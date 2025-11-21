@@ -11,9 +11,21 @@
 	import * as Sidebar from "$lib/components/ui/sidebar/index.js";
 	import { useSidebar } from "$lib/components/ui/sidebar/index.js";
 
-	let { user }: { user: { name: string; email: string; avatar: string } } = $props();
+	let {
+		user,
+	}: { user: { name: string; email: string; avatar: string } } = $props();
 
 	const sidebar = useSidebar();
+
+	// Get user initials from name
+	const getInitials = (name: string) => {
+		return name
+			.split(" ")
+			.map((n) => n[0])
+			.join("")
+			.toUpperCase()
+			.slice(0, 2);
+	};
 </script>
 
 <Sidebar.Menu>
@@ -26,15 +38,35 @@
 						size="lg"
 						class="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground md:h-8 md:p-0"
 					>
-						<Avatar.Root class="size-8 rounded-lg">
-							<Avatar.Image src={user.avatar} alt={user.name} />
-							<Avatar.Fallback class="rounded-lg">CN</Avatar.Fallback>
+						<Avatar.Root
+							class="size-8 rounded-lg"
+						>
+							<Avatar.Image
+								src={user.avatar}
+								alt={user.name}
+							/>
+							<Avatar.Fallback
+								class="rounded-lg"
+								>{getInitials(
+									user.name,
+								)}</Avatar.Fallback
+							>
 						</Avatar.Root>
-						<div class="grid flex-1 text-left text-sm leading-tight">
-							<span class="truncate font-medium">{user.name}</span>
-							<span class="truncate text-xs">{user.email}</span>
+						<div
+							class="grid flex-1 text-left text-sm leading-tight"
+						>
+							<span
+								class="truncate font-medium"
+								>{user.name}</span
+							>
+							<span
+								class="truncate text-xs"
+								>{user.email}</span
+							>
 						</div>
-						<ChevronsUpDownIcon class="ml-auto size-4" />
+						<ChevronsUpDownIcon
+							class="ml-auto size-4"
+						/>
 					</Sidebar.MenuButton>
 				{/snippet}
 			</DropdownMenu.Trigger>
@@ -45,14 +77,34 @@
 				sideOffset={4}
 			>
 				<DropdownMenu.Label class="p-0 font-normal">
-					<div class="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-						<Avatar.Root class="size-8 rounded-lg">
-							<Avatar.Image src={user.avatar} alt={user.name} />
-							<Avatar.Fallback class="rounded-lg">CN</Avatar.Fallback>
+					<div
+						class="flex items-center gap-2 px-1 py-1.5 text-left text-sm"
+					>
+						<Avatar.Root
+							class="size-8 rounded-lg"
+						>
+							<Avatar.Image
+								src={user.avatar}
+								alt={user.name}
+							/>
+							<Avatar.Fallback
+								class="rounded-lg"
+								>{getInitials(
+									user.name,
+								)}</Avatar.Fallback
+							>
 						</Avatar.Root>
-						<div class="grid flex-1 text-left text-sm leading-tight">
-							<span class="truncate font-medium">{user.name}</span>
-							<span class="truncate text-xs">{user.email}</span>
+						<div
+							class="grid flex-1 text-left text-sm leading-tight"
+						>
+							<span
+								class="truncate font-medium"
+								>{user.name}</span
+							>
+							<span
+								class="truncate text-xs"
+								>{user.email}</span
+							>
 						</div>
 					</div>
 				</DropdownMenu.Label>

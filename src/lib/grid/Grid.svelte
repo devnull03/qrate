@@ -3,156 +3,70 @@
 		CellValueChangedEvent,
 		GridApi,
 		GridOptions,
-		ICellRendererComp,
-		ICellRendererParams,
 		SelectionChangedEvent,
-		ValueFormatterParams,
 	} from "ag-grid-community";
-	import { createGrid } from "ag-grid-community";
-	import { onMount } from "svelte";
+	import { createGrid, themeQuartz } from "ag-grid-community";
+	import { csvStore } from "$lib/stores/csvStore.svelte";
 
 	// Grid API: Access to Grid API methods
 	let gridApi: GridApi | undefined = $state();
 
-	const dateFormatter = (params: ValueFormatterParams) => {
-		return new Date(params.value).toLocaleDateString("en-us", {
-			weekday: "long",
-			year: "numeric",
-			month: "short",
-			day: "numeric",
-		});
-	};
+	// Generate column definitions from CSV data
+	function generateColumnDefs(data: Record<string, string>[]) {
+		if (data.length === 0) return [];
 
-	class CompanyLogoRenderer implements ICellRendererComp {
-		eGui!: HTMLSpanElement;
+		const firstRow = data[0];
+		const columns = Object.keys(firstRow).map((key) => ({
+			field: key,
+			filter: true,
+			editable: true,
+			sortable: true,
+			resizable: true,
+		}));
 
-		// Optional: Params for rendering. The same params that are passed to the cellRenderer function.
-		init(params: ICellRendererParams) {
-			const companyLogo: HTMLImageElement =
-				document.createElement("img");
-			companyLogo.src = `https://www.ag-grid.com/example-assets/space-company-logos/${params.value.toLowerCase()}.png`;
-			companyLogo.setAttribute(
-				"style",
-				"display: block; width: 25px; height: auto; max-height: 50%; margin-right: 12px; filter: brightness(1.1)",
-			);
-
-			const companyName: HTMLParagraphElement =
-				document.createElement("p");
-			companyName.textContent = params.value;
-			companyName.setAttribute(
-				"style",
-				"text-overflow: ellipsis; overflow: hidden; white-space: nowrap;",
-			);
-
-			this.eGui = document.createElement("span");
-			this.eGui.setAttribute(
-				"style",
-				"display: flex; height: 100%; width: 100%; align-items: center",
-			);
-			this.eGui.appendChild(companyLogo);
-			this.eGui.appendChild(companyName);
-		}
-
-		// Required: Return the DOM element of the component, this is what the grid puts into the cell
-		getGui() {
-			return this.eGui;
-		}
-
-		// Required: Get the cell to refresh.
-		refresh(params: ICellRendererParams): boolean {
-			return false;
-		}
+		return columns;
 	}
 
-	class MissionResultRenderer implements ICellRendererComp {
-		eGui!: HTMLSpanElement;
+	// Check if dark mode is active
+	let isDark = $state(false);
 
-		// Optional: Params for rendering. The same params that are passed to the cellRenderer function.
-		init(params: ICellRendererParams) {
-			const icon: HTMLImageElement =
-				document.createElement("img");
-			icon.src = `https://www.ag-grid.com/example-assets/icons/${params.value ? "tick-in-circle" : "cross-in-circle"}.png`;
-			icon.setAttribute(
-				"style",
-				"width: auto; height: auto;",
-			);
+	$effect(() => {
+		if (typeof document !== "undefined") {
+			isDark =
+				document.documentElement.classList.contains(
+					"dark",
+				);
 
-			this.eGui = document.createElement("span");
-			this.eGui.setAttribute(
-				"style",
-				"display: flex; justify-content: center; height: 100%; align-items: center",
-			);
-			this.eGui.appendChild(icon);
+			// Watch for theme changes
+			const observer = new MutationObserver(() => {
+				isDark =
+					document.documentElement.classList.contains(
+						"dark",
+					);
+			});
+
+			observer.observe(document.documentElement, {
+				attributes: true,
+				attributeFilter: ["class"],
+			});
+
+			return () => observer.disconnect();
 		}
-
-		// Required: Return the DOM element of the component, this is what the grid puts into the cell
-		getGui() {
-			return this.eGui;
-		}
-
-		// Required: Get the cell to refresh.
-		refresh(params: ICellRendererParams): boolean {
-			return false;
-		}
-	}
-
-	// Row Data Interface
-	interface IRow {
-		mission: string;
-		company: string;
-		location: string;
-		date: string;
-		time: string;
-		rocket: string;
-		price: number;
-		successful: boolean;
-	}
+	});
 
 	const gridOptions: GridOptions = {
 		// Data to be displayed
 		rowData: [],
 		// Columns to be displayed (Should match rowData properties)
-		columnDefs: [
-			{
-				field: "mission",
-				width: 150,
-			},
-			{
-				field: "company",
-				width: 130,
-				cellRenderer: CompanyLogoRenderer,
-			},
-			{
-				field: "location",
-				width: 225,
-			},
-			{
-				field: "date",
-				valueFormatter: dateFormatter,
-			},
-			{
-				field: "price",
-				width: 130,
-				valueFormatter: (
-					params: ValueFormatterParams,
-				) => {
-					return (
-						"£" +
-						params.value.toLocaleString()
-					);
-				},
-			},
-			{
-				field: "successful",
-				width: 120,
-				cellRenderer: MissionResultRenderer,
-			},
-			{ field: "rocket" },
-		],
+		columnDefs: [],
+		// Use AG Grid v34 Theming API
+		theme: themeQuartz,
 		// Configurations applied to all columns
 		defaultColDef: {
 			filter: true,
 			editable: true,
+			sortable: true,
+			resizable: true,
 		},
 		// Grid Options & Callbacks
 		pagination: true,
@@ -167,19 +81,55 @@
 
 	// Create Grid: Create new grid within the #myGrid div, using the Grid Options object
 	let mygrid: HTMLDivElement | null = $state(null);
-	onMount(() => {
-		if (mygrid) {
+
+	// Initialize grid when div is available
+	$effect(() => {
+		if (mygrid && !gridApi) {
 			gridApi = createGrid(mygrid, gridOptions);
-			// Fetch Remote Data
-			fetch(
-				"https://www.ag-grid.com/example-assets/space-mission-data.json",
-			)
-				.then((response) => response.json())
-				.then((data: any) =>
-					gridApi?.setGridOption("rowData", data),
-				);
+		}
+	});
+
+	// Watch for changes in CSV data and update grid
+	$effect(() => {
+		if (gridApi && csvStore.data.length > 0) {
+			const columnDefs = generateColumnDefs(csvStore.data);
+			gridApi.setGridOption("columnDefs", columnDefs);
+			gridApi.setGridOption("rowData", csvStore.data);
+		} else if (gridApi && csvStore.data.length === 0) {
+			// Clear grid when no data
+			gridApi.setGridOption("columnDefs", []);
+			gridApi.setGridOption("rowData", []);
+		}
+	});
+
+	// Update grid theme when dark mode changes
+	$effect(() => {
+		if (gridApi) {
+			gridApi.setGridOption(
+				"theme",
+				themeQuartz.withParams({
+					browserColorScheme: isDark
+						? "dark"
+						: "light",
+				}),
+			);
 		}
 	});
 </script>
 
-<div bind:this={mygrid} class="size-full"></div>
+<div class="size-full relative">
+	{#if csvStore.data.length === 0}
+		<div
+			class="absolute inset-0 flex items-center justify-center p-8 bg-background z-10"
+		>
+			<div class="text-center text-muted-foreground">
+				<p class="text-lg mb-2">No data to display</p>
+				<p class="text-sm">
+					Load a CSV file from the sidebar to get
+					started
+				</p>
+			</div>
+		</div>
+	{/if}
+	<div bind:this={mygrid} class="size-full"></div>
+</div>
