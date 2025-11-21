@@ -2,6 +2,8 @@
 	import InboxIcon from "@lucide/svelte/icons/inbox";
 	import FolderOpenIcon from "@lucide/svelte/icons/folder-open";
 	import FileSpreadsheetIcon from "@lucide/svelte/icons/file-spreadsheet";
+	import FilePlusIcon from "@lucide/svelte/icons/file-plus";
+	import UploadIcon from "@lucide/svelte/icons/upload";
 
 	const data = {
 		user: {
@@ -11,16 +13,10 @@
 		},
 		navMain: [
 			{
-				title: "Inbox",
+				title: "File",
 				url: "#",
 				icon: InboxIcon,
 				isActive: true,
-			},
-			{
-				title: "Load CSV",
-				url: "#",
-				icon: FolderOpenIcon,
-				isActive: false,
 			},
 			{
 				title: "Data View",
@@ -41,8 +37,8 @@
 	import { Button } from "$lib/components/ui/button/index.js";
 	import CommandIcon from "@lucide/svelte/icons/command";
 	import type { ComponentProps } from "svelte";
-	import { open } from "@tauri-apps/plugin-dialog";
-	import { csvStore } from "$lib/stores/csvStore.svelte";
+	import { open, save } from "@tauri-apps/plugin-dialog";
+	import { qrateStore } from "$lib/stores/qrateStore.svelte";
 
 	let {
 		ref = $bindable(null),
@@ -50,26 +46,137 @@
 	}: ComponentProps<typeof Sidebar.Root> = $props();
 
 	let activeItem = $state(data.navMain[0]);
+	let isProcessing = $state(false);
 	const sidebar = useSidebar();
 
-	async function handleLoadCsv() {
+	// Current file info
+	let currentFileName = $derived.by(() => {
+		if (!qrateStore.currentFilePath) return null;
+		const parts = qrateStore.currentFilePath.split(/[\\/]/);
+		return parts[parts.length - 1];
+	});
+
+	let fileStats = $derived.by(() => {
+		if (!qrateStore.isFileOpen) return null;
+		return {
+			rows: qrateStore.totalRows,
+			columns: qrateStore.columns.length,
+		};
+	});
+
+	/**
+	 * Open an existing .qrate file
+	 */
+	async function handleOpenQrate() {
 		try {
-			const result = await open({
+			isProcessing = true;
+
+			const selected = await open({
 				multiple: false,
 				filters: [
 					{
-						name: "CSV",
+						name: "Qrate Files",
+						extensions: ["qrate"],
+					},
+				],
+			});
+
+			if (selected && typeof selected === "string") {
+				await qrateStore.openFile(selected);
+			}
+		} catch (err) {
+			console.error("Failed to open .qrate file:", err);
+		} finally {
+			isProcessing = false;
+		}
+	}
+
+	/**
+	 * Create a new .qrate file
+	 */
+	async function handleCreateQrate() {
+		try {
+			isProcessing = true;
+
+			const selected = await save({
+				filters: [
+					{
+						name: "Qrate Files",
+						extensions: ["qrate"],
+					},
+				],
+				defaultPath: "untitled.qrate",
+			});
+
+			if (selected) {
+				await qrateStore.createFile(selected);
+			}
+		} catch (err) {
+			console.error("Failed to create .qrate file:", err);
+		} finally {
+			isProcessing = false;
+		}
+	}
+
+	/**
+	 * Import a CSV file into a new or existing .qrate file
+	 */
+	async function handleImportCsv() {
+		try {
+			isProcessing = true;
+
+			// First, select the CSV file to import
+			const csvFile = await open({
+				multiple: false,
+				filters: [
+					{
+						name: "CSV Files",
 						extensions: ["csv"],
 					},
 				],
 			});
 
-			if (result) {
-				await csvStore.loadCsv(result);
-				sidebar.setOpen(true);
+			if (!csvFile || typeof csvFile !== "string") {
+				isProcessing = false;
+				return;
 			}
-		} catch (error) {
-			console.error("Failed to open file:", error);
+
+			// Then, select where to save the .qrate file
+			const qrateFile = await save({
+				filters: [
+					{
+						name: "Qrate Files",
+						extensions: ["qrate"],
+					},
+				],
+				defaultPath: csvFile.replace(
+					/\.csv$/i,
+					".qrate",
+				),
+			});
+
+			if (!qrateFile) {
+				isProcessing = false;
+				return;
+			}
+
+			// Import the CSV data
+			await qrateStore.importCsv(qrateFile, csvFile);
+		} catch (err) {
+			console.error("Failed to import CSV:", err);
+		} finally {
+			isProcessing = false;
+		}
+	}
+
+	/**
+	 * Close the current file
+	 */
+	async function handleCloseFile() {
+		try {
+			await qrateStore.closeFile();
+		} catch (err) {
+			console.error("Failed to close file:", err);
 		}
 	}
 </script>
@@ -108,12 +215,12 @@
 								>
 									<span
 										class="truncate font-medium"
-										>Qrate</span
+										>qRate</span
 									>
 									<span
 										class="truncate text-xs"
-										>CSV
-										Viewer</span
+										>Archival
+										Workspace</span
 									>
 								</div>
 							</a>
@@ -133,12 +240,6 @@
 										hidden: false,
 									}}
 									onclick={() => {
-										if (
-											item.title ===
-											"Load CSV"
-										) {
-											handleLoadCsv();
-										}
 										activeItem =
 											item;
 										sidebar.setOpen(
@@ -179,117 +280,217 @@
 				>
 					{activeItem.title}
 				</div>
-				{#if activeItem.title === "Load CSV"}
-					<Button
-						onclick={handleLoadCsv}
-						size="sm"
-						variant="outline"
-					>
-						Open CSV File
-					</Button>
-				{/if}
 			</div>
-			{#if csvStore.data.length > 0}
-				<div class="text-sm text-muted-foreground">
-					Loaded {csvStore.data.length} rows
+			{#if qrateStore.isFileOpen && currentFileName && fileStats}
+				<div class="p-3 bg-muted rounded-md space-y-1">
+					<p
+						class="text-sm font-medium truncate"
+						title={qrateStore.currentFilePath}
+					>
+						{currentFileName}
+					</p>
+					<p
+						class="text-xs text-muted-foreground"
+					>
+						{fileStats.rows.toLocaleString()}
+						rows × {fileStats.columns} columns
+					</p>
 				</div>
 			{/if}
 		</Sidebar.Header>
 		<Sidebar.Content>
 			<Sidebar.Group class="px-0">
 				<Sidebar.GroupContent>
-					{#if csvStore.isLoading}
-						<div
-							class="flex items-center justify-center p-8"
-						>
-							<div
-								class="text-sm text-muted-foreground"
-							>
-								Loading CSV...
-							</div>
-						</div>
-					{:else if csvStore.error}
-						<div
-							class="flex flex-col items-center justify-center p-8 gap-2"
-						>
-							<div
-								class="text-sm text-destructive"
-							>
-								{csvStore.error}
-							</div>
-							<Button
-								onclick={handleLoadCsv}
-								size="sm"
-								variant="outline"
-							>
-								Try Again
-							</Button>
-						</div>
-					{:else if csvStore.data.length > 0}
-						<div class="p-4 space-y-2">
-							<div
-								class="text-xs font-medium text-muted-foreground mb-3"
-							>
-								CSV Preview
-								(First 10 rows)
-							</div>
-							{#each csvStore.data.slice(0, 10) as row, idx}
+					{#if activeItem.title === "File"}
+						<div class="p-4 space-y-4">
+							{#if !qrateStore.isFileOpen}
 								<div
-									class="hover:bg-sidebar-accent hover:text-sidebar-accent-foreground flex flex-col gap-1 whitespace-nowrap border-b p-3 text-sm leading-tight last:border-b-0 rounded-sm"
+									class="space-y-2"
+								>
+									<Button
+										onclick={handleOpenQrate}
+										disabled={isProcessing}
+										class="w-full justify-start"
+										variant="outline"
+									>
+										<FolderOpenIcon
+											class="mr-2 size-4"
+										/>
+										Open
+										.qrate
+										File
+									</Button>
+
+									<Button
+										onclick={handleCreateQrate}
+										disabled={isProcessing}
+										class="w-full justify-start"
+										variant="outline"
+									>
+										<FilePlusIcon
+											class="mr-2 size-4"
+										/>
+										New
+										.qrate
+										File
+									</Button>
+
+									<div
+										class="relative"
+									>
+										<div
+											class="absolute inset-0 flex items-center"
+										>
+											<span
+												class="w-full border-t border-border"
+
+											></span>
+										</div>
+										<div
+											class="relative flex justify-center text-xs uppercase"
+										>
+											<span
+												class="bg-sidebar px-2 text-muted-foreground"
+												>Or</span
+											>
+										</div>
+									</div>
+
+									<Button
+										onclick={handleImportCsv}
+										disabled={isProcessing}
+										class="w-full justify-start"
+									>
+										<UploadIcon
+											class="mr-2 size-4"
+										/>
+										Import
+										CSV
+									</Button>
+								</div>
+							{:else}
+								<Button
+									onclick={handleCloseFile}
+									disabled={isProcessing}
+									class="w-full justify-start"
+									variant="outline"
+								>
+									Close
+									File
+								</Button>
+							{/if}
+
+							{#if isProcessing}
+								<div
+									class="text-sm text-muted-foreground text-center"
+								>
+									Processing...
+								</div>
+							{/if}
+
+							<div
+								class="pt-4 border-t border-border space-y-2 text-xs text-muted-foreground"
+							>
+								<h3
+									class="font-semibold text-foreground"
+								>
+									About
+									qRate
+								</h3>
+								<p>
+									Digital
+									archival
+									workspace
+									for
+									managing
+									cultural
+									heritage
+									metadata.
+								</p>
+								<ul
+									class="list-disc list-inside space-y-1 ml-2"
+								>
+									<li>
+										Instant
+										loading
+										of
+										massive
+										datasets
+									</li>
+									<li>
+										Crash-proof
+										ACID
+										transactions
+									</li>
+									<li>
+										Standards-ready
+										(RAD,
+										MODS)
+									</li>
+									<li>
+										AI-assisted
+										cataloging
+									</li>
+								</ul>
+							</div>
+						</div>
+					{:else if activeItem.title === "Data View"}
+						<div class="p-4">
+							{#if qrateStore.isFileOpen}
+								<div
+									class="space-y-2 text-sm"
 								>
 									<div
-										class="flex items-center gap-2"
+										class="flex justify-between"
 									>
 										<span
-											class="text-xs text-muted-foreground"
-											>Row
-											{idx +
-												1}</span
+											class="text-muted-foreground"
+											>Total
+											Rows:</span
+										>
+										<span
+											class="font-medium"
+											>{qrateStore.totalRows.toLocaleString()}</span
 										>
 									</div>
 									<div
-										class="flex flex-col gap-1"
+										class="flex justify-between"
 									>
-										{#each Object.entries(row) as [key, value]}
-											<div
-												class="flex gap-2"
-											>
-												<span
-													class="text-xs font-medium text-muted-foreground min-w-[80px]"
-													>{key}:</span
-												>
-												<span
-													class="text-xs truncate"
-													>{value}</span
-												>
-											</div>
-										{/each}
+										<span
+											class="text-muted-foreground"
+											>Columns:</span
+										>
+										<span
+											class="font-medium"
+											>{qrateStore
+												.columns
+												.length}</span
+										>
+									</div>
+									<div
+										class="flex justify-between"
+									>
+										<span
+											class="text-muted-foreground"
+											>Loaded
+											Rows:</span
+										>
+										<span
+											class="font-medium"
+											>{qrateStore
+												.rows
+												.length}</span
+										>
 									</div>
 								</div>
-							{/each}
-						</div>
-					{:else}
-						<div
-							class="flex flex-col items-center justify-center p-8 gap-4"
-						>
-							<FileSpreadsheetIcon
-								class="size-12 text-muted-foreground"
-							/>
-							<div
-								class="text-sm text-muted-foreground text-center"
-							>
-								No CSV file
-								loaded.<br />
-								Click "Load CSV"
-								to get started.
-							</div>
-							<Button
-								onclick={handleLoadCsv}
-								size="sm"
-								variant="outline"
-							>
-								Open CSV File
-							</Button>
+							{:else}
+								<div
+									class="text-sm text-muted-foreground text-center"
+								>
+									No file
+									open
+								</div>
+							{/if}
 						</div>
 					{/if}
 				</Sidebar.GroupContent>
