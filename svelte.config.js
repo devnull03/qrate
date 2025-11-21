@@ -13,6 +13,13 @@ const config = {
       fallback: "index.html",
     }),
   },
+  
+  files: {
+    assets: "static",
+    lib: "src/lib",
+    routes: "src/routes",
+  },
+  
 };
 
 export default config;
