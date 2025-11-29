@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { Button } from "$lib/components/ui/button/index.js";
 	import MinusIcon from "@lucide/svelte/icons/minus";
 	import SquareIcon from "@lucide/svelte/icons/square";
 	import XIcon from "@lucide/svelte/icons/x";
@@ -15,78 +16,44 @@
 	let { title = "qRate" }: Props = $props();
 </script>
 
-<div class="titlebar" data-tauri-drag-region>
-	<div class="titlebar-title" data-tauri-drag-region>
+<div
+	class="flex h-8 shrink-0 select-none items-center justify-between border-b border-border bg-background"
+	data-tauri-drag-region
+>
+	<div
+		class="flex-1 pl-3 text-[0.8125rem] text-foreground"
+		data-tauri-drag-region
+	>
 		{title}
 	</div>
 
-	<div class="titlebar-controls">
-		<button
-			class="control-button"
+	<div class="flex h-full">
+		<Button
+			variant="ghost"
+			size="icon"
+			class="h-full w-[46px] rounded-none"
 			onclick={minimizeWindow}
 			title="Minimize"
 		>
 			<MinusIcon class="size-4" />
-		</button>
-		<button
-			class="control-button"
+		</Button>
+		<Button
+			variant="ghost"
+			size="icon"
+			class="h-full w-[46px] rounded-none"
 			onclick={toggleMaximizeWindow}
 			title="Maximize"
 		>
 			<SquareIcon class="size-3.5" />
-		</button>
-		<button
-			class="control-button control-close"
+		</Button>
+		<Button
+			variant="ghost"
+			size="icon"
+			class="h-full w-[46px] rounded-none hover:bg-[#e81123] hover:text-white"
 			onclick={closeWindow}
 			title="Close"
 		>
 			<XIcon class="size-4" />
-		</button>
+		</Button>
 	</div>
 </div>
-
-<style>
-	.titlebar {
-		height: 32px;
-		background-color: var(--background);
-		user-select: none;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		border-bottom: 1px solid var(--border);
-		flex-shrink: 0;
-	}
-
-	.titlebar-title {
-		flex: 1;
-		padding-left: 0.75rem;
-		font-size: 0.8125rem;
-		color: var(--foreground);
-	}
-
-	.titlebar-controls {
-		display: flex;
-		height: 100%;
-	}
-
-	.control-button {
-		width: 46px;
-		height: 100%;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: transparent;
-		border: none;
-		cursor: pointer;
-		color: var(--foreground);
-	}
-
-	.control-button:hover {
-		background-color: var(--accent);
-	}
-
-	.control-close:hover {
-		background-color: #e81123;
-		color: white;
-	}
-</style>

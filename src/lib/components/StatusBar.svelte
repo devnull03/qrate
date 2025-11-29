@@ -10,63 +10,36 @@
 	);
 </script>
 
-<footer class="status-bar">
-	<div class="status-left">
+<footer
+	class="flex h-6 shrink-0 items-center justify-between border-t border-border bg-muted px-3 text-xs"
+>
+	<div class="flex items-center gap-2">
 		{#if qrateStore.isFileOpen && currentFileName}
-			<span class="status-item" title={qrateStore.currentFilePath}>
+			<span
+				class="truncate whitespace-nowrap"
+				title={qrateStore.currentFilePath}
+			>
 				{currentFileName}
 			</span>
-			<span class="status-separator">|</span>
-			<span class="status-item">
+			<span class="text-muted-foreground/50">|</span>
+			<span class="whitespace-nowrap">
 				{qrateStore.totalRows.toLocaleString()} rows
 			</span>
-			<span class="status-separator">|</span>
-			<span class="status-item">
+			<span class="text-muted-foreground/50">|</span>
+			<span class="whitespace-nowrap">
 				{qrateStore.columns.length} columns
 			</span>
 		{:else}
-			<span class="status-item text-muted-foreground">No file open</span>
+			<span class="text-muted-foreground">No file open</span>
 		{/if}
 	</div>
-	<div class="status-right">
+	<div class="flex items-center gap-2">
 		{#if qrateStore.isLoading}
-			<span class="status-item">Loading...</span>
+			<span>Loading...</span>
 		{:else if qrateStore.error}
-			<span class="status-item text-destructive">{qrateStore.error}</span>
+			<span class="text-destructive">{qrateStore.error}</span>
 		{:else}
-			<span class="status-item text-muted-foreground">Ready</span>
+			<span class="text-muted-foreground">Ready</span>
 		{/if}
 	</div>
 </footer>
-
-<style>
-	.status-bar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		height: 24px;
-		padding: 0 0.75rem;
-		font-size: 0.75rem;
-		background-color: var(--muted);
-		border-top: 1px solid var(--border);
-		flex-shrink: 0;
-	}
-
-	.status-left,
-	.status-right {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-	}
-
-	.status-item {
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.status-separator {
-		color: var(--muted-foreground);
-		opacity: 0.5;
-	}
-</style>

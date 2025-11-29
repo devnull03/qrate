@@ -2,10 +2,8 @@
 	import { onMount } from "svelte";
 	import { RevoGrid as RevoGridComponent } from "@revolist/svelte-datagrid";
 	import type { ColumnRegular, DataType } from "@revolist/revogrid";
-	import {
-		qrateStore,
-		type ColumnDef,
-	} from "$lib/stores/qrateStore.svelte";
+	import { Button } from "$lib/components/ui/button/index.js";
+	import { qrateStore, type ColumnDef } from "$lib/stores/qrateStore.svelte";
 
 	// Grid reference
 	let grid: any = $state();
@@ -37,17 +35,11 @@
 
 	$effect(() => {
 		if (typeof document !== "undefined") {
-			isDark =
-				document.documentElement.classList.contains(
-					"dark",
-				);
+			isDark = document.documentElement.classList.contains("dark");
 
 			// Watch for theme changes
 			const observer = new MutationObserver(() => {
-				isDark =
-					document.documentElement.classList.contains(
-						"dark",
-					);
+				isDark = document.documentElement.classList.contains("dark");
 			});
 
 			observer.observe(document.documentElement, {
@@ -83,18 +75,13 @@
 		const columnId = detail.prop;
 		const newSize = detail.size;
 
-		const column = qrateStore.columns.find(
-			(c) => c.id === columnId,
-		);
+		const column = qrateStore.columns.find((c) => c.id === columnId);
 		if (column) {
 			const updatedColumn = { ...column, width: newSize };
 			try {
 				await qrateStore.updateColumn(updatedColumn);
 			} catch (err) {
-				console.error(
-					"Failed to update column width:",
-					err,
-				);
+				console.error("Failed to update column width:", err);
 			}
 		}
 	};
@@ -115,10 +102,7 @@
 				try {
 					await qrateStore.loadRows(start, 100);
 				} catch (err) {
-					console.error(
-						"Failed to load rows during scroll:",
-						err,
-					);
+					console.error("Failed to load rows during scroll:", err);
 				}
 			}
 		}
@@ -131,25 +115,24 @@
 	});
 </script>
 
-<div class="grid-container">
+<div class="relative h-full w-full overflow-hidden">
 	{#if !qrateStore.isFileOpen}
-		<div class="empty-state">
+		<div class="flex h-full w-full items-center justify-center">
 			<div class="text-center text-muted-foreground">
-				<p class="text-lg mb-2">No file open</p>
+				<p class="mb-2 text-lg">No file open</p>
 				<p class="text-sm">
-					Open a .qrate file or import a CSV to
-					get started
+					Open a .qrate file or import a CSV to get started
 				</p>
 			</div>
 		</div>
 	{:else if isLoading}
-		<div class="empty-state">
+		<div class="flex h-full w-full items-center justify-center">
 			<div class="text-center text-muted-foreground">
-				<p class="text-lg mb-2">Loading...</p>
+				<p class="mb-2 text-lg">Loading...</p>
 			</div>
 		</div>
 	{:else}
-		<div class="grid-wrapper">
+		<div class="h-full w-full">
 			<RevoGridComponent
 				bind:this={grid}
 				source={revoRows}
@@ -167,17 +150,19 @@
 	{/if}
 
 	{#if qrateStore.error}
-		<div class="error-toast">
-			<p class="font-semibold">Error</p>
-			<p class="text-sm">{qrateStore.error}</p>
-			<button
+		<div
+			class="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border border-destructive/50 bg-destructive/10 p-4 shadow-lg backdrop-blur-sm"
+		>
+			<p class="font-semibold text-destructive">Error</p>
+			<p class="text-sm text-destructive/90">{qrateStore.error}</p>
+			<Button
+				variant="ghost"
+				size="sm"
+				class="mt-2 h-auto p-0 text-xs text-destructive underline hover:bg-transparent"
 				onclick={() => (qrateStore.error = null)}
-				class="mt-2 text-xs underline"
 			>
 				Dismiss
-			</button>
+			</Button>
 		</div>
 	{/if}
 </div>
-
-
