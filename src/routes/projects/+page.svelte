@@ -17,6 +17,7 @@
 	import XIcon from "@lucide/svelte/icons/x";
 	import { ModeWatcher } from "mode-watcher";
 	import ModeToggle from "$lib/components/ModeToggle.svelte";
+	import SimpleTitleBar from "$lib/components/SimpleTitleBar.svelte";
 
 	let isProcessing = $state(false);
 	let error = $state<string | null>(null);
@@ -182,150 +183,157 @@
 
 <ModeWatcher />
 
-<div
-	class="flex h-screen w-screen flex-col items-center justify-center bg-background p-8"
->
-	<div class="w-full max-w-2xl space-y-8">
-		<!-- Header -->
-		<div class="flex items-center justify-between">
-			<div class="flex items-center gap-4">
+<div class="flex h-screen w-screen flex-col bg-background">
+	<SimpleTitleBar title="qRate - Projects" />
+	<div
+		class="flex flex-1 flex-col items-center justify-center overflow-auto p-8"
+	>
+		<div class="w-full max-w-2xl space-y-8">
+			<!-- Header -->
+			<div class="flex items-center justify-between">
+				<div class="flex items-center gap-4">
+					<div
+						class="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground"
+					>
+						<CommandIcon class="size-6" />
+					</div>
+					<div>
+						<h1 class="text-2xl font-bold">qRate</h1>
+						<p class="text-sm text-muted-foreground">
+							Digital Archival Workspace
+						</p>
+					</div>
+				</div>
+				<ModeToggle />
+			</div>
+
+			<!-- Error Display -->
+			{#if error}
 				<div
-					class="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground"
+					class="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive"
 				>
-					<CommandIcon class="size-6" />
+					{error}
 				</div>
-				<div>
-					<h1 class="text-2xl font-bold">qRate</h1>
-					<p class="text-sm text-muted-foreground">
-						Digital Archival Workspace
-					</p>
-				</div>
-			</div>
-			<ModeToggle />
-		</div>
+			{/if}
 
-		<!-- Error Display -->
-		{#if error}
-			<div
-				class="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive"
-			>
-				{error}
-			</div>
-		{/if}
-
-		<!-- Actions -->
-		<Card.Root>
-			<Card.Header>
-				<Card.Title>Get Started</Card.Title>
-				<Card.Description
-					>Create a new project or open an existing one</Card.Description
-				>
-			</Card.Header>
-			<Card.Content>
-				<div class="grid grid-cols-3 gap-4">
-					<Button
-						onclick={handleCreateQrate}
-						disabled={isProcessing}
-						variant="outline"
-						class="flex h-24 flex-col items-center justify-center gap-2"
-					>
-						<FilePlusIcon class="size-6" />
-						<span>New Project</span>
-					</Button>
-
-					<Button
-						onclick={handleOpenQrate}
-						disabled={isProcessing}
-						variant="outline"
-						class="flex h-24 flex-col items-center justify-center gap-2"
-					>
-						<FolderOpenIcon class="size-6" />
-						<span>Open Project</span>
-					</Button>
-
-					<Button
-						onclick={handleImportCsv}
-						disabled={isProcessing}
-						variant="outline"
-						class="flex h-24 flex-col items-center justify-center gap-2"
-					>
-						<UploadIcon class="size-6" />
-						<span>Import CSV</span>
-					</Button>
-				</div>
-			</Card.Content>
-		</Card.Root>
-
-		<!-- Recent Files -->
-		{#if $recentFilesStore.files.length > 0}
+			<!-- Actions -->
 			<Card.Root>
 				<Card.Header>
-					<Card.Title class="flex items-center gap-2">
-						<ClockIcon class="size-4" />
-						Recent Projects
-					</Card.Title>
+					<Card.Title>Get Started</Card.Title>
+					<Card.Description
+						>Create a new project or open an existing one</Card.Description
+					>
 				</Card.Header>
 				<Card.Content>
-					<div class="space-y-2">
-						{#each $recentFilesStore.files as file (file.path)}
-							<div
-								class="group flex w-full items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-muted"
-							>
-								<button
-									onclick={() => handleOpenRecent(file.path)}
-									disabled={isProcessing}
-									class="flex min-w-0 flex-1 items-center gap-3 disabled:opacity-50"
-								>
-									<FileIcon
-										class="size-5 shrink-0 text-muted-foreground"
-									/>
-									<div class="min-w-0 flex-1">
-										<p
-											class="truncate font-medium text-left"
-										>
-											{file.name}
-										</p>
-										<p
-											class="truncate text-xs text-muted-foreground text-left"
-											title={file.path}
-										>
-											{file.path}
-										</p>
-									</div>
-									<span
-										class="shrink-0 text-xs text-muted-foreground"
-									>
-										{formatRelativeTime(file.lastOpened)}
-									</span>
-								</button>
-								<button
-									onclick={() => removeRecentFile(file.path)}
-									class="shrink-0 rounded p-1 opacity-0 transition-opacity hover:bg-muted-foreground/20 group-hover:opacity-100"
-									title="Remove from recent"
-								>
-									<XIcon
-										class="size-4 text-muted-foreground"
-									/>
-								</button>
-							</div>
-						{/each}
+					<div class="grid grid-cols-3 gap-4">
+						<Button
+							onclick={handleCreateQrate}
+							disabled={isProcessing}
+							variant="outline"
+							class="flex h-24 flex-col items-center justify-center gap-2"
+						>
+							<FilePlusIcon class="size-6" />
+							<span>New Project</span>
+						</Button>
+
+						<Button
+							onclick={handleOpenQrate}
+							disabled={isProcessing}
+							variant="outline"
+							class="flex h-24 flex-col items-center justify-center gap-2"
+						>
+							<FolderOpenIcon class="size-6" />
+							<span>Open Project</span>
+						</Button>
+
+						<Button
+							onclick={handleImportCsv}
+							disabled={isProcessing}
+							variant="outline"
+							class="flex h-24 flex-col items-center justify-center gap-2"
+						>
+							<UploadIcon class="size-6" />
+							<span>Import CSV</span>
+						</Button>
 					</div>
 				</Card.Content>
 			</Card.Root>
-		{/if}
 
-		<!-- Loading Overlay -->
-		{#if isProcessing}
-			<div
-				class="fixed inset-0 flex items-center justify-center bg-background/80 backdrop-blur-sm"
-			>
-				<div class="flex items-center gap-3 text-muted-foreground">
-					<div
-						class="size-5 animate-spin rounded-full border-2 border-current border-t-transparent"
-					></div>
-					<span>Loading...</span>
+			<!-- Recent Files -->
+			{#if $recentFilesStore.files.length > 0}
+				<Card.Root>
+					<Card.Header>
+						<Card.Title class="flex items-center gap-2">
+							<ClockIcon class="size-4" />
+							Recent Projects
+						</Card.Title>
+					</Card.Header>
+					<Card.Content>
+						<div class="space-y-2">
+							{#each $recentFilesStore.files as file (file.path)}
+								<div
+									class="group flex w-full items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-muted"
+								>
+									<button
+										onclick={() =>
+											handleOpenRecent(file.path)}
+										disabled={isProcessing}
+										class="flex min-w-0 flex-1 items-center gap-3 disabled:opacity-50"
+									>
+										<FileIcon
+											class="size-5 shrink-0 text-muted-foreground"
+										/>
+										<div class="min-w-0 flex-1">
+											<p
+												class="truncate font-medium text-left"
+											>
+												{file.name}
+											</p>
+											<p
+												class="truncate text-xs text-muted-foreground text-left"
+												title={file.path}
+											>
+												{file.path}
+											</p>
+										</div>
+										<span
+											class="shrink-0 text-xs text-muted-foreground"
+										>
+											{formatRelativeTime(
+												file.lastOpened,
+											)}
+										</span>
+									</button>
+									<button
+										onclick={() =>
+											removeRecentFile(file.path)}
+										class="shrink-0 rounded p-1 opacity-0 transition-opacity hover:bg-muted-foreground/20 group-hover:opacity-100"
+										title="Remove from recent"
+									>
+										<XIcon
+											class="size-4 text-muted-foreground"
+										/>
+									</button>
+								</div>
+							{/each}
+						</div>
+					</Card.Content>
+				</Card.Root>
+			{/if}
+
+			<!-- Loading Overlay -->
+			{#if isProcessing}
+				<div
+					class="fixed inset-0 flex items-center justify-center bg-background/80 backdrop-blur-sm"
+				>
+					<div class="flex items-center gap-3 text-muted-foreground">
+						<div
+							class="size-5 animate-spin rounded-full border-2 border-current border-t-transparent"
+						></div>
+						<span>Loading...</span>
+					</div>
 				</div>
-			</div>
-		{/if}
+			{/if}
+		</div>
 	</div>
 </div>
