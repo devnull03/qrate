@@ -1,4 +1,12 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from "@tauri-apps/api/core";
+import {
+	workspaceStore,
+	saveWorkspace,
+	clearWorkspace,
+	updateViewport,
+} from "./workspaceStore";
+import { addRecentFile } from "./recentFiles";
+import { get } from "svelte/store";
 
 export interface ColumnDef {
 	id: string;
@@ -43,6 +51,48 @@ class QrateStore {
 	currentOffset = $state<number>(0);
 	currentLimit = $state<number>(100);
 
+	// Track if we've attempted restoration
+	private restorationAttempted = false;
+
+	/**
+	 * Restore workspace from persistent storage (call on app init)
+	 */
+	async restoreWorkspace(): Promise<boolean> {
+		if (this.restorationAttempted) return false;
+		this.restorationAttempted = true;
+
+		try {
+			// Wait for the store to be ready
+			await workspaceStore.start();
+
+			const workspace = get(workspaceStore);
+
+			if (workspace.currentFilePath) {
+				console.log("Restoring workspace:", workspace.currentFilePath);
+				await this.openFile(workspace.currentFilePath);
+
+				// Restore viewport position
+				if (
+					workspace.currentOffset > 0 ||
+					workspace.currentLimit !== 100
+				) {
+					await this.loadRows(
+						workspace.currentOffset,
+						workspace.currentLimit,
+					);
+				}
+
+				return true;
+			}
+		} catch (err) {
+			console.warn("Failed to restore workspace:", err);
+			// Clear invalid workspace state
+			clearWorkspace();
+		}
+
+		return false;
+	}
+
 	/**
 	 * Create a new .qrate file
 	 */
@@ -51,16 +101,26 @@ class QrateStore {
 			this.isLoading = true;
 			this.error = null;
 
-			const response = await invoke<FileOpenResponse>('create_qrate_file', { path });
+			const response = await invoke<FileOpenResponse>(
+				"create_qrate_file",
+				{ path },
+			);
 
 			this.currentFilePath = response.path;
 			this.columns = response.columns;
 			this.totalRows = response.total_rows;
 			this.rows = [];
 			this.isFileOpen = true;
+
+			// Save to persistent workspace
+			saveWorkspace(response.path, 0, this.currentLimit);
+
+			// Add to recent files
+			const fileName = path.split(/[/\\]/).pop() || path;
+			addRecentFile(path, fileName);
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
-			console.error('Failed to create file:', err);
+			console.error("Failed to create file:", err);
 			throw err;
 		} finally {
 			this.isLoading = false;
@@ -75,7 +135,9 @@ class QrateStore {
 			this.isLoading = true;
 			this.error = null;
 
-			const response = await invoke<FileOpenResponse>('open_qrate_file', { path });
+			const response = await invoke<FileOpenResponse>("open_qrate_file", {
+				path,
+			});
 
 			this.currentFilePath = response.path;
 			this.columns = response.columns;
@@ -88,9 +150,16 @@ class QrateStore {
 			} else {
 				this.rows = [];
 			}
+
+			// Save to persistent workspace
+			saveWorkspace(response.path, 0, this.currentLimit);
+
+			// Add to recent files
+			const fileName = path.split(/[/\\]/).pop() || path;
+			addRecentFile(path, fileName);
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
-			console.error('Failed to open file:', err);
+			console.error("Failed to open file:", err);
 			throw err;
 		} finally {
 			this.isLoading = false;
@@ -104,11 +173,14 @@ class QrateStore {
 		if (!this.currentFilePath) return;
 
 		try {
-			await invoke('close_qrate_file', { path: this.currentFilePath });
+			await invoke("close_qrate_file", { path: this.currentFilePath });
 			this.reset();
+
+			// Clear persistent workspace
+			clearWorkspace();
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
-			console.error('Failed to close file:', err);
+			console.error("Failed to close file:", err);
 			throw err;
 		}
 	}
@@ -118,11 +190,11 @@ class QrateStore {
 	 */
 	async loadRows(offset: number, limit: number): Promise<void> {
 		if (!this.currentFilePath) {
-			throw new Error('No file is currently open');
+			throw new Error("No file is currently open");
 		}
 
 		try {
-			const response = await invoke<DataResponse>('get_rows', {
+			const response = await invoke<DataResponse>("get_rows", {
 				path: this.currentFilePath,
 				limit,
 				offset,
@@ -132,9 +204,12 @@ class QrateStore {
 			this.currentOffset = offset;
 			this.currentLimit = limit;
 			this.totalRows = response.total;
+
+			// Update persistent viewport state
+			updateViewport(offset, limit);
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
-			console.error('Failed to load rows:', err);
+			console.error("Failed to load rows:", err);
 			throw err;
 		}
 	}
@@ -142,13 +217,17 @@ class QrateStore {
 	/**
 	 * Update a single cell value
 	 */
-	async updateCell(rowId: number, columnId: string, value: string): Promise<void> {
+	async updateCell(
+		rowId: number,
+		columnId: string,
+		value: string,
+	): Promise<void> {
 		if (!this.currentFilePath) {
-			throw new Error('No file is currently open');
+			throw new Error("No file is currently open");
 		}
 
 		try {
-			await invoke('update_cell', {
+			await invoke("update_cell", {
 				path: this.currentFilePath,
 				rowId,
 				columnId,
@@ -156,13 +235,13 @@ class QrateStore {
 			});
 
 			// Update local state
-			const rowIndex = this.rows.findIndex(row => row.row_id === rowId);
+			const rowIndex = this.rows.findIndex((row) => row.row_id === rowId);
 			if (rowIndex !== -1) {
 				this.rows[rowIndex][columnId] = value;
 			}
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
-			console.error('Failed to update cell:', err);
+			console.error("Failed to update cell:", err);
 			throw err;
 		}
 	}
@@ -172,11 +251,11 @@ class QrateStore {
 	 */
 	async addColumn(column: ColumnDef): Promise<void> {
 		if (!this.currentFilePath) {
-			throw new Error('No file is currently open');
+			throw new Error("No file is currently open");
 		}
 
 		try {
-			await invoke('add_column', {
+			await invoke("add_column", {
 				path: this.currentFilePath,
 				column,
 			});
@@ -188,7 +267,7 @@ class QrateStore {
 			await this.loadRows(this.currentOffset, this.currentLimit);
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
-			console.error('Failed to add column:', err);
+			console.error("Failed to add column:", err);
 			throw err;
 		}
 	}
@@ -198,23 +277,23 @@ class QrateStore {
 	 */
 	async updateColumn(column: ColumnDef): Promise<void> {
 		if (!this.currentFilePath) {
-			throw new Error('No file is currently open');
+			throw new Error("No file is currently open");
 		}
 
 		try {
-			await invoke('update_column', {
+			await invoke("update_column", {
 				path: this.currentFilePath,
 				column,
 			});
 
 			// Update local state
-			const colIndex = this.columns.findIndex(c => c.id === column.id);
+			const colIndex = this.columns.findIndex((c) => c.id === column.id);
 			if (colIndex !== -1) {
 				this.columns[colIndex] = column;
 			}
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
-			console.error('Failed to update column:', err);
+			console.error("Failed to update column:", err);
 			throw err;
 		}
 	}
@@ -224,11 +303,11 @@ class QrateStore {
 	 */
 	async insertRow(values: Record<string, any>): Promise<number> {
 		if (!this.currentFilePath) {
-			throw new Error('No file is currently open');
+			throw new Error("No file is currently open");
 		}
 
 		try {
-			const rowId = await invoke<number>('insert_row', {
+			const rowId = await invoke<number>("insert_row", {
 				path: this.currentFilePath,
 				values,
 			});
@@ -241,7 +320,7 @@ class QrateStore {
 			return rowId;
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
-			console.error('Failed to insert row:', err);
+			console.error("Failed to insert row:", err);
 			throw err;
 		}
 	}
@@ -251,11 +330,11 @@ class QrateStore {
 	 */
 	async deleteRow(rowId: number): Promise<void> {
 		if (!this.currentFilePath) {
-			throw new Error('No file is currently open');
+			throw new Error("No file is currently open");
 		}
 
 		try {
-			await invoke('delete_row', {
+			await invoke("delete_row", {
 				path: this.currentFilePath,
 				rowId,
 			});
@@ -263,10 +342,10 @@ class QrateStore {
 			this.totalRows -= 1;
 
 			// Remove from local state
-			this.rows = this.rows.filter(row => row.row_id !== rowId);
+			this.rows = this.rows.filter((row) => row.row_id !== rowId);
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
-			console.error('Failed to delete row:', err);
+			console.error("Failed to delete row:", err);
 			throw err;
 		}
 	}
@@ -279,10 +358,13 @@ class QrateStore {
 			this.isLoading = true;
 			this.error = null;
 
-			const response = await invoke<FileOpenResponse>('import_csv_to_qrate', {
-				qratePath,
-				csvPath,
-			});
+			const response = await invoke<FileOpenResponse>(
+				"import_csv_to_qrate",
+				{
+					qratePath,
+					csvPath,
+				},
+			);
 
 			this.currentFilePath = response.path;
 			this.columns = response.columns;
@@ -295,9 +377,16 @@ class QrateStore {
 			} else {
 				this.rows = [];
 			}
+
+			// Save to persistent workspace
+			saveWorkspace(response.path, 0, this.currentLimit);
+
+			// Add to recent files
+			const fileName = qratePath.split(/[/\\]/).pop() || qratePath;
+			addRecentFile(qratePath, fileName);
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
-			console.error('Failed to import CSV:', err);
+			console.error("Failed to import CSV:", err);
 			throw err;
 		} finally {
 			this.isLoading = false;

@@ -30,10 +30,8 @@
 
 <script lang="ts">
 	import NavUser from "./nav-user.svelte";
-	import { Label } from "$lib/components/ui/label/index.js";
 	import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.js";
 	import * as Sidebar from "$lib/components/ui/sidebar/index.js";
-	import { Switch } from "$lib/components/ui/switch/index.js";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import CommandIcon from "@lucide/svelte/icons/command";
 	import type { ComponentProps } from "svelte";

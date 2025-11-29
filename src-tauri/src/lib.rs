@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 mod app_state;
 mod database;
@@ -31,10 +31,7 @@ struct DataResponse {
 
 /// Create a new .qrate file
 #[tauri::command]
-fn create_qrate_file(
-    state: State<AppState>,
-    path: String,
-) -> Result<FileOpenResponse, String> {
+fn create_qrate_file(state: State<AppState>, path: String) -> Result<FileOpenResponse, String> {
     let path_buf = PathBuf::from(&path);
 
     // Initialize new database
@@ -42,11 +39,11 @@ fn create_qrate_file(
         .map_err(|e| format!("Failed to create database: {}", e))?;
 
     // Get initial state
-    let columns = database::get_columns(&conn)
-        .map_err(|e| format!("Failed to get columns: {}", e))?;
+    let columns =
+        database::get_columns(&conn).map_err(|e| format!("Failed to get columns: {}", e))?;
 
-    let total_rows = database::get_row_count(&conn)
-        .map_err(|e| format!("Failed to get row count: {}", e))?;
+    let total_rows =
+        database::get_row_count(&conn).map_err(|e| format!("Failed to get row count: {}", e))?;
 
     // Store connection in app state
     state.add_connection(path.clone(), conn);
@@ -60,10 +57,7 @@ fn create_qrate_file(
 
 /// Open an existing .qrate file
 #[tauri::command]
-fn open_qrate_file(
-    state: State<AppState>,
-    path: String,
-) -> Result<FileOpenResponse, String> {
+fn open_qrate_file(state: State<AppState>, path: String) -> Result<FileOpenResponse, String> {
     let path_buf = PathBuf::from(&path);
 
     // Open existing database
@@ -71,11 +65,11 @@ fn open_qrate_file(
         .map_err(|e| format!("Failed to open database: {}", e))?;
 
     // Get current state
-    let columns = database::get_columns(&conn)
-        .map_err(|e| format!("Failed to get columns: {}", e))?;
+    let columns =
+        database::get_columns(&conn).map_err(|e| format!("Failed to get columns: {}", e))?;
 
-    let total_rows = database::get_row_count(&conn)
-        .map_err(|e| format!("Failed to get row count: {}", e))?;
+    let total_rows =
+        database::get_row_count(&conn).map_err(|e| format!("Failed to get row count: {}", e))?;
 
     // Store connection in app state
     state.add_connection(path.clone(), conn);
@@ -89,10 +83,7 @@ fn open_qrate_file(
 
 /// Close a .qrate file
 #[tauri::command]
-fn close_qrate_file(
-    state: State<AppState>,
-    path: String,
-) -> Result<(), String> {
+fn close_qrate_file(state: State<AppState>, path: String) -> Result<(), String> {
     state.remove_connection(&path);
     Ok(())
 }
@@ -114,8 +105,8 @@ fn get_rows(
     let rows = database::get_rows(&conn, limit, offset)
         .map_err(|e| format!("Failed to get rows: {}", e))?;
 
-    let total = database::get_row_count(&conn)
-        .map_err(|e| format!("Failed to get row count: {}", e))?;
+    let total =
+        database::get_row_count(&conn).map_err(|e| format!("Failed to get row count: {}", e))?;
 
     Ok(DataResponse { rows, total })
 }
@@ -143,30 +134,21 @@ fn update_cell(
 
 /// Add a new column
 #[tauri::command]
-fn add_column(
-    state: State<AppState>,
-    path: String,
-    column: ColumnDef,
-) -> Result<(), String> {
+fn add_column(state: State<AppState>, path: String, column: ColumnDef) -> Result<(), String> {
     let conn_arc = state
         .get_connection(&path)
         .ok_or_else(|| "File not open".to_string())?;
 
     let conn = conn_arc.lock().unwrap();
 
-    database::add_column(&conn, &column, "")
-        .map_err(|e| format!("Failed to add column: {}", e))?;
+    database::add_column(&conn, &column, "").map_err(|e| format!("Failed to add column: {}", e))?;
 
     Ok(())
 }
 
 /// Update column metadata (width, hidden state, etc.)
 #[tauri::command]
-fn update_column(
-    state: State<AppState>,
-    path: String,
-    column: ColumnDef,
-) -> Result<(), String> {
+fn update_column(state: State<AppState>, path: String, column: ColumnDef) -> Result<(), String> {
     let conn_arc = state
         .get_connection(&path)
         .ok_or_else(|| "File not open".to_string())?;
@@ -192,27 +174,22 @@ fn insert_row(
 
     let conn = conn_arc.lock().unwrap();
 
-    let row_id = database::insert_row(&conn, &values)
-        .map_err(|e| format!("Failed to insert row: {}", e))?;
+    let row_id =
+        database::insert_row(&conn, &values).map_err(|e| format!("Failed to insert row: {}", e))?;
 
     Ok(row_id)
 }
 
 /// Delete a row
 #[tauri::command]
-fn delete_row(
-    state: State<AppState>,
-    path: String,
-    row_id: i64,
-) -> Result<(), String> {
+fn delete_row(state: State<AppState>, path: String, row_id: i64) -> Result<(), String> {
     let conn_arc = state
         .get_connection(&path)
         .ok_or_else(|| "File not open".to_string())?;
 
     let conn = conn_arc.lock().unwrap();
 
-    database::delete_row(&conn, row_id)
-        .map_err(|e| format!("Failed to delete row: {}", e))?;
+    database::delete_row(&conn, row_id).map_err(|e| format!("Failed to delete row: {}", e))?;
 
     Ok(())
 }
@@ -225,8 +202,8 @@ fn import_csv_to_qrate(
     csv_path: String,
 ) -> Result<FileOpenResponse, String> {
     // Read CSV file
-    let mut reader = csv::Reader::from_path(&csv_path)
-        .map_err(|e| format!("Failed to open CSV file: {}", e))?;
+    let mut reader =
+        csv::Reader::from_path(&csv_path).map_err(|e| format!("Failed to open CSV file: {}", e))?;
 
     let headers: Vec<String> = reader
         .headers()
@@ -256,11 +233,11 @@ fn import_csv_to_qrate(
         .map_err(|e| format!("Failed to import CSV data: {}", e))?;
 
     // Get final state
-    let columns = database::get_columns(&conn)
-        .map_err(|e| format!("Failed to get columns: {}", e))?;
+    let columns =
+        database::get_columns(&conn).map_err(|e| format!("Failed to get columns: {}", e))?;
 
-    let total_rows = database::get_row_count(&conn)
-        .map_err(|e| format!("Failed to get row count: {}", e))?;
+    let total_rows =
+        database::get_row_count(&conn).map_err(|e| format!("Failed to get row count: {}", e))?;
 
     // Store connection in app state
     state.add_connection(qrate_path.clone(), conn);
@@ -272,11 +249,31 @@ fn import_csv_to_qrate(
     })
 }
 
+/// Show the main window and close the projects window
+#[tauri::command]
+fn show_main_window(app: AppHandle) -> Result<(), String> {
+    let projects_window = app
+        .get_webview_window("projects")
+        .ok_or_else(|| "Projects window not found".to_string())?;
+    let main_window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+
+    projects_window
+        .close()
+        .map_err(|e| format!("Failed to close projects window: {}", e))?;
+    main_window
+        .show()
+        .map_err(|e| format!("Failed to show main window: {}", e))?;
+
+    Ok(())
+}
+
 /// Legacy CSV loader for backward compatibility
 #[tauri::command]
 fn load_csv(path: String) -> Result<Vec<std::collections::HashMap<String, String>>, String> {
-    let mut reader = csv::Reader::from_path(&path)
-        .map_err(|e| format!("Failed to open CSV file: {}", e))?;
+    let mut reader =
+        csv::Reader::from_path(&path).map_err(|e| format!("Failed to open CSV file: {}", e))?;
 
     let headers = reader
         .headers()
@@ -302,6 +299,7 @@ fn load_csv(path: String) -> Result<Vec<std::collections::HashMap<String, String
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_svelte::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs_pro::init())
         .plugin(tauri_plugin_dialog::init())
@@ -318,7 +316,8 @@ pub fn run() {
             insert_row,
             delete_row,
             import_csv_to_qrate,
-            load_csv
+            load_csv,
+            show_main_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
