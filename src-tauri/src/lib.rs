@@ -358,6 +358,41 @@ fn show_projects_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Show the settings window
+#[tauri::command]
+fn show_settings_window(app: AppHandle) -> Result<(), String> {
+    // Try to get existing settings window or create a new one
+    if let Some(settings_window) = app.get_webview_window("settings") {
+        settings_window
+            .show()
+            .map_err(|e| format!("Failed to show settings window: {}", e))?;
+        settings_window
+            .set_focus()
+            .map_err(|e| format!("Failed to focus settings window: {}", e))?;
+    } else {
+        // Create settings window if it doesn't exist
+        let settings_window = tauri::WebviewWindowBuilder::new(
+            &app,
+            "settings",
+            tauri::WebviewUrl::App("/settings".into()),
+        )
+        .title("qRate - Settings")
+        .inner_size(600.0, 700.0)
+        .min_inner_size(400.0, 500.0)
+        .decorations(false)
+        .visible(true)
+        .center()
+        .build()
+        .map_err(|e| format!("Failed to create settings window: {}", e))?;
+
+        settings_window
+            .show()
+            .map_err(|e| format!("Failed to show settings window: {}", e))?;
+    }
+
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_svelte::init())
@@ -378,6 +413,7 @@ pub fn run() {
             import_csv_to_qrate,
             show_main_window,
             show_projects_window,
+            show_settings_window,
             get_current_state
         ])
         .run(tauri::generate_context!())

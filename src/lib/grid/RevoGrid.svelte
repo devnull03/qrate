@@ -10,7 +10,20 @@
 
 	// Convert our ColumnDef format to RevoGrid's ColumnRegular format
 	const convertColumns = (columns: ColumnDef[]): ColumnRegular[] => {
-		return columns
+		// Add row number column as the first column
+		const rowNumberColumn: ColumnRegular = {
+			prop: "_rowNum",
+			name: "#",
+			size: 60,
+			readonly: true,
+			sortable: false,
+			filter: false,
+			cellProperties: () => ({
+				class: "row-number-cell",
+			}),
+		};
+
+		const dataColumns = columns
 			.filter((col) => !col.hidden)
 			.map((col) => ({
 				prop: col.id,
@@ -19,13 +32,28 @@
 				sortable: true,
 				filter: true,
 			}));
+
+		return [rowNumberColumn, ...dataColumns];
+	};
+
+	// Add row numbers to the data
+	const addRowNumbers = (
+		rows: Record<string, any>[],
+		offset: number,
+	): DataType[] => {
+		return rows.map((row, index) => ({
+			...row,
+			_rowNum: offset + index + 1,
+		}));
 	};
 
 	// RevoGrid columns derived from store
 	let revoColumns = $derived(convertColumns(qrateStore.columns));
 
-	// RevoGrid rows derived from store
-	let revoRows = $derived(qrateStore.rows as DataType[]);
+	// RevoGrid rows derived from store (with row numbers)
+	let revoRows = $derived(
+		addRowNumbers(qrateStore.rows, qrateStore.currentOffset),
+	);
 
 	// Loading state
 	let isLoading = $derived(qrateStore.isLoading);
@@ -54,6 +82,12 @@
 	// Handle cell edit
 	const handleCellEdit = async (event: CustomEvent) => {
 		const { detail } = event;
+
+		// Ignore edits to the row number column
+		if (detail.prop === "_rowNum") {
+			return;
+		}
+
 		const rowId = detail.model.row_id;
 		const columnId = detail.prop;
 		const newValue = detail.val;
@@ -75,6 +109,11 @@
 		const columnId = detail.prop;
 		const newSize = detail.size;
 
+		// Ignore resize of row number column
+		if (columnId === "_rowNum") {
+			return;
+		}
+
 		const column = qrateStore.columns.find((c) => c.id === columnId);
 		if (column) {
 			const updatedColumn = { ...column, width: newSize };
@@ -86,25 +125,11 @@
 		}
 	};
 
-	// Handle virtual scroll - load more data when needed
-	const handleScrolling = async (event: CustomEvent) => {
-		// RevoGrid provides viewport information in scroll events
-		// We can use this to determine when to load more data
+	// Handle row focus/selection
+	const handleRowFocus = (event: CustomEvent) => {
 		const { detail } = event;
-
-		// Calculate which rows should be visible based on scroll position
-		if (detail && detail.virtualSize) {
-			const start = detail.virtualSize.realCount || 0;
-			const end = start + 100; // Load 100 rows at a time
-
-			// Only load if we're scrolling to new data
-			if (start !== qrateStore.currentOffset) {
-				try {
-					await qrateStore.loadRows(start, 100);
-				} catch (err) {
-					console.error("Failed to load rows during scroll:", err);
-				}
-			}
+		if (detail && detail.model && detail.model.row_id !== undefined) {
+			qrateStore.selectRow(detail.model.row_id);
 		}
 	};
 
@@ -115,7 +140,7 @@
 	});
 </script>
 
-<div class="relative h-full w-full overflow-hidden">
+<div class="flex h-full w-full flex-col overflow-hidden p-4">
 	{#if !qrateStore.isFileOpen}
 		<div class="flex h-full w-full items-center justify-center">
 			<div class="text-center text-muted-foreground">
@@ -132,7 +157,9 @@
 			</div>
 		</div>
 	{:else}
-		<div class="h-full w-full">
+		<div
+			class="min-h-0 flex-1 overflow-hidden rounded-lg border border-border"
+		>
 			<RevoGridComponent
 				bind:this={grid}
 				source={revoRows}
@@ -144,7 +171,7 @@
 				autoSizeColumn={false}
 				on:afteredit={handleCellEdit}
 				on:aftercolumnresize={handleColumnResize}
-				on:afterviewportscroll={handleScrolling}
+				on:afterfocus={handleRowFocus}
 			/>
 		</div>
 	{/if}
@@ -166,3 +193,13 @@
 		</div>
 	{/if}
 </div>
+
+<style>
+	:global(.row-number-cell) {
+		background-color: var(--muted) !important;
+		color: var(--muted-foreground) !important;
+		font-size: 0.75rem !important;
+		text-align: center !important;
+		user-select: none !important;
+	}
+</style>

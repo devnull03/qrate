@@ -6,8 +6,13 @@
 		recentFilesStore,
 		removeRecentFile,
 	} from "$lib/stores/recentFiles";
+	import { appSettingsStore } from "$lib/stores/appSettings";
+	import { get } from "svelte/store";
 	import { Button } from "$lib/components/ui/button/index.js";
+	import { Input } from "$lib/components/ui/input/index.js";
+	import { Label } from "$lib/components/ui/label/index.js";
 	import * as Card from "$lib/components/ui/card/index.js";
+	import { Separator } from "$lib/components/ui/separator/index.js";
 	import CommandIcon from "@lucide/svelte/icons/command";
 	import FolderOpenIcon from "@lucide/svelte/icons/folder-open";
 	import FilePlusIcon from "@lucide/svelte/icons/file-plus";
@@ -15,12 +20,22 @@
 	import FileIcon from "@lucide/svelte/icons/file";
 	import ClockIcon from "@lucide/svelte/icons/clock";
 	import XIcon from "@lucide/svelte/icons/x";
+	import CheckIcon from "@lucide/svelte/icons/check";
+	import ArrowLeftIcon from "@lucide/svelte/icons/arrow-left";
 	import { ModeWatcher } from "mode-watcher";
 	import ModeToggle from "$lib/components/ModeToggle.svelte";
 	import SimpleTitleBar from "$lib/components/SimpleTitleBar.svelte";
 
 	let isProcessing = $state(false);
 	let error = $state<string | null>(null);
+
+	// Import wizard state
+	let showImportWizard = $state(false);
+	let importStep = $state<"select-csv" | "configure">("select-csv");
+	let selectedCsvFile = $state<string | null>(null);
+	let selectedFilesFolder = $state<string>("");
+	let selectedFileColumn = $state<string>("file");
+	let selectedPathPattern = $state<string>("{files_folder}/{file_column}");
 
 	/**
 	 * After successfully loading a project, show the main window
@@ -95,13 +110,31 @@
 	}
 
 	/**
-	 * Import a CSV file into a new .qrate file
+	 * Start the import CSV wizard
 	 */
-	async function handleImportCsv() {
-		try {
-			isProcessing = true;
-			error = null;
+	function startImportWizard() {
+		showImportWizard = true;
+		importStep = "select-csv";
+		selectedCsvFile = null;
+		selectedFilesFolder = "";
+		selectedFileColumn = "file";
+		selectedPathPattern = "{files_folder}/{file_column}";
+		error = null;
+	}
 
+	/**
+	 * Cancel the import wizard
+	 */
+	function cancelImportWizard() {
+		showImportWizard = false;
+		selectedCsvFile = null;
+	}
+
+	/**
+	 * Select a CSV file for import
+	 */
+	async function selectCsvFile() {
+		try {
 			const csvFile = await open({
 				multiple: false,
 				filters: [
@@ -112,10 +145,44 @@
 				],
 			});
 
-			if (!csvFile || typeof csvFile !== "string") {
-				isProcessing = false;
-				return;
+			if (csvFile && typeof csvFile === "string") {
+				selectedCsvFile = csvFile;
+				importStep = "configure";
 			}
+		} catch (err) {
+			console.error("Failed to select CSV file:", err);
+			error = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	/**
+	 * Browse for files folder
+	 */
+	async function browseFilesFolder() {
+		try {
+			const folder = await open({
+				directory: true,
+				multiple: false,
+				title: "Select Files Folder",
+			});
+
+			if (folder && typeof folder === "string") {
+				selectedFilesFolder = folder;
+			}
+		} catch (err) {
+			console.error("Failed to select folder:", err);
+		}
+	}
+
+	/**
+	 * Complete the CSV import
+	 */
+	async function completeImport() {
+		if (!selectedCsvFile) return;
+
+		try {
+			isProcessing = true;
+			error = null;
 
 			const qrateFile = await save({
 				filters: [
@@ -124,7 +191,7 @@
 						extensions: ["qrate"],
 					},
 				],
-				defaultPath: csvFile.replace(/\.csv$/i, ".qrate"),
+				defaultPath: selectedCsvFile.replace(/\.csv$/i, ".qrate"),
 			});
 
 			if (!qrateFile) {
@@ -132,7 +199,16 @@
 				return;
 			}
 
-			await qrateStore.importCsv(qrateFile, csvFile);
+			// Save settings before importing
+			appSettingsStore.set({
+				...get(appSettingsStore),
+				filesFolder: selectedFilesFolder,
+				fileColumnName: selectedFileColumn,
+				filePathPattern: selectedPathPattern,
+			});
+
+			await qrateStore.importCsv(qrateFile, selectedCsvFile);
+			showImportWizard = false;
 			await showMainWindow();
 		} catch (err) {
 			console.error("Failed to import CSV:", err);
@@ -179,6 +255,13 @@
 			return `${minutes} minute${minutes > 1 ? "s" : ""} ago`;
 		return "Just now";
 	}
+
+	/**
+	 * Get filename from path
+	 */
+	function getFileName(path: string): string {
+		return path.split(/[/\\]/).pop() || path;
+	}
 </script>
 
 <ModeWatcher />
@@ -216,109 +299,261 @@
 				</div>
 			{/if}
 
-			<!-- Actions -->
-			<Card.Root>
-				<Card.Header>
-					<Card.Title>Get Started</Card.Title>
-					<Card.Description
-						>Create a new project or open an existing one</Card.Description
-					>
-				</Card.Header>
-				<Card.Content>
-					<div class="grid grid-cols-3 gap-4">
-						<Button
-							onclick={handleCreateQrate}
-							disabled={isProcessing}
-							variant="outline"
-							class="flex h-24 flex-col items-center justify-center gap-2"
-						>
-							<FilePlusIcon class="size-6" />
-							<span>New Project</span>
-						</Button>
-
-						<Button
-							onclick={handleOpenQrate}
-							disabled={isProcessing}
-							variant="outline"
-							class="flex h-24 flex-col items-center justify-center gap-2"
-						>
-							<FolderOpenIcon class="size-6" />
-							<span>Open Project</span>
-						</Button>
-
-						<Button
-							onclick={handleImportCsv}
-							disabled={isProcessing}
-							variant="outline"
-							class="flex h-24 flex-col items-center justify-center gap-2"
-						>
-							<UploadIcon class="size-6" />
-							<span>Import CSV</span>
-						</Button>
-					</div>
-				</Card.Content>
-			</Card.Root>
-
-			<!-- Recent Files -->
-			{#if $recentFilesStore.files.length > 0}
+			{#if showImportWizard}
+				<!-- Import Wizard -->
 				<Card.Root>
 					<Card.Header>
-						<Card.Title class="flex items-center gap-2">
-							<ClockIcon class="size-4" />
-							Recent Projects
-						</Card.Title>
+						<div class="flex items-center gap-3">
+							<Button
+								variant="ghost"
+								size="icon-sm"
+								onclick={cancelImportWizard}
+							>
+								<ArrowLeftIcon class="size-4" />
+							</Button>
+							<div>
+								<Card.Title>Import CSV</Card.Title>
+								<Card.Description>
+									{#if importStep === "select-csv"}
+										Select a CSV file to import
+									{:else}
+										Configure file settings
+									{/if}
+								</Card.Description>
+							</div>
+						</div>
+					</Card.Header>
+					<Card.Content class="space-y-6">
+						{#if importStep === "select-csv"}
+							<!-- Step 1: Select CSV -->
+							<div class="flex flex-col items-center gap-4 py-8">
+								<UploadIcon
+									class="size-12 text-muted-foreground"
+								/>
+								<p
+									class="text-center text-sm text-muted-foreground"
+								>
+									Choose a CSV file to import into qRate
+								</p>
+								<Button onclick={selectCsvFile}>
+									<FolderOpenIcon class="mr-2 size-4" />
+									Select CSV File
+								</Button>
+							</div>
+						{:else}
+							<!-- Step 2: Configure -->
+							<div class="space-y-4">
+								<!-- Selected File -->
+								<div
+									class="flex items-center gap-3 rounded-md border border-border bg-muted/50 p-3"
+								>
+									<FileIcon
+										class="size-5 text-muted-foreground"
+									/>
+									<div class="min-w-0 flex-1">
+										<p class="truncate text-sm font-medium">
+											{selectedCsvFile
+												? getFileName(selectedCsvFile)
+												: ""}
+										</p>
+										<p
+											class="truncate text-xs text-muted-foreground"
+										>
+											{selectedCsvFile}
+										</p>
+									</div>
+									<CheckIcon class="size-5 text-green-500" />
+								</div>
+
+								<Separator />
+
+								<!-- Files Folder -->
+								<div class="space-y-2">
+									<Label for="files-folder">
+										Files Folder (Optional)
+									</Label>
+									<div class="flex gap-2">
+										<Input
+											id="files-folder"
+											bind:value={selectedFilesFolder}
+											placeholder="Select folder containing files..."
+											readonly
+										/>
+										<Button
+											variant="outline"
+											onclick={browseFilesFolder}
+										>
+											<FolderOpenIcon class="size-4" />
+										</Button>
+									</div>
+									<p class="text-xs text-muted-foreground">
+										The folder containing files referenced
+										in your CSV
+									</p>
+								</div>
+
+								<!-- File Column Name -->
+								<div class="space-y-2">
+									<Label for="file-column">
+										File Column Name
+									</Label>
+									<Input
+										id="file-column"
+										bind:value={selectedFileColumn}
+										placeholder="file"
+									/>
+									<p class="text-xs text-muted-foreground">
+										The CSV column containing file names
+										(e.g., "file", "filename", "image")
+									</p>
+								</div>
+
+								<!-- Path Pattern -->
+								<div class="space-y-2">
+									<Label for="path-pattern">
+										File Path Pattern
+									</Label>
+									<Input
+										id="path-pattern"
+										bind:value={selectedPathPattern}
+										placeholder={"{files_folder}/{file_column}"}
+									/>
+									<p class="text-xs text-muted-foreground">
+										Pattern for locating files. Use
+										&#123;files_folder&#125;,
+										&#123;file_column&#125;, or any column
+										name.
+									</p>
+								</div>
+							</div>
+						{/if}
+					</Card.Content>
+					{#if importStep === "configure"}
+						<Card.Footer class="flex justify-end gap-2">
+							<Button
+								variant="outline"
+								onclick={() => (importStep = "select-csv")}
+							>
+								Back
+							</Button>
+							<Button
+								onclick={completeImport}
+								disabled={isProcessing}
+							>
+								{#if isProcessing}
+									Importing...
+								{:else}
+									Import CSV
+								{/if}
+							</Button>
+						</Card.Footer>
+					{/if}
+				</Card.Root>
+			{:else}
+				<!-- Actions -->
+				<Card.Root>
+					<Card.Header>
+						<Card.Title>Get Started</Card.Title>
+						<Card.Description>
+							Create a new project or open an existing one
+						</Card.Description>
 					</Card.Header>
 					<Card.Content>
-						<div class="space-y-2">
-							{#each $recentFilesStore.files as file (file.path)}
-								<div
-									class="group flex w-full items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-muted"
-								>
-									<button
-										onclick={() =>
-											handleOpenRecent(file.path)}
-										disabled={isProcessing}
-										class="flex min-w-0 flex-1 items-center gap-3 disabled:opacity-50"
-									>
-										<FileIcon
-											class="size-5 shrink-0 text-muted-foreground"
-										/>
-										<div class="min-w-0 flex-1">
-											<p
-												class="truncate font-medium text-left"
-											>
-												{file.name}
-											</p>
-											<p
-												class="truncate text-xs text-muted-foreground text-left"
-												title={file.path}
-											>
-												{file.path}
-											</p>
-										</div>
-										<span
-											class="shrink-0 text-xs text-muted-foreground"
-										>
-											{formatRelativeTime(
-												file.lastOpened,
-											)}
-										</span>
-									</button>
-									<button
-										onclick={() =>
-											removeRecentFile(file.path)}
-										class="shrink-0 rounded p-1 opacity-0 transition-opacity hover:bg-muted-foreground/20 group-hover:opacity-100"
-										title="Remove from recent"
-									>
-										<XIcon
-											class="size-4 text-muted-foreground"
-										/>
-									</button>
-								</div>
-							{/each}
+						<div class="grid grid-cols-3 gap-4">
+							<Button
+								onclick={handleCreateQrate}
+								disabled={isProcessing}
+								variant="outline"
+								class="flex h-24 flex-col items-center justify-center gap-2"
+							>
+								<FilePlusIcon class="size-6" />
+								<span>New Project</span>
+							</Button>
+
+							<Button
+								onclick={handleOpenQrate}
+								disabled={isProcessing}
+								variant="outline"
+								class="flex h-24 flex-col items-center justify-center gap-2"
+							>
+								<FolderOpenIcon class="size-6" />
+								<span>Open Project</span>
+							</Button>
+
+							<Button
+								onclick={startImportWizard}
+								disabled={isProcessing}
+								variant="outline"
+								class="flex h-24 flex-col items-center justify-center gap-2"
+							>
+								<UploadIcon class="size-6" />
+								<span>Import CSV</span>
+							</Button>
 						</div>
 					</Card.Content>
 				</Card.Root>
+
+				<!-- Recent Files -->
+				{#if $recentFilesStore.files.length > 0}
+					<Card.Root>
+						<Card.Header>
+							<Card.Title class="flex items-center gap-2">
+								<ClockIcon class="size-4" />
+								Recent Projects
+							</Card.Title>
+						</Card.Header>
+						<Card.Content>
+							<div class="space-y-2">
+								{#each $recentFilesStore.files as file (file.path)}
+									<div
+										class="group flex w-full items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-muted"
+									>
+										<button
+											onclick={() =>
+												handleOpenRecent(file.path)}
+											disabled={isProcessing}
+											class="flex min-w-0 flex-1 items-center gap-3 disabled:opacity-50"
+										>
+											<FileIcon
+												class="size-5 shrink-0 text-muted-foreground"
+											/>
+											<div class="min-w-0 flex-1">
+												<p
+													class="truncate text-left font-medium"
+												>
+													{file.name}
+												</p>
+												<p
+													class="truncate text-left text-xs text-muted-foreground"
+													title={file.path}
+												>
+													{file.path}
+												</p>
+											</div>
+											<span
+												class="shrink-0 text-xs text-muted-foreground"
+											>
+												{formatRelativeTime(
+													file.lastOpened,
+												)}
+											</span>
+										</button>
+										<button
+											onclick={() =>
+												removeRecentFile(file.path)}
+											class="shrink-0 rounded p-1 opacity-0 transition-opacity hover:bg-muted-foreground/20 group-hover:opacity-100"
+											title="Remove from recent"
+										>
+											<XIcon
+												class="size-4 text-muted-foreground"
+											/>
+										</button>
+									</div>
+								{/each}
+							</div>
+						</Card.Content>
+					</Card.Root>
+				{/if}
 			{/if}
 
 			<!-- Loading Overlay -->

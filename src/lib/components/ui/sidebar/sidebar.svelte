@@ -35,10 +35,7 @@
 	</div>
 {:else if sidebar.isMobile}
 	<Sheet.Root
-		bind:open={
-			() => sidebar.openMobile,
-			(v) => sidebar.setOpenMobile(v)
-		}
+		bind:open={() => sidebar.openMobile, (v) => sidebar.setOpenMobile(v)}
 		{...restProps}
 	>
 		<Sheet.Content
@@ -65,9 +62,7 @@
 		bind:this={ref}
 		class="text-sidebar-foreground group peer hidden md:block"
 		data-state={sidebar.state}
-		data-collapsible={sidebar.state === "collapsed"
-			? collapsible
-			: ""}
+		data-collapsible={sidebar.state === "collapsed" ? collapsible : ""}
 		data-variant={variant}
 		data-side={side}
 		data-slot="sidebar"
@@ -87,7 +82,7 @@
 		<div
 			data-slot="sidebar-container"
 			class={cn(
-				"w-(--sidebar-width) fixed inset-y-0 z-10 hidden h-svh transition-[left,right,width] duration-100 ease-linear md:flex",
+				"w-(--sidebar-width) absolute inset-y-0 z-10 hidden h-full transition-[left,right,width] duration-100 ease-linear md:flex",
 				side === "left"
 					? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
 					: "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",

@@ -60,7 +60,10 @@ class QrateStore {
 
 	// Viewport tracking for virtual scrolling
 	currentOffset = $state<number>(0);
-	currentLimit = $state<number>(100);
+	currentLimit = $state<number>(10000); // Load more rows for better scrolling
+
+	// Selected row for file viewing in sidebar
+	selectedRowId = $state<number | null>(null);
 
 	// Track if we've attempted restoration
 	private restorationAttempted = false;
@@ -199,9 +202,11 @@ class QrateStore {
 			this.totalRows = response.total_rows;
 			this.isFileOpen = true;
 
-			// Load initial viewport data
+			// Load all data (SQLite handles this efficiently)
 			if (this.totalRows > 0) {
-				await this.loadRows(0, this.currentLimit);
+				// Load up to 10000 rows initially for smooth scrolling
+				const limit = Math.min(this.totalRows, 10000);
+				await this.loadRows(0, limit);
 			} else {
 				this.rows = [];
 			}
@@ -425,9 +430,11 @@ class QrateStore {
 			this.totalRows = response.total_rows;
 			this.isFileOpen = true;
 
-			// Load initial viewport data
+			// Load all data (SQLite handles this efficiently)
 			if (this.totalRows > 0) {
-				await this.loadRows(0, this.currentLimit);
+				// Load up to 10000 rows initially for smooth scrolling
+				const limit = Math.min(this.totalRows, 10000);
+				await this.loadRows(0, limit);
 			} else {
 				this.rows = [];
 			}
@@ -447,6 +454,13 @@ class QrateStore {
 	}
 
 	/**
+	 * Select a row for viewing files
+	 */
+	selectRow(rowId: number | null): void {
+		this.selectedRowId = rowId;
+	}
+
+	/**
 	 * Reset the store to initial state
 	 */
 	reset(): void {
@@ -457,7 +471,8 @@ class QrateStore {
 		this.isFileOpen = false;
 		this.error = null;
 		this.currentOffset = 0;
-		this.currentLimit = 100;
+		this.currentLimit = 10000;
+		this.selectedRowId = null;
 	}
 }
 

@@ -7,12 +7,20 @@
 	import MinusIcon from "@lucide/svelte/icons/minus";
 	import SquareIcon from "@lucide/svelte/icons/square";
 	import XIcon from "@lucide/svelte/icons/x";
+	import PanelLeftIcon from "@lucide/svelte/icons/panel-left";
 	import {
 		minimizeWindow,
 		toggleMaximizeWindow,
 		closeWindow,
 	} from "$lib/utils/window";
 	import { getFileName } from "$lib/utils/path";
+
+	interface Props {
+		onToggleSidebar?: () => void;
+		sidebarOpen?: boolean;
+	}
+
+	let { onToggleSidebar, sidebarOpen = true }: Props = $props();
 
 	let isProcessing = $state(false);
 
@@ -60,6 +68,18 @@
 			await invoke("show_projects_window");
 		} catch (err) {
 			console.error("Failed to open projects window:", err);
+		} finally {
+			isProcessing = false;
+		}
+	}
+
+	async function handleSettings() {
+		if (isProcessing) return;
+		try {
+			isProcessing = true;
+			await invoke("show_settings_window");
+		} catch (err) {
+			console.error("Failed to open settings window:", err);
 		} finally {
 			isProcessing = false;
 		}
@@ -148,7 +168,20 @@
 	class="flex h-8 shrink-0 select-none items-center justify-between border-b border-border bg-background"
 	data-tauri-drag-region
 >
-	<div class="flex h-full items-center pl-1">
+	<div class="flex h-full items-center">
+		<!-- Sidebar Toggle Button -->
+		<Button
+			variant="ghost"
+			size="icon"
+			class="h-full w-10 rounded-none"
+			onclick={onToggleSidebar}
+			title={sidebarOpen ? "Hide Sidebar" : "Show Sidebar"}
+		>
+			<PanelLeftIcon class="size-4" />
+		</Button>
+
+		<div class="mx-1 h-4 w-px bg-border"></div>
+
 		<DropdownMenu.Root>
 			<DropdownMenu.Trigger
 				class="flex h-full items-center bg-transparent px-3 text-[0.8125rem] text-foreground hover:bg-accent"
@@ -240,6 +273,25 @@
 				<DropdownMenu.Item onclick={handleSelectAll}>
 					Select All
 					<DropdownMenu.Shortcut>Ctrl+A</DropdownMenu.Shortcut>
+				</DropdownMenu.Item>
+			</DropdownMenu.Content>
+		</DropdownMenu.Root>
+
+		<DropdownMenu.Root>
+			<DropdownMenu.Trigger
+				class="flex h-full items-center bg-transparent px-3 text-[0.8125rem] text-foreground hover:bg-accent"
+			>
+				View
+			</DropdownMenu.Trigger>
+			<DropdownMenu.Content align="start" class="min-w-40">
+				<DropdownMenu.Item onclick={onToggleSidebar}>
+					{sidebarOpen ? "Hide Sidebar" : "Show Sidebar"}
+					<DropdownMenu.Shortcut>Ctrl+B</DropdownMenu.Shortcut>
+				</DropdownMenu.Item>
+				<DropdownMenu.Separator />
+				<DropdownMenu.Item onclick={handleSettings}>
+					Settings
+					<DropdownMenu.Shortcut>Ctrl+,</DropdownMenu.Shortcut>
 				</DropdownMenu.Item>
 			</DropdownMenu.Content>
 		</DropdownMenu.Root>
