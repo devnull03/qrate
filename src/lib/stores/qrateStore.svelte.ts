@@ -7,6 +7,17 @@ import {
 } from "./workspaceStore";
 import { addRecentFile } from "./recentFiles";
 import { get } from "svelte/store";
+import { getFileName } from "$lib/utils/path";
+
+export interface CurrentStateResponse {
+	is_file_open: boolean;
+	path: string | null;
+	columns: ColumnDef[];
+	total_rows: number;
+	rows: Record<string, any>[];
+	offset: number;
+	limit: number;
+}
 
 export interface ColumnDef {
 	id: string;
@@ -55,12 +66,57 @@ class QrateStore {
 	private restorationAttempted = false;
 
 	/**
-	 * Restore workspace from persistent storage (call on app init)
+	 * Sync state from the Rust backend (for cross-window state sharing)
+	 * This is the preferred method for the main window to get current state
 	 */
-	async restoreWorkspace(): Promise<boolean> {
-		if (this.restorationAttempted) return false;
-		this.restorationAttempted = true;
+	async syncFromBackend(): Promise<boolean> {
+		try {
+			this.isLoading = true;
+			this.error = null;
 
+			const response =
+				await invoke<CurrentStateResponse>("get_current_state");
+
+			if (response.is_file_open && response.path) {
+				this.currentFilePath = response.path;
+				this.columns = response.columns;
+				this.totalRows = response.total_rows;
+				this.rows = response.rows;
+				this.currentOffset = response.offset;
+				this.currentLimit = response.limit;
+				this.isFileOpen = true;
+
+				console.log("Synced state from backend:", response.path);
+				return true;
+			} else {
+				// No file open in backend
+				this.reset();
+				return false;
+			}
+		} catch (err) {
+			this.error = err instanceof Error ? err.message : String(err);
+			console.error("Failed to sync from backend:", err);
+			return false;
+		} finally {
+			this.isLoading = false;
+		}
+	}
+
+	/**
+	 * Restore workspace from persistent storage (call on app init)
+	 * @param force - If true, will attempt restoration even if already attempted
+	 */
+	async restoreWorkspace(force: boolean = false): Promise<boolean> {
+		if (this.restorationAttempted && !force) return false;
+		if (!force) this.restorationAttempted = true;
+
+		// First try to sync from backend (handles cross-window state)
+		const syncedFromBackend = await this.syncFromBackend();
+		if (syncedFromBackend) {
+			return true;
+		}
+
+		// Fall back to workspace store for persistence across app restarts
 		try {
 			// Wait for the store to be ready
 			await workspaceStore.start();
@@ -116,8 +172,7 @@ class QrateStore {
 			saveWorkspace(response.path, 0, this.currentLimit);
 
 			// Add to recent files
-			const fileName = path.split(/[/\\]/).pop() || path;
-			addRecentFile(path, fileName);
+			addRecentFile(path, getFileName(path));
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
 			console.error("Failed to create file:", err);
@@ -155,8 +210,7 @@ class QrateStore {
 			saveWorkspace(response.path, 0, this.currentLimit);
 
 			// Add to recent files
-			const fileName = path.split(/[/\\]/).pop() || path;
-			addRecentFile(path, fileName);
+			addRecentFile(path, getFileName(path));
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
 			console.error("Failed to open file:", err);
@@ -382,8 +436,7 @@ class QrateStore {
 			saveWorkspace(response.path, 0, this.currentLimit);
 
 			// Add to recent files
-			const fileName = qratePath.split(/[/\\]/).pop() || qratePath;
-			addRecentFile(qratePath, fileName);
+			addRecentFile(qratePath, getFileName(qratePath));
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
 			console.error("Failed to import CSV:", err);

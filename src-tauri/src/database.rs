@@ -12,14 +12,6 @@ pub struct ColumnDef {
     pub hidden: bool,
 }
 
-/// Represents a row of data with dynamic columns
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DataRow {
-    pub row_id: i64,
-    #[serde(flatten)]
-    pub cells: serde_json::Map<String, serde_json::Value>,
-}
-
 /// Initialize a new .qrate database file with the required schema
 pub fn init_database(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
@@ -103,7 +95,8 @@ pub fn open_database(path: &Path) -> Result<Connection> {
 
 /// Get column definitions from the database
 pub fn get_columns(conn: &Connection) -> Result<Vec<ColumnDef>> {
-    let mut stmt = conn.prepare("SELECT id, name, type, width, hidden FROM _columns ORDER BY ROWID")?;
+    let mut stmt =
+        conn.prepare("SELECT id, name, type, width, hidden FROM _columns ORDER BY ROWID")?;
 
     let columns = stmt
         .query_map([], |row| {
@@ -135,7 +128,10 @@ pub fn add_column(conn: &Connection, column: &ColumnDef, default_value: &str) ->
     )?;
 
     // Add actual column to data table (TEXT affinity for CSV compatibility)
-    let alter_sql = format!("ALTER TABLE data ADD COLUMN [{}] TEXT DEFAULT '{}'", column.id, default_value);
+    let alter_sql = format!(
+        "ALTER TABLE data ADD COLUMN [{}] TEXT DEFAULT '{}'",
+        column.id, default_value
+    );
     conn.execute(&alter_sql, [])?;
 
     Ok(())
@@ -177,25 +173,26 @@ pub fn get_rows(conn: &Connection, limit: u32, offset: u32) -> Result<Vec<serde_
 
     let mut stmt = conn.prepare(&query)?;
 
-    let rows = stmt.query_map([], |row| {
-        let mut map = serde_json::Map::new();
+    let rows = stmt
+        .query_map([], |row| {
+            let mut map = serde_json::Map::new();
 
-        // Add row_id
-        let row_id: i64 = row.get(0)?;
-        map.insert("row_id".to_string(), serde_json::json!(row_id));
+            // Add row_id
+            let row_id: i64 = row.get(0)?;
+            map.insert("row_id".to_string(), serde_json::json!(row_id));
 
-        // Add all column values
-        for (idx, col) in columns.iter().enumerate() {
-            let value: Option<String> = row.get(idx + 1)?;
-            map.insert(
-                col.id.clone(),
-                serde_json::Value::String(value.unwrap_or_default()),
-            );
-        }
+            // Add all column values
+            for (idx, col) in columns.iter().enumerate() {
+                let value: Option<String> = row.get(idx + 1)?;
+                map.insert(
+                    col.id.clone(),
+                    serde_json::Value::String(value.unwrap_or_default()),
+                );
+            }
 
-        Ok(serde_json::Value::Object(map))
-    })?
-    .collect::<Result<Vec<_>>>()?;
+            Ok(serde_json::Value::Object(map))
+        })?
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(rows)
 }
@@ -208,19 +205,17 @@ pub fn get_row_count(conn: &Connection) -> Result<i64> {
 }
 
 /// Update a single cell value
-pub fn update_cell(
-    conn: &Connection,
-    row_id: i64,
-    column_id: &str,
-    value: &str,
-) -> Result<()> {
+pub fn update_cell(conn: &Connection, row_id: i64, column_id: &str, value: &str) -> Result<()> {
     let query = format!("UPDATE data SET [{}] = ?1 WHERE row_id = ?2", column_id);
     conn.execute(&query, params![value, row_id])?;
     Ok(())
 }
 
 /// Insert a new row with initial values
-pub fn insert_row(conn: &Connection, values: &serde_json::Map<String, serde_json::Value>) -> Result<i64> {
+pub fn insert_row(
+    conn: &Connection,
+    values: &serde_json::Map<String, serde_json::Value>,
+) -> Result<i64> {
     let columns = get_columns(conn)?;
 
     if columns.is_empty() {
@@ -237,14 +232,19 @@ pub fn insert_row(conn: &Connection, values: &serde_json::Map<String, serde_json
     );
 
     // Store string values to ensure proper lifetimes
-    let str_values: Vec<String> = columns.iter().map(|col| {
-        values.get(&col.id)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
-    }).collect();
+    let str_values: Vec<String> = columns
+        .iter()
+        .map(|col| {
+            values
+                .get(&col.id)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
 
-    let params_vec: Vec<&dyn rusqlite::ToSql> = str_values.iter()
+    let params_vec: Vec<&dyn rusqlite::ToSql> = str_values
+        .iter()
         .map(|s| s as &dyn rusqlite::ToSql)
         .collect();
 
@@ -298,7 +298,8 @@ pub fn import_csv_data(
     let mut stmt = tx.prepare(&insert_sql)?;
 
     for row_values in rows {
-        let params: Vec<&dyn rusqlite::ToSql> = row_values.iter()
+        let params: Vec<&dyn rusqlite::ToSql> = row_values
+            .iter()
             .map(|v| v as &dyn rusqlite::ToSql)
             .collect();
         stmt.execute(rusqlite::params_from_iter(params.iter()))?;
@@ -307,26 +308,5 @@ pub fn import_csv_data(
     drop(stmt);
     tx.commit()?;
 
-    Ok(())
-}
-
-/// Get metadata value
-pub fn get_meta(conn: &Connection, key: &str) -> Result<Option<String>> {
-    let mut stmt = conn.prepare("SELECT value FROM _meta WHERE key = ?1")?;
-    let result = stmt.query_row(params![key], |row| row.get(0));
-
-    match result {
-        Ok(val) => Ok(Some(val)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e),
-    }
-}
-
-/// Set metadata value
-pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
-    conn.execute(
-        "INSERT OR REPLACE INTO _meta (key, value) VALUES (?1, ?2)",
-        params![key, value],
-    )?;
     Ok(())
 }

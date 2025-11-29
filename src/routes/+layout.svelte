@@ -7,18 +7,37 @@
 	import { ModeWatcher } from "mode-watcher";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
 	import { page } from "$app/state";
+	import { getCurrentWindow } from "@tauri-apps/api/window";
 
 	let { children } = $props();
-	let isRestoring = $state(true);
+	let isLoading = $state(true);
 
-	onMount(async () => {
-		try {
-			await qrateStore.restoreWorkspace();
-		} catch (err) {
-			console.warn("Failed to restore workspace:", err);
-		} finally {
-			isRestoring = false;
-		}
+	let unlistenFocus: (() => void) | null = null;
+
+	onMount(() => {
+		// Initial sync from backend
+		qrateStore.syncFromBackend().finally(() => {
+			isLoading = false;
+		});
+
+		// Listen for window focus to sync state from backend
+		// This handles when the main window is shown after projects window opens a file
+		const currentWindow = getCurrentWindow();
+		currentWindow
+			.onFocusChanged(async ({ payload: focused }) => {
+				if (focused && !qrateStore.isFileOpen) {
+					await qrateStore.syncFromBackend();
+				}
+			})
+			.then((unlisten) => {
+				unlistenFocus = unlisten;
+			});
+
+		return () => {
+			if (unlistenFocus) {
+				unlistenFocus();
+			}
+		};
 	});
 </script>
 
@@ -30,11 +49,11 @@
 		<TitleBar />
 		<!-- Main content area -->
 		<div class="relative min-h-0 flex-1 overflow-hidden">
-			{#if isRestoring}
+			{#if isLoading}
 				<div
 					class="flex h-full w-full items-center justify-center text-sm text-muted-foreground"
 				>
-					<span>Restoring workspace...</span>
+					<span>Loading...</span>
 				</div>
 			{:else}
 				{@render children()}

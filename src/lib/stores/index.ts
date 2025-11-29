@@ -21,7 +21,9 @@ export {
 } from "./recentFiles";
 
 // Qrate Store - main application state (uses runes)
-export { qrateStore, type ColumnDef, type FileOpenResponse, type DataResponse } from "./qrateStore.svelte";
-
-// CSV Store - legacy CSV loading (uses runes)
-export { csvStore } from "./csvStore.svelte";
+export {
+	qrateStore,
+	type ColumnDef,
+	type FileOpenResponse,
+	type DataResponse,
+} from "./qrateStore.svelte";

@@ -12,12 +12,6 @@
 	"app": {
 		"windows": [
 			{
-				"label": "main",
-				"title": "qrate-test",
-				"visible": false,
-				"decorations": false
-			},
-			{
 				"label": "projects",
 				"title": "Projects",
 				"url": "/projects",
@@ -25,7 +19,16 @@
 				"height": 600,
 				"resizable": true,
 				"center": true,
-				"decorations": false
+				"decorations": false,
+				"visible": true,
+				"focus": true
+			},
+			{
+				"label": "main",
+				"title": "qrate-test",
+				"visible": false,
+				"decorations": false,
+				"focus": false
 			}
 		],
 		"security": {

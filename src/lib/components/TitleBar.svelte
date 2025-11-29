@@ -1,13 +1,17 @@
 <script lang="ts">
-	import { getCurrentWindow } from "@tauri-apps/api/window";
+	import { invoke } from "@tauri-apps/api/core";
 	import { open, save } from "@tauri-apps/plugin-dialog";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
 	import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
 	import MinusIcon from "@lucide/svelte/icons/minus";
 	import SquareIcon from "@lucide/svelte/icons/square";
 	import XIcon from "@lucide/svelte/icons/x";
-
-	const appWindow = getCurrentWindow();
+	import {
+		minimizeWindow,
+		toggleMaximizeWindow,
+		closeWindow,
+	} from "$lib/utils/window";
+	import { getFileName } from "$lib/utils/path";
 
 	let isProcessing = $state(false);
 
@@ -43,6 +47,18 @@
 			}
 		} catch (err) {
 			console.error("Failed to open file:", err);
+		} finally {
+			isProcessing = false;
+		}
+	}
+
+	async function handleProject() {
+		if (isProcessing) return;
+		try {
+			isProcessing = true;
+			await invoke("show_projects_window");
+		} catch (err) {
+			console.error("Failed to open projects window:", err);
 		} finally {
 			isProcessing = false;
 		}
@@ -91,7 +107,7 @@
 	}
 
 	async function handleQuit() {
-		await appWindow.close();
+		await closeWindow();
 	}
 
 	// Edit menu actions
@@ -119,18 +135,12 @@
 		document.execCommand("selectAll");
 	}
 
-	// Window controls
-	function minimize() {
-		appWindow.minimize();
-	}
-
-	function toggleMaximize() {
-		appWindow.toggleMaximize();
-	}
-
-	function close() {
-		appWindow.close();
-	}
+	// Derive title from current file path
+	let windowTitle = $derived(
+		qrateStore.currentFilePath
+			? `${getFileName(qrateStore.currentFilePath)} - qRate`
+			: "qRate",
+	);
 </script>
 
 <div class="titlebar" data-tauri-drag-region>
@@ -147,6 +157,14 @@
 				<DropdownMenu.Item onclick={handleOpen} disabled={isProcessing}>
 					Open
 					<DropdownMenu.Shortcut>Ctrl+O</DropdownMenu.Shortcut>
+				</DropdownMenu.Item>
+				<DropdownMenu.Separator />
+				<DropdownMenu.Item
+					onclick={handleProject}
+					disabled={isProcessing}
+				>
+					Open Project Window
+					<DropdownMenu.Shortcut>Ctrl+P</DropdownMenu.Shortcut>
 				</DropdownMenu.Item>
 				<DropdownMenu.Separator />
 				<DropdownMenu.Item
@@ -220,27 +238,27 @@
 	</div>
 
 	<div class="titlebar-title" data-tauri-drag-region>
-		{#if qrateStore.currentFilePath}
-			{qrateStore.currentFilePath.split(/[\\/]/).pop()} - qRate
-		{:else}
-			qRate
-		{/if}
+		{windowTitle}
 	</div>
 
 	<div class="titlebar-controls">
-		<button class="control-button" onclick={minimize} title="Minimize">
+		<button
+			class="control-button"
+			onclick={minimizeWindow}
+			title="Minimize"
+		>
 			<MinusIcon class="size-4" />
 		</button>
 		<button
 			class="control-button"
-			onclick={toggleMaximize}
+			onclick={toggleMaximizeWindow}
 			title="Maximize"
 		>
 			<SquareIcon class="size-3.5" />
 		</button>
 		<button
 			class="control-button control-close"
-			onclick={close}
+			onclick={closeWindow}
 			title="Close"
 		>
 			<XIcon class="size-4" />

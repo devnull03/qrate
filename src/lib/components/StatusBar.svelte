@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
+	import { getFileName } from "$lib/utils/path";
 
-	// Get current file name
-	let currentFileName = $derived.by(() => {
-		if (!qrateStore.currentFilePath) return null;
-		const parts = qrateStore.currentFilePath.split(/[\\/]/);
-		return parts[parts.length - 1];
-	});
+	// Get current file name using utility
+	let currentFileName = $derived(
+		qrateStore.currentFilePath
+			? getFileName(qrateStore.currentFilePath)
+			: null,
+	);
 </script>
 
 <footer class="status-bar">

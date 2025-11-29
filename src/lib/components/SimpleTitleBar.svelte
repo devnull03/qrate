@@ -1,28 +1,18 @@
 <script lang="ts">
-	import { getCurrentWindow } from "@tauri-apps/api/window";
 	import MinusIcon from "@lucide/svelte/icons/minus";
 	import SquareIcon from "@lucide/svelte/icons/square";
 	import XIcon from "@lucide/svelte/icons/x";
+	import {
+		minimizeWindow,
+		toggleMaximizeWindow,
+		closeWindow,
+	} from "$lib/utils/window";
 
 	interface Props {
 		title?: string;
 	}
 
 	let { title = "qRate" }: Props = $props();
-
-	const appWindow = getCurrentWindow();
-
-	function minimize() {
-		appWindow.minimize();
-	}
-
-	function toggleMaximize() {
-		appWindow.toggleMaximize();
-	}
-
-	function close() {
-		appWindow.close();
-	}
 </script>
 
 <div class="titlebar" data-tauri-drag-region>
@@ -31,13 +21,25 @@
 	</div>
 
 	<div class="titlebar-controls">
-		<button class="control-button" onclick={minimize} title="Minimize">
+		<button
+			class="control-button"
+			onclick={minimizeWindow}
+			title="Minimize"
+		>
 			<MinusIcon class="size-4" />
 		</button>
-		<button class="control-button" onclick={toggleMaximize} title="Maximize">
+		<button
+			class="control-button"
+			onclick={toggleMaximizeWindow}
+			title="Maximize"
+		>
 			<SquareIcon class="size-3.5" />
 		</button>
-		<button class="control-button control-close" onclick={close} title="Close">
+		<button
+			class="control-button control-close"
+			onclick={closeWindow}
+			title="Close"
+		>
 			<XIcon class="size-4" />
 		</button>
 	</div>

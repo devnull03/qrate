@@ -8,12 +8,6 @@ mod database;
 use app_state::AppState;
 use database::ColumnDef;
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
 /// Response structure for file operations
 #[derive(Debug, Serialize, Deserialize)]
 struct FileOpenResponse {
@@ -27,6 +21,62 @@ struct FileOpenResponse {
 struct DataResponse {
     rows: Vec<serde_json::Value>,
     total: i64,
+}
+
+/// Response structure for current state (used by main window on init)
+#[derive(Debug, Serialize, Deserialize)]
+struct CurrentStateResponse {
+    is_file_open: bool,
+    path: Option<String>,
+    columns: Vec<ColumnDef>,
+    total_rows: i64,
+    rows: Vec<serde_json::Value>,
+    offset: u32,
+    limit: u32,
+}
+
+/// Get the current application state (for main window initialization)
+#[tauri::command]
+fn get_current_state(state: State<AppState>) -> Result<CurrentStateResponse, String> {
+    let current_file = state.get_current_file();
+
+    match current_file {
+        Some(file_state) => {
+            let conn_arc = state
+                .get_connection(&file_state.path)
+                .ok_or_else(|| "File connection not found".to_string())?;
+
+            let conn = conn_arc.lock().unwrap();
+
+            let columns = database::get_columns(&conn)
+                .map_err(|e| format!("Failed to get columns: {}", e))?;
+
+            let total_rows = database::get_row_count(&conn)
+                .map_err(|e| format!("Failed to get row count: {}", e))?;
+
+            let rows = database::get_rows(&conn, file_state.limit, file_state.offset)
+                .map_err(|e| format!("Failed to get rows: {}", e))?;
+
+            Ok(CurrentStateResponse {
+                is_file_open: true,
+                path: Some(file_state.path),
+                columns,
+                total_rows,
+                rows,
+                offset: file_state.offset,
+                limit: file_state.limit,
+            })
+        }
+        None => Ok(CurrentStateResponse {
+            is_file_open: false,
+            path: None,
+            columns: vec![],
+            total_rows: 0,
+            rows: vec![],
+            offset: 0,
+            limit: 100,
+        }),
+    }
 }
 
 /// Create a new .qrate file
@@ -47,6 +97,9 @@ fn create_qrate_file(state: State<AppState>, path: String) -> Result<FileOpenRes
 
     // Store connection in app state
     state.add_connection(path.clone(), conn);
+
+    // Set as current file
+    state.set_current_file(path.clone(), 0, 100);
 
     Ok(FileOpenResponse {
         path,
@@ -74,6 +127,9 @@ fn open_qrate_file(state: State<AppState>, path: String) -> Result<FileOpenRespo
     // Store connection in app state
     state.add_connection(path.clone(), conn);
 
+    // Set as current file
+    state.set_current_file(path.clone(), 0, 100);
+
     Ok(FileOpenResponse {
         path,
         columns,
@@ -85,6 +141,14 @@ fn open_qrate_file(state: State<AppState>, path: String) -> Result<FileOpenRespo
 #[tauri::command]
 fn close_qrate_file(state: State<AppState>, path: String) -> Result<(), String> {
     state.remove_connection(&path);
+
+    // Clear current file if it matches
+    if let Some(current) = state.get_current_file() {
+        if current.path == path {
+            state.clear_current_file();
+        }
+    }
+
     Ok(())
 }
 
@@ -107,6 +171,9 @@ fn get_rows(
 
     let total =
         database::get_row_count(&conn).map_err(|e| format!("Failed to get row count: {}", e))?;
+
+    // Update viewport in current file state
+    state.update_viewport(offset, limit);
 
     Ok(DataResponse { rows, total })
 }
@@ -242,6 +309,9 @@ fn import_csv_to_qrate(
     // Store connection in app state
     state.add_connection(qrate_path.clone(), conn);
 
+    // Set as current file
+    state.set_current_file(qrate_path.clone(), 0, 100);
+
     Ok(FileOpenResponse {
         path: qrate_path,
         columns,
@@ -249,54 +319,45 @@ fn import_csv_to_qrate(
     })
 }
 
-/// Show the main window and close the projects window
+/// Show the main window and hide the projects window
 #[tauri::command]
 fn show_main_window(app: AppHandle) -> Result<(), String> {
-    let projects_window = app
-        .get_webview_window("projects")
-        .ok_or_else(|| "Projects window not found".to_string())?;
     let main_window = app
         .get_webview_window("main")
         .ok_or_else(|| "Main window not found".to_string())?;
 
-    projects_window
-        .close()
-        .map_err(|e| format!("Failed to close projects window: {}", e))?;
+    // Hide projects window instead of closing it
+    if let Some(projects_window) = app.get_webview_window("projects") {
+        let _ = projects_window.hide();
+    }
+
     main_window
         .show()
         .map_err(|e| format!("Failed to show main window: {}", e))?;
+    main_window
+        .set_focus()
+        .map_err(|e| format!("Failed to focus main window: {}", e))?;
 
     Ok(())
 }
 
-/// Legacy CSV loader for backward compatibility
+/// Show the projects window
 #[tauri::command]
-fn load_csv(path: String) -> Result<Vec<std::collections::HashMap<String, String>>, String> {
-    let mut reader =
-        csv::Reader::from_path(&path).map_err(|e| format!("Failed to open CSV file: {}", e))?;
+fn show_projects_window(app: AppHandle) -> Result<(), String> {
+    let projects_window = app
+        .get_webview_window("projects")
+        .ok_or_else(|| "Projects window not found".to_string())?;
 
-    let headers = reader
-        .headers()
-        .map_err(|e| format!("Failed to read CSV headers: {}", e))?
-        .clone();
+    projects_window
+        .show()
+        .map_err(|e| format!("Failed to show projects window: {}", e))?;
+    projects_window
+        .set_focus()
+        .map_err(|e| format!("Failed to focus projects window: {}", e))?;
 
-    let mut result = Vec::new();
-
-    for record in reader.records() {
-        let record = record.map_err(|e| format!("Failed to read CSV record: {}", e))?;
-        let mut row = std::collections::HashMap::new();
-
-        for (header, value) in headers.iter().zip(record.iter()) {
-            row.insert(header.to_string(), value.to_string());
-        }
-
-        result.push(row);
-    }
-
-    Ok(result)
+    Ok(())
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_svelte::init())
@@ -305,7 +366,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
-            greet,
             create_qrate_file,
             open_qrate_file,
             close_qrate_file,
@@ -316,8 +376,9 @@ pub fn run() {
             insert_row,
             delete_row,
             import_csv_to_qrate,
-            load_csv,
-            show_main_window
+            show_main_window,
+            show_projects_window,
+            get_current_state
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
