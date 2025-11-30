@@ -1,13 +1,16 @@
 <script lang="ts">
+	import { onMount } from "svelte";
 	import { invoke } from "@tauri-apps/api/core";
 	import { open, save } from "@tauri-apps/plugin-dialog";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
 	import {
-		recentFilesStore,
+		initRecentFiles,
+		subscribeToRecentFiles,
 		removeRecentFile,
+		type RecentFile,
 	} from "$lib/stores/recentFiles";
-	import { appSettingsStore } from "$lib/stores/appSettings";
-	import { get } from "svelte/store";
+	import { saveSettings, defaultSettings } from "$lib/stores/appSettings";
+	import { initGlobalSettings } from "$lib/stores/globalSettings";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import { Input } from "$lib/components/ui/input/index.js";
 	import { Label } from "$lib/components/ui/label/index.js";
@@ -28,14 +31,40 @@
 
 	let isProcessing = $state(false);
 	let error = $state<string | null>(null);
+	let recentFiles = $state<RecentFile[]>([]);
+
+	// Initialize stores on mount
+	onMount(() => {
+		console.log("[Projects] Initializing...");
+
+		let unsubscribe: (() => void) | null = null;
+
+		// Initialize stores asynchronously
+		(async () => {
+			// Initialize global settings
+			await initGlobalSettings();
+
+			// Initialize and subscribe to recent files
+			await initRecentFiles();
+			unsubscribe = subscribeToRecentFiles((files) => {
+				recentFiles = files;
+			});
+		})();
+
+		return () => {
+			if (unsubscribe) {
+				unsubscribe();
+			}
+		};
+	});
 
 	// Import wizard state
 	let showImportWizard = $state(false);
 	let importStep = $state<"select-csv" | "configure">("select-csv");
 	let selectedCsvFile = $state<string | null>(null);
-	let selectedFilesFolder = $state<string>("");
-	let selectedFileColumn = $state<string>("file");
-	let selectedPathPattern = $state<string>("{files_folder}/{file_column}");
+	let selectedFilesFolder = $state<string>(defaultSettings.filesFolder);
+	let selectedFileColumn = $state<string>(defaultSettings.fileColumnName);
+	let selectedPathPattern = $state<string>(defaultSettings.filePathPattern);
 
 	/**
 	 * After successfully loading a project, show the main window
@@ -116,9 +145,9 @@
 		showImportWizard = true;
 		importStep = "select-csv";
 		selectedCsvFile = null;
-		selectedFilesFolder = "";
-		selectedFileColumn = "file";
-		selectedPathPattern = "{files_folder}/{file_column}";
+		selectedFilesFolder = defaultSettings.filesFolder;
+		selectedFileColumn = defaultSettings.fileColumnName;
+		selectedPathPattern = defaultSettings.filePathPattern;
 		error = null;
 	}
 
@@ -199,15 +228,14 @@
 				return;
 			}
 
-			// Save settings before importing
-			appSettingsStore.set({
-				...get(appSettingsStore),
+			await qrateStore.importCsv(qrateFile, selectedCsvFile);
+
+			// Save settings after importing (now that file is open)
+			await saveSettings({
 				filesFolder: selectedFilesFolder,
 				fileColumnName: selectedFileColumn,
 				filePathPattern: selectedPathPattern,
 			});
-
-			await qrateStore.importCsv(qrateFile, selectedCsvFile);
 			showImportWizard = false;
 			await showMainWindow();
 		} catch (err) {
@@ -494,7 +522,7 @@
 				</Card.Root>
 
 				<!-- Recent Files -->
-				{#if $recentFilesStore.files.length > 0}
+				{#if recentFiles.length > 0}
 					<Card.Root>
 						<Card.Header>
 							<Card.Title class="flex items-center gap-2">
@@ -504,7 +532,7 @@
 						</Card.Header>
 						<Card.Content>
 							<div class="space-y-2">
-								{#each $recentFilesStore.files as file (file.path)}
+								{#each recentFiles as file (file.path)}
 									<div
 										class="group flex w-full items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-muted"
 									>
@@ -539,8 +567,10 @@
 											</span>
 										</button>
 										<button
-											onclick={() =>
-												removeRecentFile(file.path)}
+											onclick={async () =>
+												await removeRecentFile(
+													file.path,
+												)}
 											class="shrink-0 rounded p-1 opacity-0 transition-opacity hover:bg-muted-foreground/20 group-hover:opacity-100"
 											title="Remove from recent"
 										>

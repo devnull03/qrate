@@ -7,6 +7,7 @@
 
 	// Grid reference
 	let grid: any = $state();
+	let gridContainer: HTMLDivElement | null = $state(null);
 
 	// Convert our ColumnDef format to RevoGrid's ColumnRegular format
 	const convertColumns = (columns: ColumnDef[]): ColumnRegular[] => {
@@ -51,12 +52,12 @@
 	let revoColumns = $derived(convertColumns(qrateStore.columns));
 
 	// RevoGrid rows derived from store (with row numbers)
-	let revoRows = $derived(
-		addRowNumbers(qrateStore.rows, qrateStore.currentOffset),
-	);
+	let revoRows = $derived(addRowNumbers(qrateStore.rows, 0));
 
 	// Loading state
 	let isLoading = $derived(qrateStore.isLoading);
+	let isLoadingMore = $derived(qrateStore.isLoadingMore);
+	let hasMoreRows = $derived(qrateStore.hasMoreRows);
 
 	// Check if dark mode is active
 	let isDark = $state(false);
@@ -133,14 +134,69 @@
 		}
 	};
 
+	// Handle viewport scroll for lazy loading
+	const handleViewportScroll = async (event: CustomEvent) => {
+		const { detail } = event;
+
+		// Check if we're near the bottom of the data
+		if (detail && hasMoreRows && !isLoadingMore) {
+			const viewportEndRow = detail.endRow || 0;
+			const totalLoadedRows = qrateStore.rows.length;
+			const threshold = 20; // Load more when within 20 rows of the end
+
+			if (viewportEndRow >= totalLoadedRows - threshold) {
+				await qrateStore.loadMoreRows(100);
+			}
+		}
+	};
+
+	// Set up scroll listener on the grid's viewport
+	const setupScrollListener = () => {
+		if (!gridContainer) return;
+
+		// Find the viewport element inside RevoGrid
+		const viewport = gridContainer.querySelector(
+			"revogr-viewport-scroll, .rgViewport, [data-rgviewport]",
+		);
+		if (viewport) {
+			viewport.addEventListener("scroll", handleScroll);
+			return () => viewport.removeEventListener("scroll", handleScroll);
+		}
+	};
+
+	// Handle native scroll event as backup
+	const handleScroll = async (event: Event) => {
+		const target = event.target as HTMLElement;
+		if (!target || !hasMoreRows || isLoadingMore) return;
+
+		const { scrollTop, scrollHeight, clientHeight } = target;
+		const scrollPercentage = (scrollTop + clientHeight) / scrollHeight;
+
+		// Load more when scrolled past 80%
+		if (scrollPercentage > 0.8) {
+			await qrateStore.loadMoreRows(100);
+		}
+	};
+
 	// Initialize grid on mount
 	onMount(() => {
-		// Grid initialization happens automatically via RevoGrid component
 		console.log("RevoGrid mounted");
+
+		// Set up scroll listener after a short delay to ensure grid is rendered
+		const timeoutId = setTimeout(() => {
+			setupScrollListener();
+		}, 500);
+
+		return () => {
+			clearTimeout(timeoutId);
+		};
 	});
 </script>
 
-<div class="flex h-full w-full flex-col overflow-hidden p-4">
+<div
+	class="flex h-full w-full flex-col overflow-hidden p-4"
+	bind:this={gridContainer}
+>
 	{#if !qrateStore.isFileOpen}
 		<div class="flex h-full w-full items-center justify-center">
 			<div class="text-center text-muted-foreground">
@@ -172,8 +228,32 @@
 				on:afteredit={handleCellEdit}
 				on:aftercolumnresize={handleColumnResize}
 				on:afterfocus={handleRowFocus}
+				on:viewportscroll={handleViewportScroll}
 			/>
 		</div>
+
+		{#if isLoadingMore}
+			<div class="flex items-center justify-center py-2">
+				<p class="text-xs text-muted-foreground">
+					Loading more rows...
+				</p>
+			</div>
+		{/if}
+
+		{#if !hasMoreRows && qrateStore.rows.length > 0}
+			<div class="flex items-center justify-center py-1">
+				<p class="text-xs text-muted-foreground">
+					Showing all {qrateStore.totalRows.toLocaleString()} rows
+				</p>
+			</div>
+		{:else if hasMoreRows}
+			<div class="flex items-center justify-center py-1">
+				<p class="text-xs text-muted-foreground">
+					Loaded {qrateStore.rows.length.toLocaleString()} of {qrateStore.totalRows.toLocaleString()}
+					rows
+				</p>
+			</div>
+		{/if}
 	{/if}
 
 	{#if qrateStore.error}

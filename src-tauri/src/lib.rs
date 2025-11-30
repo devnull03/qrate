@@ -4,6 +4,7 @@ use tauri::{AppHandle, Manager, State};
 
 mod app_state;
 mod database;
+pub mod settings;
 
 use app_state::AppState;
 use database::ColumnDef;
@@ -395,26 +396,41 @@ fn show_settings_window(app: AppHandle) -> Result<(), String> {
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_svelte::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs_pro::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
+            // File operations
             create_qrate_file,
             open_qrate_file,
             close_qrate_file,
+            import_csv_to_qrate,
+            // Data operations
             get_rows,
             update_cell,
             add_column,
             update_column,
             insert_row,
             delete_row,
-            import_csv_to_qrate,
+            // Window management
             show_main_window,
             show_projects_window,
             show_settings_window,
-            get_current_state
+            // State
+            get_current_state,
+            // Settings commands (from settings module)
+            settings::commands::get_global_settings_schema,
+            settings::commands::get_project_settings_schema,
+            settings::commands::get_global_settings_defaults,
+            settings::commands::get_project_settings_defaults,
+            settings::commands::validate_setting_value,
+            settings::commands::get_project_settings,
+            settings::commands::set_project_setting,
+            settings::commands::set_project_settings,
+            settings::commands::get_project_settings_with_defaults_cmd,
+            
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

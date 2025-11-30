@@ -12,6 +12,13 @@
 	"app": {
 		"windows": [
 			{
+				"label": "main",
+				"title": "qrate",
+				"visible": false,
+				"decorations": false,
+				"focus": false
+			},
+			{
 				"label": "projects",
 				"title": "Projects",
 				"url": "/projects",
@@ -24,11 +31,16 @@
 				"focus": true
 			},
 			{
-				"label": "main",
-				"title": "qrate-test",
-				"visible": false,
+				"label": "settings",
+				"title": "Settings",
+				"url": "/settings",
+				"width": 600,
+				"height": 700,
+				"resizable": true,
+				"center": true,
 				"decorations": false,
-				"focus": false
+				"visible": false,
+				"focus": true
 			}
 		],
 		"security": {

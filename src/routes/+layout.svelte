@@ -8,12 +8,13 @@
 	import * as Sidebar from "$lib/components/ui/sidebar/index.js";
 	import { ModeWatcher } from "mode-watcher";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
+	import { initGlobalSettings } from "$lib/stores/globalSettings";
 	import { page } from "$app/state";
 	import { getCurrentWindow } from "@tauri-apps/api/window";
 
 	let { children } = $props();
 	let isLoading = $state(true);
-	let sidebarOpen = $state(true);
+	let sidebarOpen = $state(false);
 
 	let unlistenFocus: (() => void) | null = null;
 
@@ -22,8 +23,11 @@
 	}
 
 	onMount(() => {
-		// Initial sync from backend
-		qrateStore.syncFromBackend().finally(() => {
+		// Initialize global settings and sync from backend
+		Promise.all([
+			initGlobalSettings(),
+			qrateStore.syncFromBackend(),
+		]).finally(() => {
 			isLoading = false;
 		});
 

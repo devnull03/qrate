@@ -4,9 +4,10 @@ import {
 	saveWorkspace,
 	clearWorkspace,
 	updateViewport,
+	initWorkspace,
+	getWorkspace,
 } from "./workspaceStore";
 import { addRecentFile } from "./recentFiles";
-import { get } from "svelte/store";
 import { getFileName } from "$lib/utils/path";
 
 export interface CurrentStateResponse {
@@ -60,10 +61,14 @@ class QrateStore {
 
 	// Viewport tracking for virtual scrolling
 	currentOffset = $state<number>(0);
-	currentLimit = $state<number>(10000); // Load more rows for better scrolling
+	currentLimit = $state<number>(100); // Initial chunk size
 
 	// Selected row for file viewing in sidebar
 	selectedRowId = $state<number | null>(null);
+
+	// Lazy loading state
+	isLoadingMore = $state<boolean>(false);
+	hasMoreRows = $state<boolean>(true);
 
 	// Track if we've attempted restoration
 	private restorationAttempted = false;
@@ -73,12 +78,20 @@ class QrateStore {
 	 * This is the preferred method for the main window to get current state
 	 */
 	async syncFromBackend(): Promise<boolean> {
+		console.log("[qrateStore] syncFromBackend called");
 		try {
 			this.isLoading = true;
 			this.error = null;
 
+			console.log("[qrateStore] Invoking get_current_state...");
 			const response =
 				await invoke<CurrentStateResponse>("get_current_state");
+			console.log("[qrateStore] get_current_state response:", {
+				is_file_open: response.is_file_open,
+				path: response.path,
+				columns_count: response.columns?.length,
+				total_rows: response.total_rows,
+			});
 
 			if (response.is_file_open && response.path) {
 				this.currentFilePath = response.path;
@@ -89,19 +102,29 @@ class QrateStore {
 				this.currentLimit = response.limit;
 				this.isFileOpen = true;
 
-				console.log("Synced state from backend:", response.path);
+				console.log(
+					"[qrateStore] Synced state from backend:",
+					response.path,
+				);
 				return true;
 			} else {
 				// No file open in backend
+				console.log(
+					"[qrateStore] No file open in backend, resetting store",
+				);
 				this.reset();
 				return false;
 			}
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
-			console.error("Failed to sync from backend:", err);
+			console.error("[qrateStore] Failed to sync from backend:", err);
 			return false;
 		} finally {
 			this.isLoading = false;
+			console.log(
+				"[qrateStore] syncFromBackend finished, isLoading:",
+				this.isLoading,
+			);
 		}
 	}
 
@@ -121,13 +144,16 @@ class QrateStore {
 
 		// Fall back to workspace store for persistence across app restarts
 		try {
-			// Wait for the store to be ready
-			await workspaceStore.start();
+			// Initialize the workspace store
+			await initWorkspace();
 
-			const workspace = get(workspaceStore);
+			const workspace = getWorkspace();
 
 			if (workspace.currentFilePath) {
-				console.log("Restoring workspace:", workspace.currentFilePath);
+				console.log(
+					"[qrateStore] Restoring workspace:",
+					workspace.currentFilePath,
+				);
 				await this.openFile(workspace.currentFilePath);
 
 				// Restore viewport position
@@ -144,9 +170,9 @@ class QrateStore {
 				return true;
 			}
 		} catch (err) {
-			console.warn("Failed to restore workspace:", err);
+			console.warn("[qrateStore] Failed to restore workspace:", err);
 			// Clear invalid workspace state
-			clearWorkspace();
+			await clearWorkspace();
 		}
 
 		return false;
@@ -172,10 +198,10 @@ class QrateStore {
 			this.isFileOpen = true;
 
 			// Save to persistent workspace
-			saveWorkspace(response.path, 0, this.currentLimit);
+			await saveWorkspace(response.path, 0, this.currentLimit);
 
 			// Add to recent files
-			addRecentFile(path, getFileName(path));
+			await addRecentFile(path, getFileName(path));
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
 			console.error("Failed to create file:", err);
@@ -202,20 +228,20 @@ class QrateStore {
 			this.totalRows = response.total_rows;
 			this.isFileOpen = true;
 
-			// Load all data (SQLite handles this efficiently)
+			// Load initial chunk of data
 			if (this.totalRows > 0) {
-				// Load up to 10000 rows initially for smooth scrolling
-				const limit = Math.min(this.totalRows, 10000);
-				await this.loadRows(0, limit);
+				await this.loadRows(0, 100);
+				this.hasMoreRows = this.totalRows > this.rows.length;
 			} else {
 				this.rows = [];
+				this.hasMoreRows = false;
 			}
 
 			// Save to persistent workspace
-			saveWorkspace(response.path, 0, this.currentLimit);
+			await saveWorkspace(response.path, 0, this.currentLimit);
 
 			// Add to recent files
-			addRecentFile(path, getFileName(path));
+			await addRecentFile(path, getFileName(path));
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
 			console.error("Failed to open file:", err);
@@ -236,7 +262,7 @@ class QrateStore {
 			this.reset();
 
 			// Clear persistent workspace
-			clearWorkspace();
+			await clearWorkspace();
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
 			console.error("Failed to close file:", err);
@@ -263,13 +289,47 @@ class QrateStore {
 			this.currentOffset = offset;
 			this.currentLimit = limit;
 			this.totalRows = response.total;
+			this.hasMoreRows = offset + response.rows.length < response.total;
 
 			// Update persistent viewport state
-			updateViewport(offset, limit);
+			await updateViewport(offset, limit);
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
 			console.error("Failed to load rows:", err);
 			throw err;
+		}
+	}
+
+	/**
+	 * Load more rows (append to existing rows for lazy loading)
+	 */
+	async loadMoreRows(count: number = 100): Promise<void> {
+		if (!this.currentFilePath || this.isLoadingMore || !this.hasMoreRows) {
+			return;
+		}
+
+		try {
+			this.isLoadingMore = true;
+			const nextOffset = this.rows.length;
+
+			const response = await invoke<DataResponse>("get_rows", {
+				path: this.currentFilePath,
+				limit: count,
+				offset: nextOffset,
+			});
+
+			// Append new rows to existing rows
+			this.rows = [...this.rows, ...response.rows];
+			this.totalRows = response.total;
+			this.hasMoreRows = this.rows.length < response.total;
+
+			// Update persistent viewport state
+			await updateViewport(0, this.rows.length);
+		} catch (err) {
+			this.error = err instanceof Error ? err.message : String(err);
+			console.error("Failed to load more rows:", err);
+		} finally {
+			this.isLoadingMore = false;
 		}
 	}
 
@@ -430,20 +490,20 @@ class QrateStore {
 			this.totalRows = response.total_rows;
 			this.isFileOpen = true;
 
-			// Load all data (SQLite handles this efficiently)
+			// Load initial chunk of data
 			if (this.totalRows > 0) {
-				// Load up to 10000 rows initially for smooth scrolling
-				const limit = Math.min(this.totalRows, 10000);
-				await this.loadRows(0, limit);
+				await this.loadRows(0, 100);
+				this.hasMoreRows = this.totalRows > this.rows.length;
 			} else {
 				this.rows = [];
+				this.hasMoreRows = false;
 			}
 
 			// Save to persistent workspace
-			saveWorkspace(response.path, 0, this.currentLimit);
+			await saveWorkspace(response.path, 0, this.currentLimit);
 
 			// Add to recent files
-			addRecentFile(qratePath, getFileName(qratePath));
+			await addRecentFile(qratePath, getFileName(qratePath));
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
 			console.error("Failed to import CSV:", err);
@@ -471,8 +531,10 @@ class QrateStore {
 		this.isFileOpen = false;
 		this.error = null;
 		this.currentOffset = 0;
-		this.currentLimit = 10000;
+		this.currentLimit = 100;
 		this.selectedRowId = null;
+		this.isLoadingMore = false;
+		this.hasMoreRows = true;
 	}
 }
 

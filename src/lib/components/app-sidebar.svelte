@@ -3,8 +3,14 @@
 	import { Button } from "$lib/components/ui/button/index.js";
 	import type { ComponentProps } from "svelte";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
-	import { appSettingsStore, resolveFilePath } from "$lib/stores/appSettings";
+	import {
+		loadSettings,
+		subscribeToSettings,
+		resolveFilePath,
+		defaultSettings,
+	} from "$lib/stores/appSettings";
 	import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+	import { onMount } from "svelte";
 	import FileIcon from "@lucide/svelte/icons/file";
 	import FileTextIcon from "@lucide/svelte/icons/file-text";
 	import ImageIcon from "@lucide/svelte/icons/image";
@@ -25,20 +31,35 @@
 	// Selected row from store
 	let selectedRowId = $derived(qrateStore.selectedRowId);
 
-	// Settings state (sync with store)
-	let filesFolder = $state("");
-	let filePathPattern = $state("{files_folder}/{file_column}");
-	let fileColumnName = $state("file");
+	// Settings state - use defaults from appSettings store
+	let filesFolder = $state(defaultSettings.filesFolder);
+	let filePathPattern = $state(defaultSettings.filePathPattern);
+	let fileColumnName = $state(defaultSettings.fileColumnName);
 
-	// Load settings from store
-	$effect(() => {
-		const unsubscribe = appSettingsStore.subscribe((settings) => {
-			filesFolder = settings.filesFolder || "";
+	// Load settings on mount and subscribe to changes
+	onMount(() => {
+		// Load initial settings
+		if (qrateStore.isFileOpen) {
+			loadSettings();
+		}
+
+		// Subscribe to settings changes
+		const unsubscribe = subscribeToSettings((settings) => {
+			filesFolder = settings.filesFolder || defaultSettings.filesFolder;
 			filePathPattern =
-				settings.filePathPattern || "{files_folder}/{file_column}";
-			fileColumnName = settings.fileColumnName || "file";
+				settings.filePathPattern || defaultSettings.filePathPattern;
+			fileColumnName =
+				settings.fileColumnName || defaultSettings.fileColumnName;
 		});
+
 		return unsubscribe;
+	});
+
+	// Reload settings when file changes
+	$effect(() => {
+		if (qrateStore.isFileOpen && qrateStore.currentFilePath) {
+			loadSettings();
+		}
 	});
 
 	// Get files for current row

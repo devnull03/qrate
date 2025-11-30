@@ -1,11 +1,15 @@
 <script lang="ts">
+	import { onMount } from "svelte";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import { Input } from "$lib/components/ui/input/index.js";
 	import * as Card from "$lib/components/ui/card/index.js";
-	import { Skeleton } from "$lib/components/ui/skeleton/index.js";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
-	import { appSettingsStore, resolveFilePath } from "$lib/stores/appSettings";
-	import { get } from "svelte/store";
+	import {
+		loadSettings,
+		subscribeToSettings,
+		resolveFilePath,
+		defaultSettings,
+	} from "$lib/stores/appSettings";
 	import FileIcon from "@lucide/svelte/icons/file";
 	import FileTextIcon from "@lucide/svelte/icons/file-text";
 	import ImageIcon from "@lucide/svelte/icons/image";
@@ -32,20 +36,35 @@
 	// Search filter
 	let searchQuery = $state("");
 
-	// Settings from store
-	let filesFolder = $state("");
-	let filePathPattern = $state("{files_folder}/{file_column}");
-	let fileColumnName = $state("file");
+	// Settings from store - use defaults from appSettings
+	let filesFolder = $state(defaultSettings.filesFolder);
+	let filePathPattern = $state(defaultSettings.filePathPattern);
+	let fileColumnName = $state(defaultSettings.fileColumnName);
 
-	// Load settings from store
-	$effect(() => {
-		const unsubscribe = appSettingsStore.subscribe((settings) => {
-			filesFolder = settings.filesFolder || "";
+	// Load settings on mount and subscribe to changes
+	onMount(() => {
+		// Load initial settings
+		if (qrateStore.isFileOpen) {
+			loadSettings();
+		}
+
+		// Subscribe to settings changes
+		const unsubscribe = subscribeToSettings((settings) => {
+			filesFolder = settings.filesFolder || defaultSettings.filesFolder;
 			filePathPattern =
-				settings.filePathPattern || "{files_folder}/{file_column}";
-			fileColumnName = settings.fileColumnName || "file";
+				settings.filePathPattern || defaultSettings.filePathPattern;
+			fileColumnName =
+				settings.fileColumnName || defaultSettings.fileColumnName;
 		});
+
 		return unsubscribe;
+	});
+
+	// Reload settings when file changes
+	$effect(() => {
+		if (qrateStore.isFileOpen && qrateStore.currentFilePath) {
+			loadSettings();
+		}
 	});
 
 	// Get all files from all rows
@@ -195,7 +214,7 @@
 				<FolderOpenIcon class="size-12 opacity-50" />
 				<p class="text-sm">No files folder configured</p>
 				<p class="text-xs">
-					Configure the files folder in the sidebar settings
+					Configure the files folder in View → Settings
 				</p>
 			</div>
 		{:else if filteredFiles.length === 0}

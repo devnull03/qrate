@@ -12,6 +12,7 @@
 		"core:window:allow-toggle-maximize",
 		"opener:default",
 		"fs-pro:default",
-		"dialog:default"
+		"dialog:default",
+		"store:default"
 	]
 }

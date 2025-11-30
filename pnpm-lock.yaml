@@ -29,9 +29,9 @@ importers:
       '@tauri-apps/plugin-opener':
         specifier: ^2
         version: 2.5.2
-      '@tauri-store/svelte':
-        specifier: ^3.1.0
-        version: 3.1.0
+      '@tauri-apps/plugin-store':
+        specifier: ^2.4.1
+        version: 2.4.1
       '@types/lodash':
         specifier: ^4.17.20
         version: 4.17.20
@@ -672,11 +672,8 @@ packages:
   '@tauri-apps/plugin-opener@2.5.2':
     resolution: {integrity: sha512-ei/yRRoCklWHImwpCcDK3VhNXx+QXM9793aQ64YxpqVF0BDuuIlXhZgiAkc15wnPVav+IbkYhmDJIv5R326Mew==}
 
-  '@tauri-store/shared@0.10.2':
-    resolution: {integrity: sha512-hnEBbe/m9UG5ATSBp4yJOosLkX5QLblVsGIvz7mtBAqmzeWFfjP4+8X/T81L+bCH6+ref/0vsR9Ekex138kAfg==}
-
-  '@tauri-store/svelte@3.1.0':
-    resolution: {integrity: sha512-51x5jE8HcclmB3WC4IEJlUbFCT/ToaDgIwggweQRaEI9xv6G9iKrdUu0KG6DkX08MhXMedyZgMA7ZHZUPvyZJA==}
+  '@tauri-apps/plugin-store@2.4.1':
+    resolution: {integrity: sha512-ckGSEzZ5Ii4Hf2D5x25Oqnm2Zf9MfDWAzR+volY0z/OOBz6aucPKEY0F649JvQ0Vupku6UJo7ugpGRDOFOunkA==}
 
   '@types/cookie@0.6.0':
     resolution: {integrity: sha512-4Kh9a6B2bQciAhf7FSuMRRkUWecJgJu9nPnx3yzpsfXX/c50REIqpHY4C82bXP90qrLtXtkDxTZosYO3UpOwlA==}
@@ -752,9 +749,6 @@ packages:
   enhanced-resolve@5.18.3:
     resolution: {integrity: sha512-d4lC8xfavMeBjzGr2vECC3fsGXziXZQyJxD868h2M/mBI3PwAuODxAkLkq5HYuvrPYcUtiLzsTo8U3PgX3Ocww==}
     engines: {node: '>=10.13.0'}
-
-  es-toolkit@1.42.0:
-    resolution: {integrity: sha512-SLHIyY7VfDJBM8clz4+T2oquwTQxEzu263AyhVK4jREOAwJ+8eebaa4wM3nlvnAqhDrMm2EsA6hWHaQsMPQ1nA==}
 
   esbuild@0.25.12:
     resolution: {integrity: sha512-bbPBYYrtZbkt6Os6FiTLCTFxvq4tt3JKall1vRwshA3fdVztsLAatFaZobhkBC8/BrPetoa0oksYoKXoG4ryJg==}
@@ -1490,16 +1484,9 @@ snapshots:
     dependencies:
       '@tauri-apps/api': 2.9.0
 
-  '@tauri-store/shared@0.10.2':
+  '@tauri-apps/plugin-store@2.4.1':
     dependencies:
       '@tauri-apps/api': 2.9.0
-      es-toolkit: 1.42.0
-
-  '@tauri-store/svelte@3.1.0':
-    dependencies:
-      '@tauri-apps/api': 2.9.0
-      '@tauri-store/shared': 0.10.2
-      svelte: 5.43.14
 
   '@types/cookie@0.6.0': {}
 
@@ -1556,8 +1543,6 @@ snapshots:
     dependencies:
       graceful-fs: 4.2.11
       tapable: 2.3.0
-
-  es-toolkit@1.42.0: {}
 
   esbuild@0.25.12:
     optionalDependencies:

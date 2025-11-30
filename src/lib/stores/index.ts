@@ -1,26 +1,89 @@
-// App Settings - persistent user preferences
-export { appSettingsStore, type AppSettings } from "./appSettings";
+// =============================================================================
+// Settings - Schema and types (from settings module)
+// =============================================================================
+export {
+	// Types
+	type GlobalSettings,
+	type ProjectSettings,
+	type SettingType,
+	type SettingMetadata,
 
-// Workspace - persistent open file state (survives refresh)
+	// Defaults
+	defaultGlobalSettings,
+	defaultProjectSettings,
+
+	// Metadata for UI generation
+	globalSettingsMetadata,
+	projectSettingsMetadata,
+
+	// Helper functions
+	getGlobalSettingCategories,
+	getProjectSettingCategories,
+	getGlobalSettingsByCategory,
+	getProjectSettingsByCategory,
+	validateSetting,
+} from "$lib/settings";
+
+// =============================================================================
+// Global Settings Store - App-wide settings (persisted via Tauri store)
+// =============================================================================
+export {
+	initGlobalSettings,
+	getGlobalSettings,
+	getGlobalSetting,
+	setGlobalSetting,
+	setGlobalSettings,
+	resetGlobalSettings,
+	subscribeToGlobalSettings,
+} from "./globalSettings";
+
+// =============================================================================
+// Project Settings - Project-specific settings (stored in .qrate file)
+// =============================================================================
+export {
+	loadSettings,
+	saveSetting,
+	saveSettings,
+	getSettings,
+	subscribeToSettings,
+	getDefaultProjectSettings,
+	resolveFilePath,
+	// Legacy aliases
+	defaultSettings,
+	type AppSettings,
+} from "./appSettings";
+
+// =============================================================================
+// Workspace Store - Persistent open file state (survives refresh)
+// =============================================================================
 export {
 	workspaceStore,
+	initWorkspace,
+	getWorkspace,
 	saveWorkspace,
 	clearWorkspace,
 	updateViewport,
+	subscribeToWorkspace,
 	type WorkspaceState,
 } from "./workspaceStore";
 
-// Recent Files - persistent history of opened files
+// =============================================================================
+// Recent Files Store - Persistent history of opened files
+// =============================================================================
 export {
 	recentFilesStore,
+	initRecentFiles,
+	getRecentFiles,
 	addRecentFile,
 	removeRecentFile,
 	clearRecentFiles,
+	subscribeToRecentFiles,
 	type RecentFile,
-	type RecentFilesState,
 } from "./recentFiles";
 
-// Qrate Store - main application state (uses runes)
+// =============================================================================
+// Qrate Store - Main application state (uses Svelte 5 runes)
+// =============================================================================
 export {
 	qrateStore,
 	type ColumnDef,

@@ -27,4 +27,4 @@ tauri-plugin-dialog = "2"
 csv = "1.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 dashmap = "6.1"
-tauri-plugin-svelte = "3"
+tauri-plugin-store = "2"

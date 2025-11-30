@@ -2,6 +2,8 @@ use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::settings;
+
 /// Represents a column definition in the grid
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ColumnDef {
@@ -34,6 +36,18 @@ pub fn init_database(path: &Path) -> Result<Connection> {
         )",
         [],
     )?;
+
+    // Create settings table for project-specific settings
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS _settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    // Insert default project settings from the settings module
+    settings::init_project_settings(&conn)?;
 
     // Create column definitions table
     conn.execute(
@@ -89,6 +103,9 @@ pub fn open_database(path: &Path) -> Result<Connection> {
         PRAGMA temp_store = MEMORY;
         ",
     )?;
+
+    // Ensure all project settings exist (handles migrations for new settings)
+    settings::ensure_project_settings(&conn)?;
 
     Ok(conn)
 }
@@ -256,6 +273,43 @@ pub fn insert_row(
 /// Delete a row by row_id
 pub fn delete_row(conn: &Connection, row_id: i64) -> Result<()> {
     conn.execute("DELETE FROM data WHERE row_id = ?1", params![row_id])?;
+    Ok(())
+}
+
+/// Set a single setting value
+pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO _settings (key, value) VALUES (?1, ?2)",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+/// Get all settings as a map
+pub fn get_all_settings(conn: &Connection) -> Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare("SELECT key, value FROM _settings")?;
+    let mut settings = std::collections::HashMap::new();
+
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+
+    for row in rows {
+        let (key, value) = row?;
+        settings.insert(key, value);
+    }
+
+    Ok(settings)
+}
+
+/// Set multiple settings at once
+pub fn set_all_settings(
+    conn: &Connection,
+    settings: &std::collections::HashMap<String, String>,
+) -> Result<()> {
+    for (key, value) in settings {
+        set_setting(conn, key, value)?;
+    }
     Ok(())
 }
 
