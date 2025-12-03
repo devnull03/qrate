@@ -3,7 +3,7 @@
 	import { onMount } from "svelte";
 
 	import TitleBar from "$lib/components/TitleBar.svelte";
-	import StatusBar from "$lib/components/StatusBar.svelte";
+	import StatusBar from "$lib/components/StatusBar";
 	import AppSidebar from "$lib/components/app-sidebar.svelte";
 	import * as Sidebar from "$lib/components/ui/sidebar/index.js";
 	import { ModeWatcher } from "mode-watcher";

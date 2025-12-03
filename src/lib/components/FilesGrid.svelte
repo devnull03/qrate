@@ -36,6 +36,11 @@
 	// Search filter
 	let searchQuery = $state("");
 
+	// Sync search query and file counts to store
+	$effect(() => {
+		qrateStore.filesGridSearchQuery = searchQuery;
+	});
+
 	// Settings from store - use defaults from appSettings
 	let filesFolder = $state(defaultSettings.filesFolder);
 	let filePathPattern = $state(defaultSettings.filePathPattern);
@@ -115,6 +120,12 @@
 				file.fileName.toLowerCase().includes(query) ||
 				file.filePath.toLowerCase().includes(query),
 		);
+	});
+
+	// Sync file counts to store
+	$effect(() => {
+		qrateStore.filesGridFilteredCount = filteredFiles.length;
+		qrateStore.filesGridTotalCount = allFiles.length;
 	});
 
 	// Get file type based on extension
@@ -315,19 +326,6 @@
 					</button>
 				{/each}
 			</div>
-		{/if}
-	</div>
-
-	<!-- Footer with stats -->
-	<div
-		class="flex items-center justify-between border-t border-border px-3 py-2 text-xs text-muted-foreground"
-	>
-		<span>
-			{filteredFiles.length} file{filteredFiles.length !== 1 ? "s" : ""}
-			{searchQuery ? `matching "${searchQuery}"` : ""}
-		</span>
-		{#if allFiles.length !== filteredFiles.length}
-			<span>{allFiles.length} total</span>
 		{/if}
 	</div>
 </div>

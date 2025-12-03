@@ -1,4 +1,3 @@
-// Class name utilities (for shadcn-svelte)
 export { cn } from "./cn";
 export type {
 	WithoutChild,
@@ -7,7 +6,6 @@ export type {
 	WithElementRef,
 } from "./cn";
 
-// Path utilities
 export {
 	getFileName,
 	getFileNameWithoutExtension,
@@ -15,7 +13,6 @@ export {
 	getDirectory,
 } from "./path";
 
-// Window control utilities
 export {
 	getAppWindow,
 	minimizeWindow,

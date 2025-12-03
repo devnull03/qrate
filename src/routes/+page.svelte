@@ -4,8 +4,7 @@
 	import { Button } from "$lib/components/ui/button/index.js";
 	import TableIcon from "@lucide/svelte/icons/table";
 	import FolderIcon from "@lucide/svelte/icons/folder";
-
-	let activeView = $state<"spreadsheet" | "files">("spreadsheet");
+	import { qrateStore } from "$lib/stores/qrateStore.svelte";
 </script>
 
 <div class="flex h-full flex-col overflow-hidden">
@@ -14,19 +13,21 @@
 		class="flex items-center gap-1 border-b border-border bg-muted/30 px-4 py-1.5"
 	>
 		<Button
-			variant={activeView === "spreadsheet" ? "secondary" : "ghost"}
+			variant={qrateStore.activeView === "spreadsheet"
+				? "secondary"
+				: "ghost"}
 			size="sm"
 			class="h-7 gap-1.5 px-3"
-			onclick={() => (activeView = "spreadsheet")}
+			onclick={() => (qrateStore.activeView = "spreadsheet")}
 		>
 			<TableIcon class="size-3.5" />
 			<span>Spreadsheet</span>
 		</Button>
 		<Button
-			variant={activeView === "files" ? "secondary" : "ghost"}
+			variant={qrateStore.activeView === "files" ? "secondary" : "ghost"}
 			size="sm"
 			class="h-7 gap-1.5 px-3"
-			onclick={() => (activeView = "files")}
+			onclick={() => (qrateStore.activeView = "files")}
 		>
 			<FolderIcon class="size-3.5" />
 			<span>Files</span>
@@ -35,7 +36,7 @@
 
 	<!-- View Content -->
 	<div class="min-h-0 flex-1 overflow-hidden">
-		{#if activeView === "spreadsheet"}
+		{#if qrateStore.activeView === "spreadsheet"}
 			<RevoGrid />
 		{:else}
 			<FilesGrid />

@@ -1,23 +1,19 @@
-// =============================================================================
-// Settings - Schema and types (from settings module)
-// =============================================================================
-export {
-	// Minimal types for metadata
-	type SettingType,
-	type SettingMetadata,
-	type SettingDefResponse,
+export type {
+	SettingType,
+	SettingMetadata,
+	SettingDefResponse,
+	GlobalSettings,
+	ProjectSettings,
+} from "$lib/models/settings";
 
-	// Minimal, stateless invoke wrappers
+export {
 	getGlobalDefaults,
 	getProjectDefaults,
 	getGlobalSettingDef,
 	getProjectSettingDef,
-	validateSettingServer as validateSettingValue,
-} from "$lib/settings";
+	validateSettingValue,
+} from "$lib/services/settings";
 
-// =============================================================================
-// Global Settings Store - App-wide settings (persisted via Tauri store)
-// =============================================================================
 export {
 	initGlobalSettings,
 	getGlobalSettings,
@@ -28,9 +24,6 @@ export {
 	subscribeToGlobalSettings,
 } from "./globalSettings";
 
-// =============================================================================
-// Project Settings - Project-specific settings (stored in .qrate file)
-// =============================================================================
 export {
 	loadSettings,
 	saveSetting,
@@ -39,28 +32,10 @@ export {
 	subscribeToSettings,
 	getDefaultProjectSettings,
 	resolveFilePath,
-	// Legacy aliases
 	defaultSettings,
 	type AppSettings,
 } from "./appSettings";
 
-// =============================================================================
-// Workspace Store - Persistent open file state (survives refresh)
-// =============================================================================
-export {
-	workspaceStore,
-	initWorkspace,
-	getWorkspace,
-	saveWorkspace,
-	clearWorkspace,
-	updateViewport,
-	subscribeToWorkspace,
-	type WorkspaceState,
-} from "./workspaceStore";
-
-// =============================================================================
-// Recent Files Store - Persistent history of opened files
-// =============================================================================
 export {
 	recentFilesStore,
 	initRecentFiles,
@@ -72,9 +47,6 @@ export {
 	type RecentFile,
 } from "./recentFiles";
 
-// =============================================================================
-// Qrate Store - Main application state (uses Svelte 5 runes)
-// =============================================================================
 export {
 	qrateStore,
 	type ColumnDef,

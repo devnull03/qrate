@@ -35,9 +35,6 @@ importers:
       '@types/lodash':
         specifier: ^4.17.20
         version: 4.17.20
-      ag-grid-community:
-        specifier: ^34.3.1
-        version: 34.3.1
       lodash:
         specifier: ^4.17.21
         version: 4.17.21
@@ -96,6 +93,9 @@ importers:
       vite:
         specifier: ^6.0.3
         version: 6.4.1(jiti@2.6.1)(lightningcss@1.30.2)
+      vite-plugin-devtools-json:
+        specifier: ^1.0.0
+        version: 1.0.0(vite@6.4.1(jiti@2.6.1)(lightningcss@1.30.2))
 
 packages:
 
@@ -689,12 +689,6 @@ packages:
     engines: {node: '>=0.4.0'}
     hasBin: true
 
-  ag-charts-types@12.3.1:
-    resolution: {integrity: sha512-5216xYoawnvMXDFI6kTpPku+mH0Csiwu/FE7lsAm8Z22HEN6ciSG/V7g+IrpLWncELqksgENebCTP75PZ3CsHA==}
-
-  ag-grid-community@34.3.1:
-    resolution: {integrity: sha512-PwlrPudsFOzGumphi2y9ihWeaUlIwKhOra/MXu2LjeV2U8DgLLcYS8CartE5Hszhn1poJHawwI9HWrxlKliwdw==}
-
   aria-query@5.3.2:
     resolution: {integrity: sha512-COROpnaoap1E2F000S62r6A60uHZnmlvomhfyT2DlTcrY1OrBKn2UhH7qn5wTC9zMvD0AY7csdPSNwKP+7WiQw==}
     engines: {node: '>= 0.4'}
@@ -1021,6 +1015,15 @@ packages:
     resolution: {integrity: sha512-hjcS1mhfuyi4WW8IWtjP7brDrG2cuDZukyrYrSauoXGNgx0S7zceP07adYkJycEr56BOUTNPzbInooiN3fn1qw==}
     engines: {node: '>=14.17'}
     hasBin: true
+
+  uuid@11.1.0:
+    resolution: {integrity: sha512-0/A9rDy9P7cJ+8w1c9WD9V//9Wj15Ce2MPz8Ri6032usz+NfePxx5AcN3bN+r6ZL6jEo066/yNYB3tn4pQEx+A==}
+    hasBin: true
+
+  vite-plugin-devtools-json@1.0.0:
+    resolution: {integrity: sha512-MobvwqX76Vqt/O4AbnNMNWoXWGrKUqZbphCUle/J2KXH82yKQiunOeKnz/nqEPosPsoWWPP9FtNuPBSYpiiwkw==}
+    peerDependencies:
+      vite: ^5.0.0 || ^6.0.0 || ^7.0.0
 
   vite@6.4.1:
     resolution: {integrity: sha512-+Oxm7q9hDoLMyJOYfUYBuHQo+dkAloi33apOPP56pzj+vsdJDzr+j1NISE5pyaAuKL4A3UD34qd0lx5+kfKp2g==}
@@ -1496,12 +1499,6 @@ snapshots:
 
   acorn@8.15.0: {}
 
-  ag-charts-types@12.3.1: {}
-
-  ag-grid-community@34.3.1:
-    dependencies:
-      ag-charts-types: 12.3.1
-
   aria-query@5.3.2: {}
 
   axobject-query@4.1.0: {}
@@ -1823,6 +1820,13 @@ snapshots:
   tw-animate-css@1.4.0: {}
 
   typescript@5.6.3: {}
+
+  uuid@11.1.0: {}
+
+  vite-plugin-devtools-json@1.0.0(vite@6.4.1(jiti@2.6.1)(lightningcss@1.30.2)):
+    dependencies:
+      uuid: 11.1.0
+      vite: 6.4.1(jiti@2.6.1)(lightningcss@1.30.2)
 
   vite@6.4.1(jiti@2.6.1)(lightningcss@1.30.2):
     dependencies:

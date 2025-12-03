@@ -1,4 +1,3 @@
-// Re-export everything from utils folder for backward compatibility
 export {
 	cn,
 	type WithoutChild,
