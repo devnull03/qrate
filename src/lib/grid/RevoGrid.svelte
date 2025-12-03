@@ -65,6 +65,76 @@
 		return () => observer.disconnect();
 	});
 
+	// Poll the grid for range selection after user interactions
+	const pollRangeSelection = async () => {
+		if (!grid) return;
+
+		// Small delay to let the grid update its internal state
+		await new Promise((r) => setTimeout(r, 10));
+
+		try {
+			const range = await grid.getSelectedRange?.();
+			if (range) {
+				// Range exists - check if it's a multi-cell selection
+				const startRow = range.y ?? range.startRow ?? 0;
+				const endRow = range.y1 ?? range.endRow ?? startRow;
+				const startCol = range.x ?? range.startCol ?? 0;
+				const endCol = range.x1 ?? range.endCol ?? startCol;
+
+				const rowSpan = Math.abs(endRow - startRow) + 1;
+				const colSpan = Math.abs(endCol - startCol) + 1;
+
+				if (rowSpan > 1 || colSpan > 1) {
+					// Multi-cell range selected
+					qrateStore.selectRange({
+						startRow: Math.min(startRow, endRow),
+						endRow: Math.max(startRow, endRow),
+						startCol: Math.min(startCol, endCol),
+						endCol: Math.max(startCol, endCol),
+					});
+				} else {
+					// Single cell - clear range
+					qrateStore.selectRange(null);
+				}
+			}
+		} catch {
+			// getSelectedRange not available or failed
+		}
+	};
+
+	// Set up mouseup listener on the grid container to detect range selections
+	$effect(() => {
+		if (!gridContainer) return;
+
+		const handleMouseUp = () => {
+			pollRangeSelection();
+		};
+
+		const handleKeyUp = (e: KeyboardEvent) => {
+			// Poll on shift+arrow keys which are used for range selection
+			if (
+				e.shiftKey &&
+				["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(
+					e.key,
+				)
+			) {
+				pollRangeSelection();
+			}
+			// Also poll on Ctrl+A (select all)
+			if ((e.ctrlKey || e.metaKey) && e.key === "a") {
+				pollRangeSelection();
+			}
+		};
+
+		gridContainer.addEventListener("mouseup", handleMouseUp);
+		gridContainer.addEventListener("keyup", handleKeyUp);
+
+		return () => {
+			gridContainer?.removeEventListener("mouseup", handleMouseUp);
+			gridContainer?.removeEventListener("keyup", handleKeyUp);
+		};
+	});
+
 	const handleAfterEdit = async (event: CustomEvent) => {
 		const { detail } = event;
 		if (!detail) return;
@@ -113,21 +183,7 @@
 
 		qrateStore.selectRow(rowId);
 		qrateStore.selectColumn(colProp === "_rowNum" ? null : colProp);
-		qrateStore.selectRange(null);
-	};
-
-	const handleBeforeCellFocus = (event: CustomEvent) => {
-		const { detail } = event;
-		console.log("beforecellfocus event:", detail);
-
-		// Try to get selection from grid
-		if (grid) {
-			grid.getSelectedRange?.()
-				.then((range: any) => {
-					console.log("grid.getSelectedRange:", range);
-				})
-				.catch(() => {});
-		}
+		// Don't clear range here - let mouseup/keyup handler manage it
 	};
 </script>
 
@@ -166,7 +222,6 @@
 				on:afteredit={handleAfterEdit}
 				on:aftercolumnresize={handleAfterColumnResize}
 				on:afterfocus={handleAfterFocus}
-				on:beforecellfocus={handleBeforeCellFocus}
 			/>
 		</div>
 	{/if}

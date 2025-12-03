@@ -35,9 +35,6 @@ export interface DataResponse {
 
 interface PersistedWorkspace {
 	currentFilePath: string | null;
-	currentOffset: number;
-	currentLimit: number;
-	scrollPosition: number;
 }
 
 let workspaceStore: Store | null = null;
@@ -81,30 +78,21 @@ class QrateStore {
 	private async persistWorkspace(): Promise<void> {
 		const store = await getWorkspaceStore();
 		await store.set("currentFilePath", this.currentFilePath);
-		await store.set("currentOffset", this.currentOffset);
-		await store.set("currentLimit", this.currentLimit);
-		await store.set("scrollPosition", this.scrollPosition);
 	}
 
 	private async loadPersistedWorkspace(): Promise<PersistedWorkspace | null> {
 		const store = await getWorkspaceStore();
-		const filePath = await store.get<string | null>("currentFilePath");
+		const filePath = await store.get<string>("currentFilePath");
 		if (!filePath) return null;
 
 		return {
 			currentFilePath: filePath,
-			currentOffset: (await store.get<number>("currentOffset")) ?? 0,
-			currentLimit: (await store.get<number>("currentLimit")) ?? 100,
-			scrollPosition: (await store.get<number>("scrollPosition")) ?? 0,
 		};
 	}
 
 	private async clearPersistedWorkspace(): Promise<void> {
 		const store = await getWorkspaceStore();
 		await store.set("currentFilePath", null);
-		await store.set("currentOffset", 0);
-		await store.set("currentLimit", 100);
-		await store.set("scrollPosition", 0);
 	}
 
 	async syncFromBackend(): Promise<boolean> {
@@ -119,10 +107,16 @@ class QrateStore {
 				this.currentFilePath = response.path;
 				this.columns = response.columns;
 				this.totalRows = response.total_rows;
-				this.rows = response.rows;
-				this.currentOffset = response.offset;
-				this.currentLimit = response.limit;
 				this.isFileOpen = true;
+
+				// Always reload from row 0 to avoid stale offset
+				if (response.offset > 0) {
+					await this.loadRows(0, 100);
+				} else {
+					this.rows = response.rows;
+					this.currentOffset = response.offset;
+					this.currentLimit = response.limit;
+				}
 				return true;
 			}
 
@@ -148,16 +142,7 @@ class QrateStore {
 
 			if (workspace?.currentFilePath) {
 				await this.openFile(workspace.currentFilePath);
-				if (
-					workspace.currentOffset > 0 ||
-					workspace.currentLimit !== 100
-				) {
-					await this.loadRows(
-						workspace.currentOffset,
-						workspace.currentLimit,
-					);
-				}
-				this.scrollPosition = workspace.scrollPosition;
+				// Always start from row 0 - don't restore offset
 				return true;
 			}
 		} catch {
