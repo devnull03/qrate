@@ -2,26 +2,17 @@
 // Settings - Schema and types (from settings module)
 // =============================================================================
 export {
-	// Types
-	type GlobalSettings,
-	type ProjectSettings,
+	// Minimal types for metadata
 	type SettingType,
 	type SettingMetadata,
+	type SettingDefResponse,
 
-	// Defaults
-	defaultGlobalSettings,
-	defaultProjectSettings,
-
-	// Metadata for UI generation
-	globalSettingsMetadata,
-	projectSettingsMetadata,
-
-	// Helper functions
-	getGlobalSettingCategories,
-	getProjectSettingCategories,
-	getGlobalSettingsByCategory,
-	getProjectSettingsByCategory,
-	validateSetting,
+	// Minimal, stateless invoke wrappers
+	getGlobalDefaults,
+	getProjectDefaults,
+	getGlobalSettingDef,
+	getProjectSettingDef,
+	validateSettingServer as validateSettingValue,
 } from "$lib/settings";
 
 // =============================================================================

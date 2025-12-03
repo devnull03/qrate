@@ -1,14 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { qrateStore } from "./qrateStore.svelte";
-import {
-	type ProjectSettings,
-	defaultProjectSettings,
-} from "$lib/settings/schema";
+import { type ProjectSettings } from "$lib/settings";
+import { getProjectDefaults } from "$lib/settings";
 import { getGlobalSettings } from "./globalSettings";
 
 // Re-export types for convenience
-export type { ProjectSettings } from "$lib/settings/schema";
-export { defaultProjectSettings } from "$lib/settings/schema";
+export type { ProjectSettings } from "$lib/settings";
+export const defaultProjectSettings: ProjectSettings = {
+	filesFolder: "",
+	filePathPattern: "{files_folder}/{file_column}",
+	fileColumnName: "file",
+	defaultRowLimit: "100",
+};
 
 // Legacy alias for backward compatibility
 export type AppSettings = ProjectSettings;
@@ -30,13 +33,20 @@ function notifySubscribers() {
  * Get default project settings based on current global settings.
  * This uses global defaults for pattern and column name when creating new projects.
  */
-export function getDefaultProjectSettings(): ProjectSettings {
+export async function getDefaultProjectSettings(): Promise<ProjectSettings> {
 	const global = getGlobalSettings();
+	const pDefaults = await getProjectDefaults();
 	return {
-		filesFolder: "",
-		filePathPattern: global.defaultFilePathPattern,
-		fileColumnName: global.defaultFileColumnName,
-		defaultRowLimit: String(global.defaultRowLimit),
+		filesFolder: (pDefaults.filesFolder as unknown as string) ?? "",
+		filePathPattern:
+			(pDefaults.filePathPattern as unknown as string) ??
+			(global.defaultFilePathPattern as unknown as string),
+		fileColumnName:
+			(pDefaults.fileColumnName as unknown as string) ??
+			(global.defaultFileColumnName as unknown as string),
+		defaultRowLimit:
+			(pDefaults.defaultRowLimit as unknown as string) ??
+			String(global.defaultRowLimit),
 	};
 }
 
@@ -48,7 +58,7 @@ export async function loadSettings(): Promise<ProjectSettings> {
 	console.log("[appSettings] loadSettings called, path:", path);
 
 	// Get fresh defaults based on current global settings
-	const defaults = getDefaultProjectSettings();
+	const defaults = await getDefaultProjectSettings();
 
 	if (!path) {
 		console.log("[appSettings] No path, returning defaults");

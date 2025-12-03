@@ -16,9 +16,9 @@
 	import { getFileName } from "$lib/utils/path";
 
 	interface Props {
-		onToggle?: () => void;
-		sidebarOpen?: boolean;
-	}
+			onToggleSidebar?: () => void;
+			sidebarOpen?: boolean;
+		}
 
 	let { onToggleSidebar, sidebarOpen = true }: Props = $props();
 

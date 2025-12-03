@@ -2,19 +2,44 @@ import { load } from "@tauri-apps/plugin-store";
 import type { Store } from "@tauri-apps/plugin-store";
 import {
 	type GlobalSettings,
-	defaultGlobalSettings,
-} from "$lib/settings/schema";
+	getGlobalDefaults,
+	getGlobalSettingDef,
+} from "$lib/settings";
 
-// Re-export types for convenience
-export type { GlobalSettings } from "$lib/settings/schema";
-export { defaultGlobalSettings } from "$lib/settings/schema";
+// Re-export type for convenience
+export type { GlobalSettings } from "$lib/settings";
 
 // Store instance (lazy loaded)
 let storeInstance: Store | null = null;
 let storePromise: Promise<Store> | null = null;
 
 // In-memory cache for synchronous access
-let cachedSettings: GlobalSettings = { ...defaultGlobalSettings };
+// Provide a minimal fallback until runtime defaults are fetched
+const fallbackDefaults: GlobalSettings = {
+	// Appearance
+	theme: "system",
+
+	// Default values for new projects
+	defaultRowLimit: 100,
+	defaultFilePathPattern: "{files_folder}/{file_column}",
+	defaultFileColumnName: "file",
+
+	// UI preferences
+	sidebarWidth: 280,
+	sidebarCollapsed: false,
+	showStatusBar: true,
+
+	// Behavior
+	autoSaveInterval: 0,
+	confirmBeforeDelete: true,
+	reopenLastProject: true,
+
+	// Grid/Table
+	gridRowHeight: 32,
+	gridAlternateRowColors: true,
+};
+
+let cachedSettings: GlobalSettings = { ...fallbackDefaults };
 let subscribers: Set<(settings: GlobalSettings) => void> = new Set();
 
 /**
@@ -51,12 +76,33 @@ export async function initGlobalSettings(): Promise<GlobalSettings> {
 
 	try {
 		const store = await getStore();
+		const storeAny = store as any;
 
-		// Load each setting, falling back to defaults
-		for (const key of Object.keys(defaultGlobalSettings) as Array<
+		// Merge runtime defaults (strings from backend) into typed cached settings
+		const runtimeDefaults = await getGlobalDefaults();
+		for (const [key, rawValue] of Object.entries(runtimeDefaults)) {
+			const def = await getGlobalSettingDef(key);
+			if (!def) continue;
+
+			let parsedValue: unknown = rawValue;
+			if (def.setting_type === "number") {
+				const num = Number(rawValue);
+				parsedValue = Number.isNaN(num) ? 0 : num;
+			} else if (def.setting_type === "boolean") {
+				parsedValue = rawValue === "true" || rawValue === "1";
+			} else {
+				parsedValue = rawValue;
+			}
+
+			(cachedSettings as unknown as Record<string, unknown>)[key] =
+				parsedValue;
+		}
+
+		// Load each setting from the local store, falling back to runtime defaults
+		for (const key of Object.keys(cachedSettings) as Array<
 			keyof GlobalSettings
 		>) {
-			const value = await store.get<GlobalSettings[typeof key]>(key);
+			const value = await storeAny.get(key as string);
 			if (value !== null && value !== undefined) {
 				(cachedSettings as unknown as Record<string, unknown>)[key] =
 					value;
@@ -99,8 +145,9 @@ export async function setGlobalSetting<K extends keyof GlobalSettings>(
 
 	try {
 		const store = await getStore();
-		await store.set(key, value);
-		await store.save();
+		const storeAny = store as any;
+		await storeAny.set(key as string, value);
+		await storeAny.save();
 		cachedSettings[key] = value;
 		notifySubscribers();
 	} catch (err) {
@@ -119,16 +166,17 @@ export async function setGlobalSettings(
 
 	try {
 		const store = await getStore();
+		const storeAny = store as any;
 
 		for (const [key, value] of Object.entries(settings)) {
 			if (value !== undefined) {
-				await store.set(key, value);
+				await storeAny.set(key as string, value);
 				(cachedSettings as unknown as Record<string, unknown>)[key] =
 					value;
 			}
 		}
 
-		await store.save();
+		await storeAny.save();
 		notifySubscribers();
 	} catch (err) {
 		console.error("[globalSettings] Failed to set settings:", err);
@@ -144,15 +192,30 @@ export async function resetGlobalSettings(): Promise<void> {
 
 	try {
 		const store = await getStore();
-		await store.clear();
+		const storeAny = store as any;
 
-		// Set all defaults
-		for (const [key, value] of Object.entries(defaultGlobalSettings)) {
-			await store.set(key, value);
+		await storeAny.clear();
+
+		// Fetch runtime defaults from the backend and store them locally
+		const runtimeDefaults = await getGlobalDefaults();
+		for (const [key, rawValue] of Object.entries(runtimeDefaults)) {
+			const def = await getGlobalSettingDef(key);
+			let parsedValue: unknown = rawValue;
+			if (def?.setting_type === "number") {
+				const num = Number(rawValue);
+				parsedValue = Number.isNaN(num) ? 0 : num;
+			} else if (def?.setting_type === "boolean") {
+				parsedValue = rawValue === "true" || rawValue === "1";
+			} else {
+				parsedValue = rawValue;
+			}
+
+			await storeAny.set(key as string, parsedValue);
+			(cachedSettings as unknown as Record<string, unknown>)[key] =
+				parsedValue;
 		}
 
-		await store.save();
-		cachedSettings = { ...defaultGlobalSettings };
+		await storeAny.save();
 		notifySubscribers();
 	} catch (err) {
 		console.error("[globalSettings] Failed to reset settings:", err);

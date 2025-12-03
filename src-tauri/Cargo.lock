@@ -3520,7 +3520,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qrate-test"
+name = "qrate"
 version = "0.1.0"
 dependencies = [
  "csv",

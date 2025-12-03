@@ -3,13 +3,13 @@
 	import { Input } from "$lib/components/ui/input/index.js";
 	import { Label } from "$lib/components/ui/label/index.js";
 	import { Switch } from "$lib/components/ui/switch/index.js";
-	import type { SettingMetadata } from "$lib/settings/schema";
+
 	import FolderOpenIcon from "@lucide/svelte/icons/folder-open";
 	import { open } from "@tauri-apps/plugin-dialog";
 
 	interface Props {
 		id: string;
-		metadata: SettingMetadata;
+		metadata: any;
 		value: unknown;
 		disabled?: boolean;
 		onchange?: (value: unknown) => void;
@@ -54,6 +54,15 @@
 		handleChange(optionValue);
 	}
 
+	// Helpers to support both `string[]` and `{ value, label }[]` option formats
+	function getOptionValue(option: string | { value: string; label: string }) {
+		return typeof option === "string" ? option : option.value;
+	}
+
+	function getOptionLabel(option: string | { value: string; label: string }) {
+		return typeof option === "string" ? option : option.label;
+	}
+
 	// Handle path selection
 	async function handlePathSelect() {
 		try {
@@ -91,15 +100,29 @@
 		<div class="flex flex-wrap gap-2">
 			{#if metadata.options}
 				{#each metadata.options as option}
-					<Button
-						variant={value === option.value ? "default" : "outline"}
-						size="sm"
-						class="flex-1"
-						onclick={() => handleSelectOption(option.value)}
-						{disabled}
-					>
-						{option.label}
-					</Button>
+					{#if typeof option === "string"}
+						<Button
+							variant={value === option ? "default" : "outline"}
+							size="sm"
+							class="flex-1"
+							onclick={() => handleSelectOption(option)}
+							{disabled}
+						>
+							{option}
+						</Button>
+					{:else}
+						<Button
+							variant={value === option.value
+								? "default"
+								: "outline"}
+							size="sm"
+							class="flex-1"
+							onclick={() => handleSelectOption(option.value)}
+							{disabled}
+						>
+							{option.label}
+						</Button>
+					{/if}
 				{/each}
 			{/if}
 		</div>

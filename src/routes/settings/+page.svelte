@@ -30,7 +30,7 @@
 	import FileIcon from "@lucide/svelte/icons/file";
 
 	// Global settings state
-	let globalTheme = $state<GlobalSettings["theme"]>("system");
+	let globalTheme = $state<"light" | "dark" | "system">("system");
 	let globalDefaultRowLimit = $state(100);
 	let globalDefaultFilePathPattern = $state("{files_folder}/{file_column}");
 	let globalDefaultFileColumnName = $state("file");
@@ -55,12 +55,21 @@
 			// Load global settings first
 			console.log("[Settings] Loading global settings...");
 			const globalSettings = await initGlobalSettings();
-			globalTheme = globalSettings.theme;
-			globalDefaultRowLimit = globalSettings.defaultRowLimit;
-			globalDefaultFilePathPattern =
-				globalSettings.defaultFilePathPattern;
-			globalDefaultFileColumnName = globalSettings.defaultFileColumnName;
-			globalConfirmBeforeDelete = globalSettings.confirmBeforeDelete;
+			globalTheme =
+				(globalSettings.theme as "light" | "dark" | "system") ??
+				"system";
+			globalDefaultRowLimit = Number(
+				globalSettings.defaultRowLimit ?? 100,
+			);
+			globalDefaultFilePathPattern = String(
+				globalSettings.defaultFilePathPattern ??
+					"{files_folder}/{file_column}",
+			);
+			globalDefaultFileColumnName = String(
+				globalSettings.defaultFileColumnName ?? "file",
+			);
+			globalConfirmBeforeDelete =
+				String(globalSettings.confirmBeforeDelete ?? "true") === "true";
 
 			// Apply theme
 			if (globalTheme === "system") {
@@ -80,20 +89,24 @@
 			if (hasFile) {
 				console.log("[Settings] Loading project settings from file...");
 				try {
-					const defaults = getDefaultProjectSettings();
+					const defaults = await getDefaultProjectSettings();
 					const settings = await loadSettings();
 					console.log(
 						"[Settings] Loaded project settings:",
 						settings,
 					);
-					projectFilesFolder =
-						settings.filesFolder || defaults.filesFolder;
-					projectFilePathPattern =
-						settings.filePathPattern || defaults.filePathPattern;
-					projectFileColumnName =
-						settings.fileColumnName || defaults.fileColumnName;
-					projectDefaultRowLimit =
-						settings.defaultRowLimit || defaults.defaultRowLimit;
+					projectFilesFolder = String(
+						settings.filesFolder ?? defaults.filesFolder,
+					);
+					projectFilePathPattern = String(
+						settings.filePathPattern ?? defaults.filePathPattern,
+					);
+					projectFileColumnName = String(
+						settings.fileColumnName ?? defaults.fileColumnName,
+					);
+					projectDefaultRowLimit = String(
+						settings.defaultRowLimit ?? defaults.defaultRowLimit,
+					);
 					console.log(
 						"[Settings] Project settings applied successfully",
 					);
@@ -110,11 +123,17 @@
 				console.log(
 					"[Settings] No file open, using defaults for project settings",
 				);
-				const defaults = getDefaultProjectSettings();
-				projectFilesFolder = defaults.filesFolder;
-				projectFilePathPattern = defaults.filePathPattern;
-				projectFileColumnName = defaults.fileColumnName;
-				projectDefaultRowLimit = defaults.defaultRowLimit;
+				const defaults = await getDefaultProjectSettings();
+				projectFilesFolder = String(defaults.filesFolder ?? "");
+				projectFilePathPattern = String(
+					defaults.filePathPattern ?? "{files_folder}/{file_column}",
+				);
+				projectFileColumnName = String(
+					defaults.fileColumnName ?? "file",
+				);
+				projectDefaultRowLimit = String(
+					defaults.defaultRowLimit ?? "100",
+				);
 			}
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
@@ -127,7 +146,7 @@
 	});
 
 	// Handle theme change (global setting)
-	async function handleThemeChange(newTheme: GlobalSettings["theme"]) {
+	async function handleThemeChange(newTheme: "light" | "dark" | "system") {
 		console.log("[Settings] Theme change:", newTheme);
 		globalTheme = newTheme;
 

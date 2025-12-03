@@ -1,14 +1,20 @@
 {
 	"$schema": "https://schema.tauri.app/config/2",
-	"productName": "qrate-test",
+
+	"productName": "qrate",
 	"version": "0.1.0",
-	"identifier": "work.dvnl.qrate-test",
+
+	"identifier": "work.dvnl.qrate",
 	"build": {
 		"beforeDevCommand": "pnpm dev",
+
 		"devUrl": "http://localhost:1420",
+
 		"beforeBuildCommand": "pnpm build",
+
 		"frontendDist": "../build"
 	},
+
 	"app": {
 		"windows": [
 			{

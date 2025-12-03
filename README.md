@@ -1,10 +1,10 @@
-# qRate - Digital Archival Workspace
+# qrate - Digital Archival Workspace
 
 A local-first, high-performance workspace designed to streamline the cataloging of cultural heritage materials. Built with Tauri, Svelte 5, RevoGrid, and SQLite.
 
-## 📜 About qRate
+## 📜 About qrate
 
-qRate replaces the fragmented toolchain archivists currently use—bouncing between file browsers, image viewers, spreadsheets, and task trackers—with a unified, high-performance environment for managing cultural heritage metadata.
+qrate replaces the fragmented toolchain archivists currently use—bouncing between file browsers, image viewers, spreadsheets, and task trackers—with a unified, high-performance environment for managing cultural heritage metadata.
 
 ### The Problem
 
@@ -17,9 +17,9 @@ Archivists often deal with thousands of images (e.g., near-duplicate photos of t
 
 This **context switching** increases errors ("naming drift") and severely limits throughput. When working with large collections, the tools themselves become bottlenecks—traditional CSV editors crash or freeze with datasets over 10,000 rows.
 
-### The qRate Solution
+### The qrate Solution
 
-qRate unifies these tasks into a single, high-performance flow:
+qrate unifies these tasks into a single, high-performance flow:
 
 - **Headless Document Model**: Treats CSVs as databases (SQLite), enabling instant loading of massive datasets without memory bloat
 - **Unified Interface**: Displays media viewer directly beside the metadata grid (coming soon)
@@ -52,7 +52,7 @@ qRate unifies these tasks into a single, high-performance flow:
 
 ## 📊 Performance Comparison
 
-| Operation | Traditional CSV Editors | qRate |
+| Operation | Traditional CSV Editors | qrate |
 |-----------|------------------------|-------|
 | Open 1GB file | 30-60 seconds | < 1 second |
 | Memory usage | ~2-4GB | ~50-100MB |
@@ -62,7 +62,7 @@ qRate unifies these tasks into a single, high-performance flow:
 
 ## 🏗️ Architecture
 
-qRate uses a "Headless Document Model" where:
+qrate uses a "Headless Document Model" where:
 - Frontend is a **viewport** displaying only visible rows (~100 at a time)
 - Backend manages all data in **SQLite** with indexed queries
 - **Virtual scrolling** loads data on-demand
@@ -111,7 +111,7 @@ qRate uses a "Headless Document Model" where:
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd qrate-test
+cd qrate
 
 # Install dependencies
 pnpm install
@@ -151,10 +151,12 @@ pnpm run tauri build
 
 ## 📁 Project Structure
 
-```
-qrate-test/
+
+qrate/
 ├── src/                              # Frontend source
+
 │   ├── lib/
+
 │   │   ├── components/
 │   │   │   ├── ui/                  # UI component library
 │   │   │   └── app-sidebar.svelte   # File operations sidebar
@@ -362,7 +364,7 @@ MIT
 - **Svelte** by Rich Harris - https://svelte.dev
 - **SQLite** by D. Richard Hipp - https://sqlite.org
 
-## 💡 Why qRate?
+## 💡 Why qrate?
 
 ### The Archival Challenge
 
@@ -374,9 +376,9 @@ Traditional CSV editors weren't built for archival workflows. They:
 - **Can't integrate** with media files
 - **Offer no AI assistance** for repetitive tasks
 
-### The qRate Difference
+### The qrate Difference
 
-qRate treats archival cataloging as a **database problem**, not a text-editing problem:
+qrate treats archival cataloging as a **database problem**, not a text-editing problem:
 
 - **O(1) load times** via metadata queries (not full file parsing)
 - **Constant memory** via virtual scrolling (not loading entire dataset)
@@ -387,7 +389,7 @@ qRate treats archival cataloging as a **database problem**, not a text-editing p
 
 ### Built for Archivists
 
-qRate understands that archival work requires:
+qrate understands that archival work requires:
 - **Precision**: Every field matters, errors compound
 - **Throughput**: Thousands of items to process
 - **Sustainability**: Data must outlive the software
