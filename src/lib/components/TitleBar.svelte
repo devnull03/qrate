@@ -2,12 +2,16 @@
 	import { invoke } from "@tauri-apps/api/core";
 	import { open, save } from "@tauri-apps/plugin-dialog";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
+	import { layoutStore } from "$lib/stores/layoutStore.svelte";
 	import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import MinusIcon from "@lucide/svelte/icons/minus";
 	import SquareIcon from "@lucide/svelte/icons/square";
 	import XIcon from "@lucide/svelte/icons/x";
 	import PanelLeftIcon from "@lucide/svelte/icons/panel-left";
+	import PanelRightIcon from "@lucide/svelte/icons/panel-right";
+	import PanelBottomIcon from "@lucide/svelte/icons/panel-bottom";
+	import ColumnsIcon from "@lucide/svelte/icons/columns-2";
 	import {
 		minimizeWindow,
 		toggleMaximizeWindow,
@@ -15,153 +19,92 @@
 	} from "$lib/utils/window";
 	import { getFileName } from "$lib/utils/path";
 
-	interface Props {
-			onToggleSidebar?: () => void;
-			sidebarOpen?: boolean;
-		}
-
-	let { onToggleSidebar, sidebarOpen = true }: Props = $props();
-
 	let isProcessing = $state(false);
 
-	// File menu actions
-	async function handleNew() {
-		if (isProcessing) return;
-		try {
-			isProcessing = true;
-			const selected = await save({
-				filters: [{ name: "Qrate Files", extensions: ["qrate"] }],
-				defaultPath: "untitled.qrate",
-			});
-			if (selected) {
-				await qrateStore.createFile(selected);
-			}
-		} catch (err) {
-			console.error("Failed to create new file:", err);
-		} finally {
-			isProcessing = false;
-		}
-	}
-
-	async function handleOpen() {
-		if (isProcessing) return;
-		try {
-			isProcessing = true;
-			const selected = await open({
-				multiple: false,
-				filters: [{ name: "Qrate Files", extensions: ["qrate"] }],
-			});
-			if (selected && typeof selected === "string") {
-				await qrateStore.openFile(selected);
-			}
-		} catch (err) {
-			console.error("Failed to open file:", err);
-		} finally {
-			isProcessing = false;
-		}
-	}
-
-	async function handleProject() {
-		if (isProcessing) return;
-		try {
-			isProcessing = true;
-			await invoke("show_projects_window");
-		} catch (err) {
-			console.error("Failed to open projects window:", err);
-		} finally {
-			isProcessing = false;
-		}
-	}
-
-	async function handleSettings() {
-		if (isProcessing) return;
-		try {
-			isProcessing = true;
-			await invoke("show_settings_window");
-		} catch (err) {
-			console.error("Failed to open settings window:", err);
-		} finally {
-			isProcessing = false;
-		}
-	}
-
-	async function handleSave() {
-		// SQLite auto-saves
-		console.log("Save requested - changes are auto-saved");
-	}
-
-	async function handleSaveAs() {
-		// TODO: Implement save as (copy database to new location)
-		console.log("Save As requested");
-	}
-
-	async function handleImportCsv() {
-		if (isProcessing) return;
-		try {
-			isProcessing = true;
-			const csvFile = await open({
-				multiple: false,
-				filters: [{ name: "CSV Files", extensions: ["csv"] }],
-			});
-			if (!csvFile || typeof csvFile !== "string") return;
-
-			const qrateFile = await save({
-				filters: [{ name: "Qrate Files", extensions: ["qrate"] }],
-				defaultPath: csvFile.replace(/\.csv$/i, ".qrate"),
-			});
-			if (!qrateFile) return;
-
-			await qrateStore.importCsv(qrateFile, csvFile);
-		} catch (err) {
-			console.error("Failed to import CSV:", err);
-		} finally {
-			isProcessing = false;
-		}
-	}
-
-	async function handleClose() {
-		try {
-			await qrateStore.closeFile();
-		} catch (err) {
-			console.error("Failed to close file:", err);
-		}
-	}
-
-	async function handleQuit() {
-		await closeWindow();
-	}
-
-	// Edit menu actions
-	function handleUndo() {
-		document.execCommand("undo");
-	}
-
-	function handleRedo() {
-		document.execCommand("redo");
-	}
-
-	function handleCut() {
-		document.execCommand("cut");
-	}
-
-	function handleCopy() {
-		document.execCommand("copy");
-	}
-
-	function handlePaste() {
-		document.execCommand("paste");
-	}
-
-	function handleSelectAll() {
-		document.execCommand("selectAll");
-	}
-
-	// Derive title from current file path
-	let windowTitle = $derived(
+	const leftVisible = $derived(
+		layoutStore.layout?.left_sidebar?.visible ?? false,
+	);
+	const rightVisible = $derived(
+		layoutStore.layout?.right_sidebar?.visible ?? true,
+	);
+	const bottomVisible = $derived(
+		layoutStore.layout?.bottom_panel?.visible ?? false,
+	);
+	const detailsVisible = $derived(qrateStore.detailsPanelOpen);
+	const windowTitle = $derived(
 		qrateStore.currentFilePath
 			? `${getFileName(qrateStore.currentFilePath)} - qRate`
 			: "qRate",
 	);
+
+	const toggleLeft = () => layoutStore.toggleRegion("left_sidebar");
+	const toggleRight = () => layoutStore.toggleRegion("right_sidebar");
+	const toggleBottom = () => layoutStore.toggleRegion("bottom_panel");
+	const toggleDetails = () => qrateStore.toggleDetailsPanel();
+
+	async function handleNew() {
+		if (isProcessing) return;
+		isProcessing = true;
+		const selected = await save({
+			filters: [{ name: "Qrate Files", extensions: ["qrate"] }],
+			defaultPath: "untitled.qrate",
+		}).catch(() => null);
+		if (selected) await qrateStore.createFile(selected).catch(() => {});
+		isProcessing = false;
+	}
+
+	async function handleOpen() {
+		if (isProcessing) return;
+		isProcessing = true;
+		const selected = await open({
+			multiple: false,
+			filters: [{ name: "Qrate Files", extensions: ["qrate"] }],
+		}).catch(() => null);
+		if (selected && typeof selected === "string")
+			await qrateStore.openFile(selected).catch(() => {});
+		isProcessing = false;
+	}
+
+	async function handleProject() {
+		if (isProcessing) return;
+		isProcessing = true;
+		await invoke("show_projects_window").catch(() => {});
+		isProcessing = false;
+	}
+
+	async function handleSettings() {
+		if (isProcessing) return;
+		isProcessing = true;
+		await invoke("show_settings_window").catch(() => {});
+		isProcessing = false;
+	}
+
+	async function handleImportCsv() {
+		if (isProcessing) return;
+		isProcessing = true;
+		const csvFile = await open({
+			multiple: false,
+			filters: [{ name: "CSV Files", extensions: ["csv"] }],
+		}).catch(() => null);
+		if (csvFile && typeof csvFile === "string") {
+			const qrateFile = await save({
+				filters: [{ name: "Qrate Files", extensions: ["qrate"] }],
+				defaultPath: csvFile.replace(/\.csv$/i, ".qrate"),
+			}).catch(() => null);
+			if (qrateFile)
+				await qrateStore.importCsv(qrateFile, csvFile).catch(() => {});
+		}
+		isProcessing = false;
+	}
+
+	const handleClose = () => qrateStore.closeFile().catch(() => {});
+	const handleQuit = () => closeWindow();
+	const handleUndo = () => document.execCommand("undo");
+	const handleRedo = () => document.execCommand("redo");
+	const handleCut = () => document.execCommand("cut");
+	const handleCopy = () => document.execCommand("copy");
+	const handlePaste = () => document.execCommand("paste");
+	const handleSelectAll = () => document.execCommand("selectAll");
 </script>
 
 <div
@@ -169,19 +112,6 @@
 	data-tauri-drag-region
 >
 	<div class="flex h-full items-center">
-		<!-- Sidebar Toggle Button -->
-		<Button
-			variant="ghost"
-			size="icon"
-			class="h-full w-10 rounded-none"
-			onclick={onToggleSidebar}
-			title={sidebarOpen ? "Hide Sidebar" : "Show Sidebar"}
-		>
-			<PanelLeftIcon class="size-4" />
-		</Button>
-
-		<div class="mx-1 h-4 w-px bg-border"></div>
-
 		<DropdownMenu.Root>
 			<DropdownMenu.Trigger
 				class="flex h-full items-center bg-transparent px-3 text-[0.8125rem] text-foreground hover:bg-accent"
@@ -206,17 +136,11 @@
 					<DropdownMenu.Shortcut>Ctrl+P</DropdownMenu.Shortcut>
 				</DropdownMenu.Item>
 				<DropdownMenu.Separator />
-				<DropdownMenu.Item
-					onclick={handleSave}
-					disabled={!qrateStore.isFileOpen}
-				>
+				<DropdownMenu.Item disabled={!qrateStore.isFileOpen}>
 					Save
 					<DropdownMenu.Shortcut>Ctrl+S</DropdownMenu.Shortcut>
 				</DropdownMenu.Item>
-				<DropdownMenu.Item
-					onclick={handleSaveAs}
-					disabled={!qrateStore.isFileOpen}
-				>
+				<DropdownMenu.Item disabled={!qrateStore.isFileOpen}>
 					Save As...
 					<DropdownMenu.Shortcut>Ctrl+Shift+S</DropdownMenu.Shortcut>
 				</DropdownMenu.Item>
@@ -284,9 +208,21 @@
 				View
 			</DropdownMenu.Trigger>
 			<DropdownMenu.Content align="start" class="min-w-40">
-				<DropdownMenu.Item onclick={onToggleSidebar}>
-					{sidebarOpen ? "Hide Sidebar" : "Show Sidebar"}
+				<DropdownMenu.Item onclick={toggleLeft}>
+					{leftVisible ? "Hide" : "Show"} Left Sidebar
 					<DropdownMenu.Shortcut>Ctrl+B</DropdownMenu.Shortcut>
+				</DropdownMenu.Item>
+				<DropdownMenu.Item onclick={toggleRight}>
+					{rightVisible ? "Hide" : "Show"} Right Sidebar
+					<DropdownMenu.Shortcut>Ctrl+Alt+B</DropdownMenu.Shortcut>
+				</DropdownMenu.Item>
+				<DropdownMenu.Item onclick={toggleBottom}>
+					{bottomVisible ? "Hide" : "Show"} Bottom Panel
+					<DropdownMenu.Shortcut>Ctrl+`</DropdownMenu.Shortcut>
+				</DropdownMenu.Item>
+				<DropdownMenu.Item onclick={toggleDetails}>
+					{detailsVisible ? "Hide" : "Show"} Details Panel
+					<DropdownMenu.Shortcut>Ctrl+L</DropdownMenu.Shortcut>
 				</DropdownMenu.Item>
 				<DropdownMenu.Separator />
 				<DropdownMenu.Item onclick={handleSettings}>
@@ -298,13 +234,64 @@
 	</div>
 
 	<div
-		class="pointer-events-none absolute left-1/2 -translate-x-1/2 text-xs text-muted-foreground"
+		class="pointer-events-none min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs text-muted-foreground"
 		data-tauri-drag-region
 	>
 		{windowTitle}
 	</div>
 
-	<div class="flex h-full">
+	<div class="flex h-full items-center">
+		<Button
+			variant="ghost"
+			size="icon"
+			class="h-full w-7 rounded-none {leftVisible ? 'bg-accent/50' : ''}"
+			onclick={toggleLeft}
+			title={leftVisible
+				? "Hide Left Sidebar (Ctrl+B)"
+				: "Show Left Sidebar (Ctrl+B)"}
+		>
+			<PanelLeftIcon class="size-4" />
+		</Button>
+		<Button
+			variant="ghost"
+			size="icon"
+			class="h-full w-7 rounded-none {bottomVisible
+				? 'bg-accent/50'
+				: ''}"
+			onclick={toggleBottom}
+			title={bottomVisible
+				? "Hide Bottom Panel (Ctrl+`)"
+				: "Show Bottom Panel (Ctrl+`)"}
+		>
+			<PanelBottomIcon class="size-4" />
+		</Button>
+		<Button
+			variant="ghost"
+			size="icon"
+			class="h-full w-7 rounded-none {rightVisible ? 'bg-accent/50' : ''}"
+			onclick={toggleRight}
+			title={rightVisible
+				? "Hide Right Sidebar (Ctrl+Alt+B)"
+				: "Show Right Sidebar (Ctrl+Alt+B)"}
+		>
+			<PanelRightIcon class="size-4" />
+		</Button>
+		<Button
+			variant="ghost"
+			size="icon"
+			class="h-full w-7 rounded-none {detailsVisible
+				? 'bg-accent/50'
+				: ''}"
+			onclick={toggleDetails}
+			title={detailsVisible
+				? "Hide Details Panel (Ctrl+L)"
+				: "Show Details Panel (Ctrl+L)"}
+		>
+			<ColumnsIcon class="size-4" />
+		</Button>
+
+		<div class="mx-1 h-4 w-px bg-border"></div>
+
 		<Button
 			variant="ghost"
 			size="icon"

@@ -1,0 +1,761 @@
+# Multi-Window Support + Chat Sidebar Layout — Implementation Plan
+# Adapted for Svelte 5 + Tauri 2 Architecture
+
+This plan adapts VS Code's multi-window and chat sidebar patterns for qRate's Svelte/Tauri stack.
+Focus: Multi-window infrastructure and chat sidebar layout only (no chat logic/LLM integration).
+
+===============================================================================
+## ARCHITECTURAL PRINCIPLES
+===============================================================================
+
+1. RUST-HEAVY PHILOSOPHY
+   - Window state management → Rust (SQLite or JSON file)
+   - Layout persistence → Rust
+   - IPC coordination → Rust (Tauri event system)
+   - Cross-window sync → Rust state manager
+   - File system operations → Rust
+
+2. SVELTE-LIGHT PHILOSOPHY
+   - UI rendering only
+   - Local component state (collapsed/expanded, animations)
+   - Reactivity to Rust state changes
+   - User interactions → invoke Rust commands
+
+3. TAURI INTEGRATION
+   - Use Tauri's WebviewWindow API for OS windows
+   - Use Tauri's event system for cross-window messaging
+   - Use existing invoke pattern for Rust commands
+   - Leverage Tauri's window state plugin for bounds/position
+
+===============================================================================
+## CURRENT ARCHITECTURE (BASELINE)
+===============================================================================
+
+Existing Windows:
+- projects window (src/routes/projects/+page.svelte)
+- main window (src/routes/+page.svelte with RevoGrid)
+
+Existing Rust Backend:
+- src-tauri/src/main.rs - app entry
+- src-tauri/src/lib.rs - core logic
+- Database operations via rusqlite
+- File operations via tauri-plugin-fs
+
+Existing Svelte Structure:
+- Stores: qrateStore, recentFiles, appSettings, globalSettings
+- Components: TitleBar, StatusBar, RevoGrid, FilesGrid
+- Routes: projects, settings, main
+
+===============================================================================
+## GOALS & NON-GOALS
+===============================================================================
+
+Goals:
+✓ Support multiple main windows with independent .qrate files
+✓ Add chat sidebar that can dock/undock/detach
+✓ Persist layout state per window in Rust
+✓ Cross-window communication via Tauri events
+✓ Shared services (settings, theme) managed by Rust
+
+Non-Goals:
+✗ Chat logic, LLM integration (layout infra only)
+✗ Cross-machine sync (same device only)
+✗ Real-time collaborative editing
+
+===============================================================================
+## LAYOUT MODEL (RUST-MANAGED)
+===============================================================================
+
+Rust Structure (src-tauri/src/layout/mod.rs):
+
+pub struct WindowLayout {
+    pub version: u32,
+    pub window_id: String,
+    pub workspace_path: Option<String>,
+
+    pub left_sidebar: SidebarState,
+    pub right_sidebar: SidebarState,
+    pub bottom_panel: PanelState,
+    pub chat_sidebar: ChatSidebarState,
+    pub editor_area: EditorAreaState,
+
+    pub window_bounds: WindowBounds,
+}
+
+pub struct SidebarState {
+    pub visible: bool,
+    pub width: u32,
+    pub active_view_id: String,
+}
+
+pub struct ChatSidebarState {
+    pub visible: bool,
+    pub width: u32,
+    pub mode: ChatMode, // Docked | Panel | Detached
+    pub detached_window_id: Option<String>,
+}
+
+pub enum ChatMode {
+    Docked,   // Right sidebar
+    Panel,    // Bottom panel
+    Detached, // Separate window
+}
+
+Persistence Strategy:
+- Store in SQLite: workspace_layouts table
+- One row per window, keyed by window_id
+- Serialize to JSON for flexibility
+- Atomic updates with transactions
+- Auto-save on layout change (debounced in Rust)
+
+===============================================================================
+## RUST BACKEND STRUCTURE
+===============================================================================
+
+src-tauri/src/
+├── main.rs                    # App entry, window init
+├── lib.rs                     # Existing qrate logic
+├── layout/
+│   ├── mod.rs                 # Layout state management
+│   ├── manager.rs             # LayoutManager struct
+│   ├── persistence.rs         # SQLite persistence
+│   └── types.rs               # Layout types/enums
+├── window/
+│   ├── mod.rs                 # Window lifecycle
+│   ├── manager.rs             # WindowManager struct
+│   ├── registry.rs            # Active windows registry
+│   └── ipc.rs                 # Cross-window events
+└── services/
+    ├── mod.rs
+    ├── settings.rs            # Global settings (shared)
+    └── theme.rs               # Theme sync across windows
+
+Key Rust Commands (Tauri #[tauri::command]):
+
+// Window Management
+#[command] create_window(layout: WindowLayout) -> Result<String>
+#[command] close_window(window_id: String) -> Result<()>
+#[command] focus_window(window_id: String) -> Result<()>
+#[command] get_window_list() -> Result<Vec<WindowInfo>>
+
+// Layout Management
+#[command] get_layout(window_id: String) -> Result<WindowLayout>
+#[command] save_layout(window_id: String, layout: WindowLayout) -> Result<()>
+#[command] update_region_size(window_id: String, region: String, size: u32) -> Result<()>
+#[command] toggle_region(window_id: String, region: String) -> Result<()>
+#[command] set_chat_mode(window_id: String, mode: ChatMode) -> Result<()>
+
+// Cross-Window Sync
+#[command] broadcast_event(event_name: String, payload: Value) -> Result<()>
+#[command] sync_settings() -> Result<GlobalSettings>
+#[command] sync_theme(theme: String) -> Result<()>
+
+Tauri Events (for IPC):
+- window:created
+- window:closed
+- window:focused
+- layout:changed
+- settings:updated
+- theme:changed
+- chat:detached
+- chat:reattached
+
+===============================================================================
+## SVELTE FRONTEND STRUCTURE
+===============================================================================
+
+src/
+├── lib/
+│   ├── stores/
+│   │   ├── qrateStore.svelte.ts        # Existing
+│   │   ├── layoutStore.svelte.ts       # NEW: Window layout state
+│   │   ├── windowStore.svelte.ts       # NEW: Window registry
+│   │   └── chatStore.svelte.ts         # NEW: Chat sidebar state
+│   ├── components/
+│   │   ├── layout/
+│   │   │   ├── WorkbenchLayout.svelte  # NEW: Main layout container
+│   │   │   ├── LeftSidebar.svelte      # NEW: Left sidebar shell
+│   │   │   ├── RightSidebar.svelte     # NEW: Right sidebar shell
+│   │   │   ├── BottomPanel.svelte      # NEW: Bottom panel shell
+│   │   │   ├── EditorArea.svelte       # NEW: Editor container
+│   │   │   └── Resizer.svelte          # NEW: Drag resize handle
+│   │   ├── chat/
+│   │   │   ├── ChatSidebarShell.svelte # NEW: Chat container
+│   │   │   ├── ChatHeader.svelte       # NEW: Chat toolbar
+│   │   │   └── ChatPlaceholder.svelte  # NEW: Empty state
+│   │   ├── TitleBar.svelte             # Existing
+│   │   └── StatusBar/                  # Existing
+│   └── utils/
+│       ├── windowManager.ts            # NEW: Tauri window helpers
+│       └── layoutUtils.ts              # NEW: Layout calculations
+└── routes/
+    ├── +layout.svelte                  # Root layout
+    ├── +page.svelte                    # Main window (existing)
+    ├── projects/+page.svelte           # Projects window (existing)
+    └── chat/+page.svelte               # NEW: Detached chat window
+
+===============================================================================
+## IMPLEMENTATION PHASES
+===============================================================================
+
+────────────────────────────────────────────────────────────────────────────
+PHASE 1: Rust Backend - Layout & Window Infrastructure (WEEK 1)
+────────────────────────────────────────────────────────────────────────────
+
+1.1 Layout Types & Persistence
+    □ Create layout/types.rs with WindowLayout, SidebarState, etc.
+    □ Create layout/persistence.rs with SQLite schema:
+        CREATE TABLE workspace_layouts (
+            window_id TEXT PRIMARY KEY,
+            workspace_path TEXT,
+            layout_json TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+    □ Implement save/load/delete operations
+    □ Add migration logic for schema versions
+    □ Unit tests for persistence
+
+1.2 Layout Manager
+    □ Create layout/manager.rs with LayoutManager struct
+    □ Implement layout state cache (HashMap<WindowId, WindowLayout>)
+    □ Add debounced save (300ms) to avoid excessive writes
+    □ Implement layout diff/merge logic
+    □ Add validation for layout constraints (min/max sizes)
+    □ Unit tests for manager operations
+
+1.3 Window Manager
+    □ Create window/manager.rs with WindowManager struct
+    □ Implement window registry (track active windows)
+    □ Add window creation with initial layout
+    □ Add window lifecycle hooks (created, focused, closed)
+    □ Implement focus management
+    □ Clean up layout state on window close
+
+1.4 Tauri Commands
+    □ Expose all window/layout commands
+    □ Add error handling and validation
+    □ Document command signatures
+    □ Integration tests with mock windows
+
+────────────────────────────────────────────────────────────────────────────
+PHASE 2: Svelte Stores & Window Communication (WEEK 1-2)
+────────────────────────────────────────────────────────────────────────────
+
+2.1 Layout Store
+    File: src/lib/stores/layoutStore.svelte.ts
+
+    class LayoutStore {
+        windowId = $state<string>("");
+        layout = $state<WindowLayout | null>(null);
+        isLoading = $state<boolean>(false);
+
+        async loadLayout(windowId: string)
+        async saveLayout()
+        async updateRegionSize(region: string, size: number)
+        async toggleRegion(region: string)
+        async setChatMode(mode: ChatMode)
+    }
+
+    Features:
+    □ Load layout from Rust on mount
+    □ Debounced save to Rust (300ms)
+    □ Listen to Tauri layout:changed events
+    □ Optimistic updates with rollback
+
+2.2 Window Store
+    File: src/lib/stores/windowStore.svelte.ts
+
+    class WindowStore {
+        windows = $state<WindowInfo[]>([]);
+        currentWindowId = $state<string>("");
+
+        async createWindow(layout: Partial<WindowLayout>)
+        async closeWindow(windowId: string)
+        async focusWindow(windowId: string)
+        async getWindowList()
+    }
+
+    Features:
+    □ Track active windows
+    □ Listen to window:created, window:closed events
+    □ Provide window context to components
+
+2.3 Chat Store
+    File: src/lib/stores/chatStore.svelte.ts
+
+    class ChatStore {
+        mode = $state<ChatMode>("Docked");
+        visible = $state<boolean>(true);
+        width = $state<number>(360);
+        detachedWindowId = $state<string | null>(null);
+
+        async toggleVisible()
+        async setMode(mode: ChatMode)
+        async detach()
+        async reattach()
+    }
+
+    Features:
+    □ Sync with layoutStore
+    □ Handle mode transitions
+    □ Manage detached window lifecycle
+
+2.4 Window Manager Utility
+    File: src/lib/utils/windowManager.ts
+
+    export const windowManager = {
+        async createMainWindow(workspacePath?: string)
+        async createChatWindow(sourceWindowId: string)
+        async getCurrentWindowId()
+        async sendToWindow(windowId: string, event: string, payload: any)
+        async broadcast(event: string, payload: any)
+    }
+
+    Uses:
+    - @tauri-apps/api/window (WebviewWindow, getCurrentWindow)
+    - @tauri-apps/api/event (emit, listen)
+
+────────────────────────────────────────────────────────────────────────────
+PHASE 3: Layout Components (WEEK 2)
+────────────────────────────────────────────────────────────────────────────
+
+3.1 Workbench Layout Shell
+    File: src/lib/components/layout/WorkbenchLayout.svelte
+
+    Structure:
+    <div class="workbench">
+        <TitleBar />
+        <div class="workbench-main">
+            <LeftSidebar />
+            <EditorArea />
+            {#if chatStore.mode === 'Docked'}
+                <RightSidebar>
+                    <ChatSidebarShell />
+                </RightSidebar>
+            {/if}
+        </div>
+        {#if chatStore.mode === 'Panel'}
+            <BottomPanel>
+                <ChatSidebarShell />
+            </BottomPanel>
+        {/if}
+        <StatusBar />
+    </div>
+
+    Features:
+    □ Responsive grid layout
+    □ Handle mode transitions smoothly
+    □ Integrate with layoutStore
+    □ Keyboard shortcuts (Ctrl+B for sidebar, etc.)
+
+3.2 Resizer Component
+    File: src/lib/components/layout/Resizer.svelte
+
+    Props:
+    - direction: 'horizontal' | 'vertical'
+    - onResize: (delta: number) => void
+
+    Features:
+    □ Pointer capture for smooth dragging
+    □ Visual feedback (highlight on hover/drag)
+    □ Respect min/max constraints
+    □ Touch support
+    □ Emit resize events to layoutStore
+
+3.3 Sidebar Containers
+    Files: LeftSidebar.svelte, RightSidebar.svelte
+
+    Features:
+    □ Collapsible with animation
+    □ Resizable with Resizer component
+    □ Header with title and controls
+    □ Slot for content
+    □ Persist state via layoutStore
+
+3.4 Bottom Panel
+    File: src/lib/components/layout/BottomPanel.svelte
+
+    Features:
+    □ Tab system (Terminal, Problems, Output, Chat)
+    □ Resizable height
+    □ Collapsible
+    □ Panel switching logic
+
+3.5 Editor Area
+    File: src/lib/components/layout/EditorArea.svelte
+
+    Current:
+    - Move RevoGrid and FilesGrid here
+    - Add view tabs (Spreadsheet, Files)
+
+    Future:
+    - Split editor groups
+    - Editor tabs
+
+────────────────────────────────────────────────────────────────────────────
+PHASE 4: Chat Sidebar Integration (WEEK 3)
+────────────────────────────────────────────────────────────────────────────
+
+4.1 Chat Sidebar Shell
+    File: src/lib/components/chat/ChatSidebarShell.svelte
+
+    Structure:
+    <div class="chat-sidebar">
+        <ChatHeader
+            mode={chatStore.mode}
+            onDetach={() => chatStore.detach()}
+            onClose={() => chatStore.toggleVisible()}
+        />
+        <div class="chat-content">
+            <ChatPlaceholder />
+            <!-- Future: actual chat UI -->
+        </div>
+    </div>
+
+    Features:
+    □ Mode-aware rendering
+    □ Smooth transitions between modes
+    □ Resizable in docked/panel modes
+    □ Placeholder content for now
+
+4.2 Chat Header
+    File: src/lib/components/chat/ChatHeader.svelte
+
+    Features:
+    □ Title ("Chat")
+    □ Mode indicator badge
+    □ Action buttons:
+        - Dock/Undock
+        - Move to panel
+        - Detach to window
+        - Close/Minimize
+    □ Context menu for mode options
+
+4.3 Mode Transitions
+    Logic in chatStore.svelte.ts:
+
+    Docked → Panel:
+    1. Save current docked state
+    2. Update layoutStore (mode = Panel)
+    3. Animate transition
+    4. Rust persists change
+
+    Docked → Detached:
+    1. Save current state
+    2. Call windowManager.createChatWindow()
+    3. Update layoutStore (mode = Detached, detachedWindowId)
+    4. Hide local chat component
+    5. Rust creates window with chat-only layout
+
+    Detached → Docked:
+    1. Close detached window
+    2. Update layoutStore (mode = Docked)
+    3. Show local chat component
+    4. Restore previous width
+
+4.4 Detached Chat Window
+    File: src/routes/chat/+page.svelte
+
+    Structure:
+    <div class="chat-window">
+        <SimpleTitleBar title="qRate - Chat" />
+        <ChatSidebarShell standalone={true} />
+    </div>
+
+    Features:
+    □ Minimal layout (no editor, no sidebars)
+    □ Window controls (minimize, maximize, close)
+    □ Reattach button/command
+    □ Persist bounds separately
+
+────────────────────────────────────────────────────────────────────────────
+PHASE 5: Cross-Window Communication (WEEK 3-4)
+────────────────────────────────────────────────────────────────────────────
+
+5.1 Event System Setup
+    Rust side (window/ipc.rs):
+
+    pub struct WindowIPC {
+        app_handle: AppHandle,
+    }
+
+    impl WindowIPC {
+        pub fn emit_to_all(&self, event: &str, payload: impl Serialize)
+        pub fn emit_to_window(&self, window_id: &str, event: &str, payload: impl Serialize)
+        pub fn broadcast_layout_change(&self, window_id: &str, layout: &WindowLayout)
+        pub fn broadcast_settings_change(&self, settings: &GlobalSettings)
+        pub fn broadcast_theme_change(&self, theme: &str)
+    }
+
+5.2 Svelte Event Listeners
+    Each window listens:
+
+    $effect(() => {
+        const unlisten = await listen('layout:changed', (event) => {
+            if (event.payload.windowId !== windowStore.currentWindowId) {
+                // Another window's layout changed
+                // Optionally update shared state
+            }
+        });
+        return () => unlisten();
+    });
+
+5.3 Shared State Sync
+    Settings (src-tauri/src/services/settings.rs):
+    □ Single source in Rust
+    □ Auto-sync to all windows on change
+    □ Debounced persistence
+
+    Theme (src-tauri/src/services/theme.rs):
+    □ Broadcast theme changes
+    □ All windows update immediately
+
+    Recent Files:
+    □ Already global via store
+    □ Emit events on add/remove
+
+5.4 Workspace Coordination
+    Multiple windows, same .qrate file:
+    □ Rust manages file lock
+    □ Read-only mode for secondary windows
+    □ OR: Allow multi-window editing with conflict resolution
+    □ Emit file:changed events for live updates
+
+────────────────────────────────────────────────────────────────────────────
+PHASE 6: Polish & Testing (WEEK 4)
+────────────────────────────────────────────────────────────────────────────
+
+6.1 Animations & Transitions
+    □ Smooth collapse/expand (CSS transitions)
+    □ Fade in/out for mode changes
+    □ Resize snapping (snap to min/max)
+    □ Loading states
+
+6.2 Keyboard Shortcuts
+    Commands (register in main.rs):
+    □ Ctrl+B - Toggle left sidebar
+    □ Ctrl+Shift+B - Toggle chat sidebar
+    □ Ctrl+` - Toggle bottom panel
+    □ Ctrl+Shift+N - New window
+    □ Ctrl+Shift+D - Detach chat
+
+    Focus management:
+    □ F6 - Cycle focus between regions
+    □ Escape - Return focus to editor
+
+6.3 Accessibility
+    □ ARIA labels for all regions
+    □ Focus indicators
+    □ Keyboard navigation
+    □ Screen reader announcements for layout changes
+    □ High contrast mode support
+
+6.4 Error Handling
+    □ Window creation failures → fallback to panel mode
+    □ Layout load failures → use default layout
+    □ IPC failures → graceful degradation
+    □ Lost window references → cleanup registry
+
+6.5 Testing
+    Rust Unit Tests:
+    □ Layout persistence CRUD
+    □ Layout manager state mutations
+    □ Window registry operations
+    □ Event emission
+
+    Svelte Component Tests:
+    □ Resizer drag behavior
+    □ Sidebar collapse/expand
+    □ Mode transition logic
+
+    Integration Tests:
+    □ Window creation flow
+    □ Layout save/restore
+    □ Cross-window events
+
+    E2E Tests (Tauri test runner):
+    □ Launch app → verify default layout
+    □ Detach chat → verify new window created
+    □ Close detached → verify reattach
+    □ Multiple windows → verify independence
+
+6.6 Performance Optimization
+    □ Debounce layout saves (already planned)
+    □ Lazy load chat content
+    □ Virtual scrolling in chat (if needed)
+    □ Minimize cross-window broadcasts
+    □ Profile Rust event handling
+
+===============================================================================
+## API REFERENCE SUMMARY
+===============================================================================
+
+Rust Commands:
+- create_window(layout) → window_id
+- get_layout(window_id) → WindowLayout
+- save_layout(window_id, layout)
+- update_region_size(window_id, region, size)
+- set_chat_mode(window_id, mode)
+- broadcast_event(event, payload)
+
+Tauri Events:
+- window:created { window_id, layout }
+- window:closed { window_id }
+- layout:changed { window_id, layout }
+- settings:updated { settings }
+- theme:changed { theme }
+
+Svelte Stores:
+- layoutStore: Window layout state
+- windowStore: Active windows registry
+- chatStore: Chat sidebar state
+
+===============================================================================
+## FILE CHANGES CHECKLIST
+===============================================================================
+
+New Rust Files:
+□ src-tauri/src/layout/mod.rs
+□ src-tauri/src/layout/types.rs
+□ src-tauri/src/layout/manager.rs
+□ src-tauri/src/layout/persistence.rs
+□ src-tauri/src/window/mod.rs
+□ src-tauri/src/window/manager.rs
+□ src-tauri/src/window/registry.rs
+□ src-tauri/src/window/ipc.rs
+□ src-tauri/src/services/settings.rs
+□ src-tauri/src/services/theme.rs
+
+New Svelte Files:
+□ src/lib/stores/layoutStore.svelte.ts
+□ src/lib/stores/windowStore.svelte.ts
+□ src/lib/stores/chatStore.svelte.ts
+□ src/lib/utils/windowManager.ts
+□ src/lib/utils/layoutUtils.ts
+□ src/lib/components/layout/WorkbenchLayout.svelte
+□ src/lib/components/layout/LeftSidebar.svelte
+□ src/lib/components/layout/RightSidebar.svelte
+□ src/lib/components/layout/BottomPanel.svelte
+□ src/lib/components/layout/EditorArea.svelte
+□ src/lib/components/layout/Resizer.svelte
+□ src/lib/components/chat/ChatSidebarShell.svelte
+□ src/lib/components/chat/ChatHeader.svelte
+□ src/lib/components/chat/ChatPlaceholder.svelte
+□ src/routes/chat/+page.svelte
+
+Modified Files:
+□ src-tauri/src/main.rs - Window init, commands
+□ src-tauri/src/lib.rs - Integrate new modules
+□ src/routes/+layout.svelte - Add WorkbenchLayout
+□ src/routes/+page.svelte - Refactor into EditorArea
+□ src/lib/components/StatusBar/StatusBar.svelte - Layout awareness
+
+===============================================================================
+## MIGRATION STRATEGY
+===============================================================================
+
+Current State:
+- Single main window with RevoGrid
+- Projects window for file selection
+- Simple layout (no sidebars)
+
+Migration Steps:
+
+1. Add Rust backend (Phase 1)
+   - No UI changes yet
+   - Backend ready for layout management
+   - Test with mock data
+
+2. Add stores (Phase 2)
+   - layoutStore with default layout
+   - Existing components still work
+   - No visual changes
+
+3. Wrap existing UI in WorkbenchLayout (Phase 3)
+   - Move RevoGrid into EditorArea
+   - Add empty LeftSidebar (collapsed by default)
+   - Add empty BottomPanel (hidden by default)
+   - Existing functionality preserved
+
+4. Add chat sidebar (Phase 4)
+   - Initially empty/placeholder
+   - Test all modes (docked/panel/detached)
+   - No chat functionality yet
+
+5. Enable full layout system (Phase 5+6)
+   - All features operational
+   - Polish and testing
+   - Ready for chat feature development
+
+Rollback Plan:
+- Each phase is additive
+- Can disable new layout system with feature flag
+- Fallback to current simple layout
+
+===============================================================================
+## SECURITY & PRIVACY
+===============================================================================
+
+- IPC message validation (serde with strict schemas)
+- No sensitive data in cross-window broadcasts
+- Layout state sanitization before persistence
+- Window bounds validation (prevent off-screen)
+- Rate limiting on layout saves (prevent DoS)
+
+===============================================================================
+## PERFORMANCE TARGETS
+===============================================================================
+
+- Layout save: < 50ms (debounced, async)
+- Window creation: < 500ms
+- Mode transition: < 200ms (smooth animation)
+- Cross-window event: < 100ms propagation
+- Resize handle: 60fps drag performance
+
+===============================================================================
+## FUTURE ENHANCEMENTS (POST-MVP)
+===============================================================================
+
+- Multiple editor groups (split horizontal/vertical)
+- Editor tabs with drag-reorder
+- Custom sidebar views (plugins)
+- Layout presets (coding, review, presentation)
+- Export/import layout configurations
+- Per-workspace layout templates
+- Minimap for large grids
+- Command palette for all actions
+
+===============================================================================
+## NOTES & DECISIONS
+===============================================================================
+
+1. Single chat instance per window initially
+   - Simpler mental model
+   - Can add multiple chat windows later
+
+2. Layout state is per-window, not shared
+   - Each window has independent layout
+   - Shared: theme, settings, recent files
+
+3. Rust owns canonical state
+   - Svelte stores are views into Rust state
+   - Always sync from Rust on conflict
+
+4. Detached windows are full WebviewWindows
+   - Not lightweight popups
+   - Full Tauri features available
+   - Can have their own sidebars if needed
+
+5. Backwards compatibility
+   - Old workspace files work without layout metadata
+   - Default layout applied automatically
+   - Graceful degradation
+
+===============================================================================
+## END OF PLAN
+===============================================================================
+
+This plan is living documentation. Update as implementation reveals new
+requirements or architectural insights.
+
+Next step: Begin Phase 1 - Rust backend infrastructure.

@@ -6,6 +6,11 @@
 
 	let grid: any = $state();
 	let gridContainer: HTMLDivElement | null = $state(null);
+	let isLoadingMore = $state(false);
+	let lastScrollY = $state(0);
+	let scrollDebounceTimer: number | null = null;
+	let defaultRowHeight = $state(35);
+	let showRowHeightInput = $state(false);
 
 	const convertColumns = (columns: ColumnDef[]): ColumnRegular[] => {
 		const rowNumberColumn: ColumnRegular = {
@@ -15,6 +20,7 @@
 			readonly: true,
 			sortable: false,
 			filter: false,
+			pin: "colPinStart",
 			cellProperties: () => ({
 				class: "row-number-cell",
 			}),
@@ -44,7 +50,33 @@
 	};
 
 	let revoColumns = $derived(convertColumns(qrateStore.columns));
-	let revoRows = $derived(addRowNumbers(qrateStore.rows, 0));
+
+	let previousRows = $state<Record<string, any>[]>([]);
+	let cachedRevoRows = $state<DataType[]>([]);
+
+	$effect(() => {
+		const currentRows = qrateStore.rows;
+		const rowsChanged = currentRows.length !== previousRows.length;
+
+		if (rowsChanged) {
+			if (
+				currentRows.length > previousRows.length &&
+				previousRows.length > 0
+			) {
+				const newRows = currentRows.slice(previousRows.length);
+				const newRowsWithNumbers = addRowNumbers(
+					newRows,
+					previousRows.length,
+				);
+				cachedRevoRows = [...cachedRevoRows, ...newRowsWithNumbers];
+			} else {
+				cachedRevoRows = addRowNumbers(currentRows, 0);
+			}
+			previousRows = currentRows;
+		}
+	});
+
+	let revoRows = $derived(cachedRevoRows);
 
 	let isDark = $state(false);
 
@@ -106,12 +138,9 @@
 	$effect(() => {
 		if (!gridContainer) return;
 
-		const handleMouseUp = () => {
-			pollRangeSelection();
-		};
+		const handleMouseUp = () => pollRangeSelection();
 
 		const handleKeyUp = (e: KeyboardEvent) => {
-			// Poll on shift+arrow keys which are used for range selection
 			if (
 				e.shiftKey &&
 				["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(
@@ -120,7 +149,6 @@
 			) {
 				pollRangeSelection();
 			}
-			// Also poll on Ctrl+A (select all)
 			if ((e.ctrlKey || e.metaKey) && e.key === "a") {
 				pollRangeSelection();
 			}
@@ -132,6 +160,14 @@
 		return () => {
 			gridContainer?.removeEventListener("mouseup", handleMouseUp);
 			gridContainer?.removeEventListener("keyup", handleKeyUp);
+		};
+	});
+
+	$effect(() => {
+		return () => {
+			if (scrollDebounceTimer !== null) {
+				clearTimeout(scrollDebounceTimer);
+			}
 		};
 	});
 
@@ -174,7 +210,56 @@
 		}
 	};
 
-	const handleAfterFocus = (event: CustomEvent) => {
+	// Handle scroll events for infinite loading
+	const handleScroll = async (event: CustomEvent) => {
+		const { detail } = event;
+		if (!detail || !qrateStore.isFileOpen) return;
+
+		if (scrollDebounceTimer !== null) {
+			clearTimeout(scrollDebounceTimer);
+		}
+
+		scrollDebounceTimer = window.setTimeout(async () => {
+			if (!grid) return;
+
+			const currentRowCount = qrateStore.rows.length;
+			const totalRows = qrateStore.totalRows;
+			const scrollTop = detail?.scrollTop ?? detail?.y ?? 0;
+			const viewportHeight =
+				detail?.viewportHeight ?? detail?.height ?? 0;
+			const contentHeight =
+				detail?.contentHeight ?? detail?.virtualSize ?? 0;
+			const lastVisibleRow =
+				detail?.lastVisibleRow ?? detail?.endRow ?? 0;
+
+			const scrollPercentage =
+				contentHeight > 0
+					? (scrollTop + viewportHeight) / contentHeight
+					: 0;
+			const shouldLoad =
+				(scrollPercentage > 0.8 && contentHeight > 0) ||
+				(lastVisibleRow > 0 &&
+					lastVisibleRow >= currentRowCount - 20) ||
+				(scrollTop > 0 &&
+					currentRowCount < totalRows &&
+					currentRowCount > 0 &&
+					Math.abs(scrollTop + viewportHeight - contentHeight) < 100);
+
+			if (
+				shouldLoad &&
+				!isLoadingMore &&
+				qrateStore.hasMoreRows &&
+				!qrateStore.isLoadingMore
+			) {
+				isLoadingMore = true;
+				await qrateStore.loadMoreRows(100).finally(() => {
+					isLoadingMore = false;
+				});
+			}
+		}, 150);
+	};
+
+	const handleAfterFocus = async (event: CustomEvent) => {
 		const { detail } = event;
 		if (!detail) return;
 
@@ -183,12 +268,15 @@
 
 		qrateStore.selectRow(rowId);
 		qrateStore.selectColumn(colProp === "_rowNum" ? null : colProp);
-		// Don't clear range here - let mouseup/keyup handler manage it
+
+		// Check if this is a single cell focus and clear range if needed
+		// This handles plain arrow key navigation which doesn't trigger pollRangeSelection
+		await pollRangeSelection();
 	};
 </script>
 
 <div
-	class="flex h-full w-full flex-col overflow-hidden p-4"
+	class="flex h-full w-full flex-col overflow-hidden"
 	bind:this={gridContainer}
 >
 	{#if !qrateStore.isFileOpen}
@@ -207,9 +295,59 @@
 			</div>
 		</div>
 	{:else}
-		<div
-			class="min-h-0 flex-1 overflow-hidden rounded-lg border border-border"
-		>
+		<!-- Grid Controls -->
+		<!-- <div class="mb-2 flex items-center justify-between gap-4">
+			<div class="flex items-center gap-2">
+				<Label for="row-height" class="text-xs text-muted-foreground">
+					Row Height:
+				</Label>
+				<div class="flex items-center gap-1">
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						class="size-7"
+						onclick={() => {
+							if (defaultRowHeight > 20) {
+								defaultRowHeight -= 5;
+								grid?.refresh?.();
+							}
+						}}
+						disabled={defaultRowHeight <= 20}
+						title="Decrease row height"
+					>
+						<ArrowDownIcon class="size-3" />
+					</Button>
+					<Input
+						id="row-height"
+						type="number"
+						min="20"
+						max="100"
+						step="5"
+						bind:value={defaultRowHeight}
+						class="h-7 w-16 text-center text-xs"
+						onchange={() => grid?.refresh?.()}
+					/>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						class="size-7"
+						onclick={() => {
+							if (defaultRowHeight < 100) {
+								defaultRowHeight += 5;
+								grid?.refresh?.();
+							}
+						}}
+						disabled={defaultRowHeight >= 100}
+						title="Increase row height"
+					>
+						<ArrowUpIcon class="size-3" />
+					</Button>
+					<span class="ml-1 text-xs text-muted-foreground">px</span>
+				</div>
+			</div>
+		</div> -->
+
+		<div class="min-h-0 flex-1 overflow-hidden">
 			<RevoGridComponent
 				bind:this={grid}
 				source={revoRows}
@@ -219,11 +357,28 @@
 				range={true}
 				readonly={false}
 				autoSizeColumn={false}
+				rowSize={defaultRowHeight}
 				on:afteredit={handleAfterEdit}
 				on:aftercolumnresize={handleAfterColumnResize}
 				on:afterfocus={handleAfterFocus}
+				on:viewportscroll={handleScroll}
 			/>
 		</div>
+
+		{#if isLoadingMore || qrateStore.isLoadingMore}
+			<div
+				class="fixed bottom-20 right-4 z-50 rounded-lg border border-border bg-background/95 px-4 py-2 shadow-lg backdrop-blur-sm"
+			>
+				<div
+					class="flex items-center gap-2 text-sm text-muted-foreground"
+				>
+					<div
+						class="size-4 animate-spin rounded-full border-2 border-current border-t-transparent"
+					></div>
+					<span>Loading more rows...</span>
+				</div>
+			</div>
+		{/if}
 	{/if}
 
 	{#if qrateStore.error}

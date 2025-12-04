@@ -69,9 +69,14 @@ class QrateStore {
 	isLoadingMore = $state<boolean>(false);
 	hasMoreRows = $state<boolean>(true);
 	activeView = $state<"spreadsheet" | "files">("spreadsheet");
+	detailsPanelOpen = $state<boolean>(false);
 	filesGridFilteredCount = $state<number>(0);
 	filesGridTotalCount = $state<number>(0);
 	filesGridSearchQuery = $state<string>("");
+
+	toggleDetailsPanel(): void {
+		this.detailsPanelOpen = !this.detailsPanelOpen;
+	}
 
 	private restorationAttempted = false;
 
@@ -250,21 +255,23 @@ class QrateStore {
 		if (!this.currentFilePath || this.isLoadingMore || !this.hasMoreRows)
 			return;
 
-		try {
-			this.isLoadingMore = true;
-			const nextOffset = this.rows.length;
+		this.isLoadingMore = true;
 
+		try {
 			const response = await invoke<DataResponse>("get_rows", {
 				path: this.currentFilePath,
 				limit: count,
-				offset: nextOffset,
+				offset: this.rows.length,
 			});
 
-			this.rows = [...this.rows, ...response.rows];
-			this.totalRows = response.total;
-			this.hasMoreRows = this.rows.length < response.total;
-
-			await this.persistWorkspace();
+			if (response.rows.length > 0) {
+				this.rows = [...this.rows, ...response.rows];
+				this.totalRows = response.total;
+				this.hasMoreRows = this.rows.length < response.total;
+				await this.persistWorkspace();
+			} else {
+				this.hasMoreRows = false;
+			}
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
 		} finally {

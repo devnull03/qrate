@@ -1,13 +1,23 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, State};
 
 mod app_state;
 mod database;
+pub mod layout;
+mod layout_state;
 pub mod settings;
+pub mod window;
 
 use app_state::AppState;
 use database::ColumnDef;
+use layout::types::{WindowLayout, ChatMode};
+use layout::manager::LayoutManager;
+use layout::persistence::get_layout_db_path;
+use layout_state::LayoutState;
+use window::manager::WindowManager;
+use window::registry::WindowInfo;
 
 /// Response structure for file operations
 #[derive(Debug, Serialize, Deserialize)]
@@ -34,6 +44,79 @@ struct CurrentStateResponse {
     rows: Vec<serde_json::Value>,
     offset: u32,
     limit: u32,
+}
+
+/// Response structure for file path validation
+#[derive(Debug, Serialize, Deserialize)]
+struct FilePathValidationResponse {
+    valid: bool,
+    resolved_path: String,
+    error: Option<String>,
+}
+
+/// Validate a file path to ensure it's within a trusted base directory
+/// This prevents path traversal attacks and ensures files are opened safely
+#[tauri::command]
+fn validate_file_path(file_path: String, base_folder: String) -> Result<FilePathValidationResponse, String> {
+    use std::path::Path;
+    
+    if base_folder.is_empty() {
+        return Ok(FilePathValidationResponse {
+            valid: false,
+            resolved_path: String::new(),
+            error: Some("No base folder configured".to_string()),
+        });
+    }
+    
+    let file_path_obj = Path::new(&file_path);
+    let base_path = Path::new(&base_folder);
+    
+    // Canonicalize the base path (resolve symlinks, .., etc.)
+    let canonical_base = match base_path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            // Base path might not exist yet, use the absolute path
+            match std::path::absolute(base_path) {
+                Ok(p) => p,
+                Err(e) => return Ok(FilePathValidationResponse {
+                    valid: false,
+                    resolved_path: String::new(),
+                    error: Some(format!("Invalid base folder path: {}", e)),
+                }),
+            }
+        }
+    };
+    
+    // Canonicalize the file path
+    let canonical_file = match file_path_obj.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            // File might not exist yet, use the absolute path
+            match std::path::absolute(file_path_obj) {
+                Ok(p) => p,
+                Err(e) => return Ok(FilePathValidationResponse {
+                    valid: false,
+                    resolved_path: String::new(),
+                    error: Some(format!("Invalid file path: {}", e)),
+                }),
+            }
+        }
+    };
+    
+    // Check if the file path starts with the base path
+    if !canonical_file.starts_with(&canonical_base) {
+        return Ok(FilePathValidationResponse {
+            valid: false,
+            resolved_path: canonical_file.to_string_lossy().to_string(),
+            error: Some("File is outside the trusted folder".to_string()),
+        });
+    }
+    
+    Ok(FilePathValidationResponse {
+        valid: true,
+        resolved_path: canonical_file.to_string_lossy().to_string(),
+        error: None,
+    })
 }
 
 /// Get the current application state (for main window initialization)
@@ -394,12 +477,160 @@ fn show_settings_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// ============================================================================
+// Window Management Commands
+// ============================================================================
+
+/// Create a new main window with optional layout
+#[tauri::command]
+fn create_window(
+    _app: AppHandle,
+    layout_state: State<LayoutState>,
+    window_label: String,
+    workspace_path: Option<String>,
+    initial_layout: Option<WindowLayout>,
+) -> Result<String, String> {
+    let window_manager = layout_state.window_manager.lock().unwrap();
+    window_manager.create_main_window(&window_label, workspace_path, initial_layout)
+}
+
+/// Close a window and clean up its layout
+#[tauri::command]
+fn close_window(
+    layout_state: State<LayoutState>,
+    window_id: String,
+) -> Result<(), String> {
+    let window_manager = layout_state.window_manager.lock().unwrap();
+    window_manager.close_window(&window_id)
+}
+
+/// Focus a window
+#[tauri::command]
+fn focus_window(
+    layout_state: State<LayoutState>,
+    window_id: String,
+) -> Result<(), String> {
+    let window_manager = layout_state.window_manager.lock().unwrap();
+    window_manager.focus_window(&window_id)
+}
+
+/// Get list of all active windows
+#[tauri::command]
+fn get_window_list(
+    layout_state: State<LayoutState>,
+) -> Result<Vec<WindowInfo>, String> {
+    let window_manager = layout_state.window_manager.lock().unwrap();
+    Ok(window_manager.registry().get_all())
+}
+
+// ============================================================================
+// Layout Management Commands
+// ============================================================================
+
+/// Get layout for a window
+#[tauri::command]
+fn get_layout(
+    layout_state: State<LayoutState>,
+    window_id: String,
+) -> Result<Option<WindowLayout>, String> {
+    let layout_manager = layout_state.layout_manager.lock().unwrap();
+    layout_manager.get_layout(&window_id)
+}
+
+/// Save layout for a window
+#[tauri::command]
+fn save_layout_cmd(
+    layout_state: State<LayoutState>,
+    window_id: String,
+    layout: WindowLayout,
+) -> Result<(), String> {
+    // Ensure window_id matches
+    if layout.window_id != window_id {
+        return Err("Window ID mismatch".to_string());
+    }
+
+    let layout_manager = layout_state.layout_manager.lock().unwrap();
+    
+    // Validate layout
+    layout_manager.validate_layout(&layout)?;
+    
+    // Save layout
+    layout_manager.save_layout(layout)
+}
+
+/// Update a region size in a layout
+#[tauri::command]
+fn update_region_size(
+    layout_state: State<LayoutState>,
+    window_id: String,
+    region: String,
+    size: u32,
+) -> Result<(), String> {
+    let layout_manager = layout_state.layout_manager.lock().unwrap();
+    layout_manager.update_region_size(&window_id, &region, size)
+}
+
+/// Toggle a region's visibility
+#[tauri::command]
+fn toggle_region(
+    layout_state: State<LayoutState>,
+    window_id: String,
+    region: String,
+) -> Result<(), String> {
+    let layout_manager = layout_state.layout_manager.lock().unwrap();
+    layout_manager.toggle_region(&window_id, &region)
+}
+
+/// Set chat mode for a window
+#[tauri::command]
+fn set_chat_mode(
+    layout_state: State<LayoutState>,
+    window_id: String,
+    mode: ChatMode,
+) -> Result<(), String> {
+    let layout_manager = layout_state.layout_manager.lock().unwrap();
+    layout_manager.set_chat_mode(&window_id, mode)
+}
+
+/// Create a detached chat window
+#[tauri::command]
+fn create_chat_window(
+    layout_state: State<LayoutState>,
+    source_window_id: String,
+) -> Result<String, String> {
+    let window_manager = layout_state.window_manager.lock().unwrap();
+    window_manager.create_chat_window(&source_window_id)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs_pro::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // Initialize layout manager
+            let db_path = get_layout_db_path(app.handle())
+                .map_err(|e| format!("Failed to get layout DB path: {}", e))?;
+            let layout_manager = Arc::new(Mutex::new(
+                LayoutManager::new(&db_path)
+                    .map_err(|e| format!("Failed to create layout manager: {}", e))?
+            ));
+
+            // Initialize window manager
+            let window_manager = WindowManager::new(
+                app.handle().clone(),
+                layout_manager.clone(),
+            );
+
+            // Store in app state
+            app.manage(LayoutState::new(
+                layout_manager,
+                window_manager,
+            ));
+
+            Ok(())
+        })
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             // File operations
@@ -414,12 +645,26 @@ pub fn run() {
             update_column,
             insert_row,
             delete_row,
-            // Window management
+            // Window management (legacy)
             show_main_window,
             show_projects_window,
             show_settings_window,
+            // Window management (new)
+            create_window,
+            close_window,
+            focus_window,
+            get_window_list,
+            create_chat_window,
+            // Layout management
+            get_layout,
+            save_layout_cmd,
+            update_region_size,
+            toggle_region,
+            set_chat_mode,
             // State
             get_current_state,
+            // Security
+            validate_file_path,
             // Settings commands (from settings module)
             settings::commands::get_global_settings_schema,
             settings::commands::get_project_settings_schema,
