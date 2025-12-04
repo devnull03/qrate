@@ -1,9 +1,11 @@
 <script lang="ts">
-	import { onMount } from "svelte";
+	import { onMount, onDestroy } from "svelte";
+	import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import { Input } from "$lib/components/ui/input/index.js";
 	import * as Card from "$lib/components/ui/card/index.js";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
+	import { thumbnailService } from "$lib/services/thumbnails";
 	import {
 		loadSettings,
 		subscribeToSettings,
@@ -21,6 +23,8 @@
 	import SearchIcon from "@lucide/svelte/icons/search";
 	import FolderOpenIcon from "@lucide/svelte/icons/folder-open";
 	import ExternalLinkIcon from "@lucide/svelte/icons/external-link";
+	import LoaderCircleIcon from "@lucide/svelte/icons/loader-circle";
+	import RefreshCwIcon from "@lucide/svelte/icons/refresh-cw";
 	import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 
 	interface FileItem {
@@ -28,56 +32,113 @@
 		fileName: string;
 		filePath: string;
 		fileType: string;
-		rowData: Record<string, any>;
 	}
 
-	// View mode state
 	let viewMode = $state<"grid" | "list">("grid");
-
-	// Search filter
 	let searchQuery = $state("");
+	let refreshKey = $state(0);
+	let thumbnailUrls = $state<Record<string, string>>({});
 
-	// Sync search query and file counts to store
 	$effect(() => {
 		qrateStore.filesGridSearchQuery = searchQuery;
 	});
 
-	// Settings from store - use defaults from appSettings
 	let filesFolder = $state(defaultSettings.filesFolder);
 	let filePathPattern = $state(defaultSettings.filePathPattern);
 	let fileColumnName = $state(defaultSettings.fileColumnName);
 
-	// Load settings on mount and subscribe to changes
+	const thumbnailExts = [
+		"jpg",
+		"jpeg",
+		"png",
+		"gif",
+		"bmp",
+		"webp",
+		"tiff",
+		"tif",
+	];
+
+	let settingsUnsubscribe: (() => void) | null = null;
+
 	onMount(() => {
-		// Load initial settings
 		if (qrateStore.isFileOpen) {
 			loadSettings();
 		}
 
-		// Subscribe to settings changes
-		const unsubscribe = subscribeToSettings((settings) => {
-			filesFolder = settings.filesFolder || defaultSettings.filesFolder;
+		settingsUnsubscribe = subscribeToSettings(async (settings) => {
+			const newFilesFolder = String(
+				settings.filesFolder || defaultSettings.filesFolder,
+			);
+			const folderChanged = filesFolder !== newFilesFolder;
+
+			filesFolder = newFilesFolder;
 			filePathPattern =
 				settings.filePathPattern || defaultSettings.filePathPattern;
 			fileColumnName =
 				settings.fileColumnName || defaultSettings.fileColumnName;
+
+			if (folderChanged && newFilesFolder) {
+				await thumbnailService.startProcessing(newFilesFolder);
+			}
 		});
 
-		return unsubscribe;
+		return () => settingsUnsubscribe?.();
 	});
 
-	// Reload settings when file changes
+	onDestroy(() => {
+		thumbnailService.dispose();
+	});
+
 	$effect(() => {
 		if (qrateStore.isFileOpen && qrateStore.currentFilePath) {
 			loadSettings();
 		}
 	});
 
-	// Get all files from all rows
+	$effect(() => {
+		if (qrateStore.isFileOpen && filesFolder) {
+			thumbnailService.startProcessing(filesFolder as string);
+		}
+	});
+
+	$effect(() => {
+		if (filteredFiles.length > 0) {
+			loadThumbnailUrls();
+		}
+	});
+
+	async function loadThumbnailUrls() {
+		const imagePaths = filteredFiles
+			.filter(
+				(f) =>
+					supportsThumbnail(f.fileName) && !thumbnailUrls[f.filePath],
+			)
+			.map((f) => f.filePath);
+
+		if (imagePaths.length === 0) return;
+
+		const paths = await Promise.all(
+			imagePaths.map(async (filePath) => {
+				const thumbPath = await invoke<string | null>(
+					"get_thumbnail_path",
+					{ filePath },
+				);
+				return { filePath, thumbPath };
+			}),
+		);
+
+		const newUrls: Record<string, string> = {};
+		for (const { filePath, thumbPath } of paths) {
+			if (thumbPath) {
+				newUrls[filePath] = convertFileSrc(thumbPath);
+			}
+		}
+		thumbnailUrls = { ...thumbnailUrls, ...newUrls };
+	}
+
 	let allFiles = $derived.by((): FileItem[] => {
 		if (!qrateStore.isFileOpen || !filesFolder) return [];
 
-		// Find the file column
 		const fileColumn = qrateStore.columns.find(
 			(col) =>
 				col.name.toLowerCase() ===
@@ -105,14 +166,12 @@
 				fileName: fileValue,
 				filePath: filePath,
 				fileType: getFileType(filePath),
-				rowData: row,
 			});
 		}
 
 		return files;
 	});
 
-	// Filtered files based on search
 	let filteredFiles = $derived.by(() => {
 		if (!searchQuery.trim()) return allFiles;
 
@@ -124,16 +183,24 @@
 		);
 	});
 
-	// Sync file counts to store
 	$effect(() => {
 		qrateStore.filesGridFilteredCount = filteredFiles.length;
 		qrateStore.filesGridTotalCount = allFiles.length;
 	});
 
-	// Get file type based on extension
 	function getFileType(filename: string): string {
 		const ext = filename.split(".").pop()?.toLowerCase() || "";
-		const imageExts = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg"];
+		const imageExts = [
+			"jpg",
+			"jpeg",
+			"png",
+			"gif",
+			"bmp",
+			"webp",
+			"svg",
+			"tiff",
+			"tif",
+		];
 		const videoExts = ["mp4", "webm", "avi", "mov", "mkv"];
 		const audioExts = ["mp3", "wav", "ogg", "flac", "aac"];
 		const docExts = ["pdf", "doc", "docx", "txt", "md"];
@@ -145,7 +212,11 @@
 		return "file";
 	}
 
-	// Get file icon component based on type
+	function supportsThumbnail(filename: string): boolean {
+		const ext = filename.split(".").pop()?.toLowerCase() || "";
+		return thumbnailExts.includes(ext);
+	}
+
 	function getFileIcon(type: string) {
 		switch (type) {
 			case "image":
@@ -161,27 +232,29 @@
 		}
 	}
 
-	// Open file with default application
-	async function openFile(filePath: string) {
-		try {
-			await openPath(filePath);
-		} catch (err) {
-			console.error("Failed to open file:", err);
-		}
+	function getThumbnailUrl(filePath: string): string | null {
+		const url = thumbnailUrls[filePath];
+		return url ? `${url}?v=${refreshKey}` : null;
 	}
 
-	// Open file location in explorer
+	async function openFile(filePath: string) {
+		await openPath(filePath);
+	}
+
 	async function openFileLocation(filePath: string) {
-		try {
-			await revealItemInDir(filePath);
-		} catch (err) {
-			console.error("Failed to open location:", err);
+		await revealItemInDir(filePath);
+	}
+
+	function refresh() {
+		refreshKey++;
+		thumbnailUrls = {};
+		if (filesFolder) {
+			thumbnailService.startProcessing(filesFolder as string);
 		}
 	}
 </script>
 
 <div class="flex h-full flex-col">
-	<!-- Header with search and view toggle -->
 	<div class="flex items-center gap-3 border-b border-border p-3">
 		<div class="relative flex-1">
 			<SearchIcon
@@ -194,6 +267,14 @@
 			/>
 		</div>
 		<div class="flex gap-1">
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				onclick={refresh}
+				title="Refresh"
+			>
+				<RefreshCwIcon class="size-4" />
+			</Button>
 			<Button
 				variant={viewMode === "list" ? "secondary" : "ghost"}
 				size="icon-sm"
@@ -211,7 +292,6 @@
 		</div>
 	</div>
 
-	<!-- Files content -->
 	<div class="min-h-0 flex-1 overflow-y-auto p-3">
 		{#if !qrateStore.isFileOpen}
 			<div
@@ -242,12 +322,17 @@
 				</p>
 			</div>
 		{:else if viewMode === "grid"}
-			<!-- Grid View -->
 			<div
 				class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
 			>
-				{#each filteredFiles as file (file.rowId + "-" + file.fileName)}
+				{#each filteredFiles as file (file.rowId + "-" + file.fileName + "-" + refreshKey)}
 					{@const IconComponent = getFileIcon(file.fileType)}
+					{@const thumbnailUrl = supportsThumbnail(file.fileName)
+						? getThumbnailUrl(file.filePath)
+						: null}
+					{@const isLoading =
+						thumbnailService.isProcessing &&
+						supportsThumbnail(file.fileName)}
 					<Card.Root
 						class="group cursor-pointer transition-colors hover:bg-accent"
 					>
@@ -256,11 +341,33 @@
 							onclick={() => openFile(file.filePath)}
 						>
 							<div
-								class="mb-3 flex size-16 items-center justify-center rounded-lg bg-muted"
+								class="relative mb-3 flex size-16 items-center justify-center overflow-hidden rounded-lg bg-muted"
 							>
-								<IconComponent
-									class="size-8 text-muted-foreground"
-								/>
+								{#if thumbnailUrl}
+									<img
+										src={thumbnailUrl}
+										alt={file.fileName}
+										class="size-full object-cover"
+										loading="lazy"
+										decoding="async"
+										onerror={(e) => {
+											(
+												e.target as HTMLImageElement
+											).style.display = "none";
+										}}
+									/>
+									<IconComponent
+										class="absolute size-8 text-muted-foreground"
+									/>
+								{:else if isLoading}
+									<LoaderCircleIcon
+										class="size-6 animate-spin text-muted-foreground"
+									/>
+								{:else}
+									<IconComponent
+										class="size-8 text-muted-foreground"
+									/>
+								{/if}
 							</div>
 							<p class="w-full truncate text-sm font-medium">
 								{file.fileName}
@@ -287,20 +394,47 @@
 				{/each}
 			</div>
 		{:else}
-			<!-- List View -->
 			<div class="space-y-1">
-				{#each filteredFiles as file (file.rowId + "-" + file.fileName)}
+				{#each filteredFiles as file (file.rowId + "-" + file.fileName + "-" + refreshKey)}
 					{@const IconComponent = getFileIcon(file.fileType)}
+					{@const thumbnailUrl = supportsThumbnail(file.fileName)
+						? getThumbnailUrl(file.filePath)
+						: null}
+					{@const isLoading =
+						thumbnailService.isProcessing &&
+						supportsThumbnail(file.fileName)}
 					<button
 						class="group flex w-full items-center gap-3 rounded-md p-2 text-left transition-colors hover:bg-accent"
 						onclick={() => openFile(file.filePath)}
 					>
 						<div
-							class="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted"
+							class="relative flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted"
 						>
-							<IconComponent
-								class="size-5 text-muted-foreground"
-							/>
+							{#if thumbnailUrl}
+								<img
+									src={thumbnailUrl}
+									alt={file.fileName}
+									class="size-full object-cover"
+									loading="lazy"
+									decoding="async"
+									onerror={(e) => {
+										(
+											e.target as HTMLImageElement
+										).style.display = "none";
+									}}
+								/>
+								<IconComponent
+									class="absolute size-5 text-muted-foreground"
+								/>
+							{:else if isLoading}
+								<LoaderCircleIcon
+									class="size-4 animate-spin text-muted-foreground"
+								/>
+							{:else}
+								<IconComponent
+									class="size-5 text-muted-foreground"
+								/>
+							{/if}
 						</div>
 						<div class="min-w-0 flex-1">
 							<p class="truncate text-sm font-medium">
@@ -310,9 +444,9 @@
 								{file.filePath}
 							</p>
 						</div>
-						<span class="shrink-0 text-xs text-muted-foreground">
-							Row #{file.rowId}
-						</span>
+						<span class="shrink-0 text-xs text-muted-foreground"
+							>Row #{file.rowId}</span
+						>
 						<Button
 							variant="ghost"
 							size="icon-sm"

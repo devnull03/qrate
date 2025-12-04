@@ -69,8 +69,13 @@ pub fn open_layout_database(db_path: &Path) -> Result<Connection> {
 
 /// Save a window layout to the database
 pub fn save_layout(conn: &Connection, layout: &WindowLayout) -> Result<()> {
-    let layout_json = serde_json::to_string(layout)
-        .map_err(|e| rusqlite::Error::InvalidColumnType(0, format!("JSON serialization failed: {}", e), rusqlite::types::Type::Text))?;
+    let layout_json = serde_json::to_string(layout).map_err(|e| {
+        rusqlite::Error::InvalidColumnType(
+            0,
+            format!("JSON serialization failed: {}", e),
+            rusqlite::types::Type::Text,
+        )
+    })?;
 
     conn.execute(
         "INSERT OR REPLACE INTO workspace_layouts 
@@ -89,9 +94,8 @@ pub fn save_layout(conn: &Connection, layout: &WindowLayout) -> Result<()> {
 
 /// Load a window layout from the database
 pub fn load_layout(conn: &Connection, window_id: &str) -> Result<Option<WindowLayout>> {
-    let mut stmt = conn.prepare(
-        "SELECT layout_json FROM workspace_layouts WHERE window_id = ?1"
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT layout_json FROM workspace_layouts WHERE window_id = ?1")?;
 
     let layout_result = stmt.query_row([window_id], |row| {
         let json_str: String = row.get(0)?;
@@ -100,8 +104,13 @@ pub fn load_layout(conn: &Connection, window_id: &str) -> Result<Option<WindowLa
 
     match layout_result {
         Ok(json_str) => {
-            let layout: WindowLayout = serde_json::from_str(&json_str)
-                .map_err(|e| rusqlite::Error::InvalidColumnType(0, format!("JSON deserialization failed: {}", e), rusqlite::types::Type::Text))?;
+            let layout: WindowLayout = serde_json::from_str(&json_str).map_err(|e| {
+                rusqlite::Error::InvalidColumnType(
+                    0,
+                    format!("JSON deserialization failed: {}", e),
+                    rusqlite::types::Type::Text,
+                )
+            })?;
             Ok(Some(layout))
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -123,9 +132,8 @@ pub fn get_layouts_by_workspace(
     conn: &Connection,
     workspace_path: &str,
 ) -> Result<Vec<WindowLayout>> {
-    let mut stmt = conn.prepare(
-        "SELECT layout_json FROM workspace_layouts WHERE workspace_path = ?1"
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT layout_json FROM workspace_layouts WHERE workspace_path = ?1")?;
 
     let layouts = stmt
         .query_map([workspace_path], |row| {
@@ -175,4 +183,3 @@ pub fn cleanup_old_layouts(conn: &Connection, days: i64) -> Result<usize> {
 }
 
 // Tests will be added later with proper test dependencies
-

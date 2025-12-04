@@ -1,12 +1,13 @@
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use image::ImageReader;
 use serde::{Deserialize, Serialize};
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use image::ImageReader;
-use std::io::Cursor;
 
 mod app_state;
+pub mod compression;
 mod database;
 pub mod layout;
 mod layout_state;
@@ -14,10 +15,11 @@ pub mod settings;
 pub mod window;
 
 use app_state::AppState;
+use compression::commands::ThumbnailState;
 use database::ColumnDef;
-use layout::types::{WindowLayout, ChatMode};
 use layout::manager::LayoutManager;
 use layout::persistence::get_layout_db_path;
+use layout::types::{ChatMode, WindowLayout};
 use layout_state::LayoutState;
 use window::manager::WindowManager;
 use window::registry::WindowInfo;
@@ -84,7 +86,8 @@ fn load_image(file_path: String, max_width: u32, max_height: u32) -> Result<Imag
     }
 
     // Determine MIME type from extension
-    let ext = path.extension()
+    let ext = path
+        .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
@@ -101,8 +104,8 @@ fn load_image(file_path: String, max_width: u32, max_height: u32) -> Result<Imag
 
     // For SVG, just read and return as-is (no resizing)
     if ext == "svg" {
-        let content = std::fs::read(&file_path)
-            .map_err(|e| format!("Failed to read file: {}", e))?;
+        let content =
+            std::fs::read(&file_path).map_err(|e| format!("Failed to read file: {}", e))?;
         return Ok(ImageResponse {
             data: BASE64.encode(&content),
             mime_type: mime_type.to_string(),
@@ -133,7 +136,8 @@ fn load_image(file_path: String, max_width: u32, max_height: u32) -> Result<Imag
         _ => image::ImageFormat::Jpeg, // Default to JPEG for compression
     };
 
-    resized.write_to(&mut buffer, output_format)
+    resized
+        .write_to(&mut buffer, output_format)
         .map_err(|e| format!("Failed to encode image: {}", e))?;
 
     Ok(ImageResponse {
@@ -145,7 +149,10 @@ fn load_image(file_path: String, max_width: u32, max_height: u32) -> Result<Imag
 /// Validate a file path to ensure it's within a trusted base directory
 /// This prevents path traversal attacks and ensures files are opened safely
 #[tauri::command]
-fn validate_file_path(file_path: String, base_folder: String) -> Result<FilePathValidationResponse, String> {
+fn validate_file_path(
+    file_path: String,
+    base_folder: String,
+) -> Result<FilePathValidationResponse, String> {
     use std::path::Path;
 
     if base_folder.is_empty() {
@@ -166,11 +173,13 @@ fn validate_file_path(file_path: String, base_folder: String) -> Result<FilePath
             // Base path might not exist yet, use the absolute path
             match std::path::absolute(base_path) {
                 Ok(p) => p,
-                Err(e) => return Ok(FilePathValidationResponse {
-                    valid: false,
-                    resolved_path: String::new(),
-                    error: Some(format!("Invalid base folder path: {}", e)),
-                }),
+                Err(e) => {
+                    return Ok(FilePathValidationResponse {
+                        valid: false,
+                        resolved_path: String::new(),
+                        error: Some(format!("Invalid base folder path: {}", e)),
+                    })
+                }
             }
         }
     };
@@ -182,11 +191,13 @@ fn validate_file_path(file_path: String, base_folder: String) -> Result<FilePath
             // File might not exist yet, use the absolute path
             match std::path::absolute(file_path_obj) {
                 Ok(p) => p,
-                Err(e) => return Ok(FilePathValidationResponse {
-                    valid: false,
-                    resolved_path: String::new(),
-                    error: Some(format!("Invalid file path: {}", e)),
-                }),
+                Err(e) => {
+                    return Ok(FilePathValidationResponse {
+                        valid: false,
+                        resolved_path: String::new(),
+                        error: Some(format!("Invalid file path: {}", e)),
+                    })
+                }
             }
         }
     };
@@ -480,7 +491,8 @@ fn import_csv_to_qrate(
 
     // Create marker file if this is a new project
     if is_new {
-        std::fs::write(&path_buf, "").map_err(|e| format!("Failed to create marker file: {}", e))?;
+        std::fs::write(&path_buf, "")
+            .map_err(|e| format!("Failed to create marker file: {}", e))?;
     }
 
     // Import data
@@ -625,29 +637,21 @@ fn create_window(
 
 /// Close a window and clean up its layout
 #[tauri::command]
-fn close_window(
-    layout_state: State<LayoutState>,
-    window_id: String,
-) -> Result<(), String> {
+fn close_window(layout_state: State<LayoutState>, window_id: String) -> Result<(), String> {
     let window_manager = layout_state.window_manager.lock().unwrap();
     window_manager.close_window(&window_id)
 }
 
 /// Focus a window
 #[tauri::command]
-fn focus_window(
-    layout_state: State<LayoutState>,
-    window_id: String,
-) -> Result<(), String> {
+fn focus_window(layout_state: State<LayoutState>, window_id: String) -> Result<(), String> {
     let window_manager = layout_state.window_manager.lock().unwrap();
     window_manager.focus_window(&window_id)
 }
 
 /// Get list of all active windows
 #[tauri::command]
-fn get_window_list(
-    layout_state: State<LayoutState>,
-) -> Result<Vec<WindowInfo>, String> {
+fn get_window_list(layout_state: State<LayoutState>) -> Result<Vec<WindowInfo>, String> {
     let window_manager = layout_state.window_manager.lock().unwrap();
     Ok(window_manager.registry().get_all())
 }
@@ -733,6 +737,11 @@ fn create_chat_window(
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs_pro::init())
@@ -755,20 +764,14 @@ pub fn run() {
         .setup(|app| {
             let db_path = get_layout_db_path(app.handle())
                 .map_err(|e| format!("Failed to get layout DB path: {}", e))?;
-            let layout_manager = Arc::new(Mutex::new(
-                LayoutManager::new(&db_path)
-                    .map_err(|e| format!("Failed to create layout manager: {}", e))?
-            ));
+            let layout_manager =
+                Arc::new(Mutex::new(LayoutManager::new(&db_path).map_err(|e| {
+                    format!("Failed to create layout manager: {}", e)
+                })?));
 
-            let window_manager = WindowManager::new(
-                app.handle().clone(),
-                layout_manager.clone(),
-            );
+            let window_manager = WindowManager::new(app.handle().clone(), layout_manager.clone());
 
-            app.manage(LayoutState::new(
-                layout_manager,
-                window_manager,
-            ));
+            app.manage(LayoutState::new(layout_manager, window_manager));
 
             // Handle CLI arguments for "open with" support
             let args: Vec<String> = std::env::args().collect();
@@ -788,6 +791,7 @@ pub fn run() {
             Ok(())
         })
         .manage(AppState::new())
+        .manage(ThumbnailState::new())
         .invoke_handler(tauri::generate_handler![
             // File operations
             create_qrate_file,
@@ -824,6 +828,10 @@ pub fn run() {
             validate_file_path,
             // Media
             load_image,
+            // Thumbnail commands (from compression module)
+            compression::commands::start_thumbnail_processing,
+            compression::commands::cancel_thumbnail_processing,
+            compression::commands::get_thumbnail_path,
             // Settings commands (from settings module)
             settings::commands::get_global_settings_schema,
             settings::commands::get_project_settings_schema,
@@ -834,7 +842,6 @@ pub fn run() {
             settings::commands::set_project_setting,
             settings::commands::set_project_settings,
             settings::commands::get_project_settings_with_defaults_cmd,
-
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

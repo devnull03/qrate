@@ -16,7 +16,12 @@ impl WindowIPC {
         // Iterate over all windows and emit to each
         for window in self.app_handle.webview_windows().values() {
             if let Err(e) = window.emit(event, payload.clone()) {
-                eprintln!("Failed to emit {} to window {}: {}", event, window.label(), e);
+                eprintln!(
+                    "Failed to emit {} to window {}: {}",
+                    event,
+                    window.label(),
+                    e
+                );
             }
         }
         Ok(())
@@ -78,4 +83,3 @@ impl WindowIPC {
         self.emit_to_all("theme:changed", payload)
     }
 }
-

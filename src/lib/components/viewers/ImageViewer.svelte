@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { invoke } from "@tauri-apps/api/core";
+	import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 	import { openPath } from "@tauri-apps/plugin-opener";
+	import { untrack } from "svelte";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import ExternalLinkIcon from "@lucide/svelte/icons/external-link";
 	import ImageIcon from "@lucide/svelte/icons/image";
@@ -23,59 +24,85 @@
 		class: className = "",
 	}: Props = $props();
 
-	// For Rust-side resizing, use reasonable max values
-	const maxWidth = thumbnail ? 150 : 1200;
-	const maxHeight = thumbnail ? 150 : 900;
+	type LoadState =
+		| { status: "idle" }
+		| { status: "loading"; path: string }
+		| { status: "loaded"; path: string; data: string }
+		| { status: "error"; path: string; message: string };
 
-	let imageData = $state<string | null>(null);
-	let loading = $state(true);
-	let error = $state<string | null>(null);
-	let lastLoadedPath = $state<string | null>(null);
+	let loadState = $state<LoadState>({ status: "idle" });
 
-	async function loadImage(path: string) {
-		if (!path) {
-			error = "No file path provided";
-			loading = false;
-			return;
+	const loading = $derived(loadState.status === "loading");
+	const error = $derived(
+		loadState.status === "error" ? loadState.message : null,
+	);
+	const imageData = $derived(
+		loadState.status === "loaded" ? loadState.data : null,
+	);
+
+	const fetchFullImage = async (path: string): Promise<string> => {
+		const result = await invoke<{ data: string; mime_type: string }>(
+			"load_image",
+			{ filePath: path },
+		);
+		return `data:${result.mime_type};base64,${result.data}`;
+	};
+
+	const fetchThumbnail = async (path: string): Promise<string | null> => {
+		const thumbPath = await invoke<string | null>("get_thumbnail_path", {
+			filePath: path,
+		});
+		return thumbPath ? convertFileSrc(thumbPath) : null;
+	};
+
+	const fetchImage = async (
+		path: string,
+		useThumbnail: boolean,
+	): Promise<string> => {
+		if (useThumbnail) {
+			const thumbnailUrl = await fetchThumbnail(path);
+			if (thumbnailUrl) return thumbnailUrl;
 		}
+		return fetchFullImage(path);
+	};
 
-		loading = true;
-		error = null;
-		imageData = null;
-
-		try {
-			const result = await invoke<{ data: string; mime_type: string }>(
-				"load_image",
-				{
-					filePath: path,
-					maxWidth,
-					maxHeight,
-				},
-			);
-			imageData = `data:${result.mime_type};base64,${result.data}`;
-			lastLoadedPath = path;
-		} catch (err) {
-			console.error("Failed to load image:", path, err);
-			error = err instanceof Error ? err.message : String(err);
-		} finally {
-			loading = false;
-		}
-	}
-
-	async function openExternally() {
-		try {
-			await openPath(filePath);
-		} catch (err) {
-			console.error("Failed to open file:", err);
-		}
-	}
-
-	// Load image when filePath changes
 	$effect(() => {
-		if (filePath && filePath !== lastLoadedPath) {
-			loadImage(filePath);
-		}
+		const path = filePath;
+		const useThumbnail = thumbnail;
+
+		untrack(() => {
+			if (!path) return;
+			if (loadState.status === "loading" && loadState.path === path)
+				return;
+			if (loadState.status === "loaded" && loadState.path === path)
+				return;
+
+			loadState = { status: "loading", path };
+
+			fetchImage(path, useThumbnail)
+				.then((data) => {
+					if (
+						loadState.status === "loading" &&
+						loadState.path === path
+					) {
+						loadState = { status: "loaded", path, data };
+					}
+				})
+				.catch((err) => {
+					if (
+						loadState.status === "loading" &&
+						loadState.path === path
+					) {
+						console.error("Failed to load image:", path, err);
+						const message =
+							err instanceof Error ? err.message : String(err);
+						loadState = { status: "error", path, message };
+					}
+				});
+		});
 	});
+
+	const openExternally = () => openPath(filePath);
 </script>
 
 <div

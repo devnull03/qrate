@@ -1,8 +1,11 @@
 <script lang="ts">
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
+	import { thumbnailService } from "$lib/services/thumbnails";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import LoaderCircleIcon from "@lucide/svelte/icons/loader-circle";
 	import ArrowDownIcon from "@lucide/svelte/icons/arrow-down";
+	import ImageIcon from "@lucide/svelte/icons/image";
+	import XIcon from "@lucide/svelte/icons/x";
 
 	interface Props {
 		class?: string;
@@ -31,6 +34,25 @@
 	};
 
 	let selectionText = $derived(formatSelection());
+
+	let thumbnailProgress = $derived(thumbnailService.progress);
+	let isProcessingThumbnails = $derived(thumbnailService.isProcessing);
+	let thumbnailPercentage = $derived(
+		thumbnailProgress.total === 0
+			? 0
+			: Math.round(
+					(thumbnailProgress.processed / thumbnailProgress.total) *
+						100,
+				),
+	);
+
+	const handleCancelThumbnails = async () => {
+		try {
+			await thumbnailService.cancel();
+		} catch (e) {
+			console.error("Failed to cancel thumbnail processing:", e);
+		}
+	};
 </script>
 
 <footer
@@ -81,6 +103,32 @@
 	</div>
 
 	<div class="flex items-center gap-2">
+		<!-- Thumbnail processing indicator -->
+		{#if isProcessingThumbnails}
+			<div
+				class="flex items-center gap-1.5 rounded bg-background/50 px-2 py-0.5"
+				title="Processing thumbnails..."
+			>
+				<ImageIcon class="size-3 text-muted-foreground" />
+				<LoaderCircleIcon class="size-3 animate-spin text-primary" />
+				<span class="text-muted-foreground">
+					{thumbnailProgress.processed}/{thumbnailProgress.total}
+				</span>
+				<span class="text-muted-foreground/70">
+					({thumbnailPercentage}%)
+				</span>
+				<button
+					type="button"
+					class="ml-0.5 rounded p-0.5 opacity-60 transition-opacity hover:bg-muted hover:opacity-100"
+					onclick={handleCancelThumbnails}
+					title="Cancel thumbnail processing"
+				>
+					<XIcon class="size-3" />
+				</button>
+			</div>
+			<span class="text-muted-foreground/50">|</span>
+		{/if}
+
 		{#if qrateStore.isLoading}
 			<span class="flex items-center gap-1">
 				<LoaderCircleIcon class="size-3 animate-spin" />

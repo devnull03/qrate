@@ -1,9 +1,9 @@
+use crate::layout::manager::LayoutManager;
+use crate::layout::types::WindowLayout;
+use crate::window::ipc::WindowIPC;
+use crate::window::registry::WindowRegistry;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
-use crate::layout::types::WindowLayout;
-use crate::layout::manager::LayoutManager;
-use crate::window::registry::WindowRegistry;
-use crate::window::ipc::WindowIPC;
 
 /// Window manager that handles window lifecycle and layout coordination
 pub struct WindowManager {
@@ -15,10 +15,7 @@ pub struct WindowManager {
 
 impl WindowManager {
     /// Create a new window manager
-    pub fn new(
-        app_handle: AppHandle,
-        layout_manager: Arc<Mutex<LayoutManager>>,
-    ) -> Self {
+    pub fn new(app_handle: AppHandle, layout_manager: Arc<Mutex<LayoutManager>>) -> Self {
         WindowManager {
             registry: WindowRegistry::new(),
             layout_manager,
@@ -99,10 +96,7 @@ impl WindowManager {
     }
 
     /// Create a detached chat window
-    pub fn create_chat_window(
-        &self,
-        source_window_id: &str,
-    ) -> Result<String, String> {
+    pub fn create_chat_window(&self, source_window_id: &str) -> Result<String, String> {
         // Generate unique chat window ID using timestamp
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -195,9 +189,7 @@ impl WindowManager {
                     self.ipc
                         .emit_to_all(
                             "chat:reattached",
-                            ChatReattachedPayload {
-                                source_window_id,
-                            },
+                            ChatReattachedPayload { source_window_id },
                         )
                         .ok(); // Don't fail if event emission fails
                 }
@@ -275,4 +267,3 @@ impl WindowManager {
         &self.ipc
     }
 }
-

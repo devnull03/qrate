@@ -6,6 +6,8 @@ export {
 	type ICommandRegistry,
 } from "./statusbar";
 
+export { thumbnailService, type ThumbnailProgress } from "./thumbnails";
+
 export {
 	getGlobalDefaults,
 	getProjectDefaults,

@@ -1,6 +1,6 @@
-use std::sync::{Arc, Mutex};
 use crate::layout::manager::LayoutManager;
 use crate::window::manager::WindowManager;
+use std::sync::{Arc, Mutex};
 
 /// State container for layout and window managers
 pub struct LayoutState {
@@ -9,14 +9,10 @@ pub struct LayoutState {
 }
 
 impl LayoutState {
-    pub fn new(
-        layout_manager: Arc<Mutex<LayoutManager>>,
-        window_manager: WindowManager,
-    ) -> Self {
+    pub fn new(layout_manager: Arc<Mutex<LayoutManager>>, window_manager: WindowManager) -> Self {
         LayoutState {
             layout_manager,
             window_manager: Arc::new(Mutex::new(window_manager)),
         }
     }
 }
-

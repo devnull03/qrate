@@ -1,11 +1,11 @@
 use dashmap::DashMap;
 use rusqlite::Connection;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::layout::persistence::{load_layout, open_layout_database, save_layout};
 use crate::layout::types::WindowLayout;
-use crate::layout::persistence::{open_layout_database, save_layout, load_layout};
 
 /// Layout manager that handles layout state caching and persistence
 pub struct LayoutManager {
@@ -21,7 +21,7 @@ pub struct LayoutManager {
 
 impl LayoutManager {
     /// Create a new layout manager with a database connection
-    pub fn new(db_path: &PathBuf) -> Result<Self, String> {
+    pub fn new(db_path: &Path) -> Result<Self, String> {
         let conn = open_layout_database(db_path)
             .map_err(|e| format!("Failed to open layout database: {}", e))?;
 
@@ -41,7 +41,10 @@ impl LayoutManager {
         }
 
         // Load from database
-        let db = self.db.lock().map_err(|e| format!("Database lock error: {}", e))?;
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| format!("Database lock error: {}", e))?;
         match load_layout(&db, window_id) {
             Ok(Some(layout)) => {
                 // Cache it
@@ -78,15 +81,19 @@ impl LayoutManager {
 
     /// Save a layout immediately (bypasses debouncing)
     pub fn save_layout_immediate(&self, layout: WindowLayout) -> Result<(), String> {
-        let db = self.db.lock().map_err(|e| format!("Database lock error: {}", e))?;
-        save_layout(&db, &layout)
-            .map_err(|e| format!("Failed to save layout: {}", e))?;
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| format!("Database lock error: {}", e))?;
+        save_layout(&db, &layout).map_err(|e| format!("Failed to save layout: {}", e))?;
         Ok(())
     }
 
     /// Flush all pending saves (force immediate save)
     pub fn flush(&self) -> Result<(), String> {
-        let layouts_to_save: Vec<WindowLayout> = self.layouts.iter()
+        let layouts_to_save: Vec<WindowLayout> = self
+            .layouts
+            .iter()
             .map(|entry| entry.value().clone())
             .collect();
 
@@ -104,7 +111,8 @@ impl LayoutManager {
         region: &str,
         size: u32,
     ) -> Result<(), String> {
-        let mut layout = self.get_layout(window_id)?
+        let mut layout = self
+            .get_layout(window_id)?
             .ok_or_else(|| format!("Layout not found for window: {}", window_id))?;
 
         match region {
@@ -120,7 +128,8 @@ impl LayoutManager {
 
     /// Toggle a region's visibility
     pub fn toggle_region(&self, window_id: &str, region: &str) -> Result<(), String> {
-        let mut layout = self.get_layout(window_id)?
+        let mut layout = self
+            .get_layout(window_id)?
             .ok_or_else(|| format!("Layout not found for window: {}", window_id))?;
 
         match region {
@@ -140,7 +149,8 @@ impl LayoutManager {
         window_id: &str,
         mode: crate::layout::types::ChatMode,
     ) -> Result<(), String> {
-        let mut layout = self.get_layout(window_id)?
+        let mut layout = self
+            .get_layout(window_id)?
             .ok_or_else(|| format!("Layout not found for window: {}", window_id))?;
 
         layout.chat_sidebar.mode = mode;
@@ -154,7 +164,10 @@ impl LayoutManager {
         self.last_save.remove(window_id);
 
         // Remove from database
-        let db = self.db.lock().map_err(|e| format!("Database lock error: {}", e))?;
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| format!("Database lock error: {}", e))?;
         crate::layout::persistence::delete_layout(&db, window_id)
             .map_err(|e| format!("Failed to delete layout: {}", e))?;
 
@@ -209,4 +222,3 @@ impl LayoutManager {
         Ok(())
     }
 }
-

@@ -197,7 +197,10 @@ fn migrate_to_folder(qrate_path: &Path) -> Result<()> {
 
     // Create an empty .qrate file as a marker
     std::fs::write(qrate_path, "").map_err(|e| {
-        rusqlite::Error::InvalidPath(PathBuf::from(format!("Failed to create marker file: {}", e)))
+        rusqlite::Error::InvalidPath(PathBuf::from(format!(
+            "Failed to create marker file: {}",
+            e
+        )))
     })?;
 
     Ok(())

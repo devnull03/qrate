@@ -62,7 +62,20 @@
 			}
 		],
 		"security": {
-			"csp": null
+			"csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'",
+			"assetProtocol": {
+				"enable": true,
+				"scope": [
+					"$HOME/**",
+					"$DOCUMENT/**",
+					"$DOWNLOAD/**",
+					"$PICTURE/**",
+					"$VIDEO/**",
+					"$APPDATA/**",
+					"$APPLOCALDATA/**",
+					"$APPCACHE/**"
+				]
+			}
 		}
 	},
 	"bundle": {

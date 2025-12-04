@@ -35,12 +35,17 @@ impl WindowRegistry {
 
     /// Get window info by ID
     pub fn get(&self, window_id: &str) -> Option<WindowInfo> {
-        self.windows.get(window_id).map(|entry| entry.value().clone())
+        self.windows
+            .get(window_id)
+            .map(|entry| entry.value().clone())
     }
 
     /// Get all registered windows
     pub fn get_all(&self) -> Vec<WindowInfo> {
-        self.windows.iter().map(|entry| entry.value().clone()).collect()
+        self.windows
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
     }
 
     /// Get all main windows
@@ -77,4 +82,3 @@ impl Default for WindowRegistry {
         Self::new()
     }
 }
-

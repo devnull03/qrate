@@ -222,6 +222,7 @@
 										<ImageViewer
 											filePath={file.filePath}
 											alt={file.fileName}
+											thumbnail={true}
 											showOpenButton={true}
 											class="max-h-[calc(50vh-44px)]"
 										/>

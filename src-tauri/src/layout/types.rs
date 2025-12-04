@@ -134,9 +134,10 @@ impl Default for WindowLayout {
 impl WindowLayout {
     /// Create a new layout with a window ID
     pub fn new(window_id: String) -> Self {
-        let mut layout = WindowLayout::default();
-        layout.window_id = window_id;
-        layout
+        Self {
+            window_id,
+            ..Default::default()
+        }
     }
 
     /// Create a layout for a detached chat window
@@ -153,4 +154,3 @@ impl WindowLayout {
         layout
     }
 }
-

@@ -5,4 +5,3 @@ pub mod registry;
 pub use ipc::*;
 pub use manager::*;
 pub use registry::*;
-

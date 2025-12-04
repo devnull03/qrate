@@ -392,7 +392,7 @@ pub fn validate_setting(value: &str, def: &SettingDef) -> Result<(), String> {
         SettingType::String | SettingType::Path | SettingType::Pattern => Ok(()),
     }
 }
- 
+
 // =============================================================================
 // DATABASE INITIALIZATION
 // =============================================================================

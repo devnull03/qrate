@@ -3,6 +3,7 @@
 	import { onMount } from "svelte";
 
 	import WorkbenchLayout from "$lib/components/layout/WorkbenchLayout.svelte";
+	import { forwardConsole } from "$lib/utils/log";
 	import { ModeWatcher } from "mode-watcher";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
 	import { initGlobalSettings } from "$lib/stores/globalSettings";
@@ -15,7 +16,8 @@
 	let unlistenFocus: (() => void) | null = null;
 
 	onMount(() => {
-		// Initialize global settings and sync from backend
+		forwardConsole();
+
 		Promise.all([
 			initGlobalSettings(),
 			qrateStore.syncFromBackend(),
