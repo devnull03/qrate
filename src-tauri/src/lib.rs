@@ -4,22 +4,22 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 mod app_state;
-pub mod compression;
+mod checks;
+mod compression;
 mod database;
-pub mod layout;
+mod layout;
 mod layout_state;
-pub mod settings;
-pub mod checks;
-pub mod window;
+mod settings;
+mod window;
 
 use app_state::AppState;
+use checks::spellcheck::SpellCheckState;
 use compression::commands::ThumbnailState;
 use database::ColumnDef;
 use layout::manager::LayoutManager;
 use layout::persistence::get_layout_db_path;
 use layout::types::{ChatMode, WindowLayout};
 use layout_state::LayoutState;
-use checks::spellcheck::SpellCheckState;
 use window::manager::WindowManager;
 use window::registry::WindowInfo;
 
