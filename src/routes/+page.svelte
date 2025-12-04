@@ -1,5 +1,5 @@
 <script lang="ts">
-	import RevoGrid from "$lib/grid/RevoGrid.svelte";
+	import RevoGrid from "$lib/components/grid/RevoGrid.svelte";
 	import FilesGrid from "$lib/components/FilesGrid.svelte";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import TableIcon from "@lucide/svelte/icons/table";

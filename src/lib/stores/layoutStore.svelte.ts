@@ -326,7 +326,7 @@ class LayoutStore {
 				active_view_id: "",
 			},
 			right_sidebar: {
-				visible: true,
+				visible: false,
 				width: 360,
 				active_view_id: "",
 			},

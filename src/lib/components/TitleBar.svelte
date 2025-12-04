@@ -313,7 +313,7 @@
 	</div>
 
 	<div
-		class="pointer-events-none absolute left-1/2 -translate-x-1/2 text-xs text-muted-foreground"
+		class="pointer-events-none text-xs text-muted-foreground text-ellipsis whitespace-nowrap max-w-[calc(100%-14rem)]min-w-0 overflow-hidden sm:max-w-[200px] md:max-w-[400px] lg:max-w-[600px] xl:max-w-[800px] 2xl:max-w-[1000px]"
 		data-tauri-drag-region
 	>
 		{windowTitle}
@@ -324,7 +324,7 @@
 		<Button
 			variant="ghost"
 			size="icon"
-			class="h-full w-9 rounded-none {leftSidebarVisible
+			class="h-full w-7 rounded-none {leftSidebarVisible
 				? 'bg-accent/50'
 				: ''}"
 			onclick={toggleLeftSidebar}
@@ -337,7 +337,7 @@
 		<Button
 			variant="ghost"
 			size="icon"
-			class="h-full w-9 rounded-none {bottomPanelVisible
+			class="h-full w-7 rounded-none {bottomPanelVisible
 				? 'bg-accent/50'
 				: ''}"
 			onclick={toggleBottomPanel}
@@ -350,7 +350,7 @@
 		<Button
 			variant="ghost"
 			size="icon"
-			class="h-full w-9 rounded-none {rightSidebarVisible
+			class="h-full w-7 rounded-none {rightSidebarVisible
 				? 'bg-accent/50'
 				: ''}"
 			onclick={toggleRightSidebar}
