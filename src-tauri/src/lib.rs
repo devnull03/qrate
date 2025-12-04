@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, State};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use image::ImageReader;
+use std::io::Cursor;
 
 mod app_state;
 mod database;
@@ -54,12 +57,90 @@ struct FilePathValidationResponse {
     error: Option<String>,
 }
 
+/// Response structure for image loading
+#[derive(Debug, Serialize, Deserialize)]
+struct ImageResponse {
+    data: String,
+    mime_type: String,
+}
+
+/// Load an image from disk, optionally resizing it for thumbnails
+#[tauri::command]
+fn load_image(file_path: String, max_width: u32, max_height: u32) -> Result<ImageResponse, String> {
+    use std::path::Path;
+
+    let path = Path::new(&file_path);
+
+    // Check if file exists
+    if !path.exists() {
+        return Err(format!("File not found: {}", file_path));
+    }
+
+    // Determine MIME type from extension
+    let ext = path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+
+    let mime_type = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        _ => return Err(format!("Unsupported image format: {}", ext)),
+    };
+
+    // For SVG, just read and return as-is (no resizing)
+    if ext == "svg" {
+        let content = std::fs::read(&file_path)
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+        return Ok(ImageResponse {
+            data: BASE64.encode(&content),
+            mime_type: mime_type.to_string(),
+        });
+    }
+
+    // Load and decode the image
+    let img = ImageReader::open(&file_path)
+        .map_err(|e| format!("Failed to open image: {}", e))?
+        .decode()
+        .map_err(|e| format!("Failed to decode image: {}", e))?;
+
+    // Resize if necessary (maintaining aspect ratio)
+    let resized = if img.width() > max_width || img.height() > max_height {
+        img.thumbnail(max_width, max_height)
+    } else {
+        img
+    };
+
+    // Encode to the appropriate format
+    let mut buffer = Cursor::new(Vec::new());
+
+    let output_format = match ext.as_str() {
+        "png" => image::ImageFormat::Png,
+        "gif" => image::ImageFormat::Gif,
+        "webp" => image::ImageFormat::WebP,
+        "bmp" => image::ImageFormat::Bmp,
+        _ => image::ImageFormat::Jpeg, // Default to JPEG for compression
+    };
+
+    resized.write_to(&mut buffer, output_format)
+        .map_err(|e| format!("Failed to encode image: {}", e))?;
+
+    Ok(ImageResponse {
+        data: BASE64.encode(buffer.into_inner()),
+        mime_type: mime_type.to_string(),
+    })
+}
+
 /// Validate a file path to ensure it's within a trusted base directory
 /// This prevents path traversal attacks and ensures files are opened safely
 #[tauri::command]
 fn validate_file_path(file_path: String, base_folder: String) -> Result<FilePathValidationResponse, String> {
     use std::path::Path;
-    
+
     if base_folder.is_empty() {
         return Ok(FilePathValidationResponse {
             valid: false,
@@ -67,10 +148,10 @@ fn validate_file_path(file_path: String, base_folder: String) -> Result<FilePath
             error: Some("No base folder configured".to_string()),
         });
     }
-    
+
     let file_path_obj = Path::new(&file_path);
     let base_path = Path::new(&base_folder);
-    
+
     // Canonicalize the base path (resolve symlinks, .., etc.)
     let canonical_base = match base_path.canonicalize() {
         Ok(p) => p,
@@ -86,7 +167,7 @@ fn validate_file_path(file_path: String, base_folder: String) -> Result<FilePath
             }
         }
     };
-    
+
     // Canonicalize the file path
     let canonical_file = match file_path_obj.canonicalize() {
         Ok(p) => p,
@@ -102,7 +183,7 @@ fn validate_file_path(file_path: String, base_folder: String) -> Result<FilePath
             }
         }
     };
-    
+
     // Check if the file path starts with the base path
     if !canonical_file.starts_with(&canonical_base) {
         return Ok(FilePathValidationResponse {
@@ -111,7 +192,7 @@ fn validate_file_path(file_path: String, base_folder: String) -> Result<FilePath
             error: Some("File is outside the trusted folder".to_string()),
         });
     }
-    
+
     Ok(FilePathValidationResponse {
         valid: true,
         resolved_path: canonical_file.to_string_lossy().to_string(),
@@ -550,10 +631,10 @@ fn save_layout_cmd(
     }
 
     let layout_manager = layout_state.layout_manager.lock().unwrap();
-    
+
     // Validate layout
     layout_manager.validate_layout(&layout)?;
-    
+
     // Save layout
     layout_manager.save_layout(layout)
 }
@@ -665,6 +746,8 @@ pub fn run() {
             get_current_state,
             // Security
             validate_file_path,
+            // Media
+            load_image,
             // Settings commands (from settings module)
             settings::commands::get_global_settings_schema,
             settings::commands::get_project_settings_schema,
@@ -675,7 +758,7 @@ pub fn run() {
             settings::commands::set_project_setting,
             settings::commands::set_project_settings,
             settings::commands::get_project_settings_with_defaults_cmd,
-            
+
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -8,6 +8,7 @@
 		resolveFilePath,
 		defaultSettings,
 	} from "$lib/stores/appSettings";
+	import ImageViewer from "$lib/components/viewers/ImageViewer.svelte";
 	import FileIcon from "@lucide/svelte/icons/file";
 	import FileTextIcon from "@lucide/svelte/icons/file-text";
 	import ImageIcon from "@lucide/svelte/icons/image";
@@ -17,7 +18,6 @@
 	import FolderOpenIcon from "@lucide/svelte/icons/folder-open";
 	import RowsIcon from "@lucide/svelte/icons/rows-3";
 	import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
-	import { invoke } from "@tauri-apps/api/core";
 
 	interface FileItem {
 		fileName: string;
@@ -49,84 +49,6 @@
 		document: FileTextIcon,
 		file: FileIcon,
 	};
-
-	// Blocklist of dangerous executable extensions
-	const dangerousExtensions: Set<string> = new Set([
-		"exe", "bat", "cmd", "com", "msi", "scr", "pif", "vbs", "vbe",
-		"jse", "ws", "wsf", "wsc", "wsh", "ps1", "psm1", "psd1",
-		"sh", "bash", "zsh", "ksh", "csh",
-		"app", "dmg", "pkg",
-		"deb", "rpm", "appimage",
-		"jar", "class",
-		"dll", "so", "dylib",
-	]);
-
-	/**
-	 * Validates that a file path is safe to open:
-	 * 1. Path must be within the trusted filesFolder (no path traversal)
-	 * 2. File extension must be in allowlist or not in dangerous blocklist
-	 */
-	async function validateFilePath(filePath: string, baseFolder: string): Promise<{ valid: boolean; error?: string }> {
-		if (!baseFolder) {
-			return { valid: false, error: "No files folder configured" };
-		}
-
-		try {
-			// Use Tauri backend to resolve and validate paths
-			const result = await invoke<{ valid: boolean; resolved_path: string; error?: string }>(
-				"validate_file_path",
-				{ filePath, baseFolder }
-			);
-
-			if (!result.valid) {
-				return { valid: false, error: result.error || "Path validation failed" };
-			}
-
-			// Check file extension
-			const ext = filePath.split(".").pop()?.toLowerCase() || "";
-			
-			if (dangerousExtensions.has(ext)) {
-				return { valid: false, error: "Cannot open executable files for security reasons" };
-			}
-
-			return { valid: true };
-		} catch {
-			// If the backend command doesn't exist, fall back to frontend validation
-			// This provides basic protection even without backend support
-			const normalizedPath = filePath.replace(/\\/g, "/").toLowerCase();
-			const normalizedBase = baseFolder.replace(/\\/g, "/").toLowerCase();
-			
-			// Check for various path traversal patterns
-			// Note: This is a best-effort fallback; the backend validation is more robust
-			const pathTraversalPatterns = [
-				"..",           // Direct traversal
-				"%2e%2e",       // URL encoded
-				"%252e%252e",   // Double URL encoded
-				"..%2f",        // Mixed encoding
-				"%2f..",        // Mixed encoding
-			];
-			
-			for (const pattern of pathTraversalPatterns) {
-				if (normalizedPath.includes(pattern.toLowerCase())) {
-					return { valid: false, error: "Path traversal detected" };
-				}
-			}
-
-			// Simple check if path starts with base folder
-			if (!normalizedPath.startsWith(normalizedBase)) {
-				return { valid: false, error: "File is outside the trusted folder" };
-			}
-
-			// Check file extension
-			const ext = filePath.split(".").pop()?.toLowerCase() || "";
-			
-			if (dangerousExtensions.has(ext)) {
-				return { valid: false, error: "Cannot open executable files for security reasons" };
-			}
-
-			return { valid: true };
-		}
-	}
 
 	onMount(() => {
 		if (qrateStore.isFileOpen) loadSettings();
@@ -202,27 +124,19 @@
 	}
 
 	async function openFile(filePath: string) {
-		const validation = await validateFilePath(filePath, filesFolder);
-		if (!validation.valid) {
-			console.error("File path validation failed:", validation.error);
-			return;
+		try {
+			await openPath(filePath);
+		} catch (err) {
+			console.error("Failed to open file:", err);
 		}
-		
-		await openPath(filePath).catch((err) =>
-			console.error("Failed to open file:", err),
-		);
 	}
 
 	async function openFileLocation(filePath: string) {
-		const validation = await validateFilePath(filePath, filesFolder);
-		if (!validation.valid) {
-			console.error("File path validation failed:", validation.error);
-			return;
+		try {
+			await revealItemInDir(filePath);
+		} catch (err) {
+			console.error("Failed to open location:", err);
 		}
-		
-		await revealItemInDir(filePath).catch((err) =>
-			console.error("Failed to open location:", err),
-		);
 	}
 </script>
 
@@ -262,46 +176,91 @@
 					>
 						Files
 					</h3>
-					<div class="space-y-1">
+					<div class="space-y-3">
 						{#each rowFiles as file}
 							{@const IconComponent =
 								iconMap[file.fileType] || FileIcon}
-							<div
-								class="group flex items-center gap-2 rounded-md p-2 transition-colors hover:bg-accent"
-							>
-								<button
-									class="flex min-w-0 flex-1 items-center gap-2 text-left"
-									onclick={() => openFile(file.filePath)}
+							{#if file.fileType === "image"}
+								<!-- Image Preview -->
+								<div
+									class="group rounded-md border border-border overflow-hidden"
 								>
+									<ImageViewer
+										filePath={file.filePath}
+										alt={file.fileName}
+										maxWidth={400}
+										maxHeight={300}
+										showOpenButton={true}
+										class="w-full"
+									/>
 									<div
-										class="flex size-8 shrink-0 items-center justify-center rounded bg-muted"
+										class="flex items-center gap-2 p-2 bg-muted/30"
 									>
-										<IconComponent
-											class="size-4 text-muted-foreground"
+										<ImageIcon
+											class="size-4 text-muted-foreground shrink-0"
 										/>
-									</div>
-									<div class="min-w-0 flex-1">
-										<p class="truncate text-sm font-medium">
-											{file.fileName}
-										</p>
-										<p
-											class="truncate text-xs text-muted-foreground"
+										<div class="min-w-0 flex-1">
+											<p
+												class="truncate text-sm font-medium"
+											>
+												{file.fileName}
+											</p>
+										</div>
+										<Button
+											variant="ghost"
+											size="icon-sm"
+											class="size-7 shrink-0"
+											onclick={() =>
+												openFileLocation(file.filePath)}
+											title="Open file location"
 										>
-											{file.filePath}
-										</p>
+											<ExternalLinkIcon
+												class="size-3.5"
+											/>
+										</Button>
 									</div>
-								</button>
-								<Button
-									variant="ghost"
-									size="icon-sm"
-									class="size-7 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-									onclick={() =>
-										openFileLocation(file.filePath)}
-									title="Open file location"
+								</div>
+							{:else}
+								<!-- Non-image file -->
+								<div
+									class="group flex items-center gap-2 rounded-md p-2 transition-colors hover:bg-accent"
 								>
-									<ExternalLinkIcon class="size-3.5" />
-								</Button>
-							</div>
+									<button
+										class="flex min-w-0 flex-1 items-center gap-2 text-left"
+										onclick={() => openFile(file.filePath)}
+									>
+										<div
+											class="flex size-8 shrink-0 items-center justify-center rounded bg-muted"
+										>
+											<IconComponent
+												class="size-4 text-muted-foreground"
+											/>
+										</div>
+										<div class="min-w-0 flex-1">
+											<p
+												class="truncate text-sm font-medium"
+											>
+												{file.fileName}
+											</p>
+											<p
+												class="truncate text-xs text-muted-foreground"
+											>
+												{file.filePath}
+											</p>
+										</div>
+									</button>
+									<Button
+										variant="ghost"
+										size="icon-sm"
+										class="size-7 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+										onclick={() =>
+											openFileLocation(file.filePath)}
+										title="Open file location"
+									>
+										<ExternalLinkIcon class="size-3.5" />
+									</Button>
+								</div>
+							{/if}
 						{/each}
 					</div>
 				</div>

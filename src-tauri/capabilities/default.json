@@ -11,6 +11,22 @@
 		"core:window:allow-minimize",
 		"core:window:allow-toggle-maximize",
 		"opener:default",
+		{
+			"identifier": "opener:allow-open-path",
+			"allow": [
+				{
+					"path": "**"
+				}
+			]
+		},
+		{
+			"identifier": "opener:allow-reveal-item-in-dir",
+			"allow": [
+				{
+					"path": "**"
+				}
+			]
+		},
 		"fs-pro:default",
 		"dialog:default",
 		"store:default"
