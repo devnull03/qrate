@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { onDestroy } from "svelte";
+
 	interface Props {
 		direction: "horizontal" | "vertical";
 		onResize: (delta: number) => void;
@@ -100,6 +102,21 @@
 			}
 		}
 	};
+
+	// Cleanup event listeners on component unmount to prevent memory leaks
+	onDestroy(() => {
+		// Remove any mouse event listeners that might still be attached
+		document.removeEventListener("mousemove", handleMouseMove);
+		document.removeEventListener("mouseup", handleMouseUp);
+		// Remove any touch event listeners that might still be attached
+		document.removeEventListener("touchmove", handleTouchMove);
+		document.removeEventListener("touchend", handleTouchEnd);
+		// Reset body styles if component unmounts during drag
+		if (isDragging) {
+			document.body.style.cursor = "";
+			document.body.style.userSelect = "";
+		}
+	});
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
