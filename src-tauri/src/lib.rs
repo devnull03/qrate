@@ -9,6 +9,7 @@ mod database;
 pub mod layout;
 mod layout_state;
 pub mod settings;
+pub mod spellcheck;
 pub mod window;
 
 use app_state::AppState;
@@ -18,6 +19,7 @@ use layout::manager::LayoutManager;
 use layout::persistence::get_layout_db_path;
 use layout::types::{ChatMode, WindowLayout};
 use layout_state::LayoutState;
+use spellcheck::SpellCheckState;
 use window::manager::WindowManager;
 use window::registry::WindowInfo;
 
@@ -707,6 +709,7 @@ pub fn run() {
             Ok(())
         })
         .manage(AppState::new())
+        .manage(SpellCheckState::new())
         .manage(ThumbnailState::new())
         .invoke_handler(tauri::generate_handler![
             // File operations
@@ -756,6 +759,13 @@ pub fn run() {
             settings::commands::set_project_setting,
             settings::commands::set_project_settings,
             settings::commands::get_project_settings_with_defaults_cmd,
+            spellcheck::check_spelling,
+            spellcheck::check_text_fragment,
+            spellcheck::get_suggestions,
+            spellcheck::ignore_word,
+            spellcheck::add_to_dictionary,
+            spellcheck::is_word_correct,
+            spellcheck::load_dictionary_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
