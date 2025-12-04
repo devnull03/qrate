@@ -50,23 +50,10 @@
 		file: FileIcon,
 	};
 
-	// Allowlist of safe file extensions that can be opened
-	const safeExtensions: Set<string> = new Set([
-		// Images
-		"jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "ico", "tiff", "tif",
-		// Videos
-		"mp4", "webm", "avi", "mov", "mkv", "flv", "wmv", "m4v",
-		// Audio
-		"mp3", "wav", "ogg", "flac", "aac", "wma", "m4a",
-		// Documents
-		"pdf", "doc", "docx", "txt", "md", "rtf", "odt", "xls", "xlsx", "csv",
-		"ppt", "pptx", "odp",
-	]);
-
 	// Blocklist of dangerous executable extensions
 	const dangerousExtensions: Set<string> = new Set([
 		"exe", "bat", "cmd", "com", "msi", "scr", "pif", "vbs", "vbe",
-		"js", "jse", "ws", "wsf", "wsc", "wsh", "ps1", "psm1", "psd1",
+		"jse", "ws", "wsf", "wsc", "wsh", "ps1", "psm1", "psd1",
 		"sh", "bash", "zsh", "ksh", "csh",
 		"app", "dmg", "pkg",
 		"deb", "rpm", "appimage",
@@ -103,15 +90,26 @@
 			}
 
 			return { valid: true };
-		} catch (err) {
+		} catch {
 			// If the backend command doesn't exist, fall back to frontend validation
 			// This provides basic protection even without backend support
-			const normalizedPath = filePath.replace(/\\/g, "/");
-			const normalizedBase = baseFolder.replace(/\\/g, "/");
+			const normalizedPath = filePath.replace(/\\/g, "/").toLowerCase();
+			const normalizedBase = baseFolder.replace(/\\/g, "/").toLowerCase();
 			
-			// Check for path traversal attempts
-			if (normalizedPath.includes("..")) {
-				return { valid: false, error: "Path traversal detected" };
+			// Check for various path traversal patterns
+			// Note: This is a best-effort fallback; the backend validation is more robust
+			const pathTraversalPatterns = [
+				"..",           // Direct traversal
+				"%2e%2e",       // URL encoded
+				"%252e%252e",   // Double URL encoded
+				"..%2f",        // Mixed encoding
+				"%2f..",        // Mixed encoding
+			];
+			
+			for (const pattern of pathTraversalPatterns) {
+				if (normalizedPath.includes(pattern.toLowerCase())) {
+					return { valid: false, error: "Path traversal detected" };
+				}
 			}
 
 			// Simple check if path starts with base folder
