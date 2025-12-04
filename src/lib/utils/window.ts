@@ -30,6 +30,15 @@ export async function closeWindow(): Promise<void> {
 	const appWindow = getCurrentWindow();
 	await appWindow.close();
 }
+/**
+ * Hide the current window
+ */
+export function hideWindow() {
+  const win = getCurrentWindow();
+  win.hide();
+}
+
+
 
 /**
  * Check if the current window is maximized

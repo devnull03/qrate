@@ -7,6 +7,7 @@
 		minimizeWindow,
 		toggleMaximizeWindow,
 		closeWindow,
+		hideWindow
 	} from "$lib/utils/window";
 
 	interface Props {
@@ -50,7 +51,7 @@
 			variant="ghost"
 			size="icon"
 			class="h-full w-[46px] rounded-none hover:bg-[#e81123] hover:text-white"
-			onclick={closeWindow}
+			onclick={hideWindow}
 			title="Close"
 		>
 			<XIcon class="size-4" />
