@@ -191,7 +191,7 @@ class LayoutStore {
 		if (!this.layout || !this.windowId) return;
 
 		// Save previous layout for rollback
-		const previousLayout = { ...this.layout };
+		const previousLayout = structuredClone(this.layout);
 
 		try {
 			// Update local state
@@ -238,7 +238,7 @@ class LayoutStore {
 		if (!this.layout || !this.windowId) return;
 
 		// Save previous layout for rollback
-		const previousLayout = { ...this.layout };
+		const previousLayout = structuredClone(this.layout);
 
 		try {
 			// Update local state
@@ -288,7 +288,7 @@ class LayoutStore {
 		if (!this.layout || !this.windowId) return;
 
 		// Save previous layout for rollback
-		const previousLayout = { ...this.layout };
+		const previousLayout = structuredClone(this.layout);
 
 		try {
 			// Update local state
