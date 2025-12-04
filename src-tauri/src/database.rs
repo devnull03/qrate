@@ -1,8 +1,39 @@
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::settings;
+
+/// Get the hidden .qrate folder path for a given .qrate file
+/// e.g., /path/to/project.qrate -> /path/to/.project.qrate/
+pub fn get_db_folder(qrate_path: &Path) -> PathBuf {
+    let parent = qrate_path.parent().unwrap_or(Path::new("."));
+    let stem = qrate_path.file_stem().unwrap_or_default().to_string_lossy();
+    parent.join(format!(".{}.qrate", stem))
+}
+
+/// Get the actual SQLite database file path inside the hidden folder
+/// e.g., /path/to/project.qrate -> /path/to/.project.qrate/data.db
+pub fn get_db_path(qrate_path: &Path) -> PathBuf {
+    get_db_folder(qrate_path).join("data.db")
+}
+
+/// Ensure the hidden .qrate folder exists
+pub fn ensure_db_folder(qrate_path: &Path) -> std::io::Result<PathBuf> {
+    let folder = get_db_folder(qrate_path);
+    std::fs::create_dir_all(&folder)?;
+
+    // On Windows, set the folder as hidden
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let _ = Command::new("attrib")
+            .args(["+H", &folder.to_string_lossy()])
+            .output();
+    }
+
+    Ok(folder)
+}
 
 /// Represents a column definition in the grid
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -15,8 +46,16 @@ pub struct ColumnDef {
 }
 
 /// Initialize a new .qrate database file with the required schema
+/// The actual database is stored in a hidden folder alongside the .qrate file
 pub fn init_database(path: &Path) -> Result<Connection> {
-    let conn = Connection::open(path)?;
+    // Create the hidden folder for database files
+    ensure_db_folder(path).map_err(|e| {
+        rusqlite::Error::InvalidPath(PathBuf::from(format!("Failed to create db folder: {}", e)))
+    })?;
+
+    // Open the actual database file inside the hidden folder
+    let db_path = get_db_path(path);
+    let conn = Connection::open(&db_path)?;
 
     // Enable WAL mode for better concurrency
     conn.execute_batch(
@@ -91,10 +130,29 @@ pub fn init_database(path: &Path) -> Result<Connection> {
 }
 
 /// Open an existing .qrate database
+/// The actual database is stored in a hidden folder alongside the .qrate file
 pub fn open_database(path: &Path) -> Result<Connection> {
-    let conn = Connection::open(path)?;
+    let db_path = get_db_path(path);
 
-    // Enable WAL mode
+    // Check if the database exists in the hidden folder
+    if !db_path.exists() {
+        // Maybe this is an old-style database where the .qrate file IS the database
+        // Try to migrate it
+        if path.exists() {
+            // Check if the .qrate file is actually a SQLite database
+            if let Ok(old_conn) = Connection::open(path) {
+                if old_conn.prepare("SELECT 1 FROM _meta LIMIT 1").is_ok() {
+                    // It's an old-style database, migrate it
+                    drop(old_conn);
+                    migrate_to_folder(path)?;
+                }
+            }
+        }
+    }
+
+    let conn = Connection::open(&db_path)?;
+
+    // Enable WAL mode for better concurrency
     conn.execute_batch(
         "
         PRAGMA journal_mode = WAL;
@@ -108,6 +166,41 @@ pub fn open_database(path: &Path) -> Result<Connection> {
     settings::ensure_project_settings(&conn)?;
 
     Ok(conn)
+}
+
+/// Migrate an old-style .qrate database to the new folder structure
+fn migrate_to_folder(qrate_path: &Path) -> Result<()> {
+    // Create the hidden folder
+    ensure_db_folder(qrate_path).map_err(|e| {
+        rusqlite::Error::InvalidPath(PathBuf::from(format!("Failed to create db folder: {}", e)))
+    })?;
+
+    let db_path = get_db_path(qrate_path);
+
+    // Move the old database file to the new location
+    std::fs::rename(qrate_path, &db_path).map_err(|e| {
+        rusqlite::Error::InvalidPath(PathBuf::from(format!("Failed to migrate database: {}", e)))
+    })?;
+
+    // Also move WAL and SHM files if they exist
+    let wal_path = PathBuf::from(format!("{}-wal", qrate_path.display()));
+    let shm_path = PathBuf::from(format!("{}-shm", qrate_path.display()));
+    let new_wal = PathBuf::from(format!("{}-wal", db_path.display()));
+    let new_shm = PathBuf::from(format!("{}-shm", db_path.display()));
+
+    if wal_path.exists() {
+        let _ = std::fs::rename(&wal_path, &new_wal);
+    }
+    if shm_path.exists() {
+        let _ = std::fs::rename(&shm_path, &new_shm);
+    }
+
+    // Create an empty .qrate file as a marker
+    std::fs::write(qrate_path, "").map_err(|e| {
+        rusqlite::Error::InvalidPath(PathBuf::from(format!("Failed to create marker file: {}", e)))
+    })?;
+
+    Ok(())
 }
 
 /// Get column definitions from the database

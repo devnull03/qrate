@@ -249,9 +249,12 @@ fn get_current_state(state: State<AppState>) -> Result<CurrentStateResponse, Str
 fn create_qrate_file(state: State<AppState>, path: String) -> Result<FileOpenResponse, String> {
     let path_buf = PathBuf::from(&path);
 
-    // Initialize new database
+    // Initialize new database (creates hidden folder with actual db)
     let conn = database::init_database(&path_buf)
         .map_err(|e| format!("Failed to create database: {}", e))?;
+
+    // Create the .qrate marker file
+    std::fs::write(&path_buf, "").map_err(|e| format!("Failed to create marker file: {}", e))?;
 
     // Get initial state
     let columns =
@@ -305,7 +308,14 @@ fn open_qrate_file(state: State<AppState>, path: String) -> Result<FileOpenRespo
 /// Close a .qrate file
 #[tauri::command]
 fn close_qrate_file(state: State<AppState>, path: String) -> Result<(), String> {
-    state.remove_connection(&path);
+    // Get the connection and checkpoint WAL before closing
+    if let Some(conn_arc) = state.remove_connection(&path) {
+        if let Ok(conn) = conn_arc.lock() {
+            // Checkpoint WAL to merge it back into the main database file
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        }
+        // Connection is dropped here, which closes it properly
+    }
 
     // Clear current file if it matches
     if let Some(current) = state.get_current_file() {
@@ -689,6 +699,21 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs_pro::init())
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            // Checkpoint all database connections when the app is about to close
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // Only checkpoint when the last window is closing
+                if window.app_handle().webview_windows().len() == 1 {
+                    if let Some(app_state) = window.try_state::<AppState>() {
+                        for entry in app_state.connections.iter() {
+                            if let Ok(conn) = entry.value().lock() {
+                                let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+                            }
+                        }
+                    }
+                }
+            }
+        })
         .setup(|app| {
             // Initialize layout manager
             let db_path = get_layout_db_path(app.handle())
