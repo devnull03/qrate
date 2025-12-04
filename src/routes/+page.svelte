@@ -34,12 +34,19 @@
 		</Button>
 	</div>
 
-	<!-- View Content -->
-	<div class="min-h-0 flex-1 overflow-hidden">
-		{#if qrateStore.activeView === "spreadsheet"}
+	<!-- View Content - both components stay mounted, visibility controlled by CSS -->
+	<div class="relative min-h-0 flex-1 overflow-hidden">
+		<div
+			class="absolute inset-0 overflow-hidden"
+			class:hidden={qrateStore.activeView !== "spreadsheet"}
+		>
 			<RevoGrid />
-		{:else}
+		</div>
+		<div
+			class="absolute inset-0 overflow-hidden"
+			class:hidden={qrateStore.activeView !== "files"}
+		>
 			<FilesGrid />
-		{/if}
+		</div>
 	</div>
 </div>

@@ -5,6 +5,9 @@
 
 	let currentWidth = $state(360);
 
+	const MIN_WIDTH = 250;
+	const MAX_WIDTH = 800;
+
 	$effect(() => {
 		if (layoutStore.layout?.right_sidebar) {
 			currentWidth = layoutStore.layout.right_sidebar.width;
@@ -12,15 +15,21 @@
 	});
 
 	const handleResize = async (delta: number) => {
-		const newWidth = Math.max(200, Math.min(800, currentWidth - delta));
-		currentWidth = newWidth;
-		await layoutStore.updateRegionSize("right_sidebar", newWidth);
+		// For right sidebar, negative delta means dragging left (making it wider)
+		const newWidth = Math.max(
+			MIN_WIDTH,
+			Math.min(MAX_WIDTH, currentWidth - delta),
+		);
+		if (newWidth !== currentWidth) {
+			currentWidth = newWidth;
+			await layoutStore.updateRegionSize("right_sidebar", newWidth);
+		}
 	};
 </script>
 
 {#if layoutStore.layout?.right_sidebar.visible}
 	<aside
-		class="right-sidebar flex border-l border-border bg-muted/30"
+		class="right-sidebar flex h-full shrink-0 border-l border-border bg-muted/30"
 		style="width: {currentWidth}px;"
 		aria-label="Chat sidebar"
 	>
@@ -33,6 +42,6 @@
 
 <style>
 	.right-sidebar {
-		transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+		transition: width 0.05s ease-out;
 	}
 </style>

@@ -17,7 +17,7 @@
 </script>
 
 <main
-	class="editor-area flex min-w-0 flex-1 flex-col overflow-hidden"
+	class="editor-area flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
 	aria-label="Editor area"
 >
 	{#if children}

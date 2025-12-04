@@ -8,8 +8,10 @@
 
 	let { children }: Props = $props();
 
-	let containerElement: HTMLElement | null = $state(null);
 	let currentWidth = $state(250);
+
+	const MIN_WIDTH = 150;
+	const MAX_WIDTH = 600;
 
 	$effect(() => {
 		if (layoutStore.layout?.left_sidebar) {
@@ -18,20 +20,20 @@
 	});
 
 	const handleResize = async (delta: number) => {
-		const newWidth = Math.max(100, Math.min(800, currentWidth + delta));
-		currentWidth = newWidth;
-		await layoutStore.updateRegionSize("left_sidebar", newWidth);
-	};
-
-	const toggle = async () => {
-		await layoutStore.toggleRegion("left_sidebar");
+		const newWidth = Math.max(
+			MIN_WIDTH,
+			Math.min(MAX_WIDTH, currentWidth + delta),
+		);
+		if (newWidth !== currentWidth) {
+			currentWidth = newWidth;
+			await layoutStore.updateRegionSize("left_sidebar", newWidth);
+		}
 	};
 </script>
 
 {#if layoutStore.layout?.left_sidebar.visible}
 	<aside
-		bind:this={containerElement}
-		class="left-sidebar flex border-r border-border bg-muted/30"
+		class="left-sidebar flex h-full shrink-0 border-r border-border bg-muted/30"
 		style="width: {currentWidth}px;"
 		aria-label="Left sidebar"
 	>
@@ -46,6 +48,6 @@
 
 <style>
 	.left-sidebar {
-		transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+		transition: width 0.05s ease-out;
 	}
 </style>

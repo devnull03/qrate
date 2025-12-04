@@ -9,7 +9,10 @@
 
 	let { children }: Props = $props();
 
-	let currentHeight = $state(300);
+	let currentHeight = $state(200);
+
+	const MIN_HEIGHT = 100;
+	const MAX_HEIGHT = 500;
 
 	$effect(() => {
 		if (layoutStore.layout?.bottom_panel) {
@@ -18,21 +21,25 @@
 	});
 
 	const handleResize = async (delta: number) => {
-		const newHeight = Math.max(50, Math.min(600, currentHeight - delta));
-		currentHeight = newHeight;
-		await layoutStore.updateRegionSize("bottom_panel", newHeight);
-	};
-
-	const toggle = async () => {
-		await layoutStore.toggleRegion("bottom_panel");
+		// For bottom panel, negative delta means dragging up (making it taller)
+		const newHeight = Math.max(
+			MIN_HEIGHT,
+			Math.min(MAX_HEIGHT, currentHeight - delta),
+		);
+		if (newHeight !== currentHeight) {
+			currentHeight = newHeight;
+			await layoutStore.updateRegionSize("bottom_panel", newHeight);
+		}
 	};
 </script>
 
 {#if layoutStore.layout?.bottom_panel.visible}
 	<div
-		class="bottom-panel flex flex-col border-t border-border bg-muted/30"
+		class="bottom-panel flex shrink-0 flex-col border-t border-border bg-muted/30"
 		style="height: {currentHeight}px;"
 	>
+		<Resizer direction="vertical" onResize={handleResize} />
+
 		<!-- Tab Bar -->
 		<div class="flex items-center gap-1 border-b border-border px-2">
 			<div class="flex h-8 items-center gap-1.5 px-2 text-sm font-medium">
@@ -51,13 +58,11 @@
 				</div>
 			{/if}
 		</div>
-
-		<Resizer direction="vertical" onResize={handleResize} />
 	</div>
 {/if}
 
 <style>
 	.bottom-panel {
-		transition: height 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+		transition: height 0.05s ease-out;
 	}
 </style>

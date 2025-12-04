@@ -73,17 +73,20 @@
 			<!-- Future: Additional left sidebar content -->
 		</LeftSidebar>
 
-		<!-- Editor Area -->
-		<EditorArea>
-			{@render children()}
-		</EditorArea>
+		<!-- Center Area (Editor + Bottom Panel) -->
+		<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+			<!-- Editor Area -->
+			<EditorArea>
+				{@render children()}
+			</EditorArea>
+
+			<!-- Bottom Panel (Problems) - between left and right sidebars -->
+			<BottomPanel />
+		</div>
 
 		<!-- Right Sidebar (Chat) -->
 		<RightSidebar />
 	</div>
-
-	<!-- Bottom Panel (Problems) -->
-	<BottomPanel />
 
 	<!-- Status Bar -->
 	<StatusBar />

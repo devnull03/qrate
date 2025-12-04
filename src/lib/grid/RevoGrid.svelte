@@ -2,11 +2,7 @@
 	import { RevoGrid as RevoGridComponent } from "@revolist/svelte-datagrid";
 	import type { ColumnRegular, DataType } from "@revolist/revogrid";
 	import { Button } from "$lib/components/ui/button/index.js";
-	import { Input } from "$lib/components/ui/input/index.js";
-	import { Label } from "$lib/components/ui/label/index.js";
 	import { qrateStore, type ColumnDef } from "$lib/stores/qrateStore.svelte";
-	import ArrowDownIcon from "@lucide/svelte/icons/arrow-down";
-	import ArrowUpIcon from "@lucide/svelte/icons/arrow-up";
 
 	let grid: any = $state();
 	let gridContainer: HTMLDivElement | null = $state(null);
@@ -24,6 +20,7 @@
 			readonly: true,
 			sortable: false,
 			filter: false,
+			pin: "colPinStart",
 			cellProperties: () => ({
 				class: "row-number-cell",
 			}),
@@ -279,7 +276,7 @@
 </script>
 
 <div
-	class="flex h-full w-full flex-col overflow-hidden p-4"
+	class="flex h-full w-full flex-col overflow-hidden"
 	bind:this={gridContainer}
 >
 	{#if !qrateStore.isFileOpen}
@@ -298,7 +295,6 @@
 			</div>
 		</div>
 	{:else}
-	
 		<!-- Grid Controls -->
 		<!-- <div class="mb-2 flex items-center justify-between gap-4">
 			<div class="flex items-center gap-2">
@@ -351,9 +347,7 @@
 			</div>
 		</div> -->
 
-		<div
-			class="min-h-0 flex-1 overflow-hidden rounded-lg border border-border"
-		>
+		<div class="min-h-0 flex-1 overflow-hidden">
 			<RevoGridComponent
 				bind:this={grid}
 				source={revoRows}

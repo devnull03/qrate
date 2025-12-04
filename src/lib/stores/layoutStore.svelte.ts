@@ -332,8 +332,8 @@ class LayoutStore {
 			},
 			bottom_panel: {
 				visible: false,
-				height: 300,
-				active_tab: "",
+				height: 200,
+				active_tab: "problems",
 			},
 			chat_sidebar: {
 				visible: true,

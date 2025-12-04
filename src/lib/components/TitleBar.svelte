@@ -2,12 +2,15 @@
 	import { invoke } from "@tauri-apps/api/core";
 	import { open, save } from "@tauri-apps/plugin-dialog";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
+	import { layoutStore } from "$lib/stores/layoutStore.svelte";
 	import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import MinusIcon from "@lucide/svelte/icons/minus";
 	import SquareIcon from "@lucide/svelte/icons/square";
 	import XIcon from "@lucide/svelte/icons/x";
 	import PanelLeftIcon from "@lucide/svelte/icons/panel-left";
+	import PanelRightIcon from "@lucide/svelte/icons/panel-right";
+	import PanelBottomIcon from "@lucide/svelte/icons/panel-bottom";
 	import {
 		minimizeWindow,
 		toggleMaximizeWindow,
@@ -15,14 +18,31 @@
 	} from "$lib/utils/window";
 	import { getFileName } from "$lib/utils/path";
 
-	interface Props {
-			onToggleSidebar?: () => void;
-			sidebarOpen?: boolean;
-		}
-
-	let { onToggleSidebar, sidebarOpen = true }: Props = $props();
-
 	let isProcessing = $state(false);
+
+	// Panel visibility states
+	let leftSidebarVisible = $derived(
+		layoutStore.layout?.left_sidebar?.visible ?? false,
+	);
+	let rightSidebarVisible = $derived(
+		layoutStore.layout?.right_sidebar?.visible ?? true,
+	);
+	let bottomPanelVisible = $derived(
+		layoutStore.layout?.bottom_panel?.visible ?? false,
+	);
+
+	// Panel toggle actions
+	async function toggleLeftSidebar() {
+		await layoutStore.toggleRegion("left_sidebar");
+	}
+
+	async function toggleRightSidebar() {
+		await layoutStore.toggleRegion("right_sidebar");
+	}
+
+	async function toggleBottomPanel() {
+		await layoutStore.toggleRegion("bottom_panel");
+	}
 
 	// File menu actions
 	async function handleNew() {
@@ -169,19 +189,6 @@
 	data-tauri-drag-region
 >
 	<div class="flex h-full items-center">
-		<!-- Sidebar Toggle Button -->
-		<Button
-			variant="ghost"
-			size="icon"
-			class="h-full w-10 rounded-none"
-			onclick={onToggleSidebar}
-			title={sidebarOpen ? "Hide Sidebar" : "Show Sidebar"}
-		>
-			<PanelLeftIcon class="size-4" />
-		</Button>
-
-		<div class="mx-1 h-4 w-px bg-border"></div>
-
 		<DropdownMenu.Root>
 			<DropdownMenu.Trigger
 				class="flex h-full items-center bg-transparent px-3 text-[0.8125rem] text-foreground hover:bg-accent"
@@ -284,9 +291,17 @@
 				View
 			</DropdownMenu.Trigger>
 			<DropdownMenu.Content align="start" class="min-w-40">
-				<DropdownMenu.Item onclick={onToggleSidebar}>
-					{sidebarOpen ? "Hide Sidebar" : "Show Sidebar"}
+				<DropdownMenu.Item onclick={toggleLeftSidebar}>
+					{leftSidebarVisible ? "Hide" : "Show"} Left Sidebar
 					<DropdownMenu.Shortcut>Ctrl+B</DropdownMenu.Shortcut>
+				</DropdownMenu.Item>
+				<DropdownMenu.Item onclick={toggleRightSidebar}>
+					{rightSidebarVisible ? "Hide" : "Show"} Right Sidebar
+					<DropdownMenu.Shortcut>Ctrl+Alt+B</DropdownMenu.Shortcut>
+				</DropdownMenu.Item>
+				<DropdownMenu.Item onclick={toggleBottomPanel}>
+					{bottomPanelVisible ? "Hide" : "Show"} Bottom Panel
+					<DropdownMenu.Shortcut>Ctrl+`</DropdownMenu.Shortcut>
 				</DropdownMenu.Item>
 				<DropdownMenu.Separator />
 				<DropdownMenu.Item onclick={handleSettings}>
@@ -304,7 +319,51 @@
 		{windowTitle}
 	</div>
 
-	<div class="flex h-full">
+	<div class="flex h-full items-center">
+		<!-- Panel Toggle Buttons -->
+		<Button
+			variant="ghost"
+			size="icon"
+			class="h-full w-9 rounded-none {leftSidebarVisible
+				? 'bg-accent/50'
+				: ''}"
+			onclick={toggleLeftSidebar}
+			title={leftSidebarVisible
+				? "Hide Left Sidebar (Ctrl+B)"
+				: "Show Left Sidebar (Ctrl+B)"}
+		>
+			<PanelLeftIcon class="size-4" />
+		</Button>
+		<Button
+			variant="ghost"
+			size="icon"
+			class="h-full w-9 rounded-none {bottomPanelVisible
+				? 'bg-accent/50'
+				: ''}"
+			onclick={toggleBottomPanel}
+			title={bottomPanelVisible
+				? "Hide Bottom Panel (Ctrl+`)"
+				: "Show Bottom Panel (Ctrl+`)"}
+		>
+			<PanelBottomIcon class="size-4" />
+		</Button>
+		<Button
+			variant="ghost"
+			size="icon"
+			class="h-full w-9 rounded-none {rightSidebarVisible
+				? 'bg-accent/50'
+				: ''}"
+			onclick={toggleRightSidebar}
+			title={rightSidebarVisible
+				? "Hide Right Sidebar (Ctrl+Alt+B)"
+				: "Show Right Sidebar (Ctrl+Alt+B)"}
+		>
+			<PanelRightIcon class="size-4" />
+		</Button>
+
+		<div class="mx-1 h-4 w-px bg-border"></div>
+
+		<!-- Window Controls -->
 		<Button
 			variant="ghost"
 			size="icon"
