@@ -252,18 +252,7 @@ impl WindowManager {
         Ok(())
     }
 
-    /// Get window registry reference
     pub fn registry(&self) -> &WindowRegistry {
         &self.registry
-    }
-
-    /// Get layout manager reference
-    pub fn layout_manager(&self) -> &Arc<Mutex<LayoutManager>> {
-        &self.layout_manager
-    }
-
-    /// Get IPC helper reference
-    pub fn ipc(&self) -> &WindowIPC {
-        &self.ipc
     }
 }

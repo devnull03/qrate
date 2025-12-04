@@ -26,7 +26,6 @@ pub enum PipelineError {
     Io(std::io::Error),
     Decode(String),
     Resize(String),
-    Encode(String),
 }
 
 impl std::fmt::Display for PipelineError {
@@ -35,7 +34,6 @@ impl std::fmt::Display for PipelineError {
             PipelineError::Io(e) => write!(f, "IO error: {}", e),
             PipelineError::Decode(e) => write!(f, "Decode error: {}", e),
             PipelineError::Resize(e) => write!(f, "Resize error: {}", e),
-            PipelineError::Encode(e) => write!(f, "Encode error: {}", e),
         }
     }
 }

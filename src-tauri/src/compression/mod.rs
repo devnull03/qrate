@@ -12,11 +12,6 @@ pub mod commands;
 pub mod pipeline;
 pub mod processor;
 
-pub use cache::ThumbnailCache;
-pub use commands::*;
-pub use pipeline::ThumbnailPipeline;
-pub use processor::ThumbnailProcessor;
-
 /// Default thumbnail height in pixels (maintains aspect ratio)
 pub const DEFAULT_THUMBNAIL_HEIGHT: u32 = 300;
 

@@ -27,7 +27,7 @@ pub struct ThumbnailProgress {
 }
 
 #[derive(Debug, Clone)]
-pub struct FileInfo {
+struct FileInfo {
     path: PathBuf,
     mtime: i64,
 }
@@ -46,21 +46,6 @@ pub struct ThumbnailProcessor {
 }
 
 impl ThumbnailProcessor {
-    pub fn new(cache: ThumbnailCache) -> Self {
-        Self {
-            cache,
-            total: AtomicUsize::new(0),
-            processed: AtomicUsize::new(0),
-            succeeded: AtomicUsize::new(0),
-            failed: AtomicUsize::new(0),
-            skipped: AtomicUsize::new(0),
-            is_processing: AtomicBool::new(false),
-            cancel_flag: AtomicBool::new(false),
-            current_file: RwLock::new(None),
-            app_handle: None,
-        }
-    }
-
     pub fn with_app_handle(cache: ThumbnailCache, app_handle: AppHandle) -> Self {
         Self {
             cache,
@@ -74,10 +59,6 @@ impl ThumbnailProcessor {
             current_file: RwLock::new(None),
             app_handle: Some(app_handle),
         }
-    }
-
-    pub fn set_app_handle(&mut self, app_handle: AppHandle) {
-        self.app_handle = Some(app_handle);
     }
 
     pub fn get_progress(&self) -> ThumbnailProgress {
@@ -123,7 +104,7 @@ impl ThumbnailProcessor {
         }
     }
 
-    pub fn scan_directory(&self, dir: &Path) -> Vec<FileInfo> {
+    fn scan_directory(&self, dir: &Path) -> Vec<FileInfo> {
         WalkDir::new(dir)
             .follow_links(true)
             .into_iter()
@@ -157,37 +138,6 @@ impl ThumbnailProcessor {
             .collect()
     }
 
-    pub fn scan_paths(&self, paths: &[PathBuf]) -> Vec<FileInfo> {
-        paths
-            .iter()
-            .filter(|path| path.is_file())
-            .filter_map(|path| {
-                let ext = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e.to_lowercase())
-                    .unwrap_or_default();
-
-                if !is_supported_extension(&ext) {
-                    return None;
-                }
-
-                let mtime = path
-                    .metadata()
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
-
-                Some(FileInfo {
-                    path: path.clone(),
-                    mtime,
-                })
-            })
-            .collect()
-    }
-
     fn filter_uncached(&self, files: Vec<FileInfo>) -> Vec<FileInfo> {
         let items: Vec<(PathBuf, i64)> = files.iter().map(|f| (f.path.clone(), f.mtime)).collect();
 
@@ -208,32 +158,6 @@ impl ThumbnailProcessor {
         self.is_processing.store(true, Ordering::Relaxed);
 
         let all_files = self.scan_directory(dir);
-        let total_scanned = all_files.len();
-        let files_to_process = self.filter_uncached(all_files);
-        let skipped = total_scanned - files_to_process.len();
-
-        self.total.store(total_scanned, Ordering::Relaxed);
-        self.skipped.store(skipped, Ordering::Relaxed);
-        self.processed.store(skipped, Ordering::Relaxed);
-        self.emit_progress();
-
-        self.process_batch(&files_to_process);
-
-        self.is_processing.store(false, Ordering::Relaxed);
-        *self.current_file.write() = None;
-        self.emit_complete();
-        self.get_progress()
-    }
-
-    pub fn process_paths(&self, paths: &[PathBuf]) -> ThumbnailProgress {
-        if self.is_processing.load(Ordering::Relaxed) {
-            return self.get_progress();
-        }
-
-        self.reset();
-        self.is_processing.store(true, Ordering::Relaxed);
-
-        let all_files = self.scan_paths(paths);
         let total_scanned = all_files.len();
         let files_to_process = self.filter_uncached(all_files);
         let skipped = total_scanned - files_to_process.len();
@@ -298,10 +222,6 @@ impl ThumbnailProcessor {
             }
         });
     }
-
-    pub fn cache(&self) -> &ThumbnailCache {
-        &self.cache
-    }
 }
 
 pub fn spawn_directory_processor(
@@ -325,14 +245,29 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
-    #[test]
-    fn test_progress_tracking() {
+    fn create_test_processor() -> ThumbnailProcessor {
         let dir = tempdir().unwrap();
         let qrate_path = dir.path().join("test.qrate");
         fs::write(&qrate_path, "").unwrap();
 
         let cache = ThumbnailCache::open(&qrate_path).unwrap();
-        let processor = ThumbnailProcessor::new(cache);
+        ThumbnailProcessor {
+            cache,
+            total: AtomicUsize::new(0),
+            processed: AtomicUsize::new(0),
+            succeeded: AtomicUsize::new(0),
+            failed: AtomicUsize::new(0),
+            skipped: AtomicUsize::new(0),
+            is_processing: AtomicBool::new(false),
+            cancel_flag: AtomicBool::new(false),
+            current_file: RwLock::new(None),
+            app_handle: None,
+        }
+    }
+
+    #[test]
+    fn test_progress_tracking() {
+        let processor = create_test_processor();
 
         let progress = processor.get_progress();
         assert_eq!(progress.total, 0);
@@ -341,12 +276,7 @@ mod tests {
 
     #[test]
     fn test_cancel_flag() {
-        let dir = tempdir().unwrap();
-        let qrate_path = dir.path().join("test.qrate");
-        fs::write(&qrate_path, "").unwrap();
-
-        let cache = ThumbnailCache::open(&qrate_path).unwrap();
-        let processor = ThumbnailProcessor::new(cache);
+        let processor = create_test_processor();
 
         assert!(!processor.cancel_flag.load(Ordering::Relaxed));
         processor.cancel();

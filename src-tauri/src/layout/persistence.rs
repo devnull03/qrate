@@ -78,8 +78,8 @@ pub fn save_layout(conn: &Connection, layout: &WindowLayout) -> Result<()> {
     })?;
 
     conn.execute(
-        "INSERT OR REPLACE INTO workspace_layouts 
-         (window_id, workspace_path, layout_json, version, updated_at) 
+        "INSERT OR REPLACE INTO workspace_layouts
+         (window_id, workspace_path, layout_json, version, updated_at)
          VALUES (?1, ?2, ?3, ?4, strftime('%s', 'now'))",
         params![
             layout.window_id,
@@ -126,60 +126,3 @@ pub fn delete_layout(conn: &Connection, window_id: &str) -> Result<()> {
     )?;
     Ok(())
 }
-
-/// Get all layouts for a specific workspace path
-pub fn get_layouts_by_workspace(
-    conn: &Connection,
-    workspace_path: &str,
-) -> Result<Vec<WindowLayout>> {
-    let mut stmt =
-        conn.prepare("SELECT layout_json FROM workspace_layouts WHERE workspace_path = ?1")?;
-
-    let layouts = stmt
-        .query_map([workspace_path], |row| {
-            let json_str: String = row.get(0)?;
-            Ok(json_str)
-        })?
-        .collect::<Result<Vec<_>>>()?;
-
-    let mut result = Vec::new();
-    for json_str in layouts {
-        match serde_json::from_str::<WindowLayout>(&json_str) {
-            Ok(layout) => result.push(layout),
-            Err(e) => {
-                eprintln!("Failed to deserialize layout: {}", e);
-                // Continue with other layouts
-            }
-        }
-    }
-
-    Ok(result)
-}
-
-/// Get all window IDs in the database
-pub fn get_all_window_ids(conn: &Connection) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare("SELECT window_id FROM workspace_layouts")?;
-    let window_ids = stmt
-        .query_map([], |row| {
-            let id: String = row.get(0)?;
-            Ok(id)
-        })?
-        .collect::<Result<Vec<_>>>()?;
-    Ok(window_ids)
-}
-
-/// Clean up old layouts (older than specified days)
-pub fn cleanup_old_layouts(conn: &Connection, days: i64) -> Result<usize> {
-    let cutoff = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
-        - (days * 24 * 60 * 60);
-    let deleted = conn.execute(
-        "DELETE FROM workspace_layouts WHERE updated_at < ?1",
-        [cutoff],
-    )?;
-    Ok(deleted)
-}
-
-// Tests will be added later with proper test dependencies

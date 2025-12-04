@@ -89,21 +89,6 @@ impl LayoutManager {
         Ok(())
     }
 
-    /// Flush all pending saves (force immediate save)
-    pub fn flush(&self) -> Result<(), String> {
-        let layouts_to_save: Vec<WindowLayout> = self
-            .layouts
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect();
-
-        for layout in layouts_to_save {
-            self.save_layout_immediate(layout)?;
-        }
-
-        Ok(())
-    }
-
     /// Update a specific region size in a layout
     pub fn update_region_size(
         &self,

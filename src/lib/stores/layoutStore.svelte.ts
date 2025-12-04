@@ -169,7 +169,7 @@ class LayoutStore {
 		// Debounce saves (300ms as per plan)
 		this.saveDebounceTimer = window.setTimeout(async () => {
 			try {
-				await invoke("save_layout_cmd", {
+				await invoke("save_layout", {
 					windowId: this.windowId,
 					layout: this.layout,
 				});
