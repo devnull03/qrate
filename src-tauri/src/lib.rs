@@ -64,6 +64,13 @@ struct ImageResponse {
     mime_type: String,
 }
 
+/// Response structure for CSV preview (headers and first data row)
+#[derive(Debug, Serialize, Deserialize)]
+struct CsvPreviewResponse {
+    headers: Vec<String>,
+    first_row: Option<Vec<String>>,
+}
+
 /// Load an image from disk, optionally resizing it for thumbnails
 #[tauri::command]
 fn load_image(file_path: String, max_width: u32, max_height: u32) -> Result<ImageResponse, String> {
@@ -494,6 +501,31 @@ fn import_csv_to_qrate(
     })
 }
 
+/// Preview a CSV file - returns headers and first data row
+/// Used to validate file extension settings before import
+#[tauri::command]
+fn preview_csv(csv_path: String) -> Result<CsvPreviewResponse, String> {
+    let mut reader =
+        csv::Reader::from_path(&csv_path).map_err(|e| format!("Failed to open CSV file: {}", e))?;
+
+    let headers: Vec<String> = reader
+        .headers()
+        .map_err(|e| format!("Failed to read CSV headers: {}", e))?
+        .iter()
+        .map(|h| h.to_string())
+        .collect();
+
+    // Get the first data row
+    let first_row = if let Some(record) = reader.records().next() {
+        let record = record.map_err(|e| format!("Failed to read CSV record: {}", e))?;
+        Some(record.iter().map(|f| f.to_string()).collect())
+    } else {
+        None
+    };
+
+    Ok(CsvPreviewResponse { headers, first_row })
+}
+
 /// Show the main window and hide the projects window
 #[tauri::command]
 fn show_main_window(app: AppHandle) -> Result<(), String> {
@@ -744,6 +776,7 @@ pub fn run() {
             open_qrate_file,
             close_qrate_file,
             import_csv_to_qrate,
+            preview_csv,
             // Data operations
             get_rows,
             update_cell,

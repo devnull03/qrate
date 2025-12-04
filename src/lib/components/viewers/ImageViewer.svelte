@@ -79,7 +79,7 @@
 </script>
 
 <div
-	class="image-viewer group relative flex items-center justify-center overflow-hidden bg-muted/50 {className}"
+	class="image-viewer group flex flex-col bg-muted/50 {className} relative"
 	class:thumbnail
 >
 	{#if loading}
@@ -103,7 +103,6 @@
 			{/if}
 		</div>
 	{:else if imageData}
-		<img src={imageData} {alt} class="h-full w-full object-contain" />
 		{#if showOpenButton}
 			<div
 				class="absolute right-2 top-2 opacity-0 transition-opacity group-hover:opacity-100"
@@ -119,6 +118,15 @@
 				</Button>
 			</div>
 		{/if}
+		<div
+			class="flex min-h-0 flex-1 items-center justify-center overflow-hidden"
+		>
+			<img
+				src={imageData}
+				{alt}
+				class="max-h-full max-w-full object-contain!"
+			/>
+		</div>
 	{:else}
 		<div
 			class="flex flex-col items-center justify-center gap-2 p-4 text-muted-foreground"
@@ -133,13 +141,11 @@
 
 <style>
 	.image-viewer {
-		width: 100%;
 		min-height: 60px;
 	}
 
 	.image-viewer.thumbnail {
 		min-height: 40px;
 		min-width: 40px;
-		width: auto;
 	}
 </style>

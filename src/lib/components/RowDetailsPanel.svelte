@@ -215,14 +215,19 @@
 								<div
 									class="group rounded-md border border-border overflow-hidden"
 								>
-									<ImageViewer
-										filePath={file.filePath}
-										alt={file.fileName}
-										showOpenButton={true}
-										class="w-full max-h-[50vh]"
-									/>
 									<div
-										class="flex items-center gap-2 p-2 bg-muted/30"
+										class="flex items-center justify-center overflow-hidden"
+										style="max-height: calc(50vh - 44px);"
+									>
+										<ImageViewer
+											filePath={file.filePath}
+											alt={file.fileName}
+											showOpenButton={true}
+											class="max-h-[calc(50vh-44px)]"
+										/>
+									</div>
+									<div
+										class="flex items-center gap-2 p-2 bg-muted/30 shrink-0"
 									>
 										<ImageIcon
 											class="size-4 text-muted-foreground shrink-0"
