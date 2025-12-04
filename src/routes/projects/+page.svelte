@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from "svelte";
 	import { invoke } from "@tauri-apps/api/core";
+	import { listen } from "@tauri-apps/api/event";
 	import { open } from "@tauri-apps/plugin-dialog";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
 	import {
@@ -23,18 +24,40 @@
 	let showImportWizard = $state(false);
 
 	onMount(() => {
-		let unsubscribe: (() => void) | null = null;
+		let unsubscribeRecent: (() => void) | null = null;
+		let unsubscribeOpenFile: (() => void) | null = null;
 
 		(async () => {
 			await initGlobalSettings();
 			await initRecentFiles();
-			unsubscribe = subscribeToRecentFiles((files) => {
+			unsubscribeRecent = subscribeToRecentFiles((files) => {
 				recentFiles = files;
+			});
+
+			unsubscribeOpenFile = await listen<string>("open-file", (event) => {
+				handleOpenFilePath(event.payload);
 			});
 		})();
 
-		return () => unsubscribe?.();
+		return () => {
+			unsubscribeRecent?.();
+			unsubscribeOpenFile?.();
+		};
 	});
+
+	async function handleOpenFilePath(path: string) {
+		isProcessing = true;
+		error = null;
+
+		try {
+			await qrateStore.openFile(path);
+			await showMainWindow();
+		} catch (err) {
+			error = err instanceof Error ? err.message : String(err);
+		} finally {
+			isProcessing = false;
+		}
+	}
 
 	async function showMainWindow() {
 		await invoke("show_main_window").catch((err) => {

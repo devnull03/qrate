@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use image::ImageReader;
 use std::io::Cursor;
@@ -470,12 +470,18 @@ fn import_csv_to_qrate(
 
     // Open or create qrate file
     let path_buf = PathBuf::from(&qrate_path);
-    let conn = if path_buf.exists() {
-        database::open_database(&path_buf)
-    } else {
+    let is_new = !path_buf.exists();
+    let conn = if is_new {
         database::init_database(&path_buf)
+    } else {
+        database::open_database(&path_buf)
     }
     .map_err(|e| format!("Failed to open/create database: {}", e))?;
+
+    // Create marker file if this is a new project
+    if is_new {
+        std::fs::write(&path_buf, "").map_err(|e| format!("Failed to create marker file: {}", e))?;
+    }
 
     // Import data
     database::import_csv_data(&conn, headers, rows)
@@ -747,7 +753,6 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            // Initialize layout manager
             let db_path = get_layout_db_path(app.handle())
                 .map_err(|e| format!("Failed to get layout DB path: {}", e))?;
             let layout_manager = Arc::new(Mutex::new(
@@ -755,17 +760,30 @@ pub fn run() {
                     .map_err(|e| format!("Failed to create layout manager: {}", e))?
             ));
 
-            // Initialize window manager
             let window_manager = WindowManager::new(
                 app.handle().clone(),
                 layout_manager.clone(),
             );
 
-            // Store in app state
             app.manage(LayoutState::new(
                 layout_manager,
                 window_manager,
             ));
+
+            // Handle CLI arguments for "open with" support
+            let args: Vec<String> = std::env::args().collect();
+            if args.len() > 1 {
+                let file_path = &args[1];
+                if file_path.ends_with(".qrate") && std::path::Path::new(file_path).exists() {
+                    let handle = app.handle().clone();
+                    let path = file_path.clone();
+                    std::thread::spawn(move || {
+                        // Small delay to ensure windows are ready
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        let _ = handle.emit("open-file", path);
+                    });
+                }
+            }
 
             Ok(())
         })
