@@ -22,59 +22,34 @@
 	let recentFiles = $state<RecentFile[]>([]);
 	let showImportWizard = $state(false);
 
-	// Initialize stores on mount
 	onMount(() => {
-		console.log("[Projects] Initializing...");
-
 		let unsubscribe: (() => void) | null = null;
 
-		// Initialize stores asynchronously
 		(async () => {
-			// Initialize global settings
 			await initGlobalSettings();
-
-			// Initialize and subscribe to recent files
 			await initRecentFiles();
 			unsubscribe = subscribeToRecentFiles((files) => {
 				recentFiles = files;
 			});
 		})();
 
-		return () => {
-			if (unsubscribe) {
-				unsubscribe();
-			}
-		};
+		return () => unsubscribe?.();
 	});
 
-	/**
-	 * After successfully loading a project, show the main window
-	 */
 	async function showMainWindow() {
-		try {
-			await invoke("show_main_window");
-		} catch (err) {
-			console.error("Failed to show main window:", err);
+		await invoke("show_main_window").catch((err) => {
 			error = err instanceof Error ? err.message : String(err);
-		}
+		});
 	}
 
-	/**
-	 * Open an existing .qrate file
-	 */
 	async function handleOpenQrate() {
-		try {
-			isProcessing = true;
-			error = null;
+		isProcessing = true;
+		error = null;
 
+		try {
 			const selected = await open({
 				multiple: false,
-				filters: [
-					{
-						name: "Qrate Files",
-						extensions: ["qrate"],
-					},
-				],
+				filters: [{ name: "Qrate Files", extensions: ["qrate"] }],
 			});
 
 			if (selected && typeof selected === "string") {
@@ -82,68 +57,30 @@
 				await showMainWindow();
 			}
 		} catch (err) {
-			console.error("Failed to open .qrate file:", err);
 			error = err instanceof Error ? err.message : String(err);
 		} finally {
 			isProcessing = false;
 		}
 	}
 
-	/**
-	 * Start the import wizard
-	 */
-	function startImportWizard() {
-		showImportWizard = true;
-		error = null;
-	}
-
-	/**
-	 * Cancel the import wizard
-	 */
-	function cancelImportWizard() {
-		showImportWizard = false;
-	}
-
-	/**
-	 * Handle import completion
-	 */
-	async function handleImportComplete() {
-		showImportWizard = false;
-		await showMainWindow();
-	}
-
-	/**
-	 * Handle import/wizard error
-	 */
-	function handleError(err: string) {
-		error = err;
-	}
-
-	/**
-	 * Open a recent file
-	 */
 	async function handleOpenRecent(path: string) {
-		try {
-			isProcessing = true;
-			error = null;
+		isProcessing = true;
+		error = null;
 
+		try {
 			await qrateStore.openFile(path);
 			await showMainWindow();
 		} catch (err) {
-			console.error("Failed to open recent file:", err);
 			error = err instanceof Error ? err.message : String(err);
-			// Remove from recent files if it no longer exists
 			removeRecentFile(path);
 		} finally {
 			isProcessing = false;
 		}
 	}
 
-	/**
-	 * Remove a file from recent list
-	 */
-	async function handleRemoveRecent(path: string) {
-		await removeRecentFile(path);
+	async function handleImportComplete() {
+		showImportWizard = false;
+		await showMainWindow();
 	}
 </script>
 
@@ -156,10 +93,8 @@
 		class:justify-center={!showImportWizard}
 	>
 		<div class="w-full max-w-2xl space-y-8">
-			<!-- Header -->
 			<ProjectsHeader />
 
-			<!-- Error Display -->
 			{#if error}
 				<div
 					class="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive"
@@ -169,30 +104,29 @@
 			{/if}
 
 			{#if showImportWizard}
-				<!-- Import Wizard -->
 				<ImportWizard
 					onComplete={handleImportComplete}
-					onCancel={cancelImportWizard}
-					onError={handleError}
+					onCancel={() => (showImportWizard = false)}
+					onError={(err) => (error = err)}
 				/>
 			{:else}
-				<!-- Actions -->
 				<ProjectActions
 					{isProcessing}
-					onNewProject={startImportWizard}
+					onNewProject={() => {
+						showImportWizard = true;
+						error = null;
+					}}
 					onOpenProject={handleOpenQrate}
 				/>
 
-				<!-- Recent Files -->
 				<RecentProjects
 					{recentFiles}
 					{isProcessing}
 					onOpenRecent={handleOpenRecent}
-					onRemoveRecent={handleRemoveRecent}
+					onRemoveRecent={removeRecentFile}
 				/>
 			{/if}
 
-			<!-- Loading Overlay -->
 			{#if isProcessing}
 				<div
 					class="fixed inset-0 flex items-center justify-center bg-background/80 backdrop-blur-sm"

@@ -16,14 +16,9 @@
 	let { recentFiles, isProcessing, onOpenRecent, onRemoveRecent }: Props =
 		$props();
 
-	/**
-	 * Format a timestamp as a relative time string
-	 */
 	function formatRelativeTime(timestamp: number): string {
-		const now = Date.now();
-		const diff = now - timestamp;
-		const seconds = Math.floor(diff / 1000);
-		const minutes = Math.floor(seconds / 60);
+		const diff = Date.now() - timestamp;
+		const minutes = Math.floor(diff / 60000);
 		const hours = Math.floor(minutes / 60);
 		const days = Math.floor(hours / 24);
 
@@ -43,47 +38,45 @@
 				Recent Projects
 			</Card.Title>
 		</Card.Header>
-		<Card.Content>
-			<div class="space-y-2">
-				{#each recentFiles as file (file.path)}
-					<div
-						class="group flex w-full items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-muted"
+		<Card.Content class="space-y-2">
+			{#each recentFiles as file (file.path)}
+				<div
+					class="group flex w-full items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-muted"
+				>
+					<button
+						onclick={() => onOpenRecent(file.path)}
+						disabled={isProcessing}
+						class="flex min-w-0 flex-1 items-center gap-3 disabled:opacity-50"
 					>
-						<button
-							onclick={() => onOpenRecent(file.path)}
-							disabled={isProcessing}
-							class="flex min-w-0 flex-1 items-center gap-3 disabled:opacity-50"
-						>
-							<FileIcon
-								class="size-5 shrink-0 text-muted-foreground"
-							/>
-							<div class="min-w-0 flex-1">
-								<p class="truncate text-left font-medium">
-									{file.name}
-								</p>
-								<p
-									class="truncate text-left text-xs text-muted-foreground"
-									title={file.path}
-								>
-									{file.path}
-								</p>
-							</div>
-							<span
-								class="shrink-0 text-xs text-muted-foreground"
+						<FileIcon
+							class="size-5 shrink-0 text-muted-foreground"
+						/>
+						<div class="min-w-0 flex-1">
+							<p class="truncate text-left font-medium">
+								{file.name}
+							</p>
+							<p
+								class="truncate text-left text-xs text-muted-foreground"
+								title={file.path}
 							>
-								{formatRelativeTime(file.lastOpened)}
-							</span>
-						</button>
-						<button
-							onclick={async () => await onRemoveRecent(file.path)}
-							class="shrink-0 rounded p-1 opacity-0 transition-opacity hover:bg-muted-foreground/20 group-hover:opacity-100"
-							title="Remove from recent"
-						>
-							<XIcon class="size-4 text-muted-foreground" />
-						</button>
-					</div>
-				{/each}
-			</div>
+								{file.path}
+							</p>
+						</div>
+						<span class="shrink-0 text-xs text-muted-foreground">
+							{formatRelativeTime(file.lastOpened)}
+						</span>
+					</button>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						class="shrink-0 opacity-0 group-hover:opacity-100"
+						onclick={() => onRemoveRecent(file.path)}
+						title="Remove from recent"
+					>
+						<XIcon class="size-4" />
+					</Button>
+				</div>
+			{/each}
 		</Card.Content>
 	</Card.Root>
 {/if}
