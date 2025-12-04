@@ -2,7 +2,6 @@ import { menuService, shortcut, type TopLevelMenu } from "./index";
 import { layoutStore } from "$lib/stores/layoutStore.svelte";
 import { chatStore } from "$lib/stores/chatStore.svelte";
 
-// View menu command IDs
 export const VIEW_COMMANDS = {
 	TOGGLE_LEFT_SIDEBAR: "view.toggleLeftSidebar",
 	TOGGLE_RIGHT_SIDEBAR: "view.toggleRightSidebar",
@@ -10,37 +9,12 @@ export const VIEW_COMMANDS = {
 	TOGGLE_CHAT: "view.toggleChat",
 } as const;
 
-/**
- * Toggle the left sidebar visibility
- */
-export async function toggleLeftSidebar(): Promise<void> {
-	await layoutStore.toggleRegion("left_sidebar");
-}
+export const toggleLeftSidebar = () => layoutStore.toggleRegion("left_sidebar");
+export const toggleRightSidebar = () =>
+	layoutStore.toggleRegion("right_sidebar");
+export const toggleBottomPanel = () => layoutStore.toggleRegion("bottom_panel");
+export const toggleChat = () => chatStore.toggleVisible();
 
-/**
- * Toggle the right sidebar (chat) visibility
- */
-export async function toggleRightSidebar(): Promise<void> {
-	await layoutStore.toggleRegion("right_sidebar");
-}
-
-/**
- * Toggle the bottom panel visibility
- */
-export async function toggleBottomPanel(): Promise<void> {
-	await layoutStore.toggleRegion("bottom_panel");
-}
-
-/**
- * Toggle chat visibility
- */
-export async function toggleChat(): Promise<void> {
-	await chatStore.toggleVisible();
-}
-
-/**
- * Register the View menu with all toggle options
- */
 export function registerViewMenu(): void {
 	const viewMenu: TopLevelMenu = {
 		id: "view",

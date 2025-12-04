@@ -79,7 +79,7 @@
 		// Find the file column
 		const fileColumn = qrateStore.columns.find(
 			(col) =>
-				col.name.toLowerCase() === fileColumnName.toLowerCase() ||
+				col.name.toLowerCase() === (fileColumnName as string).toLowerCase() ||
 				col.id === fileColumnName,
 		);
 
@@ -92,8 +92,8 @@
 			if (!fileValue) continue;
 
 			const filePath = resolveFilePath(
-				filePathPattern,
-				filesFolder,
+				filePathPattern as string,
+				filesFolder as string,
 				row,
 				fileColumn.id,
 			);

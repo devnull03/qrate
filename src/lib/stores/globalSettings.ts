@@ -21,6 +21,8 @@ const fallbackDefaults: GlobalSettings = {
 	reopenLastProject: true,
 	gridRowHeight: 32,
 	gridAlternateRowColors: true,
+	splitDirection: "right",
+	splitSize: 65,
 };
 
 let cachedSettings: GlobalSettings = { ...fallbackDefaults };
@@ -88,12 +90,12 @@ export async function setGlobalSetting<K extends keyof GlobalSettings>(
 	await storeAny.save();
 	cachedSettings[key] = value;
 	notifySubscribers();
-	
+
 	// Broadcast settings change to all windows
 	if (typeof window !== "undefined") {
 		const { emit } = await import("@tauri-apps/api/event");
 		await emit("settings:updated", cachedSettings);
-		
+
 		// Special handling for theme changes
 		if (key === "theme") {
 			await emit("theme:changed", { theme: value });
@@ -116,12 +118,12 @@ export async function setGlobalSettings(
 
 	await storeAny.save();
 	notifySubscribers();
-	
+
 	// Broadcast settings change to all windows
 	if (typeof window !== "undefined") {
 		const { emit } = await import("@tauri-apps/api/event");
 		await emit("settings:updated", cachedSettings);
-		
+
 		// Special handling for theme changes
 		if (settings.theme !== undefined) {
 			await emit("theme:changed", { theme: settings.theme });
