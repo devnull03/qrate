@@ -298,8 +298,9 @@
 			</div>
 		</div>
 	{:else}
+	
 		<!-- Grid Controls -->
-		<div class="mb-2 flex items-center justify-between gap-4">
+		<!-- <div class="mb-2 flex items-center justify-between gap-4">
 			<div class="flex items-center gap-2">
 				<Label for="row-height" class="text-xs text-muted-foreground">
 					Row Height:
@@ -348,14 +349,7 @@
 					<span class="ml-1 text-xs text-muted-foreground">px</span>
 				</div>
 			</div>
-			<div class="text-xs text-muted-foreground">
-				{#if qrateStore.rows.length < qrateStore.totalRows}
-					Showing {qrateStore.rows.length} of {qrateStore.totalRows} rows
-				{:else}
-					{qrateStore.totalRows} rows
-				{/if}
-			</div>
-		</div>
+		</div> -->
 
 		<div
 			class="min-h-0 flex-1 overflow-hidden rounded-lg border border-border"
@@ -376,31 +370,6 @@
 				on:viewportscroll={handleScroll}
 			/>
 		</div>
-
-		{#if qrateStore.hasMoreRows && qrateStore.rows.length > 0}
-			<div class="mt-4 flex items-center justify-center">
-				<Button
-					onclick={() => {
-						isLoadingMore = true;
-						qrateStore.loadMoreRows(100).finally(() => {
-							isLoadingMore = false;
-						});
-					}}
-					disabled={isLoadingMore || qrateStore.isLoadingMore}
-					variant="outline"
-					size="sm"
-				>
-					{#if isLoadingMore || qrateStore.isLoadingMore}
-						<div
-							class="mr-2 size-4 animate-spin rounded-full border-2 border-current border-t-transparent"
-						></div>
-						Loading...
-					{:else}
-						Load More Rows
-					{/if}
-				</Button>
-			</div>
-		{/if}
 
 		{#if isLoadingMore || qrateStore.isLoadingMore}
 			<div

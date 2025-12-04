@@ -2,10 +2,7 @@
 	import "../app.css";
 	import { onMount } from "svelte";
 
-	import TitleBar from "$lib/components/TitleBar.svelte";
-	import StatusBar from "$lib/components/StatusBar";
-	import AppSidebar from "$lib/components/app-sidebar.svelte";
-	import * as Sidebar from "$lib/components/ui/sidebar/index.js";
+	import WorkbenchLayout from "$lib/components/layout/WorkbenchLayout.svelte";
 	import { ModeWatcher } from "mode-watcher";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
 	import { initGlobalSettings } from "$lib/stores/globalSettings";
@@ -14,13 +11,8 @@
 
 	let { children } = $props();
 	let isLoading = $state(true);
-	let sidebarOpen = $state(false);
 
 	let unlistenFocus: (() => void) | null = null;
-
-	function toggleSidebar() {
-		sidebarOpen = !sidebarOpen;
-	}
 
 	onMount(() => {
 		// Initialize global settings and sync from backend
@@ -54,43 +46,18 @@
 
 <ModeWatcher />
 
-{#if !page.route.id?.includes("projects") && !page.route.id?.includes("settings")}
-	<div class="flex h-screen w-screen flex-col overflow-hidden">
-		<!-- Custom titlebar with menus - always at top -->
-		<TitleBar onToggleSidebar={toggleSidebar} {sidebarOpen} />
-
-		<!-- Main content area with sidebar -->
-		<div class="relative min-h-0 flex-1 overflow-hidden">
-			{#if isLoading}
-				<div
-					class="flex h-full w-full items-center justify-center text-sm text-muted-foreground"
-				>
-					<span>Loading...</span>
-				</div>
-			{:else}
-				<Sidebar.Provider
-					bind:open={sidebarOpen}
-					class="min-h-0! h-full"
-				>
-					<div class="relative flex h-full w-full overflow-hidden">
-						<AppSidebar />
-						<Sidebar.Inset
-							class="flex min-h-0 flex-1 flex-col overflow-hidden"
-						>
-							<div
-								class="flex min-h-0 flex-1 flex-col overflow-hidden"
-							>
-								{@render children()}
-							</div>
-						</Sidebar.Inset>
-					</div>
-				</Sidebar.Provider>
-			{/if}
+{#if !page.route.id?.includes("projects") && !page.route.id?.includes("settings") && !page.route.id?.includes("chat")}
+	{#if isLoading}
+		<div
+			class="flex h-screen w-screen items-center justify-center text-sm text-muted-foreground"
+		>
+			<span>Loading...</span>
 		</div>
-
-		<!-- Status bar at bottom - always at bottom -->
-		<StatusBar />
-	</div>
+	{:else}
+		<WorkbenchLayout>
+			{@render children()}
+		</WorkbenchLayout>
+	{/if}
 {:else}
 	{@render children()}
 {/if}

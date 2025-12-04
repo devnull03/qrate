@@ -109,6 +109,7 @@ impl WindowManager {
             .unwrap()
             .as_millis();
         let window_id = format!("chat_{}", timestamp);
+        let window_label = window_id.clone();
 
         // Create chat-specific layout
         let layout = WindowLayout::new_chat_window(window_id.clone(), source_window_id.to_string());
@@ -116,13 +117,36 @@ impl WindowManager {
         // Save layout
         let layout_mgr = self.layout_manager.lock().unwrap();
         layout_mgr
-            .save_layout_immediate(layout)
+            .save_layout_immediate(layout.clone())
             .map_err(|e| format!("Failed to save layout: {}", e))?;
+        drop(layout_mgr);
+
+        // Create the actual Tauri window
+        let chat_window = tauri::WebviewWindowBuilder::new(
+            &self.app_handle,
+            &window_label,
+            tauri::WebviewUrl::App("/chat".into()),
+        )
+        .title("qRate - Chat")
+        .inner_size(layout.window_bounds.width, layout.window_bounds.height)
+        .min_inner_size(300.0, 400.0)
+        .decorations(false)
+        .visible(true)
+        .build()
+        .map_err(|e| format!("Failed to create chat window: {}", e))?;
+
+        // Set window position if specified
+        if layout.window_bounds.x > 0.0 && layout.window_bounds.y > 0.0 {
+            let _ = chat_window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
+                x: layout.window_bounds.x,
+                y: layout.window_bounds.y,
+            }));
+        }
 
         // Register window
         let window_info = crate::window::registry::WindowInfo {
             window_id: window_id.clone(),
-            window_label: format!("chat_{}", window_id),
+            window_label: window_label.clone(),
             workspace_path: None,
             is_main: false,
             is_chat: true,
@@ -159,20 +183,24 @@ impl WindowManager {
 
         // If it's a chat window, emit reattach event
         if window_info.is_chat {
-            #[derive(serde::Serialize, Clone)]
-            struct ChatReattachedPayload {
-                source_window_id: String,
-            }
+            // Get the layout to find the source window ID
+            let layout_mgr = self.layout_manager.lock().unwrap();
+            if let Ok(Some(layout)) = layout_mgr.get_layout(window_id) {
+                if let Some(source_window_id) = layout.chat_sidebar.detached_window_id {
+                    #[derive(serde::Serialize, Clone)]
+                    struct ChatReattachedPayload {
+                        source_window_id: String,
+                    }
 
-            if let Some(source_window_id) = window_info.workspace_path {
-                self.ipc
-                    .emit_to_all(
-                        "chat:reattached",
-                        ChatReattachedPayload {
-                            source_window_id,
-                        },
-                    )
-                    .ok(); // Don't fail if event emission fails
+                    self.ipc
+                        .emit_to_all(
+                            "chat:reattached",
+                            ChatReattachedPayload {
+                                source_window_id,
+                            },
+                        )
+                        .ok(); // Don't fail if event emission fails
+                }
             }
         }
 

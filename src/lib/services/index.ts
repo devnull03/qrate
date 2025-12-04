@@ -13,3 +13,16 @@ export {
 	getProjectSettingDef,
 	validateSettingValue,
 } from "./settings";
+
+export {
+	menuService,
+	shortcut,
+	formatShortcut,
+	type MenuItem,
+	type MenuGroup,
+	type TopLevelMenu,
+	type Shortcut,
+	type ModifierKey,
+} from "./menu";
+
+export { registerViewMenu, VIEW_COMMANDS } from "./menu/viewMenu";
