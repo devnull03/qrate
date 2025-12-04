@@ -7,6 +7,12 @@ export {
 } from "./utils/cn";
 
 export {
+	getThumbnailPath,
+	getThumbnailUrl,
+	getAssetUrl,
+} from "./utils/thumbnail";
+
+export {
 	getFileName,
 	getFileNameWithoutExtension,
 	getFileExtension,

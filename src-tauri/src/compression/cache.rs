@@ -97,9 +97,8 @@ impl ThumbnailCache {
     }
 
     pub fn compute_hash(path: &Path) -> String {
-        blake3::hash(path.to_string_lossy().as_bytes())
-            .to_hex()
-            .to_string()
+        let normalized = path.to_string_lossy().replace('\\', "/");
+        blake3::hash(normalized.as_bytes()).to_hex().to_string()
     }
 
     pub fn get_thumbnail_path(&self, source_path: &Path) -> PathBuf {

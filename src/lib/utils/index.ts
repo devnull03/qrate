@@ -1,4 +1,5 @@
 export { cn } from "./cn";
+export { getThumbnailPath, getThumbnailUrl, getAssetUrl } from "./thumbnail";
 export type {
 	WithoutChild,
 	WithoutChildren,

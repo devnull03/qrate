@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount, onDestroy } from "svelte";
-	import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import { Input } from "$lib/components/ui/input/index.js";
 	import * as Card from "$lib/components/ui/card/index.js";
@@ -12,6 +11,7 @@
 		resolveFilePath,
 		defaultSettings,
 	} from "$lib/stores/appSettings";
+	import { getThumbnailUrl } from "$lib/utils";
 
 	import FileIcon from "@lucide/svelte/icons/file";
 	import FileTextIcon from "@lucide/svelte/icons/file-text";
@@ -38,6 +38,7 @@
 	let searchQuery = $state("");
 	let refreshKey = $state(0);
 	let thumbnailUrls = $state<Record<string, string>>({});
+	let thumbnailStatus = $state<Record<string, "loading" | "failed">>({});
 
 	$effect(() => {
 		qrateStore.filesGridSearchQuery = searchQuery;
@@ -117,23 +118,26 @@
 
 		if (imagePaths.length === 0) return;
 
-		const paths = await Promise.all(
+		const results = await Promise.all(
 			imagePaths.map(async (filePath) => {
-				const thumbPath = await invoke<string | null>(
-					"get_thumbnail_path",
-					{ filePath },
-				);
-				return { filePath, thumbPath };
+				const url = await getThumbnailUrl(filePath);
+				return { filePath, url };
 			}),
 		);
 
 		const newUrls: Record<string, string> = {};
-		for (const { filePath, thumbPath } of paths) {
-			if (thumbPath) {
-				newUrls[filePath] = convertFileSrc(thumbPath);
-			}
+		for (const { filePath, url } of results) {
+			newUrls[filePath] = url;
 		}
 		thumbnailUrls = { ...thumbnailUrls, ...newUrls };
+	}
+
+	function handleThumbnailError(filePath: string) {
+		if (thumbnailService.isProcessing) {
+			thumbnailStatus = { ...thumbnailStatus, [filePath]: "loading" };
+		} else {
+			thumbnailStatus = { ...thumbnailStatus, [filePath]: "failed" };
+		}
 	}
 
 	let allFiles = $derived.by((): FileItem[] => {
@@ -232,9 +236,19 @@
 		}
 	}
 
-	function getThumbnailUrl(filePath: string): string | null {
+	function getThumbnailUrlForFile(filePath: string): string | null {
+		const status = thumbnailStatus[filePath];
+		if (status === "failed") return null;
 		const url = thumbnailUrls[filePath];
 		return url ? `${url}?v=${refreshKey}` : null;
+	}
+
+	function isLoadingThumbnail(filePath: string): boolean {
+		return (
+			thumbnailStatus[filePath] === "loading" ||
+			(thumbnailService.isProcessing &&
+				supportsThumbnail(filePath.split("/").pop() || ""))
+		);
 	}
 
 	async function openFile(filePath: string) {
@@ -248,6 +262,7 @@
 	function refresh() {
 		refreshKey++;
 		thumbnailUrls = {};
+		thumbnailStatus = {};
 		if (filesFolder) {
 			thumbnailService.startProcessing(filesFolder as string);
 		}
@@ -327,12 +342,7 @@
 			>
 				{#each filteredFiles as file (file.rowId + "-" + file.fileName + "-" + refreshKey)}
 					{@const IconComponent = getFileIcon(file.fileType)}
-					{@const thumbnailUrl = supportsThumbnail(file.fileName)
-						? getThumbnailUrl(file.filePath)
-						: null}
-					{@const isLoading =
-						thumbnailService.isProcessing &&
-						supportsThumbnail(file.fileName)}
+					<!-- {@const thumbnailUrl = } -->
 					<Card.Root
 						class="group cursor-pointer transition-colors hover:bg-accent"
 					>
@@ -343,31 +353,33 @@
 							<div
 								class="relative mb-3 flex size-16 items-center justify-center overflow-hidden rounded-lg bg-muted"
 							>
-								{#if thumbnailUrl}
-									<img
-										src={thumbnailUrl}
-										alt={file.fileName}
-										class="size-full object-cover"
-										loading="lazy"
-										decoding="async"
-										onerror={(e) => {
-											(
-												e.target as HTMLImageElement
-											).style.display = "none";
-										}}
-									/>
-									<IconComponent
-										class="absolute size-8 text-muted-foreground"
-									/>
-								{:else if isLoading}
+								{#await getThumbnailUrl(file.filePath)}
 									<LoaderCircleIcon
 										class="size-6 animate-spin text-muted-foreground"
 									/>
-								{:else}
+								{:then thumbnailUrl}
+									{#if thumbnailStatus[file.filePath] !== "failed"}
+										<img
+											src={thumbnailUrl}
+											alt={file.fileName}
+											class="size-full object-cover"
+											loading="lazy"
+											decoding="async"
+											onerror={() =>
+												handleThumbnailError(
+													file.filePath,
+												)}
+										/>
+									{:else}
+										<IconComponent
+											class="size-8 text-muted-foreground"
+										/>
+									{/if}
+								{:catch}
 									<IconComponent
 										class="size-8 text-muted-foreground"
 									/>
-								{/if}
+								{/await}
 							</div>
 							<p class="w-full truncate text-sm font-medium">
 								{file.fileName}
@@ -398,11 +410,9 @@
 				{#each filteredFiles as file (file.rowId + "-" + file.fileName + "-" + refreshKey)}
 					{@const IconComponent = getFileIcon(file.fileType)}
 					{@const thumbnailUrl = supportsThumbnail(file.fileName)
-						? getThumbnailUrl(file.filePath)
+						? getThumbnailUrlForFile(file.filePath)
 						: null}
-					{@const isLoading =
-						thumbnailService.isProcessing &&
-						supportsThumbnail(file.fileName)}
+					{@const isLoading = isLoadingThumbnail(file.filePath)}
 					<button
 						class="group flex w-full items-center gap-3 rounded-md p-2 text-left transition-colors hover:bg-accent"
 						onclick={() => openFile(file.filePath)}
@@ -411,20 +421,15 @@
 							class="relative flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted"
 						>
 							{#if thumbnailUrl}
+								<!-- {#if file} -->
 								<img
 									src={thumbnailUrl}
 									alt={file.fileName}
 									class="size-full object-cover"
 									loading="lazy"
 									decoding="async"
-									onerror={(e) => {
-										(
-											e.target as HTMLImageElement
-										).style.display = "none";
-									}}
-								/>
-								<IconComponent
-									class="absolute size-5 text-muted-foreground"
+									onerror={() =>
+										handleThumbnailError(file.filePath)}
 								/>
 							{:else if isLoading}
 								<LoaderCircleIcon

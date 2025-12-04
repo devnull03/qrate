@@ -22,7 +22,10 @@ impl ThumbnailState {
         }
     }
 
-    fn get_or_create_cache(&self, qrate_path: &std::path::Path) -> Result<ThumbnailCache, String> {
+    pub fn get_or_create_cache(
+        &self,
+        qrate_path: &std::path::Path,
+    ) -> Result<ThumbnailCache, String> {
         let key = qrate_path.to_string_lossy().to_string();
 
         if let Some(cache) = self.caches.read().get(&key) {
@@ -102,18 +105,18 @@ pub async fn cancel_thumbnail_processing(
 
 #[tauri::command]
 pub async fn get_thumbnail_path(
-    thumbnail_state: State<'_, ThumbnailState>,
     app_state: State<'_, AppState>,
     file_path: String,
-) -> Result<Option<String>, String> {
+) -> Result<String, String> {
     let current_file = app_state
         .get_current_file()
         .ok_or("No project is currently open")?;
 
-    let cache = thumbnail_state.get_or_create_cache(&PathBuf::from(&current_file.path))?;
+    let qrate_path = PathBuf::from(&current_file.path);
     let source_path = PathBuf::from(&file_path);
+    let thumbnails_dir = ThumbnailCache::get_thumbnails_dir(&qrate_path);
+    let hash = ThumbnailCache::compute_hash(&source_path);
+    let thumb_path = thumbnails_dir.join(format!("{}.webp", hash));
 
-    Ok(cache
-        .get_thumbnail_file_path(&source_path)
-        .map(|p| p.to_string_lossy().to_string()))
+    Ok(thumb_path.to_string_lossy().to_string())
 }

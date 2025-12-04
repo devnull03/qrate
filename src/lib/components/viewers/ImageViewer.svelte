@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 	import { openPath } from "@tauri-apps/plugin-opener";
 	import { untrack } from "svelte";
 	import { Button } from "$lib/components/ui/button/index.js";
@@ -7,6 +6,7 @@
 	import ImageIcon from "@lucide/svelte/icons/image";
 	import AlertCircleIcon from "@lucide/svelte/icons/alert-circle";
 	import LoaderIcon from "@lucide/svelte/icons/loader";
+	import { getThumbnailUrl, getAssetUrl } from "$lib/utils";
 
 	interface Props {
 		filePath: string;
@@ -40,30 +40,14 @@
 		loadState.status === "loaded" ? loadState.data : null,
 	);
 
-	const fetchFullImage = async (path: string): Promise<string> => {
-		const result = await invoke<{ data: string; mime_type: string }>(
-			"load_image",
-			{ filePath: path },
-		);
-		return `data:${result.mime_type};base64,${result.data}`;
-	};
-
-	const fetchThumbnail = async (path: string): Promise<string | null> => {
-		const thumbPath = await invoke<string | null>("get_thumbnail_path", {
-			filePath: path,
-		});
-		return thumbPath ? convertFileSrc(thumbPath) : null;
-	};
-
 	const fetchImage = async (
 		path: string,
 		useThumbnail: boolean,
 	): Promise<string> => {
 		if (useThumbnail) {
-			const thumbnailUrl = await fetchThumbnail(path);
-			if (thumbnailUrl) return thumbnailUrl;
+			return getThumbnailUrl(path);
 		}
-		return fetchFullImage(path);
+		return getAssetUrl(path);
 	};
 
 	$effect(() => {
@@ -103,6 +87,16 @@
 	});
 
 	const openExternally = () => openPath(filePath);
+
+	const handleImageError = () => {
+		if (loadState.status === "loaded") {
+			loadState = {
+				status: "error",
+				path: loadState.path,
+				message: "Image not found",
+			};
+		}
+	};
 </script>
 
 <div
@@ -152,6 +146,7 @@
 				src={imageData}
 				{alt}
 				class="max-h-full max-w-full object-contain!"
+				onerror={handleImageError}
 			/>
 		</div>
 	{:else}

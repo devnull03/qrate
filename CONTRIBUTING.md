@@ -159,7 +159,7 @@ invoke('add_column', { path, column })
 invoke('update_column', { path, column })
 
 // Media
-invoke('load_image', { filePath, maxWidth, maxHeight })
+invoke('load_image', { filePath })
 
 // Settings
 invoke('get_project_settings', { path })
