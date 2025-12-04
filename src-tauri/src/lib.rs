@@ -4,14 +4,16 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 mod app_state;
-pub mod compression;
+mod checks;
+mod compression;
 mod database;
-pub mod layout;
+mod layout;
 mod layout_state;
-pub mod settings;
-pub mod window;
+mod settings;
+mod window;
 
 use app_state::AppState;
+use checks::spellcheck::SpellCheckState;
 use compression::commands::ThumbnailState;
 use database::ColumnDef;
 use layout::manager::LayoutManager;
@@ -707,6 +709,7 @@ pub fn run() {
             Ok(())
         })
         .manage(AppState::new())
+        .manage(SpellCheckState::new())
         .manage(ThumbnailState::new())
         .invoke_handler(tauri::generate_handler![
             // File operations
@@ -756,6 +759,13 @@ pub fn run() {
             settings::commands::set_project_setting,
             settings::commands::set_project_settings,
             settings::commands::get_project_settings_with_defaults_cmd,
+            checks::spellcheck::check_spelling,
+            checks::spellcheck::check_text_fragment,
+            checks::spellcheck::get_suggestions,
+            checks::spellcheck::ignore_word,
+            checks::spellcheck::add_to_dictionary,
+            checks::spellcheck::is_word_correct,
+            checks::spellcheck::load_dictionary_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
