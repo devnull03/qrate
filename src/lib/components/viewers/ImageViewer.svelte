@@ -11,8 +11,6 @@
 		filePath: string;
 		alt?: string;
 		thumbnail?: boolean;
-		maxWidth?: number;
-		maxHeight?: number;
 		showOpenButton?: boolean;
 		class?: string;
 	}
@@ -21,11 +19,13 @@
 		filePath,
 		alt = "Image",
 		thumbnail = false,
-		maxWidth = thumbnail ? 150 : 800,
-		maxHeight = thumbnail ? 150 : 600,
 		showOpenButton = !thumbnail,
 		class: className = "",
 	}: Props = $props();
+
+	// For Rust-side resizing, use reasonable max values
+	const maxWidth = thumbnail ? 150 : 1200;
+	const maxHeight = thumbnail ? 150 : 900;
 
 	let imageData = $state<string | null>(null);
 	let loading = $state(true);
@@ -79,9 +79,8 @@
 </script>
 
 <div
-	class="image-viewer group relative flex items-center justify-center overflow-hidden rounded-md bg-muted/50 {className}"
+	class="image-viewer group relative flex items-center justify-center overflow-hidden bg-muted/50 {className}"
 	class:thumbnail
-	style="max-width: {maxWidth}px; max-height: {maxHeight}px;"
 >
 	{#if loading}
 		<div
@@ -104,12 +103,7 @@
 			{/if}
 		</div>
 	{:else if imageData}
-		<img
-			src={imageData}
-			{alt}
-			class="max-h-full max-w-full object-contain"
-			style="max-width: {maxWidth}px; max-height: {maxHeight}px;"
-		/>
+		<img src={imageData} {alt} class="h-full w-full object-contain" />
 		{#if showOpenButton}
 			<div
 				class="absolute right-2 top-2 opacity-0 transition-opacity group-hover:opacity-100"
@@ -139,12 +133,13 @@
 
 <style>
 	.image-viewer {
+		width: 100%;
 		min-height: 60px;
-		min-width: 60px;
 	}
 
 	.image-viewer.thumbnail {
 		min-height: 40px;
 		min-width: 40px;
+		width: auto;
 	}
 </style>

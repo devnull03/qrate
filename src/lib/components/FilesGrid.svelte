@@ -10,7 +10,7 @@
 		resolveFilePath,
 		defaultSettings,
 	} from "$lib/stores/appSettings";
-	import ImageViewer from "$lib/components/viewers/ImageViewer.svelte";
+
 	import FileIcon from "@lucide/svelte/icons/file";
 	import FileTextIcon from "@lucide/svelte/icons/file-text";
 	import ImageIcon from "@lucide/svelte/icons/image";
@@ -104,7 +104,7 @@
 				rowId: row.row_id,
 				fileName: fileValue,
 				filePath: filePath,
-				fileType: getFileType(fileValue),
+				fileType: getFileType(filePath),
 				rowData: row,
 			});
 		}
@@ -255,28 +255,13 @@
 							class="flex w-full flex-col items-center p-4 text-center"
 							onclick={() => openFile(file.filePath)}
 						>
-							{#if file.fileType === "image"}
-								<div
-									class="mb-3 flex size-16 items-center justify-center rounded-lg overflow-hidden"
-								>
-									<ImageViewer
-										filePath={file.filePath}
-										alt={file.fileName}
-										thumbnail={true}
-										maxWidth={64}
-										maxHeight={64}
-										showOpenButton={false}
-									/>
-								</div>
-							{:else}
-								<div
-									class="mb-3 flex size-16 items-center justify-center rounded-lg bg-muted"
-								>
-									<IconComponent
-										class="size-8 text-muted-foreground"
-									/>
-								</div>
-							{/if}
+							<div
+								class="mb-3 flex size-16 items-center justify-center rounded-lg bg-muted"
+							>
+								<IconComponent
+									class="size-8 text-muted-foreground"
+								/>
+							</div>
 							<p class="w-full truncate text-sm font-medium">
 								{file.fileName}
 							</p>
@@ -310,28 +295,13 @@
 						class="group flex w-full items-center gap-3 rounded-md p-2 text-left transition-colors hover:bg-accent"
 						onclick={() => openFile(file.filePath)}
 					>
-						{#if file.fileType === "image"}
-							<div
-								class="flex size-10 shrink-0 items-center justify-center rounded-md overflow-hidden"
-							>
-								<ImageViewer
-									filePath={file.filePath}
-									alt={file.fileName}
-									thumbnail={true}
-									maxWidth={40}
-									maxHeight={40}
-									showOpenButton={false}
-								/>
-							</div>
-						{:else}
-							<div
-								class="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted"
-							>
-								<IconComponent
-									class="size-5 text-muted-foreground"
-								/>
-							</div>
-						{/if}
+						<div
+							class="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted"
+						>
+							<IconComponent
+								class="size-5 text-muted-foreground"
+							/>
+						</div>
 						<div class="min-w-0 flex-1">
 							<p class="truncate text-sm font-medium">
 								{file.fileName}

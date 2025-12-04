@@ -14,7 +14,6 @@
 	import ImageIcon from "@lucide/svelte/icons/image";
 	import VideoIcon from "@lucide/svelte/icons/video";
 	import MusicIcon from "@lucide/svelte/icons/music";
-	import ExternalLinkIcon from "@lucide/svelte/icons/external-link";
 	import FolderOpenIcon from "@lucide/svelte/icons/folder-open";
 	import RowsIcon from "@lucide/svelte/icons/rows-3";
 	import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -75,29 +74,60 @@
 	);
 
 	let rowFiles = $derived.by((): FileItem[] => {
-		if (!selectedRow || !filesFolder || !fileColumnName) return [];
+		if (!selectedRow || !filesFolder || !fileColumnName) {
+			console.log("rowFiles: missing data", {
+				selectedRow: !!selectedRow,
+				filesFolder,
+				fileColumnName,
+			});
+			return [];
+		}
 
 		const colName = String(fileColumnName).toLowerCase();
 		const fileColumn = qrateStore.columns.find(
 			(col) =>
 				col.name.toLowerCase() === colName || col.id === fileColumnName,
 		);
-		if (!fileColumn) return [];
+		if (!fileColumn) {
+			console.log("rowFiles: file column not found", {
+				colName,
+				columns: qrateStore.columns.map((c) => c.name),
+			});
+			return [];
+		}
 
 		const fileValue = selectedRow[fileColumn.id];
-		if (!fileValue) return [];
+		if (!fileValue) {
+			console.log("rowFiles: no file value in row", {
+				columnId: fileColumn.id,
+				selectedRow,
+			});
+			return [];
+		}
 
 		const fileName = String(fileValue);
+		const filePath = resolveFilePath(
+			filePathPattern || "",
+			filesFolder,
+			selectedRow,
+			fileColumn.id,
+		);
+		// Extract extension from the resolved filePath, not fileName
+		const ext = filePath.split(".").pop()?.toLowerCase() || "";
+		const fileType = getFileType(filePath);
+
+		console.log("rowFiles: complete file info", {
+			fileName,
+			filePath,
+			fileType,
+			extension: ext,
+		});
+
 		return [
 			{
 				fileName,
-				filePath: resolveFilePath(
-					filePathPattern || "",
-					filesFolder,
-					selectedRow,
-					fileColumn.id,
-				),
-				fileType: getFileType(fileName),
+				filePath,
+				fileType,
 			},
 		];
 	});
@@ -114,8 +144,8 @@
 			: [],
 	);
 
-	function getFileType(filename: string): string {
-		const ext = filename.split(".").pop()?.toLowerCase() || "";
+	function getFileType(pathOrFilename: string): string {
+		const ext = pathOrFilename.split(".").pop()?.toLowerCase() || "";
 		return (
 			Object.entries(fileTypeMap).find(([_, exts]) =>
 				exts.includes(ext),
@@ -188,10 +218,8 @@
 									<ImageViewer
 										filePath={file.filePath}
 										alt={file.fileName}
-										maxWidth={400}
-										maxHeight={300}
 										showOpenButton={true}
-										class="w-full"
+										class="w-full max-h-[50vh]"
 									/>
 									<div
 										class="flex items-center gap-2 p-2 bg-muted/30"
@@ -214,9 +242,7 @@
 												openFileLocation(file.filePath)}
 											title="Open file location"
 										>
-											<ExternalLinkIcon
-												class="size-3.5"
-											/>
+											<FolderOpenIcon class="size-3.5" />
 										</Button>
 									</div>
 								</div>
@@ -257,7 +283,7 @@
 											openFileLocation(file.filePath)}
 										title="Open file location"
 									>
-										<ExternalLinkIcon class="size-3.5" />
+										<FolderOpenIcon class="size-3.5" />
 									</Button>
 								</div>
 							{/if}
