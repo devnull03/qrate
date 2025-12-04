@@ -46,6 +46,79 @@ struct CurrentStateResponse {
     limit: u32,
 }
 
+/// Response structure for file path validation
+#[derive(Debug, Serialize, Deserialize)]
+struct FilePathValidationResponse {
+    valid: bool,
+    resolved_path: String,
+    error: Option<String>,
+}
+
+/// Validate a file path to ensure it's within a trusted base directory
+/// This prevents path traversal attacks and ensures files are opened safely
+#[tauri::command]
+fn validate_file_path(file_path: String, base_folder: String) -> Result<FilePathValidationResponse, String> {
+    use std::path::Path;
+    
+    if base_folder.is_empty() {
+        return Ok(FilePathValidationResponse {
+            valid: false,
+            resolved_path: String::new(),
+            error: Some("No base folder configured".to_string()),
+        });
+    }
+    
+    let file_path_obj = Path::new(&file_path);
+    let base_path = Path::new(&base_folder);
+    
+    // Canonicalize the base path (resolve symlinks, .., etc.)
+    let canonical_base = match base_path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            // Base path might not exist yet, use the absolute path
+            match std::path::absolute(base_path) {
+                Ok(p) => p,
+                Err(e) => return Ok(FilePathValidationResponse {
+                    valid: false,
+                    resolved_path: String::new(),
+                    error: Some(format!("Invalid base folder path: {}", e)),
+                }),
+            }
+        }
+    };
+    
+    // Canonicalize the file path
+    let canonical_file = match file_path_obj.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            // File might not exist yet, use the absolute path
+            match std::path::absolute(file_path_obj) {
+                Ok(p) => p,
+                Err(e) => return Ok(FilePathValidationResponse {
+                    valid: false,
+                    resolved_path: String::new(),
+                    error: Some(format!("Invalid file path: {}", e)),
+                }),
+            }
+        }
+    };
+    
+    // Check if the file path starts with the base path
+    if !canonical_file.starts_with(&canonical_base) {
+        return Ok(FilePathValidationResponse {
+            valid: false,
+            resolved_path: canonical_file.to_string_lossy().to_string(),
+            error: Some("File is outside the trusted folder".to_string()),
+        });
+    }
+    
+    Ok(FilePathValidationResponse {
+        valid: true,
+        resolved_path: canonical_file.to_string_lossy().to_string(),
+        error: None,
+    })
+}
+
 /// Get the current application state (for main window initialization)
 #[tauri::command]
 fn get_current_state(state: State<AppState>) -> Result<CurrentStateResponse, String> {
@@ -590,6 +663,8 @@ pub fn run() {
             set_chat_mode,
             // State
             get_current_state,
+            // Security
+            validate_file_path,
             // Settings commands (from settings module)
             settings::commands::get_global_settings_schema,
             settings::commands::get_project_settings_schema,
