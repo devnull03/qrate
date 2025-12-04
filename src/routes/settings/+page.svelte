@@ -80,8 +80,17 @@
 
 			// Settings window is a separate Tauri window, so we need to sync state from backend
 			console.log("[Settings] Syncing state from backend...");
-			const synced = await qrateStore.syncFromBackend();
+			let synced = await qrateStore.syncFromBackend();
 			console.log("[Settings] Backend sync result:", synced);
+
+			// If backend has no file open, try to restore from persisted workspace
+			if (!synced) {
+				console.log(
+					"[Settings] Backend has no file, trying to restore workspace...",
+				);
+				synced = await qrateStore.restoreWorkspace(true);
+				console.log("[Settings] Workspace restore result:", synced);
+			}
 
 			hasFile = !!qrateStore.currentFilePath;
 			console.log("[Settings] hasFile:", hasFile);
