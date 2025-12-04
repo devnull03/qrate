@@ -34,8 +34,8 @@ export async function closeWindow(): Promise<void> {
  * Hide the current window
  */
 export function hideWindow() {
-  const win = getCurrentWindow();
-  win.hide();
+  const appWindow = getCurrentWindow();
+  appWindow.hide();
 }
 
 
