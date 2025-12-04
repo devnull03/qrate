@@ -8,6 +8,7 @@
 	import FolderIcon from "@lucide/svelte/icons/folder";
 	import PanelLeftIcon from "@lucide/svelte/icons/panel-left";
 	import PanelRightIcon from "@lucide/svelte/icons/panel-right";
+	import ColumnsIcon from "@lucide/svelte/icons/columns-2";
 	import ChevronDownIcon from "@lucide/svelte/icons/chevron-down";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
 	import {
@@ -21,17 +22,16 @@
 
 	let activeView = $state<ViewMode>("spreadsheet");
 	let splitDirection = $state<SplitDirection>("right");
-	let isSplitOpen = $state(false);
 	let splitSize = $state(65);
 	let isDragging = $state(false);
 	let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 	let containerRef = $state<HTMLDivElement | null>(null);
 
 	onMount(() => {
-		const savedDirection = getGlobalSetting("splitDirection");
-		if (savedDirection === "left" || savedDirection === "right") {
-			splitDirection = savedDirection;
-		}
+		const savedDir = getGlobalSetting("splitDirection");
+		if (savedDir === "left" || savedDir === "right")
+			splitDirection = savedDir;
+
 		const savedSize = getGlobalSetting("splitSize");
 		if (
 			typeof savedSize === "number" &&
@@ -62,9 +62,11 @@
 	function handlePointerMove(e: PointerEvent) {
 		if (!isDragging || !containerRef) return;
 		const rect = containerRef.getBoundingClientRect();
-		const pos = e.clientX - rect.left;
-		splitSize = Math.max(20, Math.min(80, (pos / rect.width) * 100));
-		debounceSaveSplitSize();
+		const pointerPercent = ((e.clientX - rect.left) / rect.width) * 100;
+		splitSize = isLeft
+			? Math.max(20, Math.min(80, 100 - pointerPercent))
+			: Math.max(20, Math.min(80, pointerPercent));
+		debounceSave();
 	}
 
 	function handlePointerUp(e: PointerEvent) {
@@ -72,39 +74,38 @@
 		isDragging = false;
 	}
 
-	function handleKeyDown(e: KeyboardEvent) {
+	function handleResizeKeyDown(e: KeyboardEvent) {
 		const step = e.shiftKey ? 5 : 1;
 		if (e.key === "ArrowLeft") {
 			e.preventDefault();
 			splitSize = Math.max(20, splitSize - step);
-			debounceSaveSplitSize();
+			debounceSave();
 		} else if (e.key === "ArrowRight") {
 			e.preventDefault();
 			splitSize = Math.min(80, splitSize + step);
-			debounceSaveSplitSize();
+			debounceSave();
 		}
 	}
 
-	function debounceSaveSplitSize() {
+	function debounceSave() {
 		if (saveTimeout) clearTimeout(saveTimeout);
-		saveTimeout = setTimeout(() => {
-			setGlobalSetting("splitSize", Math.round(splitSize));
-		}, 300);
+		saveTimeout = setTimeout(
+			() => setGlobalSetting("splitSize", Math.round(splitSize)),
+			300,
+		);
 	}
 
-	const mainPanelSize = $derived(
-		isSplitOpen
-			? splitDirection === "right"
-				? splitSize
-				: 100 - splitSize
-			: 100,
-	);
-	const detailsPanelSize = $derived(100 - mainPanelSize);
+	const isOpen = $derived(qrateStore.detailsPanelOpen);
+	const isLeft = $derived(splitDirection === "left");
+	const detailsSize = $derived(isOpen ? 100 - splitSize : 0);
+	const mainLeft = $derived(isOpen && isLeft ? 100 - splitSize : 0);
+	const mainRight = $derived(isOpen && !isLeft ? 100 - splitSize : 0);
+	const handlePosition = $derived(isLeft ? 100 - splitSize : splitSize);
 </script>
 
 <div class="flex h-full flex-col overflow-hidden">
 	<div
-		class="flex items-center justify-between border-b border-border bg-muted/30 px-4 py-1.5"
+		class="flex items-center border-b border-border bg-muted/30 px-4 py-1.5"
 	>
 		<div class="flex items-center gap-1">
 			<Button
@@ -125,52 +126,50 @@
 				<FolderIcon class="size-3.5" />
 				<span>Files</span>
 			</Button>
-		</div>
 
-		<div class="flex items-center">
-			<Button
-				variant={isSplitOpen ? "secondary" : "ghost"}
-				size="sm"
-				class="h-7 gap-1.5 rounded-r-none border-r-0 px-2"
-				onclick={() => (isSplitOpen = !isSplitOpen)}
-				title="Toggle split view"
-			>
-				{#if splitDirection === "right"}
-					<PanelRightIcon class="size-3.5" />
-				{:else}
-					<PanelLeftIcon class="size-3.5" />
-				{/if}
-				<span class="hidden sm:inline">Split</span>
-			</Button>
-			<DropdownMenu.Root>
-				<DropdownMenu.Trigger>
-					{#snippet child({ props })}
-						<Button
-							{...props}
-							variant={isSplitOpen ? "secondary" : "ghost"}
-							size="sm"
-							class="h-7 rounded-l-none px-1"
+			<div class="mx-2 h-4 w-px bg-border"></div>
+
+			<div class="flex items-center">
+				<Button
+					variant={isOpen ? "secondary" : "ghost"}
+					size="sm"
+					class="h-7 gap-1.5 rounded-r-none px-3"
+					onclick={() => qrateStore.toggleDetailsPanel()}
+					title="Toggle Details (Ctrl+L)"
+				>
+					<ColumnsIcon class="size-3.5" />
+					<span>Details</span>
+				</Button>
+				<DropdownMenu.Root>
+					<DropdownMenu.Trigger>
+						{#snippet child({ props })}
+							<Button
+								{...props}
+								variant={isOpen ? "secondary" : "ghost"}
+								size="sm"
+								class="h-7 rounded-l-none px-1"
+							>
+								<ChevronDownIcon class="size-3.5" />
+							</Button>
+						{/snippet}
+					</DropdownMenu.Trigger>
+					<DropdownMenu.Content align="start" class="w-40">
+						<DropdownMenu.RadioGroup
+							value={splitDirection}
+							onValueChange={handleDirectionChange}
 						>
-							<ChevronDownIcon class="size-3.5" />
-						</Button>
-					{/snippet}
-				</DropdownMenu.Trigger>
-				<DropdownMenu.Content align="end" class="w-40">
-					<DropdownMenu.RadioGroup
-						value={splitDirection}
-						onValueChange={handleDirectionChange}
-					>
-						<DropdownMenu.RadioItem value="left" class="gap-2">
-							<PanelLeftIcon class="size-4" />
-							Split Left
-						</DropdownMenu.RadioItem>
-						<DropdownMenu.RadioItem value="right" class="gap-2">
-							<PanelRightIcon class="size-4" />
-							Split Right
-						</DropdownMenu.RadioItem>
-					</DropdownMenu.RadioGroup>
-				</DropdownMenu.Content>
-			</DropdownMenu.Root>
+							<DropdownMenu.RadioItem value="left" class="gap-2">
+								<PanelLeftIcon class="size-4" />
+								Show Left
+							</DropdownMenu.RadioItem>
+							<DropdownMenu.RadioItem value="right" class="gap-2">
+								<PanelRightIcon class="size-4" />
+								Show Right
+							</DropdownMenu.RadioItem>
+						</DropdownMenu.RadioGroup>
+					</DropdownMenu.Content>
+				</DropdownMenu.Root>
+			</div>
 		</div>
 	</div>
 
@@ -179,11 +178,11 @@
 		class="relative min-h-0 flex-1 overflow-hidden"
 		class:select-none={isDragging}
 	>
-		{#if splitDirection === "left" && isSplitOpen}
+		{#if isLeft && isOpen}
 			<div
 				class="absolute bottom-0 left-0 top-0 overflow-hidden border-r border-border"
 				class:pointer-events-none={isDragging}
-				style="width: {detailsPanelSize}%;"
+				style="width: {detailsSize}%;"
 			>
 				<RowDetailsPanel />
 			</div>
@@ -192,11 +191,7 @@
 		<div
 			class="absolute bottom-0 top-0 overflow-hidden"
 			class:pointer-events-none={isDragging}
-			style="left: {splitDirection === 'left' && isSplitOpen
-				? detailsPanelSize
-				: 0}%; right: {splitDirection === 'right' && isSplitOpen
-				? detailsPanelSize
-				: 0}%;"
+			style="left: {mainLeft}%; right: {mainRight}%;"
 		>
 			<div class="h-full" class:hidden={activeView !== "spreadsheet"}>
 				<RevoGrid />
@@ -206,29 +201,29 @@
 			</div>
 		</div>
 
-		{#if splitDirection === "right" && isSplitOpen}
+		{#if !isLeft && isOpen}
 			<div
 				class="absolute bottom-0 right-0 top-0 overflow-hidden border-l border-border"
 				class:pointer-events-none={isDragging}
-				style="width: {detailsPanelSize}%;"
+				style="width: {detailsSize}%;"
 			>
 				<RowDetailsPanel />
 			</div>
 		{/if}
 
-		{#if isSplitOpen}
+		{#if isOpen}
 			<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 			<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 			<div
-				class="absolute bottom-0 top-0 z-10 w-1 cursor-col-resize touch-none transition-colors duration-150 hover:bg-primary/50 {isDragging
+				class="absolute bottom-0 top-0 z-10 w-1 -translate-x-1/2 cursor-col-resize touch-none transition-colors duration-150 hover:bg-primary/50 {isDragging
 					? 'bg-primary/50'
 					: ''}"
-				style="left: {splitSize}%;"
+				style="left: {handlePosition}%;"
 				onpointerdown={handlePointerDown}
 				onpointermove={handlePointerMove}
 				onpointerup={handlePointerUp}
 				onpointercancel={handlePointerUp}
-				onkeydown={handleKeyDown}
+				onkeydown={handleResizeKeyDown}
 				tabindex="0"
 				role="separator"
 				aria-orientation="vertical"

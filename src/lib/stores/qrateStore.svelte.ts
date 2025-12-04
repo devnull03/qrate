@@ -69,9 +69,14 @@ class QrateStore {
 	isLoadingMore = $state<boolean>(false);
 	hasMoreRows = $state<boolean>(true);
 	activeView = $state<"spreadsheet" | "files">("spreadsheet");
+	detailsPanelOpen = $state<boolean>(false);
 	filesGridFilteredCount = $state<number>(0);
 	filesGridTotalCount = $state<number>(0);
 	filesGridSearchQuery = $state<string>("");
+
+	toggleDetailsPanel(): void {
+		this.detailsPanelOpen = !this.detailsPanelOpen;
+	}
 
 	private restorationAttempted = false;
 

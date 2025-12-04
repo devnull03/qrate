@@ -1,12 +1,14 @@
 import { menuService, shortcut, type TopLevelMenu } from "./index";
 import { layoutStore } from "$lib/stores/layoutStore.svelte";
 import { chatStore } from "$lib/stores/chatStore.svelte";
+import { qrateStore } from "$lib/stores/qrateStore.svelte";
 
 export const VIEW_COMMANDS = {
 	TOGGLE_LEFT_SIDEBAR: "view.toggleLeftSidebar",
 	TOGGLE_RIGHT_SIDEBAR: "view.toggleRightSidebar",
 	TOGGLE_BOTTOM_PANEL: "view.toggleBottomPanel",
 	TOGGLE_CHAT: "view.toggleChat",
+	TOGGLE_DETAILS_PANEL: "view.toggleDetailsPanel",
 } as const;
 
 export const toggleLeftSidebar = () => layoutStore.toggleRegion("left_sidebar");
@@ -14,6 +16,7 @@ export const toggleRightSidebar = () =>
 	layoutStore.toggleRegion("right_sidebar");
 export const toggleBottomPanel = () => layoutStore.toggleRegion("bottom_panel");
 export const toggleChat = () => chatStore.toggleVisible();
+export const toggleDetailsPanel = () => qrateStore.toggleDetailsPanel();
 
 export function registerViewMenu(): void {
 	const viewMenu: TopLevelMenu = {
@@ -49,6 +52,12 @@ export function registerViewMenu(): void {
 						label: "Toggle Chat",
 						shortcut: shortcut("j", "ctrl"),
 						action: toggleChat,
+					},
+					{
+						id: VIEW_COMMANDS.TOGGLE_DETAILS_PANEL,
+						label: "Toggle Details Panel",
+						shortcut: shortcut("l", "ctrl"),
+						action: toggleDetailsPanel,
 					},
 				],
 			},
