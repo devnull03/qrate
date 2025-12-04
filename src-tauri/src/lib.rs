@@ -503,7 +503,7 @@ fn show_projects_window(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn show_settings_window(app: AppHandle) -> Result<(), String> {
     // Try to get existing settings window or create a new one
-    if let Some(settings_window) = app.get_webview_window("settings") {      
+    if let Some(settings_window) = app.get_webview_window("settings") {
         settings_window
             .show()
             .map_err(|e| format!("Failed to show settings window: {}", e))?;
