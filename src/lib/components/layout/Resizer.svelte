@@ -48,6 +48,9 @@
 		document.body.style.userSelect = "";
 	};
 
+	// Touch event listener options - must be consistent when adding/removing
+	const touchMoveOptions = { passive: false };
+
 	// Touch support
 	const handleTouchStart = (e: TouchEvent) => {
 		if (e.touches.length !== 1) return;
@@ -56,9 +59,7 @@
 		const touch = e.touches[0];
 		startPos = direction === "horizontal" ? touch.clientX : touch.clientY;
 
-		document.addEventListener("touchmove", handleTouchMove, {
-			passive: false,
-		});
+		document.addEventListener("touchmove", handleTouchMove, touchMoveOptions);
 		document.addEventListener("touchend", handleTouchEnd);
 	};
 
