@@ -78,6 +78,22 @@
 		document.removeEventListener("touchend", handleTouchEnd);
 	};
 
+	// Cleanup effect to prevent memory leaks if component unmounts during drag
+	$effect(() => {
+		return () => {
+			// Remove any lingering event listeners on unmount
+			document.removeEventListener("mousemove", handleMouseMove);
+			document.removeEventListener("mouseup", handleMouseUp);
+			document.removeEventListener("touchmove", handleTouchMove);
+			document.removeEventListener("touchend", handleTouchEnd);
+			// Reset cursor and user-select if component unmounts during drag
+			if (isDragging) {
+				document.body.style.cursor = "";
+				document.body.style.userSelect = "";
+			}
+		};
+	});
+
 	// Keyboard support for accessibility
 	const handleKeyDown = (e: KeyboardEvent) => {
 		const step = e.shiftKey ? 10 : 1;
