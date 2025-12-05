@@ -8,12 +8,10 @@
 	import { menuService } from "$lib/services/menu/index";
 	import { registerViewMenu } from "$lib/services/menu/viewMenu";
 	import * as Resizable from "$lib/components/ui/resizable/index";
-	import ChatSidebarShell from "$lib/components/chat/ChatSidebarShell.svelte";
-	import CommentsPanel from "./panels/CommentsPanel.svelte";
-	import ProblemsPanel from "./panels/ProblemsPanel.svelte";
-	import { annotationsService } from "$lib/services/annotations";
-	import AlertCircleIcon from "@lucide/svelte/icons/alert-circle";
-	import MessageSquareIcon from "@lucide/svelte/icons/message-square";
+	import LeftSidebar from "./LeftSidebar.svelte";
+	import RightSidebar from "./RightSidebar.svelte";
+	import BottomPanel from "./BottomPanel.svelte";
+	import EditorArea from "./EditorArea.svelte";
 
 	interface Props {
 		children?: any;
@@ -21,21 +19,10 @@
 
 	let { children }: Props = $props();
 
-	let activeTab = $state<"problems" | "comments">("comments");
-
-	const commentsCount = $derived(
-		annotationsService.byProvider("user-comment").length,
-	);
-	const problemsCount = $derived(
-		annotationsService.byProvider("validation").length,
-	);
-
-	// Track current sizes during drag (don't persist until drag ends)
 	let pendingLeftWidth: number | null = null;
 	let pendingRightWidth: number | null = null;
 	let pendingBottomHeight: number | null = null;
 
-	// Calculate initial sizes as percentages
 	const getLeftSidebarSize = () => {
 		if (!layoutStore.layout?.left_sidebar.visible) return 0;
 		return Math.max(
@@ -73,7 +60,6 @@
 		);
 	};
 
-	// Handle layout changes - just track pending values
 	const handleMainLayoutChange = (sizes: number[]) => {
 		if (!layoutStore.layout) return;
 
@@ -83,14 +69,11 @@
 			layoutStore.layout.left_sidebar.visible &&
 			layoutStore.layout.right_sidebar.visible
 		) {
-			// Both sidebars visible: [left, center, right]
 			pendingLeftWidth = Math.round((sizes[0] / 100) * containerWidth);
 			pendingRightWidth = Math.round((sizes[2] / 100) * containerWidth);
 		} else if (layoutStore.layout.left_sidebar.visible) {
-			// Only left sidebar: [left, center]
 			pendingLeftWidth = Math.round((sizes[0] / 100) * containerWidth);
 		} else if (layoutStore.layout.right_sidebar.visible) {
-			// Only right sidebar: [center, right]
 			pendingRightWidth = Math.round((sizes[1] / 100) * containerWidth);
 		}
 	};
@@ -99,13 +82,11 @@
 		if (!layoutStore.layout?.bottom_panel.visible) return;
 
 		const containerHeight = window.innerHeight - 80;
-		// Bottom panel is the second pane (index 1)
 		pendingBottomHeight = Math.round((sizes[1] / 100) * containerHeight);
 	};
 
-	// Save on drag end
 	const handleHorizontalDragEnd = (isDragging: boolean) => {
-		if (isDragging) return; // Only save when drag ends
+		if (isDragging) return;
 
 		if (
 			pendingLeftWidth !== null &&
@@ -192,12 +173,7 @@
 				maxSize={40}
 				order={1}
 			>
-				<aside
-					class="flex h-full flex-col overflow-hidden border-r border-border bg-muted/30"
-					aria-label="Left sidebar"
-				>
-					<!-- Left sidebar content placeholder -->
-				</aside>
+				<LeftSidebar />
 			</Resizable.Pane>
 			<Resizable.Handle
 				class="w-px bg-border transition-colors hover:bg-primary/50"
@@ -219,11 +195,9 @@
 					minSize={20}
 					order={1}
 				>
-					<div
-						class="editor-area flex h-full min-h-0 flex-1 flex-col overflow-hidden"
-					>
+					<EditorArea>
 						{@render children?.()}
-					</div>
+					</EditorArea>
 				</Resizable.Pane>
 
 				{#if layoutStore.layout?.bottom_panel.visible}
@@ -237,71 +211,7 @@
 						maxSize={60}
 						order={2}
 					>
-						<div class="flex h-full flex-col bg-muted/30">
-							<div
-								class="flex items-center gap-1 border-b border-border px-2"
-							>
-								<button
-									type="button"
-									class="flex h-8 items-center gap-1.5 border-b-2 px-2 text-sm font-medium transition-colors"
-									class:border-primary={activeTab ===
-										"comments"}
-									class:text-foreground={activeTab ===
-										"comments"}
-									class:border-transparent={activeTab !==
-										"comments"}
-									class:text-muted-foreground={activeTab !==
-										"comments"}
-									class:hover:text-foreground={activeTab !==
-										"comments"}
-									onclick={() => (activeTab = "comments")}
-								>
-									<MessageSquareIcon class="size-3.5" />
-									<span>Comments</span>
-									{#if commentsCount > 0}
-										<span
-											class="ml-0.5 rounded-full bg-muted px-1.5 text-xs tabular-nums"
-										>
-											{commentsCount}
-										</span>
-									{/if}
-								</button>
-
-								<button
-									type="button"
-									class="flex h-8 items-center gap-1.5 border-b-2 px-2 text-sm font-medium transition-colors"
-									class:border-primary={activeTab ===
-										"problems"}
-									class:text-foreground={activeTab ===
-										"problems"}
-									class:border-transparent={activeTab !==
-										"problems"}
-									class:text-muted-foreground={activeTab !==
-										"problems"}
-									class:hover:text-foreground={activeTab !==
-										"problems"}
-									onclick={() => (activeTab = "problems")}
-								>
-									<AlertCircleIcon class="size-3.5" />
-									<span>Problems</span>
-									{#if problemsCount > 0}
-										<span
-											class="ml-0.5 rounded-full bg-destructive/10 px-1.5 text-xs tabular-nums text-destructive"
-										>
-											{problemsCount}
-										</span>
-									{/if}
-								</button>
-							</div>
-
-							<div class="min-h-0 flex-1 overflow-auto">
-								{#if activeTab === "comments"}
-									<CommentsPanel />
-								{:else if activeTab === "problems"}
-									<ProblemsPanel />
-								{/if}
-							</div>
-						</div>
+						<BottomPanel />
 					</Resizable.Pane>
 				{/if}
 			</Resizable.PaneGroup>
@@ -318,12 +228,7 @@
 				maxSize={50}
 				order={3}
 			>
-				<aside
-					class="flex h-full flex-col overflow-hidden border-l border-border bg-muted/30"
-					aria-label="Chat sidebar"
-				>
-					<ChatSidebarShell />
-				</aside>
+				<RightSidebar />
 			</Resizable.Pane>
 		{/if}
 	</Resizable.PaneGroup>

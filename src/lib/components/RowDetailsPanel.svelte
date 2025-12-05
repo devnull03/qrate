@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from "svelte";
 	import { Button } from "$lib/components/ui/button/index.js";
+	import * as Resizable from "$lib/components/ui/resizable/index";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
 	import {
 		loadSettings,
@@ -75,11 +76,6 @@
 
 	let rowFiles = $derived.by((): FileItem[] => {
 		if (!selectedRow || !filesFolder || !fileColumnName) {
-			console.log("rowFiles: missing data", {
-				selectedRow: !!selectedRow,
-				filesFolder,
-				fileColumnName,
-			});
 			return [];
 		}
 
@@ -89,19 +85,11 @@
 				col.name.toLowerCase() === colName || col.id === fileColumnName,
 		);
 		if (!fileColumn) {
-			console.log("rowFiles: file column not found", {
-				colName,
-				columns: qrateStore.columns.map((c) => c.name),
-			});
 			return [];
 		}
 
 		const fileValue = selectedRow[fileColumn.id];
 		if (!fileValue) {
-			console.log("rowFiles: no file value in row", {
-				columnId: fileColumn.id,
-				selectedRow,
-			});
 			return [];
 		}
 
@@ -112,16 +100,7 @@
 			selectedRow,
 			fileColumn.id,
 		);
-		// Extract extension from the resolved filePath, not fileName
-		const ext = filePath.split(".").pop()?.toLowerCase() || "";
 		const fileType = getFileType(filePath);
-
-		console.log("rowFiles: complete file info", {
-			fileName,
-			filePath,
-			fileType,
-			extension: ext,
-		});
 
 		return [
 			{
@@ -182,7 +161,7 @@
 		{/if}
 	</div>
 
-	<div class="min-h-0 flex-1 overflow-y-auto">
+	<div class="min-h-0 flex-1 overflow-hidden">
 		{#if qrateStore.selectedRowId === null}
 			<div
 				class="flex h-full flex-col items-center justify-center gap-3 p-4 text-muted-foreground"
@@ -198,52 +177,92 @@
 				<p class="text-sm">No files folder configured</p>
 				<p class="text-xs">Configure in View → Settings</p>
 			</div>
-		{:else}
-			{#if rowFiles.length > 0}
-				<div class="border-b border-border p-3">
-					<h3
-						class="mb-2 text-xs font-medium uppercase text-muted-foreground"
-					>
-						Files
-					</h3>
-					<div class="space-y-3">
-						{#each rowFiles as file}
-							{@const IconComponent =
-								iconMap[file.fileType] || FileIcon}
-							{#if file.fileType === "image"}
-								<!-- Image Preview -->
-								<div
-									class="group rounded-md border border-border overflow-hidden"
-								>
+		{:else if rowFiles.length > 0}
+			<Resizable.PaneGroup direction="vertical" class="h-full">
+				<Resizable.Pane defaultSize={60} minSize={20}>
+					<div class="flex h-full flex-col overflow-hidden p-3">
+						<h3
+							class="mb-2 shrink-0 text-xs font-medium uppercase text-muted-foreground"
+						>
+							Files
+						</h3>
+						<div class="flex min-h-0 flex-1 flex-col">
+							{#each rowFiles as file}
+								{@const IconComponent =
+									iconMap[file.fileType] || FileIcon}
+								{#if file.fileType === "image"}
 									<div
-										class="flex items-center justify-center overflow-hidden"
-										style="max-height: calc(50vh - 44px);"
+										class="group flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border"
 									>
 										<ImageViewer
 											filePath={file.filePath}
 											alt={file.fileName}
 											thumbnail={true}
 											showOpenButton={true}
-											class="max-h-[calc(50vh-44px)]"
+											class="min-h-0 flex-1"
 										/>
-									</div>
-									<div
-										class="flex items-center gap-2 p-2 bg-muted/30 shrink-0"
-									>
-										<ImageIcon
-											class="size-4 text-muted-foreground shrink-0"
-										/>
-										<div class="min-w-0 flex-1">
-											<p
-												class="truncate text-sm font-medium"
+										<div
+											class="flex shrink-0 items-center gap-2 bg-muted/30 p-2"
+										>
+											<ImageIcon
+												class="size-4 shrink-0 text-muted-foreground"
+											/>
+											<div class="min-w-0 flex-1">
+												<p
+													class="truncate text-sm font-medium"
+												>
+													{file.fileName}
+												</p>
+											</div>
+											<Button
+												variant="ghost"
+												size="icon-sm"
+												class="size-7 shrink-0"
+												onclick={() =>
+													openFileLocation(
+														file.filePath,
+													)}
+												title="Open file location"
 											>
-												{file.fileName}
-											</p>
+												<FolderOpenIcon
+													class="size-3.5"
+												/>
+											</Button>
 										</div>
+									</div>
+								{:else}
+									<div
+										class="group flex items-center gap-2 rounded-md p-2 transition-colors hover:bg-accent"
+									>
+										<button
+											class="flex min-w-0 flex-1 items-center gap-2 text-left"
+											onclick={() =>
+												openFile(file.filePath)}
+										>
+											<div
+												class="flex size-8 shrink-0 items-center justify-center rounded bg-muted"
+											>
+												<IconComponent
+													class="size-4 text-muted-foreground"
+												/>
+											</div>
+											<div class="min-w-0 flex-1">
+												<p
+													class="truncate text-sm font-medium"
+												>
+													{file.fileName}
+												</p>
+												<p
+													class="truncate text-xs text-muted-foreground"
+												>
+													{file.filePath}
+												</p>
+											</div>
+										</button>
 										<Button
 											variant="ghost"
 											size="icon-sm"
-											class="size-7 shrink-0"
+											class="size-7 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
 											onclick={() =>
 												openFileLocation(file.filePath)}
 											title="Open file location"
@@ -251,54 +270,49 @@
 											<FolderOpenIcon class="size-3.5" />
 										</Button>
 									</div>
-								</div>
-							{:else}
-								<!-- Non-image file -->
-								<div
-									class="group flex items-center gap-2 rounded-md p-2 transition-colors hover:bg-accent"
-								>
-									<button
-										class="flex min-w-0 flex-1 items-center gap-2 text-left"
-										onclick={() => openFile(file.filePath)}
-									>
-										<div
-											class="flex size-8 shrink-0 items-center justify-center rounded bg-muted"
-										>
-											<IconComponent
-												class="size-4 text-muted-foreground"
-											/>
-										</div>
-										<div class="min-w-0 flex-1">
-											<p
-												class="truncate text-sm font-medium"
-											>
-												{file.fileName}
-											</p>
-											<p
-												class="truncate text-xs text-muted-foreground"
-											>
-												{file.filePath}
-											</p>
-										</div>
-									</button>
-									<Button
-										variant="ghost"
-										size="icon-sm"
-										class="size-7 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-										onclick={() =>
-											openFileLocation(file.filePath)}
-										title="Open file location"
-									>
-										<FolderOpenIcon class="size-3.5" />
-									</Button>
-								</div>
-							{/if}
-						{/each}
+								{/if}
+							{/each}
+						</div>
 					</div>
-				</div>
-			{/if}
+				</Resizable.Pane>
 
-			<div class="p-3">
+				<Resizable.Handle
+					class="h-px bg-border transition-colors hover:bg-primary/50"
+				/>
+
+				<Resizable.Pane defaultSize={40} minSize={15}>
+					<div class="h-full overflow-y-auto p-3">
+						<h3
+							class="mb-2 text-xs font-medium uppercase text-muted-foreground"
+						>
+							Row Data
+						</h3>
+						<div class="space-y-2">
+							{#each rowFields as field}
+								<div class="rounded-md bg-muted/50 p-2">
+									<div
+										class="mb-0.5 text-xs font-medium text-muted-foreground"
+									>
+										{field.name}
+									</div>
+									<div class="wrap-break-word text-sm">
+										{#if field.value !== null && field.value !== undefined && field.value !== ""}
+											{field.value}
+										{:else}
+											<span
+												class="italic text-muted-foreground"
+												>Empty</span
+											>
+										{/if}
+									</div>
+								</div>
+							{/each}
+						</div>
+					</div>
+				</Resizable.Pane>
+			</Resizable.PaneGroup>
+		{:else}
+			<div class="h-full overflow-y-auto p-3">
 				<h3
 					class="mb-2 text-xs font-medium uppercase text-muted-foreground"
 				>
