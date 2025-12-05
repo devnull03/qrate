@@ -123,6 +123,8 @@
 	);
 
 	// Which field is currently being edited in the "Row Data" section
+	// Note: Only one field can be edited at a time for a single row.
+	// This does NOT support multirow or multifield editing.
 	let editingFieldId = $state<string | null>(null);
 	let fieldDraftValues = $state<Record<string, string>>({});
 	let editingInput = $state<HTMLTextAreaElement | null>(null);
