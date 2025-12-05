@@ -1,7 +1,7 @@
 <script lang="ts">
 	import RevoGrid from "$lib/components/grid/RevoGrid.svelte";
 	import FilesGrid from "$lib/components/FilesGrid.svelte";
-	import RowDetailsPanel from "$lib/components/RowDetailsPanel.svelte";
+	import RowDetailsPanel from "$lib/components/layout/panels/RowDetailsPanel.svelte";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
 	import TableIcon from "@lucide/svelte/icons/table";
@@ -135,7 +135,7 @@
 					size="sm"
 					class="h-7 gap-1.5 rounded-r-none px-3"
 					onclick={() => qrateStore.toggleDetailsPanel()}
-					title="Toggle Details (Ctrl+L)"
+					title="Toggle Details (Ctrl+K)"
 				>
 					<ColumnsIcon class="size-3.5" />
 					<span>Details</span>

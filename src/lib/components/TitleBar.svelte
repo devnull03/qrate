@@ -222,7 +222,7 @@
 				</DropdownMenu.Item>
 				<DropdownMenu.Item onclick={toggleDetails}>
 					{detailsVisible ? "Hide" : "Show"} Details Panel
-					<DropdownMenu.Shortcut>Ctrl+L</DropdownMenu.Shortcut>
+					<DropdownMenu.Shortcut>Ctrl+K</DropdownMenu.Shortcut>
 				</DropdownMenu.Item>
 				<DropdownMenu.Separator />
 				<DropdownMenu.Item onclick={handleSettings}>
@@ -284,8 +284,8 @@
 				: ''}"
 			onclick={toggleDetails}
 			title={detailsVisible
-				? "Hide Details Panel (Ctrl+L)"
-				: "Show Details Panel (Ctrl+L)"}
+				? "Hide Details Panel (Ctrl+K)"
+				: "Show Details Panel (Ctrl+K)"}
 		>
 			<ColumnsIcon class="size-4" />
 		</Button>

@@ -56,7 +56,7 @@ export function registerViewMenu(): void {
 					{
 						id: VIEW_COMMANDS.TOGGLE_DETAILS_PANEL,
 						label: "Toggle Details Panel",
-						shortcut: shortcut("l", "ctrl"),
+						shortcut: shortcut("k", "ctrl"),
 						action: toggleDetailsPanel,
 					},
 				],
