@@ -40,8 +40,7 @@ pub fn get_annotations(
     let annotations = stmt
         .query_map(params_refs.as_slice(), |row| {
             let metadata_str: Option<String> = row.get(9)?;
-            let metadata = metadata_str
-                .and_then(|s| serde_json::from_str(&s).ok());
+            let metadata = metadata_str.and_then(|s| serde_json::from_str(&s).ok());
 
             Ok(Annotation {
                 id: row.get(0)?,
@@ -97,7 +96,6 @@ pub fn create_annotation(
 
     let id = conn.last_insert_rowid();
 
-    // Fetch the created annotation to return with all fields
     let mut stmt = conn
         .prepare(
             "SELECT id, provider, row_id, column_id, severity, message, created_at, updated_at, resolved, metadata
@@ -108,8 +106,7 @@ pub fn create_annotation(
     let result = stmt
         .query_row([id], |row| {
             let metadata_str: Option<String> = row.get(9)?;
-            let metadata = metadata_str
-                .and_then(|s| serde_json::from_str(&s).ok());
+            let metadata = metadata_str.and_then(|s| serde_json::from_str(&s).ok());
 
             Ok(Annotation {
                 id: row.get(0)?,
@@ -143,7 +140,6 @@ pub fn update_annotation(
 
     let conn = conn_arc.lock().unwrap();
 
-    // Build dynamic update query based on provided fields
     let mut set_clauses = vec!["updated_at = datetime('now')".to_string()];
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![];
 
@@ -177,7 +173,6 @@ pub fn update_annotation(
     conn.execute(&query, params_refs.as_slice())
         .map_err(|e| format!("Failed to update annotation: {}", e))?;
 
-    // Fetch the updated annotation
     let mut stmt = conn
         .prepare(
             "SELECT id, provider, row_id, column_id, severity, message, created_at, updated_at, resolved, metadata
@@ -188,8 +183,7 @@ pub fn update_annotation(
     let result = stmt
         .query_row([id], |row| {
             let metadata_str: Option<String> = row.get(9)?;
-            let metadata = metadata_str
-                .and_then(|s| serde_json::from_str(&s).ok());
+            let metadata = metadata_str.and_then(|s| serde_json::from_str(&s).ok());
 
             Ok(Annotation {
                 id: row.get(0)?,
@@ -269,8 +263,7 @@ pub fn get_annotations_at(
         (Some(rid), Some(cid)) => stmt
             .query_map(params![rid, cid], |row| {
                 let metadata_str: Option<String> = row.get(9)?;
-                let metadata = metadata_str
-                    .and_then(|s| serde_json::from_str(&s).ok());
+                let metadata = metadata_str.and_then(|s| serde_json::from_str(&s).ok());
 
                 Ok(Annotation {
                     id: row.get(0)?,
@@ -291,8 +284,7 @@ pub fn get_annotations_at(
         (Some(rid), None) => stmt
             .query_map(params![rid], |row| {
                 let metadata_str: Option<String> = row.get(9)?;
-                let metadata = metadata_str
-                    .and_then(|s| serde_json::from_str(&s).ok());
+                let metadata = metadata_str.and_then(|s| serde_json::from_str(&s).ok());
 
                 Ok(Annotation {
                     id: row.get(0)?,
@@ -313,8 +305,7 @@ pub fn get_annotations_at(
         (None, Some(cid)) => stmt
             .query_map(params![cid], |row| {
                 let metadata_str: Option<String> = row.get(9)?;
-                let metadata = metadata_str
-                    .and_then(|s| serde_json::from_str(&s).ok());
+                let metadata = metadata_str.and_then(|s| serde_json::from_str(&s).ok());
 
                 Ok(Annotation {
                     id: row.get(0)?,

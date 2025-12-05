@@ -50,36 +50,6 @@
 			qrateStore.selectColumn(columnId);
 		}
 	}
-
-	async function toggleResolved(id: number, currentResolved: boolean) {
-		const annotation = annotationsService.get(id);
-		if (!annotation) return;
-
-		const accessor = {
-			update: async (message: string) => {
-				// Not needed here
-			},
-			resolve: async () => {
-				// Will be called below
-			},
-			unresolve: async () => {
-				// Will be called below
-			},
-			delete: async () => {
-				// Not needed here
-			},
-			getAnnotation: () => annotation,
-		};
-
-		// Use the service directly
-		if (currentResolved) {
-			await annotationsService.add({
-				...annotation,
-				provider: annotation.provider,
-				message: annotation.message,
-			});
-		}
-	}
 </script>
 
 {#if comments.length === 0}

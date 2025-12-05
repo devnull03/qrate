@@ -115,7 +115,6 @@ pub fn init_database(path: &Path) -> Result<Connection> {
         [],
     )?;
 
-    // Create annotations table for comments, problems, and AI suggestions
     conn.execute(
         "CREATE TABLE IF NOT EXISTS _annotations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -132,7 +131,6 @@ pub fn init_database(path: &Path) -> Result<Connection> {
         [],
     )?;
 
-    // Create indexes for efficient annotation lookups
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_annotations_provider ON _annotations(provider)",
         [],
@@ -193,7 +191,6 @@ pub fn open_database(path: &Path) -> Result<Connection> {
     // Ensure all project settings exist (handles migrations for new settings)
     settings::ensure_project_settings(&conn)?;
 
-    // Ensure annotations table exists (migration for existing databases)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS _annotations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -124,7 +124,6 @@ class QrateStore {
 					this.currentLimit = response.limit;
 				}
 
-				// Load annotations for this file
 				await annotationsService.load(response.path);
 				return true;
 			}

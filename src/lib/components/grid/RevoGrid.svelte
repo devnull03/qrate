@@ -14,7 +14,6 @@
 	let scrollDebounceTimer: number | null = null;
 	let defaultRowHeight = $state(35);
 
-	// Context menu state
 	let contextRowId = $state<number | null>(null);
 	let contextColumnId = $state<string | null>(null);
 	let lastContextMenuPosition = $state<{ x: number; y: number }>({
@@ -22,13 +21,11 @@
 		y: 0,
 	});
 
-	// Add comment popover state
 	let addCommentDialogOpen = $state(false);
 	let commentRowId = $state<number | null>(null);
 	let commentColumnId = $state<string | null>(null);
 	let popoverAnchor = $state<{ x: number; y: number } | null>(null);
 
-	// Track cells with annotations for decoration
 	const annotatedCells = $derived.by(() => {
 		const cells = new Set<string>();
 		for (const annotation of annotationsService.annotations) {
@@ -134,17 +131,14 @@
 		return () => observer.disconnect();
 	});
 
-	// Poll the grid for range selection after user interactions
 	const pollRangeSelection = async () => {
 		if (!grid) return;
 
-		// Small delay to let the grid update its internal state
 		await new Promise((r) => setTimeout(r, 10));
 
 		try {
 			const range = await grid.getSelectedRange?.();
 			if (range) {
-				// Range exists - check if it's a multi-cell selection
 				const startRow = range.y ?? range.startRow ?? 0;
 				const endRow = range.y1 ?? range.endRow ?? startRow;
 				const startCol = range.x ?? range.startCol ?? 0;
@@ -154,7 +148,6 @@
 				const colSpan = Math.abs(endCol - startCol) + 1;
 
 				if (rowSpan > 1 || colSpan > 1) {
-					// Multi-cell range selected
 					qrateStore.selectRange({
 						startRow: Math.min(startRow, endRow),
 						endRow: Math.max(startRow, endRow),
@@ -162,16 +155,14 @@
 						endCol: Math.max(startCol, endCol),
 					});
 				} else {
-					// Single cell - clear range
 					qrateStore.selectRange(null);
 				}
 			}
 		} catch {
-			// getSelectedRange not available or failed
+			// ignore
 		}
 	};
 
-	// Set up mouseup listener on the grid container to detect range selections
 	$effect(() => {
 		if (!gridContainer) return;
 
@@ -247,7 +238,6 @@
 		}
 	};
 
-	// Handle scroll events for infinite loading
 	const handleScroll = async (event: CustomEvent) => {
 		const { detail } = event;
 		if (!detail || !qrateStore.isFileOpen) return;
@@ -305,19 +295,14 @@
 
 		qrateStore.selectRow(rowId);
 		qrateStore.selectColumn(colProp === "_rowNum" ? null : colProp);
-
-		// Check if this is a single cell focus and clear range if needed
-		// This handles plain arrow key navigation which doesn't trigger pollRangeSelection
 		await pollRangeSelection();
 	};
 
 	const handleContextMenuOpen = () => {
-		// Capture currently selected cell when context menu opens
 		contextRowId = qrateStore.selectedRowId;
 		contextColumnId = qrateStore.selectedColumnId;
 	};
 
-	// Capture the native contextmenu event position
 	const handleNativeContextMenu = (e: MouseEvent) => {
 		lastContextMenuPosition = { x: e.clientX, y: e.clientY };
 	};
