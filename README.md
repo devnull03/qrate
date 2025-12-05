@@ -22,7 +22,7 @@ This **context switching** increases errors ("naming drift") and severely limits
 qrate unifies these tasks into a single, high-performance flow:
 
 - **Headless Document Model**: Treats CSVs as databases (SQLite), enabling instant loading of massive datasets without memory bloat
-- **Unified Interface**: View media directly beside the metadata grid
+- **Unified Interface**: View media directly beside the metadata grid with resizable panels
 - **Archival Standards**: Built with support for standards like RAD (Rules for Archival Description) and MODS
 - **AI-Assisted Review**: Uses AI to draft metadata and flag inconsistencies (e.g., spelling errors, date format mismatches), which the human archivist validates
 - **Local-First**: All data stored locally in open formats (CSV/SQLite) to ensure long-term access and sustainability
@@ -31,17 +31,24 @@ qrate unifies these tasks into a single, high-performance flow:
 
 ### Performance
 - **Instant Load Times**: Open 1GB+ files in under 1 second
-- **Memory Efficient**: Uses ~100MB RAM regardless of file size
+- **Memory Efficient**: Uses ~100MB RAM regardless of file size via virtual scrolling
 - **Crash-Resistant**: ACID transactions protect your data
 - **Auto-Save**: Every edit instantly persisted to disk
-- **Virtual Scrolling**: Smooth performance with millions of rows
+- **Thumbnail Pipeline**: Background processing generates optimized thumbnails for fast previews
+
+### Workspace
+- **Resizable Panels**: Left sidebar, right details panel, and bottom panel with persistent sizes
+- **Row Details Panel**: View and edit field values inline with double-click or Alt+click
+- **Image Viewer**: Preview images with optional full-resolution loading
+- **Multiple Views**: Switch between spreadsheet and files grid views
+- **Dark/Light Themes**: System-aware theme with manual override
 
 ### Archival Workflow
 - **Rich Metadata**: Column widths and settings persist across sessions
 - **Standards Support**: Ready for RAD, MODS, and other archival standards
-- **Batch Operations**: Update multiple records simultaneously
-- **Validation**: Built-in support for controlled vocabularies
-- **Media Viewer**: View images inline while editing metadata
+- **Inline Editing**: Edit cells directly with Ctrl+Enter to save
+- **Spellcheck**: Built-in spelling validation with custom dictionary support
+- **Annotations**: Add notes and comments to cells
 
 ### Performance Comparison
 
@@ -77,6 +84,15 @@ qrate unifies these tasks into a single, high-performance flow:
 - **Navigate**: Scroll smoothly through millions of rows
 - **View Images**: Select a row to preview associated media files
 
+### Keyboard Shortcuts
+
+| Action | Shortcut |
+|--------|----------|
+| Toggle Details Panel | Ctrl+K |
+| Save Edit | Ctrl+Enter |
+| Cancel Edit | Escape |
+| Alt+Click Field | Edit field in details panel |
+
 ## .qrate File Format
 
 A .qrate file is a SQLite database stored in a hidden folder structure:
@@ -91,6 +107,60 @@ project.qrate          (marker file)
 
 This structure keeps the working files hidden while presenting a clean single-file interface.
 
+## Architecture Overview
+
+qrate uses a **Headless Document Model** where the frontend is a thin viewport and all data lives in the Rust backend:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Svelte 5 Frontend                       │
+├──────────────┬──────────────┬──────────────┬───────────────┤
+│ WorkbenchLayout │ RevoGrid   │ RowDetailsPanel │ ImageViewer │
+│ (Resizable)     │ (Virtual)  │ (Inline Edit)   │ (Thumbnails)│
+├─────────────────┴────────────┴─────────────────┴────────────┤
+│                    Reactive Stores                          │
+│  qrateStore │ layoutStore │ appSettings │ globalSettings    │
+├─────────────────────────────────────────────────────────────┤
+│                    Tauri IPC (JSON)                         │
+├─────────────────────────────────────────────────────────────┤
+│                     Rust Backend                            │
+├──────────────┬──────────────┬──────────────┬───────────────┤
+│ AppState     │ LayoutManager │ ThumbnailPipeline │ Settings │
+│ (Connections)│ (Persistence) │ (Image Processing)│ (Schema) │
+├──────────────┴──────────────┴──────────────┴───────────────┤
+│                 SQLite (rusqlite + WAL)                     │
+├─────────────────────────────────────────────────────────────┤
+│                    .qrate File                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow
+
+1. **Virtual Scrolling**: Frontend requests only visible rows (~100 at a time)
+2. **Immediate Persistence**: Cell edits invoke Rust command → SQLite transaction → success/error response
+3. **Layout Persistence**: Panel sizes saved on drag-end to separate layout database
+4. **Thumbnail Pipeline**: Background thread generates compressed previews, cached on disk
+
+## Configuration
+
+### Project Settings (per .qrate file)
+
+| Setting | Description |
+|---------|-------------|
+| Files Folder | Base folder containing referenced files |
+| File Path Pattern | Pattern for locating files (e.g., `{files_folder}/{file_column}`) |
+| File Column Name | Column containing filenames |
+| Use Thumbnails Only | Load compressed previews instead of full images |
+| Row Limit | Number of rows to load per batch |
+
+### Global Settings
+
+| Setting | Description |
+|---------|-------------|
+| Theme | System / Light / Dark |
+| Default Row Limit | Default batch size for new projects |
+| Default File Path Pattern | Default pattern for new projects |
+
 ## Roadmap
 
 ### Completed
@@ -100,7 +170,11 @@ This structure keeps the working files hidden while presenting a clean single-fi
 - [x] Auto-save on edit
 - [x] Column metadata persistence
 - [x] Dark/light theme support
-- [x] Image viewer panel
+- [x] Image viewer panel with thumbnails
+- [x] Resizable layout with persistence
+- [x] Inline field editing in details panel
+- [x] Spellcheck integration
+- [x] Annotations system
 
 ### In Progress
 - [ ] Undo/Redo support
@@ -132,7 +206,7 @@ MIT
 
 ## Credits
 
-Built with [Tauri](https://tauri.app), [Svelte](https://svelte.dev), [RevoGrid](https://rv-grid.com), and [SQLite](https://sqlite.org).
+Built with [Tauri](https://tauri.app), [Svelte 5](https://svelte.dev), [RevoGrid](https://rv-grid.com), [shadcn-svelte](https://shadcn-svelte.com), and [SQLite](https://sqlite.org).
 
 ---
 
