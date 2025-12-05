@@ -75,6 +75,9 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      paneforge:
+        specifier: ^1.0.2
+        version: 1.0.2(svelte@5.43.14)
       svelte:
         specifier: ^5.0.0
         version: 5.43.14
@@ -896,6 +899,11 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
+  paneforge@1.0.2:
+    resolution: {integrity: sha512-KzmIXQH1wCfwZ4RsMohD/IUtEjVhteR+c+ulb/CHYJHX8SuDXoJmChtsc/Xs5Wl8NHS4L5Q7cxL8MG40gSU1bA==}
+    peerDependencies:
+      svelte: ^5.29.0
+
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
 
@@ -923,6 +931,11 @@ packages:
 
   runed@0.25.0:
     resolution: {integrity: sha512-7+ma4AG9FT2sWQEA0Egf6mb7PBT2vHyuHail1ie8ropfSjvZGtEAx8YTmUjv/APCsdRRxEVvArNjALk9zFSOrg==}
+    peerDependencies:
+      svelte: ^5.7.0
+
+  runed@0.29.2:
+    resolution: {integrity: sha512-0cq6cA6sYGZwl/FvVqjx9YN+1xEBu9sDDyuWdDW1yWX7JF2wmvmVKfH+hVCZs+csW+P3ARH92MjI3H9QTagOQA==}
     peerDependencies:
       svelte: ^5.7.0
 
@@ -972,6 +985,12 @@ packages:
     engines: {node: '>=18', pnpm: '>=8.7.0'}
     peerDependencies:
       svelte: ^5.0.0
+
+  svelte-toolbelt@0.9.3:
+    resolution: {integrity: sha512-HCSWxCtVmv+c6g1ACb8LTwHVbDqLKJvHpo6J8TaqwUme2hj9ATJCpjCPNISR1OCq2Q4U1KT41if9ON0isINQZw==}
+    engines: {node: '>=18', pnpm: '>=8.7.0'}
+    peerDependencies:
+      svelte: ^5.30.2
 
   svelte@5.43.14:
     resolution: {integrity: sha512-pHeUrp1A5S6RGaXhJB7PtYjL1VVjbVrJ2EfuAoPu9/1LeoMaJa/pcdCsCSb0gS4eUHAHnhCbUDxORZyvGK6kOQ==}
@@ -1678,6 +1697,12 @@ snapshots:
 
   nanoid@3.3.11: {}
 
+  paneforge@1.0.2(svelte@5.43.14):
+    dependencies:
+      runed: 0.23.4(svelte@5.43.14)
+      svelte: 5.43.14
+      svelte-toolbelt: 0.9.3(svelte@5.43.14)
+
   picocolors@1.1.1: {}
 
   picomatch@4.0.3: {}
@@ -1724,6 +1749,11 @@ snapshots:
       svelte: 5.43.14
 
   runed@0.25.0(svelte@5.43.14):
+    dependencies:
+      esm-env: 1.2.2
+      svelte: 5.43.14
+
+  runed@0.29.2(svelte@5.43.14):
     dependencies:
       esm-env: 1.2.2
       svelte: 5.43.14
@@ -1780,6 +1810,13 @@ snapshots:
     dependencies:
       clsx: 2.1.1
       runed: 0.23.4(svelte@5.43.14)
+      style-to-object: 1.0.14
+      svelte: 5.43.14
+
+  svelte-toolbelt@0.9.3(svelte@5.43.14):
+    dependencies:
+      clsx: 2.1.1
+      runed: 0.29.2(svelte@5.43.14)
       style-to-object: 1.0.14
       svelte: 5.43.14
 
