@@ -3,14 +3,41 @@
 	import type { ColumnRegular, DataType } from "@revolist/revogrid";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import { qrateStore, type ColumnDef } from "$lib/stores/qrateStore.svelte";
+	import { annotationsService } from "$lib/services/annotations";
+	import AddCommentDialog from "$lib/components/layout/panels/AddCommentDialog.svelte";
+	import * as ContextMenu from "$lib/components/ui/context-menu/index.js";
+	import MessageSquarePlusIcon from "@lucide/svelte/icons/message-square-plus";
 
 	let grid: any = $state();
 	let gridContainer: HTMLDivElement | null = $state(null);
 	let isLoadingMore = $state(false);
-	let lastScrollY = $state(0);
 	let scrollDebounceTimer: number | null = null;
 	let defaultRowHeight = $state(35);
-	let showRowHeightInput = $state(false);
+
+	// Context menu state
+	let contextRowId = $state<number | null>(null);
+	let contextColumnId = $state<string | null>(null);
+	let lastContextMenuPosition = $state<{ x: number; y: number }>({
+		x: 0,
+		y: 0,
+	});
+
+	// Add comment popover state
+	let addCommentDialogOpen = $state(false);
+	let commentRowId = $state<number | null>(null);
+	let commentColumnId = $state<string | null>(null);
+	let popoverAnchor = $state<{ x: number; y: number } | null>(null);
+
+	// Track cells with annotations for decoration
+	const annotatedCells = $derived.by(() => {
+		const cells = new Set<string>();
+		for (const annotation of annotationsService.annotations) {
+			if (annotation.rowId !== null && annotation.columnId !== null) {
+				cells.add(`${annotation.rowId}-${annotation.columnId}`);
+			}
+		}
+		return cells;
+	});
 
 	const convertColumns = (columns: ColumnDef[]): ColumnRegular[] => {
 		const rowNumberColumn: ColumnRegular = {
@@ -34,6 +61,16 @@
 				size: col.width,
 				sortable: true,
 				filter: true,
+				cellProperties: (data: { model?: { row_id?: number } }) => {
+					const rowId = data.model?.row_id;
+					if (
+						rowId !== undefined &&
+						annotatedCells.has(`${rowId}-${col.id}`)
+					) {
+						return { class: "has-annotation" };
+					}
+					return {};
+				},
 			}));
 
 		return [rowNumberColumn, ...dataColumns];
@@ -273,30 +310,57 @@
 		// This handles plain arrow key navigation which doesn't trigger pollRangeSelection
 		await pollRangeSelection();
 	};
+
+	const handleContextMenuOpen = () => {
+		// Capture currently selected cell when context menu opens
+		contextRowId = qrateStore.selectedRowId;
+		contextColumnId = qrateStore.selectedColumnId;
+	};
+
+	// Capture the native contextmenu event position
+	const handleNativeContextMenu = (e: MouseEvent) => {
+		lastContextMenuPosition = { x: e.clientX, y: e.clientY };
+	};
+
+	const openAddCommentDialog = () => {
+		commentRowId = contextRowId;
+		commentColumnId = contextColumnId;
+		popoverAnchor = lastContextMenuPosition;
+		addCommentDialogOpen = true;
+	};
+
+	const closeAddCommentDialog = () => {
+		addCommentDialogOpen = false;
+		commentRowId = null;
+		commentColumnId = null;
+	};
 </script>
 
-<div
-	class="flex h-full w-full flex-col overflow-hidden"
-	bind:this={gridContainer}
->
-	{#if !qrateStore.isFileOpen}
-		<div class="flex h-full w-full items-center justify-center">
-			<div class="text-center text-muted-foreground">
-				<p class="mb-2 text-lg">No file open</p>
-				<p class="text-sm">
-					Open a .qrate file or import a CSV to get started
-				</p>
+<ContextMenu.Root onOpenChange={(open) => open && handleContextMenuOpen()}>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<ContextMenu.Trigger
+		class="flex h-full w-full flex-col overflow-hidden"
+		bind:ref={gridContainer}
+		oncontextmenu={handleNativeContextMenu}
+	>
+		{#if !qrateStore.isFileOpen}
+			<div class="flex h-full w-full items-center justify-center">
+				<div class="text-center text-muted-foreground">
+					<p class="mb-2 text-lg">No file open</p>
+					<p class="text-sm">
+						Open a .qrate file or import a CSV to get started
+					</p>
+				</div>
 			</div>
-		</div>
-	{:else if qrateStore.isLoading}
-		<div class="flex h-full w-full items-center justify-center">
-			<div class="text-center text-muted-foreground">
-				<p class="mb-2 text-lg">Loading...</p>
+		{:else if qrateStore.isLoading}
+			<div class="flex h-full w-full items-center justify-center">
+				<div class="text-center text-muted-foreground">
+					<p class="mb-2 text-lg">Loading...</p>
+				</div>
 			</div>
-		</div>
-	{:else}
-		<!-- Grid Controls -->
-		<!-- <div class="mb-2 flex items-center justify-between gap-4">
+		{:else}
+			<!-- Grid Controls -->
+			<!-- <div class="mb-2 flex items-center justify-between gap-4">
 			<div class="flex items-center gap-2">
 				<Label for="row-height" class="text-xs text-muted-foreground">
 					Row Height:
@@ -347,57 +411,79 @@
 			</div>
 		</div> -->
 
-		<div class="min-h-0 flex-1 overflow-hidden">
-			<RevoGridComponent
-				bind:this={grid}
-				source={revoRows}
-				columns={revoColumns}
-				theme={isDark ? "darkMaterial" : "default"}
-				resize={true}
-				range={true}
-				readonly={false}
-				autoSizeColumn={false}
-				rowSize={defaultRowHeight}
-				on:afteredit={handleAfterEdit}
-				on:aftercolumnresize={handleAfterColumnResize}
-				on:afterfocus={handleAfterFocus}
-				on:viewportscroll={handleScroll}
-			/>
-		</div>
+			<div class="min-h-0 flex-1 overflow-hidden">
+				<RevoGridComponent
+					bind:this={grid}
+					source={revoRows}
+					columns={revoColumns}
+					theme={isDark ? "darkMaterial" : "default"}
+					resize={true}
+					range={true}
+					readonly={false}
+					autoSizeColumn={false}
+					rowSize={defaultRowHeight}
+					on:afteredit={handleAfterEdit}
+					on:aftercolumnresize={handleAfterColumnResize}
+					on:afterfocus={handleAfterFocus}
+					on:viewportscroll={handleScroll}
+				/>
+			</div>
 
-		{#if isLoadingMore || qrateStore.isLoadingMore}
-			<div
-				class="fixed bottom-20 right-4 z-50 rounded-lg border border-border bg-background/95 px-4 py-2 shadow-lg backdrop-blur-sm"
-			>
+			{#if isLoadingMore || qrateStore.isLoadingMore}
 				<div
-					class="flex items-center gap-2 text-sm text-muted-foreground"
+					class="fixed bottom-20 right-4 z-50 rounded-lg border border-border bg-background/95 px-4 py-2 shadow-lg backdrop-blur-sm"
 				>
 					<div
-						class="size-4 animate-spin rounded-full border-2 border-current border-t-transparent"
-					></div>
-					<span>Loading more rows...</span>
+						class="flex items-center gap-2 text-sm text-muted-foreground"
+					>
+						<div
+							class="size-4 animate-spin rounded-full border-2 border-current border-t-transparent"
+						></div>
+						<span>Loading more rows...</span>
+					</div>
 				</div>
+			{/if}
+		{/if}
+
+		{#if qrateStore.error}
+			<div
+				class="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border border-destructive/50 bg-destructive/10 p-4 shadow-lg backdrop-blur-sm"
+			>
+				<p class="font-semibold text-destructive">Error</p>
+				<p class="text-sm text-destructive/90">{qrateStore.error}</p>
+				<Button
+					variant="ghost"
+					size="sm"
+					class="mt-2 h-auto p-0 text-xs text-destructive underline hover:bg-transparent"
+					onclick={() => (qrateStore.error = null)}
+				>
+					Dismiss
+				</Button>
 			</div>
 		{/if}
-	{/if}
+	</ContextMenu.Trigger>
 
-	{#if qrateStore.error}
-		<div
-			class="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border border-destructive/50 bg-destructive/10 p-4 shadow-lg backdrop-blur-sm"
+	<ContextMenu.Content class="w-48">
+		<ContextMenu.Item
+			onclick={openAddCommentDialog}
+			disabled={contextRowId === null}
 		>
-			<p class="font-semibold text-destructive">Error</p>
-			<p class="text-sm text-destructive/90">{qrateStore.error}</p>
-			<Button
-				variant="ghost"
-				size="sm"
-				class="mt-2 h-auto p-0 text-xs text-destructive underline hover:bg-transparent"
-				onclick={() => (qrateStore.error = null)}
-			>
-				Dismiss
-			</Button>
-		</div>
-	{/if}
-</div>
+			<MessageSquarePlusIcon class="mr-2 size-4" />
+			Add Comment
+		</ContextMenu.Item>
+	</ContextMenu.Content>
+</ContextMenu.Root>
+
+<!-- Add Comment Popover -->
+{#if popoverAnchor}
+	<AddCommentDialog
+		bind:open={addCommentDialogOpen}
+		rowId={commentRowId}
+		columnId={commentColumnId}
+		onClose={closeAddCommentDialog}
+		anchorPosition={popoverAnchor}
+	/>
+{/if}
 
 <style>
 	:global(.row-number-cell) {
@@ -406,5 +492,20 @@
 		font-size: 0.75rem !important;
 		text-align: center !important;
 		user-select: none !important;
+	}
+
+	:global(.has-annotation) {
+		position: relative;
+	}
+
+	:global(.has-annotation::after) {
+		content: "";
+		position: absolute;
+		top: 2px;
+		right: 2px;
+		width: 0;
+		height: 0;
+		border-left: 6px solid transparent;
+		border-top: 6px solid hsl(var(--primary));
 	}
 </style>

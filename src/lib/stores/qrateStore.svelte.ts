@@ -3,6 +3,7 @@ import { load } from "@tauri-apps/plugin-store";
 import type { Store } from "@tauri-apps/plugin-store";
 import { addRecentFile } from "./recentFiles";
 import { getFileName } from "$lib/utils/path";
+import { annotationsService } from "$lib/services/annotations";
 
 export interface CurrentStateResponse {
 	is_file_open: boolean;
@@ -122,6 +123,9 @@ class QrateStore {
 					this.currentOffset = response.offset;
 					this.currentLimit = response.limit;
 				}
+
+				// Load annotations for this file
+				await annotationsService.load(response.path);
 				return true;
 			}
 
@@ -175,6 +179,7 @@ class QrateStore {
 
 			await this.persistWorkspace();
 			await addRecentFile(path, getFileName(path));
+			await annotationsService.load(path);
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
 			throw err;
@@ -207,6 +212,7 @@ class QrateStore {
 
 			await this.persistWorkspace();
 			await addRecentFile(path, getFileName(path));
+			await annotationsService.load(path);
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
 			throw err;
@@ -446,6 +452,7 @@ class QrateStore {
 		this.filesGridFilteredCount = 0;
 		this.filesGridTotalCount = 0;
 		this.filesGridSearchQuery = "";
+		annotationsService.clear();
 	}
 }
 

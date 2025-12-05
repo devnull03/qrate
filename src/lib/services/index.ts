@@ -28,3 +28,5 @@ export {
 } from "./menu";
 
 export { registerViewMenu, VIEW_COMMANDS } from "./menu/viewMenu";
+
+export { annotationsService, createAnnotationsService } from "./annotations";

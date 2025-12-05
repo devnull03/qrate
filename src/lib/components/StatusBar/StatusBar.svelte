@@ -1,11 +1,14 @@
 <script lang="ts">
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
 	import { thumbnailService } from "$lib/services/thumbnails";
+	import { annotationsService } from "$lib/services/annotations";
+	import { layoutStore } from "$lib/stores/layoutStore.svelte";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import LoaderCircleIcon from "@lucide/svelte/icons/loader-circle";
 	import ArrowDownIcon from "@lucide/svelte/icons/arrow-down";
 	import ImageIcon from "@lucide/svelte/icons/image";
 	import XIcon from "@lucide/svelte/icons/x";
+	import MessageSquareIcon from "@lucide/svelte/icons/message-square";
 
 	interface Props {
 		class?: string;
@@ -53,6 +56,16 @@
 			console.error("Failed to cancel thumbnail processing:", e);
 		}
 	};
+
+	const commentsCount = $derived(
+		annotationsService.byProvider("user-comment").length,
+	);
+
+	const toggleCommentsPanel = async () => {
+		if (!layoutStore.layout?.bottom_panel.visible) {
+			await layoutStore.toggleRegion("bottom_panel");
+		}
+	};
 </script>
 
 <footer
@@ -96,6 +109,19 @@
 					<span class="text-muted-foreground/50">|</span>
 					<span>{qrateStore.filesGridTotalCount} total</span>
 				{/if}
+			{/if}
+
+			{#if commentsCount > 0}
+				<span class="text-muted-foreground/50">|</span>
+				<button
+					type="button"
+					class="flex items-center gap-1 rounded px-1 py-0.5 transition-colors hover:bg-background/50"
+					onclick={toggleCommentsPanel}
+					title="View comments"
+				>
+					<MessageSquareIcon class="size-3" />
+					<span>{commentsCount}</span>
+				</button>
 			{/if}
 		{:else}
 			<span class="text-muted-foreground">No file open</span>
