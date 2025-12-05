@@ -19,3 +19,13 @@ export type {
 	ProgressType,
 	StatusBarAlignment,
 } from "./statusbar";
+
+export type {
+	Annotation,
+	AnnotationSeverity,
+	AnnotationReference,
+	CreateAnnotationInput,
+	UpdateAnnotationInput,
+	IAnnotationAccessor,
+	IAnnotationsService,
+} from "./annotations";

@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
+mod annotations;
 mod app_state;
 mod checks;
 mod compression;
@@ -125,6 +126,12 @@ pub fn run() {
             checks::spellcheck::add_to_dictionary,
             checks::spellcheck::is_word_correct,
             checks::spellcheck::load_dictionary_file,
+            // Annotations commands
+            annotations::commands::get_annotations,
+            annotations::commands::create_annotation,
+            annotations::commands::update_annotation,
+            annotations::commands::delete_annotation,
+            annotations::commands::get_annotations_at,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
