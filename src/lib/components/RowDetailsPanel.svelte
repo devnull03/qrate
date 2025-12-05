@@ -33,6 +33,7 @@
 	let fileColumnName = $state(
 		String(defaultSettings.fileColumnName || "file"),
 	);
+	let useThumbnailsOnly = $state(true);
 
 	const fileTypeMap: Record<string, string[]> = {
 		image: ["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg"],
@@ -58,6 +59,7 @@
 				settings.filePathPattern || "{files_folder}/{file_column}",
 			);
 			fileColumnName = String(settings.fileColumnName || "file");
+			useThumbnailsOnly = settings.useThumbnailsOnly !== "false";
 		});
 	});
 
@@ -290,8 +292,9 @@
 										<ImageViewer
 											filePath={file.filePath}
 											alt={file.fileName}
-											thumbnail={true}
+											thumbnail={useThumbnailsOnly}
 											showOpenButton={true}
+											showLoadFullButton={useThumbnailsOnly}
 											class="min-h-0 flex-1"
 										/>
 										<div

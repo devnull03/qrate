@@ -3,6 +3,7 @@
 	import { untrack } from "svelte";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import ExternalLinkIcon from "@lucide/svelte/icons/external-link";
+	import MaximizeIcon from "@lucide/svelte/icons/maximize";
 	import ImageIcon from "@lucide/svelte/icons/image";
 	import AlertCircleIcon from "@lucide/svelte/icons/alert-circle";
 	import LoaderIcon from "@lucide/svelte/icons/loader";
@@ -13,6 +14,7 @@
 		alt?: string;
 		thumbnail?: boolean;
 		showOpenButton?: boolean;
+		showLoadFullButton?: boolean;
 		class?: string;
 	}
 
@@ -21,8 +23,11 @@
 		alt = "Image",
 		thumbnail = false,
 		showOpenButton = !thumbnail,
+		showLoadFullButton = thumbnail,
 		class: className = "",
 	}: Props = $props();
+
+	let loadedFull = $state(false);
 
 	type LoadState =
 		| { status: "idle" }
@@ -44,11 +49,25 @@
 		path: string,
 		useThumbnail: boolean,
 	): Promise<string> => {
-		if (useThumbnail) {
+		if (useThumbnail && !loadedFull) {
 			return getThumbnailUrl(path);
 		}
 		return getAssetUrl(path);
 	};
+
+	function loadFullImage() {
+		loadedFull = true;
+		loadState = { status: "loading", path: filePath };
+		fetchImage(filePath, false)
+			.then((data) => {
+				loadState = { status: "loaded", path: filePath, data };
+			})
+			.catch((err) => {
+				const message =
+					err instanceof Error ? err.message : String(err);
+				loadState = { status: "error", path: filePath, message };
+			});
+	}
 
 	$effect(() => {
 		const path = filePath;
@@ -86,7 +105,9 @@
 		});
 	});
 
-	const openExternally = () => openPath(filePath);
+	async function openExternally() {
+		await openPath(filePath);
+	}
 
 	const handleImageError = () => {
 		if (loadState.status === "loaded") {
@@ -124,19 +145,32 @@
 			{/if}
 		</div>
 	{:else if imageData}
-		{#if showOpenButton}
+		{#if showOpenButton || (showLoadFullButton && !loadedFull)}
 			<div
-				class="absolute right-2 top-2 opacity-0 transition-opacity group-hover:opacity-100"
+				class="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100"
 			>
-				<Button
-					variant="secondary"
-					size="icon-sm"
-					class="size-8 shadow-md"
-					onclick={openExternally}
-					title="Open externally"
-				>
-					<ExternalLinkIcon class="size-4" />
-				</Button>
+				{#if showLoadFullButton && !loadedFull}
+					<Button
+						variant="secondary"
+						size="icon-sm"
+						class="size-8 shadow-md"
+						onclick={loadFullImage}
+						title="Load full image"
+					>
+						<MaximizeIcon class="size-4" />
+					</Button>
+				{/if}
+				{#if showOpenButton}
+					<Button
+						variant="secondary"
+						size="icon-sm"
+						class="size-8 shadow-md"
+						onclick={openExternally}
+						title="Open externally"
+					>
+						<ExternalLinkIcon class="size-4" />
+					</Button>
+				{/if}
 			</div>
 		{/if}
 		<div

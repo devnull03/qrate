@@ -256,6 +256,19 @@ pub static PROJECT_SETTINGS: &[SettingDef] = &[
         max: Some(1000.0),
         options: None,
     },
+    SettingDef {
+        key: "useThumbnailsOnly",
+        scope: SettingScope::Project,
+        setting_type: SettingType::Boolean,
+        default_value: "true",
+        label: "Use Thumbnails Only",
+        description:
+            "Only load compressed thumbnails in the preview. Disable to always load full images.",
+        category: "Files",
+        min: None,
+        max: None,
+        options: None,
+    },
     // Internal/view state settings
     SettingDef {
         key: "lastSelectedRowId",
