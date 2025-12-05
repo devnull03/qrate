@@ -45,7 +45,7 @@ export interface IAnnotationsService {
 	readonly annotations: Annotation[];
 	byProvider(provider: string): Annotation[];
 	byReference(rowId: number | null, columnId: string | null): Annotation[];
-	unresolvedCount(provider?: string): number;
+	getUnresolvedCount(provider?: string): number;
 	add(input: CreateAnnotationInput): Promise<IAnnotationAccessor>;
 	get(id: number): Annotation | undefined;
 	load(path: string, provider?: string): Promise<void>;
