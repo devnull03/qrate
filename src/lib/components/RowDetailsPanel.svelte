@@ -140,9 +140,25 @@
 		};
 	});
 
-	// Which field is currently being edited in the "Row Data" section
-	// Note: Only one field can be edited at a time for a single row.
-	// This does NOT support multirow or multifield editing.
+	const PANE_STORAGE_KEY = "qrate:row-details-pane-split";
+	let filesPaneSize = $state(60);
+	let pendingPaneSize: number | null = null;
+
+	onMount(() => {
+		const saved = localStorage.getItem(PANE_STORAGE_KEY);
+		if (saved) filesPaneSize = parseFloat(saved);
+	});
+
+	function handlePaneLayoutChange(sizes: number[]) {
+		pendingPaneSize = sizes[0];
+	}
+
+	function handlePaneDragEnd(isDragging: boolean) {
+		if (isDragging || pendingPaneSize === null) return;
+		localStorage.setItem(PANE_STORAGE_KEY, String(pendingPaneSize));
+		pendingPaneSize = null;
+	}
+
 	let editingFieldId = $state<string | null>(null);
 	let fieldDraftValues = $state<Record<string, string>>({});
 	let editingInput = $state<HTMLTextAreaElement | null>(null);
@@ -251,8 +267,12 @@
 				<p class="text-xs">Configure in View → Settings</p>
 			</div>
 		{:else if rowFiles.length > 0}
-			<Resizable.PaneGroup direction="vertical" class="h-full">
-				<Resizable.Pane defaultSize={60} minSize={20}>
+			<Resizable.PaneGroup
+				direction="vertical"
+				class="h-full"
+				onLayoutChange={handlePaneLayoutChange}
+			>
+				<Resizable.Pane defaultSize={filesPaneSize} minSize={20}>
 					<div class="flex h-full flex-col overflow-hidden p-3">
 						<h3
 							class="mb-2 shrink-0 text-xs font-medium uppercase text-muted-foreground"
@@ -351,6 +371,7 @@
 
 				<Resizable.Handle
 					class="h-px bg-border transition-colors hover:bg-primary/50"
+					onDraggingChange={handlePaneDragEnd}
 				/>
 
 				<Resizable.Pane defaultSize={40} minSize={15}>
