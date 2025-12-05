@@ -13,10 +13,10 @@ pub mod pipeline;
 pub mod processor;
 
 /// Default thumbnail height in pixels (maintains aspect ratio)
-pub const DEFAULT_THUMBNAIL_HEIGHT: u32 = 300;
+pub const DEFAULT_THUMBNAIL_HEIGHT: u32 = 600;
 
 /// WebP quality for lossy encoding (0-100)
-pub const WEBP_QUALITY: f32 = 80.0;
+pub const WEBP_QUALITY: f32 = 90.0;
 
 /// Supported image extensions for thumbnail generation
 pub const SUPPORTED_EXTENSIONS: &[&str] =

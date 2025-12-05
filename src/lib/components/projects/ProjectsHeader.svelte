@@ -3,7 +3,7 @@
 	import ModeToggle from "$lib/components/ModeToggle.svelte";
 </script>
 
-<div class="flex items-center justify-between">
+<div class="flex items-center justify-between relative">
 	<div class="flex items-center gap-4">
 		<div
 			class="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground"

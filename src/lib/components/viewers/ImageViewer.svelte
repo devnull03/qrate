@@ -100,7 +100,7 @@
 </script>
 
 <div
-	class="image-viewer group flex flex-col bg-muted/50 {className} relative"
+	class="image-viewer group flex h-full flex-col bg-muted/50 {className} relative"
 	class:thumbnail
 >
 	{#if loading}
@@ -145,7 +145,7 @@
 			<img
 				src={imageData}
 				{alt}
-				class="max-h-full max-w-full object-contain!"
+				class="h-full w-full object-contain"
 				onerror={handleImageError}
 			/>
 		</div>
@@ -160,14 +160,3 @@
 		</div>
 	{/if}
 </div>
-
-<style>
-	.image-viewer {
-		min-height: 60px;
-	}
-
-	.image-viewer.thumbnail {
-		min-height: 40px;
-		min-width: 40px;
-	}
-</style>

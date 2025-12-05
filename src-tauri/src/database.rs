@@ -115,6 +115,32 @@ pub fn init_database(path: &Path) -> Result<Connection> {
         [],
     )?;
 
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS _annotations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL,
+            row_id INTEGER,
+            column_id TEXT,
+            severity TEXT DEFAULT 'info',
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            resolved INTEGER NOT NULL DEFAULT 0,
+            metadata TEXT
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_annotations_provider ON _annotations(provider)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_annotations_location ON _annotations(row_id, column_id)",
+        [],
+    )?;
+
     // Store initial metadata
     conn.execute(
         "INSERT OR IGNORE INTO _meta (key, value) VALUES ('version', '1.0')",
@@ -164,6 +190,32 @@ pub fn open_database(path: &Path) -> Result<Connection> {
 
     // Ensure all project settings exist (handles migrations for new settings)
     settings::ensure_project_settings(&conn)?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS _annotations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL,
+            row_id INTEGER,
+            column_id TEXT,
+            severity TEXT DEFAULT 'info',
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            resolved INTEGER NOT NULL DEFAULT 0,
+            metadata TEXT
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_annotations_provider ON _annotations(provider)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_annotations_location ON _annotations(row_id, column_id)",
+        [],
+    )?;
 
     Ok(conn)
 }
