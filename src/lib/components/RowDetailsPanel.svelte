@@ -122,6 +122,24 @@
 			: [],
 	);
 
+	let altPressed = $state(false);
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (e.key === "Alt") altPressed = true;
+	}
+	function handleKeyup(e: KeyboardEvent) {
+		if (e.key === "Alt") altPressed = false;
+	}
+
+	$effect(() => {
+		window.addEventListener("keydown", handleKeydown);
+		window.addEventListener("keyup", handleKeyup);
+		return () => {
+			window.removeEventListener("keydown", handleKeydown);
+			window.removeEventListener("keyup", handleKeyup);
+		};
+	});
+
 	// Which field is currently being edited in the "Row Data" section
 	// Note: Only one field can be edited at a time for a single row.
 	// This does NOT support multirow or multifield editing.
@@ -151,13 +169,10 @@
 
 	function startEditingField(fieldId: string, initialValue: unknown) {
 		editingFieldId = fieldId;
-		fieldDraftValues = {
-			...fieldDraftValues,
-			[fieldId]:
-				initialValue !== null && initialValue !== undefined
-					? String(initialValue)
-					: "",
-		};
+		fieldDraftValues[fieldId] =
+			initialValue !== null && initialValue !== undefined
+				? String(initialValue)
+				: "";
 	}
 
 	async function saveEditingField(fieldId: string) {
@@ -172,7 +187,10 @@
 	}
 
 	function handleFieldKeydown(event: KeyboardEvent, fieldId: string) {
-		if (event.key === "Escape") {
+		if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+			event.preventDefault();
+			saveEditingField(fieldId);
+		} else if (event.key === "Escape") {
 			event.preventDefault();
 			cancelEditingField();
 		}
@@ -368,15 +386,17 @@
 														event,
 														field.id,
 													)}
-												onblur={() =>
-													saveEditingField(field.id)}
+												onblur={cancelEditingField}
 												bind:this={editingInput}
 											></textarea>
 										{:else}
 											<!-- svelte-ignore a11y_click_events_have_key_events -->
 											<!-- svelte-ignore a11y_no_static_element_interactions -->
 											<div
-												class="w-full whitespace-pre-wrap cursor-text select-text"
+												class="w-full whitespace-pre-wrap select-text"
+												style:cursor={altPressed
+													? "pointer"
+													: "text"}
 												use:captureFieldHeight={field.id}
 												ondblclick={() =>
 													startEditingField(
@@ -389,7 +409,7 @@
 														field.id,
 														field.value,
 													)}
-												title="Double-click or Alt+click to edit"
+												title="Double-click or Alt+click to edit (Ctrl+Enter to save)"
 											>
 												{#if field.value !== null && field.value !== undefined && field.value !== ""}
 													{field.value}
@@ -434,15 +454,17 @@
 										oninput={autoResizeTextarea}
 										onkeydown={(event) =>
 											handleFieldKeydown(event, field.id)}
-										onblur={() =>
-											saveEditingField(field.id)}
+										onblur={cancelEditingField}
 										bind:this={editingInput}
 									></textarea>
 								{:else}
 									<!-- svelte-ignore a11y_click_events_have_key_events -->
 									<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div
-										class="w-full whitespace-pre-wrap cursor-text select-text"
+										class="w-full whitespace-pre-wrap select-text"
+										style:cursor={altPressed
+											? "pointer"
+											: "text"}
 										use:captureFieldHeight={field.id}
 										ondblclick={() =>
 											startEditingField(
@@ -455,7 +477,7 @@
 												field.id,
 												field.value,
 											)}
-										title="Double-click or Alt+click to edit"
+										title="Double-click or Alt+click to edit (Ctrl+Enter to save)"
 									>
 										{#if field.value !== null && field.value !== undefined && field.value !== ""}
 											{field.value}
