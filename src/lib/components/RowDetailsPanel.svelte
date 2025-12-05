@@ -23,7 +23,6 @@
 		filePath: string;
 		fileType: string;
 	}
-
 	let filesFolder = $state(String(defaultSettings.filesFolder || ""));
 	let filePathPattern = $state(
 		String(
@@ -143,6 +142,64 @@
 					}))
 			: [],
 	);
+
+	// Which field is currently being edited in the "Row Data" section
+	let editingFieldId = $state<string | null>(null);
+	let fieldDraftValues = $state<Record<string, string>>({});
+	let editingInput = $state<HTMLInputElement | HTMLTextAreaElement | null>(null);
+
+	$effect(() => {
+		if (editingInput) {
+			editingInput.focus();
+		}
+	});
+
+	function startEditingField(fieldId: string, initialValue: unknown) {
+		editingFieldId = fieldId;
+		fieldDraftValues = {
+			...fieldDraftValues,
+			[fieldId]:
+				initialValue !== null && initialValue !== undefined
+					? String(initialValue)
+					: "",
+		};
+	}
+
+	async function saveEditingField(fieldId: string) {
+		if (!selectedRow) return;
+		const newValue = fieldDraftValues[fieldId] ?? "";
+
+		try {
+			await qrateStore.updateCell(selectedRow.row_id, fieldId, newValue);
+		} catch (err) {
+			console.error(
+				"[RowDetailsPanel] Failed to update cell:",
+				err,
+			);
+		} finally {
+			editingFieldId = null;
+		}
+	}
+
+	function cancelEditingField() {
+		editingFieldId = null;
+	}
+
+	function handleFieldKeydown(event: KeyboardEvent, fieldId: string) {
+		const target = event.target as HTMLElement | null;
+		const isTextarea = target?.tagName === "TEXTAREA";
+
+		// For non-textarea fields, Enter saves (like before)
+		if (event.key === "Enter" && !event.shiftKey && !isTextarea) {
+			event.preventDefault();
+			void saveEditingField(fieldId);
+		} else if (event.key === "Escape") {
+			event.preventDefault();
+			cancelEditingField();
+		}
+	}
+
+
 
 	function getFileType(pathOrFilename: string): string {
 		const ext = pathOrFilename.split(".").pop()?.toLowerCase() || "";
@@ -297,34 +354,49 @@
 					</div>
 				</div>
 			{/if}
+<!-- Row Data -->
+<div class="p-3">
+  <h3 class="mb-2 text-xs font-medium uppercase text-muted-foreground">
+    Row Data
+  </h3>
+  <div class="space-y-2">
+    {#each rowFields as field}
+      <div class="rounded-md bg-muted/50 p-2">
+		<div class="mb-0.5 text-xs font-medium text-muted-foreground">
+		  {#if editingFieldId === field.id}
+			<textarea
+			class="w-full text-sm bg-background border border-border rounded px-2 py-1 min-h-[6rem] max-h-80 resize-y leading-snug"
+			rows="4"
+			bind:value={fieldDraftValues[field.id]}
+			onkeydown={(event) => handleFieldKeydown(event, field.id)}
+			onblur={() => saveEditingField(field.id)}
+			bind:this={editingInput}
+			></textarea>
 
-			<div class="p-3">
-				<h3
-					class="mb-2 text-xs font-medium uppercase text-muted-foreground"
-				>
-					Row Data
-				</h3>
-				<div class="space-y-2">
-					{#each rowFields as field}
-						<div class="rounded-md bg-muted/50 p-2">
-							<div
-								class="mb-0.5 text-xs font-medium text-muted-foreground"
-							>
-								{field.name}
-							</div>
-							<div class="wrap-break-word text-sm">
-								{#if field.value !== null && field.value !== undefined && field.value !== ""}
-									{field.value}
-								{:else}
-									<span class="italic text-muted-foreground"
-										>Empty</span
-									>
-								{/if}
-							</div>
-						</div>
-					{/each}
-				</div>
-			</div>
+		  {:else}
+			<button
+			  type="button"
+			  class="w-full text-left"
+			  onclick={() => startEditingField(field.id, field.value)}
+			  title="Click to edit"
+			>
+			  {#if field.value !== null &&
+				field.value !== undefined &&
+				field.value !== ""}
+				{field.value}
+			  {:else}
+				<span class="italic text-muted-foreground">Empty</span>
+			  {/if}
+			</button>
+		  {/if}
+		</div>
+      </div>
+    {/each}
+  </div>
+</div>
+
+
+
 		{/if}
 	</div>
 </div>
