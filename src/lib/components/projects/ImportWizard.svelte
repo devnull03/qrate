@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { invoke } from "@tauri-apps/api/core";
+	import { join } from "@tauri-apps/api/path";
 	import { open } from "@tauri-apps/plugin-dialog";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
 	import { saveSettings, defaultSettings } from "$lib/stores/appSettings";
@@ -204,10 +205,18 @@
 			return;
 		}
 
+		// Validate that filesFolder is set for CSV imports
+		if (sourceType === "csv" && !selectedFilesFolder?.trim()) {
+			onError(
+				"Files Folder is required for CSV imports. Please select a folder containing your files.",
+			);
+			return;
+		}
+
 		isProcessing = true;
 
 		try {
-			const projectPath = `${projectLocation}/${projectName}`;
+			const projectPath = await join(projectLocation, projectName);
 			const imagesRoot =
 				sourceType === "images"
 					? selectedImagesFolder
