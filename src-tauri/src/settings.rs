@@ -12,7 +12,7 @@ use std::collections::HashMap;
 pub enum SettingScope {
     /// Global settings persist across all projects (stored in app data via tauri-plugin-store)
     Global,
-    /// Project settings are stored in the .qrate file's _settings table
+    /// Project settings are stored in the .qrate folder's database _settings table
     Project,
 }
 
@@ -205,7 +205,7 @@ pub static GLOBAL_SETTINGS: &[SettingDef] = &[
 // PROJECT SETTINGS DEFINITIONS
 // =============================================================================
 
-/// All project settings definitions (stored in .qrate file)
+/// All project settings definitions (stored in .qrate/db.sqlite)
 pub static PROJECT_SETTINGS: &[SettingDef] = &[
     SettingDef {
         key: "filesFolder",
@@ -412,7 +412,7 @@ pub fn validate_setting(value: &str, def: &SettingDef) -> Result<(), String> {
 use rusqlite::Connection;
 
 /// Initialize project settings in the database with defaults
-/// This should be called when creating a new .qrate file
+/// This should be called when creating a new project
 pub fn init_project_settings(conn: &Connection) -> rusqlite::Result<()> {
     for setting in PROJECT_SETTINGS.iter() {
         conn.execute(

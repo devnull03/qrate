@@ -6,7 +6,7 @@ import { getFileName } from "$lib/utils/path";
 import { annotationsService } from "$lib/services/annotations";
 
 export interface CurrentStateResponse {
-	is_file_open: boolean;
+	is_file_open: boolean; // kept for backwards compat, means is_project_open
 	path: string | null;
 	columns: ColumnDef[];
 	total_rows: number;
@@ -35,7 +35,7 @@ export interface DataResponse {
 }
 
 interface PersistedWorkspace {
-	currentFilePath: string | null;
+	currentProjectPath: string | null;
 }
 
 let workspaceStore: Store | null = null;
@@ -49,11 +49,13 @@ async function getWorkspaceStore(): Promise<Store> {
 }
 
 class QrateStore {
+	/** Path to the project folder (folder containing .qrate subfolder) */
 	currentFilePath = $state<string | null>(null);
 	columns = $state<ColumnDef[]>([]);
 	totalRows = $state<number>(0);
 	rows = $state<Record<string, any>[]>([]);
 	isLoading = $state<boolean>(false);
+	/** Whether a project is currently open */
 	isFileOpen = $state<boolean>(false);
 	error = $state<string | null>(null);
 	currentOffset = $state<number>(0);
@@ -88,17 +90,22 @@ class QrateStore {
 
 	private async loadPersistedWorkspace(): Promise<PersistedWorkspace | null> {
 		const store = await getWorkspaceStore();
-		const filePath = await store.get<string>("currentFilePath");
-		if (!filePath) return null;
+		// Try new key first, fall back to old key for migration
+		let projectPath = await store.get<string>("currentProjectPath");
+		if (!projectPath) {
+			projectPath = await store.get<string>("currentFilePath");
+		}
+		if (!projectPath) return null;
 
 		return {
-			currentFilePath: filePath,
+			currentProjectPath: projectPath,
 		};
 	}
 
 	private async clearPersistedWorkspace(): Promise<void> {
 		const store = await getWorkspaceStore();
-		await store.set("currentFilePath", null);
+		await store.set("currentProjectPath", null);
+		await store.set("currentFilePath", null); // Clear old key too
 	}
 
 	async syncFromBackend(): Promise<boolean> {
@@ -148,8 +155,8 @@ class QrateStore {
 		try {
 			const workspace = await this.loadPersistedWorkspace();
 
-			if (workspace?.currentFilePath) {
-				await this.openFile(workspace.currentFilePath);
+			if (workspace?.currentProjectPath) {
+				await this.openFile(workspace.currentProjectPath);
 				// Always start from row 0 - don't restore offset
 				return true;
 			}
@@ -160,14 +167,26 @@ class QrateStore {
 		return false;
 	}
 
-	async createFile(path: string): Promise<void> {
+	async createFile(
+		path: string,
+		options?: {
+			name?: string;
+			mode?: "reference" | "copy";
+			imagesRoot?: string;
+		},
+	): Promise<void> {
 		try {
 			this.isLoading = true;
 			this.error = null;
 
 			const response = await invoke<FileOpenResponse>(
-				"create_qrate_file",
-				{ path },
+				"create_qrate_project",
+				{
+					path,
+					name: options?.name,
+					mode: options?.mode,
+					imagesRoot: options?.imagesRoot,
+				},
 			);
 
 			this.currentFilePath = response.path;
@@ -192,9 +211,12 @@ class QrateStore {
 			this.isLoading = true;
 			this.error = null;
 
-			const response = await invoke<FileOpenResponse>("open_qrate_file", {
-				path,
-			});
+			const response = await invoke<FileOpenResponse>(
+				"open_qrate_project",
+				{
+					path,
+				},
+			);
 
 			this.currentFilePath = response.path;
 			this.columns = response.columns;
@@ -224,7 +246,7 @@ class QrateStore {
 		if (!this.currentFilePath) return;
 
 		try {
-			await invoke("close_qrate_file", { path: this.currentFilePath });
+			await invoke("close_qrate_project", { path: this.currentFilePath });
 			this.reset();
 			await this.clearPersistedWorkspace();
 		} catch (err) {
@@ -234,7 +256,8 @@ class QrateStore {
 	}
 
 	async loadRows(offset: number, limit: number): Promise<void> {
-		if (!this.currentFilePath) throw new Error("No file is currently open");
+		if (!this.currentFilePath)
+			throw new Error("No project is currently open");
 
 		try {
 			const response = await invoke<DataResponse>("get_rows", {
@@ -289,7 +312,8 @@ class QrateStore {
 		columnId: string,
 		value: string,
 	): Promise<void> {
-		if (!this.currentFilePath) throw new Error("No file is currently open");
+		if (!this.currentFilePath)
+			throw new Error("No project is currently open");
 
 		try {
 			await invoke("update_cell", {
@@ -310,7 +334,8 @@ class QrateStore {
 	}
 
 	async addColumn(column: ColumnDef): Promise<void> {
-		if (!this.currentFilePath) throw new Error("No file is currently open");
+		if (!this.currentFilePath)
+			throw new Error("No project is currently open");
 
 		try {
 			await invoke("add_column", { path: this.currentFilePath, column });
@@ -323,7 +348,8 @@ class QrateStore {
 	}
 
 	async updateColumn(column: ColumnDef): Promise<void> {
-		if (!this.currentFilePath) throw new Error("No file is currently open");
+		if (!this.currentFilePath)
+			throw new Error("No project is currently open");
 
 		try {
 			await invoke("update_column", {
@@ -341,7 +367,8 @@ class QrateStore {
 	}
 
 	async insertRow(values: Record<string, any>): Promise<number> {
-		if (!this.currentFilePath) throw new Error("No file is currently open");
+		if (!this.currentFilePath)
+			throw new Error("No project is currently open");
 
 		try {
 			const rowId = await invoke<number>("insert_row", {
@@ -360,7 +387,8 @@ class QrateStore {
 	}
 
 	async deleteRow(rowId: number): Promise<void> {
-		if (!this.currentFilePath) throw new Error("No file is currently open");
+		if (!this.currentFilePath)
+			throw new Error("No project is currently open");
 
 		try {
 			await invoke("delete_row", { path: this.currentFilePath, rowId });

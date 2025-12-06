@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::layout::types::{ChatMode, WindowLayout};
-use crate::layout_state::LayoutState;
+use crate::layout::LayoutState;
 
 #[tauri::command]
 pub fn get_layout(

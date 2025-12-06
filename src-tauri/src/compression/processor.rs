@@ -242,15 +242,17 @@ pub fn spawn_directory_processor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database;
     use std::fs;
     use tempfile::tempdir;
 
     fn create_test_processor() -> ThumbnailProcessor {
         let dir = tempdir().unwrap();
-        let qrate_path = dir.path().join("test.qrate");
-        fs::write(&qrate_path, "").unwrap();
+        let project_path = dir.path().join("test_project");
+        fs::create_dir_all(&project_path).unwrap();
+        let _conn = database::init_database(&project_path).unwrap();
 
-        let cache = ThumbnailCache::open(&qrate_path).unwrap();
+        let cache = ThumbnailCache::open(&project_path).unwrap();
         ThumbnailProcessor {
             cache,
             total: AtomicUsize::new(0),

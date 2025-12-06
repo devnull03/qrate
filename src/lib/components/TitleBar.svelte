@@ -45,20 +45,25 @@
 	async function handleNew() {
 		if (isProcessing) return;
 		isProcessing = true;
-		const selected = await save({
-			filters: [{ name: "Qrate Files", extensions: ["qrate"] }],
-			defaultPath: "untitled.qrate",
+		// Select a folder to create the project in
+		const selected = await open({
+			directory: true,
+			multiple: false,
+			title: "Select folder for new project",
 		}).catch(() => null);
-		if (selected) await qrateStore.createFile(selected).catch(() => {});
+		if (selected && typeof selected === "string")
+			await qrateStore.createFile(selected).catch(() => {});
 		isProcessing = false;
 	}
 
 	async function handleOpen() {
 		if (isProcessing) return;
 		isProcessing = true;
+		// Select a project folder (folder containing .qrate subfolder)
 		const selected = await open({
+			directory: true,
 			multiple: false,
-			filters: [{ name: "Qrate Files", extensions: ["qrate"] }],
+			title: "Open project folder",
 		}).catch(() => null);
 		if (selected && typeof selected === "string")
 			await qrateStore.openFile(selected).catch(() => {});
@@ -87,12 +92,16 @@
 			filters: [{ name: "CSV Files", extensions: ["csv"] }],
 		}).catch(() => null);
 		if (csvFile && typeof csvFile === "string") {
-			const qrateFile = await save({
-				filters: [{ name: "Qrate Files", extensions: ["qrate"] }],
-				defaultPath: csvFile.replace(/\.csv$/i, ".qrate"),
+			// Select a folder for the new project
+			const projectFolder = await open({
+				directory: true,
+				multiple: false,
+				title: "Select folder for new project",
 			}).catch(() => null);
-			if (qrateFile)
-				await qrateStore.importCsv(qrateFile, csvFile).catch(() => {});
+			if (projectFolder && typeof projectFolder === "string")
+				await qrateStore
+					.importCsv(projectFolder, csvFile)
+					.catch(() => {});
 		}
 		isProcessing = false;
 	}

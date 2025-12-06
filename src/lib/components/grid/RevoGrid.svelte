@@ -331,9 +331,9 @@
 		{#if !qrateStore.isFileOpen}
 			<div class="flex h-full w-full items-center justify-center">
 				<div class="text-center text-muted-foreground">
-					<p class="mb-2 text-lg">No file open</p>
+					<p class="mb-2 text-lg">No project open</p>
 					<p class="text-sm">
-						Open a .qrate file or import a CSV to get started
+						Open a project folder or import a CSV to get started
 					</p>
 				</div>
 			</div>

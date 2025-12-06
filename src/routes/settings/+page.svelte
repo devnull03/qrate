@@ -407,8 +407,8 @@
 						<h2 class="text-lg font-semibold">Project Settings</h2>
 					</div>
 					<p class="text-sm text-muted-foreground">
-						These settings are stored in the .qrate file and are
-						specific to the current project.
+						These settings are stored in the project's .qrate folder
+						and are specific to the current project.
 					</p>
 
 					{#if !hasFile}
@@ -420,8 +420,8 @@
 								<p
 									class="text-sm text-amber-700 dark:text-amber-400"
 								>
-									No project file is open. Open a .qrate file
-									to configure project-specific settings.
+									No project is open. Open a project folder to
+									configure project-specific settings.
 								</p>
 							</Card.Content>
 						</Card.Root>

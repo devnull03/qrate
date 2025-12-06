@@ -1,7 +1,7 @@
 use tauri::{AppHandle, Manager, State};
 
 use crate::layout::types::WindowLayout;
-use crate::layout_state::LayoutState;
+use crate::layout::LayoutState;
 use crate::window::registry::WindowInfo;
 
 #[tauri::command]
