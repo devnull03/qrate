@@ -277,7 +277,7 @@ $effect(() => {
 		}
 	}
 	
-	function startAiEditingField(fieldId: string, initialValue: string) {
+	function startAiEditingField(fieldId: string, initialValue: string | null | undefined) {
 		aiEditingFieldId = fieldId;
 		aiDraftValues[fieldId] = initialValue ?? "";
 	}
