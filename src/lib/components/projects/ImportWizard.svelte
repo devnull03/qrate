@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { invoke } from "@tauri-apps/api/core";
+	import { join } from "@tauri-apps/api/path";
 	import { open } from "@tauri-apps/plugin-dialog";
 	import { qrateStore } from "$lib/stores/qrateStore.svelte";
 	import { saveSettings, defaultSettings } from "$lib/stores/appSettings";
@@ -207,7 +208,7 @@
 		isProcessing = true;
 
 		try {
-			const projectPath = `${projectLocation}/${projectName}`;
+			const projectPath = await join(projectLocation, projectName);
 			const imagesRoot =
 				sourceType === "images"
 					? selectedImagesFolder
