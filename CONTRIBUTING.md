@@ -1,435 +1,280 @@
 # Contributing to qrate
 
-## Development Setup
+Thank you for your interest in contributing to qrate. This document gives a practical, up-to-date guide for getting started, the development workflow, coding conventions, how to add features, and the PR checklist. We standardize on `pnpm` and a small set of repository conventions to keep the codebase consistent and reviewable.
 
-### Prerequisites
+Table of contents
+- Development quick start (pnpm-first)
+- Prerequisites
+- Local development commands (concrete)
+- Project layout overview
+- Tauri command examples (invoke + Rust)
+- Coding standards & frontend rules
+- Backend / Rust guidelines
+- Database & schema notes
+- Testing & manual QA
+- Branching, commits & PR process
+- Troubleshooting and common issues
+- Onboarding checklist for new contributors
+- Appendix: Useful commands & references
+- Footer: repository rules & @Rules Cleanup
 
-- Node.js 18+
-- Rust 1.77+
-- pnpm (required)
+IMPORTANT: This repository prefers centralized documentation. Do NOT add new `.md` files unless explicitly requested. When you finish any change, include an `@Rules Cleanup` note in the commit message or the PR description indicating you reviewed the repository rules.
 
-### Getting Started
+---
 
-```bash
-# Clone the repository
-git clone <repository-url>
-cd qrate
+Development quick start (pnpm-first)
+- We use `pnpm` for package management. Do not use `npm` or `yarn` to install or run scripts unless a CI job or a maintainer explicitly instructs otherwise.
+- The repository's frontend is Svelte 5 + Vite + Tailwind. The native shell is built with Tauri (Rust).
 
-# Install dependencies
-pnpm install
+Prerequisites
+- Node.js (LTS recommended; test against your environment)
+- pnpm (install globally: `npm i -g pnpm` or your preferred method)
+- Rust toolchain (stable) + Tauri CLI for building native artifacts
+  - On Windows, ensure the MSVC toolchain (Visual Studio Build Tools) is installed if you target MSVC.
+  - You may need to add target triples for other platforms when packaging.
+- Git (to make branches and PRs)
+- (Optional) A modern terminal and an editor with Svelte + TypeScript support (VSCode recommended)
 
-# Run development server
-pnpm tauri dev
+Concrete local commands
+- Clone:
+  - git clone <repo-url>
+  - cd qrate
+- Install dependencies (root):
+  - pnpm install
+  - If you use workspace filtering: pnpm -w install or use workspace filters as your environment requires.
+- Run frontend dev server (Vite):
+  - pnpm dev
+  - This calls the `dev` script defined in `package.json` (runs `vite dev`).
+- Build production web artifacts:
+  - pnpm build
+- Run Tauri (native) dev (hot reload of Tauri + frontend):
+  - pnpm run tauri dev
+  - NOTE: the repo has a `tauri` script; you can pass additional args (`pnpm run tauri dev`) to start Tauri in dev mode.
+- Build Tauri production bundle:
+  - pnpm run tauri build
+  - Follow the Tauri docs for platform-specific packaging requirements.
+- Type checking:
+  - pnpm run check
+- Typecheck in watch:
+  - pnpm run check:watch
+- Preview production build (Vite preview):
+  - pnpm run preview
 
-# Build for production
-pnpm tauri build
+If your environment expects `pnpm` shorthand you can also use `pnpm dev` instead of `pnpm run dev`. When invoking `tauri`, use `pnpm run tauri` to forward args like `dev` or `build`.
 
-# Format code
-pnpm format
+Project layout (high level)
+- src/ - Frontend source (Svelte + TypeScript)
+  - lib/components/ui/ - shadcn-svelte UI components (reuse these first)
+  - lib/stores/ - qrateStore, layoutStore, appSettings, globalSettings
+  - lib/services/ - thumbnails, annotations, settings, menu
+  - routes/ - SvelteKit routes (+page.svelte is the main editor)
+- src-tauri/ - Tauri/Rust backend
+  - src/ - Rust commands and modules
+    - lib.rs - command registration
+    - file/ - file operations: open/create/import, get_rows, update_cell
+    - compression/ - thumbnail pipeline
+    - checks/ - spellcheck integration
+    - layout/ - layout persistence
+- static/ - static assets
+- package.json - top-level scripts & deps (source of truth for local commands)
 
-# Lint
-pnpm lint
+Tauri commands & frontend invoke examples
+- The frontend calls Rust backend logic through Tauri `invoke`. Example usages:
 
-# Type check
-pnpm check
-```
-
-## Architecture
-
-qrate uses a **Headless Document Model** where the frontend is a thin viewport displaying only visible data, while the Rust backend manages all data in SQLite.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Svelte 5 Frontend                       │
-├──────────────┬──────────────┬──────────────┬───────────────┤
-│ WorkbenchLayout │ RevoGrid   │ RowDetailsPanel │ ImageViewer │
-│ (Resizable)     │ (Virtual)  │ (Inline Edit)   │ (Thumbnails)│
-├─────────────────┴────────────┴─────────────────┴────────────┤
-│                    Reactive Stores                          │
-│  qrateStore │ layoutStore │ appSettings │ globalSettings    │
-├─────────────────────────────────────────────────────────────┤
-│                    Tauri IPC (JSON)                         │
-├─────────────────────────────────────────────────────────────┤
-│                     Rust Backend                            │
-├──────────────┬──────────────┬──────────────┬───────────────┤
-│ AppState     │ LayoutManager │ ThumbnailPipeline │ Settings │
-│ (Connections)│ (Persistence) │ (Image Processing)│ (Schema) │
-├──────────────┴──────────────┴──────────────┴───────────────┤
-│                 SQLite (rusqlite + WAL)                     │
-├─────────────────────────────────────────────────────────────┤
-│                    .qrate File                              │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Data Flow
-
-1. **Virtual Scrolling**: Frontend requests only visible rows (~100 at a time) via `get_rows`
-2. **Immediate Persistence**: Cell edits → Tauri IPC → Rust command → SQLite transaction → response
-3. **Layout Persistence**: Panel sizes saved on drag-end to separate layout database
-4. **Thumbnail Pipeline**: Background thread generates compressed previews, cached on disk
-
-## Technology Stack
-
-### Frontend
-
-| Technology | Purpose |
-|------------|---------|
-| Svelte 5 | Reactive UI with runes ($state, $derived, $effect) |
-| SvelteKit | Application framework (SSR disabled for Tauri) |
-| RevoGrid | High-performance virtualized data grid |
-| TailwindCSS | Utility-first styling |
-| shadcn-svelte | UI component library (Button, Resizable, Dialog, etc.) |
-| paneforge | Resizable panel primitives |
-| TypeScript | Type-safe development |
-
-### Backend
-
-| Technology | Purpose |
-|------------|---------|
-| Tauri v2 | Secure native application runtime |
-| Rust | Memory-safe systems language |
-| rusqlite | SQLite database driver with connection pooling |
-| dashmap | Concurrent hashmap for connection pool |
-| image | Image loading, resizing, and format conversion |
-| hunspell-rs | Spellcheck integration |
-
-## Project Structure
-
-```
-qrate/
-├── src/                              # Frontend source
-│   ├── lib/
-│   │   ├── components/
-│   │   │   ├── ui/                   # shadcn-svelte components
-│   │   │   ├── viewers/              # ImageViewer, etc.
-│   │   │   ├── grid/                 # RevoGrid wrapper
-│   │   │   ├── layout/               # WorkbenchLayout, sidebars, panels
-│   │   │   ├── chat/                 # AI chat components
-│   │   │   └── projects/             # Project browser
-│   │   ├── stores/
-│   │   │   ├── qrateStore.svelte.ts  # Main data store (rows, columns, selection)
-│   │   │   ├── layoutStore.svelte.ts # Panel visibility and sizes
-│   │   │   ├── appSettings.ts        # Project settings
-│   │   │   └── globalSettings.ts     # Global app settings
-│   │   ├── services/
-│   │   │   ├── menu/                 # Menu bar integration
-│   │   │   ├── annotations/          # Cell annotations
-│   │   │   ├── settings/             # Settings UI logic
-│   │   │   └── thumbnails/           # Thumbnail URL resolution
-│   │   ├── models/                   # TypeScript types
-│   │   └── utils/                    # Utility functions
-│   └── routes/                       # SvelteKit routes
-│       ├── +page.svelte              # Main editor view
-│       ├── projects/                 # Project browser window
-│       ├── settings/                 # Settings window
-│       └── chat/                     # Detached chat window
-│
-├── src-tauri/                        # Backend source
-│   └── src/
-│       ├── lib.rs                    # Tauri command registration
-│       ├── main.rs                   # Entry point
-│       ├── app_state.rs              # Connection pool (DashMap)
-│       ├── database.rs               # SQLite operations
-│       ├── settings.rs               # Settings schema and validation
-│       ├── layout_state.rs           # Layout state management
-│       ├── file/                     # File operations module
-│       │   └── commands.rs           # create, open, import, get_rows, update_cell
-│       ├── layout/                   # Layout persistence module
-│       │   ├── commands.rs           # get_layout, save_layout, toggle_region
-│       │   ├── manager.rs            # LayoutManager (SQLite-backed)
-│       │   └── persistence.rs        # Layout database path
-│       ├── compression/              # Thumbnail pipeline module
-│       │   ├── commands.rs           # start_thumbnail_processing, get_thumbnail_path
-│       │   ├── pipeline.rs           # Async processing pipeline
-│       │   ├── processor.rs          # Image resize/compress
-│       │   └── cache.rs              # Disk cache management
-│       ├── window/                   # Window management module
-│       │   ├── commands.rs           # create_window, show_settings_window
-│       │   └── manager.rs            # WindowManager
-│       ├── checks/                   # Validation module
-│       │   └── spellcheck.rs         # Hunspell integration
-│       └── annotations/              # Annotations module
-│           └── commands.rs           # CRUD for cell annotations
-│
-└── static/                           # Static assets
-```
-
-## Database Schema
-
-### _meta (Workspace Metadata)
-
-```sql
-CREATE TABLE _meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
--- Stores: version, created_at, etc.
-```
-
-### _columns (Column Definitions)
-
-```sql
-CREATE TABLE _columns (
-    id TEXT PRIMARY KEY,      -- e.g., "col_0", "col_1"
-    name TEXT NOT NULL,       -- Display name
-    type TEXT NOT NULL,       -- "text", "number", etc.
-    width INTEGER NOT NULL,   -- Pixel width
-    hidden INTEGER NOT NULL   -- 0 or 1
-);
-```
-
-### _settings (Project Settings)
-
-```sql
-CREATE TABLE _settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
--- Stores: filesFolder, filePathPattern, fileColumnName, etc.
-```
-
-### _annotations (Cell Annotations)
-
-```sql
-CREATE TABLE _annotations (
-    id TEXT PRIMARY KEY,
-    row_id INTEGER NOT NULL,
-    column_id TEXT NOT NULL,
-    type TEXT NOT NULL,       -- "comment", "note", etc.
-    content TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-```
-
-### data (Content)
-
-```sql
-CREATE TABLE data (
-    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    [col_0] TEXT,
-    [col_1] TEXT,
-    ...
-);
-CREATE INDEX idx_data_rowid ON data(row_id);
-```
-
-## Tauri Commands Reference
-
-### File Operations
-
+- Create a new .qrate file (frontend)
 ```typescript
-// Create new .qrate file
-invoke('create_qrate_file', { path: string })
+import { invoke } from '@tauri-apps/api';
 
-// Open existing .qrate file
-invoke('open_qrate_file', { path: string }): Promise<FileOpenResponse>
-
-// Close file and release connection
-invoke('close_qrate_file', { path: string })
-
-// Import CSV into .qrate format
-invoke('import_csv_to_qrate', { qratePath: string, csvPath: string })
-
-// Preview CSV before import
-invoke('preview_csv', { path: string }): Promise<PreviewResponse>
-
-// Fetch rows with pagination
-invoke('get_rows', { path: string, limit: number, offset: number }): Promise<DataResponse>
-
-// Update single cell
-invoke('update_cell', { path: string, rowId: number, columnId: string, value: string })
-
-// Insert new row
-invoke('insert_row', { path: string, values: Record<string, string> })
-
-// Delete row
-invoke('delete_row', { path: string, rowId: number })
+await invoke('create_qrate_file', { path: '/abs/path/to/myproject.qrate' });
 ```
 
-### Column Operations
-
+- Open an existing .qrate file
 ```typescript
-invoke('add_column', { path: string, column: ColumnDef })
-invoke('update_column', { path: string, column: ColumnDef })
+const resp = await invoke('open_qrate_file', { path: '/abs/path/to/myproject.qrate' });
+// resp: { success: boolean, metadata: {...} }
 ```
 
-### Layout Operations
-
+- Import CSV into .qrate format
 ```typescript
-invoke('get_layout', { windowId: string }): Promise<WindowLayout>
-invoke('save_layout', { layout: WindowLayout })
-invoke('update_region_size', { windowId: string, region: string, size: number })
-invoke('toggle_region', { windowId: string, region: string })
+await invoke('import_csv_to_qrate', { qratePath: '/path/project.qrate', csvPath: '/path/data.csv' });
 ```
 
-### Thumbnail Operations
-
+- Get rows (pagination)
 ```typescript
-invoke('start_thumbnail_processing', { files: string[], cacheDir: string })
-invoke('cancel_thumbnail_processing')
-invoke('get_thumbnail_path', { filePath: string, cacheDir: string }): Promise<string>
+const rows = await invoke('get_rows', { path: '/path/project.qrate', limit: 200, offset: 0 });
 ```
 
-### Settings Operations
-
+- Update a single cell
 ```typescript
-invoke('get_global_settings_schema'): Promise<SettingDef[]>
-invoke('get_project_settings_schema'): Promise<SettingDef[]>
-invoke('get_project_settings', { path: string }): Promise<Record<string, string>>
-invoke('set_project_setting', { path: string, key: string, value: string })
-invoke('set_project_settings', { path: string, settings: Record<string, string> })
+await invoke('update_cell', {
+  path: '/path/project.qrate',
+  rowId: 123,
+  columnId: 'col_5',
+  value: 'New value'
+});
 ```
 
-### Spellcheck Operations
-
+- Thumbnail processing
 ```typescript
-invoke('check_spelling', { text: string }): Promise<SpellCheckResult[]>
-invoke('get_suggestions', { word: string }): Promise<string[]>
-invoke('add_to_dictionary', { word: string })
-invoke('ignore_word', { word: string })
+await invoke('start_thumbnail_processing', { files: ['/path/img1.jpg','/path/img2.jpg'], cacheDir: '/tmp/qrate-thumbs' });
+const thumb = await invoke('get_thumbnail_path', { filePath: '/path/img1.jpg', cacheDir: '/tmp/qrate-thumbs' });
 ```
 
-### Annotations Operations
-
-```typescript
-invoke('get_annotations', { path: string, rowId?: number, columnId?: string })
-invoke('create_annotation', { path: string, annotation: Annotation })
-invoke('update_annotation', { path: string, annotation: Annotation })
-invoke('delete_annotation', { path: string, id: string })
-```
-
-## Frontend Stores
-
-### qrateStore
-
-Main data store managing file state, rows, columns, and selection.
-
-```typescript
-class QrateStore {
-    currentFilePath: string | null
-    columns: ColumnDef[]
-    rows: Record<string, any>[]
-    totalRows: number
-    selectedRowId: number | null
-    isLoading: boolean
-    
-    async openFile(path: string): Promise<void>
-    async loadRows(offset: number, limit: number): Promise<void>
-    async updateCell(rowId: number, columnId: string, value: string): Promise<void>
-}
-```
-
-### layoutStore
-
-Manages panel visibility and sizes with persistence.
-
-```typescript
-class LayoutStore {
-    layout: WindowLayout | null
-    
-    async loadLayout(windowId: string): Promise<void>
-    async toggleRegion(region: string): Promise<void>
-    async updateRegionSize(region: string, size: number): Promise<void>
-}
-```
-
-## Adding New Features
-
-### Adding a New Tauri Command
-
-1. Define the command in Rust (`src-tauri/src/<module>/commands.rs`):
+Rust-side command pattern (reference)
+- Add a new Tauri command in Rust:
 ```rust
 #[tauri::command]
 pub async fn my_command(path: String) -> Result<MyResponse, String> {
-    // Implementation
+    // implementation
 }
 ```
-
-2. Register in `lib.rs`:
+- Register the command in `src-tauri/src/lib.rs`:
 ```rust
-.invoke_handler(tauri::generate_handler![
-    // ...existing commands
+tauri::generate_handler![
+    // existing commands...
     my_module::commands::my_command,
-])
+]
 ```
 
-3. Call from frontend:
-```typescript
-const result = await invoke<MyResponse>('my_command', { path });
-```
+Coding standards & frontend rules (enforced)
+Follow these rules exactly to maintain consistency.
 
-### Adding a New Setting
+1. pnpm-first
+   - Always use `pnpm` for dependency management, scripts, and CI workflows.
 
-1. Add to Rust settings schema (`src-tauri/src/settings.rs`):
-```rust
-SettingDef {
-    key: "myNewSetting",
-    scope: SettingScope::Project,
-    setting_type: SettingType::Boolean,
-    default_value: "true",
-    label: "My New Setting",
-    description: "Description here",
-    category: "General",
-    min: None,
-    max: None,
-    options: None,
-},
-```
+2. Tailwind-first (minimal usage)
+   - Prefer Tailwind utility classes over adding new CSS files.
+   - Keep class lists minimal — prefer composition and small utility helpers.
+   - Avoid creating large bespoke CSS files unless absolutely necessary.
 
-2. Use in frontend via `appSettings.ts` or `subscribeToSettings()`.
+3. Component reuse
+   - Reuse shadcn-svelte UI components in `src/lib/components/ui/` when possible.
+   - Do not create a new button/element variant unless the existing components cannot be adapted.
 
-### Adding a New UI Component
+4. Svelte event syntax
+   - In this codebase prefer `onclick={...}` (Svelte 5 conventions) where applicable. Do not use `on:click` if the project uses `onclick` consistently.
+   - Use Svelte 5 runes for reactive state: `$state`, `$derived`, `$effect`.
 
-1. Use existing shadcn-svelte components from `$lib/components/ui/`
-2. Follow Svelte 5 patterns: `$state`, `$derived`, `$effect`
-3. Use `onclick` not `on:click` (Svelte 5 syntax)
-4. Prefer Tailwind classes over custom CSS
+5. DOM structure
+   - Avoid unnecessary nested `div`s. Keep markup flat and semantic when possible.
 
-## Code Style
+6. Accessibility
+   - Ensure components are keyboard-accessible and use appropriate ARIA attributes where necessary.
 
-- **Frontend**: TypeScript with Svelte 5 runes
-- **Backend**: Rust with standard conventions
-- **Formatting**: Prettier (frontend), rustfmt (backend)
-- **No unnecessary comments**: Code should be self-documenting
-- **No defensive try/catch**: Only catch where errors are expected
+7. Keep PRs small & reviewable
+   - Prefer diffs for edits — make 1-2 well-scoped changes per PR.
+   - Avoid large refactors in the same PR as feature changes.
 
-## Troubleshooting
+8. Documentation & .md rules
+   - Do not create new `.md` files unless asked. Add critical updates to `README.md` or this `CONTRIBUTING.md`.
+   - Append a short "Documentation changes" note in the PR description when you change behavior that affects setup or developer workflows.
 
-### "Failed to open database"
-- Ensure file path is absolute
-- Check .qrate extension
-- Verify file permissions
-- Check if file is locked by another process
+TypeScript/Svelte style (summary)
+- Use TypeScript everywhere in the frontend.
+- Prefer `const` over `let` where possible.
+- Keep components single-responsibility and small.
+- Add JSDoc comments for non-trivial functions and public stores.
+- Run the type check before pushing: `pnpm run check`.
 
-### Grid not rendering
-- Ensure SSR is disabled in `+page.ts`: `export const ssr = false`
-- Check browser console for errors
+Rust style (summary)
+- Follow community Rust idioms.
+- Format with `rustfmt`.
+- Return `Result<T, String>` with helpful error descriptions for Tauri commands.
+- Use the shared `AppState` connection pool (DashMap) for database connections.
 
-### Slow performance
-- Reduce row limit in settings
-- Close unused files
-- Check if thumbnail processing is running
+Database & schema notes
+- The `.qrate` file is a SQLite DB stored in a hidden folder structure:
+  - project.qrate (marker)
+  - .project.qrate/
+    - data.db
+    - data.db-wal
+    - data.db-shm
+- Key tables:
+  - `_meta` - workspace metadata (version, created_at)
+  - `_columns` - column definitions (id, name, type, width, hidden)
+  - `_settings` - project-specific settings
+  - `_annotations` - cell annotations and comments
+  - `data` - content rows (row_id, col_* fields)
+- Prefer operating on rows using `row_id` and `column_id` pairs rather than A1-style notation.
 
-### Image not loading
-- Verify Files Folder is configured in settings
-- Check File Path Pattern matches your structure
-- Ensure image files exist at resolved path
-- Try "Load Full Image" button to bypass thumbnail
+Testing & manual QA
+- Manual test workflows to run locally:
+  - Open a small dataset (a few rows) and exercise editing, saving, layout persistence.
+  - Open a medium dataset (thousands of rows) and confirm virtual scrolling behaves.
+  - Open a large dataset (tens of thousands) to surface performance issues.
+  - Test image viewer and thumbnail caching across file types.
+- Suggested quick sequence before PR:
+  - pnpm install
+  - pnpm dev
+  - Open the app and reproduce the feature flow
+  - pnpm run check
+  - (If linting/format scripts are present in your environment) pnpm run lint && pnpm run format
 
-### Layout not persisting
-- Check that drag completed (not cancelled)
-- Verify layout database exists in app data directory
+Branching, commits & PR process
+- Branch naming
+  - feature/<short-description>
+  - fix/<short-description>
+  - chore/<short-description>
+- Commit messages
+  - Use short, meaningful messages. Optionally follow Conventional Commits:
+    - feat: add CSV export
+    - fix: handle null file paths
+    - docs: update README for pnpm
+  - Include `@Rules Cleanup` in the PR description and final commit if you validated the repository rules.
+- PR checklist (required for all PRs)
+  - [ ] All type checks pass: `pnpm run check`
+  - [ ] Local manual smoke test performed (brief steps added in PR description)
+  - [ ] Change is limited in scope and reviewable
+  - [ ] Documentation updated if setup or public behavior changed
+  - [ ] Reused existing components from `lib/components/ui` when applicable
+  - [ ] Added tests where reasonable (unit or integration)
+  - [ ] CI (if present) passes
+  - [ ] `@Rules Cleanup` included in final commit message/PR description
 
-## Pull Request Process
+PR review process
+- Maintainers will review within a few days. Expect iterative feedback. Address requested changes by pushing additional commits to the same branch.
+- For non-trivial changes, add a short design note in the PR describing alternatives considered and reasons for the chosen approach.
 
-1. Fork the repository
-2. Create a feature branch from `main`
-3. Make changes following code style guidelines
-4. Run `pnpm check` and `pnpm lint`
-5. Test with `pnpm tauri dev`
-6. Submit PR with clear description
+Troubleshooting & common issues
+- "Grid not rendering" — Ensure `ssr` is disabled for the route that uses Tauri (`export const ssr = false`), and confirm RevoGrid is initialized correctly.
+- "Tauri command not found" — Confirm the command is exported in Rust `lib.rs` and signatures match frontend invokes.
+- "Database locked" — Ensure there are no stale processes holding the DB open and close connections when done; prefer `close_qrate_file` command.
+- "Thumbnail generation slow" — Check compression settings and that processing runs in background pipeline (not blocking main thread).
+- Windows-specific Tauri notes:
+  - Install Visual Studio Build Tools for MSVC or configure Rust to use GNU toolchain if desired.
+  - Ensure correct Rust target and `TAURI_PLATFORM` config for packaging.
 
-## License
+Onboarding checklist for new contributors
+- [ ] Read this CONTRIBUTING.md and README.md
+- [ ] Setup environment: Node, pnpm, Rust, Tauri (if building native)
+- [ ] Run `pnpm install` and `pnpm dev`
+- [ ] Find a `good first issue` or ask maintainers for guidance
+- [ ] Open a draft PR early to discuss the approach (small diffs preferred)
+- [ ] Add `@Rules Cleanup` in the final commit/PR when ready
 
-MIT
+Appendix: Useful commands summary
+- pnpm install
+- pnpm dev
+- pnpm build
+- pnpm run tauri dev
+- pnpm run tauri build
+- pnpm run check
+- pnpm run check:watch
+
+Security & sensitive data
+- Do not commit secrets (API keys, credentials) to the repository.
+- If you must use environment variables locally, add them to `.env` and update `.gitignore`. Ask maintainers for secure vaulting practices for production secrets.
+
+Contact & getting help
+- Open an issue on GitHub for bugs and feature requests.
+- For architecture questions or design discussions, open a discussion or a draft PR.
+- Tag maintainers in PRs or use the team communication channel (specify channel here if applicable).
+
+Footer: repository rules & final note
+- Do not create new `.md` files unless explicitly requested.
+- Always use `pnpm` for package management.
+- Prefer Tailwind, minimal classes, no unnecessary div nesting.
+- Prefer `onclick` for Svelte 5 event handlers; reuse shadcn components under `src/lib/components/ui`.
+- After completing work, include `@Rules Cleanup` in your final commit message and PR description confirming you followed these rules.
+
+Thanks for contributing to qrate — your changes help make this a more robust tool for archivists and cultural heritage professionals.
