@@ -24,11 +24,10 @@
 		filePath: string;
 		fileType: string;
 	}
+
 	let filesFolder = $state(String(defaultSettings.filesFolder || ""));
 	let filePathPattern = $state(
-		String(
-			defaultSettings.filePathPattern || "{files_folder}/{file_column}",
-		),
+		String(defaultSettings.filePathPattern || "{files_folder}/{file_column}"),
 	);
 	let fileColumnName = $state(
 		String(defaultSettings.fileColumnName || "file"),
@@ -124,6 +123,56 @@
 			: [],
 	);
 
+/* --- AI suggestions state (mock data for now) --- */
+
+let showAiPanel = $state(true);
+
+interface AiSuggestion {
+	value: string;
+	reason?: string;
+}
+
+type AiFieldState = "pending" | "accepted" | "rejected";
+
+let aiSuggestions = $state<Record<string, AiSuggestion>>({});
+let aiFieldStates = $state<Record<string, AiFieldState>>({});
+
+// Regenerate mock suggestions whenever the selected row changes
+$effect(() => {
+
+	if (!selectedRow) {
+		aiSuggestions = {};
+		aiFieldStates = {};
+		return;
+	}
+
+	const suggestions: Record<string, AiSuggestion> = {};
+
+	for (const field of rowFields) {
+		if (field.id === "accessIdentifier") continue; // hard guard: AI must not touch this
+
+		const raw = field.value;
+		const base =
+			raw !== null && raw !== undefined && String(raw).trim() !== ""
+				? String(raw).trim()
+				: "";
+
+		const suggested =
+			base !== ""
+				? base
+				: `[AI suggestion for ${field.name}]`;
+
+		suggestions[field.id] = {
+			value: suggested,
+			reason: "Mock suggestion - replace with Cohere result later",
+		};
+	}
+
+	aiSuggestions = suggestions;
+	aiFieldStates = {};
+});
+
+
 	let altPressed = $state(false);
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -166,6 +215,11 @@
 	let editingInput = $state<HTMLTextAreaElement | null>(null);
 	let fieldHeights = $state<Record<string, number>>({});
 
+	// Separate editing state for AI suggestions
+	let aiEditingFieldId = $state<string | null>(null);
+	let aiDraftValues = $state<Record<string, string>>({});
+	let aiEditingInput = $state<HTMLTextAreaElement | null>(null);
+
 	$effect(() => {
 		if (editingInput) {
 			editingInput.focus();
@@ -173,6 +227,15 @@
 			editingInput.style.height = editingInput.scrollHeight + "px";
 		}
 	});
+
+	$effect(() => {
+		if (aiEditingInput) {
+			aiEditingInput.focus();
+			aiEditingInput.style.height = "auto";
+			aiEditingInput.style.height = aiEditingInput.scrollHeight + "px";
+		}
+	});
+
 
 	function autoResizeTextarea(event: Event) {
 		const textarea = event.target as HTMLTextAreaElement;
@@ -213,6 +276,43 @@
 			cancelEditingField();
 		}
 	}
+	
+	function startAiEditingField(fieldId: string, initialValue: string | null | undefined) {
+		aiEditingFieldId = fieldId;
+		aiDraftValues[fieldId] = initialValue ?? "";
+	}
+
+	function cancelAiEditingField() {
+		aiEditingFieldId = null;
+	}
+
+	function saveAiEditingField(fieldId: string) {
+		const newValue = aiDraftValues[fieldId] ?? "";
+		const existing = aiSuggestions[fieldId];
+
+		aiSuggestions = {
+			...aiSuggestions,
+			[fieldId]: {
+				...(existing ?? {}),
+				value: newValue,
+			},
+		};
+
+		aiEditingFieldId = null;
+	}
+
+	function handleAiFieldKeydown(event: KeyboardEvent, fieldId: string) {
+		// Plain Enter = save; Shift+Enter still inserts a newline
+		if (event.key === "Enter" && !event.shiftKey) {
+			event.preventDefault();
+			saveAiEditingField(fieldId);
+		} else if (event.key === "Escape") {
+			event.preventDefault();
+			cancelAiEditingField();
+		}
+	}
+
+
 
 	function getFileType(pathOrFilename: string): string {
 		const ext = pathOrFilename.split(".").pop()?.toLowerCase() || "";
@@ -237,6 +337,75 @@
 		} catch (err) {
 			console.error("Failed to open location:", err);
 		}
+	}
+
+	/* --- AI actions --- */
+
+	function getAiStatusLabel(fieldId: string): string {
+		const state = aiFieldStates[fieldId];
+		if (state === "accepted") return "Accepted";
+		if (state === "rejected") return "Rejected";
+		return "Pending";
+	}
+
+	async function applyAiSuggestion(fieldId: string) {
+		if (!selectedRow) return;
+		if (fieldId === "accessIdentifier") return; // safety guard
+
+		const suggestion = aiSuggestions[fieldId];
+		if (!suggestion) return;
+
+		await qrateStore.updateCell(
+			selectedRow.row_id,
+			fieldId,
+			suggestion.value,
+		);
+
+		aiFieldStates = {
+			...aiFieldStates,
+			[fieldId]: "accepted",
+		};
+	}
+
+	function rejectAiSuggestion(fieldId: string) {
+		if (fieldId === "accessIdentifier") return; // safety guard
+		aiFieldStates = {
+			...aiFieldStates,
+			[fieldId]: "rejected",
+		};
+	}
+
+	async function applyAllAiSuggestions() {
+		if (!selectedRow) return;
+
+		const newStates: Record<string, AiFieldState> = {
+			...aiFieldStates,
+		};
+
+		for (const [fieldId, suggestion] of Object.entries(aiSuggestions)) {
+			if (fieldId === "accessIdentifier") continue; // safety guard
+			if (!suggestion) continue;
+
+			await qrateStore.updateCell(
+				selectedRow.row_id,
+				fieldId,
+				suggestion.value,
+			);
+			newStates[fieldId] = "accepted";
+		}
+
+		aiFieldStates = newStates;
+	}
+
+	function rejectAllAiSuggestions() {
+		const newStates: Record<string, AiFieldState> = {
+			...aiFieldStates,
+		};
+		for (const fieldId of Object.keys(aiSuggestions)) {
+			if (fieldId === "accessIdentifier") continue; // safety guard
+			newStates[fieldId] = "rejected";
+		}
+		aiFieldStates = newStates;
 	}
 </script>
 
@@ -379,31 +548,271 @@
 
 				<Resizable.Pane defaultSize={40} minSize={15}>
 					<div class="h-full overflow-y-auto p-3">
-						<h3
-							class="mb-2 text-xs font-medium uppercase text-muted-foreground"
-						>
-							Row Data
-						</h3>
+						<div class="mb-2 flex items-center justify-between gap-2">
+							<h3
+								class="text-xs font-medium uppercase text-muted-foreground"
+							>
+								Row Data
+							</h3>
+							<div class="flex items-center gap-2">
+								<span
+									class="hidden text-[12px] text-muted-foreground md:inline"
+								>
+									AI suggestions (mock)
+								</span>
+								<Button
+									variant="ghost"
+									class="h-6 px-2 text-[12px]"
+									onclick={() => (showAiPanel = !showAiPanel)}
+								>
+									{#if showAiPanel}
+										Hide AI
+									{:else}
+										Show AI
+									{/if}
+								</Button>
+								{#if showAiPanel && Object.keys(aiSuggestions).length > 0}
+									<Button
+										variant="outline"
+										class="h-6 px-2 text-[10px]"
+										onclick={applyAllAiSuggestions}
+									>
+										Accept all
+									</Button>
+									<Button
+										variant="ghost"
+										class="h-6 px-2 text-[10px]"
+										onclick={rejectAllAiSuggestions}
+									>
+										Reject all
+									</Button>
+								{/if}
+							</div>
+						</div>
+
 						<div class="space-y-2">
 							{#each rowFields as field}
 								<div class="rounded-md bg-muted/50 p-2">
 									<div
-										class="mb-0.5 text-xs font-medium text-muted-foreground"
+										class="mb-1 text-xs font-medium text-muted-foreground"
 									>
 										{field.name}
 									</div>
+
+									<div class="flex gap-3">
+										<!-- Left: current editable value -->
+										<div class="flex-1">
+											<div class="wrap-break-word text-sm">
+												{#if editingFieldId === field.id}
+													<textarea
+														class="w-full max-h-80 resize-y rounded border border-border bg-background px-2 py-1 text-sm leading-snug"
+														style:min-height={fieldHeights[field.id]
+															? `${fieldHeights[field.id]}px`
+															: "1.5rem"}
+														bind:value={fieldDraftValues[field.id]}
+														oninput={autoResizeTextarea}
+														onkeydown={(event) =>
+															handleFieldKeydown(
+																event,
+																field.id,
+															)}
+														onblur={cancelEditingField}
+														bind:this={editingInput}
+													></textarea>
+												{:else}
+													<!-- svelte-ignore a11y_click_events_have_key_events -->
+													<!-- svelte-ignore a11y_no_static_element_interactions -->
+													<div
+														class="w-full select-text whitespace-pre-wrap"
+														style:cursor={altPressed
+															? "pointer"
+															: "text"}
+														use:captureFieldHeight={field.id}
+														ondblclick={() =>
+															startEditingField(
+																field.id,
+																field.value,
+															)}
+														onclick={(e) =>
+															e.altKey &&
+															startEditingField(
+																field.id,
+																field.value,
+															)}
+														title="Double-click or Alt+click to edit (Ctrl+Enter to save)"
+													>
+														{#if field.value !== null && field.value !== undefined && field.value !== ""}
+															{field.value}
+														{:else}
+															<span
+																class="italic text-muted-foreground"
+																>Empty</span
+															>
+														{/if}
+													</div>
+												{/if}
+											</div>
+										</div>
+
+										<!-- Right: AI suggestion, same row height -->
+										{#if showAiPanel}
+											<div
+												class="flex-1 border-l border-border pl-3 text-xs"
+											>
+												{#if field.id === "accessIdentifier"}
+													<div
+														class="text-[12px] italic text-muted-foreground"
+													>
+														accessIdentifier is not modified by AI.
+													</div>
+												{:else}
+													{@const suggestion =
+														aiSuggestions[field.id]}
+													{#if suggestion}
+														{#if aiEditingFieldId === field.id}
+															<textarea
+																class="w-full max-h-80 resize-y rounded border border-border bg-background px-2 py-1 text-[12px] leading-snug"
+																bind:value={aiDraftValues[field.id]}
+																oninput={autoResizeTextarea}
+																onkeydown={(event) =>
+																	handleAiFieldKeydown(
+																		event,
+																		field.id,
+																	)}
+																onblur={() => saveAiEditingField(field.id)}
+																bind:this={aiEditingInput}
+															></textarea>
+														{:else}
+															<!-- svelte-ignore a11y_click_events_have_key_events -->
+															<!-- svelte-ignore a11y_no_static_element_interactions -->
+															<div
+																class="whitespace-pre-wrap text-[12px] select-text"
+																style:cursor={altPressed ? "pointer" : "text"}
+																ondblclick={() =>
+																	startAiEditingField(
+																		field.id,
+																		suggestion.value,
+																	)}
+																onclick={(e) =>
+																	e.altKey &&
+																	startAiEditingField(
+																		field.id,
+																		suggestion.value,
+																	)}
+																title="Double-click or Alt+click to edit suggestion (Ctrl+Enter to save)"
+															>
+																{suggestion.value}
+															</div>
+														{/if}
+
+														<div class="mt-1 flex gap-1">
+															<Button
+																variant="outline"
+																class="h-6 px-2 text-[10px]"
+																onclick={() =>
+																	applyAiSuggestion(
+																		field.id,
+																	)}
+																disabled={aiFieldStates[field.id] ===
+																	"accepted"}
+															>
+																Accept
+															</Button>
+															<Button
+																variant="ghost"
+																class="h-6 px-2 text-[10px]"
+																onclick={() =>
+																	rejectAiSuggestion(
+																		field.id,
+																	)}
+																disabled={aiFieldStates[field.id] ===
+																	"rejected"}
+															>
+																Reject
+															</Button>
+														</div>
+													{:else}
+														<p
+															class="text-[12px] italic text-muted-foreground"
+														>
+															No suggestion.
+														</p>
+													{/if}
+												{/if}
+											</div>
+										{/if}
+									</div>
+								</div>
+							{/each}
+						</div>
+					</div>
+				</Resizable.Pane>
+
+			</Resizable.PaneGroup>
+		{:else}
+			<div class="h-full overflow-y-auto p-3">
+				<div class="mb-2 flex items-center justify-between gap-2">
+					<h3
+						class="text-xs font-medium uppercase text-muted-foreground"
+					>
+						Row Data
+					</h3>
+					<div class="flex items-center gap-2">
+						<span
+							class="hidden text-[12px] text-muted-foreground md:inline"
+						>
+							AI suggestions (mock)
+						</span>
+						<Button
+							variant="ghost"
+							class="h-6 px-2 text-[12px]"
+							onclick={() => (showAiPanel = !showAiPanel)}
+						>
+							{#if showAiPanel}
+								Hide AI
+							{:else}
+								Show AI
+							{/if}
+						</Button>
+						{#if showAiPanel && Object.keys(aiSuggestions).length > 0}
+							<Button
+								variant="outline"
+								class="h-6 px-2 text-[10px]"
+								onclick={applyAllAiSuggestions}
+							>
+								Accept all
+							</Button>
+							<Button
+								variant="ghost"
+								class="h-6 px-2 text-[10px]"
+								onclick={rejectAllAiSuggestions}
+							>
+								Reject all
+							</Button>
+						{/if}
+					</div>
+				</div>
+
+				<div class="space-y-2">
+					{#each rowFields as field}
+						<div class="rounded-md bg-muted/50 p-2">
+							<div
+								class="mb-1 text-xs font-medium text-muted-foreground"
+							>
+								{field.name}
+							</div>
+
+							<div class="flex gap-3">
+								<!-- Left: current editable value -->
+								<div class="flex-1">
 									<div class="wrap-break-word text-sm">
 										{#if editingFieldId === field.id}
 											<textarea
-												class="w-full text-sm bg-background border border-border rounded px-2 py-1 max-h-80 resize-y leading-snug"
-												style:min-height={fieldHeights[
-													field.id
-												]
+												class="w-full max-h-80 resize-y rounded border border-border bg-background px-2 py-1 text-sm leading-snug"
+												style:min-height={fieldHeights[field.id]
 													? `${fieldHeights[field.id]}px`
 													: "1.5rem"}
-												bind:value={
-													fieldDraftValues[field.id]
-												}
+												bind:value={fieldDraftValues[field.id]}
 												oninput={autoResizeTextarea}
 												onkeydown={(event) =>
 													handleFieldKeydown(
@@ -417,7 +826,7 @@
 											<!-- svelte-ignore a11y_click_events_have_key_events -->
 											<!-- svelte-ignore a11y_no_static_element_interactions -->
 											<div
-												class="w-full whitespace-pre-wrap select-text"
+												class="w-full select-text whitespace-pre-wrap"
 												style:cursor={altPressed
 													? "pointer"
 													: "text"}
@@ -447,69 +856,91 @@
 										{/if}
 									</div>
 								</div>
-							{/each}
-						</div>
-					</div>
-				</Resizable.Pane>
-			</Resizable.PaneGroup>
-		{:else}
-			<div class="h-full overflow-y-auto p-3">
-				<h3
-					class="mb-2 text-xs font-medium uppercase text-muted-foreground"
-				>
-					Row Data
-				</h3>
-				<div class="space-y-2">
-					{#each rowFields as field}
-						<div class="rounded-md bg-muted/50 p-2">
-							<div
-								class="mb-0.5 text-xs font-medium text-muted-foreground"
-							>
-								{field.name}
-							</div>
-							<div class="wrap-break-word text-sm">
-								{#if editingFieldId === field.id}
-									<textarea
-										class="w-full text-sm bg-background border border-border rounded px-2 py-1 max-h-80 resize-y leading-snug"
-										style:min-height={fieldHeights[field.id]
-											? `${fieldHeights[field.id]}px`
-											: "1.5rem"}
-										bind:value={fieldDraftValues[field.id]}
-										oninput={autoResizeTextarea}
-										onkeydown={(event) =>
-											handleFieldKeydown(event, field.id)}
-										onblur={cancelEditingField}
-										bind:this={editingInput}
-									></textarea>
-								{:else}
-									<!-- svelte-ignore a11y_click_events_have_key_events -->
-									<!-- svelte-ignore a11y_no_static_element_interactions -->
+
+								<!-- Right: AI suggestion, same row height -->
+								{#if showAiPanel}
 									<div
-										class="w-full whitespace-pre-wrap select-text"
-										style:cursor={altPressed
-											? "pointer"
-											: "text"}
-										use:captureFieldHeight={field.id}
-										ondblclick={() =>
-											startEditingField(
-												field.id,
-												field.value,
-											)}
-										onclick={(e) =>
-											e.altKey &&
-											startEditingField(
-												field.id,
-												field.value,
-											)}
-										title="Double-click or Alt+click to edit (Ctrl+Enter to save)"
+										class="flex-1 border-l border-border pl-3 text-xs"
 									>
-										{#if field.value !== null && field.value !== undefined && field.value !== ""}
-											{field.value}
-										{:else}
-											<span
-												class="italic text-muted-foreground"
-												>Empty</span
+										{#if field.id === "accessIdentifier"}
+											<div
+												class="text-[12px] italic text-muted-foreground"
 											>
+												accessIdentifier is not modified by AI.
+											</div>
+										{:else}
+											{@const suggestion =
+												aiSuggestions[field.id]}
+											{#if suggestion}
+												{#if aiEditingFieldId === field.id}
+													<textarea
+														class="w-full max-h-80 resize-y rounded border border-border bg-background px-2 py-1 text-[12px] leading-snug"
+														bind:value={aiDraftValues[field.id]}
+														oninput={autoResizeTextarea}
+														onkeydown={(event) =>
+															handleAiFieldKeydown(
+																event,
+																field.id,
+															)}
+														onblur={cancelAiEditingField}
+														bind:this={aiEditingInput}
+													></textarea>
+												{:else}
+													<!-- svelte-ignore a11y_click_events_have_key_events -->
+													<!-- svelte-ignore a11y_no_static_element_interactions -->
+													<div
+														class="whitespace-pre-wrap text-[12px] select-text"
+														style:cursor={altPressed ? "pointer" : "text"}
+														ondblclick={() =>
+															startAiEditingField(
+																field.id,
+																suggestion.value,
+															)}
+														onclick={(e) =>
+															e.altKey &&
+															startAiEditingField(
+																field.id,
+																suggestion.value,
+															)}
+														title="Double-click or Alt+click to edit suggestion (Ctrl+Enter to save)"
+													>
+														{suggestion.value}
+													</div>
+												{/if}
+
+												<div class="mt-1 flex gap-1">
+													<Button
+														variant="outline"
+														class="h-6 px-2 text-[10px]"
+														onclick={() =>
+															applyAiSuggestion(
+																field.id,
+															)}
+														disabled={aiFieldStates[field.id] ===
+															"accepted"}
+													>
+														Accept
+													</Button>
+													<Button
+														variant="ghost"
+														class="h-6 px-2 text-[10px]"
+														onclick={() =>
+															rejectAiSuggestion(
+																field.id,
+															)}
+														disabled={aiFieldStates[field.id] ===
+															"rejected"}
+													>
+														Reject
+													</Button>
+												</div>
+											{:else}
+												<p
+													class="text-[12px] italic text-muted-foreground"
+												>
+													No suggestion.
+												</p>
+											{/if}
 										{/if}
 									</div>
 								{/if}
@@ -519,5 +950,11 @@
 				</div>
 			</div>
 		{/if}
+
 	</div>
 </div>
+<style>
+	.wrap-break-word {
+		word-break: break-word;
+	}
+</style>
