@@ -8,16 +8,13 @@ mod compression;
 mod database;
 mod file;
 mod layout;
-mod layout_state;
 mod settings;
 mod window;
 
 use app_state::AppState;
 use checks::spellcheck::SpellCheckState;
 use compression::commands::ThumbnailState;
-use layout::manager::LayoutManager;
-use layout::persistence::get_layout_db_path;
-use layout_state::LayoutState;
+use layout::{manager::LayoutManager, persistence::get_layout_db_path, LayoutState};
 use window::manager::WindowManager;
 
 pub fn run() {
@@ -45,40 +42,31 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let db_path = get_layout_db_path(app.handle())
-                .map_err(|e| format!("Failed to get layout DB path: {}", e))?;
-            let layout_manager =
-                Arc::new(Mutex::new(LayoutManager::new(&db_path).map_err(|e| {
-                    format!("Failed to create layout manager: {}", e)
-                })?));
-
+            let db_path = get_layout_db_path(app.handle()).map_err(|e| e.to_string())?;
+            let layout_manager = Arc::new(Mutex::new(
+                LayoutManager::new(&db_path).map_err(|e| e.to_string())?,
+            ));
             let window_manager = WindowManager::new(app.handle().clone(), layout_manager.clone());
-
             app.manage(LayoutState::new(layout_manager, window_manager));
 
-            let args: Vec<String> = std::env::args().collect();
-            if args.len() > 1 {
-                let file_path = &args[1];
-                if file_path.ends_with(".qrate") && std::path::Path::new(file_path).exists() {
+            if let Some(project_path) = std::env::args().nth(1) {
+                if database::is_qrate_project(std::path::Path::new(&project_path)) {
                     let handle = app.handle().clone();
-                    let path = file_path.clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(std::time::Duration::from_millis(100));
-                        let _ = handle.emit("open-file", path);
+                        let _ = handle.emit("open-project", project_path);
                     });
                 }
             }
-
             Ok(())
         })
         .manage(AppState::new())
         .manage(SpellCheckState::new())
         .manage(ThumbnailState::new())
         .invoke_handler(tauri::generate_handler![
-            // File operations
-            file::commands::create_qrate_file,
-            file::commands::open_qrate_file,
-            file::commands::close_qrate_file,
+            file::commands::create_qrate_project,
+            file::commands::open_qrate_project,
+            file::commands::close_qrate_project,
             file::commands::import_csv_to_qrate,
             file::commands::preview_csv,
             file::commands::get_rows,
@@ -89,7 +77,6 @@ pub fn run() {
             file::commands::delete_row,
             file::commands::get_current_state,
             file::commands::validate_file_path,
-            // Window management
             window::commands::show_main_window,
             window::commands::show_projects_window,
             window::commands::show_settings_window,
@@ -98,17 +85,14 @@ pub fn run() {
             window::commands::focus_window,
             window::commands::get_window_list,
             window::commands::create_chat_window,
-            // Layout management
             layout::commands::get_layout,
             layout::commands::save_layout,
             layout::commands::update_region_size,
             layout::commands::toggle_region,
             layout::commands::set_chat_mode,
-            // Thumbnail commands
             compression::commands::start_thumbnail_processing,
             compression::commands::cancel_thumbnail_processing,
             compression::commands::get_thumbnail_path,
-            // Settings commands
             settings::commands::get_global_settings_schema,
             settings::commands::get_project_settings_schema,
             settings::commands::get_global_settings_defaults,
@@ -118,7 +102,6 @@ pub fn run() {
             settings::commands::set_project_setting,
             settings::commands::set_project_settings,
             settings::commands::get_project_settings_with_defaults_cmd,
-            // Spellcheck commands
             checks::spellcheck::check_spelling,
             checks::spellcheck::check_text_fragment,
             checks::spellcheck::get_suggestions,
@@ -126,7 +109,6 @@ pub fn run() {
             checks::spellcheck::add_to_dictionary,
             checks::spellcheck::is_word_correct,
             checks::spellcheck::load_dictionary_file,
-            // Annotations commands
             annotations::commands::get_annotations,
             annotations::commands::create_annotation,
             annotations::commands::update_annotation,

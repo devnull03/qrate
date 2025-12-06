@@ -51,4 +51,7 @@ log = "0.4"
 
 # Spell checking
 symspell_rs = { package = "symspell", version = "0.4.5" }
+thiserror = "2.0"
+reqwest = "0.12"
+chrono = { version = "0.4", features = ["serde"] }
 # symspell = "0.4.5"

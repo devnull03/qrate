@@ -71,8 +71,9 @@
 
 		try {
 			const selected = await open({
+				directory: true,
 				multiple: false,
-				filters: [{ name: "Qrate Files", extensions: ["qrate"] }],
+				title: "Open project folder",
 			});
 
 			if (selected && typeof selected === "string") {
