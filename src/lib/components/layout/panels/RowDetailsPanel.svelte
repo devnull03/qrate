@@ -139,7 +139,6 @@ let aiFieldStates = $state<Record<string, AiFieldState>>({});
 
 // Regenerate mock suggestions whenever the selected row changes
 $effect(() => {
-	const _rowId = qrateStore.selectedRowId;
 
 	if (!selectedRow) {
 		aiSuggestions = {};
