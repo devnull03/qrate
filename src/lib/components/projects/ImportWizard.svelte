@@ -205,6 +205,14 @@
 			return;
 		}
 
+		// Validate that filesFolder is set for CSV imports
+		if (sourceType === "csv" && !selectedFilesFolder?.trim()) {
+			onError(
+				"Files Folder is required for CSV imports. Please select a folder containing your files.",
+			);
+			return;
+		}
+
 		isProcessing = true;
 
 		try {
