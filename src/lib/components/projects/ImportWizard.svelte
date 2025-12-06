@@ -95,17 +95,19 @@
 		}
 	}
 
-	async function selectProjectLocation() {
+	async function selectProjectFolder() {
 		const folder = await open({
 			directory: true,
 			multiple: false,
-			title: "Select project location",
+			title: "Select project folder",
 		}).catch(() => null);
 
 		if (folder && typeof folder === "string") {
 			projectLocation = folder;
-			if (!projectName) {
-				projectName = "New Project";
+			// Extract folder name as project name
+			const folderName = getFolderName(folder);
+			if (!projectName || projectName === "New Project") {
+				projectName = folderName;
 			}
 		}
 	}
@@ -216,7 +218,7 @@
 		isProcessing = true;
 
 		try {
-			const projectPath = await join(projectLocation, projectName);
+			const projectPath = projectLocation;
 			const imagesRoot =
 				sourceType === "images"
 					? selectedImagesFolder
@@ -312,7 +314,7 @@
 				</div>
 
 				<div class="space-y-2">
-					<Label for="project-location">Location</Label>
+					<Label for="project-location">Project Folder</Label>
 					<div class="flex gap-2">
 						<Input
 							id="project-location"
@@ -320,16 +322,12 @@
 							placeholder="Select folder..."
 							readonly
 						/>
-						<Button
-							variant="outline"
-							onclick={selectProjectLocation}
-						>
+						<Button variant="outline" onclick={selectProjectFolder}>
 							<FolderOpenIcon class="size-4" />
 						</Button>
 					</div>
 					<p class="text-xs text-muted-foreground">
-						A new folder named "{projectName || "project"}" will be
-						created here
+						This folder will become your project root
 					</p>
 				</div>
 			</div>

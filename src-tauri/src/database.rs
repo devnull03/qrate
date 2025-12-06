@@ -33,6 +33,9 @@ pub struct ProjectPaths {
     pub images_root: Option<String>,
     /// Relative to .qrate folder
     pub database: String,
+    /// Original CSV file copied into project (relative to .qrate folder)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_csv: Option<String>,
 }
 
 impl Default for ProjectConfig {
@@ -45,6 +48,7 @@ impl Default for ProjectConfig {
             paths: ProjectPaths {
                 images_root: None,
                 database: format!("./{}", DB_FILE_NAME),
+                source_csv: None,
             },
         }
     }
@@ -60,6 +64,7 @@ impl ProjectConfig {
             paths: ProjectPaths {
                 images_root,
                 database: format!("./{}", DB_FILE_NAME),
+                source_csv: None,
             },
         }
     }
@@ -97,6 +102,18 @@ pub fn get_thumbnails_dir(project_path: &Path) -> PathBuf {
 
 pub fn is_qrate_project(path: &Path) -> bool {
     get_config_path(path).exists()
+}
+
+/// Copy a CSV file into the project root (beside .qrate folder) and return the relative path
+pub fn copy_csv_to_project(project_path: &Path, csv_path: &Path) -> std::io::Result<String> {
+    let file_name = csv_path
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("source.csv"));
+    let dest_path = project_path.join(file_name);
+
+    std::fs::copy(csv_path, &dest_path)?;
+
+    Ok(file_name.to_string_lossy().to_string())
 }
 
 fn ensure_qrate_folder(project_path: &Path) -> std::io::Result<PathBuf> {

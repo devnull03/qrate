@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { RevoGrid as RevoGridComponent } from "@revolist/svelte-datagrid";
+	import { onMount } from "svelte";
+	import { browser } from "$app/environment";
 	import type { ColumnRegular, DataType } from "@revolist/revogrid";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import { qrateStore, type ColumnDef } from "$lib/stores/qrateStore.svelte";
@@ -8,9 +9,19 @@
 	import * as ContextMenu from "$lib/components/ui/context-menu/index.js";
 	import MessageSquarePlusIcon from "@lucide/svelte/icons/message-square-plus";
 
+	let RevoGridComponent: any = $state(null);
 	let grid: any = $state();
 	let gridContainer: HTMLDivElement | null = $state(null);
 	let isLoadingMore = $state(false);
+	let isMounted = $state(false);
+
+	onMount(async () => {
+		if (browser) {
+			const module = await import("@revolist/svelte-datagrid");
+			RevoGridComponent = module.RevoGrid;
+			isMounted = true;
+		}
+	});
 	let scrollDebounceTimer: number | null = null;
 	let defaultRowHeight = $state(35);
 
@@ -397,21 +408,34 @@
 		</div> -->
 
 			<div class="min-h-0 flex-1 overflow-hidden">
-				<RevoGridComponent
-					bind:this={grid}
-					source={revoRows}
-					columns={revoColumns}
-					theme={isDark ? "darkMaterial" : "default"}
-					resize={true}
-					range={true}
-					readonly={false}
-					autoSizeColumn={false}
-					rowSize={defaultRowHeight}
-					on:afteredit={handleAfterEdit}
-					on:aftercolumnresize={handleAfterColumnResize}
-					on:afterfocus={handleAfterFocus}
-					on:viewportscroll={handleScroll}
-				/>
+				{#if isMounted && RevoGridComponent}
+					<RevoGridComponent
+						bind:this={grid}
+						source={revoRows}
+						columns={revoColumns}
+						theme={isDark ? "darkMaterial" : "default"}
+						resize={true}
+						range={true}
+						readonly={false}
+						autoSizeColumn={false}
+						rowSize={defaultRowHeight}
+						on:afteredit={handleAfterEdit}
+						on:aftercolumnresize={handleAfterColumnResize}
+						on:afterfocus={handleAfterFocus}
+						on:viewportscroll={handleScroll}
+					/>
+				{:else}
+					<div class="flex h-full items-center justify-center">
+						<div
+							class="flex items-center gap-2 text-sm text-muted-foreground"
+						>
+							<div
+								class="size-4 animate-spin rounded-full border-2 border-current border-t-transparent"
+							></div>
+							<span>Loading grid...</span>
+						</div>
+					</div>
+				{/if}
 			</div>
 
 			{#if isLoadingMore || qrateStore.isLoadingMore}

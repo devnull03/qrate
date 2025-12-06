@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from "svelte";
+	import { getCurrentWindow } from "@tauri-apps/api/window";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import { Input } from "$lib/components/ui/input/index.js";
 	import { Label } from "$lib/components/ui/label/index.js";
@@ -14,8 +15,6 @@
 	} from "$lib/stores/appSettings";
 	import {
 		initGlobalSettings,
-		getGlobalSettings,
-		setGlobalSetting,
 		setGlobalSettings,
 		type GlobalSettings,
 	} from "$lib/stores/globalSettings";
@@ -28,6 +27,9 @@
 	import AlertCircleIcon from "@lucide/svelte/icons/alert-circle";
 	import GlobeIcon from "@lucide/svelte/icons/globe";
 	import FileIcon from "@lucide/svelte/icons/file";
+	import SaveIcon from "@lucide/svelte/icons/save";
+	import XIcon from "@lucide/svelte/icons/x";
+	import CheckIcon from "@lucide/svelte/icons/check";
 
 	// Global settings state
 	let globalTheme = $state<"light" | "dark" | "system">("system");
@@ -36,24 +38,65 @@
 	let globalDefaultFileColumnName = $state("file");
 	let globalConfirmBeforeDelete = $state(true);
 
+	// Original global settings (for dirty checking)
+	let originalGlobalSettings = $state({
+		theme: "system" as "light" | "dark" | "system",
+		defaultRowLimit: 100,
+		defaultFilePathPattern: "{files_folder}/{file_column}",
+		defaultFileColumnName: "file",
+		confirmBeforeDelete: true,
+	});
+
 	// Project settings state
 	let projectFilesFolder = $state("");
 	let projectFilePathPattern = $state("{files_folder}/{file_column}");
 	let projectFileColumnName = $state("file");
 	let projectDefaultRowLimit = $state("100");
 
+	// Original project settings (for dirty checking)
+	let originalProjectSettings = $state({
+		filesFolder: "",
+		filePathPattern: "{files_folder}/{file_column}",
+		fileColumnName: "file",
+		defaultRowLimit: "100",
+	});
+
 	// UI state
 	let isLoaded = $state(false);
 	let hasFile = $state(false);
 	let loadError = $state<string | null>(null);
+	let saveSuccess = $state<string | null>(null);
+	let isSaving = $state(false);
+
+	// Dirty state tracking
+	let isGlobalDirty = $derived(
+		globalTheme !== originalGlobalSettings.theme ||
+			globalDefaultRowLimit !== originalGlobalSettings.defaultRowLimit ||
+			globalDefaultFilePathPattern !==
+				originalGlobalSettings.defaultFilePathPattern ||
+			globalDefaultFileColumnName !==
+				originalGlobalSettings.defaultFileColumnName ||
+			globalConfirmBeforeDelete !==
+				originalGlobalSettings.confirmBeforeDelete,
+	);
+
+	let isProjectDirty = $derived(
+		hasFile &&
+			(projectFilesFolder !== originalProjectSettings.filesFolder ||
+				projectFilePathPattern !==
+					originalProjectSettings.filePathPattern ||
+				projectFileColumnName !==
+					originalProjectSettings.fileColumnName ||
+				projectDefaultRowLimit !==
+					originalProjectSettings.defaultRowLimit),
+	);
+
+	let isDirty = $derived(isGlobalDirty || isProjectDirty);
 
 	// Load settings on mount
 	onMount(async () => {
-		console.log("[Settings] onMount starting...");
-
 		try {
 			// Load global settings first
-			console.log("[Settings] Loading global settings...");
 			const globalSettings = await initGlobalSettings();
 			globalTheme =
 				(globalSettings.theme as "light" | "dark" | "system") ??
@@ -71,6 +114,15 @@
 			globalConfirmBeforeDelete =
 				String(globalSettings.confirmBeforeDelete ?? "true") === "true";
 
+			// Store original values
+			originalGlobalSettings = {
+				theme: globalTheme,
+				defaultRowLimit: globalDefaultRowLimit,
+				defaultFilePathPattern: globalDefaultFilePathPattern,
+				defaultFileColumnName: globalDefaultFileColumnName,
+				confirmBeforeDelete: globalConfirmBeforeDelete,
+			};
+
 			// Apply theme
 			if (globalTheme === "system") {
 				resetMode();
@@ -79,31 +131,19 @@
 			}
 
 			// Settings window is a separate Tauri window, so we need to sync state from backend
-			console.log("[Settings] Syncing state from backend...");
 			let synced = await qrateStore.syncFromBackend();
-			console.log("[Settings] Backend sync result:", synced);
 
 			// If backend has no file open, try to restore from persisted workspace
 			if (!synced) {
-				console.log(
-					"[Settings] Backend has no file, trying to restore workspace...",
-				);
 				synced = await qrateStore.restoreWorkspace(true);
-				console.log("[Settings] Workspace restore result:", synced);
 			}
 
 			hasFile = !!qrateStore.currentFilePath;
-			console.log("[Settings] hasFile:", hasFile);
 
 			if (hasFile) {
-				console.log("[Settings] Loading project settings from file...");
 				try {
 					const defaults = await getDefaultProjectSettings();
 					const settings = await loadSettings();
-					console.log(
-						"[Settings] Loaded project settings:",
-						settings,
-					);
 					projectFilesFolder = String(
 						settings.filesFolder ?? defaults.filesFolder,
 					);
@@ -116,22 +156,20 @@
 					projectDefaultRowLimit = String(
 						settings.defaultRowLimit ?? defaults.defaultRowLimit,
 					);
-					console.log(
-						"[Settings] Project settings applied successfully",
-					);
+
+					// Store original values
+					originalProjectSettings = {
+						filesFolder: projectFilesFolder,
+						filePathPattern: projectFilePathPattern,
+						fileColumnName: projectFileColumnName,
+						defaultRowLimit: projectDefaultRowLimit,
+					};
 				} catch (err) {
 					const errorMsg =
 						err instanceof Error ? err.message : String(err);
-					console.error(
-						"[Settings] Failed to load project settings:",
-						errorMsg,
-					);
 					loadError = `Failed to load project settings: ${errorMsg}`;
 				}
 			} else {
-				console.log(
-					"[Settings] No file open, using defaults for project settings",
-				);
 				const defaults = await getDefaultProjectSettings();
 				projectFilesFolder = String(defaults.filesFolder ?? "");
 				projectFilePathPattern = String(
@@ -143,20 +181,24 @@
 				projectDefaultRowLimit = String(
 					defaults.defaultRowLimit ?? "100",
 				);
+
+				originalProjectSettings = {
+					filesFolder: projectFilesFolder,
+					filePathPattern: projectFilePathPattern,
+					fileColumnName: projectFileColumnName,
+					defaultRowLimit: projectDefaultRowLimit,
+				};
 			}
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
-			console.error("[Settings] Error during initialization:", errorMsg);
 			loadError = `Initialization error: ${errorMsg}`;
 		}
 
-		console.log("[Settings] Setting isLoaded = true");
 		isLoaded = true;
 	});
 
-	// Handle theme change (global setting)
-	async function handleThemeChange(newTheme: "light" | "dark" | "system") {
-		console.log("[Settings] Theme change:", newTheme);
+	// Handle theme change (applies immediately but still needs save)
+	function handleThemeChange(newTheme: "light" | "dark" | "system") {
 		globalTheme = newTheme;
 
 		if (newTheme === "system") {
@@ -164,78 +206,109 @@
 		} else {
 			setMode(newTheme);
 		}
-
-		try {
-			await setGlobalSetting("theme", newTheme);
-		} catch (err) {
-			console.error("[Settings] Failed to save theme:", err);
-		}
 	}
 
-	// Save global defaults
-	async function handleSaveGlobalDefaults() {
-		console.log("[Settings] Saving global defaults");
-		try {
-			await setGlobalSettings({
-				defaultRowLimit: globalDefaultRowLimit,
-				defaultFilePathPattern: globalDefaultFilePathPattern,
-				defaultFileColumnName: globalDefaultFileColumnName,
-				confirmBeforeDelete: globalConfirmBeforeDelete,
-			});
-			console.log("[Settings] Global defaults saved");
-		} catch (err) {
-			console.error("[Settings] Failed to save global defaults:", err);
-		}
-	}
-
-	// Browse for files folder (project setting)
+	// Browse for files folder
 	async function browseFilesFolder() {
-		console.log("[Settings] browseFilesFolder called");
 		try {
 			const folder = await open({
 				directory: true,
 				multiple: false,
 				title: "Select Files Folder",
 			});
-			console.log("[Settings] Folder selected:", folder);
 
 			if (folder && typeof folder === "string") {
 				projectFilesFolder = folder;
-				await handleSaveProjectSettings();
 			}
 		} catch (err) {
 			console.error("[Settings] Failed to select folder:", err);
 		}
 	}
 
-	// Save project settings to the .qrate file
-	async function handleSaveProjectSettings() {
-		console.log(
-			"[Settings] handleSaveProjectSettings called, hasFile:",
-			hasFile,
-		);
-		if (!hasFile) {
-			console.log("[Settings] No file open, skipping save");
-			return;
-		}
+	// Save all settings
+	async function handleSave() {
+		isSaving = true;
+		saveSuccess = null;
+		loadError = null;
 
 		try {
-			console.log("[Settings] Saving project settings:", {
-				filesFolder: projectFilesFolder,
-				filePathPattern: projectFilePathPattern,
-				fileColumnName: projectFileColumnName,
-				defaultRowLimit: projectDefaultRowLimit,
-			});
-			await saveSettings({
-				filesFolder: projectFilesFolder,
-				filePathPattern: projectFilePathPattern,
-				fileColumnName: projectFileColumnName,
-				defaultRowLimit: projectDefaultRowLimit,
-			});
-			console.log("[Settings] Project settings saved successfully");
+			// Save global settings
+			if (isGlobalDirty) {
+				await setGlobalSettings({
+					theme: globalTheme,
+					defaultRowLimit: globalDefaultRowLimit,
+					defaultFilePathPattern: globalDefaultFilePathPattern,
+					defaultFileColumnName: globalDefaultFileColumnName,
+					confirmBeforeDelete: globalConfirmBeforeDelete,
+				});
+
+				originalGlobalSettings = {
+					theme: globalTheme,
+					defaultRowLimit: globalDefaultRowLimit,
+					defaultFilePathPattern: globalDefaultFilePathPattern,
+					defaultFileColumnName: globalDefaultFileColumnName,
+					confirmBeforeDelete: globalConfirmBeforeDelete,
+				};
+			}
+
+			// Save project settings
+			if (isProjectDirty && hasFile) {
+				await saveSettings({
+					filesFolder: projectFilesFolder,
+					filePathPattern: projectFilePathPattern,
+					fileColumnName: projectFileColumnName,
+					defaultRowLimit: projectDefaultRowLimit,
+				});
+
+				originalProjectSettings = {
+					filesFolder: projectFilesFolder,
+					filePathPattern: projectFilePathPattern,
+					fileColumnName: projectFileColumnName,
+					defaultRowLimit: projectDefaultRowLimit,
+				};
+			}
+
+			saveSuccess = "Settings saved successfully!";
+			setTimeout(() => {
+				saveSuccess = null;
+			}, 3000);
 		} catch (err) {
-			console.error("[Settings] Failed to save project settings:", err);
+			const errorMsg = err instanceof Error ? err.message : String(err);
+			loadError = `Failed to save settings: ${errorMsg}`;
+		} finally {
+			isSaving = false;
 		}
+	}
+
+	// Cancel and revert changes
+	function handleCancel() {
+		// Revert global settings
+		globalTheme = originalGlobalSettings.theme;
+		globalDefaultRowLimit = originalGlobalSettings.defaultRowLimit;
+		globalDefaultFilePathPattern =
+			originalGlobalSettings.defaultFilePathPattern;
+		globalDefaultFileColumnName =
+			originalGlobalSettings.defaultFileColumnName;
+		globalConfirmBeforeDelete = originalGlobalSettings.confirmBeforeDelete;
+
+		// Apply reverted theme
+		if (globalTheme === "system") {
+			resetMode();
+		} else {
+			setMode(globalTheme);
+		}
+
+		// Revert project settings
+		projectFilesFolder = originalProjectSettings.filesFolder;
+		projectFilePathPattern = originalProjectSettings.filePathPattern;
+		projectFileColumnName = originalProjectSettings.fileColumnName;
+		projectDefaultRowLimit = originalProjectSettings.defaultRowLimit;
+	}
+
+	// Close window
+	async function handleClose() {
+		const window = getCurrentWindow();
+		await window.close();
 	}
 </script>
 
@@ -251,11 +324,20 @@
 	{:else}
 		<div class="flex-1 overflow-auto p-6">
 			<div class="mx-auto max-w-2xl space-y-6">
-				<div>
-					<h1 class="text-2xl font-bold">Settings</h1>
-					<p class="text-sm text-muted-foreground">
-						Configure your qRate preferences
-					</p>
+				<div class="flex items-center justify-between">
+					<div>
+						<h1 class="text-2xl font-bold">Settings</h1>
+						<p class="text-sm text-muted-foreground">
+							Configure global and project-specific settings
+						</p>
+					</div>
+					<div class="flex items-center gap-2">
+						{#if isDirty}
+							<span class="text-xs text-amber-500"
+								>Unsaved changes</span
+							>
+						{/if}
+					</div>
 				</div>
 
 				{#if loadError}
@@ -269,6 +351,19 @@
 					</Card.Root>
 				{/if}
 
+				{#if saveSuccess}
+					<Card.Root class="border-green-500/50 bg-green-500/10">
+						<Card.Content class="flex items-center gap-3 pt-6">
+							<CheckIcon class="size-5 text-green-500" />
+							<p
+								class="text-sm text-green-700 dark:text-green-400"
+							>
+								{saveSuccess}
+							</p>
+						</Card.Content>
+					</Card.Root>
+				{/if}
+
 				<!-- Global Settings Section -->
 				<div class="space-y-4">
 					<div class="flex items-center gap-2">
@@ -276,8 +371,8 @@
 						<h2 class="text-lg font-semibold">Global Settings</h2>
 					</div>
 					<p class="text-sm text-muted-foreground">
-						These settings apply to all projects and persist across
-						app restarts.
+						These settings apply across all projects and are stored
+						locally on your machine.
 					</p>
 
 					<!-- Appearance -->
@@ -285,7 +380,7 @@
 						<Card.Header>
 							<Card.Title>Appearance</Card.Title>
 							<Card.Description>
-								Customize the look and feel of the application
+								Customize how the application looks
 							</Card.Description>
 						</Card.Header>
 						<Card.Content class="space-y-4">
@@ -297,11 +392,10 @@
 											? "default"
 											: "outline"}
 										size="sm"
-										class="flex-1 gap-2"
 										onclick={() =>
 											handleThemeChange("light")}
 									>
-										<SunIcon class="size-4" />
+										<SunIcon class="mr-1 size-4" />
 										Light
 									</Button>
 									<Button
@@ -309,11 +403,10 @@
 											? "default"
 											: "outline"}
 										size="sm"
-										class="flex-1 gap-2"
 										onclick={() =>
 											handleThemeChange("dark")}
 									>
-										<MoonIcon class="size-4" />
+										<MoonIcon class="mr-1 size-4" />
 										Dark
 									</Button>
 									<Button
@@ -321,11 +414,10 @@
 											? "default"
 											: "outline"}
 										size="sm"
-										class="flex-1 gap-2"
 										onclick={() =>
 											handleThemeChange("system")}
 									>
-										<MonitorIcon class="size-4" />
+										<MonitorIcon class="mr-1 size-4" />
 										System
 									</Button>
 								</div>
@@ -333,12 +425,12 @@
 						</Card.Content>
 					</Card.Root>
 
-					<!-- Default Values for New Projects -->
+					<!-- Global Defaults -->
 					<Card.Root>
 						<Card.Header>
-							<Card.Title>Default Values</Card.Title>
+							<Card.Title>Defaults</Card.Title>
 							<Card.Description>
-								Default settings used when creating new projects
+								Default values for new projects
 							</Card.Description>
 						</Card.Header>
 						<Card.Content class="space-y-4">
@@ -352,11 +444,9 @@
 									bind:value={globalDefaultRowLimit}
 									min={50}
 									max={1000}
-									onchange={handleSaveGlobalDefaults}
 								/>
 								<p class="text-xs text-muted-foreground">
-									Default number of rows to load at a time
-									(50-1000)
+									Default number of rows to load (50-1000)
 								</p>
 							</div>
 
@@ -370,10 +460,10 @@
 									id="global-file-column"
 									bind:value={globalDefaultFileColumnName}
 									placeholder="file"
-									onchange={handleSaveGlobalDefaults}
 								/>
 								<p class="text-xs text-muted-foreground">
-									Default column name for file references
+									Default column name containing file
+									references
 								</p>
 							</div>
 
@@ -387,7 +477,6 @@
 									id="global-path-pattern"
 									bind:value={globalDefaultFilePathPattern}
 									placeholder="&#123;files_folder&#125;/&#123;file_column&#125;"
-									onchange={handleSaveGlobalDefaults}
 								/>
 								<p class="text-xs text-muted-foreground">
 									Default pattern for locating files in new
@@ -420,8 +509,20 @@
 								<p
 									class="text-sm text-amber-700 dark:text-amber-400"
 								>
-									No project is open. Open a project folder to
-									configure project-specific settings.
+									No project is currently open. Open a project
+									from the main window to configure
+									project-specific settings.
+								</p>
+							</Card.Content>
+						</Card.Root>
+					{:else}
+						<Card.Root class="border-green-500/50 bg-green-500/10">
+							<Card.Content class="flex items-center gap-3 pt-6">
+								<CheckIcon class="size-5 text-green-500" />
+								<p
+									class="text-sm text-green-700 dark:text-green-400"
+								>
+									Project loaded: {qrateStore.currentFilePath}
 								</p>
 							</Card.Content>
 						</Card.Root>
@@ -458,8 +559,8 @@
 									</Button>
 								</div>
 								<p class="text-xs text-muted-foreground">
-									Base folder containing all files referenced
-									in this project
+									Root folder containing the files referenced
+									in your data
 								</p>
 							</div>
 
@@ -472,12 +573,10 @@
 									id="file-column"
 									bind:value={projectFileColumnName}
 									placeholder="file"
-									onchange={handleSaveProjectSettings}
 									disabled={!hasFile}
 								/>
 								<p class="text-xs text-muted-foreground">
-									The column name containing file names in
-									your CSV
+									Column name containing file references
 								</p>
 							</div>
 
@@ -491,40 +590,37 @@
 									id="path-pattern"
 									bind:value={projectFilePathPattern}
 									placeholder="&#123;files_folder&#125;/&#123;file_column&#125;"
-									onchange={handleSaveProjectSettings}
 									disabled={!hasFile}
 								/>
 								<p class="text-xs text-muted-foreground">
-									Pattern for locating files. Use
-									&#123;files_folder&#125;,
-									&#123;file_column&#125;, or any column name.
+									Pattern for constructing full file paths
 								</p>
 							</div>
 
 							<div class="rounded-md bg-muted p-3">
 								<p class="mb-2 text-xs font-medium">
-									Pattern Examples:
+									Available variables:
 								</p>
 								<div
 									class="space-y-1 text-xs text-muted-foreground"
 								>
 									<p>
 										<code class="rounded bg-background px-1"
-											>&#123;files_folder&#125;/&#123;file_column&#125;</code
+											>&#123;files_folder&#125;</code
 										>
-										- Files directly in folder
+										- The files folder path
 									</p>
 									<p>
 										<code class="rounded bg-background px-1"
-											>&#123;files_folder&#125;/&#123;category&#125;/&#123;file_column&#125;</code
+											>&#123;file_column&#125;</code
 										>
-										- Organized by category
+										- Value from the file column
 									</p>
 									<p>
 										<code class="rounded bg-background px-1"
-											>&#123;files_folder&#125;/&#123;year&#125;/&#123;month&#125;/&#123;file_column&#125;</code
+											>&#123;column_name&#125;</code
 										>
-										- Date-based organization
+										- Value from any column
 									</p>
 								</div>
 							</div>
@@ -550,7 +646,6 @@
 									bind:value={projectDefaultRowLimit}
 									min={50}
 									max={1000}
-									onchange={handleSaveProjectSettings}
 									disabled={!hasFile}
 								/>
 								<p class="text-xs text-muted-foreground">
@@ -579,7 +674,33 @@
 						</div>
 					</Card.Content>
 				</Card.Root>
+
+				<!-- Spacer for bottom buttons -->
+				<div class="h-20"></div>
 			</div>
+		</div>
+
+		<!-- Fixed bottom action bar -->
+		<div
+			class="sticky bottom-0 flex items-center justify-end gap-3 border-t bg-background px-6 py-4"
+		>
+			<Button
+				variant="outline"
+				onclick={handleCancel}
+				disabled={!isDirty}
+			>
+				<XIcon class="mr-1 size-4" />
+				Cancel
+			</Button>
+			<Button onclick={handleSave} disabled={!isDirty || isSaving}>
+				{#if isSaving}
+					<span class="mr-1 size-4 animate-spin">⏳</span>
+					Saving...
+				{:else}
+					<SaveIcon class="mr-1 size-4" />
+					Save Changes
+				{/if}
+			</Button>
 		</div>
 	{/if}
 </div>

@@ -3963,9 +3963,8 @@ dependencies = [
 
 [[package]]
 name = "qrate"
-version = "0.1.0"
+version = "0.0.1-dev"
 dependencies = [
- "base64 0.22.1",
  "blake3",
  "chrono",
  "csv",

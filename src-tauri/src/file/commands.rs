@@ -264,6 +264,11 @@ pub fn import_csv_to_qrate(
         std::fs::create_dir_all(&project_path).map_err(|e| e.to_string())?;
     }
 
+    // Copy the CSV file into the project folder
+    let csv_source_path = PathBuf::from(&csv_path);
+    let relative_csv_path = database::copy_csv_to_project(&project_path, &csv_source_path)
+        .map_err(|e| format!("Failed to copy CSV to project: {}", e))?;
+
     let conn = if is_new {
         database::init_database(&project_path)
     } else {
@@ -272,6 +277,12 @@ pub fn import_csv_to_qrate(
     .map_err(|e| e.to_string())?;
 
     database::import_csv_data(&conn, headers, rows).map_err(|e| e.to_string())?;
+
+    // Update project config with source CSV path
+    if let Ok(mut config) = database::load_project_config(&project_path) {
+        config.paths.source_csv = Some(relative_csv_path);
+        let _ = database::save_project_config(&project_path, &config);
+    }
 
     let columns = database::get_columns(&conn).map_err(|e| e.to_string())?;
     let total_rows = database::get_row_count(&conn).map_err(|e| e.to_string())?;

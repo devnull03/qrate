@@ -1,6 +1,6 @@
 {
 	"name": "qrate",
-	"version": "0.1.0",
+	"version": "0.0.1-dev",
 	"description": "",
 	"type": "module",
 	"scripts": {
@@ -22,11 +22,10 @@
 		"@tauri-apps/plugin-log": "~2",
 		"@tauri-apps/plugin-opener": "~2",
 		"@tauri-apps/plugin-store": "^2.4.1",
-		"@types/lodash": "^4.17.20",
+		"@types/lodash": "^4.17.21",
 		"lodash": "^4.17.21",
 		"mode-watcher": "^1.1.0",
-		"tailwindcss": "^4.1.17",
-		"tauri-plugin-fs-pro-api": "^2.4.0"
+		"tailwindcss": "^4.1.17"
 	},
 	"devDependencies": {
 		"@internationalized/date": "^3.10.0",

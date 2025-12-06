@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+src-tauri/target/
+
+# Build outputs
+dist/
+build/
+.svelte-kit/
+
+# IDE and editor files
+.vscode/
+.zed/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Tauri dev files
+src-tauri/target/
+src-tauri/.cargo/
+
+# Test and coverage
+coverage/
+.nyc_output/
+
+# Misc
+*.md
+!README.md
+LICENSE
+CONTRIBUTING.md
