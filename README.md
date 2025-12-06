@@ -349,5 +349,3 @@ Built with [Tauri](https://tauri.app), [Svelte 5](https://svelte.dev), [RevoGrid
 
 ---
 **Built for archivists who care about cultural heritage**
-
-@Rules Cleanup
