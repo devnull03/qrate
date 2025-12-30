@@ -3,14 +3,14 @@ import { load } from "@tauri-apps/plugin-store";
 import type { Store } from "@tauri-apps/plugin-store";
 import { addRecentFile } from "./recentFiles";
 import { getFileName } from "$lib/utils/path";
-import { annotationsService } from "$lib/services/annotations";
+// import { annotationsService } from "$lib/services/annotations";
 
 export interface CurrentStateResponse {
 	is_file_open: boolean; // kept for backwards compat, means is_project_open
 	path: string | null;
 	columns: ColumnDef[];
 	total_rows: number;
-	rows: Record<string, any>[];
+	rows: any[][];
 	offset: number;
 	limit: number;
 }
@@ -30,7 +30,7 @@ export interface FileOpenResponse {
 }
 
 export interface DataResponse {
-	rows: Record<string, any>[];
+	rows: any[][];
 	total: number;
 }
 
@@ -59,7 +59,7 @@ class QrateStore {
 	isFileOpen = $state<boolean>(false);
 	error = $state<string | null>(null);
 	currentOffset = $state<number>(0);
-	currentLimit = $state<number>(100);
+	currentLimit = $state<number>(10000);
 	scrollPosition = $state<number>(0);
 	selectedRowId = $state<number | null>(null);
 	selectedColumnId = $state<string | null>(null);
@@ -82,6 +82,7 @@ class QrateStore {
 	}
 
 	private restorationAttempted = false;
+	private syncInProgress = false;
 
 	private async persistWorkspace(): Promise<void> {
 		const store = await getWorkspaceStore();
@@ -108,7 +109,33 @@ class QrateStore {
 		await store.set("currentFilePath", null); // Clear old key too
 	}
 
+	private convertCompactRowsToObjects(rows: any[][]): Record<string, any>[] {
+		const colIds = this.columns.map((col) => col.id);
+		return rows.map((row) => {
+			const obj: Record<string, any> = {};
+			obj.row_id = row[0];
+			for (let i = 0; i < colIds.length; i++) {
+				obj[colIds[i]] = row[i + 1];
+			}
+			return obj;
+		});
+	}
+
 	async syncFromBackend(): Promise<boolean> {
+		// Prevent concurrent syncs
+		if (this.syncInProgress) {
+			console.log("[SYNC] Sync already in progress, skipping");
+			return true;
+		}
+
+		// Skip redundant sync if project already loaded
+		if (this.isFileOpen && this.currentFilePath) {
+			console.log("[SYNC] Project already loaded, skipping sync");
+			return true;
+		}
+
+		this.syncInProgress = true;
+
 		try {
 			this.isLoading = true;
 			this.error = null;
@@ -124,14 +151,20 @@ class QrateStore {
 
 				// Always reload from row 0 to avoid stale offset
 				if (response.offset > 0) {
-					await this.loadRows(0, 100);
+					await this.loadRows(0, 200);
 				} else {
-					this.rows = response.rows;
+					this.rows = this.convertCompactRowsToObjects(response.rows);
 					this.currentOffset = response.offset;
 					this.currentLimit = response.limit;
+
+					// Load remaining rows in background (non-blocking)
+					if (this.totalRows > 200) {
+						this.loadRemainingRowsInBackground().catch((err) => {
+							console.error("[SYNC] Background load error:", err);
+						});
+					}
 				}
 
-				await annotationsService.load(response.path);
 				return true;
 			}
 
@@ -142,6 +175,7 @@ class QrateStore {
 			return false;
 		} finally {
 			this.isLoading = false;
+			this.syncInProgress = false;
 		}
 	}
 
@@ -197,7 +231,7 @@ class QrateStore {
 
 			await this.persistWorkspace();
 			await addRecentFile(path, getFileName(path));
-			await annotationsService.load(path);
+			// await annotationsService.load(path);
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
 			throw err;
@@ -224,8 +258,18 @@ class QrateStore {
 			this.isFileOpen = true;
 
 			if (this.totalRows > 0) {
-				await this.loadRows(0, 100);
+				await this.loadRows(0, 200);
 				this.hasMoreRows = this.totalRows > this.rows.length;
+
+				// Load remaining rows in background (non-blocking)
+				if (this.totalRows > 200) {
+					console.log(
+						"[OPEN] Scheduling background load of remaining rows",
+					);
+					this.loadRemainingRowsInBackground().catch((err) => {
+						console.error("[OPEN] Background load error:", err);
+					});
+				}
 			} else {
 				this.rows = [];
 				this.hasMoreRows = false;
@@ -233,7 +277,7 @@ class QrateStore {
 
 			await this.persistWorkspace();
 			await addRecentFile(path, getFileName(path));
-			await annotationsService.load(path);
+			// await annotationsService.load(path);
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
 			throw err;
@@ -266,7 +310,7 @@ class QrateStore {
 				offset,
 			});
 
-			this.rows = response.rows;
+			this.rows = this.convertCompactRowsToObjects(response.rows);
 			this.currentOffset = offset;
 			this.currentLimit = limit;
 			this.totalRows = response.total;
@@ -293,7 +337,8 @@ class QrateStore {
 			});
 
 			if (response.rows.length > 0) {
-				this.rows = [...this.rows, ...response.rows];
+				const newRows = this.convertCompactRowsToObjects(response.rows);
+				this.rows = [...this.rows, ...newRows];
 				this.totalRows = response.total;
 				this.hasMoreRows = this.rows.length < response.total;
 				await this.persistWorkspace();
@@ -419,8 +464,18 @@ class QrateStore {
 			this.isFileOpen = true;
 
 			if (this.totalRows > 0) {
-				await this.loadRows(0, 100);
+				await this.loadRows(0, 200);
 				this.hasMoreRows = this.totalRows > this.rows.length;
+
+				// Load remaining rows in background (non-blocking)
+				if (this.totalRows > 200) {
+					console.log(
+						"[IMPORT] Scheduling background load of remaining rows",
+					);
+					this.loadRemainingRowsInBackground().catch((err) => {
+						console.error("[IMPORT] Background load error:", err);
+					});
+				}
 			} else {
 				this.rows = [];
 				this.hasMoreRows = false;
@@ -433,6 +488,36 @@ class QrateStore {
 			throw err;
 		} finally {
 			this.isLoading = false;
+		}
+	}
+
+	private async loadRemainingRowsInBackground(): Promise<void> {
+		if (!this.currentFilePath || this.totalRows <= 200) return;
+
+		try {
+			let offset = this.rows.length;
+			while (offset < this.totalRows) {
+				const limit = Math.min(500, this.totalRows - offset);
+
+				const response = await invoke<DataResponse>("get_rows", {
+					path: this.currentFilePath,
+					limit,
+					offset,
+				});
+
+				if (response.rows.length === 0) break;
+
+				const newRows = this.convertCompactRowsToObjects(response.rows);
+				this.rows = [...this.rows, ...newRows];
+				offset += response.rows.length;
+
+				// Yield to UI
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+
+			this.hasMoreRows = false;
+		} catch (err) {
+			console.error("[BG] Background load failed:", err);
 		}
 	}
 
@@ -469,7 +554,7 @@ class QrateStore {
 		this.isFileOpen = false;
 		this.error = null;
 		this.currentOffset = 0;
-		this.currentLimit = 100;
+		this.currentLimit = 10000;
 		this.scrollPosition = 0;
 		this.selectedRowId = null;
 		this.selectedColumnId = null;
@@ -479,7 +564,7 @@ class QrateStore {
 		this.filesGridFilteredCount = 0;
 		this.filesGridTotalCount = 0;
 		this.filesGridSearchQuery = "";
-		annotationsService.clear();
+		// annotationsService.clear();
 	}
 }
 

@@ -33,7 +33,7 @@
 
 	// Global settings state
 	let globalTheme = $state<"light" | "dark" | "system">("system");
-	let globalDefaultRowLimit = $state(100);
+	let globalDefaultRowLimit = $state(10000);
 	let globalDefaultFilePathPattern = $state("{files_folder}/{file_column}");
 	let globalDefaultFileColumnName = $state("file");
 	let globalConfirmBeforeDelete = $state(true);
@@ -41,7 +41,7 @@
 	// Original global settings (for dirty checking)
 	let originalGlobalSettings = $state({
 		theme: "system" as "light" | "dark" | "system",
-		defaultRowLimit: 100,
+		defaultRowLimit: 10000,
 		defaultFilePathPattern: "{files_folder}/{file_column}",
 		defaultFileColumnName: "file",
 		confirmBeforeDelete: true,
@@ -51,14 +51,14 @@
 	let projectFilesFolder = $state("");
 	let projectFilePathPattern = $state("{files_folder}/{file_column}");
 	let projectFileColumnName = $state("file");
-	let projectDefaultRowLimit = $state("100");
+	let projectDefaultRowLimit = $state("10000");
 
 	// Original project settings (for dirty checking)
 	let originalProjectSettings = $state({
 		filesFolder: "",
 		filePathPattern: "{files_folder}/{file_column}",
 		fileColumnName: "file",
-		defaultRowLimit: "100",
+		defaultRowLimit: "10000",
 	});
 
 	// UI state
@@ -102,7 +102,7 @@
 				(globalSettings.theme as "light" | "dark" | "system") ??
 				"system";
 			globalDefaultRowLimit = Number(
-				globalSettings.defaultRowLimit ?? 100,
+				globalSettings.defaultRowLimit ?? 10000,
 			);
 			globalDefaultFilePathPattern = String(
 				globalSettings.defaultFilePathPattern ??
@@ -179,7 +179,7 @@
 					defaults.fileColumnName ?? "file",
 				);
 				projectDefaultRowLimit = String(
-					defaults.defaultRowLimit ?? "100",
+					defaults.defaultRowLimit ?? "10000",
 				);
 
 				originalProjectSettings = {

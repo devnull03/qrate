@@ -11,7 +11,7 @@ pub struct FileOpenResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DataResponse {
-    pub rows: Vec<serde_json::Value>,
+    pub rows: Vec<Vec<serde_json::Value>>,
     pub total: i64,
 }
 
@@ -21,7 +21,7 @@ pub struct CurrentStateResponse {
     pub path: Option<String>,
     pub columns: Vec<ColumnDef>,
     pub total_rows: i64,
-    pub rows: Vec<serde_json::Value>,
+    pub rows: Vec<Vec<serde_json::Value>>,
     pub offset: u32,
     pub limit: u32,
 }

@@ -303,40 +303,90 @@ pub fn update_column(conn: &Connection, column: &ColumnDef) -> Result<()> {
     Ok(())
 }
 
-pub fn get_rows(conn: &Connection, limit: u32, offset: u32) -> Result<Vec<serde_json::Value>> {
-    let columns = get_columns(conn)?;
-    if columns.is_empty() {
-        return Ok(vec![]);
+pub fn get_rows(conn: &Connection, limit: u32, offset: u32) -> Result<serde_json::Value> {
+    let start = std::time::Instant::now();
+
+    // Get all columns first - minimal query
+    let col_start = std::time::Instant::now();
+    let mut stmt = conn.prepare("SELECT id FROM _columns ORDER BY ROWID")?;
+    let col_ids: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<Vec<_>>>()?;
+    // eprintln!(
+    //     "[DB] get_columns: {:.2}ms",
+    //     col_start.elapsed().as_secs_f64() * 1000.0
+    // );
+
+    if col_ids.is_empty() {
+        return Ok(serde_json::json!({ "cols": [], "rows": [] }));
     }
 
-    let col_names: Vec<String> = columns.iter().map(|c| format!("[{}]", c.id)).collect();
+    // Build the column list once
+    let col_names = col_ids
+        .iter()
+        .map(|id| format!("[{}]", id))
+        .collect::<Vec<_>>()
+        .join(", ");
+
     let query = format!(
         "SELECT row_id, {} FROM data ORDER BY row_id LIMIT {} OFFSET {}",
-        col_names.join(", "),
-        limit,
-        offset
+        col_names, limit, offset
     );
 
+    let query_start = std::time::Instant::now();
     let mut stmt = conn.prepare(&query)?;
-    let rows = stmt
-        .query_map([], |row| {
-            let mut map = serde_json::Map::new();
-            map.insert("row_id".into(), serde_json::json!(row.get::<_, i64>(0)?));
-            for (idx, col) in columns.iter().enumerate() {
-                let val: Option<String> = row.get(idx + 1)?;
-                map.insert(
-                    col.id.clone(),
-                    serde_json::Value::String(val.unwrap_or_default()),
-                );
-            }
-            Ok(serde_json::Value::Object(map))
-        })?
-        .collect::<Result<Vec<_>>>()?;
-    Ok(rows)
+    let mut rows = Vec::with_capacity(limit as usize);
+
+    let mut rows_iter = stmt.query_map([], |row| {
+        let mut values: Vec<serde_json::Value> = Vec::with_capacity(col_ids.len() + 1);
+        values.push(serde_json::json!(row.get::<_, i64>(0)?));
+
+        for idx in 0..col_ids.len() {
+            let val: Option<String> = row.get(idx + 1)?;
+            values.push(serde_json::Value::String(val.unwrap_or_default()));
+        }
+        Ok(values)
+    })?;
+
+    let collect_start = std::time::Instant::now();
+    while let Some(row) = rows_iter.next() {
+        rows.push(serde_json::json!(row?));
+    }
+    // eprintln!(
+    //     "[DB] query + collect: {:.2}ms",
+    //     query_start.elapsed().as_secs_f64() * 1000.0
+    // );
+    // eprintln!(
+    //     "[DB] json conversion: {:.2}ms",
+    //     collect_start.elapsed().as_secs_f64() * 1000.0
+    // );
+
+    let result = serde_json::json!({
+        "cols": col_ids,
+        "rows": rows
+    });
+    // eprintln!(
+    //     "[DB] TOTAL get_rows({} rows): {:.2}ms",
+    //     rows.len(),
+    //     start.elapsed().as_secs_f64() * 1000.0
+    // );
+
+    Ok(result)
 }
 
 pub fn get_row_count(conn: &Connection) -> Result<i64> {
     conn.query_row("SELECT COUNT(*) FROM data", [], |row| row.get(0))
+}
+
+pub fn get_rows_with_count(
+    conn: &Connection,
+    limit: u32,
+    offset: u32,
+) -> Result<(serde_json::Value, i64)> {
+    // Get both rows and count in optimized manner
+    let count = get_row_count(conn)?;
+    let rows = get_rows(conn, limit, offset)?;
+    Ok((rows, count))
 }
 
 pub fn update_cell(conn: &Connection, row_id: i64, column_id: &str, value: &str) -> Result<()> {

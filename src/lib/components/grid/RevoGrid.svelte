@@ -96,28 +96,35 @@
 
 	let revoColumns = $derived(convertColumns(qrateStore.columns));
 
-	let previousRows = $state<Record<string, any>[]>([]);
+	let previousRowCount = $state<number>(0);
 	let cachedRevoRows = $state<DataType[]>([]);
 
 	$effect(() => {
 		const currentRows = qrateStore.rows;
-		const rowsChanged = currentRows.length !== previousRows.length;
+		const currentCount = currentRows.length;
 
-		if (rowsChanged) {
-			if (
-				currentRows.length > previousRows.length &&
-				previousRows.length > 0
-			) {
-				const newRows = currentRows.slice(previousRows.length);
+		console.log(
+			`[RevoGrid] rows effect triggered: prev=${previousRowCount}, current=${currentCount}`,
+		);
+
+		if (currentCount !== previousRowCount) {
+			if (currentCount > previousRowCount && previousRowCount > 0) {
+				// Incremental update: only add new rows
+				const newRows = currentRows.slice(previousRowCount);
+				console.log(
+					`[RevoGrid] Adding ${newRows.length} new rows (${previousRowCount} -> ${currentCount})`,
+				);
 				const newRowsWithNumbers = addRowNumbers(
 					newRows,
-					previousRows.length,
+					previousRowCount,
 				);
 				cachedRevoRows = [...cachedRevoRows, ...newRowsWithNumbers];
 			} else {
+				// Full reset or initial load
+				console.log(`[RevoGrid] Full reset: ${currentCount} rows`);
 				cachedRevoRows = addRowNumbers(currentRows, 0);
 			}
-			previousRows = currentRows;
+			previousRowCount = currentCount;
 		}
 	});
 

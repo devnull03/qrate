@@ -54,6 +54,8 @@ pub fn validate_file_path(
 
 #[tauri::command]
 pub fn get_current_state(state: State<AppState>) -> Result<CurrentStateResponse, String> {
+    let cmd_start = std::time::Instant::now();
+
     let Some(file_state) = state.get_current_file() else {
         return Ok(CurrentStateResponse {
             is_file_open: false,
@@ -62,7 +64,7 @@ pub fn get_current_state(state: State<AppState>) -> Result<CurrentStateResponse,
             total_rows: 0,
             rows: vec![],
             offset: 0,
-            limit: 100,
+            limit: 10000,
         });
     };
 
@@ -71,13 +73,38 @@ pub fn get_current_state(state: State<AppState>) -> Result<CurrentStateResponse,
         .ok_or("Project connection not found")?;
     let conn = conn_arc.lock().unwrap();
 
+    // eprintln!("[CMD] get_current_state starting");
+    let columns = database::get_columns(&conn).map_err(|e| e.to_string())?;
+    let (rows_data, total_rows) =
+        database::get_rows_with_count(&conn, file_state.limit, file_state.offset)
+            .map_err(|e| e.to_string())?;
+
+    let extract_start = std::time::Instant::now();
+    let rows = rows_data
+        .get("rows")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_array().map(|a| a.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    // eprintln!(
+    //     "[CMD] json extraction: {:.2}ms",
+    //     extract_start.elapsed().as_secs_f64() * 1000.0
+    // );
+
+    // eprintln!(
+    //     "[CMD] TOTAL get_current_state: {:.2}ms",
+    //     cmd_start.elapsed().as_secs_f64() * 1000.0
+    // );
+
     Ok(CurrentStateResponse {
         is_file_open: true,
         path: Some(file_state.path.clone()),
-        columns: database::get_columns(&conn).map_err(|e| e.to_string())?,
-        total_rows: database::get_row_count(&conn).map_err(|e| e.to_string())?,
-        rows: database::get_rows(&conn, file_state.limit, file_state.offset)
-            .map_err(|e| e.to_string())?,
+        columns,
+        total_rows,
+        rows,
         offset: file_state.offset,
         limit: file_state.limit,
     })
@@ -114,7 +141,7 @@ pub fn create_qrate_project(
     let total_rows = database::get_row_count(&conn).map_err(|e| e.to_string())?;
 
     state.add_connection(path.clone(), conn);
-    state.set_current_file(path.clone(), 0, 100);
+    state.set_current_file(path.clone(), 0, 200);
 
     Ok(FileOpenResponse {
         path,
@@ -139,7 +166,7 @@ pub fn open_qrate_project(
     let total_rows = database::get_row_count(&conn).map_err(|e| e.to_string())?;
 
     state.add_connection(path.clone(), conn);
-    state.set_current_file(path.clone(), 0, 100);
+    state.set_current_file(path.clone(), 0, 10000);
 
     Ok(FileOpenResponse {
         path,
@@ -172,13 +199,40 @@ pub fn get_rows(
     limit: u32,
     offset: u32,
 ) -> Result<DataResponse, String> {
+    // let cmd_start = std::time::Instant::now();
+    // eprintln!(
+    //     "[CMD] get_rows starting (limit={}, offset={})",
+    //     limit, offset
+    // );
+
     let conn_arc = state.get_connection(&path).ok_or("Project not open")?;
     let conn = conn_arc.lock().unwrap();
 
-    let rows = database::get_rows(&conn, limit, offset).map_err(|e| e.to_string())?;
+    let rows_data = database::get_rows(&conn, limit, offset).map_err(|e| e.to_string())?;
     let total = database::get_row_count(&conn).map_err(|e| e.to_string())?;
 
+    // let extract_start = std::time::Instant::now();
+    let rows = rows_data
+        .get("rows")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_array().map(|a| a.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    // eprintln!(
+    //     "[CMD] json extraction: {:.2}ms",
+    //     extract_start.elapsed().as_secs_f64() * 1000.0
+    // );
+
     state.update_viewport(offset, limit);
+
+    // eprintln!(
+    //     "[CMD] TOTAL get_rows: {:.2}ms",
+    //     cmd_start.elapsed().as_secs_f64() * 1000.0
+    // );
+
     Ok(DataResponse { rows, total })
 }
 
@@ -288,7 +342,7 @@ pub fn import_csv_to_qrate(
     let total_rows = database::get_row_count(&conn).map_err(|e| e.to_string())?;
 
     state.add_connection(qrate_path.clone(), conn);
-    state.set_current_file(qrate_path.clone(), 0, 100);
+    state.set_current_file(qrate_path.clone(), 0, 200);
 
     Ok(FileOpenResponse {
         path: qrate_path,

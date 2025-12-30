@@ -8,7 +8,7 @@
 	let { children }: Props = $props();
 </script>
 
-<div class="editor-area flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+<div class="editor-area flex h-full min-h-0 flex-1 flex-col">
 	{#if children}
 		{@render children()}
 	{/if}

@@ -121,7 +121,7 @@
 
 	onMount(() => {
 		const init = async () => {
-			const window = await getCurrentWindow();
+			const window = getCurrentWindow();
 			const windowId = window.label;
 
 			await layoutStore.loadLayout(windowId);
@@ -158,7 +158,7 @@
 	});
 </script>
 
-<div class="workbench flex h-screen w-screen flex-col overflow-hidden">
+<div class="workbench flex flex-col h-full">
 	<TitleBar />
 
 	<Resizable.PaneGroup

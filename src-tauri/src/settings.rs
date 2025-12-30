@@ -588,7 +588,7 @@ mod tests {
     fn test_global_defaults() {
         let defaults = get_global_defaults();
         assert_eq!(defaults.get("theme"), Some(&"system".to_string()));
-        assert_eq!(defaults.get("defaultRowLimit"), Some(&"100".to_string()));
+        assert_eq!(defaults.get("defaultRowLimit"), Some(&"10000".to_string()));
     }
 
     #[test]

@@ -16,6 +16,8 @@
 		setGlobalSetting,
 	} from "$lib/stores/globalSettings";
 	import { onMount } from "svelte";
+	import SvarGrid from "$lib/components/grid/SvarGrid.svelte";
+	import GridContainer from "$lib/components/grid/GridContainer.svelte";
 
 	type ViewMode = "spreadsheet" | "files";
 	type SplitDirection = "left" | "right";
@@ -103,7 +105,7 @@
 	const handlePosition = $derived(isLeft ? 100 - splitSize : splitSize);
 </script>
 
-<div class="flex h-full flex-col overflow-hidden">
+<div class="flex h-full flex-col">
 	<div
 		class="flex items-center border-b border-border bg-muted/30 px-4 py-1.5"
 	>
@@ -175,7 +177,7 @@
 
 	<div
 		bind:this={containerRef}
-		class="relative min-h-0 flex-1 overflow-hidden"
+		class="relative min-h-0"
 		class:select-none={isDragging}
 	>
 		{#if isLeft && isOpen}
@@ -189,12 +191,15 @@
 		{/if}
 
 		<div
-			class="absolute bottom-0 top-0 overflow-hidden"
+			class="absolute bottom-0 top-0"
 			class:pointer-events-none={isDragging}
 			style="left: {mainLeft}%; right: {mainRight}%;"
 		>
 			<div class="h-full" class:hidden={activeView !== "spreadsheet"}>
-				<RevoGrid />
+				<!-- <RevoGrid /> -->
+				<GridContainer>
+					<SvarGrid />
+				</GridContainer>
 			</div>
 			<div class="h-full" class:hidden={activeView !== "files"}>
 				<FilesGrid />

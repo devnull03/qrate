@@ -10,7 +10,7 @@ export const defaultProjectSettings: ProjectSettings = {
 	filesFolder: "",
 	filePathPattern: "{files_folder}/{file_column}",
 	fileColumnName: "file",
-	defaultRowLimit: "100",
+	defaultRowLimit: "10000",
 };
 
 export type AppSettings = ProjectSettings;

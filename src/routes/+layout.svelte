@@ -20,7 +20,7 @@
 
 		Promise.all([
 			initGlobalSettings(),
-			qrateStore.syncFromBackend(),
+			qrateStore.restoreWorkspace(),
 		]).finally(() => {
 			isLoading = false;
 		});
@@ -49,17 +49,17 @@
 <ModeWatcher />
 
 {#if !page.route.id?.includes("projects") && !page.route.id?.includes("settings") && !page.route.id?.includes("chat")}
-	{#if isLoading}
-		<div
-			class="flex h-screen w-screen items-center justify-center text-sm text-muted-foreground"
-		>
-			<span>Loading...</span>
-		</div>
-	{:else}
-		<WorkbenchLayout>
+	<WorkbenchLayout>
+		{#if isLoading}
+			<div
+				class="flex h-screen w-screen items-center justify-center text-sm text-muted-foreground"
+			>
+				<span>Loading...</span>
+			</div>
+		{:else}
 			{@render children()}
-		</WorkbenchLayout>
-	{/if}
+		{/if}
+	</WorkbenchLayout>
 {:else}
 	{@render children()}
 {/if}

@@ -10,7 +10,7 @@ let storePromise: Promise<Store> | null = null;
 
 const fallbackDefaults: GlobalSettings = {
 	theme: "system",
-	defaultRowLimit: 100,
+	defaultRowLimit: 10000,
 	defaultFilePathPattern: "{files_folder}/{file_column}",
 	defaultFileColumnName: "file",
 	sidebarWidth: 280,
