@@ -1,241 +1,192 @@
-<script lang="ts">
-	import RevoGrid from "$lib/components/grid/RevoGrid.svelte";
-	import FilesGrid from "$lib/components/FilesGrid.svelte";
-	import RowDetailsPanel from "$lib/components/layout/panels/RowDetailsPanel.svelte";
-	import { Button } from "$lib/components/ui/button/index.js";
-	import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
-	import TableIcon from "@lucide/svelte/icons/table";
-	import FolderIcon from "@lucide/svelte/icons/folder";
-	import PanelLeftIcon from "@lucide/svelte/icons/panel-left";
-	import PanelRightIcon from "@lucide/svelte/icons/panel-right";
-	import ColumnsIcon from "@lucide/svelte/icons/columns-2";
-	import ChevronDownIcon from "@lucide/svelte/icons/chevron-down";
-	import { qrateStore } from "$lib/stores/qrateStore.svelte";
-	import {
-		getGlobalSetting,
-		setGlobalSetting,
-	} from "$lib/stores/globalSettings";
-	import { onMount } from "svelte";
-	import SvarGrid from "$lib/components/grid/SvarGrid.svelte";
-	import GridContainer from "$lib/components/grid/GridContainer.svelte";
-
-	type ViewMode = "spreadsheet" | "files";
-	type SplitDirection = "left" | "right";
-
-	let activeView = $state<ViewMode>("spreadsheet");
-	let splitDirection = $state<SplitDirection>("right");
-	let splitSize = $state(65);
-	let isDragging = $state(false);
-	let saveTimeout: ReturnType<typeof setTimeout> | null = null;
-	let containerRef = $state<HTMLDivElement | null>(null);
-
-	onMount(() => {
-		const savedDir = getGlobalSetting("splitDirection");
-		if (savedDir === "left" || savedDir === "right")
-			splitDirection = savedDir;
-
-		const savedSize = getGlobalSetting("splitSize");
-		if (
-			typeof savedSize === "number" &&
-			savedSize >= 20 &&
-			savedSize <= 80
-		) {
-			splitSize = savedSize;
-		}
-	});
-
-	$effect(() => {
-		qrateStore.activeView = activeView;
-	});
-
-	async function handleDirectionChange(value: string | undefined) {
-		if (value === "left" || value === "right") {
-			splitDirection = value;
-			await setGlobalSetting("splitDirection", value);
-		}
-	}
-
-	function handlePointerDown(e: PointerEvent) {
-		e.preventDefault();
-		(e.target as HTMLElement).setPointerCapture(e.pointerId);
-		isDragging = true;
-	}
-
-	function handlePointerMove(e: PointerEvent) {
-		if (!isDragging || !containerRef) return;
-		const rect = containerRef.getBoundingClientRect();
-		const pointerPercent = ((e.clientX - rect.left) / rect.width) * 100;
-		splitSize = isLeft
-			? Math.max(20, Math.min(80, 100 - pointerPercent))
-			: Math.max(20, Math.min(80, pointerPercent));
-		debounceSave();
-	}
-
-	function handlePointerUp(e: PointerEvent) {
-		(e.target as HTMLElement).releasePointerCapture(e.pointerId);
-		isDragging = false;
-	}
-
-	function handleResizeKeyDown(e: KeyboardEvent) {
-		const step = e.shiftKey ? 5 : 1;
-		if (e.key === "ArrowLeft") {
-			e.preventDefault();
-			splitSize = Math.max(20, splitSize - step);
-			debounceSave();
-		} else if (e.key === "ArrowRight") {
-			e.preventDefault();
-			splitSize = Math.min(80, splitSize + step);
-			debounceSave();
-		}
-	}
-
-	function debounceSave() {
-		if (saveTimeout) clearTimeout(saveTimeout);
-		saveTimeout = setTimeout(
-			() => setGlobalSetting("splitSize", Math.round(splitSize)),
-			300,
-		);
-	}
-
-	const isOpen = $derived(qrateStore.detailsPanelOpen);
-	const isLeft = $derived(splitDirection === "left");
-	const detailsSize = $derived(isOpen ? 100 - splitSize : 0);
-	const mainLeft = $derived(isOpen && isLeft ? 100 - splitSize : 0);
-	const mainRight = $derived(isOpen && !isLeft ? 100 - splitSize : 0);
-	const handlePosition = $derived(isLeft ? 100 - splitSize : splitSize);
-</script>
-
-<div class="flex h-full flex-col">
-	<div
-		class="flex items-center border-b border-border bg-muted/30 px-4 py-1.5"
-	>
-		<div class="flex items-center gap-1">
-			<Button
-				variant={activeView === "spreadsheet" ? "secondary" : "ghost"}
-				size="sm"
-				class="h-7 gap-1.5 px-3"
-				onclick={() => (activeView = "spreadsheet")}
-			>
-				<TableIcon class="size-3.5" />
-				<span>Spreadsheet</span>
-			</Button>
-			<Button
-				variant={activeView === "files" ? "secondary" : "ghost"}
-				size="sm"
-				class="h-7 gap-1.5 px-3"
-				onclick={() => (activeView = "files")}
-			>
-				<FolderIcon class="size-3.5" />
-				<span>Files</span>
-			</Button>
-
-			<div class="mx-2 h-4 w-px bg-border"></div>
-
-			<div class="flex items-center">
-				<Button
-					variant={isOpen ? "secondary" : "ghost"}
-					size="sm"
-					class="h-7 gap-1.5 rounded-r-none px-3"
-					onclick={() => qrateStore.toggleDetailsPanel()}
-					title="Toggle Details (Ctrl+K)"
+<main>
+	<article>
+		<section>
+			<h1><span class="dt">q</span><u>rate</u></h1>
+			<h2>
+				<span>Your reliable workspace</span><br />
+				for <b>streamlining</b> digital asset indexing
+			</h2>
+			<p>
+				<span class="lg"><span class="dt">q</span><u>rate</u></span> is the quintessential workspace
+				for archivists, curators, librarians, and everyone else who finds themselves often indexing
+				vital information.
+				<br /><br />
+				Powered by state-of-the-art <span class="lg">cohere</span> multimodal MCP tool-calling vision
+				AI models, we feature stunning accuracy and shockingly efficient processing, ready to save you
+				months of time.
+			</p>
+			<div class="button-group">
+				<a href="./new" class="cta">Go to Projects</a>
+				<a
+					href="https://archivescanada.ca/wp-content/uploads/2022/08/RADComplete_July2008.pdf"
+					target="_blank"
+					class="secondary">Canadian Archival Standard</a
 				>
-					<ColumnsIcon class="size-3.5" />
-					<span>Details</span>
-				</Button>
-				<DropdownMenu.Root>
-					<DropdownMenu.Trigger>
-						{#snippet child({ props })}
-							<Button
-								{...props}
-								variant={isOpen ? "secondary" : "ghost"}
-								size="sm"
-								class="h-7 rounded-l-none px-1"
-							>
-								<ChevronDownIcon class="size-3.5" />
-							</Button>
-						{/snippet}
-					</DropdownMenu.Trigger>
-					<DropdownMenu.Content align="start" class="w-40">
-						<DropdownMenu.RadioGroup
-							value={splitDirection}
-							onValueChange={handleDirectionChange}
-						>
-							<DropdownMenu.RadioItem value="left" class="gap-2">
-								<PanelLeftIcon class="size-4" />
-								Show Left
-							</DropdownMenu.RadioItem>
-							<DropdownMenu.RadioItem value="right" class="gap-2">
-								<PanelRightIcon class="size-4" />
-								Show Right
-							</DropdownMenu.RadioItem>
-						</DropdownMenu.RadioGroup>
-					</DropdownMenu.Content>
-				</DropdownMenu.Root>
 			</div>
-		</div>
-	</div>
+		</section>
+	</article>
+</main>
 
-	<div
-		bind:this={containerRef}
-		class="relative min-h-0"
-		class:select-none={isDragging}
-	>
-		{#if isLeft && isOpen}
-			<div
-				class="absolute bottom-0 left-0 top-0 overflow-hidden border-r border-border"
-				class:pointer-events-none={isDragging}
-				style="width: {detailsSize}%;"
-			>
-				<RowDetailsPanel />
-			</div>
-		{/if}
+<style>
+	.dt {
+		position: relative;
+		&::before {
+			content: "";
+			position: absolute;
+			bottom: 0.09em;
+			left: 0.07em;
+			border-radius: 50%;
+			background-color: var(--dark);
+			width: 0.17em;
+			height: 0.17em;
+		}
+	}
+	u {
+		text-decoration-thickness: 0.17em;
+	}
+	.lg {
+		font-weight: 800;
+	}
+	:root {
+		--primary: var(--dark);
+		--secondary: var(--dark);
+		--background: var(--light);
+		--text: #2b2b2b;
+		--white: #ffffff;
+		--radius: 12px;
+		--transition: 0.25s ease-in-out;
+	}
 
-		<div
-			class="absolute bottom-0 top-0"
-			class:pointer-events-none={isDragging}
-			style="left: {mainLeft}%; right: {mainRight}%;"
-		>
-			<div class="h-full" class:hidden={activeView !== "spreadsheet"}>
-				<!-- <RevoGrid /> -->
-				<GridContainer>
-					<SvarGrid />
-				</GridContainer>
-			</div>
-			<div class="h-full" class:hidden={activeView !== "files"}>
-				<FilesGrid />
-			</div>
-		</div>
+	/* Layout */
+	main {
+		display: flex;
+		justify-content: center;
+		align-items: center;
+		min-height: 100vh;
+		background: var(--dark);
+		padding: 2rem;
+		font-family: system-ui, sans-serif;
+		color: var(--text);
+		--s: 193px; /* control the size*/
+		--c1: #921c2d;
+		--c2: #880d1e;
+		--c3: #5b0f1a;
 
-		{#if !isLeft && isOpen}
-			<div
-				class="absolute bottom-0 right-0 top-0 overflow-hidden border-l border-border"
-				class:pointer-events-none={isDragging}
-				style="width: {detailsSize}%;"
-			>
-				<RowDetailsPanel />
-			</div>
-		{/if}
+		--_g: var(--c1) 10%, var(--c2) 10.5% 19%, #0000 19.5% 80.5%, var(--c2) 81% 89.5%, var(--c3) 90%;
+		--_c: from -90deg at 37.5% 50%, #0000 75%;
+		--_l1: linear-gradient(145deg, var(--_g));
+		--_l2: linear-gradient(35deg, var(--_g));
+		background:
+			var(--_l1),
+			var(--_l1) calc(var(--s) / 2) var(--s),
+			var(--_l2),
+			var(--_l2) calc(var(--s) / 2) var(--s),
+			conic-gradient(var(--_c), var(--c1) 0) calc(var(--s) / 8) 0,
+			conic-gradient(var(--_c), var(--c3) 0) calc(var(--s) / 2) 0,
+			linear-gradient(90deg, var(--c3) 38%, var(--c1) 0 50%, var(--c3) 0 62%, var(--c1) 0);
+		background-size: var(--s) calc(2 * var(--s) / 3);
+	}
 
-		{#if isOpen}
-			<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-			<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-			<div
-				class="absolute bottom-0 top-0 z-10 w-1 -translate-x-1/2 cursor-col-resize touch-none transition-colors duration-150 hover:bg-primary/50 {isDragging
-					? 'bg-primary/50'
-					: ''}"
-				style="left: {handlePosition}%;"
-				onpointerdown={handlePointerDown}
-				onpointermove={handlePointerMove}
-				onpointerup={handlePointerUp}
-				onpointercancel={handlePointerUp}
-				onkeydown={handleResizeKeyDown}
-				tabindex="0"
-				role="separator"
-				aria-orientation="vertical"
-				aria-valuenow={Math.round(splitSize)}
-				aria-valuemin={20}
-				aria-valuemax={80}
-			></div>
-		{/if}
-	</div>
-</div>
+	@keyframes main {
+		0% {
+			rotate: -13deg;
+		}
+		50% {
+			rotate: 13deg;
+		}
+		100% {
+			rotate: -13deg;
+		}
+	}
+
+	article {
+		background: var(--white);
+		padding: 3rem 4rem;
+		border-radius: var(--radius);
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+		text-align: center;
+		width: calc(100vw - 14em);
+		border-top: 6px solid var(--primary);
+	}
+
+	/* Logo */
+	.logo {
+		width: 4em;
+		margin-bottom: -2em;
+		margin-top: -1.4em;
+		display: block;
+		margin-left: auto;
+		margin-right: auto;
+	}
+
+	/* Typography */
+	h1 {
+		font-size: 5.2rem;
+		font-weight: 800;
+		margin: 0.2em 0;
+		color: var(--dark);
+	}
+
+	h2 {
+		font-size: 1.5rem;
+		font-weight: 400;
+		margin: 0.5em 0 1.5em;
+		line-height: 1.4;
+		color: var(--dark);
+	}
+
+	p {
+		line-height: 1.6;
+		margin: 2em auto;
+		font-size: 1.2rem;
+		max-width: 32em;
+		color: #444;
+		text-align: center;
+	}
+
+	/* Buttons */
+	.button-group {
+		display: flex;
+		justify-content: center;
+		gap: 1em;
+		margin-top: 2em;
+	}
+
+	.cta,
+	.secondary {
+		display: inline-block;
+		padding: 0.9em 1.6em;
+		font-size: 1rem;
+		font-weight: 600;
+		text-decoration: none;
+		border-radius: var(--radius);
+		transition:
+			background var(--transition),
+			transform var(--transition),
+			box-shadow var(--transition);
+	}
+
+	/* Primary button */
+	.cta {
+		background: var(--primary);
+		color: var(--white);
+		box-shadow: 0 4px 12px rgba(139, 28, 36, 0.3);
+	}
+	.cta:hover {
+		background: #6e151b;
+		transform: translateY(-2px);
+		box-shadow: 0 6px 16px rgba(139, 28, 36, 0.4);
+	}
+
+	/* Secondary button */
+	.secondary {
+		background: var(--background);
+		color: var(--primary);
+		border: 2px solid var(--primary);
+	}
+	.secondary:hover {
+		background: var(--primary);
+		color: var(--white);
+		transform: translateY(-2px);
+	}
+</style>

@@ -26,7 +26,7 @@
 	<div
 		class={cn(
 			"bg-sidebar text-sidebar-foreground w-(--sidebar-width) flex h-full flex-col",
-			className,
+			className
 		)}
 		bind:this={ref}
 		{...restProps}
@@ -48,9 +48,7 @@
 		>
 			<Sheet.Header class="sr-only">
 				<Sheet.Title>Sidebar</Sheet.Title>
-				<Sheet.Description
-					>Displays the mobile sidebar.</Sheet.Description
-				>
+				<Sheet.Description>Displays the mobile sidebar.</Sheet.Description>
 			</Sheet.Header>
 			<div class="flex h-full w-full flex-col">
 				{@render children?.()}
@@ -71,18 +69,18 @@
 		<div
 			data-slot="sidebar-gap"
 			class={cn(
-				"w-(--sidebar-width) relative bg-transparent transition-[width] duration-100 ease-linear",
+				"w-(--sidebar-width) relative bg-transparent transition-[width] duration-80 ease-linear",
 				"group-data-[collapsible=offcanvas]:w-0",
 				"group-data-[side=right]:rotate-180",
 				variant === "floating" || variant === "inset"
 					? "group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
-					: "group-data-[collapsible=icon]:w-(--sidebar-width-icon)",
+					: "group-data-[collapsible=icon]:w-(--sidebar-width-icon)"
 			)}
 		></div>
 		<div
 			data-slot="sidebar-container"
 			class={cn(
-				"w-(--sidebar-width) absolute inset-y-0 z-10 hidden h-full transition-[left,right,width] duration-100 ease-linear md:flex",
+				"w-(--sidebar-width) fixed inset-y-0 z-10 hidden h-svh transition-[left,right,width] duration-80 ease-linear md:flex",
 				side === "left"
 					? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
 					: "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
@@ -90,7 +88,7 @@
 				variant === "floating" || variant === "inset"
 					? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
 					: "group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l",
-				className,
+				className
 			)}
 			{...restProps}
 		>
