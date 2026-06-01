@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 
-use crate::ai::traits::{
+use crate::error::Result;
+use crate::traits::{
     ClusterAssignment, Clusterer, DataReviewer, Embedder, FieldDiscrepancy, ImageContext,
     ReviewerCapabilities, RowData, ValidationResult,
 };
-use crate::error::Result;
 
 pub struct MockProvider {
     pub should_validate: bool,
@@ -39,7 +39,6 @@ impl MockProvider {
 #[async_trait]
 impl DataReviewer for MockProvider {
     async fn initialize(&self) -> Result<()> {
-        // Mock provider is always ready
         Ok(())
     }
 
@@ -51,7 +50,6 @@ impl DataReviewer for MockProvider {
         let discrepancies = if self.should_validate {
             vec![]
         } else {
-            // Create a mock discrepancy based on the first field in the row
             if let Some(obj) = row_data.inner().as_object() {
                 if let Some((key, value)) = obj.iter().next() {
                     vec![FieldDiscrepancy {
@@ -94,28 +92,20 @@ impl DataReviewer for MockProvider {
 #[async_trait]
 impl Embedder for MockProvider {
     async fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
-        // Generate a deterministic but unique embedding based on text content
         let mut embedding = vec![0.0f32; 1024];
-
-        // Use a simple hash-like approach to generate values
         for (i, byte) in text.bytes().enumerate() {
-            let idx = i % 1024;
-            embedding[idx] += (byte as f32) / 255.0;
+            embedding[i % 1024] += (byte as f32) / 255.0;
         }
-
-        // Normalize the embedding
         let magnitude: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         if magnitude > 0.0 {
             for val in &mut embedding {
                 *val /= magnitude;
             }
         }
-
         Ok(embedding)
     }
 
     async fn embed_image(&self, image: ImageContext) -> Result<Vec<f32>> {
-        // Generate embedding based on image path for deterministic results
         self.embed_text(&image.path.to_string_lossy()).await
     }
 
@@ -126,7 +116,6 @@ impl Embedder for MockProvider {
 
 impl Clusterer for MockProvider {
     fn cluster(&self, vectors: &[Vec<f32>]) -> Result<Vec<ClusterAssignment>> {
-        // Simple mock clustering: assign to clusters based on first dimension
         let assignments = vectors
             .iter()
             .enumerate()
@@ -134,7 +123,6 @@ impl Clusterer for MockProvider {
                 let cluster_id = if vec.is_empty() {
                     None
                 } else {
-                    // Assign to one of 3 clusters based on first value
                     let first_val = vec[0];
                     if first_val < -0.3 {
                         Some(0)
@@ -144,14 +132,9 @@ impl Clusterer for MockProvider {
                         Some(1)
                     }
                 };
-
-                ClusterAssignment {
-                    data_point_index: i,
-                    cluster_id,
-                }
+                ClusterAssignment { data_point_index: i, cluster_id }
             })
             .collect();
-
         Ok(assignments)
     }
 
@@ -170,7 +153,6 @@ mod tests {
         let provider = MockProvider::new();
         let row = RowData::new(serde_json::json!({"field": "value"}));
         let image = ImageContext::from_path(PathBuf::from("test.jpg"));
-
         let result = provider.validate_row(row, image).await.unwrap();
         assert!(result.is_valid);
         assert!(result.discrepancies.is_empty());
@@ -181,7 +163,6 @@ mod tests {
         let provider = MockProvider::new().with_validation(false);
         let row = RowData::new(serde_json::json!({"field": "value"}));
         let image = ImageContext::from_path(PathBuf::from("test.jpg"));
-
         let result = provider.validate_row(row, image).await.unwrap();
         assert!(!result.is_valid);
         assert!(!result.discrepancies.is_empty());
@@ -202,7 +183,6 @@ mod tests {
             vec![0.0, 0.0, 0.0],
             vec![0.5, 0.0, 0.0],
         ];
-
         let assignments = provider.cluster(&vectors).unwrap();
         assert_eq!(assignments.len(), 3);
         assert_eq!(assignments[0].cluster_id, Some(0));

@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 
-use crate::ai::traits::{
+use crate::error::{AppError, Result};
+use crate::traits::{
     DataReviewer, Embedder, ImageContext, ReviewerCapabilities, RowData, ValidationResult,
 };
-use crate::error::{AppError, Result};
 
 pub struct CohereProvider {
     api_key: String,
