@@ -1,0 +1,11 @@
+[package]
+name = "window-wrapper"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gpui.workspace = true
+gpui-component.workspace = true
+serde.workspace = true
+schemars.workspace = true
+serde_json.workspace = true

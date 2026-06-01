@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/app",
+  "crates/settings",
+  "crates/window-wrapper",
+]
+default-members = ["crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+anyhow = "1"
+gpui = "0.2.2"
+gpui-component = "0.5.1"
+gpui-component-assets = "0.5.1"
+dirs = "6"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1.0.221", features = ["derive", "rc"] }
+serde_json = { version = "1.0.144", features = ["preserve_order", "raw_value"] }
+schemars = { version = "1.0", features = ["indexmap2"] }

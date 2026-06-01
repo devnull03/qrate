@@ -1,9 +1,25 @@
+# qrate
 
-# On hold
+A desktop application built with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui).
 
----
+## Workspace
 
-## qrate — The Quintessential Archivist’s Tool
+| Crate | Description |
+|-------|-------------|
+| `crates/app` | Main application binary — window setup, menus, workspace, status bar |
+| `crates/settings` | Persisted settings: generic key-value store backed by SQLite, settings window shell, path picker widgets |
+| `crates/window-wrapper` | GPUI title bar, status bar, and window-level utilities (`WindowLock`, `OpenBrowser`) |
 
-qrate (pronounced *curate*) is an **AI-enhanced workspace** for archivists, librarians, and historians. It helps annotate and catalog historical items in a fraction of the time, while keeping accuracy in human hands.
+## Development
 
+```sh
+cargo build
+cargo run
+```
+
+## Stack
+
+- **Rust** — 2024 edition
+- **GPUI** — GPU-accelerated UI framework
+- **gpui-component** — component library (inputs, selects, settings pages, etc.)
+- **rusqlite** — settings persistence

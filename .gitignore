@@ -1,23 +1,12 @@
-node_modules
+/target
+islandora_workbench/*
 
-# Output
-.output
-.vercel
-.netlify
-.wrangler
-/.svelte-kit
-/build
 
-# OS
-.DS_Store
-Thumbs.db
+# AI stuff
+.cursor/
+.claude/
+GEMINI.md
+CLAUDE.md
 
-# Env
-.env
-.env.*
-!.env.example
-!.env.test
-
-# Vite
-vite.config.js.timestamp-*
-vite.config.ts.timestamp-*
+learnt.md
+mpsc-channels.md
