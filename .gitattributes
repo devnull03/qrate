@@ -1,0 +1,14 @@
+# Normalize line endings so CI scripts work on every platform.
+* text=auto
+
+# Shell scripts MUST stay LF — CRLF breaks the shebang on macOS/Linux runners.
+*.sh text eol=lf
+
+# Windows-only tooling keeps CRLF.
+*.ps1 text eol=crlf
+*.nsi text eol=crlf
+
+# Treat icons as binary (no EOL munging, no diff noise).
+*.png binary
+*.ico binary
+*.icns binary

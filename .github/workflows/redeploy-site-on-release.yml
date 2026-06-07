@@ -1,0 +1,24 @@
+name: Redeploy site on release publish
+
+# The releases page (on the `site` branch) is rendered at build time, so it only
+# reflects releases that existed when it was last built. `release` events fire
+# only for workflows on the default branch, so this lives on `main` and simply
+# triggers the site's own deploy workflow over on the `site` branch.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  actions: write # needed to dispatch another workflow
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger site deploy
+        # --repo is required: this job has no checkout, so gh can't infer the
+        # repository from a local git remote.
+        run: gh workflow run deploy-site.yml --ref site --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ github.token }}

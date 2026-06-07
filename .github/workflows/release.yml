@@ -1,0 +1,204 @@
+name: Release
+
+# Releases are tag-driven: push a tag like `v1.2.3` to build Windows + macOS
+# artifacts and publish them to a DRAFT GitHub release. Merging to `main` alone
+# does nothing here — only a `v*` tag triggers a release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Derive the version from the tag and assert it matches Cargo.toml.
+  # ---------------------------------------------------------------------------
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      vi_version: ${{ steps.v.outputs.vi_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Derive and verify version
+        id: v
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          cargo_version="$(grep -E '^version = ' Cargo.toml | head -1 | sed -E 's/version = "([^"]+)"/\1/')"
+          echo "tag=$tag         (version=$version)"
+          echo "Cargo.toml workspace version=$cargo_version"
+          if [ "$version" != "$cargo_version" ]; then
+            echo "::error::Tag $tag does not match Cargo.toml version $cargo_version. Bump Cargo.toml before tagging."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # NSIS VIProductVersion must be a strict numeric X.X.X.X. Strip any
+          # pre-release/build suffix (e.g. -alpha.1, +meta) and pad to 4 parts.
+          core="${version%%-*}"; core="${core%%+*}"
+          IFS=. read -r a b c d <<< "$core"
+          vi_version="${a:-0}.${b:-0}.${c:-0}.${d:-0}"
+          echo "vi_version=$vi_version" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # macOS: build each arch in parallel (separate runners + caches).
+  # ---------------------------------------------------------------------------
+  build-macos:
+    needs: version
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release -p app --target ${{ matrix.target }}
+
+      - name: Upload arch binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-bin-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/app
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # macOS: lipo the two arch binaries -> universal .app -> .dmg
+  # ---------------------------------------------------------------------------
+  bundle-macos:
+    needs: [version, build-macos]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download arch binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: macos-bin-*
+          path: macos-bins
+
+      - name: Merge into universal binary
+        run: |
+          lipo -create \
+            macos-bins/macos-bin-x86_64-apple-darwin/app \
+            macos-bins/macos-bin-aarch64-apple-darwin/app \
+            -output universal-app
+          lipo -info universal-app
+
+      - name: Bundle .app and .dmg
+        run: |
+          chmod +x scripts/bundle-mac.sh
+          scripts/bundle-mac.sh universal-app "${{ needs.version.outputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Windows: icon-embedded .exe -> portable .zip + NSIS installer
+  # ---------------------------------------------------------------------------
+  build-windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release -p app
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Package zip + installer
+        shell: pwsh
+        run: |
+          $ver = "${{ needs.version.outputs.version }}"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/app.exe dist/qrate.exe
+          Compress-Archive -Path dist/qrate.exe `
+            -DestinationPath "dist/qrate-$ver-x86_64.zip" -Force
+          $nsis = "C:\Program Files (x86)\NSIS\makensis.exe"
+          & $nsis `
+            "/DVERSION=$ver" `
+            "/DVIVERSION=${{ needs.version.outputs.vi_version }}" `
+            "/DSRCEXE=$PWD\dist\qrate.exe" `
+            "/DICONFILE=$PWD\assets\icons\app-icon.ico" `
+            "/DOUTFILE=$PWD\dist\qrate-$ver-setup.exe" `
+            scripts\installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed ($LASTEXITCODE)" }
+          Remove-Item dist/qrate.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            dist/*.zip
+            dist/*-setup.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Collect artifacts, checksum them, publish a DRAFT release.
+  # ---------------------------------------------------------------------------
+  release:
+    needs: [version, bundle-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      # Only the final artifacts — not the intermediate per-arch macOS binaries.
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-build
+          path: dist
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum *.dmg *.zip *-setup.exe > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: ${{ needs.version.outputs.tag }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*-setup.exe
+            dist/SHA256SUMS.txt
+          body: |
+            ## qrate ${{ needs.version.outputs.tag }}
+
+            ### Downloads
+            - **Windows:** `*-setup.exe` (installer) or `*-x86_64.zip` (portable)
+            - **macOS:** `*-universal.dmg` (Intel + Apple Silicon)
+
+            Verify your download against `SHA256SUMS.txt`.
+
+            > [!NOTE]
+            > These builds are **unsigned**.
+            > - **Windows:** SmartScreen may warn "unknown publisher" — click *More info → Run anyway*.
+            > - **macOS:** right-click the app → *Open* the first time, or run
+            >   `xattr -dr com.apple.quarantine "/Applications/qrate.app"`.

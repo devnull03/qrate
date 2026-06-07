@@ -1,0 +1,50 @@
+name: CI
+
+# Runs on every push to `dev` and on PRs targeting `dev` or `main`.
+# gpui needs heavy Linux system libraries to even compile, and the only
+# supported targets here are Windows + macOS, so CI runs on those two.
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev, main]
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build
+        run: cargo build --workspace
