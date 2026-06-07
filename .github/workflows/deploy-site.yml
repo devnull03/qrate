@@ -1,0 +1,42 @@
+name: Deploy site to Pages
+
+on:
+  push:
+    branches: [site]
+  workflow_dispatch: # lets the main-branch release dispatcher (and you) trigger it
+
+# Permissions the jobs need to clone the repo and publish to Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one in-flight Pages deploy; don't cancel a running one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install, build, and upload the site
+        uses: withastro/action@v6
+        # Astro's official action installs deps (auto-detecting the package
+        # manager from the lockfile), runs `astro build`, and uploads the Pages
+        # artifact — so no separate configure-pages/upload-pages-artifact steps.
+        env:
+          GH_TOKEN: ${{ github.token }} # consumed by the build-time release fetch
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

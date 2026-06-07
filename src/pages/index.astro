@@ -1,0 +1,46 @@
+---
+import Base from '../layouts/Base.astro';
+import Release from '../components/Release.astro';
+
+const REPO = 'devnull03/qrate';
+
+// This fetch runs at BUILD time (in CI), not in the browser.
+// In Actions, GH_TOKEN is the job's GITHUB_TOKEN -> 1000 req/hr, no public limit,
+// and nothing secret ends up in the shipped HTML. Locally the header is omitted,
+// so the anonymous 60 req/hr applies (fine for occasional dev builds).
+const token = import.meta.env.GH_TOKEN;
+const res = await fetch(
+  `https://api.github.com/repos/${REPO}/releases?per_page=20`,
+  {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  },
+);
+
+if (!res.ok && import.meta.env.PROD) {
+  // Fail the CI build loudly rather than shipping a silently-empty page.
+  throw new Error(`GitHub API ${res.status} ${res.statusText} fetching releases`);
+}
+
+const releases = res.ok ? await res.json() : [];
+// "Latest" badge goes on the newest non-prerelease (API returns newest first).
+const firstStableIdx = releases.findIndex((r) => !r.prerelease);
+---
+
+<Base>
+  {
+    releases.length === 0 ? (
+      <p>
+        No releases yet — check the
+        <a href={`https://github.com/${REPO}/releases`}>Releases page</a>.
+      </p>
+    ) : (
+      releases.map((release, i) => (
+        <Release release={release} latest={i === firstStableIdx} />
+      ))
+    )
+  }
+</Base>

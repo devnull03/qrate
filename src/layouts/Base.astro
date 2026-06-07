@@ -1,0 +1,51 @@
+---
+// Importing the stylesheet (rather than <link href="...">) lets Astro fingerprint
+// it and rewrite the URL under `base`, so it never 404s on the project subpath.
+import '../styles/global.css';
+
+const REPO = 'devnull03/qrate';
+const { title = 'qrate — Releases' } = Astro.props;
+
+// public/ files aren't URL-rewritten by Astro, so prepend `base` ourselves.
+// Normalize the trailing slash so we never emit a double slash or a missing one.
+const favicon = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/favicon.svg`;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <link rel="icon" type="image/svg+xml" href={favicon} />
+    <title>{title}</title>
+    <meta
+      name="description"
+      content="Download the latest qrate builds for Windows and macOS."
+    />
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="site">
+        <h1>qrate</h1>
+        <p class="tagline">Desktop builds for Windows and macOS.</p>
+        <p>
+          <a href={`https://github.com/${REPO}`}>View the project on GitHub</a>
+        </p>
+      </header>
+
+      <main>
+        <slot />
+      </main>
+
+      <footer class="site">
+        <p>
+          Builds are <strong>unsigned</strong>: your OS may warn on first launch.
+          See the
+          <a href={`https://github.com/${REPO}/releases`}>full Releases page</a>
+          for every version and asset.
+        </p>
+      </footer>
+    </div>
+  </body>
+</html>

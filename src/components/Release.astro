@@ -1,0 +1,62 @@
+---
+import { marked } from 'marked';
+
+const { release, latest = false } = Astro.props;
+
+// Friendly labels keyed off the asset filenames produced by release.yml.
+function labelFor(name) {
+  if (/-setup\.exe$/i.test(name)) return 'Windows installer';
+  if (/-x86_64\.zip$/i.test(name)) return 'Windows (portable)';
+  if (/\.dmg$/i.test(name)) return 'macOS (Intel + Apple Silicon)';
+  if (/SHA256SUMS\.txt$/i.test(name)) return 'Checksums';
+  return name;
+}
+
+function humanSize(bytes) {
+  if (bytes == null) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let n = bytes;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i += 1;
+  }
+  return `${i === 0 ? n : n.toFixed(1)} ${units[i]}`;
+}
+
+const title = release.name || release.tag_name;
+const date = new Date(release.published_at).toLocaleDateString('en-US', {
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+});
+
+// Release bodies are authored by the repo owner, so rendering their markdown is
+// trusted content. (Add sanitize-html here if that assumption ever changes.)
+const notesHtml = release.body ? marked.parse(release.body) : '';
+const assets = release.assets ?? [];
+---
+
+<article class="release">
+  <div class="release-head">
+    <h2>{title}</h2>
+    {latest && <span class="badge">Latest</span>}
+    {release.prerelease && <span class="badge pre">Pre-release</span>}
+  </div>
+  <p class="date">{date}</p>
+
+  {notesHtml && <div class="notes" set:html={notesHtml} />}
+
+  {
+    assets.length > 0 && (
+      <ul class="downloads">
+        {assets.map((a) => (
+          <li>
+            <a href={a.browser_download_url}>{labelFor(a.name)}</a>
+            <span class="size">{humanSize(a.size)}</span>
+          </li>
+        ))}
+      </ul>
+    )
+  }
+</article>
