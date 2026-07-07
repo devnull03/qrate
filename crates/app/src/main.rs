@@ -1,9 +1,10 @@
+mod actions;
 mod app_menus;
 mod app_settings;
 mod components;
-mod workspace;
 mod helpers;
 mod status_items;
+mod title_items;
 
 use gpui::*;
 use gpui_component::{Root, TitleBar, v_flex};
@@ -18,17 +19,19 @@ use window_wrapper::{
 };
 
 use crate::{
+    actions::{ToggleBottomDock, ToggleLeftDock, ToggleRightDock},
     app_menus::{OpenSettings, Quit, app_menus},
     status_items::build_status_bar_registry,
+    title_items::build_title_bar_registry,
 };
+use gpui_component::dock::DockPlacement;
 use crate::app_settings::build_pages;
-use crate::workspace::Workspace;
+use workspace::Workspace;
 
 pub struct App {
     workspace: Entity<Workspace>,
     status_bar: Entity<StatusBar>,
     _main_window_bounds_sub: Subscription,
-    _window_lock_sub: Subscription,
 }
 
 impl App {
@@ -36,19 +39,17 @@ impl App {
         let workspace = cx.new(|cx| Workspace::new(window, cx));
         let status_bar = cx.new(|_| StatusBar::new());
 
-        let registry = build_status_bar_registry(&mut *cx);
-        cx.set_global(registry);
+        let dock = workspace.read(cx).dock_area();
+        let status_registry = build_status_bar_registry(&mut *cx, dock.clone());
+        cx.set_global(status_registry);
+        let title_registry = build_title_bar_registry(&mut *cx, dock);
+        cx.set_global(title_registry);
 
         let _main_window_bounds_sub = cx.observe_window_bounds(window, |_, window, cx| {
             let b = MainWindowBounds::capture_from_window(window, cx);
             AppSettings::update(cx, |s| {
                 s.main_window_bounds = Some(b);
             });
-        });
-
-        // Re-render this view (and therefore AppTitleBar) whenever WindowLock changes.
-        let _window_lock_sub = cx.observe_global::<WindowLock>(|_, cx| {
-            cx.notify();
         });
 
         // Block the OS close button while a background task is running.
@@ -60,8 +61,17 @@ impl App {
             workspace,
             status_bar,
             _main_window_bounds_sub,
-            _window_lock_sub,
         }
+    }
+
+    fn toggle_dock(
+        &mut self,
+        placement: DockPlacement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace
+            .update(cx, |ws, cx| ws.toggle_dock(placement, window, cx));
     }
 }
 
@@ -71,10 +81,22 @@ impl Render for App {
 
         div()
             .size_full()
+            // Dock toggles are handled here on the root so the shortcuts work window-wide,
+            // regardless of which panel currently holds focus.
+            .key_context("qrate")
+            .on_action(cx.listener(|this, _: &ToggleLeftDock, window, cx| {
+                this.toggle_dock(DockPlacement::Left, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleBottomDock, window, cx| {
+                this.toggle_dock(DockPlacement::Bottom, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleRightDock, window, cx| {
+                this.toggle_dock(DockPlacement::Right, window, cx)
+            }))
             .child(
                 v_flex()
                     .size_full()
-                    .child(AppTitleBar::new(cx))
+                    .child(AppTitleBar::new())
                     .child(
                         div()
                             .id("window-body")
@@ -140,6 +162,10 @@ fn main() {
         // ----------------------------------------------
 
         cx.set_menus(app_menus());
+
+        // Keyboard shortcuts (Layer 1). See `actions.rs` to add more.
+        cx.bind_keys(actions::key_bindings());
+        actions::register_global_handlers(cx);
 
         cx.on_action(|action: &OpenBrowser, cx| {
             cx.open_url(&action.url);
