@@ -1,5 +1,7 @@
 # Normalize line endings so CI scripts work on every platform.
-* text=auto
+# eol=lf forces LF in the working tree too, so Windows checkouts stop
+# triggering "LF will be replaced by CRLF" warnings.
+* text=auto eol=lf
 
 # Shell scripts MUST stay LF — CRLF breaks the shebang on macOS/Linux runners.
 *.sh text eol=lf
