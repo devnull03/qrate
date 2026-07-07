@@ -1,5 +1,9 @@
 use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{ActiveTheme, label::Label};
+use gpui_component::{
+    ActiveTheme,
+    dock::{Panel, PanelEvent},
+    label::Label,
+};
 
 /// Approximate visual line height for text_sm. Used for Y-position → line index mapping.
 const LINE_HEIGHT: f32 = 22.0;
@@ -14,9 +18,7 @@ fn line_color(line: &str, cx: &App) -> Hsla {
         t.blue
     } else if line.starts_with("[AUTO-ACCEPT]") {
         t.green
-    } else if line.starts_with("[INFO]")
-        || (line.starts_with("---") && line.ends_with("---"))
-    {
+    } else if line.starts_with("[INFO]") || (line.starts_with("---") && line.ends_with("---")) {
         t.muted_foreground
     } else {
         t.foreground
@@ -48,12 +50,15 @@ impl LogViewer {
         }
     }
 
+    // Streaming API: wired in once a log producer feeds this panel.
+    #[allow(dead_code)]
     pub fn append(&mut self, line: &str, cx: &mut Context<Self>) {
         self.lines.push(line.to_string());
         self.scroll_handle.scroll_to_bottom();
         cx.notify();
     }
 
+    #[allow(dead_code)]
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.lines.clear();
         self.selected_range = None;
@@ -125,17 +130,13 @@ impl Render for LogViewer {
                         if event.keystroke.modifiers.control {
                             match event.keystroke.key.to_lowercase().as_str() {
                                 "c" => {
-                                    let text = this
-                                        .selected_text()
-                                        .unwrap_or_else(|| this.all_text());
+                                    let text =
+                                        this.selected_text().unwrap_or_else(|| this.all_text());
                                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                                 }
-                                "a" => {
-                                    if !this.lines.is_empty() {
-                                        this.selected_range =
-                                            Some((0, this.lines.len() - 1));
-                                        cx.notify();
-                                    }
+                                "a" if !this.lines.is_empty() => {
+                                    this.selected_range = Some((0, this.lines.len() - 1));
+                                    cx.notify();
                                 }
                                 _ => {}
                             }
@@ -160,18 +161,18 @@ impl Render for LogViewer {
                             cx.notify();
                             return;
                         }
-                        if let Some(anchor) = this.drag_anchor {
-                            if this.container_top.is_some() {
-                                let idx = this.line_idx_from_event_y(event.position.y);
-                                let (s, e) = if anchor <= idx {
-                                    (anchor, idx)
-                                } else {
-                                    (idx, anchor)
-                                };
-                                if this.selected_range != Some((s, e)) {
-                                    this.selected_range = Some((s, e));
-                                    cx.notify();
-                                }
+                        if let Some(anchor) = this.drag_anchor
+                            && this.container_top.is_some()
+                        {
+                            let idx = this.line_idx_from_event_y(event.position.y);
+                            let (s, e) = if anchor <= idx {
+                                (anchor, idx)
+                            } else {
+                                (idx, anchor)
+                            };
+                            if this.selected_range != Some((s, e)) {
+                                this.selected_range = Some((s, e));
+                                cx.notify();
                             }
                         }
                     });
@@ -188,46 +189,63 @@ impl Render for LogViewer {
                 }
             })
             // Per-line rows
-            .children(lines_data.into_iter().enumerate().map(|(ix, (line, color))| {
-                let is_selected = selected_range
-                    .map(|(s, e)| ix >= s && ix <= e)
-                    .unwrap_or(false);
-                let weak = weak.clone();
-                let focus_handle = focus_handle.clone();
-
-                div()
-                    .id(("log-line", ix as u64))
-                    .w_full()
-                    .px_1()
-                    .when(is_selected, |s: gpui::Stateful<Div>| s.bg(selection_bg))
-                    .on_mouse_down(MouseButton::Left, {
+            .children(
+                lines_data
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, (line, color))| {
+                        let is_selected = selected_range
+                            .map(|(s, e)| ix >= s && ix <= e)
+                            .unwrap_or(false);
                         let weak = weak.clone();
-                        move |event: &MouseDownEvent, window, cx| {
-                            focus_handle.focus(window);
-                            let Some(entity) = weak.upgrade() else { return };
-                            entity.update(cx, |this, cx| {
-                                // Infer the container's Y origin from this line's known index.
-                                // scroll offset is negative when scrolled down.
-                                let offset_y = this.scroll_handle.offset().y;
-                                this.container_top = Some(
-                                    event.position.y
-                                        - px(ix as f32 * LINE_HEIGHT)
-                                        - offset_y,
-                                );
-                                this.drag_anchor = Some(ix);
-                                this.drag_active = true;
-                                this.selected_range = Some((ix, ix));
-                                cx.notify();
-                            });
-                        }
-                    })
-                    .child(Label::new(line).text_sm().text_color(color))
-            }))
+                        let focus_handle = focus_handle.clone();
+
+                        div()
+                            .id(("log-line", ix as u64))
+                            .w_full()
+                            .px_1()
+                            .when(is_selected, |s: gpui::Stateful<Div>| s.bg(selection_bg))
+                            .on_mouse_down(MouseButton::Left, {
+                                let weak = weak.clone();
+                                move |event: &MouseDownEvent, window, cx| {
+                                    focus_handle.focus(window);
+                                    let Some(entity) = weak.upgrade() else { return };
+                                    entity.update(cx, |this, cx| {
+                                        // Infer the container's Y origin from this line's known index.
+                                        // scroll offset is negative when scrolled down.
+                                        let offset_y = this.scroll_handle.offset().y;
+                                        this.container_top = Some(
+                                            event.position.y
+                                                - px(ix as f32 * LINE_HEIGHT)
+                                                - offset_y,
+                                        );
+                                        this.drag_anchor = Some(ix);
+                                        this.drag_active = true;
+                                        this.selected_range = Some((ix, ix));
+                                        cx.notify();
+                                    });
+                                }
+                            })
+                            .child(Label::new(line).text_sm().text_color(color))
+                    }),
+            )
     }
 }
 
 impl Focusable for LogViewer {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+impl EventEmitter<PanelEvent> for LogViewer {}
+
+impl Panel for LogViewer {
+    fn panel_name(&self) -> &'static str {
+        "LogViewer"
+    }
+
+    fn title(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from("Logs")
     }
 }

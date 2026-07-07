@@ -4,7 +4,7 @@ use std::process::Command;
 use gpui::*;
 use gpui_component::input::InputState;
 
-use crate::workspace::Workspace;
+use workspace::Workspace;
 
 pub fn get_file(
     window: &mut Window,

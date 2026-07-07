@@ -15,3 +15,4 @@ serde_json.workspace = true
 schemars.workspace = true
 window-wrapper = { path = "../window-wrapper" }
 settings = { path = "../settings" }
+workspace = { path = "../workspace" }

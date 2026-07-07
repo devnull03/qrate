@@ -103,6 +103,7 @@ dependencies = [
  "serde_json",
  "settings",
  "window-wrapper",
+ "workspace",
 ]
 
 [[package]]
@@ -7578,6 +7579,16 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "workspace"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui-component",
+ "serde_json",
+ "settings",
 ]
 
 [[package]]

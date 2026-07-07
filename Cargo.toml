@@ -5,6 +5,7 @@ members = [
   "crates/ai",
   "crates/settings",
   "crates/window-wrapper",
+  "crates/workspace",
 ]
 default-members = ["crates/app"]
 
