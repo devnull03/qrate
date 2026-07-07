@@ -1,0 +1,29 @@
+// Project tasks — Alt+T opens the picker (see keymap: task::Spawn)
+[
+  {
+    "label": "cargo run (app)",
+    "command": "cargo run -p app",
+    "reveal": "always",
+    "use_new_terminal": false
+  },
+  {
+    "label": "cargo run --release (app)",
+    "command": "cargo run --release -p app"
+  },
+  {
+    "label": "cargo build",
+    "command": "cargo build"
+  },
+  {
+    "label": "cargo check",
+    "command": "cargo check"
+  },
+  {
+    "label": "cargo test",
+    "command": "cargo test"
+  },
+  {
+    "label": "cargo clippy",
+    "command": "cargo clippy --all-targets"
+  }
+]
