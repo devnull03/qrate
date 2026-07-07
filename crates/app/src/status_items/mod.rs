@@ -1,60 +1,48 @@
 use gpui::*;
-use gpui_component::{IconName, Sizable, button::Button};
-use settings::{AppSettings, load_app_settings};
-use window_wrapper::status_bar::StatusBarRegistry;
+use gpui_component::{
+    IconName,
+    dock::{DockArea, DockPlacement},
+};
+use window_wrapper::{BarRegistry, status_bar::StatusBarRegistry};
+use workspace::DockToggleButton;
 
-pub fn build_status_bar_registry(cx: &mut App) -> StatusBarRegistry {
+/// Populate the status bar. Left: left-panel toggle + a problems (errors/warnings) counter
+/// that opens the bottom panel. Right: the agent-panel toggle.
+pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> StatusBarRegistry {
     let mut registry = StatusBarRegistry::new();
 
-    registry.add_right(cx.new(|_| ReloadConfigs));
-    registry.add_right(cx.new(|_| OpenTerminal));
+    let left_panel = cx.new(|_| {
+        DockToggleButton::new(
+            "status-left-panel",
+            dock.clone(),
+            DockPlacement::Left,
+            IconName::PanelLeft,
+        )
+    });
+    registry.add_left(left_panel);
+
+    // ponytail: diagnostics don't exist yet — count is a placeholder "0". Wire the real
+    // error/warning totals when ProblemsPanel grows content.
+    let problems = cx.new(|_| {
+        DockToggleButton::new(
+            "status-problems",
+            dock.clone(),
+            DockPlacement::Bottom,
+            IconName::TriangleAlert,
+        )
+        .label("0")
+    });
+    registry.add_left(problems);
+
+    let agent = cx.new(|_| {
+        DockToggleButton::new(
+            "status-agent",
+            dock.clone(),
+            DockPlacement::Right,
+            IconName::Star,
+        )
+    });
+    registry.add_right(agent);
 
     registry
-}
-
-pub struct OpenTerminal;
-
-impl Render for OpenTerminal {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().child(
-            Button::new("Open Terminal")
-                .icon(IconName::SquareTerminal)
-                .label("Open Terminal")
-                .small()
-                .px_0()
-                .cursor_pointer(),
-        )
-    }
-}
-
-pub struct ReloadConfigs;
-
-impl Render for ReloadConfigs {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().child(
-            Button::new("reload-configs")
-                .icon(IconName::Redo2)
-                .label("Reload")
-                .small()
-                .px_0()
-                .cursor_pointer()
-                .tooltip("Reload settings from disk")
-                .on_click(cx.listener(|_, _, _, cx| {
-                    let current_bounds = AppSettings::get(cx).main_window_bounds.clone();
-                    cx.spawn(async move |_this, cx| {
-                        let loaded = cx
-                            .background_executor()
-                            .spawn(async move { load_app_settings().unwrap_or_default() })
-                            .await;
-                        cx.update(|cx| {
-                            let mut new_settings = loaded;
-                            new_settings.main_window_bounds = current_bounds;
-                            cx.set_global(new_settings);
-                        })
-                        .ok();
-                    })
-                    .detach();
-                })),
-        )
-    }
 }

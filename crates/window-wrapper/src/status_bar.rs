@@ -1,34 +1,26 @@
 use gpui::*;
 use gpui_component::ActiveTheme as _;
 
+use crate::bar::{BarItems, BarRegistry};
+
 /// A global registry for status bar items.
-pub struct StatusBarRegistry {
-    left_items: Vec<AnyView>,
-    right_items: Vec<AnyView>,
-}
+#[derive(Default)]
+pub struct StatusBarRegistry(BarItems);
 
 impl Global for StatusBarRegistry {}
 
-impl Default for StatusBarRegistry {
-    fn default() -> Self {
-        Self::new()
+impl StatusBarRegistry {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
-impl StatusBarRegistry {
-    pub fn new() -> Self {
-        Self {
-            left_items: Vec::new(),
-            right_items: Vec::new(),
-        }
+impl BarRegistry for StatusBarRegistry {
+    fn items(&self) -> &BarItems {
+        &self.0
     }
-
-    pub fn add_left(&mut self, view: impl Into<AnyView>) {
-        self.left_items.push(view.into());
-    }
-
-    pub fn add_right(&mut self, view: impl Into<AnyView>) {
-        self.right_items.push(view.into());
+    fn items_mut(&mut self) -> &mut BarItems {
+        &mut self.0
     }
 }
 
@@ -48,23 +40,10 @@ impl StatusBar {
 
 impl Render for StatusBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut left_items = Vec::new();
-        let mut right_items = Vec::new();
-
-        if let Some(registry) = cx.try_global::<StatusBarRegistry>() {
-            left_items = registry.left_items.clone();
-            right_items = registry.right_items.clone();
-        }
-
-        let mut left_flex = gpui_component::h_flex().gap_3().items_center();
-        for item in left_items {
-            left_flex = left_flex.child(item);
-        }
-
-        let mut right_flex = gpui_component::h_flex().gap_3().items_center();
-        for item in right_items {
-            right_flex = right_flex.child(item);
-        }
+        let (left, right) = cx
+            .try_global::<StatusBarRegistry>()
+            .map(|r| (r.items().left.clone(), r.items().right.clone()))
+            .unwrap_or_default();
 
         gpui_component::h_flex()
             .id("status-bar")
@@ -75,7 +54,7 @@ impl Render for StatusBar {
             .justify_between()
             .border_t_1()
             .border_color(cx.theme().title_bar_border)
-            .child(left_flex)
-            .child(right_flex)
+            .child(gpui_component::h_flex().gap_3().items_center().children(left))
+            .child(gpui_component::h_flex().gap_3().items_center().children(right))
     }
 }

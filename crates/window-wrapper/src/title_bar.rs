@@ -1,33 +1,40 @@
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, IconName, Sizable, TitleBar,
+    Sizable, TitleBar,
     button::{Button, ButtonVariants},
-    label::Label,
     menu::{DropdownMenu, PopupMenu},
-    spinner::Spinner,
 };
 
-use crate::WindowLock;
+use crate::bar::{BarItems, BarRegistry};
 
-#[derive(IntoElement)]
-pub struct AppTitleBar {
-    items: Vec<OwnedMenu>,
+/// Global registry for title bar items. The app menus are registered as a default
+/// left item at startup; other crates can `add_left`/`add_right` custom components.
+#[derive(Default)]
+pub struct TitleBarRegistry(BarItems);
+
+impl Global for TitleBarRegistry {}
+
+impl TitleBarRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
-impl AppTitleBar {
-    pub fn new(cx: &App) -> Self {
-        let menu_items = cx.get_menus().unwrap_or_default();
-        // let mut items: Vec<OwnedMenu> = vec![];
-        // for menu in menu_items.into_iter() {
-        //     items.push(menu.owned());
-        // }
-        Self { items: menu_items }
+impl BarRegistry for TitleBarRegistry {
+    fn items(&self) -> &BarItems {
+        &self.0
     }
-
-    pub fn with_owned(items: Vec<OwnedMenu>) -> Self {
-        Self { items }
+    fn items_mut(&mut self) -> &mut BarItems {
+        &mut self.0
     }
+}
 
+/// The app-menu dropdown row, rendered from `cx.get_menus()`. Registered as the default
+/// left item of the title bar. A view (not a bare element) so it can live in the registry
+/// as an `AnyView` and re-read the menus on each render.
+pub struct TitleMenus;
+
+impl TitleMenus {
     fn convert_menu(menu_spec: OwnedMenu) -> impl IntoElement {
         let button_id: SharedString = format!("menu-btn-{}", menu_spec.name).into();
         Button::new(button_id)
@@ -86,37 +93,43 @@ impl AppTitleBar {
     }
 }
 
+impl Render for TitleMenus {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let menus = cx.get_menus().unwrap_or_default();
+        let mut row = gpui_component::h_flex().gap_1().justify_start();
+        for item in menus {
+            row = row.child(Self::convert_menu(item)).cursor_pointer();
+        }
+        row
+    }
+}
+
+#[derive(IntoElement, Default)]
+pub struct AppTitleBar;
+
+impl AppTitleBar {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 impl RenderOnce for AppTitleBar {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let locked = WindowLock::is_locked(cx);
+        let (left, right) = cx
+            .try_global::<TitleBarRegistry>()
+            .map(|r| (r.items().left.clone(), r.items().right.clone()))
+            .unwrap_or_default();
 
-        let mut menu_container = gpui_component::h_flex().gap_1().justify_start();
-        for item in self.items.clone() {
-            menu_container = menu_container
-                .child(Self::convert_menu(item))
-                .cursor_pointer();
-        }
-
-        let mut right = gpui_component::h_flex()
-            .flex_1()
-            .justify_end()
-            .pr_4()
-            .gap_1()
-            .items_center();
-        if locked {
-            right = right
-                .child(
-                    Spinner::new()
-                        .small()
-                        .icon(IconName::LoaderCircle).color(cx.theme().muted_foreground)
-                )
-                .child(
-                    Label::new("Ingest running")
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground),
-                );
-        }
-
-        TitleBar::new().child(menu_container).child(right)
+        TitleBar::new()
+            .child(gpui_component::h_flex().gap_1().justify_start().children(left))
+            .child(
+                gpui_component::h_flex()
+                    .flex_1()
+                    .justify_end()
+                    .pr_4()
+                    .gap_1()
+                    .items_center()
+                    .children(right),
+            )
     }
 }
