@@ -19,9 +19,7 @@ use gpui::SharedString;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    AppSettings, MainWindowBounds, Val, SETTINGS_SCHEMA_VERSION,
-};
+use super::{AppSettings, MainWindowBounds, SETTINGS_SCHEMA_VERSION, Val};
 
 const APP_DIR: &str = "qrate";
 const DB_FILE: &str = "settings.sqlite3";
@@ -91,9 +89,10 @@ impl From<PersistSettings> for AppSettings {
     }
 }
 
-
 fn db_path() -> Result<PathBuf> {
-    let base = dirs::data_local_dir().context("Failed to resolve local data dir")?.join(APP_DIR);
+    let base = dirs::data_local_dir()
+        .context("Failed to resolve local data dir")?
+        .join(APP_DIR);
     Ok(base.join(DB_FILE))
 }
 

@@ -132,7 +132,10 @@ impl Clusterer for MockProvider {
                         Some(1)
                     }
                 };
-                ClusterAssignment { data_point_index: i, cluster_id }
+                ClusterAssignment {
+                    data_point_index: i,
+                    cluster_id,
+                }
             })
             .collect();
         Ok(assignments)

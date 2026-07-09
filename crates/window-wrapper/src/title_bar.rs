@@ -121,7 +121,12 @@ impl RenderOnce for AppTitleBar {
             .unwrap_or_default();
 
         TitleBar::new()
-            .child(gpui_component::h_flex().gap_1().justify_start().children(left))
+            .child(
+                gpui_component::h_flex()
+                    .gap_1()
+                    .justify_start()
+                    .children(left),
+            )
             .child(
                 gpui_component::h_flex()
                     .flex_1()
