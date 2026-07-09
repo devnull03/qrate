@@ -9,10 +9,14 @@ mod title_items;
 use gpui::*;
 use gpui_component::{Root, TitleBar, v_flex};
 use settings::{
-    AppSettings, MainWindowBounds, SettingsPersistence, SettingsWindow, SettingsWindowHandle,
-    SettingsWriter, load_app_settings,
+    AppSettings, MainWindowBounds, SettingsPersistence, SettingsWindow, SettingsWriter,
+    load_app_settings,
 };
-use window_wrapper::{OpenBrowser, WindowLock, status_bar::StatusBar, title_bar::AppTitleBar};
+use window_wrapper::{
+    OpenBrowser, WindowLock, WindowRegistry, status_bar::StatusBar, title_bar::AppTitleBar,
+};
+
+const SETTINGS_WINDOW_KIND: &str = "settings";
 
 use crate::app_settings::build_pages;
 use crate::{
@@ -119,17 +123,11 @@ fn main() {
         cx.set_global(SettingsPersistence {
             writer: Some(SettingsWriter::start()),
         });
-        cx.set_global(SettingsWindowHandle::default());
+        cx.set_global(WindowRegistry::default());
 
         cx.on_action(|_: &OpenSettings, cx| {
-            let state = cx.global::<SettingsWindowHandle>();
-
-            if let Some(handle) = &state.handle {
-                if handle.update(cx, |_, _, _| {}).is_ok() {
-                    return;
-                } else {
-                    cx.global_mut::<SettingsWindowHandle>().handle = None;
-                }
+            if WindowRegistry::focus_or_clear(SETTINGS_WINDOW_KIND, cx) {
+                return;
             }
             let bounds = Bounds::centered(None, size(px(1000.0), px(800.0)), cx);
             let window_options = WindowOptions {
@@ -147,7 +145,7 @@ fn main() {
 
                 if let Ok(window_handle) = result {
                     cx.update(|cx| {
-                        cx.global_mut::<SettingsWindowHandle>().handle = Some(window_handle.into());
+                        WindowRegistry::register(SETTINGS_WINDOW_KIND, window_handle.into(), cx);
                     })
                     .ok();
                 }

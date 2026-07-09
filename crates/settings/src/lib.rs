@@ -425,15 +425,6 @@ impl AppSettings {
     }
 }
 
-// --- Settings Window State ---
-
-#[derive(Clone, Default)]
-pub struct SettingsWindowHandle {
-    pub handle: Option<AnyWindowHandle>,
-}
-
-impl Global for SettingsWindowHandle {}
-
 // --- Settings Window ---
 
 pub struct SettingsWindow {
