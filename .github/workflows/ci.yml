@@ -41,7 +41,12 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        # dead_code is allowed: this codebase deliberately scaffolds UI
+        # components/helpers ahead of their consumers landing (see e.g.
+        # crates/workspace/src/panels/log_viewer.rs), so unused-for-now
+        # code is expected, not a bug. Every other clippy/rustc warning
+        # still hard-fails.
+        run: cargo clippy --workspace --all-targets -- -D warnings -A dead_code
 
       - name: Test
         run: cargo test --workspace

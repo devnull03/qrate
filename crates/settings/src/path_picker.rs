@@ -7,10 +7,14 @@
 
 use std::sync::Arc;
 
-use gpui::*;
 use gpui::prelude::FluentBuilder as _;
+use gpui::*;
 use gpui_component::{
-    AxisExt as _, IconName, Sizable, Size, button::Button, h_flex, input::{Input, InputState}, setting::{SettingField, SettingItem}
+    AxisExt as _, IconName, Sizable, Size,
+    button::Button,
+    h_flex,
+    input::{Input, InputState},
+    setting::{SettingField, SettingItem},
 };
 
 use crate::AppSettings;
@@ -65,26 +69,24 @@ impl RenderOnce for PathPickerApp {
                         }
                     }),
             )
-            .child(
-                btn.on_click(move |_, _, cx| {
-                    let receiver = cx.prompt_for_paths(PathPromptOptions {
-                        files,
-                        directories,
-                        multiple: false,
-                        prompt: Some(prompt.clone()),
-                    });
-                    let on_pick = Arc::clone(&on_pick);
-                    cx.spawn(async move |cx| {
-                        if let Ok(Ok(Some(paths))) = receiver.await
-                            && let Some(path) = paths.first()
-                        {
-                            let s: SharedString = path.to_string_lossy().to_string().into();
-                            cx.update(|cx| on_pick(s, cx)).ok();
-                        }
-                    })
-                    .detach();
-                }),
-            )
+            .child(btn.on_click(move |_, _, cx| {
+                let receiver = cx.prompt_for_paths(PathPromptOptions {
+                    files,
+                    directories,
+                    multiple: false,
+                    prompt: Some(prompt.clone()),
+                });
+                let on_pick = Arc::clone(&on_pick);
+                cx.spawn(async move |cx| {
+                    if let Ok(Ok(Some(paths))) = receiver.await
+                        && let Some(path) = paths.first()
+                    {
+                        let s: SharedString = path.to_string_lossy().to_string().into();
+                        cx.update(|cx| on_pick(s, cx)).ok();
+                    }
+                })
+                .detach();
+            }))
     }
 }
 

@@ -54,7 +54,17 @@ impl Render for StatusBar {
             .justify_between()
             .border_t_1()
             .border_color(cx.theme().title_bar_border)
-            .child(gpui_component::h_flex().gap_3().items_center().children(left))
-            .child(gpui_component::h_flex().gap_3().items_center().children(right))
+            .child(
+                gpui_component::h_flex()
+                    .gap_3()
+                    .items_center()
+                    .children(left),
+            )
+            .child(
+                gpui_component::h_flex()
+                    .gap_3()
+                    .items_center()
+                    .children(right),
+            )
     }
 }

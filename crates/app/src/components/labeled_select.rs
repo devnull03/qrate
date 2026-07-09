@@ -16,10 +16,7 @@ pub struct LabeledSelect<D: SelectItem + 'static> {
 }
 
 impl<D: SelectItem + 'static> LabeledSelect<D> {
-    pub fn new(
-        label: impl Into<SharedString>,
-        select: &Entity<SelectState<Vec<D>>>,
-    ) -> Self {
+    pub fn new(label: impl Into<SharedString>, select: &Entity<SelectState<Vec<D>>>) -> Self {
         Self {
             label: label.into(),
             description: SharedString::default(),
