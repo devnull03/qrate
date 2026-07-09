@@ -153,12 +153,19 @@ pub fn spawn_terminal_at(cwd: &Path, command: &str) -> std::io::Result<()> {
                 Command::new("osascript").args(["-e", &osa]).spawn()?;
             } else {
                 // Terminal.app accepts a directory argument directly.
-                Command::new("open").args(["-a", "Terminal"]).arg(cwd).spawn()?;
+                Command::new("open")
+                    .args(["-a", "Terminal"])
+                    .arg(cwd)
+                    .spawn()?;
             }
         } else {
             let script = format!("cd \"{}\" && {}", cwd.display(), command);
             let escaped = escape_applescript(&script);
-            let app = if term_prog == "iTerm.app" { "iTerm" } else { "Terminal" };
+            let app = if term_prog == "iTerm.app" {
+                "iTerm"
+            } else {
+                "Terminal"
+            };
             let osa = format!(r#"tell application "{}" to do script "{}""#, app, escaped);
             Command::new("osascript").args(["-e", &osa]).spawn()?;
         }

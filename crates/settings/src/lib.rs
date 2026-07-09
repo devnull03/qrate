@@ -12,14 +12,21 @@ use gpui_component::Sizable;
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
 
 use std::path::PathBuf;
-use std::{collections::HashMap, env};
 use std::sync::Arc;
+use std::{collections::HashMap, env};
 
 use gpui::*;
-use serde::{Deserialize, Serialize};
 use gpui_component::{
-    IconName, StyledExt, TitleBar, button::Button, h_flex, input::InputState, label::Label, scroll::ScrollableElement, setting::{SettingField, SettingItem, SettingPage, Settings}, v_flex
+    IconName, StyledExt, TitleBar,
+    button::Button,
+    h_flex,
+    input::InputState,
+    label::Label,
+    scroll::ScrollableElement,
+    setting::{SettingField, SettingItem, SettingPage, Settings},
+    v_flex,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::path_picker::PathPickerApp;
 
@@ -59,10 +66,20 @@ pub enum Setting {
 impl From<Setting> for SettingItem {
     fn from(setting: Setting) -> Self {
         match setting {
-            Setting::Text { key, label, description } => SettingItem::new(
+            Setting::Text {
+                key,
+                label,
+                description,
+            } => SettingItem::new(
                 label,
                 SettingField::input(
-                    move |cx: &App| AppSettings::get(cx).values.get(key).map(|v| v.text()).unwrap_or_default(),
+                    move |cx: &App| {
+                        AppSettings::get(cx)
+                            .values
+                            .get(key)
+                            .map(|v| v.text())
+                            .unwrap_or_default()
+                    },
                     move |val: SharedString, cx: &mut App| {
                         AppSettings::set_text(key, val, cx);
                     },
@@ -70,10 +87,20 @@ impl From<Setting> for SettingItem {
             )
             .description(description),
 
-            Setting::Switch { key, label, description } => SettingItem::new(
+            Setting::Switch {
+                key,
+                label,
+                description,
+            } => SettingItem::new(
                 label,
                 SettingField::switch(
-                    move |cx: &App| AppSettings::get(cx).values.get(key).map(|v| v.bool()).unwrap_or(false),
+                    move |cx: &App| {
+                        AppSettings::get(cx)
+                            .values
+                            .get(key)
+                            .map(|v| v.bool())
+                            .unwrap_or(false)
+                    },
                     move |val: bool, cx: &mut App| {
                         AppSettings::set_bool(key, val, cx);
                     },
@@ -81,7 +108,12 @@ impl From<Setting> for SettingItem {
             )
             .description(description),
 
-            Setting::Dropdown { key, label, description, options } => {
+            Setting::Dropdown {
+                key,
+                label,
+                description,
+                options,
+            } => {
                 let opts: Vec<(SharedString, SharedString)> = options
                     .iter()
                     .map(|(k, v)| ((*k).into(), (*v).into()))
@@ -90,7 +122,13 @@ impl From<Setting> for SettingItem {
                     label,
                     SettingField::dropdown(
                         opts,
-                        move |cx: &App| AppSettings::get(cx).values.get(key).map(|v| v.text()).unwrap_or_default(),
+                        move |cx: &App| {
+                            AppSettings::get(cx)
+                                .values
+                                .get(key)
+                                .map(|v| v.text())
+                                .unwrap_or_default()
+                        },
                         move |val: SharedString, cx: &mut App| {
                             AppSettings::set_text(key, val, cx);
                         },
@@ -99,13 +137,19 @@ impl From<Setting> for SettingItem {
                 .description(description)
             }
 
-            Setting::FilePicker { key, label, description, prompt } => {
-                build_path_picker(key, label, description, prompt, true, false)
-            }
+            Setting::FilePicker {
+                key,
+                label,
+                description,
+                prompt,
+            } => build_path_picker(key, label, description, prompt, true, false),
 
-            Setting::DirPicker { key, label, description, prompt } => {
-                build_path_picker(key, label, description, prompt, false, true)
-            }
+            Setting::DirPicker {
+                key,
+                label,
+                description,
+                prompt,
+            } => build_path_picker(key, label, description, prompt, false, true),
         }
     }
 }
@@ -122,7 +166,11 @@ fn build_path_picker(
     SettingItem::new(
         label,
         SettingField::render(move |options, window, cx| {
-            let want = AppSettings::get(cx).values.get(key).map(|v| v.text()).unwrap_or_default();
+            let want = AppSettings::get(cx)
+                .values
+                .get(key)
+                .map(|v| v.text())
+                .unwrap_or_default();
             let input = window.use_keyed_state(
                 SharedString::from(format!(
                     "path-picker-{}-{}-{}",
@@ -310,8 +358,12 @@ pub struct SettingsPersistence {
 impl Global for SettingsPersistence {}
 
 impl AppSettings {
-    pub fn get(cx: &App) -> &Self { cx.global::<Self>() }
-    pub fn get_mut(cx: &mut App) -> &mut Self { cx.global_mut::<Self>() }
+    pub fn get(cx: &App) -> &Self {
+        cx.global::<Self>()
+    }
+    pub fn get_mut(cx: &mut App) -> &mut Self {
+        cx.global_mut::<Self>()
+    }
 
     fn main_window_resolved_display(&self, cx: &App) -> Option<DisplayId> {
         self.main_window_bounds
@@ -334,19 +386,14 @@ impl AppSettings {
         const MIN_H: f32 = 250.0;
         const DEFAULT_W: f32 = 600.0;
         const DEFAULT_H: f32 = 800.0;
-        if let Some(b) = &self.main_window_bounds {
-            if b.width.is_finite()
-                && b.height.is_finite()
-                && b.width >= MIN_W
-                && b.height >= MIN_H
-            {
-                let bounds = Bounds::centered(
-                    display,
-                    size(px(b.width), px(b.height)),
-                    cx,
-                );
-                return (bounds, display);
-            }
+        if let Some(b) = &self.main_window_bounds
+            && b.width.is_finite()
+            && b.height.is_finite()
+            && b.width >= MIN_W
+            && b.height >= MIN_H
+        {
+            let bounds = Bounds::centered(display, size(px(b.width), px(b.height)), cx);
+            return (bounds, display);
         }
         let bounds = Bounds::centered(display, size(px(DEFAULT_W), px(DEFAULT_H)), cx);
         (bounds, display)
@@ -360,7 +407,7 @@ impl AppSettings {
         };
         if let Some(writer) = cx.global::<SettingsPersistence>().writer.clone() {
             let snapshot = cx.global::<Self>();
-            writer.enqueue_save(&snapshot);
+            writer.enqueue_save(snapshot);
         }
         r
     }
@@ -416,8 +463,6 @@ impl Render for SettingsWindow {
             )
     }
 }
-
-
 
 pub fn find_on_path(candidates: &[&str]) -> Option<PathBuf> {
     let path = env::var_os("PATH")?;
