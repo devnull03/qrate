@@ -2,6 +2,7 @@ mod actions;
 mod app_menus;
 mod app_settings;
 mod components;
+mod debug; // DEBUG (ASNT-13 manual test scaffolding) — see crates/app/src/debug.rs
 mod helpers;
 mod status_items;
 mod title_items;
@@ -22,11 +23,43 @@ use crate::app_settings::build_pages;
 use crate::{
     actions::{ToggleBottomDock, ToggleLeftDock, ToggleRightDock},
     app_menus::{OpenSettings, Quit, app_menus},
+    debug::register_debug_menu_action, // DEBUG (ASNT-13 manual test scaffolding)
     status_items::build_status_bar_registry,
     title_items::build_title_bar_registry,
 };
 use gpui_component::dock::DockPlacement;
 use workspace::Workspace;
+
+/// Opens the Settings window, focusing the existing one if it's already open.
+/// Shared by the real `OpenSettings` action and the debug menu's
+/// open-two-windows-at-once action (see `crate::debug`).
+pub(crate) fn open_settings_window(cx: &mut App) {
+    if WindowRegistry::focus_or_clear(SETTINGS_WINDOW_KIND, cx) {
+        return;
+    }
+    let bounds = Bounds::centered(None, size(px(1000.0), px(800.0)), cx);
+    let window_options = WindowOptions {
+        titlebar: Some(TitleBar::title_bar_options()),
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_min_size: Some(Size::new(px(600.0), px(400.0))),
+        ..Default::default()
+    };
+
+    cx.spawn(async move |cx| {
+        let result = cx.open_window(window_options, |window, cx| {
+            let view = cx.new(|cx| SettingsWindow::new(window, cx, build_pages));
+            cx.new(|cx| Root::new(view, window, cx))
+        });
+
+        if let Ok(window_handle) = result {
+            cx.update(|cx| {
+                WindowRegistry::register(SETTINGS_WINDOW_KIND, window_handle.into(), cx);
+            })
+            .ok();
+        }
+    })
+    .detach();
+}
 
 pub struct App {
     workspace: Entity<Workspace>,
@@ -119,39 +152,12 @@ fn main() {
         // Settings ------------------------------------
         let settings = load_app_settings().unwrap_or_default();
         cx.set_global(settings);
-        let (main_bounds, main_display) = AppSettings::get(cx).main_window_startup_placement(cx);
         cx.set_global(SettingsPersistence {
             writer: Some(SettingsWriter::start()),
         });
         cx.set_global(WindowRegistry::default());
 
-        cx.on_action(|_: &OpenSettings, cx| {
-            if WindowRegistry::focus_or_clear(SETTINGS_WINDOW_KIND, cx) {
-                return;
-            }
-            let bounds = Bounds::centered(None, size(px(1000.0), px(800.0)), cx);
-            let window_options = WindowOptions {
-                titlebar: Some(TitleBar::title_bar_options()),
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(Size::new(px(600.0), px(400.0))),
-                ..Default::default()
-            };
-
-            cx.spawn(async move |cx| {
-                let result = cx.open_window(window_options, |window, cx| {
-                    let view = cx.new(|cx| SettingsWindow::new(window, cx, build_pages));
-                    cx.new(|cx| Root::new(view, window, cx))
-                });
-
-                if let Ok(window_handle) = result {
-                    cx.update(|cx| {
-                        WindowRegistry::register(SETTINGS_WINDOW_KIND, window_handle.into(), cx);
-                    })
-                    .ok();
-                }
-            })
-            .detach();
-        });
+        cx.on_action(|_: &OpenSettings, cx| open_settings_window(cx));
         // ----------------------------------------------
 
         cx.set_menus(app_menus());
@@ -167,19 +173,22 @@ fn main() {
         cx.on_action(|_: &Quit, cx| {
             cx.quit();
         });
-        let min_size = Size::new(px(520.0), px(300.0));
 
-        let window_options = WindowOptions {
-            titlebar: Some(TitleBar::title_bar_options()),
-            window_bounds: Some(WindowBounds::Windowed(main_bounds)),
-            display_id: main_display,
-            window_min_size: Some(min_size),
-            ..Default::default()
-        };
+        // DEBUG (ASNT-13 manual test scaffolding): opens Settings + a stub
+        // project window together via the "Debug: Open Settings + Project"
+        // menu item. See crates/app/src/debug.rs.
+        register_debug_menu_action(cx);
 
+        // DEBUG (ASNT-13 manual test scaffolding): the startup window is a mock
+        // project-management window instead of the real main window, so the real
+        // main window, Settings, and the stub project window can all be opened
+        // independently to test WindowRegistry. Its button calls
+        // debug::open_main_window. Revert this block to open `App::new` directly
+        // once ASNT-13 has been manually verified.
+        let window_options = debug::mock_startup_window_options(cx);
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
-                let view = cx.new(|cx| App::new(window, cx));
+                let view = cx.new(|_| debug::DebugMockProjectWindow);
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .expect("Failed to open window");
