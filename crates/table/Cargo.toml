@@ -1,11 +1,8 @@
 [package]
-name = "workspace"
+name = "table"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 gpui.workspace = true
 gpui-component.workspace = true
-serde_json.workspace = true
-settings = { path = "../settings" }
-table = { path = "../table" }

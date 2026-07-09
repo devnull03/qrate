@@ -4,6 +4,7 @@ members = [
   "crates/app",
   "crates/ai",
   "crates/settings",
+  "crates/table",
   "crates/window-wrapper",
   "crates/workspace",
 ]
@@ -12,6 +13,14 @@ default-members = ["crates/app"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+
+# Dev runtime was crawling on the 2k-row table because unoptimized gpui/text-shaping
+# runs every frame. Optimize deps once (cached); keep our crates light so recompiles stay fast.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
 
 [workspace.dependencies]
 anyhow = "1"

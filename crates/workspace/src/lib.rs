@@ -8,13 +8,16 @@ mod panels;
 
 pub use dock_button::DockToggleButton;
 
+use std::sync::Arc;
+
 use gpui::*;
 use gpui_component::dock::{
     DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, register_panel,
 };
 use settings::AppSettings;
+use table::TablePanel;
 
-use crate::panels::{AgentPanel, DetailsPanel, ProblemsPanel, TablePanel};
+use crate::panels::{AgentPanel, DetailsPanel, ProblemsPanel};
 
 /// Settings key under which the serialized [`DockAreaState`] is persisted.
 const DOCK_LAYOUT_KEY: &str = "main_dock_layout";
@@ -65,7 +68,10 @@ impl Workspace {
             // We drive open/close from our own title/status-bar buttons, so hide the dock's
             // built-in toggle arrows (they otherwise flank the center table panel).
             area.set_toggle_button_visible(false, cx);
-            area.set_center(DockItem::tab(table, &weak, window, cx), window, cx);
+            // The center table gets no tab/title-bar chrome at all (no "⋯" menu, no rounded
+            // tab corners) — `DockItem::panel` embeds it directly instead of wrapping it in a
+            // `TabPanel`, which would otherwise be forced regardless of `zoomable`/`closable`.
+            area.set_center(DockItem::panel(Arc::new(table.clone())), window, cx);
             area.set_left_dock(
                 DockItem::tab(details, &weak, window, cx),
                 Some(px(300.)),
