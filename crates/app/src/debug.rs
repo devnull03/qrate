@@ -11,7 +11,10 @@ use gpui_component::{Root, TitleBar, button::Button, v_flex};
 use settings::AppSettings;
 use window_wrapper::WindowRegistry;
 
-use crate::{App, open_settings_window};
+// Aliased: a bare `App` import here would shadow `gpui::App` (from the glob
+// import above) for the whole module, since explicit imports win over globs.
+use crate::App as MainWindow;
+use crate::open_settings_window;
 
 actions!(debug, [DebugOpenBoth]);
 
@@ -38,7 +41,7 @@ pub fn open_main_window(cx: &mut App) {
 
     cx.spawn(async move |cx| {
         let result = cx.open_window(window_options, |window, cx| {
-            let view = cx.new(|cx| App::new(window, cx));
+            let view = cx.new(|cx| MainWindow::new(window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         });
 

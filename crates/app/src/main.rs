@@ -33,7 +33,10 @@ use workspace::Workspace;
 /// Opens the Settings window, focusing the existing one if it's already open.
 /// Shared by the real `OpenSettings` action and the debug menu's
 /// open-two-windows-at-once action (see `crate::debug`).
-pub(crate) fn open_settings_window(cx: &mut App) {
+// `gpui::App`, spelled out: a bare `App` here would resolve to this file's own
+// `pub struct App` below, not the GPUI context type — local items always win
+// over glob imports regardless of source order.
+pub(crate) fn open_settings_window(cx: &mut gpui::App) {
     if WindowRegistry::focus_or_clear(SETTINGS_WINDOW_KIND, cx) {
         return;
     }
