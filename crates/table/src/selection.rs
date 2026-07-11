@@ -24,7 +24,12 @@ pub(crate) fn render_cell(
     _window: &mut Window,
     cx: &mut Context<TableState<QrateTableDelegate>>,
 ) -> AnyElement {
-    if delegate.editing == (EditState::Editing { row: row_ix, col: col_ix }) {
+    if delegate.editing
+        == (EditState::Editing {
+            row: row_ix,
+            col: col_ix,
+        })
+    {
         return Input::new(&delegate.editor).into_any_element();
     }
 
