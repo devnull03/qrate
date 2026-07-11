@@ -1,0 +1,15 @@
+[package]
+name = "project-wizard"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+csv.workspace = true
+dirs.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+settings = { path = "../settings" }
+window-wrapper = { path = "../window-wrapper" }

@@ -2,13 +2,13 @@ mod actions;
 mod app_menus;
 mod app_settings;
 mod components;
-mod debug; // DEBUG (ASNT-13 manual test scaffolding) — see crates/app/src/debug.rs
 mod helpers;
 mod status_items;
 mod title_items;
 
 use gpui::*;
 use gpui_component::{Root, TitleBar, v_flex};
+use project_wizard::{EntryKind, LauncherHooks};
 use settings::{
     AppSettings, MainWindowBounds, SettingsPersistence, SettingsWindow, SettingsWriter,
     load_app_settings,
@@ -18,12 +18,12 @@ use window_wrapper::{
 };
 
 const SETTINGS_WINDOW_KIND: &str = "settings";
+const MAIN_WINDOW_KIND: &str = "main";
 
 use crate::app_settings::build_pages;
 use crate::{
-    actions::{ToggleBottomDock, ToggleLeftDock, ToggleRightDock},
+    actions::{NewProject, ToggleBottomDock, ToggleLeftDock, ToggleRightDock},
     app_menus::{OpenSettings, Quit, app_menus},
-    debug::register_debug_menu_action, // DEBUG (ASNT-13 manual test scaffolding)
     status_items::build_status_bar_registry,
     title_items::build_title_bar_registry,
 };
@@ -31,8 +31,6 @@ use gpui_component::dock::DockPlacement;
 use workspace::Workspace;
 
 /// Opens the Settings window, focusing the existing one if it's already open.
-/// Shared by the real `OpenSettings` action and the debug menu's
-/// open-two-windows-at-once action (see `crate::debug`).
 // `gpui::App`, spelled out: a bare `App` here would resolve to this file's own
 // `pub struct App` below, not the GPUI context type — local items always win
 // over glob imports regardless of source order.
@@ -57,6 +55,38 @@ pub(crate) fn open_settings_window(cx: &mut gpui::App) {
         if let Ok(window_handle) = result {
             cx.update(|cx| {
                 WindowRegistry::register(SETTINGS_WINDOW_KIND, window_handle.into(), cx);
+            })
+            .ok();
+        }
+    })
+    .detach();
+}
+
+/// Opens the real main app window, focusing the existing one if it's already open. Called by
+/// the launcher (`project-wizard` crate) when a recent project is opened or a wizard finishes.
+pub(crate) fn open_main_window(cx: &mut gpui::App) {
+    if WindowRegistry::focus_or_clear(MAIN_WINDOW_KIND, cx) {
+        return;
+    }
+
+    let (main_bounds, main_display) = AppSettings::get(cx).main_window_startup_placement(cx);
+    let window_options = WindowOptions {
+        titlebar: Some(TitleBar::title_bar_options()),
+        window_bounds: Some(WindowBounds::Windowed(main_bounds)),
+        display_id: main_display,
+        window_min_size: Some(Size::new(px(520.0), px(300.0))),
+        ..Default::default()
+    };
+
+    cx.spawn(async move |cx| {
+        let result = cx.open_window(window_options, |window, cx| {
+            let view = cx.new(|cx| App::new(window, cx));
+            cx.new(|cx| Root::new(view, window, cx))
+        });
+
+        if let Ok(window_handle) = result {
+            cx.update(|cx| {
+                WindowRegistry::register(MAIN_WINDOW_KIND, window_handle.into(), cx);
             })
             .ok();
         }
@@ -160,7 +190,16 @@ fn main() {
         });
         cx.set_global(WindowRegistry::default());
 
+        // Lets the launcher (in the `project-wizard` crate, which can't depend on `app`) open
+        // the real main window without a crate cycle. See `project_wizard::launcher`.
+        cx.set_global(LauncherHooks {
+            open_main_window,
+        });
+
         cx.on_action(|_: &OpenSettings, cx| open_settings_window(cx));
+        cx.on_action(|_: &NewProject, cx| {
+            project_wizard::open_project_wizard(EntryKind::Blank, cx)
+        });
         // ----------------------------------------------
 
         cx.set_menus(app_menus());
@@ -177,25 +216,9 @@ fn main() {
             cx.quit();
         });
 
-        // DEBUG (ASNT-13 manual test scaffolding): opens Settings + a stub
-        // project window together via the "Debug: Open Settings + Project"
-        // menu item. See crates/app/src/debug.rs.
-        register_debug_menu_action(cx);
-
-        // DEBUG (ASNT-13 manual test scaffolding): the startup window is a mock
-        // project-management window instead of the real main window, so the real
-        // main window, Settings, and the stub project window can all be opened
-        // independently to test WindowRegistry. Its button calls
-        // debug::open_main_window. Revert this block to open `App::new` directly
-        // once ASNT-13 has been manually verified.
-        let window_options = debug::mock_startup_window_options(cx);
-        cx.spawn(async move |cx| {
-            cx.open_window(window_options, |window, cx| {
-                let view = cx.new(|_| debug::DebugMockProjectWindow);
-                cx.new(|cx| Root::new(view, window, cx))
-            })
-            .expect("Failed to open window");
-        })
-        .detach();
+        // The launcher (Recent Projects + Create New) is the real startup window — it opens
+        // the main window itself for a recent project, or a project-creation wizard window for
+        // "Create New".
+        project_wizard::open_launcher_window(cx);
     });
 }

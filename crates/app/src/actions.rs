@@ -35,9 +35,11 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 
 /// Handlers that don't need a `Window`. Window-needing actions (the dock toggles) are handled
 /// on the `App` view in `main.rs` instead, since global handlers only get `&mut App`.
+///
+/// `NewProject` is registered in `main.rs` alongside `OpenSettings` (it needs to call into the
+/// `project-wizard` crate). Only `NewWindow` is still a stub here.
 pub fn register_global_handlers(cx: &mut App) {
-    // ponytail: stubs. NewProject has no project concept yet; NewWindow is blocked on the
-    // bar registries being globals (single-window) — de-globalize them per-window first.
+    // ponytail: NewWindow is blocked on the bar registries being globals (single-window) —
+    // de-globalize them per-window first.
     cx.on_action(|_: &NewWindow, _cx| eprintln!("NewWindow: TODO (bar registries are global)"));
-    cx.on_action(|_: &NewProject, _cx| eprintln!("NewProject: TODO"));
 }
