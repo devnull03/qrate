@@ -45,7 +45,7 @@ pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> St
 
     // Text readout of the table's selected cell. Added to the right *before* the agent star so it
     // lands leftmost in the right group (text items go right-leftmost, star stays rightmost).
-    let cell_location = cx.new(|cx| CellLocation::new(cx));
+    let cell_location = cx.new(CellLocation::new);
     registry.add_right(cell_location);
 
     let agent = cx.new(|_| {

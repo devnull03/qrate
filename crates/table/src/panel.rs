@@ -20,9 +20,8 @@ pub struct TablePanel {
 impl TablePanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| InputState::new(window, cx));
-        let state = cx.new(|cx| {
-            TableState::new(QrateTableDelegate::new(editor.clone()), window, cx)
-        });
+        let state =
+            cx.new(|cx| TableState::new(QrateTableDelegate::new(editor.clone()), window, cx));
         // Publish the handle so status-bar items in the `app` crate can drive/read the table.
         cx.set_global(TableStateHandle(state.downgrade()));
 
