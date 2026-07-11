@@ -7,7 +7,7 @@
 //! once.
 
 use gpui::*;
-use gpui_component::{Root, TitleBar, button::Button, v_flex};
+use gpui_component::{Root, StyledExt, TitleBar, button::Button, label::Label, v_flex};
 use settings::AppSettings;
 use window_wrapper::WindowRegistry;
 
@@ -64,9 +64,14 @@ impl Render for DebugProjectStub {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
-            .items_center()
-            .justify_center()
-            .child("Project Creation (debug stub) — ASNT-15 not built yet")
+            .child(TitleBar::new().child(Label::new("Project Creation (debug)").font_semibold()))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .child("Project Creation (debug stub) — ASNT-15 not built yet"),
+            )
     }
 }
 
@@ -117,17 +122,22 @@ impl Render for DebugMockProjectWindow {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
-            .items_center()
-            .justify_center()
-            .gap_4()
-            .child("Debug: mock project management window")
+            .child(TitleBar::new().child(Label::new("Project Management (debug)").font_semibold()))
             .child(
-                Button::new("open-main-project")
-                    .label("Open Main Project")
-                    .on_click(|_, window, cx| {
-                        open_main_window(cx);
-                        window.remove_window();
-                    }),
+                v_flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .gap_4()
+                    .child("Debug: mock project management window")
+                    .child(
+                        Button::new("open-main-project")
+                            .label("Open Main Project")
+                            .on_click(|_, window, cx| {
+                                open_main_window(cx);
+                                window.remove_window();
+                            }),
+                    ),
             )
     }
 }
