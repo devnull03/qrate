@@ -14,6 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
 window-wrapper = { path = "../window-wrapper" }
+project-wizard = { path = "../project-wizard" }
 settings = { path = "../settings" }
 table = { path = "../table" }
 workspace = { path = "../workspace" }
