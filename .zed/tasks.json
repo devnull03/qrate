@@ -25,5 +25,9 @@
   {
     "label": "cargo clippy",
     "command": "cargo clippy --all-targets"
+  },
+  {
+    "label": "lazygit",
+    "command": "lazygit"
   }
 ]
