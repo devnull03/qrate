@@ -192,9 +192,7 @@ fn main() {
 
         // Lets the launcher (in the `project-wizard` crate, which can't depend on `app`) open
         // the real main window without a crate cycle. See `project_wizard::launcher`.
-        cx.set_global(LauncherHooks {
-            open_main_window,
-        });
+        cx.set_global(LauncherHooks { open_main_window });
 
         cx.on_action(|_: &OpenSettings, cx| open_settings_window(cx));
         cx.on_action(|_: &NewProject, cx| {
