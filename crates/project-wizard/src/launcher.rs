@@ -36,7 +36,13 @@ impl Launcher {
         }
     }
 
-    fn open_recent(&mut self, path: String, name: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_recent(
+        &mut self,
+        path: String,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         recent::record_opened(name, path, cx);
         if let Some(hooks) = cx.try_global::<LauncherHooks>().copied() {
             (hooks.open_main_window)(cx);
@@ -44,8 +50,17 @@ impl Launcher {
         window.remove_window();
     }
 
-    fn start_new(&mut self, entry_kind: EntryKind, cx: &mut Context<Self>) {
+    fn start_new(&mut self, entry_kind: EntryKind, window: &mut Window, cx: &mut Context<Self>) {
         wizard::open_project_wizard(entry_kind, cx);
+        // Close the launcher while the wizard is up; `go_back` from the wizard's
+        // first step reopens it. Without this it lingers behind the new project.
+        window.remove_window();
+    }
+
+    fn remove_recent(&mut self, path: String, cx: &mut Context<Self>) {
+        recent::remove(&path, cx);
+        self.recents = recent::list(cx);
+        cx.notify();
     }
 }
 
@@ -84,6 +99,7 @@ impl Render for Launcher {
                         )
                         .child(
                             v_flex()
+                                .flex_1()
                                 .min_w(px(0.))
                                 .child(div().font_semibold().text_sm().child(project.name.clone()))
                                 .child(
@@ -93,6 +109,23 @@ impl Render for Launcher {
                                         .child(format!("{} · opened {when}", project.path)),
                                 ),
                         )
+                        .child({
+                            let remove_path = project.path.clone();
+                            div()
+                                .id(("remove-recent", ix))
+                                .flex_none()
+                                .px_1p5()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .cursor_pointer()
+                                .hover(|el| el.text_color(cx.theme().danger))
+                                .child("✕")
+                                // Stop the click from also opening the project.
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.remove_recent(remove_path.clone(), cx);
+                                }))
+                        })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_recent(path.clone(), name.clone(), window, cx)
                         })),
@@ -109,15 +142,23 @@ impl Render for Launcher {
                 h_flex()
                     .id("launcher-body")
                     .flex_1()
+                    .min_h(px(0.))
+                    .h_full()
                     .gap_5()
                     .p_5()
                     .child(
                         v_flex()
                             .flex_1()
+                            // min_h(0) lets this column be bounded to the row
+                            // height so the inner list — not the column — scrolls,
+                            // keeping the heading pinned. Without it the flex
+                            // item's default min-height:auto grows to fit content.
+                            .min_h(px(0.))
                             .min_w(px(0.))
                             .gap_2()
                             .child(
                                 h_flex()
+                                    .flex_none()
                                     .justify_between()
                                     .items_baseline()
                                     .child(div().text_lg().font_semibold().child("Recent Projects"))
@@ -127,11 +168,14 @@ impl Render for Launcher {
                                             .text_color(cx.theme().muted_foreground),
                                     ),
                             )
-                            .child(recent_list)
+                            // Heading above stays pinned; only the list scrolls.
                             .child(
-                                Label::new("Opening a recent project skips the wizard entirely.")
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground),
+                                div()
+                                    .id("recents-scroll")
+                                    .flex_1()
+                                    .min_h(px(0.))
+                                    .overflow_y_scroll()
+                                    .child(v_flex().gap_2().child(recent_list)),
                             ),
                     )
                     .child(
@@ -194,7 +238,7 @@ fn create_card(
                 .text_color(cx.theme().muted_foreground)
                 .child(description),
         )
-        .on_click(cx.listener(move |this, _, _, cx| this.start_new(entry_kind, cx)))
+        .on_click(cx.listener(move |this, _, window, cx| this.start_new(entry_kind, window, cx)))
 }
 
 pub fn open_launcher_window(cx: &mut App) {

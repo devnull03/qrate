@@ -101,23 +101,25 @@ impl ProjectWizard {
                             })),
                     )
                     .content(
-                        v_flex()
-                            .gap_2()
-                            .mt_2()
-                            .child(
-                                option_card(
-                                    "link-pattern",
-                                    "Use a custom pattern",
-                                    "Match filenames against a pattern instead of an exact match.",
-                                    pattern_selected,
-                                    cx,
-                                )
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.link_method = LinkMethod::CustomPattern;
-                                    cx.notify();
-                                })),
+                        v_flex().gap_2().mt_2().child(
+                            // The pattern input lives *inside* the option card
+                            // (appended to `option_card`'s own v_flex), revealed
+                            // once the card is selected.
+                            option_card(
+                                "link-pattern",
+                                "Use a custom pattern",
+                                "Match filenames against a pattern instead of an exact match.",
+                                pattern_selected,
+                                cx,
                             )
-                            .child(Input::new(&self.link_pattern_input).w_full()),
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.link_method = LinkMethod::CustomPattern;
+                                cx.notify();
+                            }))
+                            .when(pattern_selected, |el| {
+                                el.child(Input::new(&self.link_pattern_input).w_full())
+                            }),
+                        ),
                     ),
             )
     }

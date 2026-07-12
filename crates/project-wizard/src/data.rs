@@ -1,7 +1,6 @@
 //! Real CSV parsing and folder-matching logic used by the Files, Link, and
-//! Columns steps. Google Sheets has no OAuth/API integration in this codebase
-//! yet, so [`validate_sheet_link`] mocks a successful connection once the URL
-//! shape checks out (see its doc comment).
+//! Columns steps. Google Sheets are fetched as CSV by the `cloud-sync` crate
+//! and then run through the same [`load_csv_preview`] / [`match_folder`] path.
 
 use std::collections::HashSet;
 use std::fs;
@@ -97,36 +96,6 @@ pub struct SheetCheckResult {
 }
 
 #[derive(Clone, Debug)]
-pub enum SheetError {
-    BadLink,
-}
-
-impl SheetError {
-    pub fn message(&self) -> &'static str {
-        match self {
-            SheetError::BadLink => "That doesn't look like a Google Sheets link",
-        }
-    }
-}
-
-/// Mocked: qrate has no Google Sheets API/OAuth integration yet. Once the
-/// link shape checks out this reports a canned successful connection so the
-/// rest of the wizard flow (folder matching, column setup) can be exercised
-/// end-to-end. Swap this out for a real Sheets API call when that lands.
-pub fn validate_sheet_link(link: &str) -> Result<SheetCheckResult, SheetError> {
-    let trimmed = link.trim();
-    let looks_like_sheet = trimmed.contains("docs.google.com/spreadsheets");
-    if trimmed.is_empty() || !looks_like_sheet {
-        return Err(SheetError::BadLink);
-    }
-    Ok(SheetCheckResult {
-        title: "Aderman Collection Metadata".into(),
-        row_count: 142,
-        used_first_tab: true,
-    })
-}
-
-#[derive(Clone, Debug)]
 pub struct FolderMatch {
     pub matched_rows: usize,
     pub total_rows: usize,
@@ -181,10 +150,7 @@ pub fn match_folder(
     folder: &str,
 ) -> Result<FolderMatch, FolderError> {
     let files = list_files(folder)?;
-    let file_stems: HashSet<String> = files
-        .iter()
-        .map(|f| f.to_lowercase())
-        .collect();
+    let file_stems: HashSet<String> = files.iter().map(|f| f.to_lowercase()).collect();
     let file_names_no_ext: HashSet<String> = files
         .iter()
         .map(|f| {
@@ -226,20 +192,6 @@ pub fn match_folder(
         matched_rows,
         total_rows: preview.rows.len(),
         extra_files: files.len().saturating_sub(used_files.len()),
-    })
-}
-
-/// Same idea as [`match_folder`], but for the Google Sheet path where there's
-/// no real row data to inspect (see [`validate_sheet_link`]'s doc comment) —
-/// just a row count from the mocked sheet check. Reports every folder file up
-/// to that row count as matched.
-pub fn match_folder_sheet(sheet_row_count: usize, folder: &str) -> Result<FolderMatch, FolderError> {
-    let files = list_files(folder)?;
-    let matched_rows = files.len().min(sheet_row_count);
-    Ok(FolderMatch {
-        matched_rows,
-        total_rows: sheet_row_count,
-        extra_files: files.len().saturating_sub(matched_rows),
     })
 }
 
@@ -334,9 +286,11 @@ pub fn load_column_config(
     }
 
     let matches_any = against_headers.is_empty()
-        || entries
-            .iter()
-            .any(|e| against_headers.iter().any(|h| h.eq_ignore_ascii_case(&e.name)));
+        || entries.iter().any(|e| {
+            against_headers
+                .iter()
+                .any(|h| h.eq_ignore_ascii_case(&e.name))
+        });
     if !matches_any {
         return Err(ColumnConfigError::NoMatch);
     }
@@ -398,16 +352,6 @@ mod tests {
             match_folder(&preview, empty.to_str().unwrap()),
             Err(FolderError::Empty)
         ));
-    }
-
-    #[test]
-    fn sheet_link_validation() {
-        assert!(validate_sheet_link("https://docs.google.com/spreadsheets/d/abc123/edit").is_ok());
-        assert!(matches!(
-            validate_sheet_link("https://example.com/not-a-sheet"),
-            Err(SheetError::BadLink)
-        ));
-        assert!(matches!(validate_sheet_link(""), Err(SheetError::BadLink)));
     }
 
     #[test]

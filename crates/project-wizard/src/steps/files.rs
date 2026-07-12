@@ -2,11 +2,11 @@
 //! folder and share the same folder-matching validation; only the top field
 //! (spreadsheet file vs. sheet link) differs.
 
-use gpui::*;
+use gpui::{prelude::FluentBuilder, *};
 use gpui_component::button::Button;
 use gpui_component::input::Input;
 use gpui_component::label::Label;
-use gpui_component::{ActiveTheme, Icon, IconName, StyledExt, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Disableable, Icon, IconName, StyledExt, h_flex, v_flex};
 
 use crate::data;
 use crate::wizard::{EntryKind, ProjectWizard};
@@ -109,13 +109,12 @@ impl ProjectWizard {
             return;
         }
         let result = match self.entry_kind {
-            EntryKind::Csv => self.csv_preview.as_ref().map(|preview| {
-                data::match_folder(preview, &self.folder_path)
-            }),
-            EntryKind::Sheet => self
-                .sheet_check
+            // Sheet reuses `csv_preview` (its fetched CSV is parsed the same
+            // way), so both match folders against real row data.
+            EntryKind::Csv | EntryKind::Sheet => self
+                .csv_preview
                 .as_ref()
-                .map(|check| data::match_folder_sheet(check.row_count, &self.folder_path)),
+                .map(|preview| data::match_folder(preview, &self.folder_path)),
             EntryKind::Blank => None,
         };
         match result {
@@ -134,19 +133,43 @@ impl ProjectWizard {
         }
     }
 
-    fn check_sheet_link(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn check_sheet_link(&mut self, cx: &mut Context<Self>) {
         let link = self.sheet_link_input.read(cx).value().to_string();
-        match data::validate_sheet_link(&link) {
-            Ok(check) => {
-                self.sheet_check = Some(check);
-                self.sheet_error = None;
-            }
-            Err(e) => {
-                self.sheet_error = Some(e.message().into());
-                self.sheet_check = None;
-            }
-        }
-        self.revalidate_folder();
+        // Fetch is a blocking network call — run it on a background thread so
+        // the UI doesn't freeze, then apply the result back on the UI thread.
+        let fetch = cx
+            .background_executor()
+            .spawn(async move { cloud_sync::fetch_sheet_csv(&link) });
+        cx.spawn(async move |this, cx| {
+            let result = fetch.await;
+            this.update(cx, |this, cx| {
+                match result.map(|path| data::load_csv_preview(&path.to_string_lossy())) {
+                    Ok(Ok(preview)) => {
+                        this.sheet_check = Some(data::SheetCheckResult {
+                            title: "Google Sheet".into(),
+                            row_count: preview.row_count(),
+                            used_first_tab: true,
+                        });
+                        this.csv_preview = Some(preview);
+                        this.sheet_error = None;
+                    }
+                    Ok(Err(e)) => {
+                        this.sheet_error = Some(e.message().into());
+                        this.sheet_check = None;
+                        this.csv_preview = None;
+                    }
+                    Err(e) => {
+                        this.sheet_error = Some(e.message().into());
+                        this.sheet_check = None;
+                        this.csv_preview = None;
+                    }
+                }
+                this.revalidate_folder();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(crate) fn render_files_step(
@@ -154,23 +177,110 @@ impl ProjectWizard {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        match self.entry_kind {
+        let body = match self.entry_kind {
             EntryKind::Csv => self.render_csv_files(window, cx).into_any_element(),
             EntryKind::Sheet => self.render_sheet_files(window, cx).into_any_element(),
-            EntryKind::Blank => div().into_any_element(),
-        }
+            EntryKind::Blank => self.render_blank_files(window, cx).into_any_element(),
+        };
+        v_flex()
+            .gap_3()
+            .child(body)
+            .child(self.render_skip_files_toggle(cx))
     }
 
-    fn render_csv_files(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let csv_display = if self.csv_path.is_empty() {
-            "Choose a CSV file…".to_string()
-        } else {
-            self.csv_path.clone()
-        };
+    /// The "Files folder" picker, shared by all three Files variants. Dims and
+    /// disables itself when "add files later" is checked — only this field, not
+    /// the spreadsheet/sheet input above it. `show_status` appends the
+    /// folder-match result (Blank has no spreadsheet to match against).
+    fn folder_field(
+        &self,
+        browse_id: &'static str,
+        show_status: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let folder_display = if self.folder_path.is_empty() {
             "Choose your files folder…".to_string()
         } else {
             self.folder_path.clone()
+        };
+        let dimmed = self.skip_files;
+        let status = show_status.then(|| self.render_folder_status(cx));
+        v_flex()
+            .gap_1()
+            .when(dimmed, |el| el.opacity(0.4))
+            .child(Label::new("Files folder").text_sm())
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .px_2()
+                            .py_1p5()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(folder_display),
+                    )
+                    .child(
+                        Button::new(browse_id)
+                            .label("Browse…")
+                            .outline()
+                            .disabled(dimmed)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.browse_for_folder(window, cx)
+                            })),
+                    ),
+            )
+            .children(status)
+    }
+
+    /// "I'll add files later" — flips `skip_files`, which also skips the Link
+    /// step (see `ProjectWizard::skips_link`). Shown on every Files variant.
+    fn render_skip_files_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let checked = self.skip_files;
+        h_flex()
+            .id("skip-files-toggle")
+            .gap_1()
+            .cursor_pointer()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(if checked { "☑" } else { "☐" })
+            .child("I'll add a files folder later — skips the linking step")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.skip_files = !this.skip_files;
+                cx.notify();
+            }))
+    }
+
+    fn render_blank_files(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        v_flex()
+            .gap_3()
+            .child(div().text_lg().font_semibold().child("Add your files"))
+            .child(
+                Label::new("Point qrate at a folder of files, or skip and add them later.")
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(self.folder_field("browse-folder-blank", false, cx))
+    }
+
+    fn render_csv_files(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let csv_display = if self.csv_path.is_empty() {
+            "Choose a CSV file…".to_string()
+        } else {
+            self.csv_path.clone()
         };
 
         v_flex()
@@ -202,63 +312,39 @@ impl ProjectWizard {
                                     .child(csv_display),
                             )
                             .child(
-                                Button::new("browse-csv").label("Browse…").outline().on_click(
-                                    cx.listener(|this, _, window, cx| {
+                                Button::new("browse-csv")
+                                    .label("Browse…")
+                                    .outline()
+                                    .on_click(cx.listener(|this, _, window, cx| {
                                         this.browse_for_csv(window, cx)
-                                    }),
-                                ),
+                                    })),
                             ),
                     )
                     .child(match (&self.csv_preview, &self.csv_error) {
                         (Some(p), _) => inline_message(
-                            format!("✓ {} rows, {} columns found", p.row_count(), p.column_count()),
+                            format!(
+                                "✓ {} rows, {} columns found",
+                                p.row_count(),
+                                p.column_count()
+                            ),
                             MsgKind::Success,
                             cx,
                         )
                         .into_any_element(),
-                        (None, Some(e)) => inline_message(e.clone(), MsgKind::Error, cx).into_any_element(),
+                        (None, Some(e)) => {
+                            inline_message(e.clone(), MsgKind::Error, cx).into_any_element()
+                        }
                         (None, None) => div().into_any_element(),
                     }),
             )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(Label::new("Files folder").text_sm())
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .px_2()
-                                    .py_1p5()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(folder_display),
-                            )
-                            .child(
-                                Button::new("browse-folder").label("Browse…").outline().on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.browse_for_folder(window, cx)
-                                    }),
-                                ),
-                            ),
-                    )
-                    .child(self.render_folder_status(cx)),
-            )
+            .child(self.folder_field("browse-folder", true, cx))
     }
 
-    fn render_sheet_files(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let folder_display = if self.folder_path.is_empty() {
-            "Choose your files folder…".to_string()
-        } else {
-            self.folder_path.clone()
-        };
-
+    fn render_sheet_files(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         v_flex()
             .gap_3()
             .child(
@@ -276,9 +362,12 @@ impl ProjectWizard {
                             .gap_2()
                             .child(Input::new(&self.sheet_link_input).flex_1())
                             .child(
-                                Button::new("check-sheet").label("Check").outline().on_click(
-                                    cx.listener(|this, _, _, cx| this.check_sheet_link(cx)),
-                                ),
+                                Button::new("check-sheet")
+                                    .label("Check")
+                                    .outline()
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.check_sheet_link(cx)),
+                                    ),
                             ),
                     )
                     .child(match (&self.sheet_check, &self.sheet_error) {
@@ -297,41 +386,13 @@ impl ProjectWizard {
                             cx,
                         )
                         .into_any_element(),
-                        (None, Some(e)) => inline_message(e.clone(), MsgKind::Error, cx).into_any_element(),
+                        (None, Some(e)) => {
+                            inline_message(e.clone(), MsgKind::Error, cx).into_any_element()
+                        }
                         (None, None) => div().into_any_element(),
                     }),
             )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(Label::new("Files folder").text_sm())
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .px_2()
-                                    .py_1p5()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(folder_display),
-                            )
-                            .child(
-                                Button::new("browse-folder-sheet")
-                                    .label("Browse…")
-                                    .outline()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.browse_for_folder(window, cx)
-                                    })),
-                            ),
-                    )
-                    .child(self.render_folder_status(cx)),
-            )
+            .child(self.folder_field("browse-folder-sheet", true, cx))
     }
 
     fn render_folder_status(&self, cx: &App) -> AnyElement {

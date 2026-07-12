@@ -3,7 +3,7 @@
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::input::Input;
 use gpui_component::label::Label;
-use gpui_component::{ActiveTheme, IconName, Icon, StyledExt, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Icon, IconName, StyledExt, h_flex, v_flex};
 
 use crate::project;
 use crate::wizard::ProjectWizard;
@@ -15,9 +15,12 @@ impl ProjectWizard {
             self.name_error = Some("Give your project a name to continue".into());
             return false;
         }
+        // ponytail: fs .exists() runs per keystroke via the live subscription;
+        // debounce if it ever stutters.
         if project::name_taken(&self.save_path, &name) {
-            self.name_error =
-                Some("This name is already taken — try another, or pick a different save folder".into());
+            self.name_error = Some(
+                "This name is already taken — try another, or pick a different save folder".into(),
+            );
             return false;
         }
         self.name_error = None;
@@ -86,7 +89,9 @@ impl ProjectWizard {
                                             files: false,
                                             directories: true,
                                             multiple: false,
-                                            prompt: Some("Choose where to save this project".into()),
+                                            prompt: Some(
+                                                "Choose where to save this project".into(),
+                                            ),
                                         });
                                         cx.spawn(async move |this, cx| {
                                             if let Ok(Ok(Some(paths))) = receiver.await
