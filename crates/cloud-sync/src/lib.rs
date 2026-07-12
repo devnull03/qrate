@@ -151,7 +151,14 @@ pub struct SheetData {
 pub fn fetch_sheet(link: &str) -> Result<SheetData, SheetSyncError> {
     let SheetRef { id, .. } = parse_sheet_ref(link)?;
     let url = format!("https://docs.google.com/spreadsheets/d/{id}/export?format=xlsx");
-    let resp = reqwest::blocking::get(&url)?.error_for_status()?;
+    // Explicit timeout so a stalled connection returns an error instead of
+    // hanging the background worker thread forever.
+    let resp = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?
+        .get(&url)
+        .send()?
+        .error_for_status()?;
 
     if resp
         .url()
