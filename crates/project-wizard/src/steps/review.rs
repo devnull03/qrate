@@ -1,16 +1,16 @@
 //! Stage 5 · Review & Create — every path converges here.
 
 use gpui::{prelude::FluentBuilder, *};
-use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::label::Label;
 use gpui_component::{ActiveTheme, StyledExt, h_flex, v_flex};
 
+use crate::launcher;
 use crate::project::{self, ProjectManifest};
 use crate::recent;
 use crate::wizard::{ColumnSource, EntryKind, LinkMethod, ProjectWizard, WizardStep};
 
 impl ProjectWizard {
-    pub(crate) fn create_project(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn create_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.project_name(cx);
         let source = match self.entry_kind {
             EntryKind::Blank => "Blank".to_string(),
@@ -21,11 +21,9 @@ impl ProjectWizard {
             .folder_match
             .as_ref()
             .map(|m| (m.matched_rows, m.total_rows));
-        let link_method = (self.entry_kind != EntryKind::Blank).then(|| {
-            match self.link_method {
-                LinkMethod::ExactFilename => "exact filename".to_string(),
-                LinkMethod::CustomPattern => "custom pattern".to_string(),
-            }
+        let link_method = (self.entry_kind != EntryKind::Blank).then(|| match self.link_method {
+            LinkMethod::ExactFilename => "exact filename".to_string(),
+            LinkMethod::CustomPattern => "custom pattern".to_string(),
         });
         let columns = match self.entry_kind {
             EntryKind::Blank => Vec::new(),
@@ -67,9 +65,12 @@ impl ProjectWizard {
 
         match project::write_project_file(&self.save_path, &name, &manifest) {
             Ok(dir) => {
-                recent::record_opened(name, dir.clone(), cx);
-                self.created_dir = Some(dir);
-                self.step = WizardStep::Success;
+                recent::record_opened(name, dir, cx);
+                // No success screen — hand off to the main app right away.
+                if let Some(hooks) = cx.try_global::<launcher::LauncherHooks>().copied() {
+                    (hooks.open_main_window)(cx);
+                }
+                window.remove_window();
             }
             Err(e) => {
                 self.name_error = Some(format!("Couldn't create the project — {e}").into());
@@ -89,17 +90,38 @@ impl ProjectWizard {
             EntryKind::Csv => "CSV + folder",
             EntryKind::Sheet => "Google Sheet",
         };
+        let spreadsheet_line = self
+            .csv_preview
+            .as_ref()
+            .map(|p| format!("{} rows · {} columns", p.row_count(), p.column_count()));
         let files_line = self.folder_match.as_ref().map(|m| {
             let method = match self.link_method {
                 LinkMethod::ExactFilename => "exact filename",
                 LinkMethod::CustomPattern => "custom pattern",
             };
-            format!("{} of {} ({method})", m.matched_rows, m.total_rows)
+            let extra = if m.extra_files > 0 {
+                format!(" · {} not linked", m.extra_files)
+            } else {
+                String::new()
+            };
+            format!(
+                "{} of {} matched ({method}){extra}",
+                m.matched_rows, m.total_rows
+            )
         });
-        let columns_line = match self.column_source {
-            ColumnSource::AutoFromSpreadsheet => "Auto-matched from spreadsheet".to_string(),
-            ColumnSource::RecentlyUsed => "From a saved config".to_string(),
-            ColumnSource::LoadFromFileOrSheet => "Loaded from file/Sheet".to_string(),
+        let column_count = self
+            .config_preview
+            .as_ref()
+            .map(|c| c.entries.len())
+            .unwrap_or_else(|| self.spreadsheet_headers().len());
+        let columns_line = {
+            let source_desc = match self.column_source {
+                ColumnSource::AutoFromSpreadsheet => "Auto-matched from spreadsheet",
+                ColumnSource::RecentlyUsed => "From a saved config",
+                ColumnSource::LoadFromFileOrSheet => "Loaded from file/Sheet",
+                ColumnSource::SkipForNow => "Set up later",
+            };
+            format!("{source_desc} · {column_count} columns")
         };
 
         v_flex()
@@ -121,30 +143,18 @@ impl ProjectWizard {
                     .child(summary_row("Name", &name))
                     .child(summary_row("Location", &self.save_path))
                     .child(summary_row("Source", source))
+                    .when_some(spreadsheet_line.clone(), |el, line| {
+                        el.child(summary_row("Spreadsheet", &line))
+                    })
                     .when_some(files_line.clone(), |el, line| {
-                        el.child(summary_row("Files matched", &line))
+                        el.child(summary_row("Files", &line))
                     })
                     .when(self.entry_kind != EntryKind::Blank, |el| {
                         el.child(summary_row("Columns", &columns_line))
                     }),
             )
-            .child(
-                Button::new("create-project")
-                    .label("Create Project")
-                    .primary()
-                    .w_full()
-                    .on_click(cx.listener(|this, _, window, cx| this.create_project(window, cx))),
-            )
-            .child(
-                div()
-                    .id("review-back")
-                    .cursor_pointer()
-                    .text_sm()
-                    .text_center()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("← Back")
-                    .on_click(cx.listener(|this, _, window, cx| this.go_back(window, cx))),
-            )
+        // The shared wizard footer supplies the "Create Project" (Next) and
+        // "← Back" controls — see `ProjectWizard::render_footer`.
     }
 }
 

@@ -46,6 +46,21 @@ pub fn record_opened(name: String, path: String, cx: &mut App) {
     AppSettings::set_text(RECENTS_KEY, json.into(), cx);
 }
 
+/// Drops a project from the recent list. Only forgets the entry — the project
+/// folder on disk is left untouched.
+pub fn remove(path: &str, cx: &mut App) {
+    let mut recents = list(cx);
+    let before = recents.len();
+    recents.retain(|p| p.path != path);
+    if recents.len() == before {
+        return;
+    }
+    let Ok(json) = serde_json::to_string(&recents) else {
+        return;
+    };
+    AppSettings::set_text(RECENTS_KEY, json.into(), cx);
+}
+
 fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -12,7 +12,9 @@ use gpui_component::{ActiveTheme, StyledExt, WindowExt, h_flex, v_flex};
 
 use crate::data;
 use crate::steps::files::{MsgKind, inline_message};
-use crate::wizard::{ColumnSource, LoadConfigTab, ProjectWizard, RECENT_CONFIGS, option_card};
+use crate::wizard::{
+    ColumnSource, EntryKind, LoadConfigTab, ProjectWizard, RECENT_CONFIGS, option_card,
+};
 
 impl ProjectWizard {
     fn browse_config_file(&mut self, cx: &mut Context<Self>) {
@@ -52,16 +54,22 @@ impl ProjectWizard {
         }
     }
 
-    /// Mocked, same rationale as `data::validate_sheet_link` — no Sheets API
-    /// integration exists yet, so a plausible config (one Text column per
-    /// spreadsheet header) is synthesized once the link shape checks out.
+    /// Fetches the given public Sheet as CSV and turns its headers into a
+    /// column config (one Text column each).
+    // ponytail: blocking fetch on the UI thread — fine for a "Check" click;
+    // move to the background executor if it ever drags.
     fn load_config_from_sheet(&mut self, cx: &mut Context<Self>) {
         let link = self.sheet_link_input.read(cx).value().to_string();
-        match data::validate_sheet_link(&link) {
-            Ok(_) => {
+        let fetched = cloud_sync::fetch_sheet_csv(&link)
+            .map_err(|e| e.message())
+            .and_then(|path| {
+                data::load_csv_preview(&path.to_string_lossy()).map_err(|e| e.message())
+            });
+        match fetched {
+            Ok(preview) => {
                 self.config_preview = Some(data::ColumnConfigPreview {
-                    entries: self
-                        .spreadsheet_headers()
+                    entries: preview
+                        .headers
                         .into_iter()
                         .map(|name| data::ColumnConfigEntry {
                             name,
@@ -72,15 +80,17 @@ impl ProjectWizard {
                 });
                 self.config_error = None;
             }
-            Err(e) => {
-                self.config_error = Some(e.message().into());
+            Err(msg) => {
+                self.config_error = Some(msg.into());
                 self.config_preview = None;
             }
         }
     }
 
-    fn open_recent_config_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let entity = cx.entity();
+    /// Associated fn (not `&mut self`): it must run *outside* the click
+    /// listener's entity update, because `open_dialog`'s builder reads the
+    /// same entity synchronously. Callers defer it via `window.defer`.
+    fn open_recent_config_dialog(entity: Entity<Self>, window: &mut Window, cx: &mut App) {
         window.open_dialog(cx, move |dialog, _window, cx| {
             let selected_ix = entity.read(cx).recent_config_selected;
 
@@ -140,8 +150,8 @@ impl ProjectWizard {
         });
     }
 
-    fn open_load_config_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let entity = cx.entity();
+    /// See [`Self::open_recent_config_dialog`] — same deferred-open contract.
+    fn open_load_config_dialog(entity: Entity<Self>, window: &mut Window, cx: &mut App) {
         window.open_dialog(cx, move |dialog, _window, cx| {
             let state = entity.read(cx);
             let tab = state.load_config_tab;
@@ -204,9 +214,8 @@ impl ProjectWizard {
                                         .label("Browse…")
                                         .outline()
                                         .on_click(move |_, _, cx| {
-                                            entity_browse.update(cx, |this, cx| {
-                                                this.browse_config_file(cx)
-                                            });
+                                            entity_browse
+                                                .update(cx, |this, cx| this.browse_config_file(cx));
                                         }),
                                 ),
                         )
@@ -368,9 +377,11 @@ impl ProjectWizard {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let is_blank = self.entry_kind == EntryKind::Blank;
         let auto_selected = self.column_source == ColumnSource::AutoFromSpreadsheet;
         let recent_selected = self.column_source == ColumnSource::RecentlyUsed;
         let load_selected = self.column_source == ColumnSource::LoadFromFileOrSheet;
+        let skip_selected = self.column_source == ColumnSource::SkipForNow;
         let recent_summary = RECENT_CONFIGS
             .iter()
             .map(|c| format!("\"{}\"", c.name))
@@ -385,19 +396,21 @@ impl ProjectWizard {
                     .text_sm()
                     .text_color(cx.theme().muted_foreground),
             )
-            .child(
-                option_card(
-                    "col-auto",
-                    "Auto-created from this spreadsheet",
-                    "Default — columns matched from what you just imported.",
-                    auto_selected,
-                    cx,
+            .when(!is_blank, |el| {
+                el.child(
+                    option_card(
+                        "col-auto",
+                        "Auto-created from this spreadsheet",
+                        "Default — columns matched from what you just imported.",
+                        auto_selected,
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.column_source = ColumnSource::AutoFromSpreadsheet;
+                        cx.notify();
+                    })),
                 )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.column_source = ColumnSource::AutoFromSpreadsheet;
-                    cx.notify();
-                })),
-            )
+            })
             .child(
                 option_card(
                     "col-recent",
@@ -406,8 +419,11 @@ impl ProjectWizard {
                     recent_selected,
                     cx,
                 )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.open_recent_config_dialog(window, cx)
+                .on_click(cx.listener(|_this, _, window, cx| {
+                    let entity = cx.entity();
+                    window.defer(cx, move |window, cx| {
+                        Self::open_recent_config_dialog(entity, window, cx);
+                    });
                 })),
             )
             .child(
@@ -418,10 +434,28 @@ impl ProjectWizard {
                     load_selected,
                     cx,
                 )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.open_load_config_dialog(window, cx)
+                .on_click(cx.listener(|_this, _, window, cx| {
+                    let entity = cx.entity();
+                    window.defer(cx, move |window, cx| {
+                        Self::open_load_config_dialog(entity, window, cx);
+                    });
                 })),
             )
+            .when(is_blank, |el| {
+                el.child(
+                    option_card(
+                        "col-skip",
+                        "Skip — set up columns later",
+                        "Start empty; add columns in project settings whenever you're ready.",
+                        skip_selected,
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.column_source = ColumnSource::SkipForNow;
+                        cx.notify();
+                    })),
+                )
+            })
             .child(self.render_advanced_mapping(cx))
             .child(
                 Label::new("You can always adjust this later in project settings.")

@@ -3,4 +3,3 @@ pub(crate) mod files;
 pub(crate) mod link;
 pub(crate) mod name;
 pub(crate) mod review;
-pub(crate) mod success;
