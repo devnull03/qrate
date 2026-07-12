@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/app",
   "crates/ai",
+  "crates/cloud-sync",
   "crates/project-wizard",
   "crates/settings",
   "crates/table",
