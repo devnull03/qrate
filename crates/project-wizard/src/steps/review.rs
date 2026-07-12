@@ -17,43 +17,45 @@ impl ProjectWizard {
             EntryKind::Csv => "CSV + folder".to_string(),
             EntryKind::Sheet => "Google Sheet".to_string(),
         };
-        let files_matched = self
-            .folder_match
-            .as_ref()
-            .map(|m| (m.matched_rows, m.total_rows));
-        let link_method = (self.entry_kind != EntryKind::Blank).then(|| match self.link_method {
+        // When files are skipped the folder/link state is stale — don't let the
+        // manifest claim files were matched or a link method was chosen.
+        let files_matched = (!self.skip_files)
+            .then(|| {
+                self.folder_match
+                    .as_ref()
+                    .map(|m| (m.matched_rows, m.total_rows))
+            })
+            .flatten();
+        let link_method = (!self.skips_link()).then(|| match self.link_method {
             LinkMethod::ExactFilename => "exact filename".to_string(),
             LinkMethod::CustomPattern => "custom pattern".to_string(),
         });
-        let columns = match self.entry_kind {
-            EntryKind::Blank => Vec::new(),
-            _ => self
-                .config_preview
-                .as_ref()
-                .map(|p| {
-                    p.entries
-                        .iter()
-                        .map(|e| project::ManifestColumn {
-                            name: e.name.clone(),
-                            data_type: e.data_type.clone(),
-                            description: e.description.clone(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_else(|| {
-                    // No explicit config: auto-created from the spreadsheet,
-                    // every column defaults to Text (same rule the mocked
-                    // Sheet-config load uses).
-                    self.spreadsheet_headers()
-                        .into_iter()
-                        .map(|name| project::ManifestColumn {
-                            name,
-                            data_type: "Text".into(),
-                            description: String::new(),
-                        })
-                        .collect()
-                }),
-        };
+        // Blank projects go through the Columns step too, so honor any config
+        // loaded there; otherwise fall back to spreadsheet headers (empty for
+        // Blank), every column defaulting to Text.
+        let columns = self
+            .config_preview
+            .as_ref()
+            .map(|p| {
+                p.entries
+                    .iter()
+                    .map(|e| project::ManifestColumn {
+                        name: e.name.clone(),
+                        data_type: e.data_type.clone(),
+                        description: e.description.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                self.spreadsheet_headers()
+                    .into_iter()
+                    .map(|name| project::ManifestColumn {
+                        name,
+                        data_type: "Text".into(),
+                        description: String::new(),
+                    })
+                    .collect()
+            });
 
         let manifest = ProjectManifest {
             name: name.clone(),
@@ -94,21 +96,26 @@ impl ProjectWizard {
             .csv_preview
             .as_ref()
             .map(|p| format!("{} rows · {} columns", p.row_count(), p.column_count()));
-        let files_line = self.folder_match.as_ref().map(|m| {
-            let method = match self.link_method {
-                LinkMethod::ExactFilename => "exact filename",
-                LinkMethod::CustomPattern => "custom pattern",
-            };
-            let extra = if m.extra_files > 0 {
-                format!(" · {} not linked", m.extra_files)
-            } else {
-                String::new()
-            };
-            format!(
-                "{} of {} matched ({method}){extra}",
-                m.matched_rows, m.total_rows
-            )
-        });
+        // Skipped files → no folder was matched, so don't show a stale Files line.
+        let files_line = (!self.skip_files)
+            .then(|| {
+                self.folder_match.as_ref().map(|m| {
+                    let method = match self.link_method {
+                        LinkMethod::ExactFilename => "exact filename",
+                        LinkMethod::CustomPattern => "custom pattern",
+                    };
+                    let extra = if m.extra_files > 0 {
+                        format!(" · {} not linked", m.extra_files)
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "{} of {} matched ({method}){extra}",
+                        m.matched_rows, m.total_rows
+                    )
+                })
+            })
+            .flatten();
         let column_count = self
             .config_preview
             .as_ref()
@@ -149,9 +156,8 @@ impl ProjectWizard {
                     .when_some(files_line.clone(), |el, line| {
                         el.child(summary_row("Files", &line))
                     })
-                    .when(self.entry_kind != EntryKind::Blank, |el| {
-                        el.child(summary_row("Columns", &columns_line))
-                    }),
+                    // Blank projects go through Columns too, so always show it.
+                    .child(summary_row("Columns", &columns_line)),
             )
         // The shared wizard footer supplies the "Create Project" (Next) and
         // "← Back" controls — see `ProjectWizard::render_footer`.
