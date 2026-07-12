@@ -71,17 +71,18 @@ fn now_unix() -> i64 {
 pub fn relative_time(opened_at_unix: i64) -> String {
     let now = now_unix();
     let delta = (now - opened_at_unix).max(0);
+    let ago = |n: i64, unit: &str| format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" });
     if delta < 60 {
         "just now".into()
     } else if delta < 3600 {
-        format!("{} minutes ago", delta / 60)
+        ago(delta / 60, "minute")
     } else if delta < 86_400 {
-        format!("{} hours ago", delta / 3600)
+        ago(delta / 3600, "hour")
     } else if delta < 86_400 * 7 {
-        format!("{} days ago", delta / 86_400)
+        ago(delta / 86_400, "day")
     } else if delta < 86_400 * 30 {
-        format!("{} weeks ago", delta / (86_400 * 7))
+        ago(delta / (86_400 * 7), "week")
     } else {
-        format!("{} months ago", delta / (86_400 * 30))
+        ago(delta / (86_400 * 30), "month")
     }
 }
