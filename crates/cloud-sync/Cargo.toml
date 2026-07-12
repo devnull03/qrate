@@ -1,0 +1,17 @@
+[package]
+name = "cloud-sync"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# blocking, not async: gpui's executor isn't a tokio reactor, so we run the
+# one-shot fetch on the background executor with the blocking client.
+reqwest = { version = "0.12", features = ["blocking"] }
+thiserror = "2"
+# One .xlsx download carries both the row values and the cell notes (CSV drops
+# metadata). calamine reads the values; zip + quick-xml pull notes out of
+# xl/comments*.xml (hand-rolling xlsx value parsing / XML entity decoding is the
+# flimsy trap we avoid).
+calamine = "0.26"
+zip = "2"
+quick-xml = "0.37"
