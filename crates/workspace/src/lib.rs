@@ -19,7 +19,9 @@ use table::TablePanel;
 
 use crate::panels::{AgentPanel, DetailsPanel, ProblemsPanel};
 
-/// Settings key under which the serialized [`DockAreaState`] is persisted.
+/// Settings key under which the serialized [`DockAreaState`] is persisted —
+/// both in the open project's `.qrate` `__settings` (preferred) and in the
+/// global app settings (fallback when no project is open).
 const DOCK_LAYOUT_KEY: &str = "main_dock_layout";
 /// Layout schema version. Bumped to 2 for the center/left/right/bottom panel set so any
 /// layout saved under the previous (grid + metadata/vocabulary tabs) shape is discarded.
@@ -99,12 +101,21 @@ impl Workspace {
         Self::restore_layout(&dock_area, window, cx);
 
         // Persist on every layout change. Set up last so the default/restore building above
-        // doesn't trigger a redundant write.
+        // doesn't trigger a redundant write. With a project open the layout is saved into its
+        // `.qrate` file (per-project panel state); otherwise into the global app settings.
         let _layout_sub = cx.subscribe(&dock_area, |_this, area, event: &DockEvent, cx| {
             if matches!(event, DockEvent::LayoutChanged) {
                 let state = area.read(cx).dump(cx);
                 if let Ok(json) = serde_json::to_string(&state) {
-                    AppSettings::set_text(DOCK_LAYOUT_KEY, json.into(), cx);
+                    if let Some(project) = cx.try_global::<settings::project::CurrentProject>() {
+                        if let Err(err) =
+                            settings::project::write_setting(&project.file, DOCK_LAYOUT_KEY, &json)
+                        {
+                            eprintln!("failed to save dock layout to project: {err}");
+                        }
+                    } else {
+                        AppSettings::set_text(DOCK_LAYOUT_KEY, json.into(), cx);
+                    }
                 }
                 // Re-render the workspace so the bottom-strip crop tracks the dock's open state.
                 cx.notify();
@@ -135,11 +146,18 @@ impl Workspace {
     }
 
     fn restore_layout(dock_area: &Entity<DockArea>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(raw) = AppSettings::get(cx)
-            .values
-            .get(DOCK_LAYOUT_KEY)
-            .map(|v| v.text().to_string())
-        else {
+        // Prefer the open project's own saved layout; fall back to the global one so a
+        // brand-new project still inherits a familiar arrangement.
+        let project_layout = cx
+            .try_global::<settings::project::CurrentProject>()
+            .and_then(|p| settings::project::read_setting(&p.file, DOCK_LAYOUT_KEY).ok())
+            .flatten();
+        let Some(raw) = project_layout.or_else(|| {
+            AppSettings::get(cx)
+                .values
+                .get(DOCK_LAYOUT_KEY)
+                .map(|v| v.text().to_string())
+        }) else {
             return;
         };
 
