@@ -15,13 +15,21 @@ pub struct TablePanel {
     /// Commits an in-progress cell edit when the inline editor loses focus or the user presses
     /// Enter. Held alive for as long as the panel exists.
     _edit_sub: Subscription,
+    /// Reloads the table when a different project is opened while this window is up.
+    _project_sub: Subscription,
 }
 
 impl TablePanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| InputState::new(window, cx));
-        let state =
-            cx.new(|cx| TableState::new(QrateTableDelegate::new(editor.clone()), window, cx));
+        let mut delegate = QrateTableDelegate::new(editor.clone());
+        // Show the open project's data. Without one (dev launch straight into
+        // the main window) the table starts empty — the status-bar fake-data
+        // button still works for testing.
+        if let Some(project) = cx.try_global::<settings::project::CurrentProject>() {
+            delegate.set_data(&project.data.headers, &project.data.rows);
+        }
+        let state = cx.new(|cx| TableState::new(delegate, window, cx));
         // Publish the handle so status-bar items in the `app` crate can drive/read the table.
         cx.set_global(TableStateHandle(state.downgrade()));
 
@@ -37,10 +45,23 @@ impl TablePanel {
             });
         });
 
+        let _project_sub =
+            cx.observe_global::<settings::project::CurrentProject>(|this: &mut Self, cx| {
+                let project = cx.global::<settings::project::CurrentProject>();
+                let (headers, rows) = (project.data.headers.clone(), project.data.rows.clone());
+                this.state.update(cx, |state, cx| {
+                    state.delegate_mut().set_data(&headers, &rows);
+                    cx.emit(TableChanged);
+                    cx.notify();
+                });
+                cx.notify();
+            });
+
         Self {
             focus_handle: cx.focus_handle(),
             state,
             _edit_sub,
+            _project_sub,
         }
     }
 }

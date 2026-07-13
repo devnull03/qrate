@@ -85,6 +85,23 @@ impl QrateTableDelegate {
         self.grid.fill_fake(n, self.columns.len());
     }
 
+    /// Replaces the whole column/row model with real project data (headers →
+    /// columns, one grid cell per row cell). Clears any selection/edit state,
+    /// which may index into the old shape.
+    pub fn set_data(&mut self, headers: &[String], rows: &[Vec<String>]) {
+        self.columns = headers
+            .iter()
+            .enumerate()
+            .map(|(ix, h)| Column::new(format!("c{ix}"), h.clone()).width(px(120.)))
+            .collect();
+        self.grid.rows = rows
+            .iter()
+            .map(|r| r.iter().map(|c| SharedString::from(c.clone())).collect())
+            .collect();
+        self.selected = None;
+        self.editing = EditState::Idle;
+    }
+
     /// Cell text at `(row, col)`, if in range. `col` is a data-column index, not shifted for the
     /// pinned row-index column.
     pub fn cell(&self, row: usize, col: usize) -> Option<&SharedString> {
