@@ -34,4 +34,9 @@ impl WindowRegistry {
     pub fn register(kind: &'static str, handle: AnyWindowHandle, cx: &mut App) {
         cx.global_mut::<Self>().handles.insert(kind, handle);
     }
+
+    /// The live handle for `kind`, if one is registered (regardless of focus).
+    pub fn get(kind: &'static str, cx: &App) -> Option<AnyWindowHandle> {
+        cx.global::<Self>().handles.get(kind).copied()
+    }
 }

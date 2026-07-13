@@ -145,6 +145,15 @@ impl Workspace {
         });
     }
 
+    /// Re-reads the layout for whatever project is current and applies it over the
+    /// dock's existing state. Needed because the main window is only ever created
+    /// once per app session (see `WindowRegistry`); opening a *different* project
+    /// while it's already open focuses it instead of re-running `Workspace::new`,
+    /// so nothing else re-triggers `restore_layout` for the newly opened project.
+    pub fn reload_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        Self::restore_layout(&self.dock_area, window, cx);
+    }
+
     fn restore_layout(dock_area: &Entity<DockArea>, window: &mut Window, cx: &mut Context<Self>) {
         // Prefer the open project's own saved layout; fall back to the global one so a
         // brand-new project still inherits a familiar arrangement.

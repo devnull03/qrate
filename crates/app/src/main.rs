@@ -20,6 +20,15 @@ use window_wrapper::{
 
 const SETTINGS_WINDOW_KIND: &str = "settings";
 const MAIN_WINDOW_KIND: &str = "main";
+/// `.qrate` `__settings` key for the per-project remembered window size/display.
+/// Mirrors `workspace::DOCK_LAYOUT_KEY`'s project-first, global-fallback pattern.
+const MAIN_WINDOW_BOUNDS_KEY: &str = "main_window_bounds";
+
+/// Weak handle to the one-and-only main-window `Workspace`, so `open_main_window`
+/// can reload its layout when it *focuses* an already-open window instead of
+/// building a fresh one (see `Workspace::reload_layout`).
+struct MainWorkspaceHandle(WeakEntity<Workspace>);
+impl Global for MainWorkspaceHandle {}
 
 use crate::app_settings::build_pages;
 use crate::{
@@ -67,10 +76,33 @@ pub(crate) fn open_settings_window(cx: &mut gpui::App) {
 /// the launcher (`project-wizard` crate) when a recent project is opened or a wizard finishes.
 pub(crate) fn open_main_window(cx: &mut gpui::App) {
     if WindowRegistry::focus_or_clear(MAIN_WINDOW_KIND, cx) {
+        // The window already exists (opening a project just switched `CurrentProject`
+        // to a different one) — reload its layout instead of leaving the previous
+        // project's panels in place.
+        if let Some(handle) = WindowRegistry::get(MAIN_WINDOW_KIND, cx) {
+            handle
+                .update(cx, |_, window, cx| {
+                    if let Some(workspace) = cx
+                        .try_global::<MainWorkspaceHandle>()
+                        .and_then(|h| h.0.upgrade())
+                    {
+                        workspace.update(cx, |ws, cx| ws.reload_layout(window, cx));
+                    }
+                })
+                .ok();
+        }
         return;
     }
 
-    let (main_bounds, main_display) = AppSettings::get(cx).main_window_startup_placement(cx);
+    let project_bounds = cx
+        .try_global::<settings::project::CurrentProject>()
+        .and_then(|p| settings::project::read_setting(&p.file, MAIN_WINDOW_BOUNDS_KEY).ok())
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<MainWindowBounds>(&raw).ok());
+    let (main_bounds, main_display) = match &project_bounds {
+        Some(b) => MainWindowBounds::startup_placement(Some(b), cx),
+        None => AppSettings::get(cx).main_window_startup_placement(cx),
+    };
     let window_options = WindowOptions {
         titlebar: Some(TitleBar::title_bar_options()),
         window_bounds: Some(WindowBounds::Windowed(main_bounds)),
@@ -104,6 +136,7 @@ pub struct App {
 impl App {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let workspace = cx.new(|cx| Workspace::new(window, cx));
+        cx.set_global(MainWorkspaceHandle(workspace.downgrade()));
         let status_bar = cx.new(|_| StatusBar::new());
 
         let dock = workspace.read(cx).dock_area();
@@ -114,9 +147,22 @@ impl App {
 
         let _main_window_bounds_sub = cx.observe_window_bounds(window, |_, window, cx| {
             let b = MainWindowBounds::capture_from_window(window, cx);
-            AppSettings::update(cx, |s| {
-                s.main_window_bounds = Some(b);
-            });
+            match cx.try_global::<settings::project::CurrentProject>() {
+                Some(project) => {
+                    if let Ok(json) = serde_json::to_string(&b)
+                        && let Err(err) = settings::project::write_setting(
+                            &project.file,
+                            MAIN_WINDOW_BOUNDS_KEY,
+                            &json,
+                        )
+                    {
+                        eprintln!("failed to save window bounds to project: {err}");
+                    }
+                }
+                None => AppSettings::update(cx, |s| {
+                    s.main_window_bounds = Some(b);
+                }),
+            }
         });
 
         // Block the OS close button while a background task is running.

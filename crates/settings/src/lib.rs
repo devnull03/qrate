@@ -245,6 +245,38 @@ impl MainWindowBounds {
             display_id: window.display(cx).map(|d| u32::from(d.id())),
         }
     }
+
+    /// Resolves target bounds/display for opening the main window: centered on the
+    /// remembered display (or primary) at the remembered size, falling back to a sane
+    /// default when `bounds` is missing or invalid. Position is not restored. Free
+    /// function (not tied to `AppSettings`) so callers can pass either the global
+    /// bounds or a per-project one read from a `.qrate` file.
+    pub fn startup_placement(
+        bounds: Option<&Self>,
+        cx: &App,
+    ) -> (Bounds<Pixels>, Option<DisplayId>) {
+        let display = bounds.and_then(|b| b.display_id).and_then(|raw| {
+            cx.displays()
+                .into_iter()
+                .find(|d| u32::from(d.id()) == raw)
+                .map(|d| d.id())
+        });
+        const MIN_W: f32 = 400.0;
+        const MIN_H: f32 = 250.0;
+        const DEFAULT_W: f32 = 600.0;
+        const DEFAULT_H: f32 = 800.0;
+        if let Some(b) = bounds
+            && b.width.is_finite()
+            && b.height.is_finite()
+            && b.width >= MIN_W
+            && b.height >= MIN_H
+        {
+            let bounds = Bounds::centered(display, size(px(b.width), px(b.height)), cx);
+            return (bounds, display);
+        }
+        let bounds = Bounds::centered(display, size(px(DEFAULT_W), px(DEFAULT_H)), cx);
+        (bounds, display)
+    }
 }
 
 // --- App Settings ---
@@ -284,38 +316,10 @@ impl AppSettings {
         cx.global_mut::<Self>()
     }
 
-    fn main_window_resolved_display(&self, cx: &App) -> Option<DisplayId> {
-        self.main_window_bounds
-            .as_ref()
-            .and_then(|b| b.display_id)
-            .and_then(|raw| {
-                cx.displays()
-                    .into_iter()
-                    .find(|d| u32::from(d.id()) == raw)
-                    .map(|d| d.id())
-            })
-    }
-
-    /// Window size and target display for startup. The frame is always **centered** on the
-    /// remembered display (or primary); window **position is not restored** from disk.
-    /// Invalid/missing size falls back to 600×800 centered the same way.
+    /// Window size and target display for startup, from the global (non-project) bounds.
+    /// See [`MainWindowBounds::startup_placement`] for the per-project equivalent.
     pub fn main_window_startup_placement(&self, cx: &App) -> (Bounds<Pixels>, Option<DisplayId>) {
-        let display = self.main_window_resolved_display(cx);
-        const MIN_W: f32 = 400.0;
-        const MIN_H: f32 = 250.0;
-        const DEFAULT_W: f32 = 600.0;
-        const DEFAULT_H: f32 = 800.0;
-        if let Some(b) = &self.main_window_bounds
-            && b.width.is_finite()
-            && b.height.is_finite()
-            && b.width >= MIN_W
-            && b.height >= MIN_H
-        {
-            let bounds = Bounds::centered(display, size(px(b.width), px(b.height)), cx);
-            return (bounds, display);
-        }
-        let bounds = Bounds::centered(display, size(px(DEFAULT_W), px(DEFAULT_H)), cx);
-        (bounds, display)
+        MainWindowBounds::startup_placement(self.main_window_bounds.as_ref(), cx)
     }
 
     /// Single mutation entrypoint so we can trigger persistence.
