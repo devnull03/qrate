@@ -2,14 +2,11 @@
 //!
 //! Scope is deliberately tiny: pull a *public* ("anyone with the link") Google
 //! Sheet via the built-in export endpoint. [`fetch_sheet`] grabs the `.xlsx`
-//! export once and pulls out both the row values and the cell notes; the older
-//! CSV path ([`fetch_sheet_csv`]) is kept as marked-legacy dead code until the
-//! wizard is rewired onto `fetch_sheet` (see the "wire cloud-sync xlsx" task).
+//! export once and pulls out both the row values and the cell notes.
 //! No OAuth, no Sheets API v4 — a private sheet just yields a clear error.
 //! ponytail: export-endpoint only. Add OAuth/API v4 when private sheets matter.
 
 use std::fs;
-use std::path::PathBuf;
 
 use thiserror::Error;
 
@@ -69,63 +66,6 @@ fn parse_sheet_ref(link: &str) -> Result<SheetRef, SheetSyncError> {
     Ok(SheetRef { id, gid })
 }
 
-// === LEGACY / DEAD CODE (kept per request) ===================================
-// The CSV-export path below is superseded by `fetch_sheet`, which gets rows AND
-// notes from a single .xlsx download. It's still called by the wizard's Sheet
-// entry path today; delete it once that's rewired onto `fetch_sheet` (see the
-// "wire cloud-sync xlsx fetch into the wizard" task). Do not build on it.
-// =============================================================================
-
-/// Fetch a public Google Sheet as CSV and write it to a temp file, returning
-/// the path. Blocking — call it off the UI thread (background executor).
-pub fn fetch_sheet_csv(link: &str) -> Result<PathBuf, SheetSyncError> {
-    let SheetRef { id, gid } = parse_sheet_ref(link)?;
-
-    let mut url = format!("https://docs.google.com/spreadsheets/d/{id}/export?format=csv");
-    if let Some(gid) = &gid {
-        url.push_str(&format!("&gid={gid}"));
-    }
-
-    let resp = reqwest::blocking::get(&url)?.error_for_status()?;
-
-    // A private sheet doesn't 4xx — Google serves an HTML sign-in page (often
-    // after redirecting to accounts.google.com). Treat any non-CSV/HTML
-    // response as "not public".
-    let final_host = resp.url().host_str().unwrap_or_default().to_string();
-    let is_html = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(|ct| ct.contains("text/html"))
-        .unwrap_or(false);
-    if final_host.contains("accounts.google.com") || is_html {
-        return Err(SheetSyncError::Private);
-    }
-
-    let body = resp.bytes()?;
-    let lower = body.get(..64).unwrap_or(&body);
-    if lower.starts_with(b"<!DOCTYPE") || lower.starts_with(b"<html") || lower.starts_with(b"<HTML")
-    {
-        return Err(SheetSyncError::Private);
-    }
-
-    let dir = std::env::temp_dir().join("qrate-sheets");
-    fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{id}.csv"));
-    fs::write(&path, &body)?;
-    Ok(path)
-}
-
-/// Where a fetched sheet lands, without fetching — handy for callers/tests.
-pub fn cache_path_for(link: &str) -> Option<PathBuf> {
-    let SheetRef { id, .. } = parse_sheet_ref(link).ok()?;
-    Some(
-        std::env::temp_dir()
-            .join("qrate-sheets")
-            .join(format!("{id}.csv")),
-    )
-}
-
 /// A single Google Sheets cell note (the "Insert > Note" sticky kind), pinned
 /// to a cell like `"B2"`. Threaded comments are *not* here — they don't survive
 /// any export; only the Drive API (OAuth) can reach those.
@@ -149,8 +89,12 @@ pub struct SheetData {
 /// for everything. The `.xlsx` is cached in the temp dir. Blocking — call it
 /// off the UI thread.
 pub fn fetch_sheet(link: &str) -> Result<SheetData, SheetSyncError> {
-    let SheetRef { id, .. } = parse_sheet_ref(link)?;
-    let url = format!("https://docs.google.com/spreadsheets/d/{id}/export?format=xlsx");
+    let SheetRef { id, gid } = parse_sheet_ref(link)?;
+    // ponytail: gid is forwarded so a link to a specific tab exports that tab
+    // when Google honors it; if Google ignores it for xlsx we still fall back
+    // to the first tab, same as before. Real multi-tab selection needs API v4.
+    let gid_param = gid.map(|g| format!("&gid={g}")).unwrap_or_default();
+    let url = format!("https://docs.google.com/spreadsheets/d/{id}/export?format=xlsx{gid_param}");
     // Explicit timeout so a stalled connection returns an error instead of
     // hanging the background worker thread forever.
     let resp = reqwest::blocking::Client::builder()
