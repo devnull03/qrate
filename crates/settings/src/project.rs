@@ -55,6 +55,20 @@ pub struct CurrentProject {
 
 impl gpui::Global for CurrentProject {}
 
+impl CurrentProject {
+    /// Resolved display name for titles/UI: the stored project name, else the
+    /// file stem, else "Untitled Project". The one place this fallback lives.
+    pub fn display_name(&self) -> String {
+        if !self.data.name.is_empty() {
+            return self.data.name.clone();
+        }
+        self.file
+            .file_stem()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Untitled Project".into())
+    }
+}
+
 /// Opens a `.qrate` read-write with the pragmas every connection wants:
 /// DELETE journaling (also converts any WAL-era file back, which removes its
 /// stale `-wal`/`-shm` siblings), FULL synchronous — the durable setting for

@@ -1,3 +1,4 @@
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     Sizable, TitleBar,
@@ -105,11 +106,16 @@ impl Render for TitleMenus {
 }
 
 #[derive(IntoElement, Default)]
-pub struct AppTitleBar;
+pub struct AppTitleBar {
+    /// Centered title text (the open project's name); empty renders nothing.
+    title: SharedString,
+}
 
 impl AppTitleBar {
-    pub fn new() -> Self {
-        Self
+    pub fn new(title: impl Into<SharedString>) -> Self {
+        Self {
+            title: title.into(),
+        }
     }
 }
 
@@ -120,12 +126,22 @@ impl RenderOnce for AppTitleBar {
             .map(|r| (r.items().left.clone(), r.items().right.clone()))
             .unwrap_or_default();
 
+        // left menus | centered project name | right dock toggles. Left and right groups both
+        // flex_1 so the natural-width center label sits in the true middle of the bar.
         TitleBar::new()
             .child(
                 gpui_component::h_flex()
+                    .flex_1()
                     .gap_1()
                     .justify_start()
                     .children(left),
+            )
+            .child(
+                gpui_component::h_flex()
+                    .justify_center()
+                    .when(!self.title.is_empty(), |this| {
+                        this.child(self.title.clone())
+                    }),
             )
             .child(
                 gpui_component::h_flex()

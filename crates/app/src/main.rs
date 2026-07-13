@@ -74,6 +74,15 @@ pub(crate) fn open_settings_window(cx: &mut gpui::App) {
 
 /// Opens the real main app window, focusing the existing one if it's already open. Called by
 /// the launcher (`project-wizard` crate) when a recent project is opened or a wizard finishes.
+/// Sets the OS window title to "<project> — qrate" (just "qrate" with no project open).
+fn set_main_window_title(window: &mut Window, cx: &gpui::App) {
+    let title = cx
+        .try_global::<settings::project::CurrentProject>()
+        .map(|p| format!("{} — qrate", p.display_name()))
+        .unwrap_or_else(|| "qrate".into());
+    window.set_window_title(&title);
+}
+
 pub(crate) fn open_main_window(cx: &mut gpui::App) {
     if WindowRegistry::focus_or_clear(MAIN_WINDOW_KIND, cx) {
         // The window already exists (opening a project just switched `CurrentProject`
@@ -88,6 +97,7 @@ pub(crate) fn open_main_window(cx: &mut gpui::App) {
                     {
                         workspace.update(cx, |ws, cx| ws.reload_layout(window, cx));
                     }
+                    set_main_window_title(window, cx);
                 })
                 .ok();
         }
@@ -169,6 +179,8 @@ impl App {
         // Block the OS close button while a background task is running.
         window.on_window_should_close(cx, |_, cx| !WindowLock::is_locked(cx));
 
+        set_main_window_title(window, cx);
+
         Self {
             workspace,
             status_bar,
@@ -208,7 +220,11 @@ impl Render for App {
             .child(
                 v_flex()
                     .size_full()
-                    .child(AppTitleBar::new())
+                    .child(AppTitleBar::new(
+                        cx.try_global::<settings::project::CurrentProject>()
+                            .map(|p| p.display_name())
+                            .unwrap_or_default(),
+                    ))
                     .child(
                         div()
                             .id("window-body")

@@ -80,11 +80,6 @@ impl QrateTableDelegate {
         }
     }
 
-    /// Append `n` rows of placeholder text.
-    pub fn fill_fake(&mut self, n: usize) {
-        self.grid.fill_fake(n, self.columns.len());
-    }
-
     /// Replaces the whole column/row model with real project data (headers →
     /// columns, one grid cell per row cell). Clears any selection/edit state,
     /// which may index into the old shape.

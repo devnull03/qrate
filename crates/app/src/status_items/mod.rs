@@ -1,8 +1,6 @@
 mod cell_location;
-mod fake_data;
 
 use cell_location::CellLocation;
-use fake_data::FakeDataButton;
 use gpui::*;
 use gpui_component::{
     IconName,
@@ -38,10 +36,6 @@ pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> St
         .label("0")
     });
     registry.add_left(problems);
-
-    // Debug tool: append 2000 fake rows to the center table. Interactive → left group.
-    let fake_data = cx.new(|_| FakeDataButton::new());
-    registry.add_left(fake_data);
 
     // Text readout of the table's selected cell. Added to the right *before* the agent star so it
     // lands leftmost in the right group (text items go right-leftmost, star stays rightmost).

@@ -42,17 +42,12 @@ pub fn name_taken(save_dir: &str, name: &str) -> bool {
 pub fn open_project(file: &Path, cx: &mut gpui::App) -> anyhow::Result<String> {
     anyhow::ensure!(file.exists(), "no project file at {}", file.display());
     let data = settings::project::load_project_file(file)?;
-    let name = if data.name.is_empty() {
-        file.file_stem()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Untitled Project".into())
-    } else {
-        data.name.clone()
-    };
-    cx.set_global(settings::project::CurrentProject {
+    let project = settings::project::CurrentProject {
         file: file.to_path_buf(),
         data,
-    });
+    };
+    let name = project.display_name();
+    cx.set_global(project);
     Ok(name)
 }
 
