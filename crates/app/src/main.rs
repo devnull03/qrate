@@ -23,7 +23,7 @@ const MAIN_WINDOW_KIND: &str = "main";
 use crate::app_settings::build_pages;
 use crate::{
     actions::{NewProject, ToggleBottomDock, ToggleLeftDock, ToggleRightDock},
-    app_menus::{OpenSettings, Quit, app_menus},
+    app_menus::{OpenProjects, OpenSettings, Quit, app_menus},
     status_items::build_status_bar_registry,
     title_items::build_title_bar_registry,
 };
@@ -198,6 +198,7 @@ fn main() {
         cx.on_action(|_: &NewProject, cx| {
             project_wizard::open_project_wizard(EntryKind::Blank, cx)
         });
+        cx.on_action(|_: &OpenProjects, cx| project_wizard::open_launcher_window(cx));
         // ----------------------------------------------
 
         cx.set_menus(app_menus());
