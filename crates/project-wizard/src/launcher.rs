@@ -11,6 +11,7 @@ use gpui_component::label::Label;
 use gpui_component::{ActiveTheme, Root, StyledExt, TitleBar, h_flex, v_flex};
 use window_wrapper::WindowRegistry;
 
+use crate::project;
 use crate::recent::{self, RecentProject};
 use crate::wizard::{self, EntryKind};
 
@@ -27,27 +28,61 @@ impl Global for LauncherHooks {}
 
 pub struct Launcher {
     recents: Vec<RecentProject>,
+    /// Shown above the recents list when opening a project fails (missing or
+    /// unreadable `.qrate`).
+    error: Option<SharedString>,
 }
 
 impl Launcher {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
             recents: recent::list(cx),
+            error: None,
         }
     }
 
-    fn open_recent(
-        &mut self,
-        path: String,
-        name: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        recent::record_opened(name, path, cx);
-        if let Some(hooks) = cx.try_global::<LauncherHooks>().copied() {
-            (hooks.open_main_window)(cx);
+    /// Loads the `.qrate` in `path`, sets it current, and hands off to the
+    /// main window. On failure the launcher stays up and shows why.
+    fn open_project_dir(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        match project::open_project(std::path::Path::new(&path), cx) {
+            Ok(name) => {
+                recent::record_opened(name, path, cx);
+                if let Some(hooks) = cx.try_global::<LauncherHooks>().copied() {
+                    (hooks.open_main_window)(cx);
+                }
+                window.remove_window();
+            }
+            Err(e) => {
+                self.error = Some(format!("Couldn't open that project — {e}").into());
+                cx.notify();
+            }
         }
-        window.remove_window();
+    }
+
+    /// "Open other…" — pick a `project.qrate` file anywhere on disk; its
+    /// parent folder is the project.
+    fn open_other(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Choose a project (.qrate) file".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = receiver.await
+                && let Some(path) = paths.first()
+            {
+                let dir = path
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                this.update_in(cx, |this, window, cx| {
+                    this.open_project_dir(dir, window, cx);
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     fn start_new(&mut self, entry_kind: EntryKind, window: &mut Window, cx: &mut Context<Self>) {
@@ -78,7 +113,6 @@ impl Render for Launcher {
             let mut list = v_flex().gap_0();
             for (ix, project) in self.recents.iter().enumerate() {
                 let path = project.path.clone();
-                let name = project.name.clone();
                 let when = recent::relative_time(project.opened_at_unix);
                 list = list.child(
                     h_flex()
@@ -127,7 +161,7 @@ impl Render for Launcher {
                                 }))
                         })
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_recent(path.clone(), name.clone(), window, cx)
+                            this.open_project_dir(path.clone(), window, cx)
                         })),
                 );
             }
@@ -163,11 +197,27 @@ impl Render for Launcher {
                                     .items_baseline()
                                     .child(div().text_lg().font_semibold().child("Recent Projects"))
                                     .child(
-                                        Label::new("Open other…")
+                                        div()
+                                            .id("open-other")
                                             .text_sm()
-                                            .text_color(cx.theme().muted_foreground),
+                                            .text_color(cx.theme().muted_foreground)
+                                            .cursor_pointer()
+                                            .hover(|el| el.text_color(cx.theme().primary))
+                                            .child("Open other…")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.open_other(window, cx)
+                                            })),
                                     ),
                             )
+                            .when_some(self.error.clone(), |el, msg| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .text_sm()
+                                        .text_color(cx.theme().danger)
+                                        .child(msg),
+                                )
+                            })
                             // Heading above stays pinned; only the list scrolls.
                             .child(
                                 div()
