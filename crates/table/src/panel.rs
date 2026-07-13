@@ -2,13 +2,20 @@ use gpui::*;
 use gpui_component::{
     dock::{Panel, PanelControl, PanelEvent},
     input::{InputEvent, InputState},
-    table::{Table, TableState},
+    table::{DataTable, TableDelegate as _, TableEvent, TableState},
 };
 
-use crate::{TableStateHandle, delegate::QrateTableDelegate, delegate::TableChanged, editing};
+use crate::{
+    TableStateHandle,
+    delegate::{ColumnLayout, QrateTableDelegate, TableChanged},
+    editing, row_index,
+};
 
-/// Center panel: the virtualized 2k×20 text table, with a pinned row-number column, single-cell
-/// selection, and double-click-to-edit cells.
+/// Settings key for the saved column layout (order + widths) in the project's `.qrate` file.
+const COLUMN_LAYOUT_KEY: &str = "table_columns";
+
+/// Center panel: the virtualized text table, with a pinned row-number column, native
+/// cell/row/column selection, movable + resizable columns, and double-click-to-edit cells.
 pub struct TablePanel {
     focus_handle: FocusHandle,
     state: Entity<TableState<QrateTableDelegate>>,
@@ -17,20 +24,36 @@ pub struct TablePanel {
     _edit_sub: Subscription,
     /// Reloads the table when a different project is opened while this window is up.
     _project_sub: Subscription,
+    /// Bridges the table's native `TableEvent`s to app behavior: keeps the delegate's selection
+    /// cursor, starts edits on double-click, persists the column layout, and re-emits
+    /// `TableChanged` so cross-crate readers refresh off one signal.
+    _table_sub: Subscription,
 }
 
 impl TablePanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| InputState::new(window, cx));
         let mut delegate = QrateTableDelegate::new(editor.clone());
-        // Show the open project's data. Without one (dev launch straight into
-        // the main window) the table starts empty — the status-bar fake-data
-        // button still works for testing.
+        // Show the open project's data, restoring its saved column order/widths. Without a
+        // project (dev launch straight into the main window) the table starts empty.
         if let Some(project) = cx.try_global::<settings::project::CurrentProject>() {
             delegate.set_data(&project.data.headers, &project.data.rows);
+            Self::restore_columns(&mut delegate, &project.file);
         }
-        let state = cx.new(|cx| TableState::new(delegate, window, cx));
-        // Publish the handle so status-bar items in the `app` crate can drive/read the table.
+        let state = cx.new(|cx| {
+            TableState::new(delegate, window, cx)
+                .cell_selectable(true)
+                .row_selectable(true)
+                .col_selectable(true)
+                .col_resizable(true)
+                .col_movable(true)
+                // Our numbered `#` column (row_index.rs) plays row header, so hide the
+                // library's blank strip. With it hidden, clicking the already-selected cell
+                // escalates to selecting the whole row.
+                .row_header(false)
+        });
+        // Publish the handle so cross-crate readers (status bar, Details panel) can reach the
+        // table; they observe this global to re-bind when the panel is rebuilt.
         cx.set_global(TableStateHandle(state.downgrade()));
 
         let table_state = state.clone();
@@ -45,12 +68,66 @@ impl TablePanel {
             });
         });
 
+        let _table_sub = cx.subscribe_in(
+            &state,
+            window,
+            |_this, state, event: &TableEvent, window, cx| {
+                match event {
+                    TableEvent::SelectCell(row, col) if *col == row_index::COL_IX => {
+                        // Native cell selection ignores per-column `selectable(false)`, so a
+                        // click (or arrow-left) can land on the pinned `#` column — bounce to
+                        // the first data cell. The nested SelectCell updates the cursor.
+                        let (row, cols) = (*row, state.read(cx).delegate().columns_count(cx));
+                        if cols > 1 {
+                            state.update(cx, |s, cx| s.set_selected_cell(row, 1, cx));
+                        }
+                        return;
+                    }
+                    TableEvent::SelectCell(row, col) => {
+                        let cursor = Some((*row, Some(*col - 1)));
+                        state.update(cx, |s, _| s.delegate_mut().cursor = cursor);
+                    }
+                    TableEvent::SelectRow(row) => {
+                        let cursor = Some((*row, None));
+                        state.update(cx, |s, _| s.delegate_mut().cursor = cursor);
+                    }
+                    TableEvent::SelectColumn(_) | TableEvent::ClearSelection => {
+                        state.update(cx, |s, _| s.delegate_mut().cursor = None);
+                    }
+                    TableEvent::DoubleClickedCell(row, col) if *col != row_index::COL_IX => {
+                        let (row, col) = (*row, *col - 1);
+                        state.update(cx, |s, cx| {
+                            editing::start(s.delegate_mut(), row, col, window, cx);
+                        });
+                    }
+                    TableEvent::ColumnWidthsChanged(widths) => {
+                        state.update(cx, |s, _| s.delegate_mut().set_column_widths(widths));
+                        Self::persist_columns(state, cx);
+                    }
+                    // The delegate's `move_column` hook already reordered the data.
+                    TableEvent::MoveColumn(..) => Self::persist_columns(state, cx),
+                    _ => {}
+                }
+                // Cross-crate readers refresh off this single signal.
+                state.update(cx, |_, cx| cx.emit(TableChanged));
+            },
+        );
+
         let _project_sub =
             cx.observe_global::<settings::project::CurrentProject>(|this: &mut Self, cx| {
                 let project = cx.global::<settings::project::CurrentProject>();
                 let (headers, rows) = (project.data.headers.clone(), project.data.rows.clone());
+                let saved = settings::project::read_setting(&project.file, COLUMN_LAYOUT_KEY)
+                    .ok()
+                    .flatten();
                 this.state.update(cx, |state, cx| {
                     state.delegate_mut().set_data(&headers, &rows);
+                    if let Some(layout) =
+                        saved.and_then(|json| serde_json::from_str::<ColumnLayout>(&json).ok())
+                    {
+                        state.delegate_mut().apply_column_layout(&layout);
+                    }
+                    state.refresh(cx);
                     cx.emit(TableChanged);
                     cx.notify();
                 });
@@ -62,7 +139,31 @@ impl TablePanel {
             state,
             _edit_sub,
             _project_sub,
+            _table_sub,
         }
+    }
+
+    /// Apply the project's saved column layout onto freshly loaded data, if any.
+    fn restore_columns(delegate: &mut QrateTableDelegate, file: &std::path::Path) {
+        let Ok(Some(json)) = settings::project::read_setting(file, COLUMN_LAYOUT_KEY) else {
+            return;
+        };
+        if let Ok(layout) = serde_json::from_str::<ColumnLayout>(&json) {
+            delegate.apply_column_layout(&layout);
+        }
+    }
+
+    /// Save the current column order + widths into the open project's `.qrate` file
+    /// (debounced, off the UI thread). Without a project there's nowhere sensible to put it.
+    fn persist_columns(state: &Entity<TableState<QrateTableDelegate>>, cx: &App) {
+        let Some(project) = cx.try_global::<settings::project::CurrentProject>() else {
+            return;
+        };
+        let layout = state.read(cx).delegate().column_layout();
+        let Ok(json) = serde_json::to_string(&layout) else {
+            return;
+        };
+        settings::project::queue_write(&project.file, COLUMN_LAYOUT_KEY, &json, cx);
     }
 }
 
@@ -102,6 +203,6 @@ impl Render for TablePanel {
         div()
             .size_full()
             .p_2()
-            .child(Table::new(&self.state).bordered(false))
+            .child(DataTable::new(&self.state).bordered(false))
     }
 }

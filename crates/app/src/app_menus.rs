@@ -26,6 +26,7 @@ pub fn app_menus() -> Vec<Menu> {
     vec![
         Menu {
             name: "File".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action("New Project…", NewProject),
                 MenuItem::Separator,
@@ -37,6 +38,7 @@ pub fn app_menus() -> Vec<Menu> {
         },
         Menu {
             name: "Edit".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action("Undo", Undo),
                 MenuItem::action("Redo", Redo),
@@ -48,9 +50,11 @@ pub fn app_menus() -> Vec<Menu> {
         },
         Menu {
             name: "View".into(),
+            disabled: false,
             items: vec![
                 MenuItem::submenu(Menu {
                     name: "Theme".into(),
+                    disabled: false,
                     items: THEME_CHOICES
                         .iter()
                         .map(|name| {
@@ -71,9 +75,11 @@ pub fn app_menus() -> Vec<Menu> {
         },
         Menu {
             name: "Help".into(),
+            disabled: false,
             items: vec![
                 MenuItem::submenu(Menu {
                     name: "GitHub".into(),
+                    disabled: false,
                     items: vec![
                         MenuItem::action(
                             "Repository",

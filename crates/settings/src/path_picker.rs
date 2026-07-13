@@ -79,7 +79,7 @@ impl RenderOnce for PathPickerApp {
                         && let Some(path) = paths.first()
                     {
                         let s: SharedString = path.to_string_lossy().to_string().into();
-                        cx.update(|cx| on_pick(s, cx)).ok();
+                        cx.update(|cx| on_pick(s, cx));
                     }
                 })
                 .detach();

@@ -457,19 +457,14 @@ pub fn open_project_wizard(entry_kind: EntryKind, cx: &mut App) {
         ..Default::default()
     };
 
-    cx.spawn(async move |cx| {
-        let result = cx.open_window(window_options, |window, cx| {
-            let view = cx.new(|cx| ProjectWizard::new(entry_kind, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        });
-        if let Ok(window_handle) = result {
-            cx.update(|cx| {
-                WindowRegistry::register(WIZARD_WINDOW_KIND, window_handle.into(), cx);
-            })
-            .ok();
-        }
-    })
-    .detach();
+    // Open synchronously: gpui quits when the window list is empty (non-macOS), so a window
+    // spawned from an async task would leave a zero-window gap that kills the app mid-transition.
+    if let Ok(window_handle) = cx.open_window(window_options, |window, cx| {
+        let view = cx.new(|cx| ProjectWizard::new(entry_kind, window, cx));
+        cx.new(|cx| Root::new(view, window, cx))
+    }) {
+        WindowRegistry::register(WIZARD_WINDOW_KIND, window_handle.into(), cx);
+    }
 }
 
 /// Small bordered, clickable "radio card" used for the entry-kind picker,

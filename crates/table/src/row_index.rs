@@ -1,5 +1,6 @@
 //! The pinned row-number column at table column 0. Display-only — never routes through
-//! `selection.rs`/`editing.rs`, so it can't be selected or edited.
+//! `cell.rs`/`editing.rs`, so it can't be edited; `TablePanel`'s event bridge bounces any
+//! native cell selection landing here onto the first data column.
 
 use std::sync::OnceLock;
 
@@ -16,16 +17,18 @@ pub(crate) const COL_IX: usize = 0;
 
 const WIDTH: f32 = 48.;
 
-pub(crate) fn column() -> &'static Column {
+pub(crate) fn column() -> Column {
     static COLUMN: OnceLock<Column> = OnceLock::new();
-    COLUMN.get_or_init(|| {
-        Column::new("__row_ix", "")
-            .fixed_left()
-            .resizable(false)
-            .movable(false)
-            .selectable(false)
-            .width(px(WIDTH))
-    })
+    COLUMN
+        .get_or_init(|| {
+            Column::new("__row_ix", "")
+                .fixed_left()
+                .resizable(false)
+                .movable(false)
+                .selectable(false)
+                .width(px(WIDTH))
+        })
+        .clone()
 }
 
 pub(crate) fn render_td(

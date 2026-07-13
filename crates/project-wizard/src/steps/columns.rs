@@ -217,11 +217,11 @@ impl ProjectWizard {
             dialog
                 .title("Load column config")
                 .child(v_flex().gap_3().child(tabs).child(body).children(status))
-                .confirm()
                 .button_props(
                     DialogButtonProps::default()
                         .ok_text("Next →")
-                        .cancel_text("← Back"),
+                        .cancel_text("← Back")
+                        .show_cancel(true),
                 )
                 .on_ok(move |_, _, cx| {
                     let has_preview = entity_ok.read(cx).config_preview.is_some();

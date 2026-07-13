@@ -299,17 +299,12 @@ pub fn open_launcher_window(cx: &mut App) {
         ..Default::default()
     };
 
-    cx.spawn(async move |cx| {
-        let result = cx.open_window(window_options, |window, cx| {
-            let view = cx.new(|cx| Launcher::new(window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        });
-        if let Ok(window_handle) = result {
-            cx.update(|cx| {
-                WindowRegistry::register(LAUNCHER_WINDOW_KIND, window_handle.into(), cx);
-            })
-            .ok();
-        }
-    })
-    .detach();
+    // Open synchronously: gpui quits when the window list is empty (non-macOS), so a window
+    // spawned from an async task would leave a zero-window gap that kills the app mid-transition.
+    if let Ok(window_handle) = cx.open_window(window_options, |window, cx| {
+        let view = cx.new(|cx| Launcher::new(window, cx));
+        cx.new(|cx| Root::new(view, window, cx))
+    }) {
+        WindowRegistry::register(LAUNCHER_WINDOW_KIND, window_handle.into(), cx);
+    }
 }

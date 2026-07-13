@@ -1,13 +1,14 @@
-//! The center table panel: a virtualized data grid with a pinned row-number column, single-cell
-//! selection, and double-click-to-edit cells. This crate owns all table state; `workspace` only
-//! needs to know `TablePanel` is a `gpui_component::dock::Panel` it can register and place, and
-//! `app`'s status-bar items only need `TableStateHandle`/`QrateTableDelegate` to read selection.
+//! The center table panel: a virtualized data grid with a pinned row-number column, native
+//! cell/row/column selection, movable + resizable columns (layout persisted per project), and
+//! double-click-to-edit cells. This crate owns all table state; `workspace` only needs to know
+//! `TablePanel` is a `gpui_component::dock::Panel` it can register and place, and `app`'s
+//! status-bar items only need `TableStateHandle`/`QrateTableDelegate` to read the selection.
 
+mod cell;
 mod delegate;
 mod editing;
 mod panel;
 mod row_index;
-mod selection;
 
 pub use delegate::{QrateTableDelegate, TableChanged};
 pub use panel::TablePanel;

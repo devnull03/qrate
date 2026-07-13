@@ -56,20 +56,14 @@ pub(crate) fn open_settings_window(cx: &mut gpui::App) {
         ..Default::default()
     };
 
-    cx.spawn(async move |cx| {
-        let result = cx.open_window(window_options, |window, cx| {
-            let view = cx.new(|cx| SettingsWindow::new(window, cx, build_pages));
-            cx.new(|cx| Root::new(view, window, cx))
-        });
-
-        if let Ok(window_handle) = result {
-            cx.update(|cx| {
-                WindowRegistry::register(SETTINGS_WINDOW_KIND, window_handle.into(), cx);
-            })
-            .ok();
-        }
-    })
-    .detach();
+    // Open synchronously: gpui quits when the window list is empty (non-macOS), so a window
+    // spawned from an async task would leave a zero-window gap that kills the app mid-transition.
+    if let Ok(window_handle) = cx.open_window(window_options, |window, cx| {
+        let view = cx.new(|cx| SettingsWindow::new(window, cx, build_pages));
+        cx.new(|cx| Root::new(view, window, cx))
+    }) {
+        WindowRegistry::register(SETTINGS_WINDOW_KIND, window_handle.into(), cx);
+    }
 }
 
 /// Opens the real main app window, focusing the existing one if it's already open. Called by
@@ -121,20 +115,13 @@ pub(crate) fn open_main_window(cx: &mut gpui::App) {
         ..Default::default()
     };
 
-    cx.spawn(async move |cx| {
-        let result = cx.open_window(window_options, |window, cx| {
-            let view = cx.new(|cx| App::new(window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        });
-
-        if let Ok(window_handle) = result {
-            cx.update(|cx| {
-                WindowRegistry::register(MAIN_WINDOW_KIND, window_handle.into(), cx);
-            })
-            .ok();
-        }
-    })
-    .detach();
+    // Open synchronously — see `open_settings_window` for why (quit-on-empty-window-list).
+    if let Ok(window_handle) = cx.open_window(window_options, |window, cx| {
+        let view = cx.new(|cx| App::new(window, cx));
+        cx.new(|cx| Root::new(view, window, cx))
+    }) {
+        WindowRegistry::register(MAIN_WINDOW_KIND, window_handle.into(), cx);
+    }
 }
 
 pub struct App {
@@ -269,7 +256,7 @@ fn flush_all_state(cx: &mut gpui::App) {
 }
 
 fn main() {
-    let app = Application::new().with_assets(gpui_component_assets::Assets);
+    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
 
     app.run(move |cx| {
         gpui_component::init(cx);

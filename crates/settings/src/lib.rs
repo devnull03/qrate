@@ -233,7 +233,7 @@ pub struct MainWindowBounds {
     pub height: f32,
     /// `PlatformDisplay::id` as `u32`; matched at startup against [`App::displays`].
     #[serde(default)]
-    pub display_id: Option<u32>,
+    pub display_id: Option<u64>,
 }
 
 impl MainWindowBounds {
@@ -242,7 +242,7 @@ impl MainWindowBounds {
         Self {
             width: b.size.width.into(),
             height: b.size.height.into(),
-            display_id: window.display(cx).map(|d| u32::from(d.id())),
+            display_id: window.display(cx).map(|d| u64::from(d.id())),
         }
     }
 
@@ -258,7 +258,7 @@ impl MainWindowBounds {
         let display = bounds.and_then(|b| b.display_id).and_then(|raw| {
             cx.displays()
                 .into_iter()
-                .find(|d| u32::from(d.id()) == raw)
+                .find(|d| u64::from(d.id()) == raw)
                 .map(|d| d.id())
         });
         const MIN_W: f32 = 400.0;
