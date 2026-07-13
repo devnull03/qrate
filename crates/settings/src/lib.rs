@@ -2,24 +2,20 @@
 //! settings-window shell (`SettingsWindow`). Product-specific pages live in `app`.
 
 pub mod path_picker;
+pub mod project;
 
 mod db;
 
 pub use db::{SettingsWriter, load_app_settings};
-use gpui_component::Sizable;
-
 /// Increment when the persisted SQLite JSON schema (`db::PersistSettings`) changes.
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
 
-use std::path::PathBuf;
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::{collections::HashMap, env};
 
 use gpui::*;
 use gpui_component::{
-    IconName, StyledExt, TitleBar,
-    button::Button,
-    h_flex,
+    StyledExt, TitleBar,
     input::InputState,
     label::Label,
     scroll::ScrollableElement,
@@ -253,83 +249,6 @@ impl MainWindowBounds {
 
 // --- App Settings ---
 
-pub fn picker_with_path_button(
-    key: &'static str,
-    label: &'static str,
-    description: &'static str,
-    prompt: &'static str,
-    path_candidates: Vec<&'static str>,
-) -> SettingItem {
-    let prompt: SharedString = prompt.into();
-    SettingItem::new(
-        label,
-        SettingField::render(move |options, window, cx| {
-            let want = AppSettings::get(cx)
-                .values
-                .get(key)
-                .map(|v| v.text())
-                .unwrap_or_default();
-
-            let input = window.use_keyed_state(
-                SharedString::from(format!(
-                    "path-picker-pathbtn-{}-{}-{}",
-                    options.page_ix, options.group_ix, options.item_ix
-                )),
-                cx,
-                |window, cx| {
-                    InputState::new(window, cx)
-                        .placeholder("No file selected...")
-                        .default_value(want.clone())
-                },
-            );
-
-            input.update(cx, |state, cx| {
-                if state.value() != want {
-                    state.set_value(want.to_string(), window, cx);
-                }
-            });
-
-            let on_pick_key = key;
-            let on_path_key = key;
-            let path_candidates = path_candidates.clone();
-
-            h_flex()
-                .gap_2()
-                .w_full()
-                .child(PathPickerApp {
-                    layout: options.layout,
-                    field_size: options.size,
-                    button_size: Some(options.size),
-                    button_id: SharedString::from(format!("browse-{}", key)),
-                    files: true,
-                    directories: false,
-                    prompt: prompt.clone(),
-                    input: input.clone(),
-                    on_pick: std::sync::Arc::new(move |val, cx| {
-                        AppSettings::set_text(on_pick_key, val, cx);
-                    }),
-                })
-                .child(
-                    Button::new(SharedString::from(format!("get-from-path-{}", key)))
-                        .outline()
-                        .icon(IconName::Redo2)
-                        .tooltip("Get from PATH")
-                        .with_size(options.size)
-                        .on_click(move |_, _, cx| {
-                            if let Some(p) = find_on_path(&path_candidates) {
-                                AppSettings::set_text(
-                                    on_path_key,
-                                    p.to_string_lossy().to_string().into(),
-                                    cx,
-                                );
-                            }
-                        }),
-                )
-        }),
-    )
-    .description(description)
-}
-
 pub struct AppSettings {
     pub values: HashMap<String, Val>,
     pub main_window_bounds: Option<MainWindowBounds>,
@@ -453,17 +372,4 @@ impl Render for SettingsWindow {
                     .child(Settings::new("app-settings").pages((self.build_pages)())),
             )
     }
-}
-
-pub fn find_on_path(candidates: &[&str]) -> Option<PathBuf> {
-    let path = env::var_os("PATH")?;
-    for dir in env::split_paths(&path) {
-        for name in candidates {
-            let p = dir.join(name);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-    }
-    None
 }

@@ -14,10 +14,7 @@ use gpui_component::{
     button::Button,
     h_flex,
     input::{Input, InputState},
-    setting::{SettingField, SettingItem},
 };
-
-use crate::AppSettings;
 
 /// Callback after the user picks a path in settings (`PathPickerApp`).
 pub type AppPathPickFn = Arc<dyn Fn(SharedString, &mut App) + Send + Sync>;
@@ -109,81 +106,4 @@ impl<B: IntoElement + 'static> RenderOnce for PathPickerBrowseRow<B> {
             )
             .child(self.browse)
     }
-}
-
-pub fn picker_with_path_button(
-    key: &'static str,
-    label: &'static str,
-    description: &'static str,
-    prompt: &'static str,
-    path_candidates: Vec<&'static str>,
-) -> SettingItem {
-    let prompt: SharedString = prompt.into();
-    SettingItem::new(
-        label,
-        SettingField::render(move |options, window, cx| {
-            let want = AppSettings::get(cx)
-                .values
-                .get(key)
-                .map(|v| v.text())
-                .unwrap_or_default();
-
-            let input = window.use_keyed_state(
-                SharedString::from(format!(
-                    "path-picker-pathbtn-{}-{}-{}",
-                    options.page_ix, options.group_ix, options.item_ix
-                )),
-                cx,
-                |window, cx| {
-                    InputState::new(window, cx)
-                        .placeholder("No file selected...")
-                        .default_value(want.clone())
-                },
-            );
-
-            input.update(cx, |state, cx| {
-                if state.value() != want {
-                    state.set_value(want.to_string(), window, cx);
-                }
-            });
-
-            let on_pick_key = key;
-            let on_path_key = key;
-            let path_candidates = path_candidates.clone();
-
-            h_flex()
-                .gap_2()
-                .w_full()
-                .child(PathPickerApp {
-                    layout: options.layout,
-                    field_size: options.size,
-                    button_size: Some(options.size),
-                    button_id: SharedString::from(format!("browse-{}", key)),
-                    files: true,
-                    directories: false,
-                    prompt: prompt.clone(),
-                    input: input.clone(),
-                    on_pick: std::sync::Arc::new(move |val, cx| {
-                        AppSettings::set_text(on_pick_key, val, cx);
-                    }),
-                })
-                .child(
-                    Button::new(SharedString::from(format!("get-from-path-{}", key)))
-                        .outline()
-                        .icon(IconName::Redo2)
-                        .tooltip("Get from PATH")
-                        .with_size(options.size)
-                        .on_click(move |_, _, cx| {
-                            if let Some(p) = crate::find_on_path(&path_candidates) {
-                                AppSettings::set_text(
-                                    on_path_key,
-                                    p.to_string_lossy().to_string().into(),
-                                    cx,
-                                );
-                            }
-                        }),
-                )
-        }),
-    )
-    .description(description)
 }
