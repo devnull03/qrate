@@ -176,8 +176,17 @@ impl App {
             }
         });
 
-        // Block the OS close button while a background task is running.
-        window.on_window_should_close(cx, |_, cx| !WindowLock::is_locked(cx));
+        // Block the OS close button while a background task is running, and
+        // otherwise run the same final flush that `on_app_quit` does — the
+        // native X skips the app-quit path on Windows (zed#40385/#40290), so
+        // relying on `on_app_quit` alone loses state on OS-native close.
+        window.on_window_should_close(cx, |_, cx| {
+            if WindowLock::is_locked(cx) {
+                return false;
+            }
+            flush_all_state(cx);
+            true
+        });
 
         set_main_window_title(window, cx);
 
@@ -238,6 +247,27 @@ impl Render for App {
     }
 }
 
+/// Final persist before the app or main window goes away. Called from both
+/// `on_app_quit` (menu Quit) and `on_window_should_close` (native X), since on
+/// Windows the native close doesn't route through the app-quit path.
+fn flush_all_state(cx: &mut gpui::App) {
+    if let Some(workspace) = cx
+        .try_global::<MainWorkspaceHandle>()
+        .and_then(|h| h.0.upgrade())
+    {
+        workspace.update(cx, |ws, cx| ws.persist_layout_on_quit(cx));
+    }
+    if let Some(writer) = cx
+        .try_global::<settings::project::ProjectPersistence>()
+        .and_then(|p| p.writer.clone())
+    {
+        writer.flush();
+    }
+    if let Err(err) = settings::flush_app_settings(AppSettings::get(cx)) {
+        eprintln!("failed to flush app settings on quit: {err}");
+    }
+}
+
 fn main() {
     let app = Application::new().with_assets(gpui_component_assets::Assets);
 
@@ -289,21 +319,7 @@ fn main() {
         // open/close toggles and edge resizes never emit `LayoutChanged`, so
         // the final layout may never have been captured at all.
         cx.on_app_quit(|cx| {
-            if let Some(workspace) = cx
-                .try_global::<MainWorkspaceHandle>()
-                .and_then(|h| h.0.upgrade())
-            {
-                workspace.update(cx, |ws, cx| ws.persist_layout_on_quit(cx));
-            }
-            if let Some(writer) = cx
-                .try_global::<settings::project::ProjectPersistence>()
-                .and_then(|p| p.writer.clone())
-            {
-                writer.flush();
-            }
-            if let Err(err) = settings::flush_app_settings(AppSettings::get(cx)) {
-                eprintln!("failed to flush app settings on quit: {err}");
-            }
+            flush_all_state(cx);
             async {}
         })
         .detach();
