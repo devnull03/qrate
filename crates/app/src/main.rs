@@ -149,14 +149,15 @@ impl App {
             let b = MainWindowBounds::capture_from_window(window, cx);
             match cx.try_global::<settings::project::CurrentProject>() {
                 Some(project) => {
-                    if let Ok(json) = serde_json::to_string(&b)
-                        && let Err(err) = settings::project::write_setting(
+                    // Debounced — this observer fires on every pixel of a
+                    // resize/move drag, so don't block the UI thread on file I/O.
+                    if let Ok(json) = serde_json::to_string(&b) {
+                        settings::project::queue_write(
                             &project.file,
                             MAIN_WINDOW_BOUNDS_KEY,
                             &json,
-                        )
-                    {
-                        eprintln!("failed to save window bounds to project: {err}");
+                            cx,
+                        );
                     }
                 }
                 None => AppSettings::update(cx, |s| {
@@ -235,6 +236,9 @@ fn main() {
         cx.set_global(SettingsPersistence {
             writer: Some(SettingsWriter::start()),
         });
+        cx.set_global(settings::project::ProjectPersistence {
+            writer: Some(settings::project::ProjectSettingsWriter::start()),
+        });
         theming::init(cx);
         cx.set_global(WindowRegistry::default());
 
@@ -262,6 +266,31 @@ fn main() {
         cx.on_action(|_: &Quit, cx| {
             cx.quit();
         });
+
+        // Guaranteed flush before exit (gpui gives `on_app_quit` handlers 100ms).
+        // Two gaps close here: (1) both writers debounce at 450ms, so a write
+        // enqueued right before quit would otherwise be lost; (2) dock
+        // open/close toggles and edge resizes never emit `LayoutChanged`, so
+        // the final layout may never have been captured at all.
+        cx.on_app_quit(|cx| {
+            if let Some(workspace) = cx
+                .try_global::<MainWorkspaceHandle>()
+                .and_then(|h| h.0.upgrade())
+            {
+                workspace.update(cx, |ws, cx| ws.persist_layout_on_quit(cx));
+            }
+            if let Some(writer) = cx
+                .try_global::<settings::project::ProjectPersistence>()
+                .and_then(|p| p.writer.clone())
+            {
+                writer.flush();
+            }
+            if let Err(err) = settings::flush_app_settings(AppSettings::get(cx)) {
+                eprintln!("failed to flush app settings on quit: {err}");
+            }
+            async {}
+        })
+        .detach();
 
         // The launcher (Recent Projects + Create New) is the real startup window — it opens
         // the main window itself for a recent project, or a project-creation wizard window for

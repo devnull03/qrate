@@ -1,8 +1,11 @@
 //! On-disk `.qrate` project file (v1). One SQLite database per project,
-//! written once by the "New Project" wizard. WAL behavior was validated by
-//! `examples/qrate_wal_probe.rs` (ASNT-16): a clean close with zero remaining
-//! connections removes the `-wal`/`-shm` siblings, and the explicit
-//! `wal_checkpoint(TRUNCATE)` before close is cheap insurance.
+//! written once by the "New Project" wizard. Runs in `journal_mode=DELETE`,
+//! not WAL: with a single short-lived connection per operation WAL buys no
+//! concurrency, and its `-wal`/`-shm` siblings only vanish when the *last*
+//! connection closes cleanly — the exact lifecycle bug ASNT-16's probe
+//! characterized. In DELETE mode a `-journal` exists only mid-transaction, so
+//! a clean commit always leaves a single file on disk, and a crash leaves a
+//! hot journal that SQLite auto-recovers on the next open.
 //!
 //! v1 schema — only what has a consumer today:
 //! - `__settings`  key/value: project name, source kind, link method, created_at.
@@ -15,7 +18,10 @@
 //! add each when its consumer (media viewer, validation rules, multi-import)
 //! exists. Versioned via `PRAGMA user_version` for future migrations.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use rusqlite::{Connection, OptionalExtension as _, params};
@@ -23,9 +29,6 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 /// `PRAGMA application_id` value so `file`-style tools can recognize `.qrate`.
 const QRATE_APPLICATION_ID: i32 = 1097887558;
 const QRATE_SCHEMA_VERSION: i32 = 1;
-
-/// The `.qrate` file's name inside a project folder.
-pub const PROJECT_FILE_NAME: &str = "project.qrate";
 
 pub struct ProjectColumn {
     pub name: String,
@@ -45,14 +48,38 @@ pub struct ProjectData {
 /// The currently open project — set when the launcher/wizard opens one, read
 /// by the table (data) and workspace (per-project dock layout).
 pub struct CurrentProject {
-    /// The project folder (what recents show).
-    pub dir: PathBuf,
-    /// The `.qrate` file inside it.
+    /// The `.qrate` file (the project *is* this one file — no wrapper folder).
     pub file: PathBuf,
     pub data: ProjectData,
 }
 
 impl gpui::Global for CurrentProject {}
+
+/// Opens a `.qrate` read-write with the pragmas every connection wants:
+/// DELETE journaling (also converts any WAL-era file back, which removes its
+/// stale `-wal`/`-shm` siblings), FULL synchronous — the durable setting for
+/// rollback journals; NORMAL is only equivalent under WAL — and a busy
+/// timeout so a transient AV/indexer file lock retries instead of surfacing
+/// as SQLITE_BUSY.
+fn open_rw(path: &Path) -> Result<Connection> {
+    let conn = Connection::open(path).with_context(|| format!("Open project at {path:?}"))?;
+    conn.busy_timeout(Duration::from_secs(5))
+        .context("Set busy timeout")?;
+    conn.pragma_update(None, "journal_mode", "DELETE")
+        .context("Set journal mode")?;
+    conn.pragma_update(None, "synchronous", "FULL")
+        .context("Set synchronous")?;
+    Ok(conn)
+}
+
+/// Read-only open; no journal-mode change (that needs a write handle).
+fn open_ro(path: &Path) -> Result<Connection> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("Open project at {path:?}"))?;
+    conn.busy_timeout(Duration::from_secs(5))
+        .context("Set busy timeout")?;
+    Ok(conn)
+}
 
 /// Creates `path` (a `.qrate` file) with the v1 schema and the imported data.
 /// `headers`/`rows` are the raw spreadsheet; `columns` the configured column
@@ -67,9 +94,7 @@ pub fn create_project_file(
     headers: &[String],
     rows: &[Vec<String>],
 ) -> Result<()> {
-    let conn = Connection::open(path).with_context(|| format!("Create project at {path:?}"))?;
-    conn.pragma_update(None, "journal_mode", "WAL")
-        .context("Set WAL mode")?;
+    let conn = open_rw(path).with_context(|| format!("Create project at {path:?}"))?;
     conn.pragma_update(None, "application_id", QRATE_APPLICATION_ID)
         .context("Set application_id")?;
     conn.pragma_update(None, "user_version", QRATE_SCHEMA_VERSION)
@@ -125,19 +150,13 @@ pub fn create_project_file(
     if !headers.is_empty() {
         write_dataset(&conn, headers, rows)?;
     }
-
-    // TRUNCATE the WAL before close so the project is a single file on disk
-    // even if something else briefly holds a handle (see module docs).
-    conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")
-        .context("Checkpoint WAL")?;
     Ok(())
 }
 
 /// Reads a whole `.qrate` file back: settings name, configured columns, and
 /// the `dataset_main` contents (empty for blank projects).
 pub fn load_project_file(path: &Path) -> Result<ProjectData> {
-    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .with_context(|| format!("Open project at {path:?}"))?;
+    let conn = open_ro(path)?;
 
     let name: String = conn
         .query_row("SELECT value FROM __settings WHERE key = 'name'", [], |r| {
@@ -206,8 +225,7 @@ fn load_dataset(conn: &Connection) -> Result<(Vec<String>, Vec<Vec<String>>)> {
 
 /// Reads one `__settings` value from a `.qrate` file (e.g. the dock layout).
 pub fn read_setting(path: &Path, key: &str) -> Result<Option<String>> {
-    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .with_context(|| format!("Open project at {path:?}"))?;
+    let conn = open_ro(path)?;
     conn.query_row(
         "SELECT value FROM __settings WHERE key = ?1",
         params![key],
@@ -217,21 +235,98 @@ pub fn read_setting(path: &Path, key: &str) -> Result<Option<String>> {
     .context("Read setting")
 }
 
-/// Upserts one `__settings` value. Opens a short-lived connection per call —
-/// cheap for the current callers (dock-layout saves).
-/// ponytail: sync write per call; add a debounced writer thread (like
-/// `db::SettingsWriter`) if layout drags ever stutter.
+/// Upserts one `__settings` value, synchronously. Hot-path callers (dock
+/// layout, window bounds — per drag event) should go through
+/// [`queue_write`] instead so the UI thread never blocks on file I/O.
 pub fn write_setting(path: &Path, key: &str, value: &str) -> Result<()> {
-    let conn = Connection::open(path).with_context(|| format!("Open project at {path:?}"))?;
+    let conn = open_rw(path)?;
     conn.execute(
         "INSERT INTO __settings(key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![key, value],
     )
     .context("Upsert setting")?;
-    conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")
-        .context("Checkpoint WAL")?;
     Ok(())
+}
+
+/// Debounced background writer for `__settings` values. The dock-layout and
+/// window-bounds observers fire on every drag event; latest value per
+/// (file, key) wins, and one thread serves all project files — no lifecycle
+/// to manage on project switch, since the path travels with each entry.
+/// Mirrors `db::SettingsWriter`.
+#[derive(Clone)]
+pub struct ProjectSettingsWriter {
+    pending: Arc<Mutex<HashMap<(PathBuf, String), String>>>,
+    wake: mpsc::Sender<()>,
+}
+
+impl ProjectSettingsWriter {
+    pub fn start() -> Self {
+        let pending: Arc<Mutex<HashMap<(PathBuf, String), String>>> = Arc::default();
+        let (wake, rx) = mpsc::channel::<()>();
+        let map = pending.clone();
+        std::thread::spawn(move || {
+            let debounce = Duration::from_millis(450);
+            while rx.recv().is_ok() {
+                // Something was enqueued — let the burst settle (drain wake-ups
+                // until one debounce window passes quietly), then write.
+                while rx.recv_timeout(debounce).is_ok() {}
+                Self::write_pending(&map);
+            }
+            // Channel closed (writer dropped) — flush whatever is left.
+            Self::write_pending(&map);
+        });
+        Self { pending, wake }
+    }
+
+    pub fn enqueue(&self, file: &Path, key: &str, value: String) {
+        if let Ok(mut map) = self.pending.lock() {
+            map.insert((file.to_path_buf(), key.to_string()), value);
+        }
+        let _ = self.wake.send(());
+    }
+
+    /// Writes everything still pending, synchronously — the app-quit path,
+    /// which can't wait out the debounce window.
+    pub fn flush(&self) {
+        Self::write_pending(&self.pending);
+    }
+
+    fn write_pending(pending: &Mutex<HashMap<(PathBuf, String), String>>) {
+        let drained: Vec<_> = match pending.lock() {
+            Ok(mut map) => map.drain().collect(),
+            Err(_) => return,
+        };
+        for ((file, key), value) in drained {
+            if let Err(err) = write_setting(&file, &key, &value) {
+                eprintln!("failed to save project setting {key}: {err}");
+            }
+        }
+    }
+}
+
+/// App-wide handle to the one [`ProjectSettingsWriter`], set at startup.
+#[derive(Clone, Default)]
+pub struct ProjectPersistence {
+    pub writer: Option<ProjectSettingsWriter>,
+}
+
+impl gpui::Global for ProjectPersistence {}
+
+/// Queues a debounced project-setting write; falls back to a synchronous
+/// write when the writer global isn't set (tests, early startup).
+pub fn queue_write(file: &Path, key: &str, value: &str, cx: &gpui::App) {
+    let writer = cx
+        .try_global::<ProjectPersistence>()
+        .and_then(|p| p.writer.clone());
+    match writer {
+        Some(w) => w.enqueue(file, key, value.to_string()),
+        None => {
+            if let Err(err) = write_setting(file, key, value) {
+                eprintln!("failed to save project setting {key}: {err}");
+            }
+        }
+    }
 }
 
 /// Creates `dataset_main` with one TEXT column per header and bulk-inserts the
@@ -302,6 +397,10 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join(name);
         let _ = std::fs::remove_file(&path);
+        // Also clear journal/WAL siblings a previous (possibly WAL-era) run left.
+        for ext in ["qrate-journal", "qrate-wal", "qrate-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(ext));
+        }
         path
     }
 
@@ -329,9 +428,12 @@ mod tests {
         )
         .unwrap();
 
-        // Single file on disk — WAL siblings gone after close.
+        // Single file on disk — DELETE mode removes the `-journal` at commit,
+        // and no `-wal`/`-shm` are ever created.
         assert!(path.exists());
+        assert!(!path.with_extension("qrate-journal").exists());
         assert!(!path.with_extension("qrate-wal").exists());
+        assert!(!path.with_extension("qrate-shm").exists());
 
         let conn = Connection::open(&path).unwrap();
         let app_id: i32 = conn
@@ -376,12 +478,24 @@ mod tests {
             read_setting(&path, "dock_layout").unwrap().as_deref(),
             Some("{\"v\":2}")
         );
-        // Read-only handles can leave an empty `-wal` behind (they may not
-        // delete it on close) — the invariant is no *unflushed* data in it.
-        let wal_len = std::fs::metadata(path.with_extension("qrate-wal"))
-            .map(|m| m.len())
-            .unwrap_or(0);
-        assert_eq!(wal_len, 0);
+        // DELETE mode's invariant: nothing but the `.qrate` file at rest.
+        assert!(!path.with_extension("qrate-journal").exists());
+        assert!(!path.with_extension("qrate-wal").exists());
+    }
+
+    #[test]
+    fn writer_flushes_latest_value_per_key() {
+        let path = tempfile("writer.qrate");
+        create_project_file(&path, "W", "Blank", None, &[], &[], &[]).unwrap();
+
+        let writer = ProjectSettingsWriter::start();
+        writer.enqueue(&path, "dock_layout", "{\"v\":1}".into());
+        writer.enqueue(&path, "dock_layout", "{\"v\":2}".into()); // latest wins
+        writer.flush(); // quit path: synchronous, doesn't wait out the debounce
+        assert_eq!(
+            read_setting(&path, "dock_layout").unwrap().as_deref(),
+            Some("{\"v\":2}")
+        );
     }
 
     #[test]

@@ -65,15 +65,15 @@ impl ProjectWizard {
             &headers,
             &rows,
         ) {
-            Ok(dir) => {
+            Ok(file) => {
                 // Load the file straight back so the main window opens on the
                 // real, round-tripped data (same path the launcher uses).
-                if let Err(e) = project::open_project(std::path::Path::new(&dir), cx) {
+                if let Err(e) = project::open_project(std::path::Path::new(&file), cx) {
                     self.name_error = Some(format!("Couldn't open the new project — {e}").into());
                     self.step = WizardStep::Name;
                     return;
                 }
-                recent::record_opened(name, dir, cx);
+                recent::record_opened(name, file, cx);
                 // No success screen — hand off to the main app right away.
                 if let Some(hooks) = cx.try_global::<launcher::LauncherHooks>().copied() {
                     (hooks.open_main_window)(cx);

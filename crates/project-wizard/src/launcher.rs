@@ -41,9 +41,9 @@ impl Launcher {
         }
     }
 
-    /// Loads the `.qrate` in `path`, sets it current, and hands off to the
-    /// main window. On failure the launcher stays up and shows why.
-    fn open_project_dir(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+    /// Loads the `.qrate` file at `path`, sets it current, and hands off to
+    /// the main window. On failure the launcher stays up and shows why.
+    fn open_project_file(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
         match project::open_project(std::path::Path::new(&path), cx) {
             Ok(name) => {
                 recent::record_opened(name, path, cx);
@@ -59,8 +59,7 @@ impl Launcher {
         }
     }
 
-    /// "Open other…" — pick a `project.qrate` file anywhere on disk; its
-    /// parent folder is the project.
+    /// "Open other…" — pick a `.qrate` file anywhere on disk.
     fn open_other(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -72,12 +71,9 @@ impl Launcher {
             if let Ok(Ok(Some(paths))) = receiver.await
                 && let Some(path) = paths.first()
             {
-                let dir = path
-                    .parent()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
+                let file = path.to_string_lossy().to_string();
                 this.update_in(cx, |this, window, cx| {
-                    this.open_project_dir(dir, window, cx);
+                    this.open_project_file(file, window, cx);
                 })
                 .ok();
             }
@@ -161,7 +157,7 @@ impl Render for Launcher {
                                 }))
                         })
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_project_dir(path.clone(), window, cx)
+                            this.open_project_file(path.clone(), window, cx)
                         })),
                 );
             }

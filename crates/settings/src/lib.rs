@@ -6,7 +6,7 @@ pub mod project;
 
 mod db;
 
-pub use db::{SettingsWriter, load_app_settings};
+pub use db::{SettingsWriter, flush_app_settings, load_app_settings};
 /// Increment when the persisted SQLite JSON schema (`db::PersistSettings`) changes.
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
 

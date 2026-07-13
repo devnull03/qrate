@@ -103,20 +103,12 @@ impl Workspace {
         // Persist on every layout change. Set up last so the default/restore building above
         // doesn't trigger a redundant write. With a project open the layout is saved into its
         // `.qrate` file (per-project panel state); otherwise into the global app settings.
+        // NOTE: gpui_component only emits `LayoutChanged` for *inner* panel changes (tab
+        // drags, split resizes) — a dock open/close or edge resize just `cx.notify()`s, so
+        // `toggle_dock` below and the app-quit flush persist those explicitly.
         let _layout_sub = cx.subscribe(&dock_area, |_this, area, event: &DockEvent, cx| {
             if matches!(event, DockEvent::LayoutChanged) {
-                let state = area.read(cx).dump(cx);
-                if let Ok(json) = serde_json::to_string(&state) {
-                    if let Some(project) = cx.try_global::<settings::project::CurrentProject>() {
-                        if let Err(err) =
-                            settings::project::write_setting(&project.file, DOCK_LAYOUT_KEY, &json)
-                        {
-                            eprintln!("failed to save dock layout to project: {err}");
-                        }
-                    } else {
-                        AppSettings::set_text(DOCK_LAYOUT_KEY, json.into(), cx);
-                    }
-                }
+                Self::persist_layout(&area, cx);
                 // Re-render the workspace so the bottom-strip crop tracks the dock's open state.
                 cx.notify();
             }
@@ -143,6 +135,34 @@ impl Workspace {
         self.dock_area.update(cx, |area, cx| {
             area.toggle_dock(placement, window, cx);
         });
+        // `Dock::set_open` never emits `LayoutChanged` (it only notifies), so the
+        // subscription in `new` can't see toggles — persist here or open/closed
+        // state is lost on reopen.
+        Self::persist_layout(&self.dock_area, cx);
+        cx.notify();
+    }
+
+    /// Serializes the dock state into the open project's `.qrate` (debounced,
+    /// off the UI thread) or the global app settings when no project is open.
+    fn persist_layout(dock_area: &Entity<DockArea>, cx: &mut App) {
+        let state = dock_area.read(cx).dump(cx);
+        let Ok(json) = serde_json::to_string(&state) else {
+            return;
+        };
+        if let Some(project) = cx.try_global::<settings::project::CurrentProject>() {
+            settings::project::queue_write(&project.file, DOCK_LAYOUT_KEY, &json, cx);
+        } else {
+            AppSettings::set_text(DOCK_LAYOUT_KEY, json.into(), cx);
+        }
+    }
+
+    /// Best-effort layout persist for the app-quit path: dock edge-resizes never
+    /// fire any event (see `persist_layout`), so the final sizes are only
+    /// guaranteed to be captured here.
+    /// ponytail: mid-session edge-resizes persist only at quit; hook the dock's
+    /// resize if gpui_component ever emits an event for it.
+    pub fn persist_layout_on_quit(&self, cx: &mut App) {
+        Self::persist_layout(&self.dock_area, cx);
     }
 
     /// Re-reads the layout for whatever project is current and applies it over the

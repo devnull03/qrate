@@ -139,6 +139,12 @@ pub fn load_app_settings() -> Result<AppSettings> {
     Ok(persist.into())
 }
 
+/// Writes the settings synchronously, bypassing the debounced writer — the
+/// app-quit path, where a pending 450ms debounce would otherwise be lost.
+pub fn flush_app_settings(settings: &AppSettings) -> Result<()> {
+    save_app_settings_snapshot(PersistSettings::from(settings))
+}
+
 fn save_app_settings_snapshot(snapshot: PersistSettings) -> Result<()> {
     let path = db_path()?;
     let conn = open_db(&path)?;

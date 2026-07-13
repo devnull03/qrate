@@ -98,7 +98,6 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "project-wizard",
- "rusqlite",
  "schemars",
  "serde",
  "serde_json",

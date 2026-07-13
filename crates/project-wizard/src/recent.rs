@@ -46,8 +46,8 @@ pub fn record_opened(name: String, path: String, cx: &mut App) {
     AppSettings::set_text(RECENTS_KEY, json.into(), cx);
 }
 
-/// Drops a project from the recent list. Only forgets the entry — the project
-/// folder on disk is left untouched.
+/// Drops a project from the recent list. Only forgets the entry — the
+/// `.qrate` file on disk is left untouched.
 pub fn remove(path: &str, cx: &mut App) {
     let mut recents = list(cx);
     let before = recents.len();
