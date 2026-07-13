@@ -40,7 +40,6 @@ pub enum LinkMethod {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ColumnSource {
     AutoFromSpreadsheet,
-    RecentlyUsed,
     LoadFromFileOrSheet,
     /// Blank projects have no spreadsheet to derive columns from — defer setup.
     SkipForNow,
@@ -51,30 +50,6 @@ pub enum LoadConfigTab {
     File,
     Sheet,
 }
-
-pub struct RecentConfig {
-    pub name: &'static str,
-    pub column_count: usize,
-    pub last_used: &'static str,
-}
-
-pub const RECENT_CONFIGS: &[RecentConfig] = &[
-    RecentConfig {
-        name: "Aderman Collection",
-        column_count: 7,
-        last_used: "2 days ago",
-    },
-    RecentConfig {
-        name: "Photo Donations 2025",
-        column_count: 5,
-        last_used: "1 month ago",
-    },
-    RecentConfig {
-        name: "Oral History Intake",
-        column_count: 9,
-        last_used: "3 months ago",
-    },
-];
 
 pub struct ProjectWizard {
     pub(crate) step: WizardStep,
@@ -110,7 +85,6 @@ pub struct ProjectWizard {
     // Columns step
     pub(crate) column_source: ColumnSource,
     pub(crate) show_advanced_mapping: bool,
-    pub(crate) recent_config_selected: usize,
     pub(crate) load_config_tab: LoadConfigTab,
     pub(crate) config_file_path: String,
     pub(crate) config_preview: Option<ColumnConfigPreview>,
@@ -167,7 +141,6 @@ impl ProjectWizard {
                 ColumnSource::AutoFromSpreadsheet
             },
             show_advanced_mapping: false,
-            recent_config_selected: 0,
             load_config_tab: LoadConfigTab::File,
             config_file_path: String::new(),
             config_preview: None,

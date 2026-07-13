@@ -5,7 +5,7 @@ use gpui_component::label::Label;
 use gpui_component::{ActiveTheme, StyledExt, h_flex, v_flex};
 
 use crate::launcher;
-use crate::project::{self, ProjectManifest};
+use crate::project;
 use crate::recent;
 use crate::wizard::{ColumnSource, EntryKind, LinkMethod, ProjectWizard, WizardStep};
 
@@ -18,55 +18,61 @@ impl ProjectWizard {
             EntryKind::Sheet => "Google Sheet".to_string(),
         };
         // When files are skipped the folder/link state is stale — don't let the
-        // manifest claim files were matched or a link method was chosen.
-        let files_matched = (!self.skip_files)
-            .then(|| {
-                self.folder_match
-                    .as_ref()
-                    .map(|m| (m.matched_rows, m.total_rows))
-            })
-            .flatten();
-        let link_method = (!self.skips_link()).then(|| match self.link_method {
-            LinkMethod::ExactFilename => "exact filename".to_string(),
-            LinkMethod::CustomPattern => "custom pattern".to_string(),
+        // project claim a link method was chosen.
+        let link_method = (!self.skips_link()).then_some(match self.link_method {
+            LinkMethod::ExactFilename => "exact filename",
+            LinkMethod::CustomPattern => "custom pattern",
         });
         // Blank projects go through the Columns step too, so honor any config
         // loaded there; otherwise fall back to spreadsheet headers (empty for
         // Blank), every column defaulting to Text.
-        let columns = self
+        let columns: Vec<project::ProjectColumn> = self
             .config_preview
             .as_ref()
             .map(|p| {
                 p.entries
                     .iter()
-                    .map(|e| project::ManifestColumn {
+                    .map(|e| project::ProjectColumn {
                         name: e.name.clone(),
                         data_type: e.data_type.clone(),
-                        description: e.description.clone(),
+                        notes: e.description.clone(),
                     })
                     .collect()
             })
             .unwrap_or_else(|| {
                 self.spreadsheet_headers()
                     .into_iter()
-                    .map(|name| project::ManifestColumn {
+                    .map(|name| project::ProjectColumn {
                         name,
                         data_type: "Text".into(),
-                        description: String::new(),
+                        notes: String::new(),
                     })
                     .collect()
             });
+        // The imported rows themselves — the whole point of the `.qrate` file.
+        let (headers, rows) = self
+            .csv_preview
+            .as_ref()
+            .map(|p| (p.headers.clone(), p.rows.clone()))
+            .unwrap_or_default();
 
-        let manifest = ProjectManifest {
-            name: name.clone(),
-            source,
-            files_matched,
+        match project::write_project_file(
+            &self.save_path,
+            &name,
+            &source,
             link_method,
-            columns,
-        };
-
-        match project::write_project_file(&self.save_path, &name, &manifest) {
+            &columns,
+            &headers,
+            &rows,
+        ) {
             Ok(dir) => {
+                // Load the file straight back so the main window opens on the
+                // real, round-tripped data (same path the launcher uses).
+                if let Err(e) = project::open_project(std::path::Path::new(&dir), cx) {
+                    self.name_error = Some(format!("Couldn't open the new project — {e}").into());
+                    self.step = WizardStep::Name;
+                    return;
+                }
                 recent::record_opened(name, dir, cx);
                 // No success screen — hand off to the main app right away.
                 if let Some(hooks) = cx.try_global::<launcher::LauncherHooks>().copied() {
@@ -124,7 +130,6 @@ impl ProjectWizard {
         let columns_line = {
             let source_desc = match self.column_source {
                 ColumnSource::AutoFromSpreadsheet => "Auto-matched from spreadsheet",
-                ColumnSource::RecentlyUsed => "From a saved config",
                 ColumnSource::LoadFromFileOrSheet => "Loaded from file/Sheet",
                 ColumnSource::SkipForNow => "Set up later",
             };

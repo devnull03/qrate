@@ -1,6 +1,7 @@
 //! Real CSV parsing and folder-matching logic used by the Files, Link, and
-//! Columns steps. Google Sheets are fetched as CSV by the `cloud-sync` crate
-//! and then run through the same [`load_csv_preview`] / [`match_folder`] path.
+//! Columns steps. Google Sheets are fetched as `.xlsx` by the `cloud-sync`
+//! crate and adapted into a [`SpreadsheetPreview`] (see the `From` impl below),
+//! then run through the same [`match_folder`] path as local CSV files.
 
 use std::collections::HashSet;
 use std::fs;
@@ -19,6 +20,18 @@ impl SpreadsheetPreview {
 
     pub fn column_count(&self) -> usize {
         self.headers.len()
+    }
+}
+
+impl From<cloud_sync::SheetData> for SpreadsheetPreview {
+    // ponytail: notes are dropped here — the wizard preview has no field for
+    // them yet. Carry `sheet.notes` through when the Problems/column-notes
+    // panels land (see the ".qrate project file" + "Problems panel" tasks).
+    fn from(sheet: cloud_sync::SheetData) -> Self {
+        Self {
+            headers: sheet.headers,
+            rows: sheet.rows,
+        }
     }
 }
 

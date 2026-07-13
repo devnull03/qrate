@@ -1,5 +1,5 @@
-//! Stage 4 · Set up your columns, plus the Stage 4b/4c sub-dialogs opened
-//! from the "recently used" and "load from file/Sheet" cards.
+//! Stage 4 · Set up your columns, plus the Stage 4c sub-dialog opened
+//! from the "load from file/Sheet" card.
 
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::button::Button;
@@ -12,9 +12,7 @@ use gpui_component::{ActiveTheme, StyledExt, WindowExt, h_flex, v_flex};
 
 use crate::data;
 use crate::steps::files::{MsgKind, inline_message};
-use crate::wizard::{
-    ColumnSource, EntryKind, LoadConfigTab, ProjectWizard, RECENT_CONFIGS, option_card,
-};
+use crate::wizard::{ColumnSource, EntryKind, LoadConfigTab, ProjectWizard, option_card};
 
 impl ProjectWizard {
     fn browse_config_file(&mut self, cx: &mut Context<Self>) {
@@ -54,17 +52,15 @@ impl ProjectWizard {
         }
     }
 
-    /// Fetches the given public Sheet as CSV and turns its headers into a
+    /// Fetches the given public Sheet as `.xlsx` and turns its headers into a
     /// column config (one Text column each).
     // ponytail: blocking fetch on the UI thread — fine for a "Check" click;
     // move to the background executor if it ever drags.
     fn load_config_from_sheet(&mut self, cx: &mut Context<Self>) {
         let link = self.sheet_link_input.read(cx).value().to_string();
-        let fetched = cloud_sync::fetch_sheet_csv(&link)
+        let fetched = cloud_sync::fetch_sheet(&link)
             .map_err(|e| e.message())
-            .and_then(|path| {
-                data::load_csv_preview(&path.to_string_lossy()).map_err(|e| e.message())
-            });
+            .map(data::SpreadsheetPreview::from);
         match fetched {
             Ok(preview) => {
                 self.config_preview = Some(data::ColumnConfigPreview {
@@ -90,67 +86,6 @@ impl ProjectWizard {
     /// Associated fn (not `&mut self`): it must run *outside* the click
     /// listener's entity update, because `open_dialog`'s builder reads the
     /// same entity synchronously. Callers defer it via `window.defer`.
-    fn open_recent_config_dialog(entity: Entity<Self>, window: &mut Window, cx: &mut App) {
-        window.open_dialog(cx, move |dialog, _window, cx| {
-            let selected_ix = entity.read(cx).recent_config_selected;
-
-            let mut list = v_flex().gap_2();
-            for (ix, config) in RECENT_CONFIGS.iter().enumerate() {
-                let entity_row = entity.clone();
-                list = list.child(
-                    option_card(
-                        ("recent-config", ix),
-                        config.name,
-                        format!(
-                            "{} columns · last used {}",
-                            config.column_count, config.last_used
-                        ),
-                        ix == selected_ix,
-                        cx,
-                    )
-                    .on_click(move |_, _, cx| {
-                        entity_row.update(cx, |this, cx| {
-                            this.recent_config_selected = ix;
-                            cx.notify();
-                        });
-                    }),
-                );
-            }
-
-            let warning = if RECENT_CONFIGS[selected_ix].name == "Photo Donations 2025" {
-                Some("'Photo Donations 2025' only matches 2 of your 8 columns — use it anyway, or start fresh?")
-            } else {
-                None
-            };
-
-            let entity_ok = entity.clone();
-            dialog
-                .title("Choose a saved column config")
-                .child(
-                    v_flex()
-                        .gap_3()
-                        .child(list)
-                        .when_some(warning, |el, msg| {
-                            el.child(inline_message(msg, MsgKind::Warning, cx))
-                        }),
-                )
-                .confirm()
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Use this config")
-                        .cancel_text("Cancel"),
-                )
-                .on_ok(move |_, _, cx| {
-                    entity_ok.update(cx, |this, cx| {
-                        this.column_source = ColumnSource::RecentlyUsed;
-                        cx.notify();
-                    });
-                    true
-                })
-        });
-    }
-
-    /// See [`Self::open_recent_config_dialog`] — same deferred-open contract.
     fn open_load_config_dialog(entity: Entity<Self>, window: &mut Window, cx: &mut App) {
         window.open_dialog(cx, move |dialog, _window, cx| {
             let state = entity.read(cx);
@@ -379,14 +314,8 @@ impl ProjectWizard {
     ) -> impl IntoElement {
         let is_blank = self.entry_kind == EntryKind::Blank;
         let auto_selected = self.column_source == ColumnSource::AutoFromSpreadsheet;
-        let recent_selected = self.column_source == ColumnSource::RecentlyUsed;
         let load_selected = self.column_source == ColumnSource::LoadFromFileOrSheet;
         let skip_selected = self.column_source == ColumnSource::SkipForNow;
-        let recent_summary = RECENT_CONFIGS
-            .iter()
-            .map(|c| format!("\"{}\"", c.name))
-            .collect::<Vec<_>>()
-            .join(" · ");
 
         v_flex()
             .gap_3()
@@ -411,21 +340,6 @@ impl ProjectWizard {
                     })),
                 )
             })
-            .child(
-                option_card(
-                    "col-recent",
-                    "Choose a recently used config",
-                    recent_summary,
-                    recent_selected,
-                    cx,
-                )
-                .on_click(cx.listener(|_this, _, window, cx| {
-                    let entity = cx.entity();
-                    window.defer(cx, move |window, cx| {
-                        Self::open_recent_config_dialog(entity, window, cx);
-                    });
-                })),
-            )
             .child(
                 option_card(
                     "col-load",

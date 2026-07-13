@@ -109,8 +109,8 @@ impl ProjectWizard {
             return;
         }
         let result = match self.entry_kind {
-            // Sheet reuses `csv_preview` (its fetched CSV is parsed the same
-            // way), so both match folders against real row data.
+            // Sheet reuses `csv_preview` (its fetched xlsx is adapted into the
+            // same preview shape), so both match folders against real row data.
             EntryKind::Csv | EntryKind::Sheet => self
                 .csv_preview
                 .as_ref()
@@ -139,12 +139,12 @@ impl ProjectWizard {
         // the UI doesn't freeze, then apply the result back on the UI thread.
         let fetch = cx
             .background_executor()
-            .spawn(async move { cloud_sync::fetch_sheet_csv(&link) });
+            .spawn(async move { cloud_sync::fetch_sheet(&link) });
         cx.spawn(async move |this, cx| {
             let result = fetch.await;
             this.update(cx, |this, cx| {
-                match result.map(|path| data::load_csv_preview(&path.to_string_lossy())) {
-                    Ok(Ok(preview)) => {
+                match result.map(data::SpreadsheetPreview::from) {
+                    Ok(preview) => {
                         this.sheet_check = Some(data::SheetCheckResult {
                             title: "Google Sheet".into(),
                             row_count: preview.row_count(),
@@ -152,11 +152,6 @@ impl ProjectWizard {
                         });
                         this.csv_preview = Some(preview);
                         this.sheet_error = None;
-                    }
-                    Ok(Err(e)) => {
-                        this.sheet_error = Some(e.message().into());
-                        this.sheet_check = None;
-                        this.csv_preview = None;
                     }
                     Err(e) => {
                         this.sheet_error = Some(e.message().into());
