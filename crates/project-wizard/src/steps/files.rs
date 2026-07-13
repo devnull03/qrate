@@ -133,7 +133,11 @@ impl ProjectWizard {
         }
     }
 
-    pub(crate) fn check_sheet_link(&mut self, cx: &mut Context<Self>) {
+    /// `auto_advance` lets the Next button (which doubles as "Check" while the
+    /// sheet is unverified) skip the extra click once the check succeeds and
+    /// the folder already matches — the explicit "Check" button never does
+    /// this, since clicking it isn't a request to leave the step.
+    pub(crate) fn check_sheet_link(&mut self, auto_advance: bool, cx: &mut Context<Self>) {
         let link = self.sheet_link_input.read(cx).value().to_string();
         // Fetch is a blocking network call — run it on a background thread so
         // the UI doesn't freeze, then apply the result back on the UI thread.
@@ -142,27 +146,41 @@ impl ProjectWizard {
             .spawn(async move { cloud_sync::fetch_sheet(&link) });
         cx.spawn(async move |this, cx| {
             let result = fetch.await;
-            this.update(cx, |this, cx| {
-                match result.map(data::SpreadsheetPreview::from) {
-                    Ok(preview) => {
-                        this.sheet_check = Some(data::SheetCheckResult {
-                            title: "Google Sheet".into(),
-                            row_count: preview.row_count(),
-                            used_first_tab: true,
-                        });
-                        this.csv_preview = Some(preview);
-                        this.sheet_error = None;
+            let ready = this
+                .update(cx, |this, cx| {
+                    match result.map(data::SpreadsheetPreview::from) {
+                        Ok(preview) => {
+                            this.sheet_check = Some(data::SheetCheckResult {
+                                title: "Google Sheet".into(),
+                                row_count: preview.row_count(),
+                                used_first_tab: true,
+                            });
+                            this.csv_preview = Some(preview);
+                            this.sheet_error = None;
+                        }
+                        Err(e) => {
+                            this.sheet_error = Some(e.message().into());
+                            this.sheet_check = None;
+                            this.csv_preview = None;
+                        }
                     }
-                    Err(e) => {
-                        this.sheet_error = Some(e.message().into());
-                        this.sheet_check = None;
-                        this.csv_preview = None;
-                    }
-                }
-                this.revalidate_folder();
-                cx.notify();
-            })
-            .ok();
+                    this.revalidate_folder();
+                    cx.notify();
+                    auto_advance && this.can_advance(cx).is_ok()
+                })
+                .unwrap_or(false);
+            if ready {
+                // Brief pause so the "found N rows" success message is visible
+                // before the step changes out from under the user.
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(600))
+                    .await;
+                this.update(cx, |this, cx| {
+                    this.advance_past_files();
+                    cx.notify();
+                })
+                .ok();
+            }
         })
         .detach();
     }
@@ -360,9 +378,9 @@ impl ProjectWizard {
                                 Button::new("check-sheet")
                                     .label("Check")
                                     .outline()
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.check_sheet_link(cx)),
-                                    ),
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.check_sheet_link(false, cx)
+                                    })),
                             ),
                     )
                     .child(match (&self.sheet_check, &self.sheet_error) {

@@ -190,34 +190,30 @@ impl ProjectWizard {
                 }
                 Ok(())
             }
-            WizardStep::Files => {
-                if self.skip_files || self.entry_kind == EntryKind::Blank {
-                    return Ok(());
-                }
-                match self.entry_kind {
-                    EntryKind::Csv => {
-                        if self.csv_preview.is_none() {
-                            return Err("Choose a valid CSV spreadsheet".into());
-                        }
-                        if self.folder_match.is_none() {
-                            return Err(
-                                "Choose a files folder that matches your spreadsheet".into()
-                            );
-                        }
-                        Ok(())
+            WizardStep::Files => match self.entry_kind {
+                // `skip_files` only waives the *folder* requirement below — it
+                // means "skip linking a files folder", not "skip checking the
+                // spreadsheet/sheet exists" (see its label in steps/files.rs).
+                EntryKind::Csv => {
+                    if self.csv_preview.is_none() {
+                        return Err("Choose a valid CSV spreadsheet".into());
                     }
-                    EntryKind::Sheet => {
-                        if self.sheet_check.is_none() {
-                            return Err("Check your Google Sheet link first".into());
-                        }
-                        if self.folder_match.is_none() {
-                            return Err("Choose a files folder that matches your sheet".into());
-                        }
-                        Ok(())
+                    if !self.skip_files && self.folder_match.is_none() {
+                        return Err("Choose a files folder that matches your spreadsheet".into());
                     }
-                    EntryKind::Blank => Ok(()),
+                    Ok(())
                 }
-            }
+                EntryKind::Sheet => {
+                    if self.sheet_check.is_none() {
+                        return Err("Check your Google Sheet link first".into());
+                    }
+                    if !self.skip_files && self.folder_match.is_none() {
+                        return Err("Choose a files folder that matches your sheet".into());
+                    }
+                    Ok(())
+                }
+                EntryKind::Blank => Ok(()),
+            },
             WizardStep::Link => {
                 if self.link_method == LinkMethod::CustomPattern
                     && self.link_pattern_input.read(cx).value().trim().is_empty()
@@ -240,13 +236,26 @@ impl ProjectWizard {
 
     /// On the Files step for a Google Sheet, pressing Next fetches the sheet
     /// itself if it hasn't been checked yet — the separate "Check" button
-    /// becomes optional. True while a link is typed but not yet fetched.
+    /// becomes optional. True while a link is typed but not yet fetched;
+    /// checking never depends on a folder being chosen (`skip_files` doesn't
+    /// exempt it either — see the note on `can_advance`), so `check_sheet_link`'s
+    /// own `can_advance` re-check after the fetch is what decides whether to
+    /// auto-advance or leave the (now folder-only) blocker showing.
     fn needs_sheet_check(&self, cx: &App) -> bool {
         self.step == WizardStep::Files
             && self.entry_kind == EntryKind::Sheet
-            && !self.skip_files
             && self.sheet_check.is_none()
             && !self.sheet_link_input.read(cx).value().trim().is_empty()
+    }
+
+    /// Shared by the manual Next click and the auto-advance after a
+    /// just-succeeded sheet check (see `steps/files.rs::check_sheet_link`).
+    pub(crate) fn advance_past_files(&mut self) {
+        self.step = if self.skips_link() {
+            WizardStep::Columns
+        } else {
+            WizardStep::Link
+        };
     }
 
     fn breadcrumb_items(&self) -> Vec<(&'static str, WizardStep)> {
@@ -316,7 +325,7 @@ impl ProjectWizard {
         // Google Sheet: Next doubles as "Check" until the sheet is fetched.
         // The async result re-renders; the user then presses Next to advance.
         if self.needs_sheet_check(cx) {
-            self.check_sheet_link(cx);
+            self.check_sheet_link(true, cx);
             return;
         }
         if self.can_advance(cx).is_err() {
@@ -331,13 +340,7 @@ impl ProjectWizard {
                 }
                 self.step = WizardStep::Files;
             }
-            WizardStep::Files => {
-                self.step = if self.skips_link() {
-                    WizardStep::Columns
-                } else {
-                    WizardStep::Link
-                };
-            }
+            WizardStep::Files => self.advance_past_files(),
             WizardStep::Link => self.step = WizardStep::Columns,
             WizardStep::Columns => self.step = WizardStep::Review,
             WizardStep::Review => self.create_project(window, cx),
