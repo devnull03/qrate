@@ -15,21 +15,22 @@ use crate::steps::files::{MsgKind, inline_message};
 use crate::wizard::{ColumnSource, EntryKind, LoadConfigTab, ProjectWizard, option_card};
 
 impl ProjectWizard {
-    fn browse_config_file(&mut self, cx: &mut Context<Self>) {
+    fn browse_config_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
             prompt: Some("Choose a column config file".into()),
         });
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = receiver.await
                 && let Some(path) = paths.first()
             {
                 let s = path.to_string_lossy().to_string();
-                this.update(cx, |this, cx| {
+                this.update_in(cx, |this, window, cx| {
                     this.load_config_from_file(s, cx);
-                    cx.notify();
+                    let entity = cx.entity();
+                    this.refresh_load_config_dialog(entity, window, cx);
                 })
                 .ok();
             }
@@ -83,18 +84,31 @@ impl ProjectWizard {
         }
     }
 
-    /// Associated fn (not `&mut self`): it must run *outside* the click
-    /// listener's entity update, because `open_dialog`'s builder reads the
-    /// same entity synchronously. Callers defer it via `window.defer`.
-    fn open_load_config_dialog(entity: Entity<Self>, window: &mut Window, cx: &mut App) {
-        window.open_dialog(cx, move |dialog, _window, cx| {
-            let state = entity.read(cx);
-            let tab = state.load_config_tab;
-            let file_path = state.config_file_path.clone();
-            let preview = state.config_preview.clone();
-            let error = state.config_error.clone();
-            let sheet_link_input = state.sheet_link_input.clone();
+    /// Registers the dialog with a builder that closes over a *snapshot* of
+    /// the fields it needs (`tab`, `file_path`, ...), taken once right now.
+    ///
+    /// It must NOT capture `entity` and call `entity.read(cx)` inside the
+    /// builder instead: `window.open_dialog`'s builder is re-invoked on every
+    /// render of *this* view (`ProjectWizard::render` calls
+    /// `Root::render_dialog_layer`, which calls this builder), and by the
+    /// time it runs, `self` is already leased for that render — reading it
+    /// again panics with "cannot read ... while it is already being
+    /// updated". This isn't timing-dependent (deferring a click doesn't
+    /// help); it happens on the very next frame the dialog is open,
+    /// regardless of which button was pressed.
+    ///
+    /// Because the builder is a pure function of the snapshot, any click
+    /// inside it that changes what the dialog should show (tab switch,
+    /// Browse, Check) must call `refresh_load_config_dialog` afterwards to
+    /// re-register the dialog with an up-to-date snapshot.
+    fn open_load_config_dialog(&self, entity: Entity<Self>, window: &mut Window, cx: &mut App) {
+        let tab = self.load_config_tab;
+        let file_path = self.config_file_path.clone();
+        let preview = self.config_preview.clone();
+        let error = self.config_error.clone();
+        let sheet_link_input = self.sheet_link_input.clone();
 
+        window.open_dialog(cx, move |dialog, _window, cx| {
             let tabs = TabBar::new("load-config-tabs")
                 .segmented()
                 .selected_index(match tab {
@@ -103,15 +117,16 @@ impl ProjectWizard {
                 })
                 .on_click({
                     let entity = entity.clone();
-                    move |ix: &usize, _, cx| {
-                        let ix = *ix;
+                    move |ix: &usize, window, cx| {
+                        let tab = if *ix == 0 {
+                            LoadConfigTab::File
+                        } else {
+                            LoadConfigTab::Sheet
+                        };
                         entity.update(cx, |this, cx| {
-                            this.load_config_tab = if ix == 0 {
-                                LoadConfigTab::File
-                            } else {
-                                LoadConfigTab::Sheet
-                            };
-                            cx.notify();
+                            this.load_config_tab = tab;
+                            let entity = cx.entity();
+                            this.refresh_load_config_dialog(entity, window, cx);
                         });
                     }
                 })
@@ -148,9 +163,10 @@ impl ProjectWizard {
                                     Button::new("browse-config")
                                         .label("Browse…")
                                         .outline()
-                                        .on_click(move |_, _, cx| {
-                                            entity_browse
-                                                .update(cx, |this, cx| this.browse_config_file(cx));
+                                        .on_click(move |_, window, cx| {
+                                            entity_browse.update(cx, |this, cx| {
+                                                this.browse_config_file(window, cx)
+                                            });
                                         }),
                                 ),
                         )
@@ -169,9 +185,11 @@ impl ProjectWizard {
                                     Button::new("check-config-sheet")
                                         .label("Check")
                                         .outline()
-                                        .on_click(move |_, _, cx| {
+                                        .on_click(move |_, window, cx| {
                                             entity_check.update(cx, |this, cx| {
-                                                this.load_config_from_sheet(cx)
+                                                this.load_config_from_sheet(cx);
+                                                let entity = cx.entity();
+                                                this.refresh_load_config_dialog(entity, window, cx);
                                             });
                                         }),
                                 ),
@@ -218,6 +236,15 @@ impl ProjectWizard {
                     }
                 })
         });
+    }
+
+    /// Re-registers the load-config dialog with a fresh snapshot. Call this
+    /// after any mutation (inside the dialog) to state the dialog displays —
+    /// see the note on `open_load_config_dialog` for why the dialog can't
+    /// just re-read `self` on its own.
+    fn refresh_load_config_dialog(&self, entity: Entity<Self>, window: &mut Window, cx: &mut App) {
+        window.close_dialog(cx);
+        self.open_load_config_dialog(entity, window, cx);
     }
 
     fn render_advanced_mapping(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -348,11 +375,9 @@ impl ProjectWizard {
                     load_selected,
                     cx,
                 )
-                .on_click(cx.listener(|_this, _, window, cx| {
+                .on_click(cx.listener(|this, _, window, cx| {
                     let entity = cx.entity();
-                    window.defer(cx, move |window, cx| {
-                        Self::open_load_config_dialog(entity, window, cx);
-                    });
+                    this.open_load_config_dialog(entity, window, cx);
                 })),
             )
             .when(is_blank, |el| {
