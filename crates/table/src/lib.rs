@@ -13,6 +13,9 @@ mod row_index;
 pub use delegate::{QrateTableDelegate, TableChanged};
 pub use panel::TablePanel;
 
+/// Settings key (in either scope) for the alternating-row-stripe toggle.
+pub const TABLE_STRIPES_KEY: &str = "table_stripes";
+
 use gpui::{Global, WeakEntity};
 use gpui_component::table::TableState;
 

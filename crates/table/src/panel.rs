@@ -24,6 +24,10 @@ pub struct TablePanel {
     _edit_sub: Subscription,
     /// Reloads the table when a different project is opened while this window is up.
     _project_sub: Subscription,
+    /// Repaints on a user-scope settings change (e.g. the stripe toggle with no project open).
+    /// The project-scope case already repaints via `_project_sub`, since writing a project
+    /// setting mutates the `CurrentProject` global.
+    _settings_sub: Subscription,
     /// Bridges the table's native `TableEvent`s to app behavior: keeps the delegate's selection
     /// cursor, starts edits on double-click, persists the column layout, and re-emits
     /// `TableChanged` so cross-crate readers refresh off one signal.
@@ -134,11 +138,15 @@ impl TablePanel {
                 cx.notify();
             });
 
+        let _settings_sub =
+            cx.observe_global::<settings::AppSettings>(|_this: &mut Self, cx| cx.notify());
+
         Self {
             focus_handle: cx.focus_handle(),
             state,
             _edit_sub,
             _project_sub,
+            _settings_sub,
             _table_sub,
         }
     }
@@ -199,10 +207,11 @@ impl Panel for TablePanel {
 }
 
 impl Render for TablePanel {
-    fn render(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let stripe = settings::effective_bool(crate::TABLE_STRIPES_KEY, cx);
         div()
             .size_full()
             .p_2()
-            .child(DataTable::new(&self.state).bordered(false))
+            .child(DataTable::new(&self.state).bordered(false).stripe(stripe))
     }
 }

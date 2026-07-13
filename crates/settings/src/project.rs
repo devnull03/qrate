@@ -43,6 +43,9 @@ pub struct ProjectData {
     /// `dataset_main` column names, in table order (no `_row_id`).
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
+    /// Every `__settings` row, cached so project-scope setting reads (e.g. a live table
+    /// repaint) don't hit the DB. Writers keep it current via `CurrentProject::set_bool`.
+    pub values: HashMap<String, crate::Val>,
 }
 
 /// The currently open project — set when the launcher/wizard opens one, read
@@ -66,6 +69,34 @@ impl CurrentProject {
             .file_stem()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Untitled Project".into())
+    }
+
+    /// Project-scoped boolean setting, `false` if unset.
+    pub fn get_bool(&self, key: &str) -> bool {
+        self.data.values.get(key).map(|v| v.bool()).unwrap_or(false)
+    }
+
+    /// Sets a project-scoped boolean: updates the in-memory cache and queues a debounced
+    /// write to the `.qrate` file. Mutating the global fires observers so readers repaint.
+    pub fn set_bool(key: &'static str, val: bool, cx: &mut gpui::App) {
+        let file = {
+            let p = cx.global_mut::<Self>();
+            p.data.values.insert(key.into(), crate::Val::Bool(val));
+            p.file.clone()
+        };
+        queue_write(&file, key, if val { "true" } else { "false" }, cx);
+    }
+
+    /// Sets a project-scoped text value. See [`set_bool`](Self::set_bool).
+    pub fn set_text(key: &'static str, val: gpui::SharedString, cx: &mut gpui::App) {
+        let (file, value) = {
+            let p = cx.global_mut::<Self>();
+            p.data
+                .values
+                .insert(key.into(), crate::Val::Text(val.clone()));
+            (p.file.clone(), val)
+        };
+        queue_write(&file, key, &value, cx);
     }
 }
 
@@ -194,12 +225,22 @@ pub fn load_project_file(path: &Path) -> Result<ProjectData> {
     }
     drop(stmt);
 
+    let mut values = HashMap::new();
+    let mut stmt = conn.prepare("SELECT key, value FROM __settings")?;
+    let iter = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    for row in iter {
+        let (key, value) = row.context("Read setting")?;
+        values.insert(key, crate::Val::Text(value.into()));
+    }
+    drop(stmt);
+
     let (headers, rows) = load_dataset(&conn)?;
     Ok(ProjectData {
         name,
         columns,
         headers,
         rows,
+        values,
     })
 }
 
@@ -495,6 +536,20 @@ mod tests {
         // DELETE mode's invariant: nothing but the `.qrate` file at rest.
         assert!(!path.with_extension("qrate-journal").exists());
         assert!(!path.with_extension("qrate-wal").exists());
+    }
+
+    #[test]
+    fn load_project_file_caches_settings_values() {
+        let path = tempfile("values.qrate");
+        create_project_file(&path, "V", "Blank", None, &[], &[], &[]).unwrap();
+        write_setting(&path, "table_stripes", "true").unwrap();
+
+        let data = load_project_file(&path).unwrap();
+        assert_eq!(data.name, "V");
+        assert!(data.values.get("table_stripes").unwrap().bool());
+        // Creation-time settings are cached too.
+        assert_eq!(data.values.get("source").unwrap().text(), "Blank");
+        assert!(!data.values.contains_key("table_stripes_missing"));
     }
 
     #[test]

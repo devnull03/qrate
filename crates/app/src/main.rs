@@ -48,11 +48,31 @@ pub(crate) fn open_settings_window(cx: &mut gpui::App) {
     if WindowRegistry::focus_or_clear(SETTINGS_WINDOW_KIND, cx) {
         return;
     }
-    let bounds = Bounds::centered(None, size(px(1000.0), px(800.0)), cx);
+    // Reopen at the saved size (persisted per-resize), else a compact default.
+    let saved = AppSettings::get(cx)
+        .values
+        .get(settings::SETTINGS_WINDOW_BOUNDS_KEY)
+        .map(|v| v.text())
+        .and_then(|raw| serde_json::from_str::<MainWindowBounds>(&raw).ok());
+    let display = saved.as_ref().and_then(|b| b.display_id).and_then(|raw| {
+        cx.displays()
+            .into_iter()
+            .find(|d| u64::from(d.id()) == raw)
+            .map(|d| d.id())
+    });
+    let win_size = saved
+        .as_ref()
+        .filter(|b| {
+            b.width.is_finite() && b.height.is_finite() && b.width >= 480.0 && b.height >= 360.0
+        })
+        .map(|b| size(px(b.width), px(b.height)))
+        .unwrap_or_else(|| size(px(760.0), px(560.0)));
+    let bounds = Bounds::centered(display, win_size, cx);
     let window_options = WindowOptions {
         titlebar: Some(TitleBar::title_bar_options()),
         window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(Size::new(px(600.0), px(400.0))),
+        display_id: display,
+        window_min_size: Some(Size::new(px(480.0), px(360.0))),
         ..Default::default()
     };
 

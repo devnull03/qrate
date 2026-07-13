@@ -13,9 +13,10 @@ pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    StyledExt, TitleBar,
+    ActiveTheme as _, StyledExt, TitleBar, h_flex,
     input::InputState,
     label::Label,
     scroll::ScrollableElement,
@@ -25,6 +26,108 @@ use gpui_component::{
 use serde::{Deserialize, Serialize};
 
 use crate::path_picker::PathPickerApp;
+
+/// `AppSettings` value key for the Settings window's last size (a JSON [`MainWindowBounds`]).
+pub const SETTINGS_WINDOW_BOUNDS_KEY: &str = "settings_window_bounds";
+
+// --- Settings Scope ---
+
+/// Which store a settings field reads and writes. The same fields render in both scopes; only
+/// the backing store differs — `User` is the app-wide `AppSettings`, `Project` is the open
+/// project's `.qrate` file.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsScope {
+    #[default]
+    User,
+    Project,
+}
+
+/// The scope the Settings window's fields currently target. Unset means [`SettingsScope::User`].
+#[derive(Clone, Copy, Default)]
+pub struct CurrentSettingsScope(pub SettingsScope);
+
+impl Global for CurrentSettingsScope {}
+
+impl SettingsScope {
+    pub fn current(cx: &App) -> Self {
+        cx.try_global::<CurrentSettingsScope>()
+            .map(|s| s.0)
+            .unwrap_or_default()
+    }
+}
+
+/// Reads a bool from whichever scope the Settings window currently targets.
+fn scoped_bool(key: &str, cx: &App) -> bool {
+    match SettingsScope::current(cx) {
+        SettingsScope::User => AppSettings::get(cx)
+            .values
+            .get(key)
+            .map(|v| v.bool())
+            .unwrap_or(false),
+        SettingsScope::Project => cx
+            .try_global::<project::CurrentProject>()
+            .map(|p| p.get_bool(key))
+            .unwrap_or(false),
+    }
+}
+
+/// Writes a bool to whichever scope the Settings window currently targets. Falls back to the
+/// user scope when `Project` is active but no project is open, so a stale scope can't panic.
+fn set_scoped_bool(key: &'static str, val: bool, cx: &mut App) {
+    let target = match SettingsScope::current(cx) {
+        SettingsScope::Project if cx.has_global::<project::CurrentProject>() => {
+            SettingsScope::Project
+        }
+        _ => SettingsScope::User,
+    };
+    match target {
+        SettingsScope::User => AppSettings::set_bool(key, val, cx),
+        SettingsScope::Project => project::CurrentProject::set_bool(key, val, cx),
+    }
+}
+
+fn scoped_text(key: &str, cx: &App) -> SharedString {
+    match SettingsScope::current(cx) {
+        SettingsScope::User => AppSettings::get(cx)
+            .values
+            .get(key)
+            .map(|v| v.text())
+            .unwrap_or_default(),
+        SettingsScope::Project => cx
+            .try_global::<project::CurrentProject>()
+            .and_then(|p| p.data.values.get(key).map(|v| v.text()))
+            .unwrap_or_default(),
+    }
+}
+
+fn set_scoped_text(key: &'static str, val: SharedString, cx: &mut App) {
+    let target = match SettingsScope::current(cx) {
+        SettingsScope::Project if cx.has_global::<project::CurrentProject>() => {
+            SettingsScope::Project
+        }
+        _ => SettingsScope::User,
+    };
+    match target {
+        SettingsScope::User => AppSettings::set_text(key, val, cx),
+        SettingsScope::Project => project::CurrentProject::set_text(key, val, cx),
+    }
+}
+
+/// Resolves a bool setting for a *consumer* (e.g. the table's stripe toggle): the open project's
+/// value wins if present, else the user-wide default, else `false`. Unlike [`scoped_bool`], this
+/// ignores the Settings window's active scope — it's what the feature should actually use.
+pub fn effective_bool(key: &str, cx: &App) -> bool {
+    if let Some(project) = cx.try_global::<project::CurrentProject>()
+        && let Some(v) = project.data.values.get(key)
+    {
+        return v.bool();
+    }
+    AppSettings::get(cx)
+        .values
+        .get(key)
+        .map(|v| v.bool())
+        .unwrap_or(false)
+}
 
 // --- Setting Field Enum ---
 
@@ -69,16 +172,8 @@ impl From<Setting> for SettingItem {
             } => SettingItem::new(
                 label,
                 SettingField::input(
-                    move |cx: &App| {
-                        AppSettings::get(cx)
-                            .values
-                            .get(key)
-                            .map(|v| v.text())
-                            .unwrap_or_default()
-                    },
-                    move |val: SharedString, cx: &mut App| {
-                        AppSettings::set_text(key, val, cx);
-                    },
+                    move |cx: &App| scoped_text(key, cx),
+                    move |val: SharedString, cx: &mut App| set_scoped_text(key, val, cx),
                 ),
             )
             .description(description),
@@ -90,16 +185,8 @@ impl From<Setting> for SettingItem {
             } => SettingItem::new(
                 label,
                 SettingField::switch(
-                    move |cx: &App| {
-                        AppSettings::get(cx)
-                            .values
-                            .get(key)
-                            .map(|v| v.bool())
-                            .unwrap_or(false)
-                    },
-                    move |val: bool, cx: &mut App| {
-                        AppSettings::set_bool(key, val, cx);
-                    },
+                    move |cx: &App| scoped_bool(key, cx),
+                    move |val: bool, cx: &mut App| set_scoped_bool(key, val, cx),
                 ),
             )
             .description(description),
@@ -118,16 +205,8 @@ impl From<Setting> for SettingItem {
                     label,
                     SettingField::dropdown(
                         opts,
-                        move |cx: &App| {
-                            AppSettings::get(cx)
-                                .values
-                                .get(key)
-                                .map(|v| v.text())
-                                .unwrap_or_default()
-                        },
-                        move |val: SharedString, cx: &mut App| {
-                            AppSettings::set_text(key, val, cx);
-                        },
+                        move |cx: &App| scoped_text(key, cx),
+                        move |val: SharedString, cx: &mut App| set_scoped_text(key, val, cx),
                     ),
                 )
                 .description(description)
@@ -352,23 +431,99 @@ impl AppSettings {
 
 pub struct SettingsWindow {
     pub build_pages: fn() -> Vec<SettingPage>,
+    /// Persists the window's size (debounced) so it reopens where it was left.
+    _bounds_sub: Subscription,
 }
 
 impl SettingsWindow {
     pub fn new(
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
         build_pages: fn() -> Vec<SettingPage>,
     ) -> Self {
-        Self { build_pages }
+        let _bounds_sub = cx.observe_window_bounds(window, |_this, window, cx| {
+            let bounds = MainWindowBounds::capture_from_window(window, cx);
+            if let Ok(json) = serde_json::to_string(&bounds) {
+                AppSettings::set_text(SETTINGS_WINDOW_BOUNDS_KEY, json.into(), cx);
+            }
+        });
+        Self {
+            build_pages,
+            _bounds_sub,
+        }
+    }
+}
+
+/// A small text-only scope tab (Zed-style): accented when selected, muted otherwise.
+fn scope_tab(
+    id: &'static str,
+    label: &'static str,
+    selected: bool,
+    enabled: bool,
+    target: SettingsScope,
+    cx: &mut Context<SettingsWindow>,
+) -> Stateful<Div> {
+    let color = if selected {
+        cx.theme().foreground
+    } else {
+        cx.theme().muted_foreground
+    };
+    let base = div()
+        .id(id)
+        .text_sm()
+        .text_color(color)
+        .when(selected, |d| d.font_semibold())
+        .child(label);
+    if enabled {
+        base.cursor_pointer()
+            .on_click(cx.listener(move |_this, _ev, _window, cx| {
+                cx.set_global(CurrentSettingsScope(target));
+                cx.notify();
+            }))
+    } else {
+        base
     }
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_project = cx.has_global::<project::CurrentProject>();
+        // A stale `Project` scope (project closed while it was selected) snaps back to User so
+        // fields don't target a nonexistent store.
+        let scope = if has_project {
+            SettingsScope::current(cx)
+        } else {
+            SettingsScope::User
+        };
+
         v_flex()
             .size_full()
             .child(TitleBar::new().child(Label::new("Settings").font_semibold()))
+            // Fixed scope switcher, right-aligned over the settings content section.
+            .child(
+                h_flex()
+                    .flex_none()
+                    .justify_end()
+                    .gap_4()
+                    .px_4()
+                    .py_2()
+                    .child(scope_tab(
+                        "scope-user",
+                        "User",
+                        scope == SettingsScope::User,
+                        true,
+                        SettingsScope::User,
+                        cx,
+                    ))
+                    .child(scope_tab(
+                        "scope-project",
+                        "Project",
+                        scope == SettingsScope::Project,
+                        has_project,
+                        SettingsScope::Project,
+                        cx,
+                    )),
+            )
             .child(
                 div()
                     .flex_1()
