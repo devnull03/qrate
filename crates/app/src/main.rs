@@ -4,6 +4,7 @@ mod app_settings;
 mod components;
 mod helpers;
 mod status_items;
+mod theming;
 mod title_items;
 
 use gpui::*;
@@ -188,6 +189,7 @@ fn main() {
         cx.set_global(SettingsPersistence {
             writer: Some(SettingsWriter::start()),
         });
+        theming::init(cx);
         cx.set_global(WindowRegistry::default());
 
         // Lets the launcher (in the `project-wizard` crate, which can't depend on `app`) open
