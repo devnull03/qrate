@@ -7,7 +7,7 @@ use gpui_component::{
 
 use crate::{
     TableStateHandle,
-    delegate::{ColumnLayout, QrateTableDelegate, TableChanged},
+    delegate::{ColumnLayout, QrateTableDelegate, Selection, TableChanged},
     editing, row_index,
 };
 
@@ -88,15 +88,23 @@ impl TablePanel {
                         return;
                     }
                     TableEvent::SelectCell(row, col) => {
-                        let cursor = Some((*row, Some(*col - 1)));
-                        state.update(cx, |s, _| s.delegate_mut().cursor = cursor);
+                        let sel = Some(Selection::Cell {
+                            row: *row,
+                            col: *col - 1,
+                        });
+                        state.update(cx, |s, _| s.delegate_mut().selection = sel);
                     }
                     TableEvent::SelectRow(row) => {
-                        let cursor = Some((*row, None));
-                        state.update(cx, |s, _| s.delegate_mut().cursor = cursor);
+                        let sel = Some(Selection::Row(*row));
+                        state.update(cx, |s, _| s.delegate_mut().selection = sel);
+                    }
+                    // The pinned `#` column isn't a data column, so selecting it clears instead.
+                    TableEvent::SelectColumn(col) if *col != row_index::COL_IX => {
+                        let sel = Some(Selection::Column(*col - 1));
+                        state.update(cx, |s, _| s.delegate_mut().selection = sel);
                     }
                     TableEvent::SelectColumn(_) | TableEvent::ClearSelection => {
-                        state.update(cx, |s, _| s.delegate_mut().cursor = None);
+                        state.update(cx, |s, _| s.delegate_mut().selection = None);
                     }
                     TableEvent::DoubleClickedCell(row, col) if *col != row_index::COL_IX => {
                         let (row, col) = (*row, *col - 1);

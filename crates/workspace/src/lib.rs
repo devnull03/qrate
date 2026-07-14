@@ -58,47 +58,51 @@ impl Workspace {
 
         let dock_area =
             cx.new(|cx| DockArea::new("qrate-main", Some(DOCK_LAYOUT_VERSION), window, cx));
-        let weak = dock_area.downgrade();
 
-        // Default static layout: center table, left details, right agent, bottom problems.
-        let table = cx.new(|cx| TablePanel::new(window, cx));
-        let details = cx.new(|cx| DetailsPanel::new(window, cx));
-        let agent = cx.new(|cx| AgentPanel::new(window, cx));
-        let problems = cx.new(|cx| ProblemsPanel::new(window, cx));
+        // Restore the saved arrangement if there is one; only build the default layout when
+        // there isn't. Building the default first and then `load`ing over it would construct a
+        // throwaway *second* table, leaving cross-crate readers (Details panel, status bar)
+        // bound to the orphaned first one — which never sees selection events.
+        if !Self::restore_layout(&dock_area, window, cx) {
+            let weak = dock_area.downgrade();
+            // Default static layout: center table, left details, right agent, bottom problems.
+            let table = cx.new(|cx| TablePanel::new(window, cx));
+            let details = cx.new(|cx| DetailsPanel::new(window, cx));
+            let agent = cx.new(|cx| AgentPanel::new(window, cx));
+            let problems = cx.new(|cx| ProblemsPanel::new(window, cx));
 
-        dock_area.update(cx, |area, cx| {
-            // We drive open/close from our own title/status-bar buttons, so hide the dock's
-            // built-in toggle arrows (they otherwise flank the center table panel).
-            area.set_toggle_button_visible(false, cx);
-            // The center table gets no tab/title-bar chrome at all (no "⋯" menu, no rounded
-            // tab corners) — `DockItem::panel` embeds it directly instead of wrapping it in a
-            // `TabPanel`, which would otherwise be forced regardless of `zoomable`/`closable`.
-            area.set_center(DockItem::panel(Arc::new(table.clone())), window, cx);
-            area.set_left_dock(
-                DockItem::tab(details, &weak, window, cx),
-                Some(px(300.)),
-                true,
-                window,
-                cx,
-            );
-            area.set_right_dock(
-                DockItem::tab(agent, &weak, window, cx),
-                Some(px(340.)),
-                true,
-                window,
-                cx,
-            );
-            area.set_bottom_dock(
-                DockItem::tab(problems, &weak, window, cx),
-                Some(px(200.)),
-                true,
-                window,
-                cx,
-            );
-        });
+            dock_area.update(cx, |area, cx| {
+                // The center table gets no tab/title-bar chrome at all (no "⋯" menu, no rounded
+                // tab corners) — `DockItem::panel` embeds it directly instead of wrapping it in
+                // a `TabPanel`, which would otherwise be forced regardless of `zoomable`.
+                area.set_center(DockItem::panel(Arc::new(table.clone())), window, cx);
+                area.set_left_dock(
+                    DockItem::tab(details, &weak, window, cx),
+                    Some(px(300.)),
+                    true,
+                    window,
+                    cx,
+                );
+                area.set_right_dock(
+                    DockItem::tab(agent, &weak, window, cx),
+                    Some(px(340.)),
+                    true,
+                    window,
+                    cx,
+                );
+                area.set_bottom_dock(
+                    DockItem::tab(problems, &weak, window, cx),
+                    Some(px(200.)),
+                    true,
+                    window,
+                    cx,
+                );
+            });
+        }
 
-        // Restore a previously saved layout over the default, if one exists and matches.
-        Self::restore_layout(&dock_area, window, cx);
+        // We drive dock open/close from our own title/status-bar buttons, so hide the built-in
+        // toggle arrows. Done in both paths — `load` doesn't carry this runtime-only flag.
+        dock_area.update(cx, |area, cx| area.set_toggle_button_visible(false, cx));
 
         // Persist on every layout change. Set up last so the default/restore building above
         // doesn't trigger a redundant write. With a project open the layout is saved into its
@@ -174,7 +178,14 @@ impl Workspace {
         Self::restore_layout(&self.dock_area, window, cx);
     }
 
-    fn restore_layout(dock_area: &Entity<DockArea>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Applies a previously saved dock arrangement, returning `true` if one was loaded. `false`
+    /// (no saved layout / corrupt / stale version / load error) tells the caller to fall back to
+    /// the default static layout.
+    fn restore_layout(
+        dock_area: &Entity<DockArea>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         // Prefer the open project's own saved layout; fall back to the global one so a
         // brand-new project still inherits a familiar arrangement.
         let project_layout = cx
@@ -187,27 +198,29 @@ impl Workspace {
                 .get(DOCK_LAYOUT_KEY)
                 .map(|v| v.text().to_string())
         }) else {
-            return;
+            return false;
         };
 
         let state: DockAreaState = match serde_json::from_str(&raw) {
             Ok(state) => state,
             Err(err) => {
                 eprintln!("ignoring corrupt dock layout: {err}");
-                return;
+                return false;
             }
         };
 
         // Discard layouts saved under a different schema version.
         if state.version != Some(DOCK_LAYOUT_VERSION) {
-            return;
+            return false;
         }
 
-        dock_area.update(cx, |area, cx| {
-            if let Err(err) = area.load(state, window, cx) {
+        dock_area.update(cx, |area, cx| match area.load(state, window, cx) {
+            Ok(()) => true,
+            Err(err) => {
                 eprintln!("failed to restore dock layout: {err}");
+                false
             }
-        });
+        })
     }
 }
 

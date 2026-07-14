@@ -10,7 +10,7 @@ mod editing;
 mod panel;
 mod row_index;
 
-pub use delegate::{QrateTableDelegate, TableChanged};
+pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 pub use panel::TablePanel;
 
 /// Settings key (in either scope) for the alternating-row-stripe toggle.

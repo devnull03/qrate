@@ -1,10 +1,10 @@
 //! Right-side status-bar widget: shows the table's selection — `Row N, Col M, K words` for a
-//! cell (word count of its text), `Row N` for a whole-row selection. Text-only readout — sits
-//! leftmost in the right group.
+//! cell (word count of its text), `Row N` for a whole-row selection, `Col M` for a whole-column
+//! selection. Text-only readout — sits leftmost in the right group.
 
 use gpui::*;
 use gpui_component::{ActiveTheme, table::TableState};
-use table::{QrateTableDelegate, TableChanged, TableStateHandle};
+use table::{QrateTableDelegate, Selection, TableChanged, TableStateHandle};
 
 pub struct CellLocation {
     state: Option<WeakEntity<TableState<QrateTableDelegate>>>,
@@ -43,8 +43,8 @@ impl CellLocation {
             return "No table".into();
         };
         let state = state.read(cx);
-        match state.delegate().cursor() {
-            Some((row, Some(col))) => {
+        match state.delegate().selection() {
+            Some(Selection::Cell { row, col }) => {
                 let words = state
                     .delegate()
                     .cell(row, col)
@@ -52,7 +52,8 @@ impl CellLocation {
                     .unwrap_or(0);
                 format!("Row {}, Col {}, {} words", row + 1, col + 1, words).into()
             }
-            Some((row, None)) => format!("Row {}", row + 1).into(),
+            Some(Selection::Row(row)) => format!("Row {}", row + 1).into(),
+            Some(Selection::Column(col)) => format!("Col {}", col + 1).into(),
             None => "No selection".into(),
         }
     }

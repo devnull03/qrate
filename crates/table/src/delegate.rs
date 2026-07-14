@@ -14,6 +14,17 @@ pub struct TableChanged;
 
 impl EventEmitter<TableChanged> for TableState<QrateTableDelegate> {}
 
+/// The table's current selection, mirrored from the library's native `TableEvent`s by
+/// `TablePanel`'s event bridge. Cell/row/column are distinct variants because the status-bar
+/// readout shows each differently, and a whole-column selection has no row to hang on a tuple.
+/// Indices are data-relative (the pinned `#` column excluded) and 0-based — display adds 1.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Selection {
+    Cell { row: usize, col: usize },
+    Row(usize),
+    Column(usize),
+}
+
 /// Row/column text storage, kept separate from `QrateTableDelegate` so it's unit-testable
 /// without a live gpui `App` (the delegate itself needs one, to hold the editor `Entity`).
 #[derive(Default)]
@@ -62,11 +73,11 @@ pub struct ColumnLayout {
 pub struct QrateTableDelegate {
     columns: Vec<Column>,
     grid: RowGrid,
-    /// Last selection reported by the table's native `TableEvent`s — `(row, data_col)`, with
-    /// `data_col == None` for a whole-row selection. Written only by `TablePanel`'s event
-    /// bridge; readers treat it as the current cursor. Kept here (not read from `TableState`
-    /// directly) because the library's `selected_cell()` goes stale in row-selection mode.
-    pub(crate) cursor: Option<(usize, Option<usize>)>,
+    /// Last selection reported by the table's native `TableEvent`s. Written only by
+    /// `TablePanel`'s event bridge; readers treat it as the current selection. Kept here (not
+    /// read from `TableState` directly) because the library's `selected_cell()` goes stale in
+    /// row-selection mode.
+    pub(crate) selection: Option<Selection>,
     pub(crate) editing: EditState,
     /// Shared single-line editor, reused across whichever cell is being edited.
     pub(crate) editor: Entity<InputState>,
@@ -77,7 +88,7 @@ impl QrateTableDelegate {
         Self {
             columns: Vec::new(),
             grid: RowGrid::default(),
-            cursor: None,
+            selection: None,
             editing: EditState::Idle,
             editor,
         }
@@ -101,7 +112,7 @@ impl QrateTableDelegate {
             .iter()
             .map(|r| r.iter().map(|c| SharedString::from(c.clone())).collect())
             .collect();
-        self.cursor = None;
+        self.selection = None;
         self.editing = EditState::Idle;
     }
 
@@ -115,9 +126,9 @@ impl QrateTableDelegate {
         self.grid.set_cell(row, col, value);
     }
 
-    /// The current selection cursor — `(row, data_col)`, `data_col == None` for row selection.
-    pub fn cursor(&self) -> Option<(usize, Option<usize>)> {
-        self.cursor
+    /// The current selection — a cell, a whole row, or a whole column.
+    pub fn selection(&self) -> Option<Selection> {
+        self.selection
     }
 
     /// The row's cells as `(column header, cell text)` pairs, in display order — what the

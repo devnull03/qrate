@@ -3,10 +3,11 @@ use gpui_component::{
     ActiveTheme,
     description_list::DescriptionList,
     dock::{Panel, PanelControl, PanelEvent},
+    scroll::ScrollableElement,
     skeleton::Skeleton,
     table::TableState,
 };
-use table::{QrateTableDelegate, TableChanged, TableStateHandle};
+use table::{QrateTableDelegate, Selection, TableChanged, TableStateHandle};
 
 /// Left dock: an image preview (skeleton placeholder for now) plus the selected row's fields
 /// as a label/value list, per the main-workspace design.
@@ -78,10 +79,12 @@ impl Render for DetailsPanel {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let fields = self.state.as_ref().and_then(|w| w.upgrade()).and_then(|s| {
             let state = s.read(cx);
-            state
-                .delegate()
-                .cursor()
-                .map(|(row, _)| state.delegate().row_fields(row))
+            let row = match state.delegate().selection()? {
+                Selection::Cell { row, .. } | Selection::Row(row) => row,
+                // A whole-column selection has no single row to detail.
+                Selection::Column(_) => return None,
+            };
+            Some(state.delegate().row_fields(row))
         });
 
         let content = match fields {
@@ -117,6 +120,12 @@ impl Render for DetailsPanel {
                 .into_any_element(),
         };
 
-        div().size_full().overflow_hidden().p_3().child(content)
+        // Scroll vertically when a long field list overflows the dock height, rather than
+        // clipping it (`overflow_hidden`).
+        div()
+            .size_full()
+            .overflow_y_scrollbar()
+            .p_3()
+            .child(content)
     }
 }
