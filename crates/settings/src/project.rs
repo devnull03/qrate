@@ -30,6 +30,11 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 const QRATE_APPLICATION_ID: i32 = 1097887558;
 const QRATE_SCHEMA_VERSION: i32 = 1;
 
+/// `__settings` key for the files folder chosen in the wizard's Files step. Only the path is
+/// kept — qrate never copies source files, so the table crate re-resolves row images against
+/// this folder every time the project opens (see `table::photos`).
+pub const FILES_FOLDER_KEY: &str = "files_folder";
+
 pub struct ProjectColumn {
     pub name: String,
     pub data_type: String,
@@ -129,12 +134,15 @@ fn open_ro(path: &Path) -> Result<Connection> {
 /// Creates `path` (a `.qrate` file) with the v1 schema and the imported data.
 /// `headers`/`rows` are the raw spreadsheet; `columns` the configured column
 /// list (may differ from `headers` when a column config was loaded). Blank
-/// projects pass empty `headers` and get no `dataset_main` table.
+/// projects pass empty `headers` and get no `dataset_main` table. `files_folder`
+/// is the wizard's Files-step folder path, if one was chosen and linked.
+#[allow(clippy::too_many_arguments)]
 pub fn create_project_file(
     path: &Path,
     name: &str,
     source: &str,
     link_method: Option<&str>,
+    files_folder: Option<&str>,
     columns: &[ProjectColumn],
     headers: &[String],
     rows: &[Vec<String>],
@@ -171,6 +179,9 @@ pub fn create_project_file(
     ];
     if let Some(m) = link_method {
         settings.push(("link_method", m.to_string()));
+    }
+    if let Some(folder) = files_folder.filter(|f| !f.trim().is_empty()) {
+        settings.push((FILES_FOLDER_KEY, folder.to_string()));
     }
     for (key, value) in &settings {
         conn.execute(
@@ -477,6 +488,7 @@ mod tests {
             "Test Project",
             "CSV + folder",
             Some("exact filename"),
+            Some("/photos"),
             &columns,
             &headers,
             &rows,
@@ -524,6 +536,10 @@ mod tests {
         assert_eq!(data.rows[0], vec!["1", "First"]);
         assert_eq!(data.rows[1], vec!["2", ""]);
         assert_eq!(data.columns.len(), 1);
+        assert_eq!(
+            data.values.get(FILES_FOLDER_KEY).map(|v| v.text()),
+            Some("/photos".into())
+        );
 
         // Per-key settings round trip (dock layout persistence).
         assert_eq!(read_setting(&path, "dock_layout").unwrap(), None);
@@ -541,7 +557,7 @@ mod tests {
     #[test]
     fn load_project_file_caches_settings_values() {
         let path = tempfile("values.qrate");
-        create_project_file(&path, "V", "Blank", None, &[], &[], &[]).unwrap();
+        create_project_file(&path, "V", "Blank", None, None, &[], &[], &[]).unwrap();
         write_setting(&path, "table_stripes", "true").unwrap();
 
         let data = load_project_file(&path).unwrap();
@@ -555,7 +571,7 @@ mod tests {
     #[test]
     fn writer_flushes_latest_value_per_key() {
         let path = tempfile("writer.qrate");
-        create_project_file(&path, "W", "Blank", None, &[], &[], &[]).unwrap();
+        create_project_file(&path, "W", "Blank", None, None, &[], &[], &[]).unwrap();
 
         let writer = ProjectSettingsWriter::start();
         writer.enqueue(&path, "dock_layout", "{\"v\":1}".into());
@@ -570,7 +586,7 @@ mod tests {
     #[test]
     fn blank_project_has_no_dataset_table() {
         let path = tempfile("blank.qrate");
-        create_project_file(&path, "Blank", "Blank", None, &[], &[], &[]).unwrap();
+        create_project_file(&path, "Blank", "Blank", None, None, &[], &[], &[]).unwrap();
         let conn = Connection::open(&path).unwrap();
         let n: i64 = conn
             .query_row(

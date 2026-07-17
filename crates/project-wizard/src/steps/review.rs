@@ -55,12 +55,16 @@ impl ProjectWizard {
             .as_ref()
             .map(|p| (p.headers.clone(), p.rows.clone()))
             .unwrap_or_default();
+        // Skipped files → the folder field is stale, same reasoning as `link_method` above.
+        let files_folder = (!self.skip_files && !self.folder_path.trim().is_empty())
+            .then_some(self.folder_path.as_str());
 
         match project::write_project_file(
             &self.save_path,
             &name,
             &source,
             link_method,
+            files_folder,
             &columns,
             &headers,
             &rows,

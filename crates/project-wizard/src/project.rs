@@ -52,13 +52,16 @@ pub fn open_project(file: &Path, cx: &mut gpui::App) -> anyhow::Result<String> {
 }
 
 /// Creates the `<name>.qrate` file in `save_dir`; returns the file path
-/// (what the recents list and the launcher show).
+/// (what the recents list and the launcher show). `files_folder` is only
+/// persisted (as a path) — qrate never copies the files themselves; row
+/// images are re-resolved against this folder every time the project opens.
 #[allow(clippy::too_many_arguments)]
 pub fn write_project_file(
     save_dir: &str,
     name: &str,
     source: &str,
     link_method: Option<&str>,
+    files_folder: Option<&str>,
     columns: &[ProjectColumn],
     headers: &[String],
     rows: &[Vec<String>],
@@ -70,6 +73,7 @@ pub fn write_project_file(
         name,
         source,
         link_method,
+        files_folder,
         columns,
         headers,
         rows,
