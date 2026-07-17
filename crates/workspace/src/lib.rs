@@ -88,9 +88,11 @@ impl Workspace {
             let problems = cx.new(|cx| ProblemsPanel::new(window, cx));
 
             dock_area.update(cx, |area, cx| {
-                // The center table gets no tab/title-bar chrome at all (no "⋯" menu, no rounded
-                // tab corners) — `DockItem::panel` embeds it directly instead of wrapping it in
-                // a `TabPanel`, which would otherwise be forced regardless of `zoomable`.
+                // `DockItem::panel` embeds the table directly, with no `TabPanel` and so no
+                // title bar. Note this only holds until a layout is *saved*: `DockAreaState`
+                // round-trips a bare panel back as `DockItem::tabs` (state.rs's
+                // `PanelInfo::Panel` arm), so every run after the first restores it wrapped —
+                // title bar, ⋯ menu and all. `TablePanel::toolbar_buttons` renders there.
                 area.set_center(DockItem::panel(Arc::new(table.clone())), window, cx);
                 area.set_left_dock(
                     DockItem::tab(details, &weak, window, cx),

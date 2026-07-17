@@ -1,5 +1,7 @@
 use gpui::*;
 use gpui_component::{
+    IconName,
+    button::Button,
     dock::{Panel, PanelControl, PanelEvent},
     input::{InputEvent, InputState},
     table::{DataTable, TableDelegate as _, TableEvent, TableState},
@@ -228,11 +230,23 @@ impl Panel for TablePanel {
         false
     }
 
-    // `workspace` embeds this panel with `DockItem::panel`, which has no title bar at all, so
-    // this never actually renders — kept `None` regardless, since a zoom control makes no sense
-    // for the main body.
+    /// A zoom control makes no sense for the main body. Note this *does* render: `zoomable:
+    /// None` only greys the ⋯ menu's "Zoom In" entry and drops the zoom toolbar button — the ⋯
+    /// itself is unconditional in `TabPanel::render_toolbar`.
     fn zoomable(&self, _cx: &App) -> Option<PanelControl> {
         None
+    }
+
+    /// Rendered by `TabPanel::render_toolbar` immediately left of the ⋯ menu, forced to
+    /// `.xsmall().ghost()` by the library. `title_suffix` is the other option, but it sits by the
+    /// title instead — this is the hook for buttons that belong *beside* the ⋯.
+    fn toolbar_buttons(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> Option<Vec<Button>> {
+        Some(vec![
+            Button::new("table-debug")
+                .icon(IconName::Inspector)
+                .tooltip("Debug ping")
+                .on_click(|_, _, _| eprintln!("[qrate] table toolbar button clicked")),
+        ])
     }
 }
 
