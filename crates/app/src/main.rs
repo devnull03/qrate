@@ -154,7 +154,7 @@ impl App {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let workspace = cx.new(|cx| Workspace::new(window, cx));
         cx.set_global(MainWorkspaceHandle(workspace.downgrade()));
-        let status_bar = cx.new(|_| StatusBar::new());
+        let status_bar = cx.new(|_| StatusBar);
 
         let dock = workspace.read(cx).dock_area();
         let status_registry = build_status_bar_registry(&mut *cx, dock.clone());
@@ -258,11 +258,12 @@ impl Render for App {
 /// `on_app_quit` (menu Quit) and `on_window_should_close` (native X), since on
 /// Windows the native close doesn't route through the app-quit path.
 fn flush_all_state(cx: &mut gpui::App) {
-    if let Some(workspace) = cx
+    if let Some(dock) = cx
         .try_global::<MainWorkspaceHandle>()
         .and_then(|h| h.0.upgrade())
+        .and_then(|ws| ws.read(cx).dock_area().upgrade())
     {
-        workspace.update(cx, |ws, cx| ws.persist_layout_on_quit(cx));
+        Workspace::persist_layout(&dock, cx);
     }
     if let Some(writer) = cx
         .try_global::<settings::project::ProjectPersistence>()

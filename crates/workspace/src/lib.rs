@@ -148,7 +148,12 @@ impl Workspace {
 
     /// Serializes the dock state into the open project's `.qrate` (debounced,
     /// off the UI thread) or the global app settings when no project is open.
-    fn persist_layout(dock_area: &Entity<DockArea>, cx: &mut App) {
+    ///
+    /// Also the app-quit path (via `dock_area()`): dock edge-resizes never fire
+    /// any event, so the final sizes are only guaranteed to be captured at quit.
+    /// ponytail: mid-session edge-resizes persist only at quit; hook the dock's
+    /// resize if gpui_component ever emits an event for it.
+    pub fn persist_layout(dock_area: &Entity<DockArea>, cx: &mut App) {
         let state = dock_area.read(cx).dump(cx);
         let Ok(json) = serde_json::to_string(&state) else {
             return;
@@ -158,15 +163,6 @@ impl Workspace {
         } else {
             AppSettings::set_text(DOCK_LAYOUT_KEY, json.into(), cx);
         }
-    }
-
-    /// Best-effort layout persist for the app-quit path: dock edge-resizes never
-    /// fire any event (see `persist_layout`), so the final sizes are only
-    /// guaranteed to be captured here.
-    /// ponytail: mid-session edge-resizes persist only at quit; hook the dock's
-    /// resize if gpui_component ever emits an event for it.
-    pub fn persist_layout_on_quit(&self, cx: &mut App) {
-        Self::persist_layout(&self.dock_area, cx);
     }
 
     /// Re-reads the layout for whatever project is current and applies it over the

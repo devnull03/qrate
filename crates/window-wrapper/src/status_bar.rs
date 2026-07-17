@@ -26,18 +26,6 @@ impl BarRegistry for StatusBarRegistry {
 
 pub struct StatusBar;
 
-impl Default for StatusBar {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl StatusBar {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl Render for StatusBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (left, right) = cx
