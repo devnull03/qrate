@@ -1,6 +1,7 @@
 //! Persisted preferences, reusable setting field builders, path picker widgets, and a generic
 //! settings-window shell (`SettingsWindow`). Product-specific pages live in `app`.
 
+pub mod os_open;
 pub mod path_picker;
 pub mod project;
 
