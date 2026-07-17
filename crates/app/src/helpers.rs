@@ -66,6 +66,41 @@ pub fn _open_folder(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Opens `path` in the OS's default application for its file type.
+pub fn open_in_default_app(path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("path does not exist: {}", path.display()),
+        ));
+    }
+
+    #[cfg(windows)]
+    {
+        // `cmd /C start ""` — the empty title argument keeps `start` from treating a
+        // quoted path as the window title instead of the file to open.
+        Command::new("cmd")
+            .args(["/C", "start", ""])
+            .arg(path)
+            .spawn()?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(path).spawn()?;
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "open_in_default_app is only supported on Windows and macOS",
+        ));
+    }
+
+    Ok(())
+}
+
 /// Opens the file manager and selects `path`.
 ///
 /// For a file, highlights that file in its parent folder. For a directory, shows that folder
