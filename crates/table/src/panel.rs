@@ -8,7 +8,7 @@ use gpui_component::{
 use crate::{
     TableStateHandle,
     delegate::{ColumnLayout, QrateTableDelegate, Selection, TableChanged},
-    editing, row_index,
+    editing, photos, row_index,
 };
 
 /// Settings key for the saved column layout (order + widths) in the project's `.qrate` file.
@@ -43,6 +43,7 @@ impl TablePanel {
         if let Some(project) = cx.try_global::<settings::project::CurrentProject>() {
             delegate.set_data(&project.data.headers, &project.data.rows);
             Self::restore_columns(&mut delegate, &project.file);
+            Self::resolve_images(&mut delegate, &project.data);
         }
         let state = cx.new(|cx| {
             TableState::new(delegate, window, cx)
@@ -132,6 +133,8 @@ impl TablePanel {
                 let saved = settings::project::read_setting(&project.file, COLUMN_LAYOUT_KEY)
                     .ok()
                     .flatten();
+                let image_paths =
+                    photos::resolve_row_images(&headers, &rows, &Self::files_folder(&project.data));
                 this.state.update(cx, |state, cx| {
                     state.delegate_mut().set_data(&headers, &rows);
                     if let Some(layout) =
@@ -139,6 +142,7 @@ impl TablePanel {
                     {
                         state.delegate_mut().apply_column_layout(&layout);
                     }
+                    state.delegate_mut().set_image_paths(image_paths);
                     state.refresh(cx);
                     cx.emit(TableChanged);
                     cx.notify();
@@ -167,6 +171,24 @@ impl TablePanel {
         if let Ok(layout) = serde_json::from_str::<ColumnLayout>(&json) {
             delegate.apply_column_layout(&layout);
         }
+    }
+
+    /// The project's persisted files folder (empty if none was linked) — cached settings values
+    /// loaded by `settings::project::load_project_file`, no disk I/O here.
+    fn files_folder(data: &settings::project::ProjectData) -> String {
+        data.values
+            .get(settings::project::FILES_FOLDER_KEY)
+            .map(|v| v.text().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Resolves and stores each row's image path against the project's files folder. Re-walks
+    /// the folder from disk every call (project open, project switch) — qrate never copies files
+    /// in, so this is the only source of truth for where they live right now.
+    fn resolve_images(delegate: &mut QrateTableDelegate, data: &settings::project::ProjectData) {
+        let folder = Self::files_folder(data);
+        let paths = photos::resolve_row_images(&data.headers, &data.rows, &folder);
+        delegate.set_image_paths(paths);
     }
 
     /// Save the current column order + widths into the open project's `.qrate` file

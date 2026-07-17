@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use gpui::{App, Context, Entity, EventEmitter, IntoElement, Pixels, SharedString, Window, px};
 use gpui_component::{
     input::InputState,
@@ -81,6 +83,10 @@ pub struct QrateTableDelegate {
     pub(crate) editing: EditState,
     /// Shared single-line editor, reused across whichever cell is being edited.
     pub(crate) editor: Entity<InputState>,
+    /// Each row's resolved image path, parallel to `grid.rows` — populated by `TablePanel` via
+    /// `set_image_paths` after `set_data`, since resolving requires the project's files-folder
+    /// setting which this crate doesn't own. `None` until then, or for a row with no match.
+    image_paths: Vec<Option<PathBuf>>,
 }
 
 impl QrateTableDelegate {
@@ -91,6 +97,7 @@ impl QrateTableDelegate {
             selection: None,
             editing: EditState::Idle,
             editor,
+            image_paths: Vec::new(),
         }
     }
 
@@ -114,6 +121,23 @@ impl QrateTableDelegate {
             .collect();
         self.selection = None;
         self.editing = EditState::Idle;
+        // Stale — indexes into the old row set. Cleared until `TablePanel` re-resolves and
+        // calls `set_image_paths`; until then rows show the Details panel's no-image fallback.
+        self.image_paths = vec![None; self.grid.rows_count()];
+    }
+
+    /// Replaces the per-row resolved image paths — called by `TablePanel` right after
+    /// `set_data`, once it has resolved the project's files folder (`table::photos`). A length
+    /// mismatch (stale call racing a newer `set_data`) is ignored rather than panicking.
+    pub fn set_image_paths(&mut self, paths: Vec<Option<PathBuf>>) {
+        if paths.len() == self.grid.rows_count() {
+            self.image_paths = paths;
+        }
+    }
+
+    /// The selected row's resolved image path, if the files folder had a match for it.
+    pub fn row_image(&self, row: usize) -> Option<&Path> {
+        self.image_paths.get(row).and_then(|p| p.as_deref())
     }
 
     /// Cell text at `(row, col)`, if in range. `col` is a data-column index, not shifted for the

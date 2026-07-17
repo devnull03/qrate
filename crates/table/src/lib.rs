@@ -8,6 +8,7 @@ mod cell;
 mod delegate;
 mod editing;
 mod panel;
+pub mod photos;
 mod row_index;
 
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
