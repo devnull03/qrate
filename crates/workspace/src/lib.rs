@@ -34,6 +34,22 @@ const DOCK_LAYOUT_VERSION: usize = 2;
 /// gpui_component ever exposes a "hide when closed" option for bottom docks.
 const BOTTOM_DOCK_STRIP_PX: f32 = 29.;
 
+/// How many pixels the strip crop above is currently eating off the bottom of the *side* docks,
+/// for their panels to pad themselves back out by. `px(0.)` whenever the bottom dock is open.
+///
+/// Why they need it: the crop stretches the whole dock area past the bottom edge and clips, but
+/// the library only parks the closed bottom dock's strip inside the *center* column — the left
+/// and right docks are `h_full` of the entire area (`DockArea::render`), so the crop takes their
+/// last 29px of real content with it. The center is unaffected (the strip occupied that space
+/// anyway), which is why only the side panels compensate.
+///
+/// ponytail: a global rather than plumbing, because it's a workspace-level hack the panels
+/// shouldn't have in their signatures; dies with `BOTTOM_DOCK_STRIP_PX`.
+#[derive(Copy, Clone, Default, PartialEq)]
+pub struct BottomDockCrop(pub Pixels);
+
+impl Global for BottomDockCrop {}
+
 pub struct Workspace {
     dock_area: Entity<DockArea>,
     /// Persists the layout to settings whenever the dock emits `LayoutChanged`.
@@ -234,6 +250,13 @@ impl Render for Workspace {
         } else {
             px(-BOTTOM_DOCK_STRIP_PX)
         };
+
+        // Publish what the crop costs the side docks, so their panels can pad it back. Guarded:
+        // `set_global` wakes every `observe_global`, and this runs on every workspace render.
+        let crop = BottomDockCrop(-overshoot);
+        if cx.try_global::<BottomDockCrop>() != Some(&crop) {
+            cx.set_global(crop);
+        }
 
         div().size_full().relative().overflow_hidden().child(
             div()

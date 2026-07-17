@@ -5,12 +5,14 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable,
     button::{Button, ButtonVariants},
-    description_list::DescriptionList,
     dock::{Panel, PanelControl, PanelEvent},
+    resizable::{resizable_panel, v_resizable},
     scroll::ScrollableElement,
     table::TableState,
 };
 use table::{QrateTableDelegate, Selection, TableChanged, TableStateHandle};
+
+use crate::BottomDockCrop;
 
 /// Left dock: the selected row's photo (if the files folder resolved one) plus its fields as a
 /// label/value list, per the main-workspace design.
@@ -24,6 +26,8 @@ pub struct DetailsPanel {
     _handle_sub: Subscription,
     /// Re-renders on any table change (selection, edits, column moves).
     _table_sub: Option<Subscription>,
+    /// Re-renders when the bottom dock opens/closes, so the strip-crop padding tracks it.
+    _crop_sub: Subscription,
 }
 
 impl DetailsPanel {
@@ -37,6 +41,7 @@ impl DetailsPanel {
             state: None,
             _handle_sub,
             _table_sub: None,
+            _crop_sub: cx.observe_global::<BottomDockCrop>(|_this: &mut Self, cx| cx.notify()),
         };
         this.bind(cx);
         this
@@ -78,21 +83,55 @@ impl Panel for DetailsPanel {
     }
 }
 
-/// The image frame: the selected row's photo if one resolved, else a muted placeholder icon —
-/// same rounded/bordered box either way. When a photo is shown, two ghost icon buttons overlay
-/// the top-right: open in the OS default viewer, reveal in the file manager (plain shell-outs,
-/// no panel state touched). `gpui`'s image cache is keyed by resource path, so switching back
-/// to a previously-viewed row's image is served from cache rather than re-decoded from disk.
+/// Whether `gpui`'s `img()` can decode this path. Anything else gets an icon instead of a
+/// failed load + fallback, which also keeps the placeholder honest about *what* it stands for.
+/// Matches gpui's `image_cache` decoders (`ImageFormat` + svg); extension-only, like the rest of
+/// this app's file handling (`table::photos` resolves rows by filename too) — sniffing magic
+/// bytes would mean reading every selected file off disk to pick an icon.
+fn is_previewable_image(path: &Path) -> bool {
+    matches!(
+        extension(path).as_deref(),
+        Some("jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "ico" | "svg")
+    )
+}
+
+fn extension(path: &Path) -> Option<String> {
+    Some(path.extension()?.to_str()?.to_ascii_lowercase())
+}
+
+/// Placeholder icon for a file we can't render inline. `gpui_component`'s bundled icon set has
+/// no media glyphs (no camera/film/music), so these are the nearest stand-ins available —
+/// swap in custom SVGs via `Icon::path` if the set ever grows.
+///
+/// ponytail: four buckets, extension-keyed. Add a real mime crate only if the icon actually
+/// needs to be right for files with no/wrong extension.
+fn placeholder_icon(path: Option<&Path>) -> IconName {
+    match path.and_then(extension).as_deref() {
+        Some("pdf" | "epub" | "doc" | "docx" | "txt" | "md") => IconName::BookOpen,
+        Some("mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "aiff") => IconName::Play,
+        Some("mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v") => IconName::Frame,
+        _ => IconName::File,
+    }
+}
+
+/// The image frame: the selected row's photo if one resolved and is a decodable image, else a
+/// muted placeholder icon chosen from the file's extension — same rounded/bordered box either
+/// way. Whenever a path resolved at all, two ghost icon buttons overlay the top-right: open in
+/// the OS default viewer, reveal in the file manager (plain shell-outs, no panel state touched).
+/// Those matter *most* for the icon case, where the OS is the only way to actually see the file.
+/// `gpui`'s image cache is keyed by resource path, so switching back to a previously-viewed
+/// row's image is served from cache rather than re-decoded from disk.
 ///
 /// Returns `AnyElement` (erased), not `impl IntoElement` — this is called from several `Render`
 /// impls (the real panel plus test probes), and gpui's chained builder calls produce deeply
 /// nested generic types; propagating that concrete type into every caller overflowed rustc's
 /// stack during type-checking instead of just hitting a slow compile.
 fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
-    // Also `img()`'s missing-file fallback; captures the color because the `'static` fallback
-    // closure can't borrow `cx`.
+    // Also `img()`'s decode-failure fallback; captures by value because the `'static` fallback
+    // closure can't borrow `cx` or `image_path`.
     let placeholder = {
         let color = cx.theme().muted_foreground;
+        let icon = placeholder_icon(image_path.as_deref());
         move || {
             div()
                 .size_full()
@@ -100,10 +139,13 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
                 .items_center()
                 .justify_center()
                 .text_color(color)
-                .child(Icon::new(IconName::File).size_6())
+                // `IconName` isn't `Copy`, and `with_fallback` wants `Fn` (it may re-render) —
+                // so clone per call rather than move the captured icon out.
+                .child(Icon::new(icon.clone()).size_6())
                 .into_any_element()
         }
     };
+    let show_image = image_path.as_deref().is_some_and(is_previewable_image);
 
     let action = |id: &'static str, icon: IconName, tip: &'static str, path: PathBuf| {
         Button::new(id)
@@ -122,10 +164,11 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
             })
     };
 
+    // `h_full`, not a fixed height: the caller sizes the frame (a resizable panel), so dragging
+    // the split re-letterboxes the photo instead of stretching or cropping it.
     div()
         .relative()
-        .w_full()
-        .h(px(180.))
+        .size_full()
         .rounded(cx.theme().radius)
         .border_1()
         .border_color(cx.theme().border)
@@ -133,12 +176,24 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
         .bg(cx.theme().muted)
         .map(|frame| match image_path {
             Some(path) => frame
-                .child(
-                    img(path.clone())
-                        .size_full()
-                        .object_fit(ObjectFit::Contain)
-                        .with_fallback(placeholder),
-                )
+                .map(|frame| {
+                    if show_image {
+                        // `rounded` goes on the `img` itself, not just the frame: gpui's
+                        // overflow mask is a plain rect (`Style::overflow_mask`), so
+                        // `overflow_hidden` above clips square and a full-bleed photo would
+                        // paint over the frame's rounded corners. `Img` reads its *own*
+                        // corner radii when painting, which is what actually rounds it.
+                        frame.child(
+                            img(path.clone())
+                                .size_full()
+                                .rounded(cx.theme().radius)
+                                .object_fit(ObjectFit::Contain)
+                                .with_fallback(placeholder),
+                        )
+                    } else {
+                        frame.child(placeholder())
+                    }
+                })
                 .child(
                     div()
                         .absolute()
@@ -179,35 +234,85 @@ impl Render for DetailsPanel {
             Some((delegate.row_fields(row), image))
         });
 
-        let content = match selection {
-            Some((fields, image_path)) if !fields.is_empty() => div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .child(render_image_frame(image_path, cx))
-                .child(
-                    fields.into_iter().fold(
-                        DescriptionList::horizontal()
-                            .columns(1)
-                            .bordered(false)
-                            .label_width(px(110.)),
-                        |list, (k, v)| list.item(k, v, 1),
-                    ),
-                )
-                .into_any_element(),
-            _ => div()
+        let crop = cx.try_global::<BottomDockCrop>().map_or(px(0.), |c| c.0);
+
+        let Some((fields, image_path)) = selection.filter(|(f, _)| !f.is_empty()) else {
+            return div()
+                .size_full()
+                .p_3()
                 .text_color(cx.theme().muted_foreground)
                 .child("No selection")
-                .into_any_element(),
+                .into_any_element();
         };
 
-        // Scroll vertically when a long field list overflows the dock height, rather than
-        // clipping it (`overflow_hidden`).
-        div()
-            .size_full()
-            .overflow_y_scrollbar()
-            .p_3()
-            .child(content)
+        // A bordered two-column grid, not `DescriptionList` — the label/value list read as
+        // free-floating text, and the fields *are* tabular. Hand-built rather than a second
+        // `DataTable`: that would mean another `TableDelegate` + `TableState` entity to render
+        // what is a fixed 2-column, no-sort, no-resize, no-header view of data the center
+        // table's delegate already hands over as pairs (`QrateTableDelegate::row_fields`).
+        // ponytail: revisit if these fields ever need sorting or inline editing.
+        let border = cx.theme().border;
+        let rows = fields.into_iter().enumerate().map(|(ix, (k, v))| {
+            div()
+                .flex()
+                .items_start()
+                .border_b_1()
+                .border_color(border)
+                .when(ix % 2 == 1, |r| r.bg(cx.theme().muted.opacity(0.4)))
+                .child(
+                    div()
+                        .w(px(110.))
+                        .flex_shrink_0()
+                        .px_2()
+                        .py_1p5()
+                        .border_r_1()
+                        .border_color(border)
+                        .text_color(cx.theme().muted_foreground)
+                        .child(k),
+                )
+                .child(div().flex_1().px_2().py_1p5().child(v))
+        });
+
+        // Split, not one scrolling column: the image lives in its own panel so it stays put
+        // while only the fields scroll (the old single `overflow_y_scrollbar` div scrolled the
+        // photo away), and the drag handle between them lets the user trade image height for
+        // field rows instead of the photo distorting as the dock is resized.
+        v_resizable("details-split")
+            .child(
+                resizable_panel()
+                    .size(px(180.))
+                    .size_range(px(80.)..px(600.))
+                    .p_3()
+                    .child(render_image_frame(image_path, cx)),
+            )
+            .child(
+                resizable_panel().child(
+                    div()
+                        .size_full()
+                        // Scrolls the fields alone. `min_h_0` is load-bearing: a flex child's
+                        // default `min-height: auto` refuses to shrink below its content, so
+                        // without it this box grows past the panel and the last rows fall off
+                        // the bottom with no scrollbar to reach them — the reported bug.
+                        .min_h_0()
+                        .overflow_y_scrollbar()
+                        .px_3()
+                        // Normal padding *plus* whatever the workspace's bottom-strip crop is
+                        // clipping off this dock right now (29px while the bottom dock is
+                        // closed, 0 while it's open) — otherwise the crop eats the last field
+                        // row. Padding the scroll content, not the panel, so the extra space
+                        // is scrollable-to rather than a dead gap.
+                        .pb(px(12.) + crop)
+                        .child(
+                            div()
+                                .rounded(cx.theme().radius)
+                                .border_1()
+                                .border_color(border)
+                                .overflow_hidden()
+                                .children(rows),
+                        ),
+                ),
+            )
+            .into_any_element()
     }
 }
 
@@ -219,8 +324,35 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use gpui::{Context, IntoElement, Render, TestAppContext, Window};
+    use gpui_component::{IconName, IconNamed as _};
 
-    use super::{DetailsPanel, render_image_frame};
+    use super::{DetailsPanel, is_previewable_image, placeholder_icon, render_image_frame};
+
+    #[test]
+    fn placeholder_icon_varies_by_file_type() {
+        // `IconName` is macro-generated and implements neither `PartialEq` nor `Debug`, so
+        // compare the embedded asset paths it resolves to instead.
+        let icon = |p: &str| placeholder_icon(Some(Path::new(p))).path();
+        assert_eq!(icon("/f/scan.PDF"), IconName::BookOpen.path());
+        assert_eq!(icon("/f/take.mp3"), IconName::Play.path());
+        assert_eq!(icon("/f/clip.mov"), IconName::Frame.path());
+        assert_eq!(icon("/f/archive.zip"), IconName::File.path());
+        assert_eq!(icon("/f/no-extension"), IconName::File.path());
+        assert_eq!(placeholder_icon(None).path(), IconName::File.path());
+        // The buckets must actually differ — a regression that collapsed them all to `File`
+        // would otherwise still pass every assertion above.
+        assert_ne!(icon("/f/scan.pdf"), icon("/f/take.mp3"));
+    }
+
+    #[test]
+    fn only_decodable_images_get_an_inline_preview() {
+        assert!(is_previewable_image(Path::new("/f/a.JPG")));
+        assert!(is_previewable_image(Path::new("/f/a.png")));
+        // Resolves via the files folder like any other row file, but `img()` can't decode it —
+        // it gets an icon instead of a failed load.
+        assert!(!is_previewable_image(Path::new("/f/a.pdf")));
+        assert!(!is_previewable_image(Path::new("/f/a")));
+    }
 
     /// Wraps `render_image_frame` in a root `Render` view so a test can actually draw it —
     /// `Img`'s real load/fallback logic runs during layout/paint, not at element construction,
