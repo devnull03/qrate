@@ -19,7 +19,7 @@ pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> St
             "status-left-panel",
             dock.clone(),
             DockPlacement::Left,
-            IconName::PanelLeft,
+            IconName::Info,
         )
     });
     registry.add_left(left_panel);
