@@ -1,6 +1,8 @@
 //! Persisted preferences, reusable setting field builders, path picker widgets, and a generic
 //! settings-window shell (`SettingsWindow`). Product-specific pages live in `app`.
 
+pub mod columns;
+pub mod dirty;
 pub mod os_open;
 pub mod path_picker;
 pub mod project;
@@ -430,7 +432,9 @@ impl AppSettings {
 // --- Settings Window ---
 
 pub struct SettingsWindow {
-    pub build_pages: fn() -> Vec<SettingPage>,
+    /// Takes `&App` so a page can build itself from live state — the Columns page lists the open
+    /// project's columns, which a context-free builder can't see. Re-invoked every render.
+    pub build_pages: fn(&App) -> Vec<SettingPage>,
     /// Persists the window's size (debounced) so it reopens where it was left.
     _bounds_sub: Subscription,
 }
@@ -439,7 +443,7 @@ impl SettingsWindow {
     pub fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
-        build_pages: fn() -> Vec<SettingPage>,
+        build_pages: fn(&App) -> Vec<SettingPage>,
     ) -> Self {
         let _bounds_sub = cx.observe_window_bounds(window, |_this, window, cx| {
             let bounds = MainWindowBounds::capture_from_window(window, cx);
@@ -528,7 +532,7 @@ impl Render for SettingsWindow {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .child(Settings::new("app-settings").pages((self.build_pages)())),
+                    .child(Settings::new("app-settings").pages((self.build_pages)(cx))),
             )
     }
 }

@@ -274,6 +274,8 @@ fn flush_all_state(cx: &mut gpui::App) {
     if let Err(err) = settings::flush_app_settings(AppSettings::get(cx)) {
         eprintln!("failed to flush app settings on quit: {err}");
     }
+    // Everything above reached disk synchronously, so nothing is outstanding.
+    settings::dirty::clear_all(cx);
 }
 
 fn main() {
@@ -293,6 +295,7 @@ fn main() {
         cx.set_global(settings::project::ProjectPersistence {
             writer: Some(settings::project::ProjectSettingsWriter::start()),
         });
+        settings::dirty::init(cx);
         theming::init(cx);
         cx.set_global(WindowRegistry::default());
 
