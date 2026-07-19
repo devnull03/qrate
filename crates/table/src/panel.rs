@@ -230,9 +230,15 @@ impl TablePanel {
             );
 
         // The column-filter dropdown's "search values" box lives on the delegate; repaint when it
-        // changes so the open dropdown re-narrows its checklist.
-        let _filter_search_sub = cx
-            .subscribe(&filter_search, |_this, _input, _event: &InputEvent, cx| {
+        // changes so the open dropdown re-narrows its checklist. Narrowing can leave the scroll
+        // offset past the end of the shorter list, showing a blank box — so jump back to the top.
+        let _filter_search_sub =
+            cx.subscribe(&filter_search, |this, _input, _event: &InputEvent, cx| {
+                this.state
+                    .read(cx)
+                    .delegate()
+                    .filter_scroll
+                    .scroll_to_item(0, ScrollStrategy::Top);
                 cx.notify()
             });
 

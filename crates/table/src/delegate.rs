@@ -6,6 +6,7 @@ use gpui::{
     Window, div, px,
 };
 use gpui_component::{
+    VirtualListScrollHandle,
     input::InputState,
     table::{Column, TableDelegate, TableState},
 };
@@ -59,6 +60,10 @@ pub struct QrateTableDelegate {
     filters_enabled: Vec<bool>,
     /// Shared "search values" box for whichever column-filter popover is open.
     pub(crate) filter_search: Entity<InputState>,
+    /// Scroll position of that popover's value list. Held here, not built in the popover's render
+    /// closure: `v_virtual_list` mints a fresh handle per call, and the popover rebuilds its
+    /// content every frame, so an inline handle resets the offset to zero as fast as you scroll.
+    pub(crate) filter_scroll: VirtualListScrollHandle,
 }
 
 impl QrateTableDelegate {
@@ -74,6 +79,7 @@ impl QrateTableDelegate {
             filters: Vec::new(),
             filters_enabled: Vec::new(),
             filter_search,
+            filter_scroll: VirtualListScrollHandle::new(),
         }
     }
 
