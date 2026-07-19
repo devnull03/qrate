@@ -15,16 +15,32 @@ use settings::{Setting, columns, project::CurrentProject};
 
 pub fn build_pages(cx: &App) -> Vec<SettingPage> {
     vec![
-        SettingPage::new("Table").group(
-            SettingGroup::new().title("Appearance").item(
-                Setting::Switch {
-                    key: table::TABLE_STRIPES_KEY,
-                    label: "Row Stripes",
-                    description: "Alternate row background color in the data table.",
-                }
-                .into(),
+        SettingPage::new("Table")
+            .group(
+                SettingGroup::new().title("Appearance").item(
+                    Setting::Switch {
+                        key: table::TABLE_STRIPES_KEY,
+                        label: "Row Stripes",
+                        description: "Alternate row background color in the data table.",
+                    }
+                    .into(),
+                ),
+            )
+            .group(
+                SettingGroup::new().title("Saving").item(
+                    Setting::Dropdown {
+                        key: settings::AUTOSAVE_KEY,
+                        label: "Autosave",
+                        description: "When cell edits reach the project file. Ctrl+S always saves.",
+                        options: &[
+                            ("timed", "After a short pause"),
+                            ("immediate", "On every edit"),
+                            ("off", "Manual only (Ctrl+S)"),
+                        ],
+                    }
+                    .into(),
+                ),
             ),
-        ),
         columns_page(cx),
     ]
 }

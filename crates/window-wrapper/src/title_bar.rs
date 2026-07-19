@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
-    Sizable, TitleBar,
+    ActiveTheme, Sizable, TitleBar,
     button::{Button, ButtonVariants},
     menu::{DropdownMenu, PopupMenu},
 };
@@ -109,13 +109,22 @@ impl Render for TitleMenus {
 pub struct AppTitleBar {
     /// Centered title text (the open project's name); empty renders nothing.
     title: SharedString,
+    /// Whether there is unsaved work — draws a dot before the title.
+    dirty: bool,
 }
 
 impl AppTitleBar {
     pub fn new(title: impl Into<SharedString>) -> Self {
         Self {
             title: title.into(),
+            dirty: false,
         }
+    }
+
+    /// Show the unsaved-changes dot (fed from `settings::dirty::Dirty::any`).
+    pub fn dirty(mut self, dirty: bool) -> Self {
+        self.dirty = dirty;
+        self
     }
 }
 
@@ -139,6 +148,12 @@ impl RenderOnce for AppTitleBar {
             .child(
                 gpui_component::h_flex()
                     .justify_center()
+                    .items_center()
+                    .gap_1p5()
+                    // Unsaved-changes dot, left of the project name (editor convention).
+                    .when(self.dirty, |this| {
+                        this.child(div().size(px(6.)).rounded_full().bg(cx.theme().foreground))
+                    })
                     .when(!self.title.is_empty(), |this| {
                         this.child(self.title.clone())
                     }),

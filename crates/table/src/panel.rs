@@ -67,6 +67,9 @@ pub struct TablePanel {
     /// as its search box is typed into.
     _search_sub: Subscription,
     _filter_search_sub: Subscription,
+    /// Pending debounced autosave (the "timed" mode). Replacing it drops the prior task, which
+    /// cancels its timer — that drop *is* the debounce, coalescing a burst of edits into one write.
+    _autosave_task: Option<Task<()>>,
 }
 
 impl TablePanel {
@@ -103,7 +106,7 @@ impl TablePanel {
         cx.set_global(TableStateHandle(state.downgrade()));
 
         let table_state = state.clone();
-        let _edit_sub = cx.subscribe(&editor, move |_this, _editor, event: &InputEvent, cx| {
+        let _edit_sub = cx.subscribe(&editor, move |this, _editor, event: &InputEvent, cx| {
             if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
                 return;
             }
@@ -112,6 +115,8 @@ impl TablePanel {
                 cx.emit(TableChanged);
                 cx.notify();
             });
+            // The commit marked PROJECT_DATA dirty; persist per the Autosave setting.
+            this.schedule_autosave(cx);
         });
 
         let _table_sub = cx.subscribe_in(
@@ -256,6 +261,25 @@ impl TablePanel {
             search_error: false,
             _search_sub,
             _filter_search_sub,
+            _autosave_task: None,
+        }
+    }
+
+    /// React to a committed cell edit per the Autosave setting: write immediately, buffer behind a
+    /// short debounce (the default), or leave it for Ctrl+S / quit. The default and any unset/
+    /// unrecognized value both mean "timed".
+    fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
+        match settings::effective_text(settings::AUTOSAVE_KEY, cx).as_ref() {
+            "off" => {}
+            "immediate" => crate::save_now(cx),
+            _ => {
+                self._autosave_task = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(800))
+                        .await;
+                    this.update(cx, |_this, cx| crate::save_now(cx)).ok();
+                }));
+            }
         }
     }
 

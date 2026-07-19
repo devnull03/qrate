@@ -144,6 +144,9 @@ pub struct App {
     workspace: Entity<Workspace>,
     status_bar: Entity<StatusBar>,
     _main_window_bounds_sub: Subscription,
+    /// Repaints the title bar's unsaved-changes dot when the dirty set changes. `dirty::mark`/
+    /// `clear` mutate the global, so this fires on every edit and every save.
+    _dirty_sub: Subscription,
 }
 
 impl App {
@@ -190,10 +193,13 @@ impl App {
 
         set_main_window_title(window, cx);
 
+        let _dirty_sub = cx.observe_global::<settings::dirty::Dirty>(|_, cx| cx.notify());
+
         Self {
             workspace,
             status_bar,
             _main_window_bounds_sub,
+            _dirty_sub,
         }
     }
 
@@ -229,11 +235,14 @@ impl Render for App {
             .child(
                 v_flex()
                     .size_full()
-                    .child(AppTitleBar::new(
-                        cx.try_global::<settings::project::CurrentProject>()
-                            .map(|p| p.display_name())
-                            .unwrap_or_default(),
-                    ))
+                    .child(
+                        AppTitleBar::new(
+                            cx.try_global::<settings::project::CurrentProject>()
+                                .map(|p| p.display_name())
+                                .unwrap_or_default(),
+                        )
+                        .dirty(settings::dirty::Dirty::any(cx)),
+                    )
                     .child(
                         div()
                             .id("window-body")
@@ -266,6 +275,10 @@ fn flush_all_state(cx: &mut gpui::App) {
     }
     if let Err(err) = settings::flush_app_settings(AppSettings::get(cx)) {
         eprintln!("failed to flush app settings on quit: {err}");
+    }
+    // Flush unsaved cell edits (a pending "timed" autosave, or edits made with autosave off).
+    if settings::dirty::Dirty::has(settings::dirty::PROJECT_DATA, cx) {
+        table::save_now(cx);
     }
     // Everything above reached disk synchronously, so nothing is outstanding.
     settings::dirty::clear_all(cx);
