@@ -14,6 +14,9 @@ use table::{QrateTableDelegate, Selection, TableChanged, TableStateHandle};
 
 use crate::BottomDockCrop;
 
+/// Project-scoped height of the details panel's image pane, in pixels.
+const IMAGE_PANE_HEIGHT_KEY: &str = "details_image_height";
+
 /// Left dock: the selected row's photo (if the files folder resolved one) plus its fields as a
 /// label/value list, per the main-workspace design.
 pub struct DetailsPanel {
@@ -277,10 +280,29 @@ impl Render for DetailsPanel {
         // while only the fields scroll (the old single `overflow_y_scrollbar` div scrolled the
         // photo away), and the drag handle between them lets the user trade image height for
         // field rows instead of the photo distorting as the dock is resized.
+        // `.size()` is the *initial* size only — once the user drags, `ResizableState` owns it,
+        // so re-reading the persisted value each render is a restore, not a fight.
+        let image_height = cx
+            .try_global::<settings::project::CurrentProject>()
+            .and_then(|p| p.data.values.get(IMAGE_PANE_HEIGHT_KEY))
+            .and_then(|v| v.text().parse::<f32>().ok())
+            .unwrap_or(180.);
+
         v_resizable("details-split")
+            .on_resize(|state, _, cx| {
+                if cx.has_global::<settings::project::CurrentProject>()
+                    && let Some(height) = state.read(cx).sizes().first().copied()
+                {
+                    settings::project::CurrentProject::set_text(
+                        IMAGE_PANE_HEIGHT_KEY,
+                        format!("{}", f32::from(height)).into(),
+                        cx,
+                    );
+                }
+            })
             .child(
                 resizable_panel()
-                    .size(px(180.))
+                    .size(px(image_height))
                     .size_range(px(80.)..px(600.))
                     .p_3()
                     .child(render_image_frame(image_path, cx)),
