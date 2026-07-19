@@ -1,16 +1,20 @@
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, IconName, Sizable as _,
-    button::Button,
+    ActiveTheme, IconName, Selectable as _, Sizable as _,
+    button::{Button, ButtonVariants as _},
     dock::{Panel, PanelControl, PanelEvent},
     h_flex,
     input::{Escape, Input, InputEvent, InputState},
     table::{DataTable, TableDelegate as _, TableEvent, TableState},
+    v_flex,
 };
 
 use crate::{
     TableStateHandle,
-    delegate::{ColumnLayout, QrateTableDelegate, Selection, TableChanged},
+    delegate::{
+        ColumnLayout, QrateTableDelegate, SearchOpts, Selection, TableChanged, compile_search,
+    },
     editing, photos, row_index,
 };
 
@@ -46,8 +50,8 @@ pub struct TablePanel {
     /// cursor, starts edits on double-click, persists the column layout, and re-emits
     /// `TableChanged` so cross-crate readers refresh off one signal.
     _table_sub: Subscription,
-    /// The free-text find bar's editor, rendered via `title_suffix` while `search_open`. Its
-    /// `Change`/`PressEnter` events drive match recomputation and next/prev navigation.
+    /// The free-text find bar's editor, rendered at the top of this panel while `search_open`.
+    /// Its `Change`/`PressEnter` events drive match recomputation and next/prev navigation.
     search_input: Entity<InputState>,
     /// Whether the find bar is shown. Toggled by `Search` (Ctrl+F / the toolbar button) and
     /// dismissed by Escape.
@@ -57,6 +61,11 @@ pub struct TablePanel {
     search_matches: Vec<(usize, usize)>,
     /// Index into `search_matches` of the hit currently scrolled to / selected.
     search_ix: usize,
+    /// The find bar's match-case / whole-word / regex toggles (Zed's three search options).
+    search_opts: SearchOpts,
+    /// True when regex mode is on and the query doesn't parse — flips the readout to "Invalid
+    /// regex" instead of a misleading "No results".
+    search_error: bool,
     /// Repaints the find bar's "N of M" readout and re-narrows the column-filter dropdown's list
     /// as its search box is typed into.
     _search_sub: Subscription,
@@ -254,6 +263,8 @@ impl TablePanel {
             search_open: false,
             search_matches: Vec::new(),
             search_ix: 0,
+            search_opts: SearchOpts::default(),
+            search_error: false,
             _search_sub,
             _filter_search_sub,
         }
@@ -263,20 +274,43 @@ impl TablePanel {
     /// every keystroke in the find bar (the scan is sub-millisecond for qrate's grids).
     fn refresh_search(&mut self, cx: &mut Context<Self>) {
         let needle = self.search_input.read(cx).value().to_string();
-        self.search_matches = self.state.read(cx).delegate().search_matches(&needle);
+        self.search_error =
+            !needle.trim().is_empty() && compile_search(&needle, self.search_opts).is_none();
+        self.search_matches = self
+            .state
+            .read(cx)
+            .delegate()
+            .search_matches(&needle, self.search_opts);
         self.search_ix = 0;
         self.select_current_match(cx);
         cx.notify();
     }
 
+    /// Flip one of the three search toggles and re-run the find. `pick` selects which bool.
+    fn toggle_opt(&mut self, pick: fn(&mut SearchOpts) -> &mut bool, cx: &mut Context<Self>) {
+        let flag = pick(&mut self.search_opts);
+        *flag = !*flag;
+        self.refresh_search(cx);
+    }
+
     /// Step `delta` matches forward (+1) or back (-1), wrapping, and scroll/select the landing
     /// cell. No-op with no matches.
     fn goto_match(&mut self, delta: isize, cx: &mut Context<Self>) {
+        // Re-scan first: matches are `(view_row, col)`, and a column filter changed since the last
+        // keystroke would have shifted every view index under us — stepping a stale list lands on
+        // whatever row now happens to sit at that position.
+        let needle = self.search_input.read(cx).value().to_string();
+        self.search_matches = self
+            .state
+            .read(cx)
+            .delegate()
+            .search_matches(&needle, self.search_opts);
         let n = self.search_matches.len();
         if n == 0 {
             return;
         }
-        self.search_ix = (self.search_ix as isize + delta).rem_euclid(n as isize) as usize;
+        let from = self.search_ix.min(n - 1) as isize;
+        self.search_ix = (from + delta).rem_euclid(n as isize) as usize;
         self.select_current_match(cx);
         cx.notify();
     }
@@ -287,10 +321,11 @@ impl TablePanel {
         let Some(&(view_row, data_col)) = self.search_matches.get(self.search_ix) else {
             return;
         };
+        // `set_selected_cell` scrolls the row to center itself, so no separate `scroll_to_row` —
+        // two scrolls per match fight each other.
+        // +1 for the pinned row-index column.
         self.state.update(cx, |state, cx| {
-            state.scroll_to_row(view_row, cx);
-            // +1 for the pinned row-index column.
-            state.set_selected_cell(view_row, data_col + 1, cx);
+            state.set_selected_cell(view_row, data_col + 1, cx)
         });
     }
 
@@ -405,20 +440,15 @@ impl Panel for TablePanel {
                 }),
         ])
     }
+}
 
-    /// Rendered by `TabPanel` immediately left of the toolbar group (the ⋯ cluster). Hosts the
-    /// find bar while it's open — `toolbar_buttons` can't, since it's typed `Option<Vec<Button>>`
-    /// with no element escape hatch. The bar is a fixed 30px, so the input is `xsmall`.
-    fn title_suffix(
-        &mut self,
-        _w: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<impl IntoElement> {
-        if !self.search_open {
-            return None;
-        }
+impl Render for TablePanel {
+    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let stripe = settings::effective_bool(crate::TABLE_STRIPES_KEY, cx);
         let query = self.search_input.read(cx).value();
-        let count = if !self.search_matches.is_empty() {
+        let count = if self.search_error {
+            SharedString::from("Invalid regex")
+        } else if !self.search_matches.is_empty() {
             SharedString::from(format!(
                 "{} of {}",
                 self.search_ix + 1,
@@ -429,25 +459,9 @@ impl Panel for TablePanel {
         } else {
             SharedString::from("No results")
         };
-        Some(
-            h_flex()
-                .gap_1()
-                .items_center()
-                .child(Input::new(&self.search_input).xsmall())
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(count),
-                ),
-        )
-    }
-}
+        let (border, muted) = (cx.theme().border, cx.theme().muted_foreground);
 
-impl Render for TablePanel {
-    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let stripe = settings::effective_bool(crate::TABLE_STRIPES_KEY, cx);
-        div()
+        v_flex()
             .size_full()
             // `TablePanel` key context so Ctrl+F (bound in `crates/app`) reaches the find toggle
             // without stealing the shortcut from the cell editor's own `Input` context. Tracking
@@ -459,6 +473,110 @@ impl Render for TablePanel {
             // The find input propagates Escape (it doesn't consume it), so dismiss the bar here.
             .on_action(cx.listener(|this, _: &Escape, window, cx| this.dismiss_search(window, cx)))
             .p_2()
-            .child(DataTable::new(&self.state).bordered(false).stripe(stripe))
+            .gap_2()
+            // The find bar lives in this panel's own render, not in `title_suffix`: that is drawn
+            // by the parent `TabPanel`, which never observes its child panels, so toggling
+            // `search_open` here would notify only us and the bar would sit invisible until some
+            // unrelated interaction happened to redraw the tab bar.
+            .when(self.search_open, |this| {
+                let opts = self.search_opts;
+                // A compact toggle button (case / word / regex), highlighted while active.
+                let toggle = |id: &'static str,
+                              icon: Option<IconName>,
+                              label: &'static str,
+                              tip: &'static str,
+                              on: bool,
+                              pick: fn(&mut SearchOpts) -> &mut bool| {
+                    Button::new(id)
+                        .ghost()
+                        .small()
+                        .selected(on)
+                        .tooltip(tip)
+                        .map(|b| match icon {
+                            Some(icon) => b.icon(icon),
+                            None => b.label(label),
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| this.toggle_opt(pick, cx)))
+                };
+                this.child(
+                    h_flex()
+                        .flex_none()
+                        .gap_1()
+                        .items_center()
+                        .pb_2()
+                        .border_b_1()
+                        .border_color(border)
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .items_center()
+                                .gap_1()
+                                .child(div().flex_1().child(Input::new(&self.search_input)))
+                                .child(toggle(
+                                    "search-case",
+                                    Some(IconName::CaseSensitive),
+                                    "",
+                                    "Match case",
+                                    opts.case,
+                                    |o| &mut o.case,
+                                ))
+                                .child(toggle(
+                                    "search-word",
+                                    None,
+                                    "W",
+                                    "Match whole word",
+                                    opts.word,
+                                    |o| &mut o.word,
+                                ))
+                                .child(toggle(
+                                    "search-regex",
+                                    None,
+                                    ".*",
+                                    "Use regular expression",
+                                    opts.regex,
+                                    |o| &mut o.regex,
+                                )),
+                        )
+                        .child(
+                            div()
+                                .min_w(px(64.))
+                                .text_xs()
+                                .text_color(muted)
+                                .child(count),
+                        )
+                        .child(
+                            Button::new("search-prev")
+                                .icon(IconName::ChevronUp)
+                                .ghost()
+                                .small()
+                                .tooltip("Previous match (Shift+Enter)")
+                                .on_click(cx.listener(|this, _, _, cx| this.goto_match(-1, cx))),
+                        )
+                        .child(
+                            Button::new("search-next")
+                                .icon(IconName::ChevronDown)
+                                .ghost()
+                                .small()
+                                .tooltip("Next match (Enter)")
+                                .on_click(cx.listener(|this, _, _, cx| this.goto_match(1, cx))),
+                        )
+                        .child(
+                            Button::new("search-close")
+                                .icon(IconName::Close)
+                                .ghost()
+                                .small()
+                                .tooltip("Close find (Esc)")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.dismiss_search(window, cx)
+                                })),
+                        ),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(DataTable::new(&self.state).bordered(false).stripe(stripe)),
+            )
     }
 }

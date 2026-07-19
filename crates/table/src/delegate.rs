@@ -176,10 +176,16 @@ impl QrateTableDelegate {
         }
     }
 
-    /// Cells in the *visible* set matching `needle`, as `(view_row, data_col)` in view order —
-    /// ready for `set_selected_cell`/`scroll_to_row` after the pinned `+1` on the column.
-    pub(crate) fn search_matches(&self, needle: &str) -> Vec<(usize, usize)> {
-        find_matches(&self.rows, &self.visible_rows, self.columns.len(), needle)
+    /// Cells in the *visible* set matching `needle` under `opts`, as `(view_row, data_col)` in view
+    /// order — ready for `set_selected_cell`/`scroll_to_row` after the pinned `+1` on the column.
+    pub(crate) fn search_matches(&self, needle: &str, opts: SearchOpts) -> Vec<(usize, usize)> {
+        find_matches(
+            &self.rows,
+            &self.visible_rows,
+            self.columns.len(),
+            needle,
+            opts,
+        )
     }
 
     /// Replaces the whole column/row model with real project data. Clears any selection/edit
@@ -349,23 +355,56 @@ fn compute_visible_rows(
 
 /// Cells matching `needle` (case-insensitive substring) within the visible set, as
 /// `(view_row, data_col)` in view order. `cols` bounds the data columns scanned.
+/// The find bar's three toggles, mirroring Zed's search: match case, whole word, and treat the
+/// query as a regular expression.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SearchOpts {
+    pub case: bool,
+    pub word: bool,
+    pub regex: bool,
+}
+
+/// Compile the query into a matcher honoring the toggles. `None` means "match nothing": a blank
+/// query, or (in regex mode) a pattern that fails to parse.
+pub(crate) fn compile_search(needle: &str, opts: SearchOpts) -> Option<regex::Regex> {
+    if needle.trim().is_empty() {
+        return None;
+    }
+    let body = if opts.regex {
+        needle.to_string()
+    } else {
+        regex::escape(needle)
+    };
+    let body = if opts.word {
+        format!(r"\b(?:{body})\b")
+    } else {
+        body
+    };
+    let pattern = if opts.case {
+        body
+    } else {
+        format!("(?i){body}")
+    };
+    regex::Regex::new(&pattern).ok()
+}
+
 fn find_matches(
     rows: &[Vec<SharedString>],
     visible: &[usize],
     cols: usize,
     needle: &str,
+    opts: SearchOpts,
 ) -> Vec<(usize, usize)> {
-    if needle.trim().is_empty() {
+    let Some(re) = compile_search(needle, opts) else {
         return Vec::new();
-    }
-    let needle = needle.to_lowercase();
+    };
     let mut hits = Vec::new();
     for (view, &source) in visible.iter().enumerate() {
         for col in 0..cols {
             if rows
                 .get(source)
                 .and_then(|r| r.get(col))
-                .is_some_and(|c| c.to_lowercase().contains(&needle))
+                .is_some_and(|c| re.is_match(c))
             {
                 hits.push((view, col));
             }
@@ -537,18 +576,46 @@ mod tests {
             &["apricot", "red"],
         ]);
         let all = compute_visible_rows(&data, &filters(&[&[], &[]]));
-        assert_eq!(find_matches(&data, &all, 2, "AP"), vec![(0, 0), (2, 0)]);
+        let opts = SearchOpts::default();
+        assert_eq!(
+            find_matches(&data, &all, 2, "AP", opts),
+            vec![(0, 0), (2, 0)]
+        );
         // Hide the "apricot" row: the search must not report it, and the surviving hit is
         // addressed by its *view* row, not its source row.
         let visible = compute_visible_rows(&data, &filters(&[&["apricot"], &[]]));
         assert_eq!(visible, vec![0, 1]);
-        assert_eq!(find_matches(&data, &visible, 2, "ap"), vec![(0, 0)]);
+        assert_eq!(find_matches(&data, &visible, 2, "ap", opts), vec![(0, 0)]);
     }
 
     #[test]
     fn blank_query_matches_nothing() {
         let data = rows(&[&["a"]]);
-        assert!(find_matches(&data, &[0], 1, "   ").is_empty());
+        assert!(find_matches(&data, &[0], 1, "   ", SearchOpts::default()).is_empty());
+    }
+
+    #[test]
+    fn search_toggles_case_word_and_regex() {
+        let data = rows(&[&["Apple pie"], &["pineapple"]]);
+        let all = &[0, 1][..];
+        let opt = |case, word, regex| SearchOpts { case, word, regex };
+
+        // Match case: "apple" no longer hits the capitalized "Apple pie".
+        assert_eq!(
+            find_matches(&data, all, 1, "apple", opt(true, false, false)),
+            vec![(1, 0)]
+        );
+        // Whole word: "apple" hits "Apple pie" but not the substring in "pineapple".
+        assert_eq!(
+            find_matches(&data, all, 1, "apple", opt(false, true, false)),
+            vec![(0, 0)]
+        );
+        // Regex: alternation matches both rows; an unparseable pattern matches nothing.
+        assert_eq!(
+            find_matches(&data, all, 1, "pie|pine", opt(false, false, true)),
+            vec![(0, 0), (1, 0)]
+        );
+        assert!(compile_search("(", opt(false, false, true)).is_none());
     }
 
     /// The mapping every edit/selection path goes through: in a filtered view a view index and
