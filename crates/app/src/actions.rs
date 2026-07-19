@@ -15,6 +15,7 @@ actions!(
         // Workspace commands.
         NewWindow,
         NewProject,
+        Save,
         // Dock/panel toggles (handled on the App root — they need a `Window`).
         ToggleLeftDock,
         ToggleBottomDock,
@@ -29,6 +30,9 @@ pub fn key_bindings() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("ctrl-shift-n", NewWindow, None),
         KeyBinding::new("ctrl-n", NewProject, None),
+        // Save the open project's data to its `.qrate` file. Global: saving shouldn't depend on
+        // where focus sits (a focused cell editor's `Input` context doesn't bind Ctrl+S).
+        KeyBinding::new("ctrl-s", Save, None),
         KeyBinding::new("ctrl-b", ToggleLeftDock, None),
         KeyBinding::new("ctrl-`", ToggleBottomDock, None),
         KeyBinding::new("ctrl-alt-b", ToggleRightDock, None),
@@ -49,4 +53,5 @@ pub fn register_global_handlers(cx: &mut App) {
     // ponytail: NewWindow is blocked on the bar registries being globals (single-window) —
     // de-globalize them per-window first.
     cx.on_action(|_: &NewWindow, _cx| eprintln!("NewWindow: TODO (bar registries are global)"));
+    cx.on_action(|_: &Save, cx| table::save_now(cx));
 }

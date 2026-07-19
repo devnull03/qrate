@@ -32,6 +32,10 @@ use crate::path_picker::PathPickerApp;
 /// `AppSettings` value key for the Settings window's last size (a JSON [`MainWindowBounds`]).
 pub const SETTINGS_WINDOW_BOUNDS_KEY: &str = "settings_window_bounds";
 
+/// Setting key (either scope) for autosave behavior: `"timed"` (buffered, the default), `"immediate"`,
+/// or `"off"`. Read by the table crate to decide when a committed cell edit reaches disk.
+pub const AUTOSAVE_KEY: &str = "autosave";
+
 // --- Settings Scope ---
 
 /// Which store a settings field reads and writes. The same fields render in both scopes; only
@@ -129,6 +133,21 @@ pub fn effective_bool(key: &str, cx: &App) -> bool {
         .get(key)
         .map(|v| v.bool())
         .unwrap_or(false)
+}
+
+/// Resolves a text setting for a *consumer*: the open project's value wins if present, else the
+/// user-wide default, else empty. Text sibling of [`effective_bool`].
+pub fn effective_text(key: &str, cx: &App) -> SharedString {
+    if let Some(project) = cx.try_global::<project::CurrentProject>()
+        && let Some(v) = project.data.values.get(key)
+    {
+        return v.text();
+    }
+    AppSettings::get(cx)
+        .values
+        .get(key)
+        .map(|v| v.text())
+        .unwrap_or_default()
 }
 
 // --- Setting Field Enum ---

@@ -267,6 +267,31 @@ impl QrateTableDelegate {
             .collect()
     }
 
+    /// Headers + rows in the project's *original* column order, recovered from each column's
+    /// stable `c{ix}` key rather than the current display order. `dataset_main` keeps a fixed
+    /// physical column order (the separately-saved [`ColumnLayout`] maps it to display order), so
+    /// a save after a column move must not reshuffle the stored columns. Cells are stringified for
+    /// the `.qrate` writer.
+    pub(crate) fn dataset_snapshot(&self) -> (Vec<String>, Vec<Vec<String>>) {
+        let mut order: Vec<usize> = (0..self.columns.len()).collect();
+        order.sort_by_key(|&i| orig_col_ix(&self.columns[i]));
+        let headers = order
+            .iter()
+            .map(|&i| self.columns[i].name.to_string())
+            .collect();
+        let rows = self
+            .rows
+            .iter()
+            .map(|row| {
+                order
+                    .iter()
+                    .map(|&i| row.get(i).map(|c| c.to_string()).unwrap_or_default())
+                    .collect()
+            })
+            .collect();
+        (headers, rows)
+    }
+
     /// Current column layout (keys + widths in display order) for persistence.
     pub(crate) fn column_layout(&self) -> ColumnLayout {
         ColumnLayout {
@@ -322,6 +347,16 @@ impl QrateTableDelegate {
             self.filters_enabled = perm.iter().map(|&i| self.filters_enabled[i]).collect();
         }
     }
+}
+
+/// The original column index encoded in a `c{ix}` key (minted in [`QrateTableDelegate::set_data`]).
+/// An unexpected key sorts last (`usize::MAX`) rather than colliding at 0.
+fn orig_col_ix(col: &Column) -> usize {
+    col.key
+        .as_ref()
+        .strip_prefix('c')
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(usize::MAX)
 }
 
 /// Move every row's cell at `from` to position `to`, mirroring a column move so cell lookups
@@ -522,6 +557,20 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    #[test]
+    fn snapshot_order_follows_ckey_not_display_order() {
+        // A display where columns sit out of their original `c{ix}` order (as after moves).
+        let cols = [
+            Column::new("c2", "C"),
+            Column::new("c0", "A"),
+            Column::new("c1", "B"),
+        ];
+        let mut order: Vec<usize> = (0..cols.len()).collect();
+        order.sort_by_key(|&i| orig_col_ix(&cols[i]));
+        let names: Vec<&str> = order.iter().map(|&i| cols[i].name.as_ref()).collect();
+        assert_eq!(names, vec!["A", "B", "C"]);
     }
 
     #[test]

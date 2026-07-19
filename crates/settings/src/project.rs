@@ -395,9 +395,15 @@ pub fn queue_write(file: &Path, key: &str, value: &str, cx: &gpui::App) {
     }
 }
 
-/// Creates `dataset_main` with one TEXT column per header and bulk-inserts the
-/// rows. Ragged rows (flexible CSV) are padded/truncated to the header count.
-fn write_dataset(conn: &Connection, headers: &[String], rows: &[Vec<String>]) -> Result<()> {
+/// Creates `dataset_main` (one TEXT column per header) and bulk-inserts the rows. Ragged rows
+/// (flexible CSV) are padded/truncated to the header count. Manages no transaction of its own —
+/// the caller wraps it, so the create and the inserts commit together (and, on a re-save,
+/// atomically with the preceding drop).
+fn create_and_fill_dataset(
+    conn: &Connection,
+    headers: &[String],
+    rows: &[Vec<String>],
+) -> Result<()> {
     let idents = dataset_column_idents(headers);
     let cols_sql: Vec<String> = idents.iter().map(|i| format!("{i} TEXT")).collect();
     conn.execute_batch(&format!(
@@ -412,19 +418,41 @@ fn write_dataset(conn: &Connection, headers: &[String], rows: &[Vec<String>]) ->
         idents.join(", "),
         placeholders.join(", ")
     );
-    conn.execute_batch("BEGIN")?;
-    {
-        let mut stmt = conn.prepare(&insert_sql).context("Prepare row insert")?;
-        let empty = String::new();
-        for row in rows {
-            let padded: Vec<&String> = (0..idents.len())
-                .map(|i| row.get(i).unwrap_or(&empty))
-                .collect();
-            stmt.execute(rusqlite::params_from_iter(padded))
-                .context("Insert row")?;
-        }
+    let mut stmt = conn.prepare(&insert_sql).context("Prepare row insert")?;
+    let empty = String::new();
+    for row in rows {
+        let padded: Vec<&String> = (0..idents.len())
+            .map(|i| row.get(i).unwrap_or(&empty))
+            .collect();
+        stmt.execute(rusqlite::params_from_iter(padded))
+            .context("Insert row")?;
     }
+    Ok(())
+}
+
+/// Creates and fills `dataset_main` in one transaction (the create-time path).
+fn write_dataset(conn: &Connection, headers: &[String], rows: &[Vec<String>]) -> Result<()> {
+    conn.execute_batch("BEGIN")?;
+    create_and_fill_dataset(conn, headers, rows)?;
     conn.execute_batch("COMMIT")?;
+    Ok(())
+}
+
+/// Rewrites `dataset_main` from the in-memory rows — the whole table, in one transaction, so a
+/// crash mid-save leaves the previous version intact (an uncommitted transaction rolls back when
+/// the connection drops). `headers`/`rows` must be in the project's *original* column order: the
+/// `.qrate` schema keeps a fixed physical column order, and the separately-saved column layout
+/// maps that to display order. A blank project (no headers, no `dataset_main`) is a no-op.
+pub fn save_dataset(path: &Path, headers: &[String], rows: &[Vec<String>]) -> Result<()> {
+    if headers.is_empty() {
+        return Ok(());
+    }
+    let conn = open_rw(path)?;
+    conn.execute_batch("BEGIN; DROP TABLE IF EXISTS dataset_main;")
+        .context("Begin dataset rewrite")?;
+    create_and_fill_dataset(&conn, headers, rows)?;
+    conn.execute_batch("COMMIT")
+        .context("Commit dataset rewrite")?;
     Ok(())
 }
 
@@ -550,6 +578,28 @@ mod tests {
             Some("{\"v\":2}")
         );
         // DELETE mode's invariant: nothing but the `.qrate` file at rest.
+        assert!(!path.with_extension("qrate-journal").exists());
+        assert!(!path.with_extension("qrate-wal").exists());
+    }
+
+    #[test]
+    fn save_dataset_rewrites_rows_and_round_trips() {
+        let path = tempfile("save.qrate");
+        let headers = vec!["Digital ID".to_string(), "Title".to_string()];
+        let rows = vec![vec!["1".to_string(), "First".to_string()]];
+        create_project_file(&path, "S", "CSV", None, None, &[], &headers, &rows).unwrap();
+
+        // Edit a cell and add a row, then save the whole table back.
+        let edited = vec![
+            vec!["1".to_string(), "Edited".to_string()],
+            vec!["2".to_string(), "Second".to_string()],
+        ];
+        save_dataset(&path, &headers, &edited).unwrap();
+
+        let data = load_project_file(&path).unwrap();
+        assert_eq!(data.headers, headers);
+        assert_eq!(data.rows, edited);
+        // DELETE mode's invariant survives the rewrite: only the `.qrate` file at rest.
         assert!(!path.with_extension("qrate-journal").exists());
         assert!(!path.with_extension("qrate-wal").exists());
     }
