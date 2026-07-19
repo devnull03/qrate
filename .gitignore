@@ -1,12 +1,6 @@
 /target
-islandora_workbench/*
-
 
 # AI stuff
 .cursor/
 .claude/
 GEMINI.md
-CLAUDE.md
-
-learnt.md
-mpsc-channels.md
