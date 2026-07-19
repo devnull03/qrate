@@ -86,12 +86,13 @@ fn filter_dropdown(
 
     // Pull everything the list needs as owned data first, so no borrow of `cx`/the table is held
     // while the child elements are built.
-    let (values, filter_search) = {
+    let (values, filter_search, filter_scroll) = {
         let state = table.read(cx);
         let delegate = state.delegate();
         (
             delegate.column_values(data_col),
             delegate.filter_search.clone(),
+            delegate.filter_scroll.clone(),
         )
     };
     let needle = filter_search.read(cx).value().to_lowercase();
@@ -187,7 +188,7 @@ fn filter_dropdown(
                                     .collect()
                             },
                         )
-                        .size_full(),
+                        .track_scroll(&filter_scroll),
                     )
                 }),
         )
