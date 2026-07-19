@@ -1,20 +1,27 @@
 use gpui::*;
 use gpui_component::{
-    IconName,
+    ActiveTheme, IconName, Sizable as _,
     button::Button,
     dock::{Panel, PanelControl, PanelEvent},
-    input::{InputEvent, InputState},
+    h_flex,
+    input::{Escape, Input, InputEvent, InputState},
     table::{DataTable, TableDelegate as _, TableEvent, TableState},
 };
 
 use crate::{
     TableStateHandle,
-    delegate::{ColumnLayout, QrateTableDelegate, Selection, TableChanged},
+    delegate::{ColumnLayout, QrateTableDelegate, Selection, TableChanged, ViewIx},
     editing, photos, row_index,
 };
 
 /// Settings key for the saved column layout (order + widths) in the project's `.qrate` file.
 const COLUMN_LAYOUT_KEY: &str = "table_columns";
+
+// Free-text find across the grid. Declared here in `crate::table` (not `crate::app`) because the
+// dependency edge is app → table: an action declared in app is invisible to `TablePanel`, which
+// must handle it. `crates/app/src/actions.rs` binds Ctrl+F to it, scoped to the `TablePanel`
+// context so it doesn't steal the shortcut from the cell editor's own `Input` context.
+actions!(qrate, [Search]);
 
 /// Center panel: the virtualized text table, with a pinned row-number column, native
 /// cell/row/column selection, movable + resizable columns, and double-click-to-edit cells.
@@ -34,12 +41,29 @@ pub struct TablePanel {
     /// cursor, starts edits on double-click, persists the column layout, and re-emits
     /// `TableChanged` so cross-crate readers refresh off one signal.
     _table_sub: Subscription,
+    /// The free-text find bar's editor, rendered via `title_suffix` while `search_open`. Its
+    /// `Change`/`PressEnter` events drive match recomputation and next/prev navigation.
+    search_input: Entity<InputState>,
+    /// Whether the find bar is shown. Toggled by `Search` (Ctrl+F / the toolbar button) and
+    /// dismissed by Escape.
+    search_open: bool,
+    /// Current find hits as `(view_row, data_col)` in view order, recomputed on every query
+    /// change. Empty when the query is blank or matches nothing.
+    search_matches: Vec<(usize, usize)>,
+    /// Index into `search_matches` of the hit currently scrolled to / selected.
+    search_ix: usize,
+    /// Repaints the find bar's "N of M" readout and re-narrows the column-filter dropdown's list
+    /// as its search box is typed into.
+    _search_sub: Subscription,
+    _filter_search_sub: Subscription,
 }
 
 impl TablePanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| InputState::new(window, cx));
-        let mut delegate = QrateTableDelegate::new(editor.clone());
+        let filter_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search values"));
+        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in table"));
+        let mut delegate = QrateTableDelegate::new(editor.clone(), filter_search.clone());
         // Show the open project's data, restoring its saved column order/widths. Without a
         // project (dev launch straight into the main window) the table starts empty.
         if let Some(project) = cx.try_global::<settings::project::CurrentProject>() {
@@ -91,15 +115,22 @@ impl TablePanel {
                         return;
                     }
                     TableEvent::SelectCell(row, col) => {
-                        let sel = Some(Selection::Cell {
-                            row: *row,
-                            col: *col - 1,
+                        // `row` is a VIEW index; store the SOURCE row so the selection survives a
+                        // filter change and cross-crate readers index the real data.
+                        let col = *col - 1;
+                        state.update(cx, |s, _| {
+                            if let Some(source) = s.delegate().source(ViewIx(*row)) {
+                                s.delegate_mut().selection =
+                                    Some(Selection::Cell { row: source.0, col });
+                            }
                         });
-                        state.update(cx, |s, _| s.delegate_mut().selection = sel);
                     }
                     TableEvent::SelectRow(row) => {
-                        let sel = Some(Selection::Row(*row));
-                        state.update(cx, |s, _| s.delegate_mut().selection = sel);
+                        state.update(cx, |s, _| {
+                            if let Some(source) = s.delegate().source(ViewIx(*row)) {
+                                s.delegate_mut().selection = Some(Selection::Row(source.0));
+                            }
+                        });
                     }
                     // The pinned `#` column isn't a data column, so selecting it clears instead.
                     TableEvent::SelectColumn(col) if *col != row_index::COL_IX => {
@@ -110,9 +141,13 @@ impl TablePanel {
                         state.update(cx, |s, _| s.delegate_mut().selection = None);
                     }
                     TableEvent::DoubleClickedCell(row, col) if *col != row_index::COL_IX => {
-                        let (row, col) = (*row, *col - 1);
+                        // `row` is a VIEW index; edit the SOURCE row it maps to so the commit
+                        // writes back to the correct data row in a filtered view.
+                        let (view, col) = (*row, *col - 1);
                         state.update(cx, |s, cx| {
-                            editing::start(s.delegate_mut(), row, col, window, cx);
+                            if let Some(source) = s.delegate().source(ViewIx(view)) {
+                                editing::start(s.delegate_mut(), source.0, col, window, cx);
+                            }
                         });
                     }
                     TableEvent::ColumnWidthsChanged(widths) => {
@@ -155,6 +190,27 @@ impl TablePanel {
         let _settings_sub =
             cx.observe_global::<settings::AppSettings>(|_this: &mut Self, cx| cx.notify());
 
+        // Typing in the find bar recomputes matches (jumping to the first); Enter/Shift-Enter
+        // steps to the next/previous match.
+        let _search_sub =
+            cx.subscribe(
+                &search_input,
+                |this, _input, event: &InputEvent, cx| match event {
+                    InputEvent::Change => this.refresh_search(cx),
+                    InputEvent::PressEnter { shift, .. } => {
+                        this.goto_match(if *shift { -1 } else { 1 }, cx)
+                    }
+                    _ => {}
+                },
+            );
+
+        // The column-filter dropdown's "search values" box lives on the delegate; repaint when it
+        // changes so the open dropdown re-narrows its checklist.
+        let _filter_search_sub = cx
+            .subscribe(&filter_search, |_this, _input, _event: &InputEvent, cx| {
+                cx.notify()
+            });
+
         Self {
             focus_handle: cx.focus_handle(),
             state,
@@ -162,7 +218,71 @@ impl TablePanel {
             _project_sub,
             _settings_sub,
             _table_sub,
+            search_input,
+            search_open: false,
+            search_matches: Vec::new(),
+            search_ix: 0,
+            _search_sub,
+            _filter_search_sub,
         }
+    }
+
+    /// Recompute the find matches from the current query and jump to the first, if any. Called on
+    /// every keystroke in the find bar (the scan is sub-millisecond for qrate's grids).
+    fn refresh_search(&mut self, cx: &mut Context<Self>) {
+        let needle = self.search_input.read(cx).value().to_string();
+        self.search_matches = self.state.read(cx).delegate().search_matches(&needle);
+        self.search_ix = 0;
+        self.select_current_match(cx);
+        cx.notify();
+    }
+
+    /// Step `delta` matches forward (+1) or back (-1), wrapping, and scroll/select the landing
+    /// cell. No-op with no matches.
+    fn goto_match(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let n = self.search_matches.len();
+        if n == 0 {
+            return;
+        }
+        self.search_ix = (self.search_ix as isize + delta).rem_euclid(n as isize) as usize;
+        self.select_current_match(cx);
+        cx.notify();
+    }
+
+    /// Scroll the current match into view and set it as the native cell selection — reusing the
+    /// library's own highlight instead of building span-level match highlighting.
+    fn select_current_match(&mut self, cx: &mut Context<Self>) {
+        let Some(&(view_row, data_col)) = self.search_matches.get(self.search_ix) else {
+            return;
+        };
+        self.state.update(cx, |state, cx| {
+            state.scroll_to_row(view_row, cx);
+            // +1 for the pinned row-index column.
+            state.set_selected_cell(view_row, data_col + 1, cx);
+        });
+    }
+
+    /// Toggle the find bar. Opening focuses the query editor; closing returns focus to the table.
+    fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_open = !self.search_open;
+        if self.search_open {
+            self.search_input
+                .update(cx, |input, cx| input.focus(window, cx));
+            self.refresh_search(cx);
+        } else {
+            self.focus_handle.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Dismiss the find bar (Escape) and return focus to the table. No-op if already closed.
+    fn dismiss_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.search_open {
+            return;
+        }
+        self.search_open = false;
+        self.focus_handle.focus(window, cx);
+        cx.notify();
     }
 
     /// Apply the project's saved column layout onto freshly loaded data, if any.
@@ -240,13 +360,58 @@ impl Panel for TablePanel {
     /// Rendered by `TabPanel::render_toolbar` immediately left of the ⋯ menu, forced to
     /// `.xsmall().ghost()` by the library. `title_suffix` is the other option, but it sits by the
     /// title instead — this is the hook for buttons that belong *beside* the ⋯.
-    fn toolbar_buttons(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> Option<Vec<Button>> {
+    fn toolbar_buttons(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+        // Toggle the find bar directly through a weak handle to this panel — more robust than
+        // dispatching the `Search` action, which would only reach us if focus happened to sit
+        // inside the `TablePanel` context when the button is clicked.
+        let this = cx.entity().downgrade();
         Some(vec![
-            Button::new("table-debug")
-                .icon(IconName::Inspector)
-                .tooltip("Debug ping")
-                .on_click(|_, _, _| eprintln!("[qrate] table toolbar button clicked")),
+            Button::new("table-search")
+                .icon(IconName::Search)
+                .tooltip("Find in table")
+                .on_click(move |_, window, cx| {
+                    if let Some(this) = this.upgrade() {
+                        this.update(cx, |panel, cx| panel.toggle_search(window, cx));
+                    }
+                }),
         ])
+    }
+
+    /// Rendered by `TabPanel` immediately left of the toolbar group (the ⋯ cluster). Hosts the
+    /// find bar while it's open — `toolbar_buttons` can't, since it's typed `Option<Vec<Button>>`
+    /// with no element escape hatch. The bar is a fixed 30px, so the input is `xsmall`.
+    fn title_suffix(
+        &mut self,
+        _w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        if !self.search_open {
+            return None;
+        }
+        let query = self.search_input.read(cx).value();
+        let count = if !self.search_matches.is_empty() {
+            SharedString::from(format!(
+                "{} of {}",
+                self.search_ix + 1,
+                self.search_matches.len()
+            ))
+        } else if query.trim().is_empty() {
+            SharedString::default()
+        } else {
+            SharedString::from("No results")
+        };
+        Some(
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(Input::new(&self.search_input).xsmall())
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(count),
+                ),
+        )
     }
 }
 
@@ -255,6 +420,15 @@ impl Render for TablePanel {
         let stripe = settings::effective_bool(crate::TABLE_STRIPES_KEY, cx);
         div()
             .size_full()
+            // `TablePanel` key context so Ctrl+F (bound in `crates/app`) reaches the find toggle
+            // without stealing the shortcut from the cell editor's own `Input` context. Tracking
+            // the focus handle keeps this node in the focus dispatch path even when no cell holds
+            // focus, so the binding fires.
+            .key_context("TablePanel")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &Search, window, cx| this.toggle_search(window, cx)))
+            // The find input propagates Escape (it doesn't consume it), so dismiss the bar here.
+            .on_action(cx.listener(|this, _: &Escape, window, cx| this.dismiss_search(window, cx)))
             .p_2()
             .child(DataTable::new(&self.state).bordered(false).stripe(stripe))
     }
