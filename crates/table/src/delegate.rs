@@ -11,36 +11,16 @@ use gpui_component::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{cell, editing::EditState, filter, row_index, search};
-
-/// A row index into the *view* — the filtered, narrowed set the library asks about and reports
-/// events in. Distinct from [`SourceIx`] so the two can't be confused at a call site: today the
-/// grid is unfiltered so view == source, but a filtered view breaks that and every boundary
-/// must convert. The confusion lives at exactly three spots (`rows_count`, `render_td`, and
-/// `TablePanel`'s event bridge), so this pair plus [`QrateTableDelegate::source`] is the whole
-/// index-safety story — no arithmetic traits, no generic index machinery.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct ViewIx(pub usize);
-
-/// A row index into the *source* data (`grid.rows`, `image_paths`), stable under filtering.
-/// Selection and [`EditState`] store these so a cell edit lands on the right row even in a
-/// filtered view, and so the Details panel / status bar index the real data with zero changes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct SourceIx(pub usize);
+use crate::{cell, editing::EditState, filter, row_index};
 
 /// Emitted whenever the table's selection, a cell's text, or the column layout changes, so
-/// cross-crate listeners (the status-bar cell readout, the Details panel) know to re-render.
-/// `TablePanel` bridges the library's own `TableEvent`s into this single signal.
+/// cross-crate listeners know to re-render.
 pub struct TableChanged;
 
 impl EventEmitter<TableChanged> for TableState<QrateTableDelegate> {}
 
-/// The table's current selection, mirrored from the library's native `TableEvent`s by
-/// `TablePanel`'s event bridge. Cell/row/column are distinct variants because the status-bar
-/// readout shows each differently, and a whole-column selection has no row to hang on a tuple.
-/// Columns are data-relative (the pinned `#` column excluded) and 0-based — display adds 1.
-/// Rows are `SourceIx` values (converted from the library's view index at the event bridge) so
-/// the selection survives a filter change and cross-crate readers index the real data.
+/// The table's current selection. Columns are data-relative (the pinned `#` column excluded) and
+/// 0-based; rows are source-data indices, so a selection survives a filter change.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Selection {
     Cell { row: usize, col: usize },
@@ -48,43 +28,8 @@ pub enum Selection {
     Column(usize),
 }
 
-/// Row/column text storage, kept separate from `QrateTableDelegate` so it's unit-testable
-/// without a live gpui `App` (the delegate itself needs one, to hold the editor `Entity`).
-#[derive(Default)]
-struct RowGrid {
-    rows: Vec<Vec<SharedString>>,
-}
-
-impl RowGrid {
-    fn rows_count(&self) -> usize {
-        self.rows.len()
-    }
-
-    fn cell(&self, row: usize, col: usize) -> Option<&SharedString> {
-        self.rows.get(row).and_then(|r| r.get(col))
-    }
-
-    fn set_cell(&mut self, row: usize, col: usize, value: SharedString) {
-        if let Some(cell) = self.rows.get_mut(row).and_then(|r| r.get_mut(col)) {
-            *cell = value;
-        }
-    }
-
-    /// Move every row's cell at `from` to position `to`, mirroring a column move so cell
-    /// lookups stay positional (display order == storage order).
-    fn move_col(&mut self, from: usize, to: usize) {
-        for row in &mut self.rows {
-            if from < row.len() && to < row.len() {
-                let cell = row.remove(from);
-                row.insert(to, cell);
-            }
-        }
-    }
-}
-
 /// Saved column layout — display order + widths — persisted into the project's `.qrate` file.
-/// Keys are assigned per original data column at load time (`c{n}`), so they track a column's
-/// identity across moves; a layout whose key set doesn't match the current data is ignored.
+/// A layout whose key set doesn't match the current data is ignored.
 #[derive(Serialize, Deserialize)]
 pub struct ColumnLayout {
     pub keys: Vec<String>,
@@ -95,32 +40,24 @@ pub struct ColumnLayout {
 /// the virtualized `DataTable` calls back into it for counts and per-cell rendering.
 pub struct QrateTableDelegate {
     columns: Vec<Column>,
-    grid: RowGrid,
-    /// Last selection reported by the table's native `TableEvent`s. Written only by
-    /// `TablePanel`'s event bridge; readers treat it as the current selection. Kept here (not
-    /// read from `TableState` directly) because the library's `selected_cell()` goes stale in
-    /// row-selection mode.
+    rows: Vec<Vec<SharedString>>,
+    /// Last selection reported by the table's native `TableEvent`s, written only by
+    /// `TablePanel`'s event bridge (the library's `selected_cell()` goes stale in row mode).
     pub(crate) selection: Option<Selection>,
     pub(crate) editing: EditState,
     /// Shared single-line editor, reused across whichever cell is being edited.
     pub(crate) editor: Entity<InputState>,
-    /// Each row's resolved image path, parallel to `grid.rows` — populated by `TablePanel` via
-    /// `set_image_paths` after `set_data`, since resolving requires the project's files-folder
-    /// setting which this crate doesn't own. `None` until then, or for a row with no match.
+    /// Each row's resolved image path, parallel to `rows`. `None` until `TablePanel` resolves it.
     image_paths: Vec<Option<PathBuf>>,
     /// View→source row mapping: `visible_rows[view] == source`. The library only ever sees this
-    /// narrowed set — `rows_count` returns its length and `render_td` maps through it — so
-    /// per-column filtering composes with the virtualized render for free (only the visible
-    /// range is asked about). Reset to identity by `set_data`; rebuilt by `recompute_visible`.
+    /// narrowed set, so filtering composes with the virtualized render for free.
     visible_rows: Vec<usize>,
-    /// Per-data-column filter, parallel to `columns`: the set of *excluded* (unchecked) cell
-    /// values for that column, à la a Google Sheets "filter by values" list. Empty = no filter.
-    /// A source row is visible iff, for every column, its cell value is not in that column's
-    /// excluded set. Reordered alongside `columns` on move/layout so a filter tracks its column.
+    /// Per-data-column set of *excluded* cell values, parallel to `columns`. Empty = no filter.
     filters: Vec<HashSet<SharedString>>,
-    /// Shared "search this list" box for the open column-filter popover — narrows which distinct
-    /// values the checklist shows (it does not itself filter the table). One entity, reused
-    /// across columns since only one popover is open at a time.
+    /// Whether each column offers a filter dropdown at all, parallel to `columns`. Off for every
+    /// column until switched on per column — filtering is opt-in.
+    filters_enabled: Vec<bool>,
+    /// Shared "search values" box for whichever column-filter popover is open.
     pub(crate) filter_search: Entity<InputState>,
 }
 
@@ -128,43 +65,41 @@ impl QrateTableDelegate {
     pub(crate) fn new(editor: Entity<InputState>, filter_search: Entity<InputState>) -> Self {
         Self {
             columns: Vec::new(),
-            grid: RowGrid::default(),
+            rows: Vec::new(),
             selection: None,
             editing: EditState::Idle,
             editor,
             image_paths: Vec::new(),
             visible_rows: Vec::new(),
             filters: Vec::new(),
+            filters_enabled: Vec::new(),
             filter_search,
         }
     }
 
-    /// View→source conversion at the single library boundary. `None` when the view index is
-    /// stale for the current filtered set (e.g. a late event referencing a now-hidden row).
-    pub(crate) fn source(&self, view: ViewIx) -> Option<SourceIx> {
-        self.visible_rows.get(view.0).copied().map(SourceIx)
+    /// View→source conversion at the single library boundary. `None` for a view index that's
+    /// stale for the current filtered set.
+    pub(crate) fn source(&self, view: usize) -> Option<usize> {
+        self.visible_rows.get(view).copied()
     }
 
-    /// Rebuild `visible_rows` from the active column filters.
     fn recompute_visible(&mut self) {
-        self.visible_rows = compute_visible_rows(&self.grid.rows, &self.filters);
+        self.visible_rows = compute_visible_rows(&self.rows, &self.filters);
     }
 
-    /// The distinct values in a data column, sorted — the universe the filter checklist offers.
-    /// Drawn from *all* source rows (not just visible ones) so an excluded value can be
-    /// re-checked to bring its rows back.
+    /// The distinct values in a data column, sorted. Drawn from *all* source rows, so an excluded
+    /// value can be re-checked to bring its rows back.
     pub(crate) fn column_values(&self, data_col: usize) -> Vec<SharedString> {
-        let mut seen = BTreeSet::new();
-        for row in &self.grid.rows {
-            if let Some(v) = row.get(data_col) {
-                seen.insert(v.clone());
-            }
-        }
-        seen.into_iter().collect()
+        self.rows
+            .iter()
+            .filter_map(|row| row.get(data_col).cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
-    /// Toggle a single value in/out of a column's excluded set, then renarrow. Drops any
-    /// in-flight edit, whose cell may have just been filtered out from under the editor.
+    /// Toggle a value in/out of a column's excluded set, then renarrow. Drops any in-flight edit,
+    /// whose cell may have just been filtered out from under the editor.
     pub(crate) fn toggle_filter_value(&mut self, data_col: usize, value: &SharedString) {
         if let Some(excluded) = self.filters.get_mut(data_col)
             && !excluded.remove(value)
@@ -175,29 +110,24 @@ impl QrateTableDelegate {
         self.editing = EditState::Idle;
     }
 
-    /// Whether a value is currently excluded (unchecked) for a column.
     pub(crate) fn is_filter_excluded(&self, data_col: usize, value: &SharedString) -> bool {
         self.filters
             .get(data_col)
             .is_some_and(|e| e.contains(value))
     }
 
-    /// Clear a column's filter entirely (re-check every value), then renarrow.
+    /// Re-check every value in a column, then renarrow.
     pub(crate) fn clear_column_filter(&mut self, data_col: usize) {
         if let Some(excluded) = self.filters.get_mut(data_col) {
-            if excluded.is_empty() {
-                return;
-            }
             excluded.clear();
         }
         self.recompute_visible();
         self.editing = EditState::Idle;
     }
 
-    /// Exclude *every* value in a column (uncheck all — the checklist's "Clear" affordance),
-    /// then renarrow. Rows reappear as values are re-checked or the filter is cleared.
+    /// Uncheck every value in a column, then renarrow.
     pub(crate) fn exclude_all_in_column(&mut self, data_col: usize) {
-        let all: HashSet<SharedString> = self.column_values(data_col).into_iter().collect();
+        let all = self.column_values(data_col).into_iter().collect();
         if let Some(excluded) = self.filters.get_mut(data_col) {
             *excluded = all;
         }
@@ -205,27 +135,49 @@ impl QrateTableDelegate {
         self.editing = EditState::Idle;
     }
 
-    /// Whether a column currently narrows the view (has any excluded value) — drives the
-    /// header's filter-icon "active" state.
+    /// Whether a column currently narrows the view — drives the header affordance's active state.
     pub(crate) fn column_has_filter(&self, data_col: usize) -> bool {
         self.filters.get(data_col).is_some_and(|e| !e.is_empty())
     }
 
-    /// Cells in the *visible* set matching `needle`, as `(view_row, data_col)` in view order —
-    /// ready for `set_selected_cell`/`scroll_to_row` after the pinned `+1` on the column. Global
-    /// find scans the filtered view so search and filter compose (find within what's shown).
-    pub(crate) fn search_matches(&self, needle: &str) -> Vec<(usize, usize)> {
-        find_matches(
-            &self.grid.rows,
-            &self.visible_rows,
-            self.columns.len(),
-            needle,
-        )
+    /// Whether a column shows a filter dropdown at all.
+    pub(crate) fn column_filter_enabled(&self, data_col: usize) -> bool {
+        self.filters_enabled.get(data_col).copied().unwrap_or(false)
     }
 
-    /// Replaces the whole column/row model with real project data (headers →
-    /// columns, one grid cell per row cell). Clears any selection/edit state,
-    /// which may index into the old shape.
+    /// Switch a column's filter dropdown on or off. Switching off also clears whatever that
+    /// column was excluding, so a hidden filter can't keep narrowing the view invisibly.
+    pub fn set_column_filter_enabled(&mut self, data_col: usize, enabled: bool) {
+        if let Some(slot) = self.filters_enabled.get_mut(data_col) {
+            *slot = enabled;
+        }
+        if !enabled {
+            self.clear_column_filter(data_col);
+        }
+    }
+
+    /// Apply saved per-column settings, looked up by each column's stable `c{ix}` key. Takes a
+    /// closure rather than the settings type so this crate doesn't depend on its shape, and so the
+    /// `c{ix}` convention stays owned by the delegate that mints it.
+    pub fn apply_column_settings(&mut self, filter_enabled: impl Fn(&str) -> bool) {
+        let wanted: Vec<bool> = self
+            .columns
+            .iter()
+            .map(|c| filter_enabled(c.key.as_ref()))
+            .collect();
+        for (data_col, enabled) in wanted.into_iter().enumerate() {
+            self.set_column_filter_enabled(data_col, enabled);
+        }
+    }
+
+    /// Cells in the *visible* set matching `needle`, as `(view_row, data_col)` in view order —
+    /// ready for `set_selected_cell`/`scroll_to_row` after the pinned `+1` on the column.
+    pub(crate) fn search_matches(&self, needle: &str) -> Vec<(usize, usize)> {
+        find_matches(&self.rows, &self.visible_rows, self.columns.len(), needle)
+    }
+
+    /// Replaces the whole column/row model with real project data. Clears any selection/edit
+    /// state, which may index into the old shape.
     pub fn set_data(&mut self, headers: &[String], rows: &[Vec<String>]) {
         self.columns = headers
             .iter()
@@ -237,25 +189,23 @@ impl QrateTableDelegate {
                     .movable(true)
             })
             .collect();
-        self.grid.rows = rows
+        self.rows = rows
             .iter()
             .map(|r| r.iter().map(|c| SharedString::from(c.clone())).collect())
             .collect();
         self.selection = None;
         self.editing = EditState::Idle;
-        // Fresh data: no filters, view is the identity over every source row.
         self.filters = vec![HashSet::new(); self.columns.len()];
-        self.visible_rows = (0..self.grid.rows_count()).collect();
-        // Stale — indexes into the old row set. Cleared until `TablePanel` re-resolves and
-        // calls `set_image_paths`; until then rows show the Details panel's no-image fallback.
-        self.image_paths = vec![None; self.grid.rows_count()];
+        self.filters_enabled = vec![false; self.columns.len()];
+        self.visible_rows = (0..self.rows.len()).collect();
+        // Stale — indexes into the old row set; `TablePanel` re-resolves right after.
+        self.image_paths = vec![None; self.rows.len()];
     }
 
-    /// Replaces the per-row resolved image paths — called by `TablePanel` right after
-    /// `set_data`, once it has resolved the project's files folder (`table::photos`). A length
-    /// mismatch (stale call racing a newer `set_data`) is ignored rather than panicking.
+    /// Replaces the per-row resolved image paths. A length mismatch (a stale call racing a newer
+    /// `set_data`) is ignored rather than panicking.
     pub fn set_image_paths(&mut self, paths: Vec<Option<PathBuf>>) {
-        if paths.len() == self.grid.rows_count() {
+        if paths.len() == self.rows.len() {
             self.image_paths = paths;
         }
     }
@@ -268,7 +218,7 @@ impl QrateTableDelegate {
     /// Cell text at `(row, col)`, if in range. `col` is a data-column index, not shifted for the
     /// pinned row-index column.
     pub fn cell(&self, row: usize, col: usize) -> Option<&SharedString> {
-        self.grid.cell(row, col)
+        self.rows.get(row).and_then(|r| r.get(col))
     }
 
     /// The header text of a data column, for the filter dropdown's title.
@@ -280,7 +230,9 @@ impl QrateTableDelegate {
     }
 
     pub(crate) fn set_cell(&mut self, row: usize, col: usize, value: SharedString) {
-        self.grid.set_cell(row, col, value);
+        if let Some(cell) = self.rows.get_mut(row).and_then(|r| r.get_mut(col)) {
+            *cell = value;
+        }
     }
 
     /// The current selection — a cell, a whole row, or a whole column.
@@ -289,8 +241,7 @@ impl QrateTableDelegate {
     }
 
     /// The row's cells as `(column header, cell text)` pairs, in display order — what the
-    /// Details panel shows. Iterating `self.columns` directly keeps the pinned row-index
-    /// column's `+1` offset (see `column`) contained in this crate.
+    /// Details panel shows.
     pub fn row_fields(&self, row: usize) -> Vec<(SharedString, SharedString)> {
         self.columns
             .iter()
@@ -298,7 +249,7 @@ impl QrateTableDelegate {
             .map(|(c, col)| {
                 (
                     col.name.clone(),
-                    self.grid.cell(row, c).cloned().unwrap_or_default(),
+                    self.cell(row, c).cloned().unwrap_or_default(),
                 )
             })
             .collect()
@@ -312,17 +263,16 @@ impl QrateTableDelegate {
         }
     }
 
-    /// Update column widths from a `ColumnWidthsChanged` event. The event's vec is over table
-    /// columns, so index 0 is the pinned row-index column — skipped.
+    /// Update column widths from a `ColumnWidthsChanged` event. Index 0 is the pinned row-index
+    /// column — skipped.
     pub(crate) fn set_column_widths(&mut self, widths: &[Pixels]) {
         for (col, w) in self.columns.iter_mut().zip(widths.iter().skip(1)) {
             col.width = *w;
         }
     }
 
-    /// Apply a saved layout: reorder columns (and every row's cells, keeping lookups
-    /// positional) and set widths. Ignored unless the saved keys are exactly a permutation of
-    /// the current ones — a changed header set makes the layout stale.
+    /// Apply a saved layout: reorder columns (and every row's cells, keeping lookups positional)
+    /// and set widths. Ignored unless the saved keys are a permutation of the current ones.
     pub(crate) fn apply_column_layout(&mut self, layout: &ColumnLayout) {
         if layout.keys.len() != self.columns.len() || layout.widths.len() != layout.keys.len() {
             return;
@@ -347,22 +297,34 @@ impl QrateTableDelegate {
         for (col, w) in self.columns.iter_mut().zip(&layout.widths) {
             col.width = px(*w);
         }
-        for row in &mut self.grid.rows {
+        for row in &mut self.rows {
             if row.len() == perm.len() {
                 *row = perm.iter().map(|&i| row[i].clone()).collect();
             }
         }
-        // A filter belongs to its column's data, so it rides along with the reorder. Row order
-        // is untouched, so `visible_rows` stays valid — no recompute needed.
+        // Row order is untouched, so `visible_rows` stays valid — no recompute needed.
         if self.filters.len() == perm.len() {
             self.filters = perm.iter().map(|&i| self.filters[i].clone()).collect();
+        }
+        if self.filters_enabled.len() == perm.len() {
+            self.filters_enabled = perm.iter().map(|&i| self.filters_enabled[i]).collect();
+        }
+    }
+}
+
+/// Move every row's cell at `from` to position `to`, mirroring a column move so cell lookups
+/// stay positional (display order == storage order).
+fn move_col(rows: &mut [Vec<SharedString>], from: usize, to: usize) {
+    for row in rows {
+        if from < row.len() && to < row.len() {
+            let cell = row.remove(from);
+            row.insert(to, cell);
         }
     }
 }
 
 /// Source-row indices that pass every column's excluded-value filter, in order. Split out of the
-/// delegate (which needs a live gpui `App` for its editor entity) so the filtering logic is
-/// unit-testable on plain data. Fast path: no active filter → the identity mapping.
+/// delegate (which needs a live gpui `App`) so the logic is unit-testable on plain data.
 fn compute_visible_rows(
     rows: &[Vec<SharedString>],
     filters: &[HashSet<SharedString>],
@@ -380,8 +342,7 @@ fn compute_visible_rows(
 }
 
 /// Cells matching `needle` (case-insensitive substring) within the visible set, as
-/// `(view_row, data_col)` in view order. `cols` bounds the data columns scanned. Split out for
-/// the same unit-testability reason as [`compute_visible_rows`].
+/// `(view_row, data_col)` in view order. `cols` bounds the data columns scanned.
 fn find_matches(
     rows: &[Vec<SharedString>],
     visible: &[usize],
@@ -398,7 +359,7 @@ fn find_matches(
             if rows
                 .get(source)
                 .and_then(|r| r.get(col))
-                .is_some_and(|c| search::cell_matches(c, &needle))
+                .is_some_and(|c| c.to_lowercase().contains(&needle))
             {
                 hits.push((view, col));
             }
@@ -449,17 +410,15 @@ impl TableDelegate for QrateTableDelegate {
         window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        // `row_ix` is a VIEW index; map it to the source row before touching any row-indexed
-        // data. A stale view index (out of range) renders empty rather than panicking.
-        let Some(source) = self.source(ViewIx(row_ix)) else {
+        // `row_ix` is a VIEW index; map it to the source row before touching row-indexed data.
+        let Some(source) = self.source(row_ix) else {
             return div().into_any_element();
         };
         if col_ix == row_index::COL_IX {
-            // Show the source row number — the row's stable identity, not its shifting position
-            // within a filtered view.
-            row_index::render_td(source.0, cx)
+            // The source row number — the row's stable identity, not its view position.
+            row_index::render_td(source, cx)
         } else {
-            cell::render_cell(self, source.0, col_ix - 1, window, cx)
+            cell::render_cell(self, source, col_ix - 1, window, cx)
         }
     }
 
@@ -480,15 +439,17 @@ impl TableDelegate for QrateTableDelegate {
         }
         let col = self.columns.remove(from);
         self.columns.insert(to, col);
-        self.grid.move_col(from, to);
-        // The column's filter moves with it (row order is untouched, so `visible_rows` stays
-        // valid).
+        move_col(&mut self.rows, from, to);
+        // The column's filter (and whether it has one) moves with it; row order is untouched.
         if from < self.filters.len() && to < self.filters.len() {
             let f = self.filters.remove(from);
             self.filters.insert(to, f);
         }
-        // An in-flight edit indexes into the old column order — drop it rather than
-        // let its commit land in the wrong cell.
+        if from < self.filters_enabled.len() && to < self.filters_enabled.len() {
+            let e = self.filters_enabled.remove(from);
+            self.filters_enabled.insert(to, e);
+        }
+        // An in-flight edit indexes into the old column order — drop it.
         self.editing = EditState::Idle;
     }
 }
@@ -496,35 +457,6 @@ impl TableDelegate for QrateTableDelegate {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn grid(rows: &[&[&str]]) -> RowGrid {
-        RowGrid {
-            rows: rows
-                .iter()
-                .map(|r| {
-                    r.iter()
-                        .map(|c| SharedString::from(c.to_string()))
-                        .collect()
-                })
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn move_col_shifts_every_row() {
-        let mut g = grid(&[&["a", "b", "c"], &["d", "e", "f"]]);
-        g.move_col(0, 2);
-        assert_eq!(g.cell(0, 0).unwrap().as_ref(), "b");
-        assert_eq!(g.cell(0, 2).unwrap().as_ref(), "a");
-        assert_eq!(g.cell(1, 2).unwrap().as_ref(), "d");
-    }
-
-    #[test]
-    fn move_col_out_of_range_is_noop() {
-        let mut g = grid(&[&["a", "b"]]);
-        g.move_col(0, 5);
-        assert_eq!(g.cell(0, 0).unwrap().as_ref(), "a");
-    }
 
     fn rows(rows: &[&[&str]]) -> Vec<Vec<SharedString>> {
         rows.iter()
@@ -548,6 +480,21 @@ mod tests {
     }
 
     #[test]
+    fn move_col_shifts_every_row() {
+        let mut g = rows(&[&["a", "b", "c"], &["d", "e", "f"]]);
+        move_col(&mut g, 0, 2);
+        assert_eq!(g[0], rows(&[&["b", "c", "a"]])[0]);
+        assert_eq!(g[1], rows(&[&["e", "f", "d"]])[0]);
+    }
+
+    #[test]
+    fn move_col_out_of_range_is_noop() {
+        let mut g = rows(&[&["a", "b"]]);
+        move_col(&mut g, 0, 5);
+        assert_eq!(g[0], rows(&[&["a", "b"]])[0]);
+    }
+
+    #[test]
     fn no_filter_is_identity_view() {
         let data = rows(&[&["a", "x"], &["b", "y"], &["c", "z"]]);
         assert_eq!(
@@ -560,16 +507,20 @@ mod tests {
     fn excluding_a_value_hides_its_rows() {
         let data = rows(&[&["a", "x"], &["b", "y"], &["a", "z"]]);
         // Exclude "a" in column 0 → only the middle row (source 1) survives.
-        let visible = compute_visible_rows(&data, &filters(&[&["a"], &[]]));
-        assert_eq!(visible, vec![1]);
+        assert_eq!(
+            compute_visible_rows(&data, &filters(&[&["a"], &[]])),
+            vec![1]
+        );
     }
 
     #[test]
     fn filters_across_columns_are_anded() {
         let data = rows(&[&["a", "x"], &["b", "x"], &["b", "y"]]);
-        // Exclude "a" in col 0 and "y" in col 1 → source 0 (a) and source 2 (y) hidden.
-        let visible = compute_visible_rows(&data, &filters(&[&["a"], &["y"]]));
-        assert_eq!(visible, vec![1]);
+        // Exclude "a" in col 0 and "y" in col 1 → source 0 and source 2 hidden.
+        assert_eq!(
+            compute_visible_rows(&data, &filters(&[&["a"], &["y"]])),
+            vec![1]
+        );
     }
 
     #[test]
@@ -579,11 +530,10 @@ mod tests {
             &["banana", "yellow"],
             &["apricot", "red"],
         ]);
-        // Full view: "ap" hits source 0 col 0 and source 2 col 0.
         let all = compute_visible_rows(&data, &filters(&[&[], &[]]));
         assert_eq!(find_matches(&data, &all, 2, "AP"), vec![(0, 0), (2, 0)]);
-        // Hide the "apricot" row (exclude it in col 0): the search must not report it, and the
-        // surviving hit is addressed by its *view* row, not its source row.
+        // Hide the "apricot" row: the search must not report it, and the surviving hit is
+        // addressed by its *view* row, not its source row.
         let visible = compute_visible_rows(&data, &filters(&[&["apricot"], &[]]));
         assert_eq!(visible, vec![0, 1]);
         assert_eq!(find_matches(&data, &visible, 2, "ap"), vec![(0, 0)]);
@@ -595,40 +545,13 @@ mod tests {
         assert!(find_matches(&data, &[0], 1, "   ").is_empty());
     }
 
-    /// The bug this whole view/source split exists to prevent: editing a cell in a *filtered*
-    /// view must write to the source row the view position maps to — never to the row that
-    /// happens to share the view's numeric index.
+    /// The mapping every edit/selection path goes through: in a filtered view a view index and
+    /// its source index diverge, so `visible_rows[view]` is the only correct row to write.
     #[test]
-    fn edit_in_filtered_view_writes_source_row() {
-        let mut g = grid(&[
-            &["hide", "keep-0"],
-            &["show", "keep-1"],
-            &["hide", "keep-2"],
-            &["show", "keep-3"],
-        ]);
-        // Exclude "hide" in col 0 → visible = [1, 3] (sources), so view row 1 == source row 3.
-        let visible = compute_visible_rows(&g.rows, &filters(&[&["hide"], &[]]));
+    fn filtered_view_index_diverges_from_source_index() {
+        let g = rows(&[&["hide"], &["show"], &["hide"], &["show"]]);
+        let visible = compute_visible_rows(&g, &filters(&[&["hide"]]));
         assert_eq!(visible, vec![1, 3]);
-
-        let view_row = 1;
-        let source = visible[view_row];
-        assert_ne!(
-            view_row, source,
-            "test is meaningless unless view != source"
-        );
-
-        // The delegate's path: map view→source, then write at source.
-        g.set_cell(source, 1, SharedString::from("edited"));
-
-        assert_eq!(
-            g.cell(3, 1).unwrap().as_ref(),
-            "edited",
-            "wrote the mapped source row"
-        );
-        assert_eq!(
-            g.cell(1, 1).unwrap().as_ref(),
-            "keep-1",
-            "the row sharing the view index must be untouched"
-        );
+        assert_eq!(visible[1], 3, "view row 1 must resolve to source row 3");
     }
 }

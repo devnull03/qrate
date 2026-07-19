@@ -11,7 +11,6 @@ mod filter;
 mod panel;
 pub mod photos;
 mod row_index;
-mod search;
 
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 pub use panel::{Search, TablePanel};

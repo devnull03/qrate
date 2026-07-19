@@ -10,7 +10,7 @@ use gpui_component::{
 
 use crate::{
     TableStateHandle,
-    delegate::{ColumnLayout, QrateTableDelegate, Selection, TableChanged, ViewIx},
+    delegate::{ColumnLayout, QrateTableDelegate, Selection, TableChanged},
     editing, photos, row_index,
 };
 
@@ -33,6 +33,11 @@ pub struct TablePanel {
     _edit_sub: Subscription,
     /// Reloads the table when a different project is opened while this window is up.
     _project_sub: Subscription,
+    /// Which project's data is currently loaded. `CurrentProject` is mutated by *every*
+    /// project-scoped setting write, so `_project_sub` fires far more often than the project
+    /// actually changes; without this guard a column-settings toggle would re-run `set_data` and
+    /// wipe the user's active filters and selection.
+    loaded_project: Option<std::path::PathBuf>,
     /// Repaints on a user-scope settings change (e.g. the stripe toggle with no project open).
     /// The project-scope case already repaints via `_project_sub`, since writing a project
     /// setting mutates the `CurrentProject` global.
@@ -66,11 +71,17 @@ impl TablePanel {
         let mut delegate = QrateTableDelegate::new(editor.clone(), filter_search.clone());
         // Show the open project's data, restoring its saved column order/widths. Without a
         // project (dev launch straight into the main window) the table starts empty.
+        let mut loaded_project = None;
         if let Some(project) = cx.try_global::<settings::project::CurrentProject>() {
             delegate.set_data(&project.data.headers, &project.data.rows);
-            Self::restore_columns(&mut delegate, &project.file);
-            Self::resolve_images(&mut delegate, &project.data);
+            Self::apply_saved_layout(&mut delegate, &project.file);
+            delegate.set_image_paths(Self::resolve_images(&project.data));
+            loaded_project = Some(project.file.clone());
         }
+        let column_settings = settings::columns::load(cx);
+        delegate.apply_column_settings(|key| {
+            column_settings.get(key).is_some_and(|s| s.filter_enabled)
+        });
         let state = cx.new(|cx| {
             TableState::new(delegate, window, cx)
                 .cell_selectable(true)
@@ -119,16 +130,15 @@ impl TablePanel {
                         // filter change and cross-crate readers index the real data.
                         let col = *col - 1;
                         state.update(cx, |s, _| {
-                            if let Some(source) = s.delegate().source(ViewIx(*row)) {
-                                s.delegate_mut().selection =
-                                    Some(Selection::Cell { row: source.0, col });
+                            if let Some(row) = s.delegate().source(*row) {
+                                s.delegate_mut().selection = Some(Selection::Cell { row, col });
                             }
                         });
                     }
                     TableEvent::SelectRow(row) => {
                         state.update(cx, |s, _| {
-                            if let Some(source) = s.delegate().source(ViewIx(*row)) {
-                                s.delegate_mut().selection = Some(Selection::Row(source.0));
+                            if let Some(row) = s.delegate().source(*row) {
+                                s.delegate_mut().selection = Some(Selection::Row(row));
                             }
                         });
                     }
@@ -145,8 +155,8 @@ impl TablePanel {
                         // writes back to the correct data row in a filtered view.
                         let (view, col) = (*row, *col - 1);
                         state.update(cx, |s, cx| {
-                            if let Some(source) = s.delegate().source(ViewIx(view)) {
-                                editing::start(s.delegate_mut(), source.0, col, window, cx);
+                            if let Some(source) = s.delegate().source(view) {
+                                editing::start(s.delegate_mut(), source, col, window, cx);
                             }
                         });
                     }
@@ -166,20 +176,35 @@ impl TablePanel {
         let _project_sub =
             cx.observe_global::<settings::project::CurrentProject>(|this: &mut Self, cx| {
                 let project = cx.global::<settings::project::CurrentProject>();
+                let file = project.file.clone();
+                // Same project, so this fired for a project-scoped *setting* write. Re-apply the
+                // per-column settings and repaint — reloading the data here would throw away the
+                // user's filters, edit state and selection on every settings toggle.
+                if this.loaded_project.as_ref() == Some(&file) {
+                    let column_settings = settings::columns::load(cx);
+                    this.state.update(cx, |state, cx| {
+                        state.delegate_mut().apply_column_settings(|key| {
+                            column_settings.get(key).is_some_and(|s| s.filter_enabled)
+                        });
+                        state.refresh(cx);
+                        cx.emit(TableChanged);
+                        cx.notify();
+                    });
+                    cx.notify();
+                    return;
+                }
+
                 let (headers, rows) = (project.data.headers.clone(), project.data.rows.clone());
-                let saved = settings::project::read_setting(&project.file, COLUMN_LAYOUT_KEY)
-                    .ok()
-                    .flatten();
-                let image_paths =
-                    photos::resolve_row_images(&headers, &rows, &Self::files_folder(&project.data));
+                let image_paths = Self::resolve_images(&project.data);
+                this.loaded_project = Some(file.clone());
+                let column_settings = settings::columns::load(cx);
                 this.state.update(cx, |state, cx| {
                     state.delegate_mut().set_data(&headers, &rows);
-                    if let Some(layout) =
-                        saved.and_then(|json| serde_json::from_str::<ColumnLayout>(&json).ok())
-                    {
-                        state.delegate_mut().apply_column_layout(&layout);
-                    }
+                    Self::apply_saved_layout(state.delegate_mut(), &file);
                     state.delegate_mut().set_image_paths(image_paths);
+                    state.delegate_mut().apply_column_settings(|key| {
+                        column_settings.get(key).is_some_and(|s| s.filter_enabled)
+                    });
                     state.refresh(cx);
                     cx.emit(TableChanged);
                     cx.notify();
@@ -214,6 +239,7 @@ impl TablePanel {
         Self {
             focus_handle: cx.focus_handle(),
             state,
+            loaded_project,
             _edit_sub,
             _project_sub,
             _settings_sub,
@@ -286,7 +312,7 @@ impl TablePanel {
     }
 
     /// Apply the project's saved column layout onto freshly loaded data, if any.
-    fn restore_columns(delegate: &mut QrateTableDelegate, file: &std::path::Path) {
+    fn apply_saved_layout(delegate: &mut QrateTableDelegate, file: &std::path::Path) {
         let Ok(Some(json)) = settings::project::read_setting(file, COLUMN_LAYOUT_KEY) else {
             return;
         };
@@ -295,35 +321,32 @@ impl TablePanel {
         }
     }
 
-    /// The project's persisted files folder (empty if none was linked) — cached settings values
-    /// loaded by `settings::project::load_project_file`, no disk I/O here.
-    fn files_folder(data: &settings::project::ProjectData) -> String {
-        data.values
+    /// Each row's image path, resolved against the project's files folder. Re-walks the folder
+    /// from disk every call — qrate never copies files in, so disk is the only source of truth.
+    fn resolve_images(data: &settings::project::ProjectData) -> Vec<Option<std::path::PathBuf>> {
+        let folder = data
+            .values
             .get(settings::project::FILES_FOLDER_KEY)
             .map(|v| v.text().to_string())
-            .unwrap_or_default()
-    }
-
-    /// Resolves and stores each row's image path against the project's files folder. Re-walks
-    /// the folder from disk every call (project open, project switch) — qrate never copies files
-    /// in, so this is the only source of truth for where they live right now.
-    fn resolve_images(delegate: &mut QrateTableDelegate, data: &settings::project::ProjectData) {
-        let folder = Self::files_folder(data);
-        let paths = photos::resolve_row_images(&data.headers, &data.rows, &folder);
-        delegate.set_image_paths(paths);
+            .unwrap_or_default();
+        photos::resolve_row_images(&data.headers, &data.rows, &folder)
     }
 
     /// Save the current column order + widths into the open project's `.qrate` file
     /// (debounced, off the UI thread). Without a project there's nowhere sensible to put it.
-    fn persist_columns(state: &Entity<TableState<QrateTableDelegate>>, cx: &App) {
-        let Some(project) = cx.try_global::<settings::project::CurrentProject>() else {
+    fn persist_columns(state: &Entity<TableState<QrateTableDelegate>>, cx: &mut App) {
+        let Some(file) = cx
+            .try_global::<settings::project::CurrentProject>()
+            .map(|p| p.file.clone())
+        else {
             return;
         };
         let layout = state.read(cx).delegate().column_layout();
         let Ok(json) = serde_json::to_string(&layout) else {
             return;
         };
-        settings::project::queue_write(&project.file, COLUMN_LAYOUT_KEY, &json, cx);
+        settings::project::queue_write(&file, COLUMN_LAYOUT_KEY, &json, cx);
+        settings::dirty::mark(settings::dirty::COLUMN_LAYOUT, cx);
     }
 }
 
