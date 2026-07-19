@@ -4,7 +4,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 use gpui_component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
+    ActiveTheme as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     popover::Popover,
@@ -80,31 +80,22 @@ fn columns_page(cx: &App) -> SettingPage {
         let (get_key, set_key, remove_key) = (key.clone(), key.clone(), key.clone());
         page = page.group(
             SettingGroup::new()
-                // A full-custom row, not a group title: the name has to sit beside its Remove
-                // button, and a group title is text-only.
-                .item(SettingItem::render(move |_opts, _window, cx: &mut App| {
+                // The column name is the group *title* so it also lists as a sub-entry under
+                // "Columns" in the sidebar, which only picks up titled groups. That makes it
+                // text-only, so Remove gets its own right-aligned row directly beneath it.
+                .title(name)
+                .item(SettingItem::render(move |_opts, _window, _cx| {
                     let remove_key = remove_key.clone();
-                    h_flex()
-                        .w_full()
-                        .justify_between()
-                        .items_center()
-                        .child(
-                            div()
-                                .text_base()
-                                .font_semibold()
-                                .text_color(cx.theme().foreground)
-                                .child(name.clone()),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!("remove-{remove_key}")))
-                                .icon(IconName::Delete)
-                                .ghost()
-                                .xsmall()
-                                .tooltip("Remove from settings")
-                                .on_click(move |_, _, cx: &mut App| {
-                                    columns::remove(&remove_key, cx);
-                                }),
-                        )
+                    h_flex().w_full().justify_end().child(
+                        Button::new(SharedString::from(format!("remove-{remove_key}")))
+                            .icon(IconName::Delete)
+                            .label("Remove")
+                            .ghost()
+                            .xsmall()
+                            .on_click(move |_, _, cx: &mut App| {
+                                columns::remove(&remove_key, cx);
+                            }),
+                    )
                 }))
                 .item(
                     SettingItem::new(
