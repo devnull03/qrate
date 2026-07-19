@@ -20,7 +20,6 @@ use gpui_component::{
     ActiveTheme as _, StyledExt, TitleBar, h_flex,
     input::InputState,
     label::Label,
-    scroll::ScrollableElement,
     setting::{SettingField, SettingItem, SettingPage, Settings},
     v_flex,
 };
@@ -528,7 +527,7 @@ impl Render for SettingsWindow {
             .child(
                 div()
                     .flex_1()
-                    .overflow_y_scrollbar()
+                    .min_h_0()
                     .child(Settings::new("app-settings").pages((self.build_pages)())),
             )
     }
