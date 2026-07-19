@@ -1,5 +1,16 @@
-use gpui::{App, SharedString};
-use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    App, InteractiveElement as _, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _, div, px,
+};
+use gpui_component::{
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
+    button::{Button, ButtonVariants as _},
+    h_flex,
+    popover::Popover,
+    setting::{SettingField, SettingGroup, SettingItem, SettingPage},
+    v_flex,
+};
 use settings::{Setting, columns, project::CurrentProject};
 
 pub fn build_pages(cx: &App) -> Vec<SettingPage> {
@@ -19,17 +30,17 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
 }
 
 /// Per-column settings, project-scoped. The page starts empty: a column is added by name, which
-/// unlocks its settings. Built from `&App` rather than a fixed list because the columns depend on
-/// whichever project is open.
+/// is what surfaces its settings. Built from `&App` rather than a fixed list because the columns
+/// depend on whichever project is open.
 ///
-/// These use `SettingField` directly rather than the `Setting::Switch` enum — that one's `key` is
-/// `&'static str` and routes through the user/project scope helpers, while a column key is
-/// computed at runtime and is always project-scoped.
+/// These use `SettingField`/`SettingItem` directly rather than the `Setting::Switch` enum — that
+/// one's `key` is `&'static str` and routes through the user/project scope helpers, while a column
+/// key is computed at runtime and is always project-scoped.
 fn columns_page(cx: &App) -> SettingPage {
     let Some(project) = cx.try_global::<CurrentProject>() else {
         return SettingPage::new("Columns").group(
             SettingGroup::new()
-                .title("No project open")
+                .title("Add column")
                 .description("Open a project to configure its columns."),
         );
     };
@@ -44,47 +55,57 @@ fn columns_page(cx: &App) -> SettingPage {
         .map(|(ix, name)| (format!("c{ix}"), SharedString::from(name.clone())))
         .collect();
     let tracked = columns::tracked(cx);
-    let label_for = |key: &str| {
-        headers
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, name)| name.clone())
-            .unwrap_or_else(|| SharedString::from(key.to_string()))
-    };
-
-    let unadded: Vec<(SharedString, SharedString)> = headers
+    let unadded: Vec<(String, SharedString)> = headers
         .iter()
         .filter(|(key, _)| !tracked.contains(key))
-        .map(|(key, name)| (SharedString::from(key.clone()), name.clone()))
+        .cloned()
         .collect();
 
-    let mut page = SettingPage::new("Columns").group(
-        SettingGroup::new()
-            .title("Add a column")
-            .description("Pick a column to unlock its settings.")
-            .item(SettingItem::new(
-                "Column",
-                SettingField::dropdown(
-                    unadded,
-                    // Nothing is "selected" — this is an action dressed as a picker, so it always
-                    // reads back empty and re-offers every remaining column.
-                    |_| SharedString::default(),
-                    |key: SharedString, cx: &mut App| {
-                        if !key.is_empty() {
-                            columns::add(key.as_ref(), cx);
-                        }
-                    },
-                ),
-            )),
-    );
+    // Heading + one subtitle row carrying the Add button on its right.
+    let mut page = SettingPage::new("Columns").group(SettingGroup::new().title("Add column").item(
+        SettingItem::new(
+            "Add a column to change its settings",
+            SettingField::element(move |_opts: &_, _window: &mut _, _cx: &mut _| {
+                add_column_button(unadded.clone())
+            }),
+        ),
+    ));
 
-    // One group per added column. The closures capture the owned key, which is why these can't be
-    // the `'static`-keyed `Setting::Switch`.
     for key in tracked {
+        let name = headers
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| SharedString::from(key.clone()));
         let (get_key, set_key, remove_key) = (key.clone(), key.clone(), key.clone());
         page = page.group(
             SettingGroup::new()
-                .title(label_for(&key))
+                // A full-custom row, not a group title: the name has to sit beside its Remove
+                // button, and a group title is text-only.
+                .item(SettingItem::render(move |_opts, _window, cx: &mut App| {
+                    let remove_key = remove_key.clone();
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_base()
+                                .font_semibold()
+                                .text_color(cx.theme().foreground)
+                                .child(name.clone()),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("remove-{remove_key}")))
+                                .icon(IconName::Delete)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Remove from settings")
+                                .on_click(move |_, _, cx: &mut App| {
+                                    columns::remove(&remove_key, cx);
+                                }),
+                        )
+                }))
                 .item(
                     SettingItem::new(
                         "Enable filter",
@@ -96,22 +117,58 @@ fn columns_page(cx: &App) -> SettingPage {
                         ),
                     )
                     .description("Show a filter dropdown in this column's header."),
-                )
-                .item(
-                    SettingItem::new(
-                        "Remove",
-                        SettingField::switch(
-                            |_| false,
-                            move |on: bool, cx: &mut App| {
-                                if on {
-                                    columns::remove(&remove_key, cx);
-                                }
-                            },
-                        ),
-                    )
-                    .description("Drop this column from the page, discarding its settings."),
                 ),
         );
     }
     page
+}
+
+/// The Add button and its column list. A popover rather than a `Dropdown` so the list can scroll
+/// and so the trigger reads as an action rather than a value being picked.
+fn add_column_button(unadded: Vec<(String, SharedString)>) -> impl gpui::IntoElement {
+    Popover::new("add-column")
+        .trigger(
+            Button::new("add-column-btn")
+                .icon(IconName::Plus)
+                .label("Add")
+                .outline()
+                .xsmall(),
+        )
+        .content(move |_state, _window, cx| {
+            let (hover, muted) = (cx.theme().secondary_hover, cx.theme().muted_foreground);
+            let radius = cx.theme().radius;
+            let popover = cx.entity();
+            let rows: Vec<_> = unadded.clone();
+            v_flex()
+                .id("add-column-list")
+                .w(px(220.))
+                .max_h(px(280.))
+                // `overflow_y_scroll` only — `overflow_hidden` would set *both* axes and silently
+                // undo it.
+                .overflow_y_scroll()
+                .when(rows.is_empty(), |list| {
+                    list.child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .text_color(muted)
+                            .child("Every column has been added"),
+                    )
+                })
+                .children(rows.into_iter().map(move |(key, label)| {
+                    let popover = popover.clone();
+                    div()
+                        .id(SharedString::from(format!("add-{key}")))
+                        .px_2()
+                        .py_1()
+                        .rounded(radius)
+                        .cursor_pointer()
+                        .hover(|r| r.bg(hover))
+                        .child(label)
+                        .on_click(move |_, window, cx: &mut App| {
+                            columns::add(&key, cx);
+                            popover.update(cx, |state, cx| state.dismiss(window, cx));
+                        })
+                }))
+        })
 }
