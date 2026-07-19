@@ -7,12 +7,14 @@
 mod cell;
 mod delegate;
 mod editing;
+mod filter;
 mod panel;
 pub mod photos;
 mod row_index;
+mod search;
 
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
-pub use panel::TablePanel;
+pub use panel::{Search, TablePanel};
 
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
 pub const TABLE_STRIPES_KEY: &str = "table_stripes";

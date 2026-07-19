@@ -8,7 +8,10 @@ use gpui_component::{input::Input, table::TableState};
 
 use crate::{delegate::QrateTableDelegate, editing::EditState};
 
-/// `col_ix` is a data-column index, not shifted for the pinned row-index column.
+/// `row_ix` is a source (not view) row index — `render_td` maps the library's view index
+/// through `visible_rows` before calling here, so the edit-in-progress check and the text
+/// lookup both key off source data. `col_ix` is a data-column index, not shifted for the pinned
+/// row-index column.
 pub(crate) fn render_cell(
     delegate: &mut QrateTableDelegate,
     row_ix: usize,
