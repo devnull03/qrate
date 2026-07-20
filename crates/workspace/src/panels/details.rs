@@ -242,13 +242,13 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// Near-fullscreen image overlay contents: the photo with scroll-to-zoom and drag-to-pan. A
-/// tiny stateful view because the transform has to survive the dialog's re-renders — the
-/// dialog's content builder runs every frame, so a plain closure couldn't hold accumulated
-/// zoom/offset.
+/// Full-window image overlay contents: the photo (fit-to-window, then zoomable/pannable) with the
+/// filename top-left and zoom/close controls top-right. A stateful view because the transform has
+/// to survive the dialog's re-renders — the content builder runs every frame, so a plain closure
+/// couldn't hold accumulated zoom/offset.
 struct ImageViewer {
     path: PathBuf,
-    /// 1.0 = fit-to-frame (`Contain`); scroll wheel scales up to 8×.
+    /// 1.0 = fit-to-window (`Contain`); scales up to 8×.
     zoom: f32,
     /// Pan translation from the centered position.
     offset: Point<Pixels>,
@@ -256,23 +256,42 @@ struct ImageViewer {
     drag_from: Option<Point<Pixels>>,
 }
 
+impl ImageViewer {
+    /// Clamp to [1, 8] and recenter at fit — below 1 there's nothing to pan to, so a stray offset
+    /// would just push the fit image off-frame.
+    fn set_zoom(&mut self, zoom: f32) {
+        self.zoom = zoom.clamp(1.0, 8.0);
+        if self.zoom <= 1.0 {
+            self.offset = Point::default();
+        }
+    }
+}
+
 impl Render for ImageViewer {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (zoom, offset) = (self.zoom, self.offset);
+        let name: SharedString = self
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Image")
+            .to_string()
+            .into();
+        let pill = cx.theme().background.opacity(0.75);
+
         div()
             .id("image-viewer")
             .size_full()
+            .relative()
             .overflow_hidden()
-            .flex()
-            .items_center()
-            .justify_center()
+            // Any scroll zooms — covers a trackpad's pixel deltas, a wheel's line deltas, and
+            // ctrl+scroll alike (drag is what pans, so scroll is free to mean zoom).
             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
-                let dy = f32::from(ev.delta.pixel_delta(px(20.)).y);
-                this.zoom = (this.zoom * (1.0 + dy * 0.002)).clamp(1.0, 8.0);
-                // Back at fit there's nothing to pan to — recenter so the image can't drift off.
-                if this.zoom <= 1.0 {
-                    this.offset = Point::default();
-                }
+                let step = match ev.delta {
+                    ScrollDelta::Lines(d) => d.y * 0.1,
+                    ScrollDelta::Pixels(d) => f32::from(d.y) * 0.005,
+                };
+                this.set_zoom(this.zoom * (1.0 + step));
                 cx.notify();
             }))
             .on_mouse_down(
@@ -297,47 +316,111 @@ impl Render for ImageViewer {
                     cx.notify();
                 }),
             )
-            // `relative` (not `absolute`): the img keeps its centered in-flow position and
-            // `left`/`top` just nudge it, so pan is an offset from center rather than absolute
-            // coordinates we'd have to derive from the (unknown-at-build-time) frame size.
             .child(
-                img(self.path.clone())
-                    .relative()
-                    .w(relative(zoom))
-                    .h(relative(zoom))
-                    .left(offset.x)
-                    .top(offset.y)
-                    .object_fit(ObjectFit::Contain),
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        // `flex_shrink_0` is load-bearing: as a flex child the img would otherwise
+                        // shrink back to the container on the main axis, cancelling every
+                        // `relative(zoom)` past 1 — that was the "zoom does nothing" bug. `relative`
+                        // position + `left`/`top` pan it as an offset from the centered position.
+                        img(self.path.clone())
+                            .flex_shrink_0()
+                            .relative()
+                            .w(relative(zoom))
+                            .h(relative(zoom))
+                            .left(offset.x)
+                            .top(offset.y)
+                            .object_fit(ObjectFit::Contain),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_2()
+                    .left_2()
+                    .px_2()
+                    .py_1()
+                    .rounded(cx.theme().radius)
+                    .bg(pill)
+                    .child(name),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_2()
+                    .right_2()
+                    .flex()
+                    .gap_1()
+                    .p_1()
+                    .rounded(cx.theme().radius)
+                    .bg(pill)
+                    .child(
+                        Button::new("zoom-out")
+                            .icon(IconName::Minus)
+                            .ghost()
+                            .small()
+                            .tooltip("Zoom out")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_zoom(this.zoom / 1.25);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("zoom-in")
+                            .icon(IconName::Plus)
+                            .ghost()
+                            .small()
+                            .tooltip("Zoom in")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_zoom(this.zoom * 1.25);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("close-viewer")
+                            .icon(IconName::Close)
+                            .ghost()
+                            .small()
+                            .tooltip("Close")
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    ),
             )
     }
 }
 
-/// Opens the photo in a ~90% viewport dialog overlay with zoom/pan. Esc, the close button, or an
-/// overlay click dismiss it; the transform lives in the `ImageViewer` entity so it resets per open.
+/// Opens the photo in a transparent full-window dialog overlay with zoom/pan. Esc or an overlay
+/// click dismiss it; the transform lives in the `ImageViewer` entity so it resets per open. The
+/// dialog card is stripped to transparent and sized to the viewport so only the image and its
+/// controls show, and nothing spills off-screen (the image is `Contain`-fit within the window).
 fn open_image_viewer(path: PathBuf, window: &mut Window, cx: &mut App) {
     let viewer = cx.new(|_| ImageViewer {
-        path: path.clone(),
+        path,
         zoom: 1.0,
         offset: Point::default(),
         drag_from: None,
     });
-    let title: SharedString = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("Image")
-        .to_string()
-        .into();
+    let clear = gpui::hsla(0., 0., 0., 0.);
     window.open_dialog(cx, move |dialog, window, _| {
         let vp = window.viewport_size();
         let viewer = viewer.clone();
         dialog
-            .title(title.clone())
+            .overlay(true)
             .overlay_closable(true)
-            .close_button(true)
+            .close_button(false)
             .keyboard(true)
-            .w(vp.width * 0.9)
-            .max_w(vp.width * 0.9)
-            .content(move |content, _, _| content.h(vp.height * 0.85).child(viewer.clone()))
+            // Strip the card to a transparent, edge-to-edge, top-anchored frame so it reads as a
+            // bare image over the dimmed backdrop rather than a centered panel (which overflowed).
+            .p_0()
+            .bg(clear)
+            .border_color(clear)
+            .margin_top(px(0.))
+            .w(vp.width)
+            .max_w(vp.width)
+            .content(move |content, _, _| content.w(vp.width).h(vp.height).child(viewer.clone()))
     });
 }
 
