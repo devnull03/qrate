@@ -8,6 +8,7 @@ mod cell;
 mod delegate;
 mod editing;
 mod filter;
+mod floating;
 mod panel;
 pub mod photos;
 mod row_index;
@@ -18,13 +19,27 @@ pub use panel::{Search, TablePanel};
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
 pub const TABLE_STRIPES_KEY: &str = "table_stripes";
 
-use gpui::{App, Global, WeakEntity};
+use gpui::{App, Bounds, Global, Pixels, WeakEntity, px, size};
 use gpui_component::table::TableState;
 
 /// Global handle to the live table state, so cross-crate status-bar items (the fake-data button
 /// and the selected-cell widget in the `app` crate) can reach the table.
 pub struct TableStateHandle(pub WeakEntity<TableState<QrateTableDelegate>>);
 impl Global for TableStateHandle {}
+
+/// The table area's window-space rectangle, measured each frame (see `panel.rs`). The floating
+/// cell editor caps its wrap width to this and clamps its position to it, so a long value wraps
+/// within the panel instead of scrolling sideways and the box never spills over a side panel.
+pub(crate) struct TableViewportBounds(pub Bounds<Pixels>);
+impl Global for TableViewportBounds {}
+
+impl Default for TableViewportBounds {
+    /// A rect large enough to be a no-op clamp until the first real measurement lands (editing
+    /// can't start before the panel has rendered once anyway).
+    fn default() -> Self {
+        Self(Bounds::new(Default::default(), size(px(4000.), px(4000.))))
+    }
+}
 
 /// Persist the open project's table data to its `.qrate` file, synchronously, and clear the
 /// `PROJECT_DATA` dirty mark. No-op with no project open, no live table, or a blank project. Runs
