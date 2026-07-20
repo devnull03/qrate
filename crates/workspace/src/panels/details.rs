@@ -172,10 +172,12 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
     div()
         .relative()
         .size_full()
-        // Flex item in `resizable_panel`: without this its min-content width floors at the
-        // photo's intrinsic pixels, so the frame never narrows and `Contain` never re-fits the
-        // width. The horizontal twin of the `min_h_0` the fields column relies on below.
+        // Flex item in `resizable_panel`: without these its min-content size floors at the
+        // photo's intrinsic pixels, so the frame never shrinks below the image and `Contain`
+        // never re-fits — a tall or wide photo overflows the pane. `min_w_0`/`min_h_0` drop that
+        // floor on each axis so the frame tracks the pane and the image letterboxes to fit.
         .min_w_0()
+        .min_h_0()
         .rounded(cx.theme().radius)
         .border_1()
         .border_color(cx.theme().border)
