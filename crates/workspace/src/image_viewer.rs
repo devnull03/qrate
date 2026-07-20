@@ -85,6 +85,9 @@ impl Render for ImageViewer {
             .absolute()
             .size_full()
             .overflow_hidden()
+            // Register an opaque hitbox over the whole overlay so clicks and scrolls land here
+            // instead of falling through to the table painted behind it.
+            .occlude()
             // Dim what's behind so the photo reads as the focus.
             .bg(cx.theme().background.opacity(0.9))
             .on_key_down(cx.listener(|_, ev: &KeyDownEvent, _, cx| {
