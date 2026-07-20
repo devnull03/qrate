@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable,
+    ActiveTheme, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     dock::{Panel, PanelControl, PanelEvent},
     resizable::{resizable_panel, v_resizable},
@@ -172,6 +172,10 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
     div()
         .relative()
         .size_full()
+        // Flex item in `resizable_panel`: without this its min-content width floors at the
+        // photo's intrinsic pixels, so the frame never narrows and `Contain` never re-fits the
+        // width. The horizontal twin of the `min_h_0` the fields column relies on below.
+        .min_w_0()
         .rounded(cx.theme().radius)
         .border_1()
         .border_color(cx.theme().border)
@@ -205,6 +209,21 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
                         .flex()
                         .gap_1()
                         .bg(cx.theme().background.opacity(0.7))
+                        // Fullscreen only makes sense for something we can actually render; an
+                        // icon-placeholder file has nothing to zoom into.
+                        .when(show_image, |group| {
+                            let path = path.clone();
+                            group.child(
+                                Button::new("fullscreen-image")
+                                    .icon(IconName::Maximize)
+                                    .ghost()
+                                    .small()
+                                    .tooltip("View fullscreen")
+                                    .on_click(move |_, window, cx| {
+                                        open_image_viewer(path.clone(), window, cx)
+                                    }),
+                            )
+                        })
                         .child(action(
                             "open-image",
                             IconName::ExternalLink,
@@ -221,6 +240,105 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
             None => frame.child(placeholder()),
         })
         .into_any_element()
+}
+
+/// Near-fullscreen image overlay contents: the photo with scroll-to-zoom and drag-to-pan. A
+/// tiny stateful view because the transform has to survive the dialog's re-renders — the
+/// dialog's content builder runs every frame, so a plain closure couldn't hold accumulated
+/// zoom/offset.
+struct ImageViewer {
+    path: PathBuf,
+    /// 1.0 = fit-to-frame (`Contain`); scroll wheel scales up to 8×.
+    zoom: f32,
+    /// Pan translation from the centered position.
+    offset: Point<Pixels>,
+    /// Last pointer position while dragging; `None` when not panning.
+    drag_from: Option<Point<Pixels>>,
+}
+
+impl Render for ImageViewer {
+    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (zoom, offset) = (self.zoom, self.offset);
+        div()
+            .id("image-viewer")
+            .size_full()
+            .overflow_hidden()
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
+                let dy = f32::from(ev.delta.pixel_delta(px(20.)).y);
+                this.zoom = (this.zoom * (1.0 + dy * 0.002)).clamp(1.0, 8.0);
+                // Back at fit there's nothing to pan to — recenter so the image can't drift off.
+                if this.zoom <= 1.0 {
+                    this.offset = Point::default();
+                }
+                cx.notify();
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                    this.drag_from = Some(ev.position);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                if let Some(last) = this.drag_from {
+                    this.offset.x += ev.position.x - last.x;
+                    this.offset.y += ev.position.y - last.y;
+                    this.drag_from = Some(ev.position);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.drag_from = None;
+                    cx.notify();
+                }),
+            )
+            // `relative` (not `absolute`): the img keeps its centered in-flow position and
+            // `left`/`top` just nudge it, so pan is an offset from center rather than absolute
+            // coordinates we'd have to derive from the (unknown-at-build-time) frame size.
+            .child(
+                img(self.path.clone())
+                    .relative()
+                    .w(relative(zoom))
+                    .h(relative(zoom))
+                    .left(offset.x)
+                    .top(offset.y)
+                    .object_fit(ObjectFit::Contain),
+            )
+    }
+}
+
+/// Opens the photo in a ~90% viewport dialog overlay with zoom/pan. Esc, the close button, or an
+/// overlay click dismiss it; the transform lives in the `ImageViewer` entity so it resets per open.
+fn open_image_viewer(path: PathBuf, window: &mut Window, cx: &mut App) {
+    let viewer = cx.new(|_| ImageViewer {
+        path: path.clone(),
+        zoom: 1.0,
+        offset: Point::default(),
+        drag_from: None,
+    });
+    let title: SharedString = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Image")
+        .to_string()
+        .into();
+    window.open_dialog(cx, move |dialog, window, _| {
+        let vp = window.viewport_size();
+        let viewer = viewer.clone();
+        dialog
+            .title(title.clone())
+            .overlay_closable(true)
+            .close_button(true)
+            .keyboard(true)
+            .w(vp.width * 0.9)
+            .max_w(vp.width * 0.9)
+            .content(move |content, _, _| content.h(vp.height * 0.85).child(viewer.clone()))
+    });
 }
 
 impl Render for DetailsPanel {
@@ -258,7 +376,10 @@ impl Render for DetailsPanel {
         let rows = fields.into_iter().enumerate().map(|(ix, (k, v))| {
             div()
                 .flex()
-                .items_start()
+                // `items_stretch`, not `items_start`: the label cell is one line tall, so with
+                // top-align its `border_r` divider only spanned the first line and vanished down
+                // the rest of a tall wrapped row. Stretching makes both cells fill the row height.
+                .items_stretch()
                 .border_b_1()
                 .border_color(border)
                 .when(ix % 2 == 1, |r| r.bg(cx.theme().muted.opacity(0.4)))
@@ -273,7 +394,27 @@ impl Render for DetailsPanel {
                         .text_color(cx.theme().muted_foreground)
                         .child(k),
                 )
-                .child(div().flex_1().px_2().py_1p5().child(v))
+                // `min_w_0` lets the value shrink below its longest unbreakable token so the
+                // text wraps instead of overflowing the row to the right (the "no line breaks"
+                // bug). Without it, a flex item's `min-width: auto` pins it to min-content width.
+                // Click-to-copy the whole value: `TextView` (the only selectable text) parses
+                // markdown/html, which would mangle raw metadata, so a click beats drag-select.
+                .child(
+                    div()
+                        .id(ix)
+                        .flex_1()
+                        .min_w_0()
+                        .px_2()
+                        .py_1p5()
+                        .cursor_pointer()
+                        .on_click({
+                            let value = v.clone();
+                            move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()))
+                            }
+                        })
+                        .child(v),
+                )
         });
 
         // Split, not one scrolling column: the image lives in its own panel so it stays put
@@ -308,7 +449,10 @@ impl Render for DetailsPanel {
                     .child(render_image_frame(image_path, cx)),
             )
             .child(
-                resizable_panel().child(
+                // `pr_2` on the panel, not the scroll content: it insets the whole scroll area
+                // (scrollbar included) from the dock's right resize edge, so grabbing the edge to
+                // resize doesn't catch the scrollbar.
+                resizable_panel().pr_2().child(
                     div()
                         .size_full()
                         // Scrolls the fields alone. `min_h_0` is load-bearing: a flex child's
