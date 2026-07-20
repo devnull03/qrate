@@ -5,12 +5,12 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnchoredPositionMode, AnyElement, Context, IntoElement, ParentElement as _, Styled as _,
-    Window, anchored, deferred, div, px,
+    AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, Styled as _,
+    Window, deferred, div, px,
 };
 use gpui_component::{ActiveTheme as _, input::Input, table::TableState};
 
-use crate::{delegate::QrateTableDelegate, editing::EditState};
+use crate::{delegate::QrateTableDelegate, editing::EditState, floating::clamped_float};
 
 /// `row_ix` is a source (not view) row index — `render_td` maps through `visible_rows` first.
 /// `col_ix` is a data-column index, not shifted for the pinned row-index column.
@@ -30,30 +30,39 @@ pub(crate) fn render_cell(
     // Keep the plain text underneath so the row height and neighbouring cells are unaffected; the
     // editor floats over it.
     let text = delegate.cell(row_ix, col_ix).cloned().unwrap_or_default();
+    // The table's rect (measured in `panel.rs`) both caps the editor's wrap width — so long text
+    // wraps multi-line instead of scrolling sideways (height is `auto_grow`'s job) — and is the
+    // rect `clamped_float` keeps the box inside.
+    let table = cx
+        .try_global::<crate::TableViewportBounds>()
+        .map(|b| b.0)
+        .unwrap_or_default();
+    let max_w = table.size.width;
     div()
         .size_full()
         .child(text)
         .when(editing, |cell| {
-            // A floating editor over the cell: `deferred` + `anchored` (Local) paint it above the
-            // grid and let it overflow the cramped cell, while `snap_to_window` keeps it fully
-            // on-screen whichever edge the cell sits near. Dismissed only by the user (Enter/blur
+            // `deferred` paints the box above the grid and lets it escape the cell's clip;
+            // `clamped_float` confines it to the *table* rect (not the window), so it can't spill
+            // over the details or any other side panel. Dismissed only by the user (Enter/blur
             // commit, Escape, or a filter dropping the row) — never by scrolling.
-            cell.child(deferred(
-                anchored()
-                    .position_mode(AnchoredPositionMode::Local)
-                    .snap_to_window()
-                    .child(
-                        div()
-                            .min_w(px(240.))
-                            .max_w(px(520.))
-                            .bg(cx.theme().background)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .rounded(cx.theme().radius)
-                            .shadow_lg()
-                            .child(Input::new(&delegate.editor)),
-                    ),
-            ))
+            cell.child(deferred(clamped_float(
+                table,
+                div()
+                    // Swallow mouse events so clicking/selecting inside the editor doesn't fall
+                    // through to the cells painted behind it (moving the table's selection).
+                    .occlude()
+                    // Triple the old 240px minimum so the box opens comfortably wide, but never
+                    // past the panel width (`clamped_float` then shifts it left to fit at the edge).
+                    .min_w(max_w.min(px(720.)))
+                    .max_w(max_w)
+                    .bg(cx.theme().background)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(cx.theme().radius)
+                    .shadow_lg()
+                    .child(Input::new(&delegate.editor)),
+            )))
         })
         .into_any_element()
 }

@@ -74,7 +74,13 @@ pub struct TablePanel {
 
 impl TablePanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let editor = cx.new(|cx| InputState::new(window, cx));
+        // Multi-line so long values wrap and the box grows down instead of scrolling sideways;
+        // `submit_on_enter` keeps Enter as commit (Shift+Enter inserts a newline).
+        let editor = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(1, 8)
+                .submit_on_enter(true)
+        });
         let filter_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search values"));
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in table"));
         let mut delegate = QrateTableDelegate::new(editor.clone(), filter_search.clone());
@@ -578,6 +584,16 @@ impl Render for TablePanel {
                 div()
                     .flex_1()
                     .min_h_0()
+                    // Record the table area's rect so the floating cell editor can wrap to it and
+                    // stay clamped inside it (never over a side panel).
+                    .child(
+                        canvas(
+                            |bounds, _, cx| cx.set_global(crate::TableViewportBounds(bounds)),
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
                     .child(DataTable::new(&self.state).bordered(false).stripe(stripe)),
             )
     }
