@@ -44,12 +44,16 @@ pub(crate) fn render_th(
 ) -> AnyElement {
     let name = delegate.column_name(data_col);
     let active = delegate.column_has_filter(data_col);
+    // Highlight this header while its column holds the active (edited/selected) cell. The header
+    // row is sticky, so the highlight stays put as the grid scrolls under it.
+    let editing_col = delegate.active_cell().is_some_and(|(_, c)| c == data_col);
 
     h_flex()
         .size_full()
         .justify_between()
         .items_center()
         .gap_1()
+        .when(editing_col, |th| th.bg(_cx.theme().secondary_hover))
         .child(div().flex_1().truncate().child(name))
         .when(delegate.column_filter_enabled(data_col), |th| {
             th.child(

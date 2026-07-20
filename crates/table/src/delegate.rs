@@ -252,6 +252,19 @@ impl QrateTableDelegate {
         self.selection
     }
 
+    /// The `(source_row, data_col)` whose row-number and column header should be highlighted
+    /// (Google-Sheets style): the cell being edited, else the selected cell. `None` when nothing
+    /// cell-specific is active (a whole-row/column selection, or none).
+    pub(crate) fn active_cell(&self) -> Option<(usize, usize)> {
+        if let EditState::Editing { row, col } = self.editing {
+            return Some((row, col));
+        }
+        match self.selection {
+            Some(Selection::Cell { row, col }) => Some((row, col)),
+            _ => None,
+        }
+    }
+
     /// The row's cells as `(column header, cell text)` pairs, in display order — what the
     /// Details panel shows.
     pub fn row_fields(&self, row: usize) -> Vec<(SharedString, SharedString)> {
@@ -495,8 +508,10 @@ impl TableDelegate for QrateTableDelegate {
             return div().into_any_element();
         };
         if col_ix == row_index::COL_IX {
-            // The source row number — the row's stable identity, not its view position.
-            row_index::render_td(source, cx)
+            // The source row number — the row's stable identity, not its view position. Highlight
+            // it while its row holds the active (edited/selected) cell.
+            let highlighted = self.active_cell().is_some_and(|(r, _)| r == source);
+            row_index::render_td(source, highlighted, cx)
         } else {
             cell::render_cell(self, source, col_ix - 1, window, cx)
         }

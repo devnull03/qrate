@@ -4,7 +4,8 @@
 
 use std::sync::OnceLock;
 
-use gpui::{Context, IntoElement, SharedString, div, prelude::*, px};
+use gpui::prelude::FluentBuilder as _;
+use gpui::{Context, FontWeight, IntoElement, SharedString, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme,
     table::{Column, TableState},
@@ -33,14 +34,25 @@ pub(crate) fn column() -> Column {
 
 pub(crate) fn render_td(
     row_ix: usize,
+    highlighted: bool,
     cx: &mut Context<TableState<QrateTableDelegate>>,
 ) -> gpui::AnyElement {
+    // Active row's number reads in full-strength text on a filled cell (like a sheet's row
+    // header); other rows stay muted. The `#` column is `fixed_left`, so this stays visible and
+    // highlighted while scrolling horizontally.
+    let (fg, bg) = if highlighted {
+        (cx.theme().foreground, cx.theme().secondary_hover)
+    } else {
+        (cx.theme().muted_foreground, cx.theme().transparent)
+    };
     div()
         .size_full()
         .flex()
         .items_center()
         .justify_center()
-        .text_color(cx.theme().muted_foreground)
+        .bg(bg)
+        .text_color(fg)
+        .when(highlighted, |d| d.font_weight(FontWeight::SEMIBOLD))
         .child(SharedString::from((row_ix + 1).to_string()))
         .into_any_element()
 }
