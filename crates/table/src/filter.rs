@@ -236,9 +236,7 @@ fn row(
             // key would leave hover/focus on the wrong row.
             Checkbox::new(SharedString::from(format!("filter-value-{value}")))
                 .checked(!is_excluded)
-                // The value goes in as a *child*, not `.label()`: the label path forces
-                // `line_height(1.0)` under an `overflow_hidden` parent, which clips descenders —
-                // underscores in ids vanished entirely.
+                // Value as a child, not `.label()`: the label's `line_height(1.0)` clips descenders here.
                 .child(
                     div()
                         .w_full()

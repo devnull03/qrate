@@ -21,10 +21,7 @@ use crate::{
 /// Settings key for the saved column layout (order + widths) in the project's `.qrate` file.
 const COLUMN_LAYOUT_KEY: &str = "table_columns";
 
-// Free-text find across the grid. Declared here in `crate::table` (not `crate::app`) because the
-// dependency edge is app → table: an action declared in app is invisible to `TablePanel`, which
-// must handle it. `crates/app/src/actions.rs` binds Ctrl+F to it, scoped to the `TablePanel`
-// context so it doesn't steal the shortcut from the cell editor's own `Input` context.
+// Free-text find, declared here (not in `app`) since app→table is one-way; `app` binds Ctrl+F to it.
 actions!(qrate, [Search]);
 
 /// Center panel: the virtualized text table, with a pinned row-number column, native
@@ -98,9 +95,7 @@ impl TablePanel {
                 .col_selectable(true)
                 .col_resizable(true)
                 .col_movable(true)
-                // Our numbered `#` column (row_index.rs) plays row header, so hide the
-                // library's blank strip. With it hidden, clicking the already-selected cell
-                // escalates to selecting the whole row.
+                // Our `#` column is the row header, so hide the library's blank strip.
                 .row_header(false)
         });
         // Publish the handle so cross-crate readers (status bar, Details panel) can reach the
@@ -125,9 +120,7 @@ impl TablePanel {
             |_this, state, event: &TableEvent, window, cx| {
                 match event {
                     TableEvent::SelectCell(row, col) if *col == row_index::COL_IX => {
-                        // Native cell selection ignores per-column `selectable(false)`, so a
-                        // click (or arrow-left) can land on the pinned `#` column — bounce to
-                        // the first data cell. The nested SelectCell updates the cursor.
+                        // Native selection ignores `selectable(false)`, so bounce a hit on the `#` column to col 1.
                         let (row, cols) = (*row, state.read(cx).delegate().columns_count(cx));
                         if cols > 1 {
                             state.update(cx, |s, cx| s.set_selected_cell(row, 1, cx));
@@ -186,9 +179,7 @@ impl TablePanel {
             cx.observe_global::<settings::project::CurrentProject>(|this: &mut Self, cx| {
                 let project = cx.global::<settings::project::CurrentProject>();
                 let file = project.file.clone();
-                // Same project, so this fired for a project-scoped *setting* write. Re-apply the
-                // per-column settings and repaint — reloading the data here would throw away the
-                // user's filters, edit state and selection on every settings toggle.
+                // A project-scoped setting write: re-apply per-column settings only, don't reload (loses state).
                 if this.loaded_project.as_ref() == Some(&file) {
                     let column_settings = settings::columns::load(cx);
                     this.state.update(cx, |state, cx| {
@@ -238,9 +229,7 @@ impl TablePanel {
                 },
             );
 
-        // The column-filter dropdown's "search values" box lives on the delegate; repaint when it
-        // changes so the open dropdown re-narrows its checklist. Narrowing can leave the scroll
-        // offset past the end of the shorter list, showing a blank box — so jump back to the top.
+        // Repaint on filter-search change so the dropdown re-narrows; reset scroll to top to avoid a blank box.
         let _filter_search_sub =
             cx.subscribe(&filter_search, |this, _input, _event: &InputEvent, cx| {
                 this.state
@@ -296,9 +285,7 @@ impl TablePanel {
     /// Step `delta` matches forward (+1) or back (-1), wrapping, and scroll/select the landing
     /// cell. No-op with no matches.
     fn goto_match(&mut self, delta: isize, cx: &mut Context<Self>) {
-        // Re-scan first: matches are `(view_row, col)`, and a column filter changed since the last
-        // keystroke would have shifted every view index under us — stepping a stale list lands on
-        // whatever row now happens to sit at that position.
+        // Re-scan first: matches are view indices, and a filter change since last keystroke invalidates them.
         let needle = self.search_input.read(cx).value().to_string();
         self.search_matches = self
             .state
@@ -321,8 +308,7 @@ impl TablePanel {
         let Some(&(view_row, data_col)) = self.search_matches.get(self.search_ix) else {
             return;
         };
-        // `set_selected_cell` scrolls the row to center itself, so no separate `scroll_to_row` —
-        // two scrolls per match fight each other.
+        // `set_selected_cell` already centre-scrolls the row, so no separate `scroll_to_row`.
         // +1 for the pinned row-index column.
         self.state.update(cx, |state, cx| {
             state.set_selected_cell(view_row, data_col + 1, cx)
@@ -425,9 +411,7 @@ impl Panel for TablePanel {
     /// `.xsmall().ghost()` by the library. `title_suffix` is the other option, but it sits by the
     /// title instead — this is the hook for buttons that belong *beside* the ⋯.
     fn toolbar_buttons(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
-        // Toggle the find bar directly through a weak handle to this panel — more robust than
-        // dispatching the `Search` action, which would only reach us if focus happened to sit
-        // inside the `TablePanel` context when the button is clicked.
+        // Toggle via a weak handle, not the `Search` action, which only fires when focus is inside `TablePanel`.
         let this = cx.entity().downgrade();
         Some(vec![
             Button::new("table-search")
@@ -463,10 +447,7 @@ impl Render for TablePanel {
 
         v_flex()
             .size_full()
-            // `TablePanel` key context so Ctrl+F (bound in `crates/app`) reaches the find toggle
-            // without stealing the shortcut from the cell editor's own `Input` context. Tracking
-            // the focus handle keeps this node in the focus dispatch path even when no cell holds
-            // focus, so the binding fires.
+            // `TablePanel` context + tracked focus so Ctrl+F reaches the toggle even when no cell holds focus.
             .key_context("TablePanel")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|this, _: &Search, window, cx| this.toggle_search(window, cx)))
@@ -474,10 +455,7 @@ impl Render for TablePanel {
             .on_action(cx.listener(|this, _: &Escape, window, cx| this.dismiss_search(window, cx)))
             .p_2()
             .gap_2()
-            // The find bar lives in this panel's own render, not in `title_suffix`: that is drawn
-            // by the parent `TabPanel`, which never observes its child panels, so toggling
-            // `search_open` here would notify only us and the bar would sit invisible until some
-            // unrelated interaction happened to redraw the tab bar.
+            // Find bar renders here, not in `title_suffix`: the parent `TabPanel` never observes us to redraw it.
             .when(self.search_open, |this| {
                 let opts = self.search_opts;
                 // A compact toggle button (case / word / regex), highlighted while active.

@@ -102,9 +102,7 @@ impl ProjectWizard {
                     )
                     .content(
                         v_flex().gap_2().mt_2().child(
-                            // The pattern input lives *inside* the option card
-                            // (appended to `option_card`'s own v_flex), revealed
-                            // once the card is selected.
+                            // Pattern input lives inside the option card, revealed once it's selected.
                             option_card(
                                 "link-pattern",
                                 "Use a custom pattern",

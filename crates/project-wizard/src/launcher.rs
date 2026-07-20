@@ -179,10 +179,7 @@ impl Render for Launcher {
                     .child(
                         v_flex()
                             .flex_1()
-                            // min_h(0) lets this column be bounded to the row
-                            // height so the inner list — not the column — scrolls,
-                            // keeping the heading pinned. Without it the flex
-                            // item's default min-height:auto grows to fit content.
+                            // min_h(0) overrides the flex default min-height:auto so the inner list scrolls, not the column.
                             .min_h(px(0.))
                             .min_w(px(0.))
                             .gap_2()

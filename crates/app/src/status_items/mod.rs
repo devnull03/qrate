@@ -22,7 +22,7 @@ pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> St
             IconName::Info,
         )
     });
-    registry.add_left(left_panel);
+    registry.items_mut().add_left(left_panel);
 
     // ponytail: diagnostics don't exist yet — count is a placeholder "0". Wire the real
     // error/warning totals when ProblemsPanel grows content.
@@ -35,12 +35,12 @@ pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> St
         )
         .label("0")
     });
-    registry.add_left(problems);
+    registry.items_mut().add_left(problems);
 
     // Text readout of the table's selected cell. Added to the right *before* the agent star so it
     // lands leftmost in the right group (text items go right-leftmost, star stays rightmost).
     let cell_location = cx.new(CellLocation::new);
-    registry.add_right(cell_location);
+    registry.items_mut().add_right(cell_location);
 
     let agent = cx.new(|_| {
         DockToggleButton::new(
@@ -50,7 +50,7 @@ pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> St
             IconName::Star,
         )
     });
-    registry.add_right(agent);
+    registry.items_mut().add_right(agent);
 
     registry
 }

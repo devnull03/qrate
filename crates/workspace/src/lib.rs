@@ -80,10 +80,7 @@ impl Workspace {
         let dock_area =
             cx.new(|cx| DockArea::new("qrate-main", Some(DOCK_LAYOUT_VERSION), window, cx));
 
-        // Restore the saved arrangement if there is one; only build the default layout when
-        // there isn't. Building the default first and then `load`ing over it would construct a
-        // throwaway *second* table, leaving cross-crate readers (Details panel, status bar)
-        // bound to the orphaned first one — which never sees selection events.
+        // Restore if saved, else build default; building first then loading would orphan a throwaway table.
         if !Self::restore_layout(&dock_area, window, cx) {
             let weak = dock_area.downgrade();
             // Default static layout: center table, left details, right agent, bottom problems.
@@ -93,11 +90,7 @@ impl Workspace {
             let problems = cx.new(|cx| ProblemsPanel::new(window, cx));
 
             dock_area.update(cx, |area, cx| {
-                // `DockItem::panel` embeds the table directly, with no `TabPanel` and so no
-                // title bar. Note this only holds until a layout is *saved*: `DockAreaState`
-                // round-trips a bare panel back as `DockItem::tabs` (state.rs's
-                // `PanelInfo::Panel` arm), so every run after the first restores it wrapped —
-                // title bar, ⋯ menu and all. `TablePanel::toolbar_buttons` renders there.
+                // `DockItem::panel` embeds the table bare (no title bar); only until saved, then it restores wrapped.
                 area.set_center(DockItem::panel(Arc::new(table.clone())), window, cx);
                 area.set_left_dock(
                     DockItem::tab(details, &weak, window, cx),
@@ -127,12 +120,7 @@ impl Workspace {
         // toggle arrows. Done in both paths — `load` doesn't carry this runtime-only flag.
         dock_area.update(cx, |area, cx| area.set_toggle_button_visible(false, cx));
 
-        // Persist on every layout change. Set up last so the default/restore building above
-        // doesn't trigger a redundant write. With a project open the layout is saved into its
-        // `.qrate` file (per-project panel state); otherwise into the global app settings.
-        // NOTE: gpui_component only emits `LayoutChanged` for *inner* panel changes (tab
-        // drags, split resizes) — a dock open/close or edge resize just `cx.notify()`s, so
-        // `toggle_dock` below and the app-quit flush persist those explicitly.
+        // Persist on `LayoutChanged` (inner changes only); `toggle_dock` and the app-quit flush cover the rest.
         let _layout_sub = cx.subscribe(&dock_area, |_this, area, event: &DockEvent, cx| {
             if matches!(event, DockEvent::LayoutChanged) {
                 Self::persist_layout(&area, cx);
@@ -166,9 +154,7 @@ impl Workspace {
         self.dock_area.update(cx, |area, cx| {
             area.toggle_dock(placement, window, cx);
         });
-        // `Dock::set_open` never emits `LayoutChanged` (it only notifies), so the
-        // subscription in `new` can't see toggles — persist here or open/closed
-        // state is lost on reopen.
+        // `Dock::set_open` only notifies, never emits `LayoutChanged`, so persist the toggle here.
         Self::persist_layout(&self.dock_area, cx);
         cx.notify();
     }
@@ -249,9 +235,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // When the bottom dock is closed, stretch the dock area 29px past the bottom edge and
-        // clip it, so the library's residual "closed bottom" strip is cropped out of view.
-        // When it's open, sit flush (bottom: 0) so no real content is lost.
+        // Bottom dock closed: overhang 29px and clip to hide the library's residual strip; open: sit flush.
         let bottom_open = self
             .dock_area
             .read(cx)
@@ -269,9 +253,7 @@ impl Render for Workspace {
             cx.set_global(crop);
         }
 
-        // Mounted here, not as a dialog: a dialog layer occludes the whole window (title bar
-        // included), whereas this overlay is a later sibling of the dock inside the workspace, so
-        // it stacks over the dock content but leaves the title bar's window controls reachable.
+        // A sibling overlay, not a dialog: it covers the dock but leaves the title bar's controls reachable.
         let viewer = cx
             .try_global::<image_viewer::ActiveImageViewer>()
             .and_then(|a| a.0.clone());

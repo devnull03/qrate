@@ -22,21 +22,8 @@ impl BarItems {
 
 /// A bar's global registry. The data lives in [`BarItems`]; implementors exist only to
 /// give each bar a distinct type (GPUI globals are keyed by type, so title and status
-/// bars can't share one registry struct). `add_left`/`add_right` forward to the items.
+/// bars can't share one registry struct). Push items via `items_mut().add_left(view)`.
 pub trait BarRegistry: Global {
     fn items(&self) -> &BarItems;
     fn items_mut(&mut self) -> &mut BarItems;
-
-    fn add_left(&mut self, view: impl Into<AnyView>)
-    where
-        Self: Sized,
-    {
-        self.items_mut().add_left(view);
-    }
-    fn add_right(&mut self, view: impl Into<AnyView>)
-    where
-        Self: Sized,
-    {
-        self.items_mut().add_right(view);
-    }
 }

@@ -191,9 +191,7 @@ impl ProjectWizard {
                 Ok(())
             }
             WizardStep::Files => match self.entry_kind {
-                // `skip_files` only waives the *folder* requirement below — it
-                // means "skip linking a files folder", not "skip checking the
-                // spreadsheet/sheet exists" (see its label in steps/files.rs).
+                // `skip_files` waives only the folder requirement, not the spreadsheet/sheet check.
                 EntryKind::Csv => {
                     if self.csv_preview.is_none() {
                         return Err("Choose a valid CSV spreadsheet".into());
@@ -354,9 +352,7 @@ impl ProjectWizard {
         } else {
             "Next →"
         };
-        // When the sheet still needs checking, Next doubles as "Check" and is
-        // live regardless of the blocker. Otherwise a blocker greys out Next and
-        // its reason is shown beside it.
+        // While the sheet needs checking, Next acts as "Check" (no blocker); otherwise a blocker greys it out.
         let blocker = if self.needs_sheet_check(cx) {
             None
         } else {
@@ -411,9 +407,7 @@ impl Render for ProjectWizard {
             WizardStep::Review => self.render_review_step(window, cx).into_any_element(),
         };
 
-        // Shared scaffold for every step: pinned breadcrumb on top, scrolling
-        // body in the middle, pinned Back/Next footer at the bottom. Each step
-        // only supplies `body`; navigation and validation live in the footer.
+        // Shared scaffold: pinned breadcrumb, scrolling body, pinned footer; each step supplies only `body`.
         let breadcrumb = self.render_breadcrumb(cx).into_any_element();
         let footer = self.render_footer(cx).into_any_element();
 
@@ -425,10 +419,7 @@ impl Render for ProjectWizard {
                 v_flex()
                     .id("wizard-body")
                     .flex_1()
-                    // min_h(0) bounds this to the window height (below the title
-                    // bar) so the scroll region — not the whole page — grows.
-                    // Without it the flex item's default min-height:auto expands
-                    // to fit all steps' content, pushing the footer off-screen.
+                    // min_h(0) overrides flex min-height:auto so the scroll region grows, not the page.
                     .min_h(px(0.))
                     .p_5()
                     .gap_3()

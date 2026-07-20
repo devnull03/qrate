@@ -41,9 +41,7 @@ use gpui_component::dock::DockPlacement;
 use workspace::Workspace;
 
 /// Opens the Settings window, focusing the existing one if it's already open.
-// `gpui::App`, spelled out: a bare `App` here would resolve to this file's own
-// `pub struct App` below, not the GPUI context type — local items always win
-// over glob imports regardless of source order.
+// `gpui::App` spelled out: a bare `App` binds to this file's own `struct App`, not the context type.
 pub(crate) fn open_settings_window(cx: &mut gpui::App) {
     if WindowRegistry::focus_or_clear(SETTINGS_WINDOW_KIND, cx) {
         return;
@@ -99,9 +97,7 @@ fn set_main_window_title(window: &mut Window, cx: &gpui::App) {
 
 pub(crate) fn open_main_window(cx: &mut gpui::App) {
     if WindowRegistry::focus_or_clear(MAIN_WINDOW_KIND, cx) {
-        // The window already exists (opening a project just switched `CurrentProject`
-        // to a different one) — reload its layout instead of leaving the previous
-        // project's panels in place.
+        // Window already exists (a project switch); reload its layout instead of keeping the old one's.
         if let Some(handle) = WindowRegistry::get(MAIN_WINDOW_KIND, cx) {
             handle
                 .update(cx, |_, window, cx| {
@@ -183,10 +179,7 @@ impl App {
             }
         });
 
-        // Block the OS close button while a background task is running, and
-        // otherwise run the same final flush that `on_app_quit` does — the
-        // native X skips the app-quit path on Windows (zed#40385/#40290), so
-        // relying on `on_app_quit` alone loses state on OS-native close.
+        // Native X skips `on_app_quit` on Windows (zed#40385/#40290), so flush here too — unless locked.
         window.on_window_should_close(cx, |_, cx| {
             if WindowLock::is_locked(cx) {
                 return false;
@@ -324,20 +317,14 @@ fn main() {
             cx.quit();
         });
 
-        // Guaranteed flush before exit (gpui gives `on_app_quit` handlers 100ms).
-        // Two gaps close here: (1) both writers debounce at 450ms, so a write
-        // enqueued right before quit would otherwise be lost; (2) dock
-        // open/close toggles and edge resizes never emit `LayoutChanged`, so
-        // the final layout may never have been captured at all.
+        // Flush before exit: writers debounce 450ms, and dock toggles/resizes never emit `LayoutChanged`.
         cx.on_app_quit(|cx| {
             flush_all_state(cx);
             async {}
         })
         .detach();
 
-        // The launcher (Recent Projects + Create New) is the real startup window — it opens
-        // the main window itself for a recent project, or a project-creation wizard window for
-        // "Create New".
+        // The launcher is the real startup window; it opens the main window or the wizard itself.
         project_wizard::open_launcher_window(cx);
     });
 }

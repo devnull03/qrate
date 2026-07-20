@@ -80,9 +80,7 @@ fn columns_page(cx: &App) -> SettingPage {
         let (get_key, set_key, remove_key) = (key.clone(), key.clone(), key.clone());
         page = page.group(
             SettingGroup::new()
-                // The column name is the group *title* so it also lists as a sub-entry under
-                // "Columns" in the sidebar, which only picks up titled groups. That makes it
-                // text-only, so Remove gets its own right-aligned row directly beneath it.
+                // Column name is the group title so it lists under "Columns" in the sidebar (titled groups only).
                 .title(name)
                 .item(SettingItem::render(move |_opts, _window, _cx| {
                     let remove_key = remove_key.clone();
