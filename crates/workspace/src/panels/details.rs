@@ -184,13 +184,23 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
             Some(path) => frame
                 .map(|frame| {
                     if show_image {
-                        // `rounded` on the `img` itself: gpui's overflow mask is a rect, so `Img` must round itself.
+                        // gpui's `img` stamps the element with the *image's* aspect ratio, so a
+                        // `size_full` img ignores the frame shape and `object_fit` has nothing to
+                        // letterbox. Size it by its intrinsic ratio under `max_w/h_full` (where that
+                        // aspect logic applies) and center it, so it shrinks to fit — bars and all.
                         frame.child(
-                            img(path.clone())
+                            div()
                                 .size_full()
-                                .rounded(cx.theme().radius)
-                                .object_fit(ObjectFit::Contain)
-                                .with_fallback(placeholder),
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    img(path.clone())
+                                        .max_w_full()
+                                        .max_h_full()
+                                        .object_fit(ObjectFit::Contain)
+                                        .with_fallback(placeholder),
+                                ),
                         )
                     } else {
                         frame.child(placeholder())
