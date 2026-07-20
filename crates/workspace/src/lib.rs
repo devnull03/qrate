@@ -2,7 +2,10 @@
 //! (center table, left details, right agent, bottom problems) with layout persistence.
 
 mod dock_button;
+mod image_viewer;
 mod panels;
+
+pub use image_viewer::open_image_viewer;
 // `panels/log_viewer.rs` is intentionally NOT declared here — it is a set-aside,
 // reusable line-coloring viewer kept for when `ProblemsPanel` grows real content.
 
@@ -54,6 +57,8 @@ pub struct Workspace {
     dock_area: Entity<DockArea>,
     /// Persists the layout to settings whenever the dock emits `LayoutChanged`.
     _layout_sub: Subscription,
+    /// Re-renders to mount/unmount the image viewer overlay when it opens or closes.
+    _viewer_sub: Subscription,
 }
 
 impl Workspace {
@@ -136,9 +141,13 @@ impl Workspace {
             }
         });
 
+        let _viewer_sub =
+            cx.observe_global::<image_viewer::ActiveImageViewer>(|_this, cx| cx.notify());
+
         Self {
             dock_area,
             _layout_sub,
+            _viewer_sub,
         }
     }
 
@@ -260,14 +269,26 @@ impl Render for Workspace {
             cx.set_global(crop);
         }
 
-        div().size_full().relative().overflow_hidden().child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .right_0()
-                .bottom(overshoot)
-                .child(self.dock_area.clone()),
-        )
+        // Mounted here, not as a dialog: a dialog layer occludes the whole window (title bar
+        // included), whereas this overlay is a later sibling of the dock inside the workspace, so
+        // it stacks over the dock content but leaves the title bar's window controls reachable.
+        let viewer = cx
+            .try_global::<image_viewer::ActiveImageViewer>()
+            .and_then(|a| a.0.clone());
+
+        div()
+            .size_full()
+            .relative()
+            .overflow_hidden()
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom(overshoot)
+                    .child(self.dock_area.clone()),
+            )
+            .children(viewer)
     }
 }
