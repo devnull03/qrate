@@ -15,7 +15,7 @@ pub fn build_title_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> Tit
     let mut registry = TitleBarRegistry::new();
 
     let menus = cx.new(|_| TitleMenus);
-    registry.add_left(menus);
+    registry.items_mut().add_left(menus);
 
     for (id, placement, icon) in [
         ("title-panel-left", DockPlacement::Left, IconName::PanelLeft),
@@ -31,7 +31,7 @@ pub fn build_title_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> Tit
         ),
     ] {
         let btn = cx.new(|_| DockToggleButton::new(id, dock.clone(), placement, icon));
-        registry.add_right(btn);
+        registry.items_mut().add_right(btn);
     }
 
     registry

@@ -24,9 +24,7 @@ impl SpreadsheetPreview {
 }
 
 impl From<cloud_sync::SheetData> for SpreadsheetPreview {
-    // ponytail: notes are dropped here — the wizard preview has no field for
-    // them yet. Carry `sheet.notes` through when the Problems/column-notes
-    // panels land (see the ".qrate project file" + "Problems panel" tasks).
+    // ponytail: `sheet.notes` dropped — no preview field yet; carry them through when the Problems panel lands.
     fn from(sheet: cloud_sync::SheetData) -> Self {
         Self {
             headers: sheet.headers,

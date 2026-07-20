@@ -90,9 +90,7 @@ pub struct SheetData {
 /// off the UI thread.
 pub fn fetch_sheet(link: &str) -> Result<SheetData, SheetSyncError> {
     let SheetRef { id, gid } = parse_sheet_ref(link)?;
-    // ponytail: gid is forwarded so a link to a specific tab exports that tab
-    // when Google honors it; if Google ignores it for xlsx we still fall back
-    // to the first tab, same as before. Real multi-tab selection needs API v4.
+    // ponytail: gid forwarded as a hint, falls back to first tab; real multi-tab selection needs API v4.
     let gid_param = gid.map(|g| format!("&gid={g}")).unwrap_or_default();
     let url = format!("https://docs.google.com/spreadsheets/d/{id}/export?format=xlsx{gid_param}");
     // Explicit timeout so a stalled connection returns an error instead of

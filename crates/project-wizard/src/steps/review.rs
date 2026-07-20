@@ -23,9 +23,7 @@ impl ProjectWizard {
             LinkMethod::ExactFilename => "exact filename",
             LinkMethod::CustomPattern => "custom pattern",
         });
-        // Blank projects go through the Columns step too, so honor any config
-        // loaded there; otherwise fall back to spreadsheet headers (empty for
-        // Blank), every column defaulting to Text.
+        // Prefer config from the Columns step; else fall back to spreadsheet headers, all Text.
         let columns: Vec<project::ProjectColumn> = self
             .config_preview
             .as_ref()

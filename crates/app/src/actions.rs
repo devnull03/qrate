@@ -35,9 +35,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // Settings. Declared in `app_menus` (it's a menu action first); the handler is already
         // registered globally in `main.rs`, so this only adds the key.
         KeyBinding::new("ctrl-,", OpenSettings, None),
-        // Find in the table. The action is declared in `crate::table` (app → table is one-way, so
-        // an app-declared action would be invisible to `TablePanel`). Scoped to the `TablePanel`
-        // context, not global, so it doesn't shadow Ctrl+F inside the cell editor's `Input`.
+        // `Search` is declared in `crate::table` (app→table is one-way); scoped so it spares the cell editor's Ctrl+F.
         KeyBinding::new("ctrl-f", table::Search, Some("TablePanel")),
     ]
 }

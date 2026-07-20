@@ -172,10 +172,7 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
     div()
         .relative()
         .size_full()
-        // Flex item in `resizable_panel`: without these its min-content size floors at the
-        // photo's intrinsic pixels, so the frame never shrinks below the image and `Contain`
-        // never re-fits — a tall or wide photo overflows the pane. `min_w_0`/`min_h_0` drop that
-        // floor on each axis so the frame tracks the pane and the image letterboxes to fit.
+        // `min_w_0`/`min_h_0` drop the min-content floor so the frame tracks the pane and the image letterboxes.
         .min_w_0()
         .min_h_0()
         .rounded(cx.theme().radius)
@@ -187,11 +184,7 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
             Some(path) => frame
                 .map(|frame| {
                     if show_image {
-                        // `rounded` goes on the `img` itself, not just the frame: gpui's
-                        // overflow mask is a plain rect (`Style::overflow_mask`), so
-                        // `overflow_hidden` above clips square and a full-bleed photo would
-                        // paint over the frame's rounded corners. `Img` reads its *own*
-                        // corner radii when painting, which is what actually rounds it.
+                        // `rounded` on the `img` itself: gpui's overflow mask is a rect, so `Img` must round itself.
                         frame.child(
                             img(path.clone())
                                 .size_full()
@@ -269,19 +262,13 @@ impl Render for DetailsPanel {
                 .into_any_element();
         };
 
-        // A bordered two-column grid, not `DescriptionList` — the label/value list read as
-        // free-floating text, and the fields *are* tabular. Hand-built rather than a second
-        // `DataTable`: that would mean another `TableDelegate` + `TableState` entity to render
-        // what is a fixed 2-column, no-sort, no-resize, no-header view of data the center
-        // table's delegate already hands over as pairs (`QrateTableDelegate::row_fields`).
+        // Hand-built 2-column grid, not `DescriptionList`/`DataTable`: the fields are fixed, tabular pairs.
         // ponytail: revisit if these fields ever need sorting or inline editing.
         let border = cx.theme().border;
         let rows = fields.into_iter().enumerate().map(|(ix, (k, v))| {
             div()
                 .flex()
-                // `items_stretch`, not `items_start`: the label cell is one line tall, so with
-                // top-align its `border_r` divider only spanned the first line and vanished down
-                // the rest of a tall wrapped row. Stretching makes both cells fill the row height.
+                // `items_stretch` so the label cell's `border_r` divider spans the full (wrapped) row height.
                 .items_stretch()
                 .border_b_1()
                 .border_color(border)
@@ -297,11 +284,8 @@ impl Render for DetailsPanel {
                         .text_color(cx.theme().muted_foreground)
                         .child(k),
                 )
-                // `min_w_0` lets the value shrink below its longest unbreakable token so the
-                // text wraps instead of overflowing the row to the right (the "no line breaks"
-                // bug). Without it, a flex item's `min-width: auto` pins it to min-content width.
-                // Click-to-copy the whole value: `TextView` (the only selectable text) parses
-                // markdown/html, which would mangle raw metadata, so a click beats drag-select.
+                // `min_w_0` overrides flex `min-width: auto` so the value wraps instead of overflowing right.
+                // Click-to-copy rather than drag-select: `TextView` parses markdown/html and mangles raw metadata.
                 .child(
                     div()
                         .id(ix)
@@ -320,12 +304,8 @@ impl Render for DetailsPanel {
                 )
         });
 
-        // Split, not one scrolling column: the image lives in its own panel so it stays put
-        // while only the fields scroll (the old single `overflow_y_scrollbar` div scrolled the
-        // photo away), and the drag handle between them lets the user trade image height for
-        // field rows instead of the photo distorting as the dock is resized.
-        // `.size()` is the *initial* size only — once the user drags, `ResizableState` owns it,
-        // so re-reading the persisted value each render is a restore, not a fight.
+        // Split so the image stays put while only the fields scroll, with a drag handle to trade heights.
+        // `.size()` is the initial size only — once dragged, `ResizableState` owns it, so re-reading restores.
         let image_height = cx
             .try_global::<settings::project::CurrentProject>()
             .and_then(|p| p.data.values.get(IMAGE_PANE_HEIGHT_KEY))
@@ -352,24 +332,15 @@ impl Render for DetailsPanel {
                     .child(render_image_frame(image_path, cx)),
             )
             .child(
-                // `pr_2` on the panel, not the scroll content: it insets the whole scroll area
-                // (scrollbar included) from the dock's right resize edge, so grabbing the edge to
-                // resize doesn't catch the scrollbar.
+                // `pr_2` on the panel insets the scrollbar from the resize edge so dragging it doesn't catch.
                 resizable_panel().pr_2().child(
                     div()
                         .size_full()
-                        // Scrolls the fields alone. `min_h_0` is load-bearing: a flex child's
-                        // default `min-height: auto` refuses to shrink below its content, so
-                        // without it this box grows past the panel and the last rows fall off
-                        // the bottom with no scrollbar to reach them — the reported bug.
+                        // `min_h_0` overrides flex `min-height: auto` so this scrolls instead of growing past the panel.
                         .min_h_0()
                         .overflow_y_scrollbar()
                         .px_3()
-                        // Normal padding *plus* whatever the workspace's bottom-strip crop is
-                        // clipping off this dock right now (29px while the bottom dock is
-                        // closed, 0 while it's open) — otherwise the crop eats the last field
-                        // row. Padding the scroll content, not the panel, so the extra space
-                        // is scrollable-to rather than a dead gap.
+                        // Pad by the bottom-strip crop (29px closed / 0 open) so it doesn't eat the last field row.
                         .pb(px(12.) + crop)
                         .child(
                             div()
@@ -387,9 +358,7 @@ impl Render for DetailsPanel {
 
 #[cfg(test)]
 mod tests {
-    // No `use super::*` here: it would chain-glob `gpui::*`, whose `test` proc-macro shadows
-    // the built-in `#[test]` that `#[gpui::test]`'s expansion emits — making the macro expand
-    // into itself until rustc's recursion limit (and then its stack) blows.
+    // No `use super::*`: chain-globbing `gpui::*` shadows the built-in `#[test]` and recurses (see CLAUDE.md).
     use std::path::{Path, PathBuf};
 
     use gpui::{Context, IntoElement, Render, TestAppContext, Window};

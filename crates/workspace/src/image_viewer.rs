@@ -137,9 +137,7 @@ impl Render for ImageViewer {
                     .justify_center()
                     .p_8()
                     .child(
-                        // `flex_shrink_0`: a flex child would otherwise shrink back to the container
-                        // on the main axis, cancelling every `relative(zoom)` past 1. `relative`
-                        // position + `left`/`top` pan it as an offset from the centered position.
+                        // `flex_shrink_0` keeps `relative(zoom)` past 1; `relative` + `left`/`top` pan it.
                         img(self.path.clone())
                             .flex_shrink_0()
                             .relative()
