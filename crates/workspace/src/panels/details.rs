@@ -257,10 +257,11 @@ struct ImageViewer {
 }
 
 impl ImageViewer {
-    /// Clamp to [1, 8] and recenter at fit — below 1 there's nothing to pan to, so a stray offset
-    /// would just push the fit image off-frame.
+    /// Clamp zoom and recenter once it's back within the frame.
     fn set_zoom(&mut self, zoom: f32) {
-        self.zoom = zoom.clamp(1.0, 8.0);
+        // Down to 0.1 so zoom-out can shrink the image well past the initial fit, up to 8×.
+        self.zoom = zoom.clamp(0.1, 8.0);
+        // At or below fit the image is no larger than its frame, so there's nothing to pan to.
         if self.zoom <= 1.0 {
             self.offset = Point::default();
         }
@@ -392,10 +393,14 @@ impl Render for ImageViewer {
     }
 }
 
-/// Opens the photo in a transparent full-window dialog overlay with zoom/pan. Esc or an overlay
-/// click dismiss it; the transform lives in the `ImageViewer` entity so it resets per open. The
-/// dialog card is stripped to transparent and sized to the viewport so only the image and its
-/// controls show, and nothing spills off-screen (the image is `Contain`-fit within the window).
+/// Fraction of the viewport the viewer occupies, leaving a ~10% margin all around. The image
+/// (`Contain`-fit) never exceeds this, so its larger edge matches the frame with breathing room.
+const VIEWER_FRAME: f32 = 0.8;
+
+/// Opens the photo in a transparent dialog overlay (~80% of the viewport, centered) with zoom/pan.
+/// Esc or a click on the dimmed backdrop around it dismiss it; the transform lives in the
+/// `ImageViewer` entity so it resets per open. The card is stripped to transparent so only the
+/// image and its controls show over the backdrop.
 fn open_image_viewer(path: PathBuf, window: &mut Window, cx: &mut App) {
     let viewer = cx.new(|_| ImageViewer {
         path,
@@ -412,15 +417,20 @@ fn open_image_viewer(path: PathBuf, window: &mut Window, cx: &mut App) {
             .overlay_closable(true)
             .close_button(false)
             .keyboard(true)
-            // Strip the card to a transparent, edge-to-edge, top-anchored frame so it reads as a
-            // bare image over the dimmed backdrop rather than a centered panel (which overflowed).
+            // Transparent card, sized to 80% and centered (the forced `top(margin_top)` plus the
+            // library's own horizontal centering give the ~10% margin on every side).
             .p_0()
             .bg(clear)
             .border_color(clear)
-            .margin_top(px(0.))
-            .w(vp.width)
-            .max_w(vp.width)
-            .content(move |content, _, _| content.w(vp.width).h(vp.height).child(viewer.clone()))
+            .margin_top(vp.height * (1. - VIEWER_FRAME) / 2.)
+            .w(vp.width * VIEWER_FRAME)
+            .max_w(vp.width * VIEWER_FRAME)
+            .content(move |content, _, _| {
+                content
+                    .w(vp.width * VIEWER_FRAME)
+                    .h(vp.height * VIEWER_FRAME)
+                    .child(viewer.clone())
+            })
     });
 }
 
