@@ -21,6 +21,11 @@ use crate::project::CurrentProject;
 /// `__settings` key holding the JSON map below.
 pub const COLUMN_SETTINGS_KEY: &str = "table_column_settings";
 
+/// `__settings` key for the master "column filters" switch — the kill-switch gating every
+/// column's filter dropdown. Absent means on, so opening a project that already selected columns
+/// shows their filters without first flipping a toggle.
+pub const COLUMN_FILTERS_ENABLED_KEY: &str = "table_column_filters_enabled";
+
 /// A column's preferences. A column only has an entry once the user adds it on the Columns
 /// settings page; absent means "not configured", which reads as all-defaults.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq, Debug)]
@@ -56,19 +61,30 @@ pub fn load(cx: &App) -> ColumnSettingsMap {
     )
 }
 
-/// The column keys the user has added to the settings page, in `c{ix}` order.
-pub fn tracked(cx: &App) -> Vec<String> {
-    load(cx).into_keys().collect()
-}
-
 /// One column's settings, all-defaults if it was never added.
 pub fn get(col_key: &str, cx: &App) -> ColumnSettings {
     load(cx).get(col_key).cloned().unwrap_or_default()
 }
 
-/// Whether a column has been added to the settings page.
-pub fn is_tracked(col_key: &str, cx: &App) -> bool {
-    load(cx).contains_key(col_key)
+/// The master filter switch (default on — see [`COLUMN_FILTERS_ENABLED_KEY`]).
+pub fn filters_master_enabled(cx: &App) -> bool {
+    cx.try_global::<CurrentProject>()
+        .and_then(|p| {
+            p.data
+                .values
+                .get(COLUMN_FILTERS_ENABLED_KEY)
+                .map(|v| v.bool())
+        })
+        .unwrap_or(true)
+}
+
+/// Flip the master filter switch. No-op without an open project.
+pub fn set_filters_master_enabled(on: bool, cx: &mut App) {
+    if !cx.has_global::<CurrentProject>() {
+        return;
+    }
+    CurrentProject::set_bool(COLUMN_FILTERS_ENABLED_KEY, on, cx);
+    dirty::mark(dirty::COLUMN_SETTINGS, cx);
 }
 
 /// Persist the whole map, updating `CurrentProject`'s cache and queueing a debounced write.
@@ -82,26 +98,6 @@ fn store(map: &ColumnSettingsMap, cx: &mut App) {
     };
     CurrentProject::set_text(COLUMN_SETTINGS_KEY, json.into(), cx);
     dirty::mark(dirty::COLUMN_SETTINGS, cx);
-}
-
-/// Add a column to the settings page, unlocking its settings at their defaults. Adding one that
-/// is already there leaves it untouched.
-pub fn add(col_key: &str, cx: &mut App) {
-    let mut map = load(cx);
-    if map.contains_key(col_key) {
-        return;
-    }
-    map.insert(col_key.to_string(), ColumnSettings::default());
-    store(&map, cx);
-}
-
-/// Drop a column from the settings page, discarding its settings.
-pub fn remove(col_key: &str, cx: &mut App) {
-    let mut map = load(cx);
-    if map.remove(col_key).is_none() {
-        return;
-    }
-    store(&map, cx);
 }
 
 /// Mutate one column's settings. Adds the entry first if it is missing, so a toggle can't

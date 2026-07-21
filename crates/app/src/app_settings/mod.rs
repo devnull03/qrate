@@ -4,8 +4,8 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 use gpui_component::{
-    ActiveTheme as _, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme as _, Icon, IconName, Sizable as _,
+    button::Button,
     h_flex,
     popover::Popover,
     setting::{SettingField, SettingGroup, SettingItem, SettingPage},
@@ -26,37 +26,66 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                     .into(),
                 ),
             )
-            .group(
-                SettingGroup::new().title("Saving").item(
-                    Setting::Dropdown {
-                        key: settings::AUTOSAVE_KEY,
-                        label: "Autosave",
-                        description: "When cell edits reach the project file. Ctrl+S always saves.",
-                        options: &[
-                            ("timed", "After a short pause"),
-                            ("immediate", "On every edit"),
-                            ("off", "Manual only (Ctrl+S)"),
-                        ],
-                    }
-                    .into(),
-                ),
-            ),
+            .group(saving_group(cx)),
         columns_page(cx),
     ]
 }
 
-/// Per-column settings, project-scoped. The page starts empty: a column is added by name, which
-/// is what surfaces its settings. Built from `&App` rather than a fixed list because the columns
+/// Autosave as a toggle plus, when on, the method. Both edit the one `AUTOSAVE_KEY` the table reads
+/// (`off`/`timed`/`immediate`): the switch is off iff the value is `off`, so an unset value reads as
+/// on. The method row only exists while autosave is on — the Settings window observes settings
+/// globals (see `SettingsWindow`), so flipping the switch rebuilds this page live.
+fn saving_group(cx: &App) -> SettingGroup {
+    let mut group = SettingGroup::new().title("Saving").item(
+        SettingItem::new(
+            "Autosave",
+            SettingField::switch(
+                |cx: &App| settings::scoped_text(settings::AUTOSAVE_KEY, cx) != "off",
+                |on: bool, cx: &mut App| {
+                    settings::set_scoped_text(
+                        settings::AUTOSAVE_KEY,
+                        if on { "timed" } else { "off" }.into(),
+                        cx,
+                    );
+                },
+            ),
+        )
+        .description("Save cell edits automatically. Ctrl+S always saves."),
+    );
+
+    if settings::scoped_text(settings::AUTOSAVE_KEY, cx) != "off" {
+        group = group.item(
+            SettingItem::new(
+                "Method",
+                SettingField::dropdown(
+                    vec![
+                        ("timed".into(), "After a short pause".into()),
+                        ("immediate".into(), "On every edit".into()),
+                    ],
+                    |cx: &App| {
+                        let v = settings::scoped_text(settings::AUTOSAVE_KEY, cx);
+                        if v == "immediate" { v } else { "timed".into() }
+                    },
+                    |val: SharedString, cx: &mut App| {
+                        settings::set_scoped_text(settings::AUTOSAVE_KEY, val, cx);
+                    },
+                ),
+            )
+            .description("When edits reach the file: after you pause typing, or on every edit."),
+        );
+    }
+    group
+}
+
+/// Per-column filters, project-scoped. A master switch gates the feature; when on, a multi-select
+/// picker chooses which columns show a filter dropdown (a picked column *is* a filter-enabled one —
+/// selection and `filter_enabled` are the same thing now). Built from `&App` because the columns
 /// depend on whichever project is open.
-///
-/// These use `SettingField`/`SettingItem` directly rather than the `Setting::Switch` enum — that
-/// one's `key` is `&'static str` and routes through the user/project scope helpers, while a column
-/// key is computed at runtime and is always project-scoped.
 fn columns_page(cx: &App) -> SettingPage {
     let Some(project) = cx.try_global::<CurrentProject>() else {
         return SettingPage::new("Columns").group(
             SettingGroup::new()
-                .title("Add column")
+                .title("Filters")
                 .description("Open a project to configure its columns."),
         );
     };
@@ -70,109 +99,115 @@ fn columns_page(cx: &App) -> SettingPage {
         .enumerate()
         .map(|(ix, name)| (format!("c{ix}"), SharedString::from(name.clone())))
         .collect();
-    let tracked = columns::tracked(cx);
-    let unadded: Vec<(String, SharedString)> = headers
-        .iter()
-        .filter(|(key, _)| !tracked.contains(key))
-        .cloned()
-        .collect();
 
-    // Heading + one subtitle row carrying the Add button on its right.
-    let mut page = SettingPage::new("Columns").group(SettingGroup::new().title("Add column").item(
+    let mut group = SettingGroup::new().title("Filters").item(
         SettingItem::new(
-            "Add a column to change its settings",
-            SettingField::element(move |_opts: &_, _window: &mut _, _cx: &mut _| {
-                add_column_button(unadded.clone())
-            }),
-        ),
-    ));
+            "Enable column filters",
+            SettingField::switch(
+                |cx: &App| columns::filters_master_enabled(cx),
+                |on: bool, cx: &mut App| columns::set_filters_master_enabled(on, cx),
+            ),
+        )
+        .description("Show a filter dropdown in the header of the columns you pick."),
+    );
 
-    for key in tracked {
-        let name = headers
-            .iter()
-            .find(|(k, _)| *k == key)
-            .map(|(_, n)| n.clone())
-            .unwrap_or_else(|| SharedString::from(key.clone()));
-        let (get_key, set_key, remove_key) = (key.clone(), key.clone(), key.clone());
-        page = page.group(
-            SettingGroup::new()
-                // Column name is the group title so it lists under "Columns" in the sidebar (titled groups only).
-                .title(name)
-                .item(SettingItem::render(move |_opts, _window, _cx| {
-                    let remove_key = remove_key.clone();
-                    h_flex().w_full().justify_end().child(
-                        Button::new(SharedString::from(format!("remove-{remove_key}")))
-                            .icon(IconName::Delete)
-                            .label("Remove")
-                            .ghost()
-                            .xsmall()
-                            .on_click(move |_, _, cx: &mut App| {
-                                columns::remove(&remove_key, cx);
-                            }),
-                    )
-                }))
-                .item(
-                    SettingItem::new(
-                        "Enable filter",
-                        SettingField::switch(
-                            move |cx: &App| columns::get(&get_key, cx).filter_enabled,
-                            move |on: bool, cx: &mut App| {
-                                columns::update(&set_key, |s| s.filter_enabled = on, cx);
-                            },
-                        ),
-                    )
-                    .description("Show a filter dropdown in this column's header."),
-                ),
+    if columns::filters_master_enabled(cx) {
+        group = group.item(
+            SettingItem::new(
+                "Filtered columns",
+                SettingField::element(move |_opts: &_, _window: &mut _, cx: &mut _| {
+                    let label = picker_label(&headers, cx);
+                    filtered_columns_picker(headers.clone(), label)
+                }),
+            )
+            .description("Columns that show a filter dropdown."),
         );
     }
-    page
+    SettingPage::new("Columns").group(group)
 }
 
-/// The Add button and its column list. A popover rather than a `Dropdown` so the list can scroll
-/// and so the trigger reads as an action rather than a value being picked.
-fn add_column_button(unadded: Vec<(String, SharedString)>) -> impl gpui::IntoElement {
-    Popover::new("add-column")
+/// Trigger label for the picker: "First +N others", or "No columns" when nothing is selected.
+fn picker_label(headers: &[(String, SharedString)], cx: &App) -> SharedString {
+    let selected: Vec<&SharedString> = headers
+        .iter()
+        .filter(|(key, _)| columns::get(key, cx).filter_enabled)
+        .map(|(_, name)| name)
+        .collect();
+    match selected.len() {
+        0 => "No columns".into(),
+        1 => selected[0].clone(),
+        n => format!(
+            "{} +{} other{}",
+            selected[0],
+            n - 1,
+            if n - 1 == 1 { "" } else { "s" }
+        )
+        .into(),
+    }
+}
+
+/// The picker trigger ("First +N others") and its checklist. A popover, not a `Dropdown`, so the
+/// list scrolls and clicking a row toggles that column's filter without dismissing.
+fn filtered_columns_picker(
+    headers: Vec<(String, SharedString)>,
+    label: SharedString,
+) -> impl gpui::IntoElement {
+    Popover::new("filtered-columns")
         .trigger(
-            Button::new("add-column-btn")
-                .icon(IconName::Plus)
-                .label("Add")
+            Button::new("filtered-columns-btn")
+                .label(label)
                 .outline()
                 .xsmall(),
         )
         .content(move |_state, _window, cx| {
-            let (hover, muted) = (cx.theme().secondary_hover, cx.theme().muted_foreground);
+            // Match gpui-component's own menu items: text_sm rows, accent highlight on hover, a
+            // right-aligned check marking selection (see `menu/popup_menu.rs`).
+            let (accent, accent_fg, muted) = (
+                cx.theme().accent,
+                cx.theme().accent_foreground,
+                cx.theme().muted_foreground,
+            );
             let radius = cx.theme().radius;
-            let popover = cx.entity();
-            let rows: Vec<_> = unadded.clone();
+            let rows = headers.clone();
             v_flex()
-                .id("add-column-list")
-                .w(px(220.))
-                .max_h(px(280.))
-                // `overflow_y_scroll` only — `overflow_hidden` would set *both* axes and silently
-                // undo it.
+                .id("filtered-columns-list")
+                .w(px(240.))
+                .max_h(px(320.))
+                .p_1()
+                // `overflow_y_scroll` only — `overflow_hidden` would set *both* axes and undo it.
                 .overflow_y_scroll()
                 .when(rows.is_empty(), |list| {
                     list.child(
                         div()
                             .px_2()
                             .py_1()
+                            .text_sm()
                             .text_color(muted)
-                            .child("Every column has been added"),
+                            .child("No columns in this project"),
                     )
                 })
-                .children(rows.into_iter().map(move |(key, label)| {
-                    let popover = popover.clone();
-                    div()
-                        .id(SharedString::from(format!("add-{key}")))
-                        .px_2()
-                        .py_1()
+                .children(rows.into_iter().map(move |(key, name)| {
+                    let on = columns::get(&key, cx).filter_enabled;
+                    let toggle_key = key.clone();
+                    h_flex()
+                        .id(SharedString::from(format!("pick-{key}")))
+                        .h(px(26.))
+                        .px(px(8.))
+                        .gap_x_1()
                         .rounded(radius)
+                        .items_center()
+                        .justify_between()
+                        .text_sm()
                         .cursor_pointer()
-                        .hover(|r| r.bg(hover))
-                        .child(label)
-                        .on_click(move |_, window, cx: &mut App| {
-                            columns::add(&key, cx);
-                            popover.update(cx, |state, cx| state.dismiss(window, cx));
+                        .hover(|r| r.bg(accent).text_color(accent_fg))
+                        .child(name)
+                        .when(on, |r| r.child(Icon::new(IconName::Check).xsmall()))
+                        .on_click(move |_, _, cx: &mut App| {
+                            columns::update(
+                                &toggle_key,
+                                |s| s.filter_enabled = !s.filter_enabled,
+                                cx,
+                            );
                         })
                 }))
         })
