@@ -1,7 +1,7 @@
 use gpui::*;
 use window_wrapper::OpenBrowser;
 
-use crate::actions::{NewProject, ToggleBottomDock, ToggleLeftDock, ToggleRightDock};
+use crate::actions::{NewProject, Save, ToggleBottomDock, ToggleLeftDock, ToggleRightDock};
 use crate::theming::{SwitchTheme, THEME_CHOICES};
 
 // ponytail: Undo/Redo/Cut/Copy/Paste are declared and wired into the Edit menu but have no
@@ -31,6 +31,8 @@ pub fn app_menus() -> Vec<Menu> {
                 MenuItem::action("New Project…", NewProject),
                 MenuItem::Separator,
                 MenuItem::action("Open Projects…", OpenProjects),
+                MenuItem::action("Save", Save),
+                MenuItem::Separator,
                 MenuItem::action("Settings", OpenSettings),
                 MenuItem::Separator,
                 MenuItem::action("Quit", Quit),
