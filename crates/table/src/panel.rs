@@ -74,11 +74,11 @@ pub struct TablePanel {
 
 impl TablePanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Multi-line so long values wrap and the box grows down instead of scrolling sideways;
-        // `submit_on_enter` keeps Enter as commit (Shift+Enter inserts a newline).
+        // Multi-line so long values wrap; the editor fills the user-resizable box (`cell.rs`) and
+        // scrolls inside it. `submit_on_enter` keeps Enter as commit (Shift+Enter inserts a newline).
         let editor = cx.new(|cx| {
             InputState::new(window, cx)
-                .auto_grow(1, 8)
+                .multi_line(true)
                 .submit_on_enter(true)
         });
         let filter_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search values"));
@@ -94,8 +94,9 @@ impl TablePanel {
             loaded_project = Some(project.file.clone());
         }
         let column_settings = settings::columns::load(cx);
+        let filters_on = settings::columns::filters_master_enabled(cx);
         delegate.apply_column_settings(|key| {
-            column_settings.get(key).is_some_and(|s| s.filter_enabled)
+            filters_on && column_settings.get(key).is_some_and(|s| s.filter_enabled)
         });
         let state = cx.new(|cx| {
             TableState::new(delegate, window, cx)
@@ -193,9 +194,10 @@ impl TablePanel {
                 // A project-scoped setting write: re-apply per-column settings only, don't reload (loses state).
                 if this.loaded_project.as_ref() == Some(&file) {
                     let column_settings = settings::columns::load(cx);
+                    let filters_on = settings::columns::filters_master_enabled(cx);
                     this.state.update(cx, |state, cx| {
                         state.delegate_mut().apply_column_settings(|key| {
-                            column_settings.get(key).is_some_and(|s| s.filter_enabled)
+                            filters_on && column_settings.get(key).is_some_and(|s| s.filter_enabled)
                         });
                         state.refresh(cx);
                         cx.emit(TableChanged);
@@ -209,12 +211,13 @@ impl TablePanel {
                 let image_paths = Self::resolve_images(&project.data);
                 this.loaded_project = Some(file.clone());
                 let column_settings = settings::columns::load(cx);
+                let filters_on = settings::columns::filters_master_enabled(cx);
                 this.state.update(cx, |state, cx| {
                     state.delegate_mut().set_data(&headers, &rows);
                     Self::apply_saved_layout(state.delegate_mut(), &file);
                     state.delegate_mut().set_image_paths(image_paths);
                     state.delegate_mut().apply_column_settings(|key| {
-                        column_settings.get(key).is_some_and(|s| s.filter_enabled)
+                        filters_on && column_settings.get(key).is_some_and(|s| s.filter_enabled)
                     });
                     state.refresh(cx);
                     cx.emit(TableChanged);

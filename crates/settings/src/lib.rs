@@ -92,7 +92,7 @@ fn set_scoped_bool(key: &'static str, val: bool, cx: &mut App) {
     }
 }
 
-fn scoped_text(key: &str, cx: &App) -> SharedString {
+pub fn scoped_text(key: &str, cx: &App) -> SharedString {
     match SettingsScope::current(cx) {
         SettingsScope::User => AppSettings::get(cx)
             .values
@@ -106,7 +106,7 @@ fn scoped_text(key: &str, cx: &App) -> SharedString {
     }
 }
 
-fn set_scoped_text(key: &'static str, val: SharedString, cx: &mut App) {
+pub fn set_scoped_text(key: &'static str, val: SharedString, cx: &mut App) {
     let target = match SettingsScope::current(cx) {
         SettingsScope::Project if cx.has_global::<project::CurrentProject>() => {
             SettingsScope::Project
@@ -456,6 +456,10 @@ pub struct SettingsWindow {
     pub build_pages: fn(&App) -> Vec<SettingPage>,
     /// Persists the window's size (debounced) so it reopens where it was left.
     _bounds_sub: Subscription,
+    /// Re-render when any setting changes so scope-dependent pages (autosave's method row, the
+    /// columns filter picker) rebuild live instead of on the next unrelated repaint.
+    _settings_sub: Subscription,
+    _project_sub: Subscription,
 }
 
 impl SettingsWindow {
@@ -470,9 +474,13 @@ impl SettingsWindow {
                 AppSettings::set_text(SETTINGS_WINDOW_BOUNDS_KEY, json.into(), cx);
             }
         });
+        let _settings_sub = cx.observe_global::<AppSettings>(|_this, cx| cx.notify());
+        let _project_sub = cx.observe_global::<project::CurrentProject>(|_this, cx| cx.notify());
         Self {
             build_pages,
             _bounds_sub,
+            _settings_sub,
+            _project_sub,
         }
     }
 }
