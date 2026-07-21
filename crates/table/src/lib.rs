@@ -19,7 +19,7 @@ pub use panel::{Search, TablePanel};
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
 pub const TABLE_STRIPES_KEY: &str = "table_stripes";
 
-use gpui::{App, Bounds, Global, Pixels, WeakEntity, px, size};
+use gpui::{App, Bounds, Global, Pixels, Point, Size, WeakEntity, px, size};
 use gpui_component::table::TableState;
 
 /// Global handle to the live table state, so cross-crate status-bar items (the fake-data button
@@ -40,6 +40,14 @@ impl Default for TableViewportBounds {
         Self(Bounds::new(Default::default(), size(px(4000.), px(4000.))))
     }
 }
+
+/// Captured when an editor resize-drag begins: the mouse position and box size at that instant, so
+/// each drag-move applies the delta from the start. Transient — only present while dragging.
+pub(crate) struct EditorResizeAnchor {
+    pub mouse: Point<Pixels>,
+    pub size: Size<Pixels>,
+}
+impl Global for EditorResizeAnchor {}
 
 /// Persist the open project's table data to its `.qrate` file, synchronously, and clear the
 /// `PROJECT_DATA` dirty mark. No-op with no project open, no live table, or a blank project. Runs
