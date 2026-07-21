@@ -183,8 +183,36 @@ impl App {
         });
 
         // Native X skips `on_app_quit` on Windows (zed#40385/#40290), so flush here too — unless locked.
-        window.on_window_should_close(cx, |_, cx| {
+        window.on_window_should_close(cx, |window, cx| {
             if WindowLock::is_locked(cx) {
+                return false;
+            }
+            // Unsaved cell edits (autosave off, or a pending "timed" save) are the only thing the
+            // user might want to discard — layout/settings auto-persist on the flush below.
+            if settings::dirty::Dirty::has(settings::dirty::PROJECT_DATA, cx) {
+                let answer = window.prompt(
+                    PromptLevel::Warning,
+                    "You have unsaved changes.",
+                    Some("Save them before closing?"),
+                    &["Save", "Don't Save", "Cancel"],
+                    cx,
+                );
+                cx.spawn(async move |cx| {
+                    let choice = answer.await.unwrap_or(2);
+                    cx.update(|cx| {
+                        match choice {
+                            // Save: the quit flush persists PROJECT_DATA (still dirty).
+                            0 => {}
+                            // Don't Save: drop the mark so the flush skips it — edits are discarded.
+                            1 => settings::dirty::clear(settings::dirty::PROJECT_DATA, cx),
+                            // Cancel: leave the window open.
+                            _ => return,
+                        }
+                        cx.quit();
+                    });
+                })
+                .detach();
+                // Veto this close; the async handler quits once the user decides.
                 return false;
             }
             flush_all_state(cx);
@@ -241,7 +269,13 @@ impl Render for App {
                                 .map(|p| p.display_name())
                                 .unwrap_or_default(),
                         )
-                        .dirty(settings::dirty::Dirty::any(cx)),
+                        // Only cell data (gated by autosave/Ctrl+S) can be genuinely unsaved;
+                        // column layout/settings auto-persist via the debounced writer, so `any()`
+                        // would light the dot forever for those (nothing clears them until quit).
+                        .dirty(settings::dirty::Dirty::has(
+                            settings::dirty::PROJECT_DATA,
+                            cx,
+                        )),
                     )
                     .child(
                         div()
