@@ -4,6 +4,7 @@ members = [
   "crates/app",
   "crates/ai",
   "crates/cloud-sync",
+  "crates/diagnostics",
   "crates/project-wizard",
   "crates/settings",
   "crates/table",

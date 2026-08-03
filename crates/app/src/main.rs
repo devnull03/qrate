@@ -290,6 +290,39 @@ impl Render for App {
     }
 }
 
+/// Select and scroll to whatever a problem points at. Three index spaces meet here: the
+/// diagnostic's source row and column *name*, the delegate's filtered view row, and the table's
+/// display column (data col + 1, past the pinned `#`).
+fn reveal_in_table(location: &diagnostics::Location, cx: &mut gpui::App) {
+    let Some(state) = cx
+        .try_global::<table::TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+
+    let delegate_lookup = {
+        let delegate = state.read(cx).delegate();
+        let row = location.row.map(|r| delegate.view_row(r));
+        let col = location
+            .column
+            .as_ref()
+            .map(|c| delegate.data_col(c).map(|ix| ix + 1));
+        (row, col)
+    };
+
+    // ponytail: a row filtered out of view is silently unreachable; clearing the user's filter
+    // on what they think is a navigation click would be worse than nothing happening.
+    match delegate_lookup {
+        (Some(Some(row)), Some(Some(col))) => {
+            state.update(cx, |s, cx| s.set_selected_cell(row, col, cx))
+        }
+        (Some(Some(row)), None) => state.update(cx, |s, cx| s.set_selected_row(row, cx)),
+        (None, Some(Some(col))) => state.update(cx, |s, cx| s.set_selected_col(col, cx)),
+        _ => {}
+    }
+}
+
 /// Final persist before the app or main window goes away. Called from both
 /// `on_app_quit` (menu Quit) and `on_window_should_close` (native X), since on
 /// Windows the native close doesn't route through the app-quit path.
@@ -342,6 +375,13 @@ fn main() {
         // Lets the launcher (in the `project-wizard` crate, which can't depend on `app`) open
         // the real main window without a crate cycle. See `project_wizard::launcher`.
         cx.set_global(LauncherHooks { open_main_window });
+
+        // Same inversion for the Problems panel: `diagnostics` must not depend on `table`, so
+        // the jump comes back through here. See `diagnostics::DiagnosticHooks`.
+        cx.set_global(diagnostics::DiagnosticHooks {
+            reveal: reveal_in_table,
+        });
+        diagnostics::init(cx);
 
         cx.on_action(|_: &OpenSettings, cx| open_settings_window(cx));
         cx.on_action(|_: &NewProject, cx| {

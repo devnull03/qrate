@@ -82,6 +82,24 @@ pub struct SheetData {
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
     pub notes: Vec<CellNote>,
+    /// Top-left of the sheet's used range. `headers`/`rows` start here, but [`CellNote::cell`]
+    /// is an absolute sheet coordinate — subtract this before indexing into them.
+    pub origin: (u32, u32),
+}
+
+/// `"B2"` → zero-based `(row, col)`. Columns are bijective base-26: `A`=0 … `Z`=25, `AA`=26.
+/// `None` for anything that isn't letters-then-digits.
+pub fn a1_to_index(cell: &str) -> Option<(u32, u32)> {
+    let split = cell.find(|c: char| c.is_ascii_digit())?;
+    let (letters, digits) = cell.split_at(split);
+    if letters.is_empty() || !letters.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return None;
+    }
+    let col = letters.bytes().try_fold(0u32, |acc, b| {
+        acc.checked_mul(26)?
+            .checked_add(u32::from(b.to_ascii_uppercase() - b'A') + 1)
+    })?;
+    Some((digits.parse::<u32>().ok()?.checked_sub(1)?, col - 1))
 }
 
 /// Fetch a public Sheet as `.xlsx` (one download) and pull out both the first
@@ -121,17 +139,22 @@ pub fn fetch_sheet(link: &str) -> Result<SheetData, SheetSyncError> {
     fs::create_dir_all(&dir)?;
     fs::write(dir.join(format!("{id}.xlsx")), &body)?;
 
-    let (headers, rows) = parse_xlsx_rows(&body)?;
+    let (headers, rows, origin) = parse_xlsx_rows(&body)?;
     let notes = parse_xlsx_notes(&body)?;
     Ok(SheetData {
         headers,
         rows,
         notes,
+        origin,
     })
 }
 
-/// First tab's values via calamine — row 0 is the header, the rest are data.
-fn parse_xlsx_rows(bytes: &[u8]) -> Result<(Vec<String>, Vec<Vec<String>>), SheetSyncError> {
+/// First tab's values via calamine — row 0 is the header, the rest are data. Also returns the
+/// used range's top-left, which is not always A1 and which cell-note coordinates are relative to.
+#[allow(clippy::type_complexity)]
+fn parse_xlsx_rows(
+    bytes: &[u8],
+) -> Result<(Vec<String>, Vec<Vec<String>>, (u32, u32)), SheetSyncError> {
     use calamine::{Reader, Xlsx};
 
     let mut wb: Xlsx<std::io::Cursor<&[u8]>> =
@@ -142,6 +165,7 @@ fn parse_xlsx_rows(bytes: &[u8]) -> Result<(Vec<String>, Vec<Vec<String>>), Shee
         .ok_or_else(|| SheetSyncError::Parse("the sheet has no tabs".into()))?
         .map_err(|e| SheetSyncError::Parse(e.to_string()))?;
 
+    let origin = range.start().unwrap_or((0, 0));
     let mut iter = range.rows();
     let headers = iter
         .next()
@@ -150,7 +174,7 @@ fn parse_xlsx_rows(bytes: &[u8]) -> Result<(Vec<String>, Vec<Vec<String>>), Shee
     let rows = iter
         .map(|r| r.iter().map(|c| c.to_string()).collect())
         .collect();
-    Ok((headers, rows))
+    Ok((headers, rows, origin))
 }
 
 /// Cell notes from every `xl/comments*.xml` entry in the xlsx zip.
@@ -235,6 +259,21 @@ mod tests {
 
         let r = parse_sheet_ref("https://docs.google.com/spreadsheets/d/onlyid").unwrap();
         assert_eq!(r.id, "onlyid");
+    }
+
+    #[test]
+    fn a1_references_convert_to_zero_based_indices() {
+        assert_eq!(a1_to_index("A1"), Some((0, 0)));
+        assert_eq!(a1_to_index("B2"), Some((1, 1)));
+        assert_eq!(a1_to_index("Z9"), Some((8, 25)));
+        // Bijective base-26: AA follows Z, so it is 26 rather than 27 or 0.
+        assert_eq!(a1_to_index("AA1"), Some((0, 26)));
+        assert_eq!(a1_to_index("AB10"), Some((9, 27)));
+        assert_eq!(a1_to_index("b2"), Some((1, 1)));
+
+        for bad in ["", "1", "B", "B0", "B-2", "2B", "$B$2"] {
+            assert_eq!(a1_to_index(bad), None, "{bad} should not parse");
+        }
     }
 
     #[test]

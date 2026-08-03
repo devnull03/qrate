@@ -24,16 +24,14 @@ pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> St
     });
     registry.items_mut().add_left(left_panel);
 
-    // ponytail: diagnostics don't exist yet — count is a placeholder "0". Wire the real
-    // error/warning totals when ProblemsPanel grows content.
-    let problems = cx.new(|_| {
+    let problems = cx.new(|cx| {
         DockToggleButton::new(
             "status-problems",
             dock.clone(),
             DockPlacement::Bottom,
             IconName::TriangleAlert,
         )
-        .label("0")
+        .problem_count(cx)
     });
     registry.items_mut().add_left(problems);
 

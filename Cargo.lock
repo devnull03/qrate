@@ -185,6 +185,7 @@ name = "app"
 version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
+ "diagnostics",
  "dirs",
  "gpui",
  "gpui-component",
@@ -1444,6 +1445,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "diagnostics"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "gpui",
+ "gpui-component",
+ "settings",
 ]
 
 [[package]]
@@ -8466,6 +8476,7 @@ dependencies = [
 name = "workspace"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "diagnostics",
  "gpui",
  "gpui-component",
  "serde_json",
