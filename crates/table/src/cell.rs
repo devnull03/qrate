@@ -6,12 +6,16 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, Context, CursorStyle, DragMoveEvent,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, Size,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString, Size,
     StatefulInteractiveElement as _, Styled as _, Window, deferred, div, px, size,
 };
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme as _, input::Input, table::TableState};
 use settings::AppSettings;
 
+use diagnostics::Diagnostics;
+
+use crate::note::{self, Target};
 use crate::{
     EditorResizeAnchor, delegate::QrateTableDelegate, editing::EditState, floating::clamped_float,
 };
@@ -82,9 +86,44 @@ pub(crate) fn render_cell(
         .unwrap_or_default();
     let box_size = editor_size(cx, table);
     let (max_w, max_h) = (table.size.width, table.size.height);
+
+    let location = delegate.location(Some(row_ix), Some(col_ix));
+    let worst = Diagnostics::worst_at(
+        &location.dataset,
+        Some(row_ix),
+        location.column.as_deref(),
+        cx,
+    );
+    let tip = note::tooltip_text(&location, cx);
+    let note_editor = note::editor(delegate, Some(row_ix), Some(col_ix), cx);
+
     div()
+        // The library ids the *wrapper* cell `table-cell:{r}:{c}`; this is the inner div, and it
+        // needs its own id before it can carry a tooltip or a context menu.
+        .id(SharedString::from(format!("cell-note:{row_ix}:{col_ix}")))
         .size_full()
         .child(text)
+        .when_some(worst, |cell, severity| {
+            cell.child(note::marker(severity, cx))
+        })
+        .when_some(tip, |cell, text| {
+            cell.tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
+            })
+            .tooltip_show_delay(note::HOVER_DELAY)
+        })
+        .context_menu(move |menu, window, cx| {
+            note::menu(
+                Target::Cell {
+                    row: row_ix,
+                    col: col_ix,
+                },
+                menu,
+                window,
+                cx,
+            )
+        })
+        .when_some(note_editor, |cell, editor| cell.child(editor))
         .when(editing, |cell| {
             // `deferred` paints the box above the grid and lets it escape the cell's clip;
             // `clamped_float` confines it to the *table* rect (not the window), so it can't spill

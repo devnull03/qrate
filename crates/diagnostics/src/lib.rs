@@ -30,8 +30,8 @@ pub struct Location {
     pub column: Option<SharedString>,
 }
 
-/// How loud a problem is. Closed set — a user-authored mark is just a [`Severity::Note`] from
-/// [`Source::User`], so marks and validator output share one list and one colour scale.
+/// How loud a problem is. Closed set — a hand-authored mark is just a [`Severity::Note`] from
+/// [`Source::Note`], so marks and validator output share one list and one colour scale.
 /// Ordered worst-first so sorting by it floats errors to the top.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Severity {
@@ -66,29 +66,30 @@ impl Severity {
 /// What emitted a problem. Doubles as the invalidation key for [`Diagnostics::set`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Source {
-    /// Carried in from the imported spreadsheet — xlsx cell notes today. Persists.
-    Import,
-    /// Authored in qrate by a person. Persists.
-    User,
+    /// A note attached to the data, whether typed here or carried in from the imported
+    /// spreadsheet. Notes carry no provenance — one is worth no more than the other. Persists.
+    Note,
     /// A named rule, validator, plugin, or language server — the string is what the panel shows.
     /// Never persisted: computed output is recomputed on open, and stored copies go stale.
     Validator(SharedString),
 }
 
+/// `__notes.source` for every persisted note, and the replace-by-source key [`Diagnostics::set`]
+/// files them under.
+pub const SOURCE_NOTE: &str = "note";
+
 impl Source {
-    /// Provenance shown in the panel and stored in `__notes.source`.
+    /// What the panel shows in a diagnostic's source column.
     pub fn label(&self) -> SharedString {
         match self {
-            Source::Import => "import".into(),
-            Source::User => "you".into(),
+            Source::Note => SOURCE_NOTE.into(),
             Source::Validator(name) => name.clone(),
         }
     }
 
     pub fn from_key(key: &str) -> Self {
         match key {
-            "import" => Source::Import,
-            "you" => Source::User,
+            SOURCE_NOTE => Source::Note,
             other => Source::Validator(other.to_string().into()),
         }
     }
@@ -96,7 +97,7 @@ impl Source {
     /// Whether this source's output belongs in the `.qrate` file. Authored content persists;
     /// computed content is recomputed on open.
     pub fn persists(&self) -> bool {
-        matches!(self, Source::Import | Source::User)
+        matches!(self, Source::Note)
     }
 }
 
@@ -161,6 +162,85 @@ impl Diagnostics {
             .filter(|d| matches!(d.severity, Severity::Error | Severity::Warning))
             .count()
     }
+
+    /// Everything pointing at exactly this location. A cell passes both coordinates, the row-index
+    /// gutter passes row-only, a column header column-only — so a cell does *not* inherit its
+    /// row's or column's diagnostics, and each is marked where it was attached.
+    ///
+    // ponytail: linear scan, run once per rendered cell. Index by (row, column) if a sheet with
+    // thousands of notes starts dropping frames.
+    pub fn at<'a>(
+        dataset: &'a str,
+        row: Option<usize>,
+        column: Option<&'a str>,
+        cx: &'a App,
+    ) -> impl Iterator<Item = &'a Diagnostic> {
+        Self::all(cx).iter().filter(move |d| {
+            d.location.dataset == dataset
+                && d.location.row == row
+                && d.location.column.as_deref() == column
+        })
+    }
+
+    /// Severity of the loudest diagnostic here, which is the colour the corner marker takes.
+    pub fn worst_at(
+        dataset: &str,
+        row: Option<usize>,
+        column: Option<&str>,
+        cx: &App,
+    ) -> Option<Severity> {
+        Self::at(dataset, row, column, cx).map(|d| d.severity).min()
+    }
+
+    /// The note filed here, if any — what the `Notes ▸` menu offers to edit rather than add.
+    pub fn note_at(
+        dataset: &str,
+        row: Option<usize>,
+        column: Option<&str>,
+        cx: &App,
+    ) -> Option<SharedString> {
+        Self::at(dataset, row, column, cx)
+            .find(|d| d.source == Source::Note)
+            .map(|d| d.message.clone())
+    }
+
+    /// Attach a note here, replacing any note already at this location; an empty `message` deletes
+    /// it. Writes straight through to `__notes` — this is a deliberate keystroke, not the hot path
+    /// the debounced setting writer exists for.
+    pub fn set_note(location: Location, message: SharedString, cx: &mut App) {
+        let this = cx.default_global::<Self>();
+        this.items
+            .retain(|d| d.source != Source::Note || d.location != location);
+        if !message.trim().is_empty() {
+            this.items.push(Diagnostic {
+                location,
+                severity: Severity::Note,
+                source: Source::Note,
+                message,
+            });
+        }
+
+        // No open project (tests, early startup) leaves the change in memory only.
+        let Some(file) = this.loaded.clone() else {
+            return;
+        };
+        let notes: Vec<_> = this
+            .items
+            .iter()
+            .filter(|d| d.source == Source::Note)
+            .map(|d| settings::project::StoredNote {
+                dataset: d.location.dataset.to_string(),
+                row: d.location.row,
+                column: d.location.column.as_ref().map(|c| c.to_string()),
+                severity: d.severity.key().into(),
+                source: SOURCE_NOTE.into(),
+                message: d.message.to_string(),
+            })
+            .collect();
+        if let Err(err) = settings::project::write_notes(&file, SOURCE_NOTE, &notes) {
+            eprintln!("failed to save notes: {err}");
+        }
+    }
 }
 
 /// Load the open project's stored notes, and reload on project switch. Called from `main` rather
@@ -188,26 +268,22 @@ fn load_project_notes(cx: &mut App) {
     let stored = settings::project::read_notes(&file).unwrap_or_default();
     cx.default_global::<Diagnostics>().loaded = Some(file);
 
-    // Grouped by source so each keeps its own replace-by-source slot, exactly as if it had just
-    // published: a later re-import of one source can't drop another's notes.
-    for source in [Source::Import, Source::User] {
-        let key = source.label();
-        let items = stored
-            .iter()
-            .filter(|n| n.source == key.as_ref())
-            .map(|n| Diagnostic {
-                location: Location {
-                    dataset: n.dataset.clone().into(),
-                    row: n.row,
-                    column: n.column.clone().map(SharedString::from),
-                },
-                severity: Severity::from_key(&n.severity),
-                source: source.clone(),
-                message: n.message.clone().into(),
-            })
-            .collect();
-        Diagnostics::set(&source, DATASET_MAIN, items, cx);
-    }
+    // Republished under `Source::Note`, exactly as if a note had just been attached, so the
+    // store reaches the same state whichever way a note arrived.
+    let items = stored
+        .iter()
+        .map(|n| Diagnostic {
+            location: Location {
+                dataset: n.dataset.clone().into(),
+                row: n.row,
+                column: n.column.clone().map(SharedString::from),
+            },
+            severity: Severity::from_key(&n.severity),
+            source: Source::Note,
+            message: n.message.clone().into(),
+        })
+        .collect();
+    Diagnostics::set(&Source::Note, DATASET_MAIN, items, cx);
 }
 
 /// Set once at startup (see `crates/app/src/main.rs`) so the Problems panel can jump the table to
@@ -253,14 +329,14 @@ mod tests {
             .unwrap();
         settings::project::write_notes(
             &file,
-            "import",
+            "note",
             &[
                 StoredNote {
                     dataset: DATASET_MAIN.into(),
                     row: Some(2),
                     column: Some("Title".into()),
                     severity: "warning".into(),
-                    source: "import".into(),
+                    source: "note".into(),
                     message: "check this".into(),
                 },
                 StoredNote {
@@ -268,7 +344,7 @@ mod tests {
                     row: Some(4),
                     column: None,
                     severity: "note".into(),
-                    source: "import".into(),
+                    source: "note".into(),
                     message: "whole row".into(),
                 },
             ],
@@ -297,7 +373,7 @@ mod tests {
             let wide = all.iter().find(|d| d.message == "whole row").unwrap();
             assert_eq!(wide.severity, Severity::Note);
             assert_eq!((wide.location.row, &wide.location.column), (Some(4), &None));
-            assert!(all.iter().all(|d| d.source == Source::Import));
+            assert!(all.iter().all(|d| d.source == Source::Note));
 
             // Re-running is idempotent: the `loaded` guard stops the same project's notes being
             // read again on every project-scoped setting write.
@@ -307,26 +383,102 @@ mod tests {
     }
 
     #[gpui::test]
+    fn notes_upsert_delete_and_reach_the_disk(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join("qrate-diagnostics-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("author.qrate");
+        let _ = std::fs::remove_file(&file);
+        settings::project::create_project_file(&file, "T", "CSV", None, None, &[], &[], &[])
+            .unwrap();
+
+        let cell = Location {
+            dataset: DATASET_MAIN.into(),
+            row: Some(3),
+            column: Some("Title".into()),
+        };
+        let whole_row = Location {
+            dataset: DATASET_MAIN.into(),
+            row: Some(7),
+            column: None,
+        };
+
+        cx.update(|cx| {
+            cx.set_global(CurrentProject {
+                file: file.clone(),
+                data: ProjectData {
+                    name: "T".into(),
+                    columns: Vec::new(),
+                    headers: Vec::new(),
+                    rows: Vec::new(),
+                    values: Default::default(),
+                },
+            });
+            init(cx);
+
+            Diagnostics::set_note(cell.clone(), "first".into(), cx);
+            Diagnostics::set_note(whole_row.clone(), "row wide".into(), cx);
+            assert_eq!(Diagnostics::all(cx).len(), 2);
+
+            // Same location again replaces rather than stacking.
+            Diagnostics::set_note(cell.clone(), "second".into(), cx);
+            assert_eq!(Diagnostics::all(cx).len(), 2);
+            assert_eq!(
+                Diagnostics::note_at(DATASET_MAIN, Some(3), Some("Title"), cx),
+                Some("second".into())
+            );
+
+            // A validator sharing the cell is a separate entry, and outranks the note's colour.
+            let v = Source::Validator("spell".into());
+            Diagnostics::set(
+                &v,
+                DATASET_MAIN,
+                vec![Diagnostic {
+                    location: cell.clone(),
+                    severity: Severity::Error,
+                    source: v.clone(),
+                    message: "typo".into(),
+                }],
+                cx,
+            );
+            assert_eq!(
+                Diagnostics::worst_at(DATASET_MAIN, Some(3), Some("Title"), cx),
+                Some(Severity::Error)
+            );
+
+            // An empty message deletes the note and leaves the validator's entry standing.
+            Diagnostics::set_note(cell.clone(), "   ".into(), cx);
+            assert_eq!(
+                Diagnostics::note_at(DATASET_MAIN, Some(3), Some("Title"), cx),
+                None
+            );
+            assert_eq!(
+                Diagnostics::worst_at(DATASET_MAIN, Some(3), Some("Title"), cx),
+                Some(Severity::Error)
+            );
+        });
+
+        // Only the surviving note is on disk — validator output never is.
+        let stored = settings::project::read_notes(&file).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].message, "row wide");
+        assert_eq!((stored[0].row, &stored[0].column), (Some(7), &None));
+        assert_eq!(stored[0].source, "note");
+    }
+
+    #[gpui::test]
     fn publishing_replaces_only_that_sources_diagnostics(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let import = |n: usize| {
                 (0..n)
-                    .map(|i| {
-                        diag(
-                            Severity::Note,
-                            Source::Import,
-                            DATASET_MAIN,
-                            &format!("n{i}"),
-                        )
-                    })
+                    .map(|i| diag(Severity::Note, Source::Note, DATASET_MAIN, &format!("n{i}")))
                     .collect::<Vec<_>>()
             };
 
-            Diagnostics::set(&Source::Import, DATASET_MAIN, import(2), cx);
+            Diagnostics::set(&Source::Note, DATASET_MAIN, import(2), cx);
             assert_eq!(Diagnostics::all(cx).len(), 2);
 
             // Republishing replaces rather than appends — 1, not 3.
-            Diagnostics::set(&Source::Import, DATASET_MAIN, import(1), cx);
+            Diagnostics::set(&Source::Note, DATASET_MAIN, import(1), cx);
             assert_eq!(Diagnostics::all(cx).len(), 1);
 
             // A different source is additive.
@@ -340,7 +492,7 @@ mod tests {
             assert_eq!(Diagnostics::all(cx).len(), 2);
 
             // Publishing nothing clears that source and leaves the other alone.
-            Diagnostics::set(&Source::Import, DATASET_MAIN, vec![], cx);
+            Diagnostics::set(&Source::Note, DATASET_MAIN, vec![], cx);
             assert_eq!(Diagnostics::all(cx).len(), 1);
             assert_eq!(Diagnostics::all(cx)[0].source, spell);
 
@@ -359,13 +511,13 @@ mod tests {
     fn the_status_count_ignores_notes_and_info(cx: &mut TestAppContext) {
         cx.update(|cx| {
             Diagnostics::set(
-                &Source::Import,
+                &Source::Note,
                 DATASET_MAIN,
                 vec![
-                    diag(Severity::Error, Source::Import, DATASET_MAIN, "e"),
-                    diag(Severity::Warning, Source::Import, DATASET_MAIN, "w"),
-                    diag(Severity::Info, Source::Import, DATASET_MAIN, "i"),
-                    diag(Severity::Note, Source::Import, DATASET_MAIN, "n"),
+                    diag(Severity::Error, Source::Note, DATASET_MAIN, "e"),
+                    diag(Severity::Warning, Source::Note, DATASET_MAIN, "w"),
+                    diag(Severity::Info, Source::Note, DATASET_MAIN, "i"),
+                    diag(Severity::Note, Source::Note, DATASET_MAIN, "n"),
                 ],
                 cx,
             );

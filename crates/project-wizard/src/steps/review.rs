@@ -76,17 +76,19 @@ impl ProjectWizard {
                         .notes
                         .iter()
                         .map(|n| project::StoredNote {
-                            dataset: "dataset_main".into(),
+                            dataset: diagnostics::DATASET_MAIN.into(),
                             row: Some(n.row),
                             column: Some(n.column.clone()),
                             severity: "note".into(),
-                            source: "import".into(),
+                            source: diagnostics::SOURCE_NOTE.into(),
                             message: n.text.clone(),
                         })
                         .collect();
-                    if let Err(e) =
-                        project::write_notes(std::path::Path::new(&file), "import", &notes)
-                    {
+                    if let Err(e) = project::write_notes(
+                        std::path::Path::new(&file),
+                        diagnostics::SOURCE_NOTE,
+                        &notes,
+                    ) {
                         eprintln!("Couldn't save the sheet's notes — {e}");
                     }
                 }

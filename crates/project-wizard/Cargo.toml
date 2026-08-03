@@ -12,5 +12,6 @@ gpui-component.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 cloud-sync = { path = "../cloud-sync" }
+diagnostics = { path = "../diagnostics" }
 settings = { path = "../settings" }
 window-wrapper = { path = "../window-wrapper" }

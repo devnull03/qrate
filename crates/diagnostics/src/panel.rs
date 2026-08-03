@@ -247,7 +247,7 @@ mod tests {
             // One of each: cell, row-wide, column-wide, dataset-wide — the four `match` arms
             // that build a row's scope label, plus a sort across mixed `None`/`Some`.
             Diagnostics::set(
-                &Source::Import,
+                &Source::Note,
                 DATASET_MAIN,
                 [
                     (Severity::Note, at(Some(4), Some("Title"))),
@@ -259,7 +259,7 @@ mod tests {
                 .map(|(severity, location)| Diagnostic {
                     location,
                     severity,
-                    source: Source::Import,
+                    source: Source::Note,
                     message: "m".into(),
                 })
                 .collect(),

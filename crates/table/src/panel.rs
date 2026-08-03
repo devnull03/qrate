@@ -32,6 +32,8 @@ pub struct TablePanel {
     /// Commits an in-progress cell edit when the inline editor loses focus or the user presses
     /// Enter. Held alive for as long as the panel exists.
     _edit_sub: Subscription,
+    /// Saves the open note when its editor loses focus or the user presses Enter.
+    _note_sub: Subscription,
     /// Reloads the table when a different project is opened while this window is up.
     _project_sub: Subscription,
     /// Which project's data is currently loaded. `CurrentProject` is mutated by *every*
@@ -81,9 +83,16 @@ impl TablePanel {
                 .multi_line(true)
                 .submit_on_enter(true)
         });
+        let note_editor = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .submit_on_enter(true)
+                .placeholder("Note")
+        });
         let filter_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search values"));
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in table"));
-        let mut delegate = QrateTableDelegate::new(editor.clone(), filter_search.clone());
+        let mut delegate =
+            QrateTableDelegate::new(editor.clone(), note_editor.clone(), filter_search.clone());
         // Show the open project's data, restoring its saved column order/widths. Without a
         // project (dev launch straight into the main window) the table starts empty.
         let mut loaded_project = None;
@@ -125,6 +134,26 @@ impl TablePanel {
             // The commit marked PROJECT_DATA dirty; persist per the Autosave setting.
             this.schedule_autosave(cx);
         });
+
+        // Notes are not `PROJECT_DATA`: `set_note` writes `__notes` itself, so this must not also
+        // trip the table autosave (which would rewrite the whole dataset for a typed comment).
+        let note_state = state.clone();
+        let _note_sub = cx.subscribe(
+            &note_editor,
+            move |_this, editor, event: &InputEvent, cx| {
+                if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    return;
+                }
+                let message = editor.read(cx).value();
+                note_state.update(cx, |state, cx| {
+                    let Some(location) = state.delegate_mut().note_edit.take() else {
+                        return;
+                    };
+                    diagnostics::Diagnostics::set_note(location, message, cx);
+                    cx.notify();
+                });
+            },
+        );
 
         let _table_sub = cx.subscribe_in(
             &state,
@@ -259,6 +288,7 @@ impl TablePanel {
             state,
             loaded_project,
             _edit_sub,
+            _note_sub,
             _project_sub,
             _settings_sub,
             _table_sub,

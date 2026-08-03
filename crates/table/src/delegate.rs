@@ -12,6 +12,8 @@ use gpui_component::{
 };
 use serde::{Deserialize, Serialize};
 
+use diagnostics::{DATASET_MAIN, Location};
+
 use crate::{cell, editing::EditState, filter, row_index};
 
 /// Emitted whenever the table's selection, a cell's text, or the column layout changes, so
@@ -48,6 +50,10 @@ pub struct QrateTableDelegate {
     pub(crate) editing: EditState,
     /// Shared single-line editor, reused across whichever cell is being edited.
     pub(crate) editor: Entity<InputState>,
+    /// Which cell/row/column the note editor is open on, if any.
+    pub(crate) note_edit: Option<Location>,
+    /// Shared note editor, the same one-per-table arrangement as [`Self::editor`].
+    pub(crate) note_editor: Entity<InputState>,
     /// Each row's resolved image path, parallel to `rows`. `None` until `TablePanel` resolves it.
     image_paths: Vec<Option<PathBuf>>,
     /// View→source row mapping: `visible_rows[view] == source`. The library only ever sees this
@@ -67,13 +73,19 @@ pub struct QrateTableDelegate {
 }
 
 impl QrateTableDelegate {
-    pub(crate) fn new(editor: Entity<InputState>, filter_search: Entity<InputState>) -> Self {
+    pub(crate) fn new(
+        editor: Entity<InputState>,
+        note_editor: Entity<InputState>,
+        filter_search: Entity<InputState>,
+    ) -> Self {
         Self {
             columns: Vec::new(),
             rows: Vec::new(),
             selection: None,
             editing: EditState::Idle,
             editor,
+            note_edit: None,
+            note_editor,
             image_paths: Vec::new(),
             visible_rows: Vec::new(),
             filters: Vec::new(),
@@ -100,6 +112,24 @@ impl QrateTableDelegate {
     /// never leaves this crate.
     pub fn data_col(&self, header: &str) -> Option<usize> {
         self.columns.iter().position(|c| c.name == header)
+    }
+
+    /// A diagnostic [`Location`] from the delegate's own coordinates — a source row, a data
+    /// column, or both. The only place `DATASET_MAIN` and the positional-column→name lookup meet.
+    pub(crate) fn location(&self, row: Option<usize>, data_col: Option<usize>) -> Location {
+        Location {
+            dataset: DATASET_MAIN.into(),
+            row,
+            column: data_col.map(|c| self.column_name(c)),
+        }
+    }
+
+    /// Narrow a column to a single value. Switches the dropdown on too, so the narrowing is
+    /// visible in the header and reversible without going back through the cell.
+    pub(crate) fn keep_only_value(&mut self, data_col: usize, value: &SharedString) {
+        self.set_column_filter_enabled(data_col, true);
+        self.exclude_all_in_column(data_col);
+        self.toggle_filter_value(data_col, value);
     }
 
     fn recompute_visible(&mut self) {
@@ -524,7 +554,7 @@ impl TableDelegate for QrateTableDelegate {
             // The source row number — the row's stable identity, not its view position. Highlight
             // it while its row holds the active (edited/selected) cell.
             let highlighted = self.active_cell().is_some_and(|(r, _)| r == source);
-            row_index::render_td(source, highlighted, cx)
+            row_index::render_td(self, source, highlighted, cx)
         } else {
             cell::render_cell(self, source, col_ix - 1, window, cx)
         }

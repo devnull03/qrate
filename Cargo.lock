@@ -4952,6 +4952,7 @@ dependencies = [
  "anyhow",
  "cloud-sync",
  "csv",
+ "diagnostics",
  "dirs",
  "gpui",
  "gpui-component",
@@ -6596,6 +6597,7 @@ dependencies = [
 name = "table"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "diagnostics",
  "gpui",
  "gpui-component",
  "regex",
