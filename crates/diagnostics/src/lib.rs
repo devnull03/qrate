@@ -86,19 +86,6 @@ impl Source {
             Source::Validator(name) => name.clone(),
         }
     }
-
-    pub fn from_key(key: &str) -> Self {
-        match key {
-            SOURCE_NOTE => Source::Note,
-            other => Source::Validator(other.to_string().into()),
-        }
-    }
-
-    /// Whether this source's output belongs in the `.qrate` file. Authored content persists;
-    /// computed content is recomputed on open.
-    pub fn persists(&self) -> bool {
-        matches!(self, Source::Note)
-    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]

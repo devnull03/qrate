@@ -5,36 +5,6 @@
 use std::path::Path;
 use std::process::Command;
 
-/// Opens a folder in the system file manager (Explorer on Windows, Finder on macOS).
-pub fn open_folder(path: &Path) -> std::io::Result<()> {
-    if !path.is_dir() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("open_folder expects a directory: {}", path.display()),
-        ));
-    }
-
-    #[cfg(windows)]
-    {
-        Command::new("explorer").arg(path).spawn()?;
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open").arg(path).spawn()?;
-    }
-
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "open_folder is only supported on Windows and macOS",
-        ));
-    }
-
-    Ok(())
-}
-
 /// Opens `path` in the OS's default application for its file type.
 pub fn open_in_default_app(path: &Path) -> std::io::Result<()> {
     if !path.exists() {

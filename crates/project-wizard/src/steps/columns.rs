@@ -60,7 +60,7 @@ impl ProjectWizard {
     fn load_config_from_sheet(&mut self, cx: &mut Context<Self>) {
         let link = self.sheet_link_input.read(cx).value().to_string();
         let fetched = cloud_sync::fetch_sheet(&link)
-            .map_err(|e| e.message())
+            .map_err(|e| e.to_string())
             .map(data::SpreadsheetPreview::from);
         match fetched {
             Ok(preview) => {

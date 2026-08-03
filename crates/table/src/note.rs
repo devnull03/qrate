@@ -1,10 +1,8 @@
 //! The grid's right-click menu, the corner marker on anything a diagnostic points at, and the
 //! floating note editor.
 //!
-//! Right-click is wired with `gpui_component`'s blanket `ContextMenuExt` on our own cell div
-//! rather than `TableDelegate::context_menu`: the library only calls that hook while
-//! `right_clicked_row` is `Some`, and `on_cell_right_click` clears it in `cell_selectable` mode,
-//! so the hook never fires for us — and it wouldn't carry the column anyway.
+//! Right-click uses `ContextMenuExt` on our own cell div, not `TableDelegate::context_menu` —
+//! that hook only fires while `right_clicked_row` is `Some`, which `on_cell_right_click` clears.
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -45,24 +43,10 @@ pub(crate) enum Target {
     Column(usize),
 }
 
-impl Target {
-    /// The delegate coordinates this addresses, as `(source row, data column)`.
-    fn coords(self) -> (Option<usize>, Option<usize>) {
-        match self {
-            Target::Cell { row, col } => (Some(row), Some(col)),
-            Target::Row(row) => (Some(row), None),
-            Target::Column(col) => (None, Some(col)),
-        }
-    }
-}
-
-/// The corner tag on anything a diagnostic points at. A real triangle, painted through `canvas`:
-/// gpui has no triangular border, and the cheap stand-ins (a rotated square, a quarter-disc)
-/// don't read as a tag at this size. The library wraps every `render_td` in a `.relative()` div,
-/// so absolute positioning anchors to the cell.
+/// The corner tag on anything a diagnostic points at, painted through `canvas` because gpui has
+/// no triangular border.
 pub(crate) fn marker(severity: Severity, cx: &App) -> impl IntoElement {
-    // `Severity::Note`'s muted grey is picked to sit quietly behind panel text and disappears
-    // entirely at 7px, so notes borrow the accent instead.
+    // Muted grey vanishes at 7px, so notes borrow the accent.
     let color = if severity == Severity::Note {
         cx.theme().accent
     } else {
@@ -111,7 +95,11 @@ pub(crate) fn menu(
         return menu;
     };
 
-    let (row, col) = target.coords();
+    let (row, col) = match target {
+        Target::Cell { row, col } => (Some(row), Some(col)),
+        Target::Row(row) => (Some(row), None),
+        Target::Column(col) => (None, Some(col)),
+    };
     let (location, cell_text, row_tsv) = {
         let state = table.read(cx);
         let delegate = state.delegate();
@@ -220,10 +208,7 @@ fn open(
 
 /// The floating note editor, or `None` unless it is open on exactly these coordinates — every
 /// cell, row-number cell, and column header calls this with its own, and one of them wins.
-///
-/// Same `deferred` + `clamped_float` box as the cell editor (`cell.rs`), deliberately not a
-/// `PopupMenu` item: a `PopupMenu` dismisses on every click, so nothing typable can live in one.
-/// Set apart from the cell editor by an accent border and a strip naming what the note is on.
+/// Same box as the cell editor (`cell.rs`), set apart by an accent border and a scope strip.
 pub(crate) fn editor(
     delegate: &QrateTableDelegate,
     row: Option<usize>,
@@ -362,9 +347,8 @@ mod tests {
                 state.delegate_mut().note_edit = Some(at(Some(0), Some("Title")));
                 cx.notify();
             });
-            // The grid is virtualized, so a test that only *constructs* the panel would prove
-            // nothing. This global is written by the canvas in `panel.rs`'s render, so its
-            // presence is what says the cells above really got built.
+            // Written by `panel.rs`'s render canvas, so its presence is what proves the
+            // virtualized cells above really got built.
             assert!(
                 cx.try_global::<crate::TableViewportBounds>().is_some(),
                 "the table never painted, so nothing here was exercised"

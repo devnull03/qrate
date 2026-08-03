@@ -9,12 +9,6 @@ pub struct StatusBarRegistry(BarItems);
 
 impl Global for StatusBarRegistry {}
 
-impl StatusBarRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
 impl BarRegistry for StatusBarRegistry {
     fn items(&self) -> &BarItems {
         &self.0

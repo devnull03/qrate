@@ -12,7 +12,7 @@ use workspace::DockToggleButton;
 /// Populate the status bar. Left: left-panel toggle + a problems (errors/warnings) counter
 /// that opens the bottom panel. Right: the agent-panel toggle.
 pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> StatusBarRegistry {
-    let mut registry = StatusBarRegistry::new();
+    let mut registry = StatusBarRegistry::default();
 
     let left_panel = cx.new(|_| {
         DockToggleButton::new(
