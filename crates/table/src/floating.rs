@@ -8,11 +8,12 @@ use std::panic::Location;
 
 use gpui::{
     App, Bounds, Display, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
-    LayoutId, Pixels, Position, Style, Window,
+    LayoutId, Pixels, Point, Position, Style, Window,
 };
 
 pub(crate) struct ClampedFloat {
     rect: Bounds<Pixels>,
+    origin: Option<Point<Pixels>>,
     child: gpui::AnyElement,
 }
 
@@ -20,6 +21,22 @@ pub(crate) struct ClampedFloat {
 pub(crate) fn clamped_float(rect: Bounds<Pixels>, child: impl IntoElement) -> ClampedFloat {
     ClampedFloat {
         rect,
+        origin: None,
+        child: child.into_any_element(),
+    }
+}
+
+/// Float `child` at an explicit window-space `origin` (still clamped to `rect`). Unlike a `.left()`
+/// / `.top()` pair this needs no knowledge of which ancestor the offsets would resolve against —
+/// the cell editor's origin is measured in window space and has to land there exactly.
+pub(crate) fn float_at(
+    origin: Point<Pixels>,
+    rect: Bounds<Pixels>,
+    child: impl IntoElement,
+) -> ClampedFloat {
+    ClampedFloat {
+        rect,
+        origin: Some(origin),
         child: child.into_any_element(),
     }
 }
@@ -64,15 +81,17 @@ impl Element for ClampedFloat {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _bounds: Bounds<Pixels>,
         child_id: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) {
-        // `bounds.origin` is where the box lands naturally — the edited cell's top-left. Shift it the
-        // least amount that keeps the box (its real, just-laid-out size) inside the table rect.
-        let size = window.layout_bounds(*child_id).size;
-        let mut origin = bounds.origin;
+        // Measured on the *child*, not on this wrapper: an absolute element with no insets gets a
+        // static position after its in-flow siblings, so the wrapper's own rect is not where the
+        // box would draw. Shift the child the least amount that keeps it inside the table rect.
+        let child_bounds = window.layout_bounds(*child_id);
+        let size = child_bounds.size;
+        let mut origin = self.origin.unwrap_or(child_bounds.origin);
         origin.x = origin
             .x
             .min(self.rect.right() - size.width)
@@ -82,7 +101,7 @@ impl Element for ClampedFloat {
             .min(self.rect.bottom() - size.height)
             .max(self.rect.top());
 
-        let offset = origin - bounds.origin;
+        let offset = origin - child_bounds.origin;
         window.with_element_offset(offset, |window| self.child.prepaint(window, cx));
     }
 

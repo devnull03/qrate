@@ -20,7 +20,7 @@ pub use panel::{Search, TablePanel};
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
 pub const TABLE_STRIPES_KEY: &str = "table_stripes";
 
-use gpui::{App, Bounds, Global, Pixels, Point, Size, WeakEntity, px, size};
+use gpui::{App, Bounds, Global, Pixels, Point, WeakEntity, px, size};
 use gpui_component::table::TableState;
 
 /// Global handle to the live table state, so cross-crate status-bar items (the fake-data button
@@ -28,9 +28,10 @@ use gpui_component::table::TableState;
 pub struct TableStateHandle(pub WeakEntity<TableState<QrateTableDelegate>>);
 impl Global for TableStateHandle {}
 
-/// The table area's window-space rectangle, measured each frame (see `panel.rs`). The floating
-/// cell editor caps its wrap width to this and clamps its position to it, so a long value wraps
-/// within the panel instead of scrolling sideways and the box never spills over a side panel.
+/// The table area's window-space rectangle, measured each frame (see `panel.rs`). It's both the
+/// origin the floating cell editor is positioned against and the limit it grows to, so a long
+/// value wraps within the panel instead of spilling over a side panel. The note editor clamps to
+/// it too, via `clamped_float`.
 pub(crate) struct TableViewportBounds(pub Bounds<Pixels>);
 impl Global for TableViewportBounds {}
 
@@ -42,13 +43,18 @@ impl Default for TableViewportBounds {
     }
 }
 
-/// Captured when an editor resize-drag begins: the mouse position and box size at that instant, so
-/// each drag-move applies the delta from the start. Transient — only present while dragging.
-pub(crate) struct EditorResizeAnchor {
-    pub mouse: Point<Pixels>,
-    pub size: Size<Pixels>,
+/// Where the in-progress cell edit opened: which cell, its full window-space rect, and the table's
+/// scroll offset at that instant. Written once per edit by `cell.rs` (the cell is on screen when an
+/// edit starts), read by `panel.rs` to place and size the floating editor — which is why the box
+/// stays put when the grid scrolls out from under it, Sheets-style. `scroll` is filled in on the
+/// next panel render, since the scroll handles live on `TableState` and aren't reachable from a
+/// cell. Cleared by `editing::start` so re-editing the same cell re-measures.
+pub(crate) struct EditSpawn {
+    pub cell: (usize, usize),
+    pub bounds: Bounds<Pixels>,
+    pub scroll: Option<Point<Pixels>>,
 }
-impl Global for EditorResizeAnchor {}
+impl Global for EditSpawn {}
 
 /// Persist the open project's table data to its `.qrate` file, synchronously, and clear the
 /// `PROJECT_DATA` dirty mark. No-op with no project open, no live table, or a blank project. Runs

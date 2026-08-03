@@ -1,64 +1,28 @@
-//! Data-cell rendering: plain text, swapped for the shared inline editor while that cell is
-//! being edited (see `editing.rs`). Selection is the table's own native cell selection
-//! (`cell_selectable`) — the library draws the active-cell highlight and emits the
-//! `TableEvent`s that `TablePanel` bridges (double-click → edit, cursor updates, etc.).
+//! Data-cell rendering: plain text plus, while this cell is being edited, an outline marking it as
+//! the edit's source and a one-shot capture of its rect (the floating editor itself is rendered by
+//! `panel.rs`, outside the virtualized grid, so it survives scrolling). Selection is the table's own
+//! native cell selection (`cell_selectable`) — the library draws the active-cell highlight and emits
+//! the `TableEvent`s that `TablePanel` bridges (double-click → edit, cursor updates, etc.).
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, Context, CursorStyle, DragMoveEvent,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString, Size,
-    StatefulInteractiveElement as _, Styled as _, Window, deferred, div, px, size,
+    AnyElement, BorderStyle, Bounds, Context, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    canvas, div, outline, point, px, size,
 };
 use gpui_component::menu::ContextMenuExt as _;
-use gpui_component::{ActiveTheme as _, input::Input, table::TableState};
-use settings::AppSettings;
+use gpui_component::{ActiveTheme as _, table::TableState};
 
 use diagnostics::Diagnostics;
 
+use crate::EditSpawn;
 use crate::note::{self, Target};
-use crate::{
-    EditorResizeAnchor, delegate::QrateTableDelegate, editing::EditState, floating::clamped_float,
-};
+use crate::{delegate::QrateTableDelegate, editing::EditState};
 
-/// User-scope ("global") keys for the persisted editor box size, in pixels.
-const CELL_EDITOR_W_KEY: &str = "cell_editor_w";
-const CELL_EDITOR_H_KEY: &str = "cell_editor_h";
-
-const MIN_W: f32 = 160.;
-const MIN_H: f32 = 80.;
-
-/// The persisted editor size (user scope), clamped to sane bounds and never larger than the table.
-/// Width defaults to ≈40% of the table so a small window opens a proportionally small box.
-fn editor_size(cx: &App, table: Bounds<Pixels>) -> Size<Pixels> {
-    let (max_w, max_h) = (table.size.width, table.size.height);
-    let read = |k: &str| {
-        AppSettings::get(cx)
-            .values
-            .get(k)
-            .and_then(|v| v.text().parse::<f32>().ok())
-            .map(px)
-    };
-    let w = read(CELL_EDITOR_W_KEY)
-        .unwrap_or((max_w * 0.4).max(px(MIN_W)))
-        .clamp(px(MIN_W).min(max_w), max_w);
-    let h = read(CELL_EDITOR_H_KEY)
-        .unwrap_or(px(160.))
-        .clamp(px(MIN_H).min(max_h), max_h);
-    size(w, h)
-}
-
-/// Invisible drag preview for the resize handle — the box tracks the cursor via persisted size, so
-/// the drag itself renders nothing.
-struct ResizeGhost;
-impl Render for ResizeGhost {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-    }
-}
-
-/// Marker payload so `on_drag_move` only fires for the editor resize (matched by type).
-#[derive(Clone)]
-struct EditorResize;
+/// The library's `Size::Medium` table-cell padding, which our inner cell div sits inside. The
+/// captured rect is grown by it so the editor covers the whole cell, not just its text box.
+pub(crate) const CELL_PAD_X: f32 = 8.;
+pub(crate) const CELL_PAD_Y: f32 = 4.;
 
 /// `row_ix` is a source (not view) row index — `render_td` maps through `visible_rows` first.
 /// `col_ix` is a data-column index, not shifted for the pinned row-index column.
@@ -78,14 +42,13 @@ pub(crate) fn render_cell(
     // Keep the plain text underneath so the row height and neighbouring cells are unaffected; the
     // editor floats over it.
     let text = delegate.cell(row_ix, col_ix).cloned().unwrap_or_default();
-    // The table's rect (measured in `panel.rs`) bounds the editor: it caps the box size and is the
-    // rect `clamped_float` keeps the box inside.
-    let table = cx
-        .try_global::<crate::TableViewportBounds>()
-        .map(|b| b.0)
-        .unwrap_or_default();
-    let box_size = editor_size(cx, table);
-    let (max_w, max_h) = (table.size.width, table.size.height);
+    // Measure once per edit: any later frame would report the cell's *scrolled* position, and the
+    // box is meant to stay where the edit opened.
+    let capture = editing
+        && cx
+            .try_global::<EditSpawn>()
+            .is_none_or(|s| s.cell != (row_ix, col_ix));
+    let accent = cx.theme().primary;
 
     let location = delegate.location(Some(row_ix), Some(col_ix));
     let worst = Diagnostics::worst_at(
@@ -102,6 +65,9 @@ pub(crate) fn render_cell(
         // needs its own id before it can carry a tooltip or a context menu.
         .id(SharedString::from(format!("cell-note:{row_ix}:{col_ix}")))
         .size_full()
+        // Own the containing block for the capture canvas below: without this it resolves against
+        // the library's cell div, whose padding makes "the bounds" ambiguous.
+        .relative()
         .child(text)
         .when_some(worst, |cell, severity| {
             cell.child(note::marker(severity, cx))
@@ -124,70 +90,42 @@ pub(crate) fn render_cell(
             )
         })
         .when_some(note_editor, |cell, editor| cell.child(editor))
+        // Outlines the source cell for as long as the edit is open, so it stays findable once the
+        // box has been scrolled away from it. Painted rather than bordered because the border would
+        // land inside the cell's padding instead of around the cell.
         .when(editing, |cell| {
-            // `deferred` paints the box above the grid and lets it escape the cell's clip;
-            // `clamped_float` confines it to the *table* rect (not the window), so it can't spill
-            // over the details or any other side panel. Dismissed only by the user (Enter/blur
-            // commit, Escape, or a filter dropping the row) — never by scrolling.
-            cell.child(deferred(clamped_float(
-                table,
-                div()
-                    // Swallow mouse events so clicking/selecting inside the editor doesn't fall
-                    // through to the cells painted behind it (moving the table's selection).
-                    .occlude()
-                    .relative()
-                    .w(box_size.width)
-                    .h(box_size.height)
-                    .bg(cx.theme().background)
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .rounded(cx.theme().radius)
-                    .shadow_lg()
-                    .child(Input::new(&delegate.editor).h_full())
-                    .child(resize_handle(cx, table, max_w, max_h)),
-            )))
+            cell.child(
+                canvas(
+                    move |bounds, window, cx| {
+                        let bounds = full_cell(bounds);
+                        if capture {
+                            cx.set_global(EditSpawn {
+                                cell: (row_ix, col_ix),
+                                bounds,
+                                scroll: None,
+                            });
+                            // `panel.rs` only reads this on its *next* render, and nothing else
+                            // schedules one. Deferred because `Window::refresh` is a no-op while a
+                            // frame is drawing — which is exactly when prepaint runs.
+                            window.defer(cx, |window, _| window.refresh());
+                        }
+                        bounds
+                    },
+                    move |_, bounds, window, _| {
+                        window.paint_quad(outline(bounds, accent, BorderStyle::Solid));
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
         })
         .into_any_element()
 }
 
-/// A corner grip the user drags to resize the editor. The chosen size persists in user-scope
-/// settings, so every cell opens at the size last set. `AppSettings` debounces the disk write, so
-/// updating it on every drag-move is cheap.
-fn resize_handle(
-    cx: &mut Context<TableState<QrateTableDelegate>>,
-    table: Bounds<Pixels>,
-    max_w: Pixels,
-    max_h: Pixels,
-) -> impl IntoElement {
-    div()
-        .id("cell-editor-resize")
-        .absolute()
-        .bottom_0()
-        .right_0()
-        .size(px(14.))
-        .cursor(CursorStyle::ResizeUpLeftDownRight)
-        // `window.mouse_position()` (absolute) — the `Point` gpui passes here is element-relative,
-        // which wouldn't match `on_drag_move`'s absolute positions and would spike the delta.
-        .on_drag(EditorResize, move |_, _, window, cx| {
-            cx.set_global(EditorResizeAnchor {
-                mouse: window.mouse_position(),
-                size: editor_size(cx, table),
-            });
-            cx.new(|_| ResizeGhost)
-        })
-        .on_drag_move(
-            cx.listener(move |_, ev: &DragMoveEvent<EditorResize>, _, cx| {
-                let Some((mouse, start)) = cx
-                    .try_global::<EditorResizeAnchor>()
-                    .map(|a| (a.mouse, a.size))
-                else {
-                    return;
-                };
-                let delta = ev.event.position - mouse;
-                let w = (start.width + delta.x).clamp(px(MIN_W).min(max_w), max_w);
-                let h = (start.height + delta.y).clamp(px(MIN_H).min(max_h), max_h);
-                AppSettings::set_text(CELL_EDITOR_W_KEY, format!("{}", f32::from(w)).into(), cx);
-                AppSettings::set_text(CELL_EDITOR_H_KEY, format!("{}", f32::from(h)).into(), cx);
-            }),
-        )
+/// Grow a cell's inner (text) rect back out to the cell's own rect.
+fn full_cell(bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+    Bounds {
+        origin: bounds.origin - point(px(CELL_PAD_X), px(CELL_PAD_Y)),
+        size: bounds.size + size(px(CELL_PAD_X * 2.), px(CELL_PAD_Y * 2.)),
+    }
 }
