@@ -18,4 +18,6 @@ project-wizard = { path = "../project-wizard" }
 diagnostics = { path = "../diagnostics" }
 settings = { path = "../settings" }
 table = { path = "../table" }
+# Validators are leaf crates registered here and nowhere else — see `Validators::register`.
+validator-vocab = { path = "../validator-vocab" }
 workspace = { path = "../workspace" }

@@ -1,0 +1,11 @@
+[package]
+name = "validator-vocab"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+diagnostics = { path = "../diagnostics" }
+gpui.workspace = true
+
+[dev-dependencies]
+settings = { path = "../settings" }

@@ -276,6 +276,42 @@ impl QrateTableDelegate {
         self.rows.get(row).and_then(|r| r.get(col))
     }
 
+    /// A data column's stable `c{ix}` settings key — the only route out for a private field, and
+    /// the one place outside [`Self::apply_column_settings`] that the convention leaks.
+    pub(crate) fn column_key(&self, data_col: usize) -> SharedString {
+        self.columns
+            .get(data_col)
+            .map(|c| c.key.clone())
+            .unwrap_or_default()
+    }
+
+    /// Re-run every registered validator over the delegate's own copy of the data.
+    ///
+    /// The delegate's copy, not `CurrentProject`'s: between a commit and the next save they differ,
+    /// and the squiggle has to follow the cell the user just typed into.
+    pub(crate) fn revalidate(&self, cx: &mut App) {
+        let columns: Vec<(SharedString, SharedString)> = self
+            .columns
+            .iter()
+            .map(|c| (c.key.clone(), c.name.clone()))
+            .collect();
+        diagnostics::Validators::run(&columns, &self.rows, cx);
+    }
+
+    /// Every distinct non-blank value in a data column — the vocabulary the header menu offers to
+    /// restrict the column to. Sorted, so the stored list is diff-friendly.
+    pub(crate) fn distinct_values(&self, data_col: usize) -> Vec<String> {
+        self.rows
+            .iter()
+            .filter_map(|r| r.get(data_col))
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     /// The header text of a data column, for the filter dropdown's title.
     pub(crate) fn column_name(&self, data_col: usize) -> SharedString {
         self.columns
