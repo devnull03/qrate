@@ -33,6 +33,10 @@ pub struct ColumnSettings {
     /// Whether this column offers the filter dropdown in its header.
     #[serde(default)]
     pub filter_enabled: bool,
+    /// The controlled vocabulary this column is restricted to. Empty means unrestricted, which is
+    /// how the vocabulary validator stays off until a column opts in.
+    #[serde(default)]
+    pub allowed_values: Vec<String>,
 }
 
 /// `c{ix}` → settings. `BTreeMap` so the settings page lists columns in a stable order and the
@@ -114,7 +118,13 @@ mod tests {
 
     fn map_with(key: &str, filter_enabled: bool) -> ColumnSettingsMap {
         let mut m = ColumnSettingsMap::new();
-        m.insert(key.to_string(), ColumnSettings { filter_enabled });
+        m.insert(
+            key.to_string(),
+            ColumnSettings {
+                filter_enabled,
+                ..Default::default()
+            },
+        );
         m
     }
 
@@ -152,6 +162,7 @@ mod tests {
             "c1".into(),
             ColumnSettings {
                 filter_enabled: true,
+                ..Default::default()
             },
         );
         map.remove("c0");
@@ -164,5 +175,18 @@ mod tests {
     fn unknown_fields_are_ignored() {
         let parsed = parse(Some(r#"{"c2":{"filter_enabled":true,"future_thing":42}}"#));
         assert!(parsed["c2"].filter_enabled);
+    }
+
+    /// The other direction, which is what adding `allowed_values` relies on: a blob written before
+    /// the field existed still loads, and reads as unrestricted rather than "allow nothing".
+    #[test]
+    fn a_blob_without_allowed_values_reads_as_unrestricted() {
+        let parsed = parse(Some(r#"{"c2":{"filter_enabled":true}}"#));
+        assert!(parsed["c2"].allowed_values.is_empty());
+
+        let mut map = map_with("c2", true);
+        map.get_mut("c2").unwrap().allowed_values = vec!["Film".into(), "Video".into()];
+        let json = serde_json::to_string(&map).unwrap();
+        assert_eq!(parse(Some(&json)), map);
     }
 }

@@ -13,7 +13,7 @@ use gpui::{
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme as _, table::TableState};
 
-use diagnostics::Diagnostics;
+use diagnostics::{Diagnostics, Source};
 
 use crate::EditSpawn;
 use crate::note::{self, Target};
@@ -51,12 +51,21 @@ pub(crate) fn render_cell(
     let accent = cx.theme().primary;
 
     let location = delegate.location(Some(row_ix), Some(col_ix));
-    let worst = Diagnostics::worst_at(
-        &location.dataset,
-        Some(row_ix),
-        location.column.as_deref(),
-        cx,
-    );
+    // Authored and computed diagnostics get different decorations, as they do in every editor: a
+    // note is a corner tag you put there, a validator's finding is a squiggle under the text.
+    let worst_from = |authored: bool| {
+        Diagnostics::at(
+            &location.dataset,
+            Some(row_ix),
+            location.column.as_deref(),
+            cx,
+        )
+        .filter(move |d| (d.source == Source::Note) == authored)
+        .map(|d| d.severity)
+        .min()
+    };
+    let marked = worst_from(true);
+    let flagged = worst_from(false);
     let tip = note::tooltip_text(&location, cx);
     let note_editor = note::editor(delegate, Some(row_ix), Some(col_ix), cx);
 
@@ -69,8 +78,11 @@ pub(crate) fn render_cell(
         // the library's cell div, whose padding makes "the bounds" ambiguous.
         .relative()
         .child(text)
-        .when_some(worst, |cell, severity| {
+        .when_some(marked, |cell, severity| {
             cell.child(note::marker(severity, cx))
+        })
+        .when_some(flagged, |cell, severity| {
+            cell.child(note::squiggle(severity, cx))
         })
         .when_some(tip, |cell, text| {
             cell.tooltip(move |window, cx| {

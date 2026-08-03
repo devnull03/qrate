@@ -382,6 +382,10 @@ fn main() {
         });
         diagnostics::init(cx);
 
+        // The composition root is the only place that knows which validator crates are compiled
+        // in; `table` triggers the runs without naming any of them.
+        diagnostics::Validators::register(Box::new(validator_vocab::Vocab), cx);
+
         cx.on_action(|_: &OpenSettings, cx| open_settings_window(cx));
         cx.on_action(|_: &NewProject, cx| {
             project_wizard::open_project_wizard(EntryKind::Blank, cx)

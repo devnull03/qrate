@@ -110,6 +110,9 @@ impl TablePanel {
         delegate.apply_column_settings(|key| {
             filters_on && column_settings.get(key).is_some_and(|s| s.filter_enabled)
         });
+        // Validator output is never persisted, so opening a project is the only thing that puts it
+        // back. Runs before the state entity exists because the delegate already holds the data.
+        delegate.revalidate(cx);
         let state = cx.new(|cx| {
             TableState::new(delegate, window, cx)
                 .cell_selectable(true)
@@ -131,6 +134,7 @@ impl TablePanel {
             }
             table_state.update(cx, |state, cx| {
                 editing::commit(state.delegate_mut(), cx);
+                state.delegate().revalidate(cx);
                 cx.emit(TableChanged);
                 cx.notify();
             });

@@ -23,6 +23,11 @@ use crate::floating::clamped_float;
 /// Side of the square the corner triangle fills.
 const MARKER: f32 = 7.;
 
+/// Half a wave of the squiggle, its peak-to-trough height, and its stroke thickness.
+const SQUIGGLE_STEP: f32 = 3.;
+const SQUIGGLE_H: f32 = 2.;
+const SQUIGGLE_T: f32 = 1.;
+
 /// How long the pointer rests before a note reveals itself. gpui does the timing, so nothing here
 /// tracks hover state — the table has none.
 pub(crate) const HOVER_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
@@ -65,6 +70,46 @@ pub(crate) fn marker(severity: Severity, cx: &App) -> impl IntoElement {
     .top_0()
     .right_0()
     .size(px(MARKER))
+}
+
+/// The wavy underline computed diagnostics get, following the convention every editor shares: an
+/// authored note is a corner tag, a validator's finding is a squiggle. Drawn as a closed zigzag
+/// ribbon because `paint_path` fills rather than strokes.
+pub(crate) fn squiggle(severity: Severity, cx: &App) -> impl IntoElement {
+    let color = severity_color(severity, cx);
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let steps = (f32::from(bounds.size.width) / SQUIGGLE_STEP).floor() as usize;
+            if steps < 2 {
+                return;
+            }
+            let peak = |i: usize| {
+                bounds.origin
+                    + point(
+                        px(i as f32 * SQUIGGLE_STEP),
+                        if i.is_multiple_of(2) {
+                            px(0.)
+                        } else {
+                            px(SQUIGGLE_H)
+                        },
+                    )
+            };
+            let mut path = Path::new(peak(0));
+            for i in 1..=steps {
+                path.line_to(peak(i));
+            }
+            for i in (0..=steps).rev() {
+                path.line_to(peak(i) + point(px(0.), px(SQUIGGLE_T)));
+            }
+            window.paint_path(path, color);
+        },
+    )
+    .absolute()
+    .bottom_0()
+    .left_0()
+    .w_full()
+    .h(px(SQUIGGLE_H + SQUIGGLE_T))
 }
 
 /// Every diagnostic at a location, newline-joined — the cell's hover tooltip.
@@ -161,7 +206,41 @@ pub(crate) fn menu(
             .separator()
         }
         Target::Row(_) => copy_row(menu).separator(),
-        Target::Column(_) => menu,
+        // Restricting a column to the values already in it turns a categorical column into a
+        // typo-catcher in one click, which is the whole configuration the vocabulary validator has.
+        Target::Column(col) => {
+            let key = table.read(cx).delegate().column_key(col);
+            let restricted = !settings::columns::get(&key, cx).allowed_values.is_empty();
+            let (restrict_table, clear_table) = (table.clone(), table.clone());
+            let clear_key = key.clone();
+            menu.item(
+                PopupMenuItem::new(if restricted {
+                    "Re-restrict to current values"
+                } else {
+                    "Restrict to current values"
+                })
+                .on_click(move |_, _, cx| {
+                    restrict_table.update(cx, |state, cx| {
+                        let values = state.delegate().distinct_values(col);
+                        settings::columns::update(&key, |s| s.allowed_values = values, cx);
+                        state.delegate().revalidate(cx);
+                        cx.notify();
+                    });
+                }),
+            )
+            .when(restricted, |menu| {
+                menu.item(
+                    PopupMenuItem::new("Clear restriction").on_click(move |_, _, cx| {
+                        clear_table.update(cx, |state, cx| {
+                            settings::columns::update(&clear_key, |s| s.allowed_values.clear(), cx);
+                            state.delegate().revalidate(cx);
+                            cx.notify();
+                        });
+                    }),
+                )
+            })
+            .separator()
+        }
     };
 
     menu.submenu("Notes", window, cx, move |sub, _window, _cx| {
@@ -317,7 +396,8 @@ mod tests {
                 ],
                 cx,
             );
-            // An error on the same cell as the note must win the marker's colour.
+            // A validator error on the same cell as a note: the note keeps its corner marker and
+            // the error adds a squiggle, so this cell builds both decorations.
             let v = Source::Validator("v".into());
             Diagnostics::set(
                 &v,
@@ -330,10 +410,12 @@ mod tests {
                 }],
                 cx,
             );
-            assert_eq!(
-                Diagnostics::worst_at(DATASET_MAIN, Some(0), Some("Title"), cx),
-                Some(Severity::Error)
-            );
+            let (authored, computed): (Vec<_>, Vec<_>) =
+                Diagnostics::at(DATASET_MAIN, Some(0), Some("Title"), cx)
+                    .partition(|d| d.source == Source::Note);
+            assert_eq!(authored.len(), 1, "the corner marker's input");
+            assert_eq!(computed.len(), 1, "the squiggle's input");
+            assert_eq!(computed[0].severity, Severity::Error);
         });
 
         cx.add_window_view(TablePanel::new);

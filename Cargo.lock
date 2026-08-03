@@ -197,6 +197,7 @@ dependencies = [
  "serde_json",
  "settings",
  "table",
+ "validator-vocab",
  "window-wrapper",
  "workspace",
 ]
@@ -7328,6 +7329,15 @@ dependencies = [
  "aligned-vec",
  "num-traits",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "validator-vocab"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "diagnostics",
+ "gpui",
+ "settings",
 ]
 
 [[package]]

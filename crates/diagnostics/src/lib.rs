@@ -6,7 +6,9 @@
 //! panel asks the app to reveal a cell.
 
 mod panel;
+mod validator;
 pub use panel::ProblemsPanel;
+pub use validator::{ColumnInfo, ColumnValidator, Validators};
 
 use std::path::PathBuf;
 
