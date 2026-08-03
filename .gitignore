@@ -1,6 +1,8 @@
+# rust
 /target
 
 # AI stuff
 .cursor/
 .claude/
 GEMINI.md
+*handoff.md
