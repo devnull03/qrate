@@ -25,6 +25,11 @@ pub(crate) fn start(
     window: &mut Window,
     cx: &mut Context<TableState<QrateTableDelegate>>,
 ) {
+    // Drop the previous edit's measurement, or re-editing the same cell after scrolling would
+    // reuse a stale rect (`cell.rs` only re-measures when the cell identity changes).
+    if cx.has_global::<crate::EditSpawn>() {
+        cx.remove_global::<crate::EditSpawn>();
+    }
     let value = delegate.cell(row, col).cloned().unwrap_or_default();
     let editor = delegate.editor.clone();
     editor.update(cx, |input, cx| input.set_value(value, window, cx));

@@ -11,11 +11,13 @@ use gpui_component::{
 };
 
 use crate::{
-    TableStateHandle,
+    TableStateHandle, cell,
     delegate::{
         ColumnLayout, QrateTableDelegate, SearchOpts, Selection, TableChanged, compile_search,
     },
-    editing, photos, row_index,
+    editing::{self, EditState},
+    floating::float_at,
+    photos, row_index,
 };
 
 /// Settings key for the saved column layout (order + widths) in the project's `.qrate` file.
@@ -76,8 +78,9 @@ pub struct TablePanel {
 
 impl TablePanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Multi-line so long values wrap; the editor fills the user-resizable box (`cell.rs`) and
-        // scrolls inside it. `submit_on_enter` keeps Enter as commit (Shift+Enter inserts a newline).
+        // Multi-line so long values wrap; the box grows to fit them (`cell_editor`) and the input
+        // scrolls once it can't grow further. `submit_on_enter` keeps Enter as commit
+        // (Shift+Enter inserts a newline).
         let editor = cx.new(|cx| {
             InputState::new(window, cx)
                 .multi_line(true)
@@ -438,6 +441,119 @@ impl TablePanel {
         settings::project::queue_write(&file, COLUMN_LAYOUT_KEY, &json, cx);
         settings::dirty::mark(settings::dirty::COLUMN_LAYOUT, cx);
     }
+
+    /// The floating cell editor, sized to its content and pinned to where the edit opened. `None`
+    /// unless a cell is being edited *and* `cell.rs` has measured it (one frame later).
+    fn cell_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.state.read(cx);
+        let EditState::Editing { row, col } = state.delegate().editing else {
+            return None;
+        };
+        let scroll = point(
+            state.horizontal_scroll_handle.offset().x,
+            state
+                .vertical_scroll_handle
+                .0
+                .borrow()
+                .base_handle
+                .offset()
+                .y,
+        );
+        let editor = state.delegate().editor.clone();
+        let label = format!("{} {}", state.delegate().column_name(col), row + 1);
+        let spawn = cx.try_global::<crate::EditSpawn>()?;
+        if spawn.cell != (row, col) {
+            return None;
+        }
+        let cell = spawn.bounds;
+        // First render after the measurement, so this *is* the scroll offset it was taken at.
+        let spawn_scroll = spawn.scroll.unwrap_or(scroll);
+        if spawn.scroll.is_none() {
+            cx.global_mut::<crate::EditSpawn>().scroll = Some(scroll);
+        }
+        let table = cx
+            .try_global::<crate::TableViewportBounds>()
+            .map(|b| b.0)
+            .unwrap_or_default();
+
+        let style = window.text_style();
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        // What `Input` actually lays its lines out at (its own `LINE_HEIGHT: Rems(1.25)`), not the
+        // window's text style — the two differ and only this one predicts the wrapped height.
+        let line_height = window.rem_size() * 1.25;
+        let value = editor.read(cx).value();
+        // `shape_line` panics on newlines, so hard-wrapped lines are measured one at a time; the
+        // widest is what the box would need to show the value unwrapped.
+        let natural_w = value.split('\n').fold(px(0.), |widest, line| {
+            let w = window
+                .text_system()
+                .shape_line(
+                    SharedString::from(line.to_string()),
+                    font_size,
+                    &[style.to_run(line.len())],
+                    None,
+                )
+                .width;
+            if w > widest { w } else { widest }
+        });
+        let box_size = editor_size(cell, table, natural_w, line_height, |wrap_w| {
+            window
+                .text_system()
+                .shape_text(
+                    value.clone(),
+                    font_size,
+                    &[style.to_run(value.len())],
+                    Some(wrap_w),
+                    None,
+                )
+                .map(|lines| lines.iter().map(|l| 1 + l.wrap_boundaries.len()).sum())
+                .unwrap_or(1)
+        });
+
+        let scrolled = scroll != spawn_scroll;
+        let accent = cx.theme().primary;
+        let box_el = div()
+            .relative()
+            .w(box_size.width)
+            .h(box_size.height)
+            // Swallow mouse events so clicking inside the box doesn't fall through to the cells
+            // painted behind it and move the table's selection.
+            .occlude()
+            .bg(cx.theme().background)
+            .border_1()
+            .border_color(accent)
+            .rounded(cx.theme().radius)
+            .shadow_lg()
+            // Once the grid has moved under the box, name the cell it belongs to — the column's
+            // own header, which beats a spreadsheet letter when the columns are named.
+            .when(scrolled, |b| {
+                b.child(
+                    div()
+                        .absolute()
+                        .top(px(-TAB_H))
+                        .left_0()
+                        .h(px(TAB_H))
+                        .px_1()
+                        .text_xs()
+                        .bg(accent)
+                        .text_color(cx.theme().primary_foreground)
+                        .rounded_t(cx.theme().radius)
+                        .child(label),
+                )
+            })
+            .child(
+                Input::new(&editor)
+                    .appearance(false)
+                    .h_full()
+                    .px(px(cell::CELL_PAD_X))
+                    .py(px(cell::CELL_PAD_Y))
+                    .text_size(font_size),
+            );
+        // ponytail: empirical one-row correction — the measured rect and the target agree on paper,
+        // but the box still draws a row low. Find the real source before adding a second knob.
+        let origin = cell.origin - point(px(0.), cell.size.height - px(2.));
+        Some(deferred(float_at(origin, table, box_el)).into_any_element())
+    }
 }
 
 impl Focusable for TablePanel {
@@ -490,7 +606,7 @@ impl Panel for TablePanel {
 }
 
 impl Render for TablePanel {
-    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let stripe = settings::effective_bool(crate::TABLE_STRIPES_KEY, cx);
         let query = self.search_input.read(cx).value();
         let count = if self.search_error {
@@ -617,6 +733,7 @@ impl Render for TablePanel {
                 div()
                     .flex_1()
                     .min_h_0()
+                    .relative()
                     // Record the table area's rect so the floating cell editor can wrap to it and
                     // stay clamped inside it (never over a side panel).
                     .child(
@@ -627,7 +744,95 @@ impl Render for TablePanel {
                         .absolute()
                         .size_full(),
                     )
-                    .child(DataTable::new(&self.state).bordered(false).stripe(stripe)),
+                    .child(DataTable::new(&self.state).bordered(false).stripe(stripe))
+                    // A sibling of the table, not a child of the edited cell: the grid virtualizes
+                    // rows and columns away, and the box has to outlive that.
+                    .children(self.cell_editor(window, cx)),
             )
+    }
+}
+
+/// Google-Sheets box sizing. Text that fits gets a cell-sized box; text that overflows keeps the
+/// row height and grows rightward to the table's edge; text that still overflows there grows
+/// downward to its wrapped height. Never leaves the table rect, so no clamping is needed after.
+/// `wrapped_lines` counts display lines at a given wrap width.
+fn editor_size(
+    cell: Bounds<Pixels>,
+    table: Bounds<Pixels>,
+    natural_w: Pixels,
+    line_height: Pixels,
+    wrapped_lines: impl FnOnce(Pixels) -> usize,
+) -> Size<Pixels> {
+    let avail_w = table.right() - cell.origin.x;
+    let avail_h = table.bottom() - cell.origin.y;
+    let w = (natural_w + px(PAD_X)).clamp(cell.size.width.min(avail_w), avail_w);
+    // Counted at the final width even when the text fits, because a value with hard newlines needs
+    // more than one line at any width — assuming otherwise is what put a scrollbar in the box.
+    let lines = wrapped_lines(w - px(PAD_X)).max(1);
+    let h = (line_height * lines as f32 + px(PAD_Y))
+        .max(cell.size.height)
+        .min(avail_h);
+    size(w, h)
+}
+
+/// The editor's own padding — the cell's, so the text sits exactly where it did unedited — plus the
+/// 1px border on each side, plus the `RIGHT_MARGIN` a soft-wrapping `Input` subtracts from its own
+/// bounds before shaping. Leave that last term out and the box is 10px wider than the width the
+/// text was measured at, so the final word wraps into a second line the box has no room for.
+const PAD_X: f32 = cell::CELL_PAD_X * 2. + 2. + INPUT_RIGHT_MARGIN;
+
+/// `gpui_component::input::element::RIGHT_MARGIN`, which is private.
+const INPUT_RIGHT_MARGIN: f32 = 10.;
+const PAD_Y: f32 = cell::CELL_PAD_Y * 2. + 2.;
+
+/// Height of the `C6` tab that marks the box once the grid has scrolled under it.
+const TAB_H: f32 = 16.;
+
+#[cfg(test)]
+mod tests {
+    use gpui::{Bounds, Pixels, point, px, size};
+
+    /// A 120x32 cell whose top-left is 200px from the table's right edge and 100px from its bottom.
+    fn cell_and_table() -> (Bounds<Pixels>, Bounds<Pixels>) {
+        let cell = Bounds::new(point(px(300.), px(50.)), size(px(120.), px(32.)));
+        let table = Bounds::new(point(px(0.), px(0.)), size(px(500.), px(150.)));
+        (cell, table)
+    }
+
+    #[test]
+    fn text_that_fits_gets_a_cell_sized_box() {
+        let (cell, table) = cell_and_table();
+        let got = super::editor_size(cell, table, px(40.), px(20.), |_| 1);
+        assert_eq!(got, cell.size);
+    }
+
+    #[test]
+    fn overflowing_text_grows_right_at_the_row_height() {
+        let (cell, table) = cell_and_table();
+        let got = super::editor_size(cell, table, px(150.), px(20.), |_| 1);
+        assert_eq!(got, size(px(150. + super::PAD_X), px(32.)));
+    }
+
+    /// A short value with hard newlines fits horizontally but not vertically.
+    #[test]
+    fn hard_newlines_grow_the_box_down_even_when_the_text_fits() {
+        let (cell, table) = cell_and_table();
+        let got = super::editor_size(cell, table, px(40.), px(20.), |_| 3);
+        assert_eq!(got, size(px(120.), px(60. + super::PAD_Y)));
+    }
+
+    #[test]
+    fn text_past_the_table_edge_wraps_and_grows_down() {
+        let (cell, table) = cell_and_table();
+        let got = super::editor_size(cell, table, px(900.), px(20.), |_| 3);
+        // Width capped at the table's right edge; height = 3 wrapped lines + padding.
+        assert_eq!(got, size(px(200.), px(60. + super::PAD_Y)));
+    }
+
+    #[test]
+    fn height_never_passes_the_tables_bottom() {
+        let (cell, table) = cell_and_table();
+        let got = super::editor_size(cell, table, px(900.), px(20.), |_| 40);
+        assert_eq!(got.height, px(100.));
     }
 }
