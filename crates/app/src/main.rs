@@ -2,7 +2,6 @@ mod actions;
 mod app_menus;
 mod app_settings;
 mod components;
-mod helpers;
 mod status_items;
 mod theming;
 mod title_items;

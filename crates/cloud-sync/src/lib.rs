@@ -28,13 +28,6 @@ pub enum SheetSyncError {
     Parse(String),
 }
 
-impl SheetSyncError {
-    /// User-facing one-liner (mirrors the wizard's other `.message()` errors).
-    pub fn message(&self) -> String {
-        self.to_string()
-    }
-}
-
 /// The `{id}` and optional `{gid}` pulled out of a Sheets URL.
 struct SheetRef {
     id: String,

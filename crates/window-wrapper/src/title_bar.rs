@@ -15,12 +15,6 @@ pub struct TitleBarRegistry(BarItems);
 
 impl Global for TitleBarRegistry {}
 
-impl TitleBarRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
 impl BarRegistry for TitleBarRegistry {
     fn items(&self) -> &BarItems {
         &self.0

@@ -25,16 +25,6 @@ pub struct SpreadsheetPreview {
     pub notes: Vec<PreviewNote>,
 }
 
-impl SpreadsheetPreview {
-    pub fn row_count(&self) -> usize {
-        self.rows.len()
-    }
-
-    pub fn column_count(&self) -> usize {
-        self.headers.len()
-    }
-}
-
 impl From<cloud_sync::SheetData> for SpreadsheetPreview {
     fn from(sheet: cloud_sync::SheetData) -> Self {
         let (top, left) = sheet.origin;
@@ -419,8 +409,8 @@ mod tests {
         let csv = sample_dir().join("aderman_collection.csv");
         let preview = load_csv_preview(csv.to_str().unwrap()).unwrap();
         assert_eq!(preview.headers[0], "Digital ID");
-        assert_eq!(preview.row_count(), 4);
-        assert_eq!(preview.column_count(), 6);
+        assert_eq!(preview.rows.len(), 4);
+        assert_eq!(preview.headers.len(), 6);
     }
 
     #[test]

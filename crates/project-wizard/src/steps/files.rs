@@ -152,14 +152,14 @@ impl ProjectWizard {
                         Ok(preview) => {
                             this.sheet_check = Some(data::SheetCheckResult {
                                 title: "Google Sheet".into(),
-                                row_count: preview.row_count(),
+                                row_count: preview.rows.len(),
                                 used_first_tab: true,
                             });
                             this.csv_preview = Some(preview);
                             this.sheet_error = None;
                         }
                         Err(e) => {
-                            this.sheet_error = Some(e.message().into());
+                            this.sheet_error = Some(e.to_string().into());
                             this.sheet_check = None;
                             this.csv_preview = None;
                         }
@@ -335,11 +335,7 @@ impl ProjectWizard {
                     )
                     .child(match (&self.csv_preview, &self.csv_error) {
                         (Some(p), _) => inline_message(
-                            format!(
-                                "✓ {} rows, {} columns found",
-                                p.row_count(),
-                                p.column_count()
-                            ),
+                            format!("✓ {} rows, {} columns found", p.rows.len(), p.headers.len()),
                             MsgKind::Success,
                             cx,
                         )

@@ -12,7 +12,7 @@ use workspace::DockToggleButton;
 /// Populate the title bar registry. The app menus are the one always-present item, so they
 /// are registered on the left by default. Right: generic open/close buttons for each dock.
 pub fn build_title_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> TitleBarRegistry {
-    let mut registry = TitleBarRegistry::new();
+    let mut registry = TitleBarRegistry::default();
 
     let menus = cx.new(|_| TitleMenus);
     registry.items_mut().add_left(menus);

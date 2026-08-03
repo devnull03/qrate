@@ -127,7 +127,7 @@ impl ProjectWizard {
         let spreadsheet_line = self
             .csv_preview
             .as_ref()
-            .map(|p| format!("{} rows · {} columns", p.row_count(), p.column_count()));
+            .map(|p| format!("{} rows · {} columns", p.rows.len(), p.headers.len()));
         // Skipped files → no folder was matched, so don't show a stale Files line.
         let files_line = (!self.skip_files)
             .then(|| {
