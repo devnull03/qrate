@@ -9,6 +9,7 @@ mod delegate;
 mod editing;
 mod filter;
 mod floating;
+mod note;
 mod panel;
 pub mod photos;
 mod row_index;

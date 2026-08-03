@@ -8,11 +8,13 @@
 
 use std::rc::Rc;
 
+use diagnostics::Diagnostics;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ClickEvent, Context, InteractiveElement as _, IntoElement, ParentElement as _,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, px, size,
 };
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{
     ActiveTheme, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -24,6 +26,7 @@ use gpui_component::{
     v_flex, v_virtual_list,
 };
 
+use crate::note::{self, Target};
 use crate::{TableStateHandle, delegate::QrateTableDelegate};
 
 /// Fixed row height for the value checklist. The virtual list needs every item's size up front,
@@ -48,13 +51,30 @@ pub(crate) fn render_th(
     // row is sticky, so the highlight stays put as the grid scrolls under it.
     let editing_col = delegate.active_cell().is_some_and(|(_, c)| c == data_col);
 
+    let location = delegate.location(None, Some(data_col));
+    let worst = Diagnostics::worst_at(&location.dataset, None, location.column.as_deref(), _cx);
+    let tip = note::tooltip_text(&location, _cx);
+    let note_editor = note::editor(delegate, None, Some(data_col), _cx);
+
     h_flex()
+        .id(("col-note", data_col))
         .size_full()
         .justify_between()
         .items_center()
         .gap_1()
         .when(editing_col, |th| th.bg(_cx.theme().secondary_hover))
         .child(div().flex_1().truncate().child(name))
+        .when_some(worst, |th, severity| th.child(note::marker(severity, _cx)))
+        .when_some(tip, |th, text| {
+            th.tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
+            })
+            .tooltip_show_delay(note::HOVER_DELAY)
+        })
+        .context_menu(move |menu, window, cx| {
+            note::menu(Target::Column(data_col), menu, window, cx)
+        })
+        .when_some(note_editor, |th, editor| th.child(editor))
         .when(delegate.column_filter_enabled(data_col), |th| {
             th.child(
                 Popover::new(("col-filter", data_col))

@@ -9,4 +9,8 @@ gpui-component.workspace = true
 regex = "1"
 serde.workspace = true
 serde_json.workspace = true
+diagnostics = { path = "../diagnostics" }
 settings = { path = "../settings" }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
