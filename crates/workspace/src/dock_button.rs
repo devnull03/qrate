@@ -63,9 +63,10 @@ impl Render for DockToggleButton {
             .rounded_md()
             .cursor_pointer()
             .hover(move |this| this.bg(hover_bg))
-            // The title bar is a window-drag region; claim the mouse-down (as the library
-            // Button does) so a click here toggles the dock instead of dragging the window.
-            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            // The title bar wraps its children in a `WindowControlArea::Drag` hitbox, which
+            // Windows hit-tests as HTCAPTION and never delivers a click from. Occluding
+            // stops that hit test at this button.
+            .occlude()
             .child(Icon::new(self.icon.clone()).small())
             .when(self.count, |this| {
                 this.child(Diagnostics::count(cx).to_string())
