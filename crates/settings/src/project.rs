@@ -1,4 +1,4 @@
-//! On-disk `.qrate` project file (v1). One SQLite database per project,
+//! On-disk `.qrate` project file (v2). One SQLite database per project,
 //! written once by the "New Project" wizard. Runs in `journal_mode=DELETE`,
 //! not WAL: with a single short-lived connection per operation WAL buys no
 //! concurrency, and its `-wal`/`-shm` siblings only vanish when the *last*
@@ -7,16 +7,22 @@
 //! a clean commit always leaves a single file on disk, and a crash leaves a
 //! hot journal that SQLite auto-recovers on the next open.
 //!
-//! v1 schema — only what has a consumer today:
+//! v2 schema — only what has a consumer today:
 //! - `__settings`  key/value: project name, source kind, link method, created_at.
 //! - `__columns`   configured columns (`notes` is where ASNT-18's per-column
 //!   notes land — adding them is an UPDATE, not a schema change).
+//! - `__notes`     authored diagnostics: imported cell notes today, user marks
+//!   later. Its `dataset` column is why a second sheet will be new rows rather
+//!   than a new table. Computed diagnostics (validators, spell-check) are never
+//!   stored — they are recomputed on open, so persisting them only goes stale.
 //! - `dataset_main` the imported rows, one real SQL column per spreadsheet
 //!   header. Only created when there is a spreadsheet.
 //!
 //! ponytail: no `__file_links`, no `metadata` blob, single dataset table —
 //! add each when its consumer (media viewer, validation rules, multi-import)
-//! exists. Versioned via `PRAGMA user_version` for future migrations.
+//! exists. Versioned via `PRAGMA user_version` for future migrations; v1 files
+//! get `__notes` created lazily on first write rather than a migration pass, so
+//! opening a project stays a read-only operation.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 
 /// `PRAGMA application_id` value so `file`-style tools can recognize `.qrate`.
 const QRATE_APPLICATION_ID: i32 = 1097887558;
-const QRATE_SCHEMA_VERSION: i32 = 1;
+const QRATE_SCHEMA_VERSION: i32 = 2;
 
 /// `__settings` key for the files folder chosen in the wizard's Files step. Only the path is
 /// kept — qrate never copies source files, so the table crate re-resolves row images against
@@ -131,7 +137,7 @@ fn open_ro(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// Creates `path` (a `.qrate` file) with the v1 schema and the imported data.
+/// Creates `path` (a `.qrate` file) with the v2 schema and the imported data.
 /// `headers`/`rows` are the raw spreadsheet; `columns` the configured column
 /// list (may differ from `headers` when a column config was loaded). Blank
 /// projects pass empty `headers` and get no `dataset_main` table. `files_folder`
@@ -167,6 +173,7 @@ pub fn create_project_file(
         "#,
     )
     .context("Create schema")?;
+    conn.execute_batch(NOTES_DDL).context("Create __notes")?;
 
     let created_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -312,6 +319,95 @@ pub fn write_setting(path: &Path, key: &str, value: &str) -> Result<()> {
         params![key, value],
     )
     .context("Upsert setting")?;
+    Ok(())
+}
+
+/// Shared by project creation and [`write_notes`], which creates the table on demand so a v1
+/// file gains it on first write instead of needing a migration pass on open.
+const NOTES_DDL: &str = r#"
+    CREATE TABLE IF NOT EXISTS __notes (
+      dataset     TEXT NOT NULL,
+      row_ix      INTEGER,
+      column_name TEXT,
+      severity    TEXT NOT NULL,
+      source      TEXT NOT NULL,
+      message     TEXT NOT NULL
+    );
+"#;
+
+/// One `__notes` row. Deliberately flat and stringly-typed rather than reusing
+/// `diagnostics::Diagnostic`: that crate depends on this one, so the schema stays owned by the
+/// module that documents it. A `None` coordinate widens the note — row-only marks a whole row,
+/// column-only a whole column, neither the dataset itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredNote {
+    pub dataset: String,
+    pub row: Option<usize>,
+    pub column: Option<String>,
+    pub severity: String,
+    pub source: String,
+    pub message: String,
+}
+
+/// Every stored note. A file written before `__notes` existed yields an empty vec, the same
+/// tolerance [`load_dataset`] gives a blank project's missing `dataset_main`.
+pub fn read_notes(path: &Path) -> Result<Vec<StoredNote>> {
+    let conn = open_ro(path)?;
+    let exists: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '__notes'",
+        [],
+        |r| r.get(0),
+    )?;
+    if exists == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT dataset, row_ix, column_name, severity, source, message FROM __notes")?;
+    let iter = stmt.query_map([], |r| {
+        Ok(StoredNote {
+            dataset: r.get(0)?,
+            row: r.get::<_, Option<i64>>(1)?.map(|v| v as usize),
+            column: r.get(2)?,
+            severity: r.get(3)?,
+            source: r.get(4)?,
+            message: r.get(5)?,
+        })
+    })?;
+    iter.collect::<rusqlite::Result<Vec<_>>>()
+        .context("Read notes")
+}
+
+/// Replaces everything `source` previously stored, in one transaction — the same
+/// replace-by-source rule the in-memory store uses, so a re-import can't leave orphans behind.
+/// Only authored sources belong here (imported notes, user marks); computed diagnostics are
+/// recomputed on open and would go stale in storage.
+pub fn write_notes(path: &Path, source: &str, notes: &[StoredNote]) -> Result<()> {
+    let mut conn = open_rw(path)?;
+    let tx = conn.transaction()?;
+    tx.execute_batch(NOTES_DDL).context("Create __notes")?;
+    tx.execute("DELETE FROM __notes WHERE source = ?1", params![source])
+        .context("Clear notes")?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO __notes(dataset, row_ix, column_name, severity, source, message)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        for n in notes {
+            stmt.execute(params![
+                n.dataset,
+                n.row.map(|v| v as i64),
+                n.column,
+                n.severity,
+                source,
+                n.message
+            ])
+            .context("Insert note")?;
+        }
+    }
+    tx.pragma_update(None, "user_version", QRATE_SCHEMA_VERSION)
+        .context("Set user_version")?;
+    tx.commit().context("Commit notes")?;
     Ok(())
 }
 
@@ -496,6 +592,81 @@ mod tests {
             let _ = std::fs::remove_file(path.with_extension(ext));
         }
         path
+    }
+
+    fn note(source: &str, row: Option<usize>, column: Option<&str>, msg: &str) -> StoredNote {
+        StoredNote {
+            dataset: "dataset_main".into(),
+            row,
+            column: column.map(str::to_string),
+            severity: "note".into(),
+            source: source.into(),
+            message: msg.into(),
+        }
+    }
+
+    fn blank_project(path: &Path) {
+        create_project_file(path, "Notes", "CSV", None, None, &[], &[], &[]).unwrap();
+    }
+
+    #[test]
+    fn notes_round_trip_and_replace_by_source() {
+        let path = tempfile("notes.qrate");
+        blank_project(&path);
+
+        write_notes(
+            &path,
+            "import",
+            &[
+                note("import", Some(0), Some("Title"), "cell note"),
+                note("import", Some(3), None, "whole row"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(read_notes(&path).unwrap().len(), 2);
+
+        // A different source is additive — it must not disturb `import`'s entries.
+        write_notes(
+            &path,
+            "spell",
+            &[note("spell", None, Some("Title"), "whole column")],
+        )
+        .unwrap();
+        assert_eq!(read_notes(&path).unwrap().len(), 3);
+
+        // Optional coordinates survive the NULL round-trip in both directions.
+        let all = read_notes(&path).unwrap();
+        let row_only = all.iter().find(|n| n.message == "whole row").unwrap();
+        assert_eq!((row_only.row, row_only.column.as_deref()), (Some(3), None));
+        let col_only = all.iter().find(|n| n.message == "whole column").unwrap();
+        assert_eq!(
+            (col_only.row, col_only.column.as_deref()),
+            (None, Some("Title"))
+        );
+
+        // Republishing an empty set clears only that source — the invalidation rule.
+        write_notes(&path, "import", &[]).unwrap();
+        let left = read_notes(&path).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].source, "spell");
+
+        assert!(!path.with_extension("qrate-journal").exists());
+    }
+
+    #[test]
+    fn reads_notes_from_a_file_predating_the_table() {
+        let path = tempfile("v1.qrate");
+        blank_project(&path);
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("DROP TABLE __notes")
+            .unwrap();
+
+        // A v1 `.qrate` is missing the table entirely; that is empty, not an error.
+        assert_eq!(read_notes(&path).unwrap(), Vec::new());
+        // ...and the first write creates it, which is the whole 1 -> 2 migration.
+        write_notes(&path, "import", &[note("import", Some(1), Some("A"), "hi")]).unwrap();
+        assert_eq!(read_notes(&path).unwrap().len(), 1);
     }
 
     #[test]

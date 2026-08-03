@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-pub use settings::project::ProjectColumn;
+pub use settings::project::{ProjectColumn, StoredNote, write_notes};
 
 pub fn sanitize_file_stem(name: &str) -> String {
     let cleaned: String = name

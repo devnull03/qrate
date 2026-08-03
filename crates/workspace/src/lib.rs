@@ -6,8 +6,6 @@ mod image_viewer;
 mod panels;
 
 pub use image_viewer::open_image_viewer;
-// `panels/log_viewer.rs` is intentionally NOT declared here — it is a set-aside,
-// reusable line-coloring viewer kept for when `ProblemsPanel` grows real content.
 
 pub use dock_button::DockToggleButton;
 
@@ -20,7 +18,9 @@ use gpui_component::dock::{
 use settings::AppSettings;
 use table::TablePanel;
 
-use crate::panels::{AgentPanel, DetailsPanel, ProblemsPanel};
+use diagnostics::ProblemsPanel;
+
+use crate::panels::{AgentPanel, DetailsPanel};
 
 /// Settings key under which the serialized [`DockAreaState`] is persisted —
 /// both in the open project's `.qrate` `__settings` (preferred) and in the

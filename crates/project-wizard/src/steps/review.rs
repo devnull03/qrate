@@ -68,6 +68,28 @@ impl ProjectWizard {
             &rows,
         ) {
             Ok(file) => {
+                // Imported notes become Problems-panel entries. Non-fatal: a lost note must not
+                // fail project creation. `open_project` below wakes the diagnostics loader,
+                // which reads them straight back, so this write is the single source of truth.
+                if let Some(preview) = &self.csv_preview {
+                    let notes: Vec<_> = preview
+                        .notes
+                        .iter()
+                        .map(|n| project::StoredNote {
+                            dataset: "dataset_main".into(),
+                            row: Some(n.row),
+                            column: Some(n.column.clone()),
+                            severity: "note".into(),
+                            source: "import".into(),
+                            message: n.text.clone(),
+                        })
+                        .collect();
+                    if let Err(e) =
+                        project::write_notes(std::path::Path::new(&file), "import", &notes)
+                    {
+                        eprintln!("Couldn't save the sheet's notes — {e}");
+                    }
+                }
                 // Load the file straight back so the main window opens on the
                 // real, round-tripped data (same path the launcher uses).
                 if let Err(e) = project::open_project(std::path::Path::new(&file), cx) {

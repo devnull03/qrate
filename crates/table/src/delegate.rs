@@ -89,6 +89,19 @@ impl QrateTableDelegate {
         self.visible_rows.get(view).copied()
     }
 
+    /// Source→view, the inverse of [`source`](Self::source). `None` when a filter currently hides
+    /// the row — a diagnostic can point at a row the user has narrowed away.
+    pub fn view_row(&self, source: usize) -> Option<usize> {
+        self.visible_rows.iter().position(|&s| s == source)
+    }
+
+    /// A data-column index from its header text. Diagnostics address columns by name because
+    /// names are `__columns`' PRIMARY KEY and survive a column move; the positional `c{ix}` key
+    /// never leaves this crate.
+    pub fn data_col(&self, header: &str) -> Option<usize> {
+        self.columns.iter().position(|c| c.name == header)
+    }
+
     fn recompute_visible(&mut self) {
         self.visible_rows = compute_visible_rows(&self.rows, &self.filters);
     }

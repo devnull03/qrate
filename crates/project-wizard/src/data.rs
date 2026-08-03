@@ -7,10 +7,22 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
+/// A note carried in from the sheet, resolved against this preview's own indices: `row` indexes
+/// [`SpreadsheetPreview::rows`] and `column` is the header text, so nothing downstream has to
+/// know about spreadsheet coordinates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewNote {
+    pub row: usize,
+    pub column: String,
+    pub text: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct SpreadsheetPreview {
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
+    /// Cell notes, when the source carried any. CSV has no way to express them.
+    pub notes: Vec<PreviewNote>,
 }
 
 impl SpreadsheetPreview {
@@ -24,11 +36,29 @@ impl SpreadsheetPreview {
 }
 
 impl From<cloud_sync::SheetData> for SpreadsheetPreview {
-    // ponytail: `sheet.notes` dropped — no preview field yet; carry them through when the Problems panel lands.
     fn from(sheet: cloud_sync::SheetData) -> Self {
+        let (top, left) = sheet.origin;
+        let notes = sheet
+            .notes
+            .iter()
+            .filter_map(|n| {
+                // Note refs are absolute sheet coordinates; the rows start at the used range's
+                // origin, and the first of those is the header.
+                let (r, c) = cloud_sync::a1_to_index(&n.cell)?;
+                let row = r.checked_sub(top)?.checked_sub(1)? as usize;
+                let column = sheet.headers.get(c.checked_sub(left)? as usize)?.clone();
+                // An orphan outside the imported grid can't be shown or jumped to.
+                (row < sheet.rows.len()).then(|| PreviewNote {
+                    row,
+                    column,
+                    text: n.text.clone(),
+                })
+            })
+            .collect();
         Self {
             headers: sheet.headers,
             rows: sheet.rows,
+            notes,
         }
     }
 }
@@ -96,7 +126,11 @@ pub fn load_csv_preview(path: &str) -> Result<SpreadsheetPreview, SpreadsheetErr
         return Err(SpreadsheetError::Empty);
     }
 
-    Ok(SpreadsheetPreview { headers, rows })
+    Ok(SpreadsheetPreview {
+        headers,
+        rows,
+        notes: Vec::new(),
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -319,6 +353,65 @@ mod tests {
             .join("../../sample")
             .canonicalize()
             .expect("sample/ directory present in repo")
+    }
+
+    fn sheet(origin: (u32, u32), notes: &[(&str, &str)]) -> cloud_sync::SheetData {
+        cloud_sync::SheetData {
+            headers: vec!["Digital ID".into(), "Title".into()],
+            rows: vec![
+                vec!["1".into(), "First".into()],
+                vec!["2".into(), "Second".into()],
+            ],
+            notes: notes
+                .iter()
+                .map(|(cell, text)| cloud_sync::CellNote {
+                    cell: (*cell).into(),
+                    text: (*text).into(),
+                })
+                .collect(),
+            origin,
+        }
+    }
+
+    #[test]
+    fn sheet_notes_resolve_against_the_used_range_origin() {
+        // Sheet starting at A1: row 1 is the header, so B2 is the first data row's `Title`.
+        let p = SpreadsheetPreview::from(sheet((0, 0), &[("B2", "check this")]));
+        assert_eq!(
+            p.notes,
+            vec![PreviewNote {
+                row: 0,
+                column: "Title".into(),
+                text: "check this".into(),
+            }]
+        );
+
+        // Same grid parked at C5: calamine's rows start there, but note refs stay absolute, so
+        // the origin has to come off both axes or every note lands in the wrong cell.
+        let p = SpreadsheetPreview::from(sheet((4, 2), &[("D6", "check this")]));
+        assert_eq!(
+            p.notes,
+            vec![PreviewNote {
+                row: 0,
+                column: "Title".into(),
+                text: "check this".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn notes_outside_the_imported_grid_are_dropped() {
+        // The header row itself, a row past the last one, a column past the last one, and junk.
+        let p = SpreadsheetPreview::from(sheet(
+            (0, 0),
+            &[
+                ("A1", "header"),
+                ("A9", "too far down"),
+                ("Z2", "too far right"),
+                ("nope", "junk"),
+            ],
+        ));
+        assert_eq!(p.notes, Vec::new());
     }
 
     #[test]

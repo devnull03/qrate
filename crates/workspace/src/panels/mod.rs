@@ -3,8 +3,6 @@
 
 pub mod agent;
 pub mod details;
-pub mod problems;
 
 pub use agent::AgentPanel;
 pub use details::DetailsPanel;
-pub use problems::ProblemsPanel;

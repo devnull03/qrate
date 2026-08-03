@@ -6,6 +6,7 @@
 //! the only way to get a pointer cursor on these toggles. It also lets us set the hover
 //! highlight explicitly instead of relying on the ghost variant's subtle default.
 
+use diagnostics::Diagnostics;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable,
@@ -18,8 +19,9 @@ pub struct DockToggleButton {
     dock: WeakEntity<DockArea>,
     placement: DockPlacement,
     icon: IconName,
-    /// Optional text (e.g. the problems counter's count). Placeholder until diagnostics exist.
-    label: Option<SharedString>,
+    /// Whether to show the live error/warning count beside the icon.
+    count: bool,
+    _sub: Option<Subscription>,
 }
 
 impl DockToggleButton {
@@ -34,12 +36,15 @@ impl DockToggleButton {
             dock,
             placement,
             icon,
-            label: None,
+            count: false,
+            _sub: None,
         }
     }
 
-    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
-        self.label = Some(label.into());
+    /// Show the diagnostics count, kept current as problems come and go.
+    pub fn problem_count(mut self, cx: &mut Context<Self>) -> Self {
+        self.count = true;
+        self._sub = Some(cx.observe_global::<Diagnostics>(|_this, cx| cx.notify()));
         self
     }
 }
@@ -62,7 +67,9 @@ impl Render for DockToggleButton {
             // Button does) so a click here toggles the dock instead of dragging the window.
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .child(Icon::new(self.icon.clone()).small())
-            .when_some(self.label.clone(), |this, label| this.child(label))
+            .when(self.count, |this| {
+                this.child(Diagnostics::count(cx).to_string())
+            })
             .on_click(move |_, window, cx| {
                 dock.update(cx, |area, cx| {
                     area.toggle_dock(placement, window, cx);
