@@ -17,6 +17,7 @@ use std::panic;
 use std::path::{Path, PathBuf};
 
 use gpui::App;
+use log::{Level, Log, Metadata, Record};
 use simplelog::{
     ColorChoice, CombinedLogger, ConfigBuilder, LevelFilter, TermLogger, TerminalMode, WriteLogger,
 };
@@ -59,7 +60,8 @@ pub fn init() {
         }
     }
 
-    let _ = CombinedLogger::init(sinks);
+    let _ = log::set_boxed_logger(Box::new(QuietWindowTeardown(CombinedLogger::new(sinks))));
+    log::set_max_level(LevelFilter::Debug);
 
     // Chained rather than replaced: the default hook is what prints a panic to a developer's
     // terminal, and losing that to gain the file would be a bad trade.
@@ -77,6 +79,48 @@ pub fn init() {
 
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// Demotes gpui's window-teardown errors to debug.
+///
+/// Closing a window always produces them: a detached per-window callback outlives the window,
+/// reads it, and `log_err`s the expected miss. Kept in the file for teardown debugging, but not at
+/// a level that makes every pasted bug report open with three errors nobody can act on.
+struct QuietWindowTeardown(Box<dyn Log>);
+
+fn is_window_teardown(record: &Record) -> bool {
+    if record.level() != Level::Error || !record.target().starts_with("gpui") {
+        return false;
+    }
+    let message = record.args().to_string();
+    message == "window not found" || message.starts_with("Invalid window handle")
+}
+
+impl Log for QuietWindowTeardown {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        self.0.enabled(metadata)
+    }
+
+    fn flush(&self) {
+        self.0.flush();
+    }
+
+    fn log(&self, record: &Record) {
+        if is_window_teardown(record) {
+            self.0.log(
+                &Record::builder()
+                    .level(Level::Debug)
+                    .target(record.target())
+                    .module_path(record.module_path())
+                    .file(record.file())
+                    .line(record.line())
+                    .args(*record.args())
+                    .build(),
+            );
+            return;
+        }
+        self.0.log(record);
+    }
 }
 
 /// Everything a bug report needs about the machine and the session, redacted and ready to paste.
@@ -216,6 +260,41 @@ mod tests {
     fn urlencodes_what_a_url_cannot_carry() {
         assert_eq!(super::urlencode("a b&c"), "a%20b%26c");
         assert_eq!(super::urlencode("qrate-0.1_x.y~z"), "qrate-0.1_x.y~z");
+    }
+
+    /// The demotion has to be narrow: it must catch gpui's two teardown messages and nothing else,
+    /// or a real failure quietly stops being an error.
+    #[test]
+    fn only_window_teardown_is_demoted() {
+        let teardown = |target: &str, level: log::Level, message: &str| {
+            super::is_window_teardown(
+                &log::Record::builder()
+                    .level(level)
+                    .target(target)
+                    .args(format_args!("{message}"))
+                    .build(),
+            )
+        };
+        let error = log::Level::Error;
+
+        assert!(teardown("gpui::window", error, "window not found"));
+        assert!(teardown(
+            "gpui_windows::window",
+            error,
+            "Invalid window handle (0x80040102)"
+        ));
+
+        assert!(!teardown(
+            "gpui_windows::platform",
+            error,
+            "DirectX device lost"
+        ));
+        assert!(!teardown("app::logging", error, "window not found"));
+        assert!(!teardown(
+            "gpui::window",
+            log::Level::Warn,
+            "window not found"
+        ));
     }
 
     /// The dump is only useful if every section is actually in it — a report missing the version
