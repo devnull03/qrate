@@ -20,8 +20,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use diagnostics::{
-    AsyncValidators, ColumnSnapshot, ColumnValidator as _, DATASET_MAIN, Diagnostics, Source,
-    Validators,
+    AsyncValidators, ColumnSnapshot, ColumnValidator as _, DATASET_MAIN, Diagnostic, Diagnostics,
+    Location, Severity, Source, Validators,
 };
 use gpui::{App, AppContext as _, Global, SharedString, Task};
 use plugin_api::{BarContributions, CommandContext, MenuContributions, PluginHooks};
@@ -61,7 +61,11 @@ pub fn reload(cx: &mut App) {
         std::mem::take(&mut plugins.loaded)
     };
     for plugin in previous {
-        Validators::remove(&plugin.name(), cx);
+        let name = plugin.name();
+        Validators::remove(&name, cx);
+        // A plugin whose syntax error is now fixed has to stop reporting it, and an empty publish
+        // is the only invalidation this store has.
+        Diagnostics::set(&Source::Plugin(name), DATASET_MAIN, Vec::new(), cx);
     }
 
     // Settings are fetched after loading rather than passed in, because a plugin may rename itself
@@ -98,8 +102,45 @@ pub fn reload(cx: &mut App) {
     cx.set_global(AsyncValidators {
         run: validate_async,
     });
+    // Published now rather than waiting for a run: a menu-only plugin never validates, so its
+    // syntax error would otherwise be invisible until someone read stderr that a packaged build
+    // does not have. Filed against the dataset because a broken script has no row to blame.
+    for plugin in &loaded {
+        let Some(err) = plugin.load_error() else {
+            continue;
+        };
+        let name = plugin.name();
+        log::error!("{name} failed to load: {err}");
+        Diagnostics::set(
+            &Source::Plugin(name.clone()),
+            DATASET_MAIN,
+            vec![Diagnostic {
+                location: Location {
+                    dataset: DATASET_MAIN.into(),
+                    row: None,
+                    column: None,
+                },
+                severity: Severity::Error,
+                source: Source::Plugin(name.clone()),
+                message: format!("{name} failed to load: {err}").into(),
+            }],
+            cx,
+        );
+    }
+
     cx.default_global::<Plugins>().loaded = loaded;
     refresh_scoped(cx);
+}
+
+/// Every loaded plugin as `(name, why it failed)`, for the Help ▸ Copy Debug Info dump.
+pub fn status(cx: &App) -> Vec<(SharedString, Option<String>)> {
+    cx.try_global::<Plugins>().map_or(Vec::new(), |plugins| {
+        plugins
+            .loaded
+            .iter()
+            .map(|plugin| (plugin.name(), plugin.load_error().map(str::to_string)))
+            .collect()
+    })
 }
 
 /// Run every plugin over the snapshot on the background executor, and publish what they find.
@@ -240,7 +281,7 @@ pub fn open_plugins_folder() {
     if let Err(err) =
         fs::create_dir_all(&dir).and_then(|()| settings::os_open::open_in_default_app(&dir))
     {
-        eprintln!("failed to open the plugins folder: {err}");
+        log::error!("failed to open the plugins folder: {err}");
     }
 }
 
@@ -284,7 +325,7 @@ fn invoke(plugin: &SharedString, command: &SharedString, ctx: &CommandContext, c
                 // ponytail: a failed command is only reported to stderr. It has no run to attach a
                 // diagnostic to the way `validate` does; give commands their own diagnostic source if
                 // silent failures start costing debugging time.
-                Err(err) => eprintln!("{plugin}: {err}"),
+                Err(err) => log::error!("{plugin}: {err}"),
                 Ok(written) => {
                     // A bar command has no column to write to; dropping the write beats inventing a
                     // column for it to land in.
@@ -329,8 +370,14 @@ fn invoke(plugin: &SharedString, command: &SharedString, ctx: &CommandContext, c
 fn discover() -> Vec<(String, String)> {
     let mut found: Vec<(String, String)> = Vec::new();
     for dir in search_paths() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            // Absent is the normal case for a user who has never installed one; unreadable is not.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                log::warn!("skipping plugin folder {}: {err}", dir.display());
+                continue;
+            }
         };
         for entry in entries.flatten() {
             let path = entry.path();
@@ -350,8 +397,11 @@ fn discover() -> Vec<(String, String)> {
             if found.iter().any(|(seen, _)| seen == &id) {
                 continue;
             }
-            if let Ok(source) = fs::read_to_string(&file) {
-                found.push((id, source));
+            match fs::read_to_string(&file) {
+                Ok(source) => found.push((id, source)),
+                // A `<name>/` with no `init.lua` is the usual cause, and vanishing without a word
+                // is what makes it hard to spot.
+                Err(err) => log::warn!("skipping plugin {id}: {} — {err}", file.display()),
             }
         }
     }

@@ -92,7 +92,7 @@ impl LuaPlugin {
         let pending = Arc::new(Mutex::new(Vec::new()));
         Self {
             id: id.to_string().into(),
-            state: build(source, &deadline, &pending).map_err(|err| err.to_string()),
+            state: build(id, source, &deadline, &pending).map_err(|err| err.to_string()),
             scoped: Mutex::new((Json::Null, Json::Null)),
             pending,
             deadline,
@@ -101,6 +101,12 @@ impl LuaPlugin {
 
     pub fn bar(&self) -> &[BarItem] {
         self.state.as_ref().map_or(&[], |l| l.bar.as_slice())
+    }
+
+    /// Why this plugin did not load, if it did not. The only route to the private `state`, which
+    /// is what lets `reload` file the failure and the debug dump list it.
+    pub fn load_error(&self) -> Option<&str> {
+        self.state.as_ref().err().map(String::as_str)
     }
 
     /// Every `qrate.status.set` since the last call, and empty afterwards.
@@ -234,24 +240,25 @@ impl ColumnValidator for LuaPlugin {
         column: &ColumnInfo,
         values: &[SharedString],
     ) -> Vec<(usize, Severity, SharedString)> {
-        let result = self
-            .state
-            .as_ref()
-            .map_err(String::clone)
-            .and_then(|loaded| {
-                let Some(validate) = loaded.validate.as_ref() else {
-                    return Ok(Vec::new());
-                };
-                self.call_validate(loaded, validate, column, values)
-                    .map_err(|err| err.to_string())
-            });
+        // A plugin that never loaded reports nothing here: `reload` already filed that failure
+        // against the dataset, where it belongs, and repeating it per column would bury the run.
+        let Ok(loaded) = self.state.as_ref() else {
+            return Vec::new();
+        };
+        let Some(validate) = loaded.validate.as_ref() else {
+            return Vec::new();
+        };
 
-        match result {
+        match self.call_validate(loaded, validate, column, values) {
             Ok(found) => found,
-            // ponytail: a plugin's own failure is filed at row 0 because `ColumnValidator` returns
-            // `usize`, not `Option<usize>`. Widen the trait once something else needs a
-            // dataset-level finding. Visible and wrong beats invisible.
-            Err(err) => vec![(0, Severity::Error, format!("{}: {err}", self.id).into())],
+            // ponytail: a *runtime* failure is filed at row 0 because `ColumnValidator` returns
+            // `usize`, not `Option<usize>`, and unlike a load failure there is no `App` here to
+            // publish against the dataset. Widen the trait if this ever misleads someone. The log
+            // line below is the accurate copy.
+            Err(err) => {
+                log::error!("{}: {err}", self.id);
+                vec![(0, Severity::Error, format!("{}: {err}", self.id).into())]
+            }
         }
     }
 }
@@ -274,6 +281,7 @@ fn json_field(lua: &Lua, table: &Table, key: &str) -> mlua::Result<Option<Json>>
 }
 
 fn build(
+    id: &str,
     source: &str,
     deadline: &Arc<Mutex<Instant>>,
     pending: &Arc<Mutex<Vec<(SharedString, SharedString)>>>,
@@ -288,6 +296,7 @@ fn build(
     )?;
     lua.set_memory_limit(MEMORY_LIMIT)?;
     install_qrate(&lua, deadline, pending)?;
+    install_print(&lua, id)?;
     lua.sandbox(true)?;
     lua.set_interrupt({
         let deadline = deadline.clone();
@@ -301,7 +310,9 @@ fn build(
     });
 
     *deadline.lock().unwrap() = Instant::now() + DEADLINE;
-    let descriptor: Table = lua.load(source).eval()?;
+    // Named, or mlua labels the chunk with this file and line — so a plugin's syntax error would
+    // point at qrate's source instead of the author's.
+    let descriptor: Table = lua.load(source).set_name(id).eval()?;
     let validate: Option<Function> = descriptor.get("validate")?;
     let on_command: Option<Function> = descriptor.get("on_command")?;
     let menu = match descriptor.get::<Option<Vec<Table>>>("menu")? {
@@ -347,6 +358,20 @@ fn build(
         settings,
         bar,
     })
+}
+
+/// Point Luau's `print` at the session log instead of a stdout nobody sees.
+///
+/// A packaged build has no console, so the built-in `print` is a debugging tool that works only
+/// for whoever runs the app from a terminal. Tagged with the plugin's id, since the log
+/// interleaves every plugin's output with the host's.
+fn install_print(lua: &Lua, id: &str) -> mlua::Result<()> {
+    let id = id.to_string();
+    let print = lua.create_function(move |_, args: mlua::Variadic<String>| {
+        log::info!("[{id}] {}", args.join("\t"));
+        Ok(())
+    })?;
+    lua.globals().set("print", print)
 }
 
 /// The whole `qrate` global, installed before `sandbox` freezes the global table.
@@ -760,9 +785,14 @@ mod tests {
               validate = function() return {} end,
             }
         "#;
-        let found = check(source, &["x"]);
-        assert_eq!(found.len(), 1);
-        assert!(found[0].2.contains("middle"), "{:?}", found[0].2);
+        let plugin = plugin(source);
+        assert!(
+            plugin
+                .load_error()
+                .is_some_and(|err| err.contains("middle")),
+            "{:?}",
+            plugin.load_error()
+        );
     }
 
     #[test]
@@ -773,9 +803,14 @@ mod tests {
               validate = function() return {} end,
             }
         "#;
-        let found = check(source, &["x"]);
-        assert_eq!(found.len(), 1);
-        assert!(found[0].2.contains("slider"), "{:?}", found[0].2);
+        let plugin = plugin(source);
+        assert!(
+            plugin
+                .load_error()
+                .is_some_and(|err| err.contains("slider")),
+            "{:?}",
+            plugin.load_error()
+        );
     }
 
     /// The descriptor may rename the plugin, and that name is its identity everywhere — including
@@ -854,8 +889,9 @@ mod tests {
         assert!(!settings::plugins::is_set(written.column.as_ref().unwrap()));
     }
 
-    /// Every failure mode lands in the Problems panel as one row-0 error rather than a panic or
-    /// silence — which is the difference between debuggable and not while authoring a plugin.
+    /// Every failure mode is kept and readable rather than becoming a panic or silence — which is
+    /// the difference between debuggable and not while authoring a plugin. `reload` turns this into
+    /// the dataset-level diagnostic; a broken plugin validates nothing, so it says nothing here.
     #[test]
     fn a_plugin_that_will_not_load_reports_itself() {
         for source in [
@@ -863,11 +899,9 @@ mod tests {
             "return { }",                    // neither hook
             "return 42",                     // not a table
         ] {
-            let found = check(source, &["x"]);
-            assert_eq!(found.len(), 1, "{source:?}");
-            assert_eq!(found[0].0, 0);
-            assert_eq!(found[0].1, Severity::Error);
-            assert!(found[0].2.starts_with("test: "), "{:?}", found[0].2);
+            let plugin = plugin(source);
+            assert!(plugin.load_error().is_some(), "{source:?}");
+            assert!(check(source, &["x"]).is_empty(), "{source:?}");
         }
     }
 
