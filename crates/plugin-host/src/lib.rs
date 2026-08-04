@@ -1,15 +1,18 @@
 //! Loads Lua plugins from a folder, registers each one as a validator, and publishes what they
-//! contribute to the app's menus.
+//! contribute to the app's menus and Settings window.
 //!
-//! Neovim's model, not an extension marketplace: a plugin is a directory containing `init.lua`,
-//! dropped in by hand, discovered on startup and on demand. There is no manifest — the table the
-//! script returns *is* the descriptor — and the folder name is the plugin's identity, which is
-//! what the Problems panel shows, what its findings are replaced by, and what its settings are
-//! stored under.
+//! Neovim's model, not an extension marketplace: a plugin is a `<name>.lua` file or a `<name>/`
+//! directory containing `init.lua`, dropped in by hand, discovered on startup and on demand. There
+//! is no manifest — the table the script returns *is* the descriptor, and it may declare a `name`
+//! to override the one on disk. That name is the plugin's identity, which is what the Problems
+//! panel shows, what its findings are replaced by, and what its settings are stored under, so
+//! renaming a plugin orphans whatever it had already stored.
 
 mod plugin;
 
 pub use plugin::{LuaPlugin, Writes};
+// So the Settings window can render a plugin's knobs without depending on `plugin-api` directly.
+pub use plugin_api::{SettingKind, SettingScope, SettingSpec};
 
 use std::fs;
 use std::path::PathBuf;
@@ -18,6 +21,7 @@ use std::rc::Rc;
 use diagnostics::{ColumnInfo, ColumnValidator, Severity, Validators};
 use gpui::{App, Global, SharedString};
 use plugin_api::{CommandContext, MenuContributions, PluginHooks};
+use serde_json::Value as Json;
 
 /// What the last [`reload`] loaded. Kept here as well as in the validator registry because a menu
 /// command needs the plugin itself, which a `dyn ColumnValidator` cannot be recovered from.
@@ -59,13 +63,11 @@ pub fn reload(cx: &mut App) {
         Validators::remove(&plugin.name(), cx);
     }
 
+    // Settings are fetched after loading rather than passed in, because a plugin may rename itself
+    // in its descriptor and its stored object is keyed by whatever it ends up called.
     let loaded: Vec<Rc<LuaPlugin>> = discover()
         .into_iter()
-        .map(|(name, source)| {
-            let project = settings::plugins::project(&name, cx);
-            let user = settings::plugins::user(&name, cx);
-            Rc::new(LuaPlugin::load(&name, &source, project, user))
-        })
+        .map(|(id, source)| Rc::new(LuaPlugin::load(&id, &source)))
         .collect();
 
     let contributions = loaded
@@ -85,6 +87,69 @@ pub fn reload(cx: &mut App) {
     cx.set_global(MenuContributions(contributions));
     cx.set_global(PluginHooks { invoke });
     cx.default_global::<Plugins>().0 = loaded;
+    refresh_scoped(cx);
+}
+
+/// Every loaded plugin that declares settings, as `(name, description, its knobs)`. Read directly
+/// rather than through a global because the Settings window lives in `app`, which already links
+/// the host.
+pub fn setting_specs(cx: &App) -> Vec<(SharedString, Option<SharedString>, Vec<SettingSpec>)> {
+    cx.try_global::<Plugins>().map_or(Vec::new(), |plugins| {
+        plugins
+            .0
+            .iter()
+            .filter(|plugin| !plugin.settings().is_empty())
+            .map(|plugin| {
+                (
+                    plugin.name(),
+                    plugin.description(),
+                    plugin.settings().to_vec(),
+                )
+            })
+            .collect()
+    })
+}
+
+/// One declared setting's stored value, [`Json::Null`] if the plugin has never stored it.
+pub fn setting_value(plugin: &str, spec: &SettingSpec, cx: &App) -> Json {
+    let object = match spec.scope {
+        SettingScope::User => settings::plugins::user(plugin, cx),
+        SettingScope::Project => settings::plugins::project(plugin, cx),
+    };
+    object.get(spec.key.as_ref()).cloned().unwrap_or(Json::Null)
+}
+
+/// Store one declared setting, merging into the plugin's object for that scope rather than
+/// replacing it the way a command's write does — the knobs are independent of each other.
+pub fn set_setting(plugin: &str, spec: &SettingSpec, value: Json, cx: &mut App) {
+    let mut object = match spec.scope {
+        SettingScope::User => settings::plugins::user(plugin, cx),
+        SettingScope::Project => settings::plugins::project(plugin, cx),
+    };
+    if !object.is_object() {
+        object = Json::Object(Default::default());
+    }
+    object[spec.key.as_ref()] = value;
+    match spec.scope {
+        SettingScope::User => settings::plugins::set_user(plugin, object, cx),
+        SettingScope::Project => settings::plugins::set_project(plugin, object, cx),
+    }
+    refresh_scoped(cx);
+}
+
+/// Hand every loaded plugin the current project- and user-scope objects, so a write takes effect on
+/// the next `validate` without reloading the VMs.
+fn refresh_scoped(cx: &mut App) {
+    let plugins = cx
+        .try_global::<Plugins>()
+        .map_or(Vec::new(), |plugins| plugins.0.clone());
+    for plugin in plugins {
+        let name = plugin.name();
+        plugin.set_scoped(
+            settings::plugins::project(&name, cx),
+            settings::plugins::user(&name, cx),
+        );
+    }
 }
 
 pub fn open_plugins_folder() {
@@ -129,31 +194,48 @@ fn invoke(plugin: &SharedString, command: &SharedString, ctx: &CommandContext, c
             if let Some(value) = written.user {
                 settings::plugins::set_user(plugin, value, cx);
             }
-            // Project and user settings are snapshotted into each VM at load, so a write to them
-            // only takes effect on the next load. Column settings are read per call and need no
-            // such round trip.
+            // Column settings are read per call; the other two scopes are held in the plugin and
+            // have to be handed back after a write.
             if scoped {
-                reload(cx);
+                refresh_scoped(cx);
             }
         }
     }
 }
 
-/// Every `<dir>/<name>/init.lua` under the searched roots, as `(folder name, source)`.
+/// Every plugin under the searched roots, as `(id, source)`. A plugin is either a `<name>.lua`
+/// file or a `<name>/init.lua` folder — the folder form for anything that outgrows one file — and
+/// either way the name on disk is the id until the descriptor overrides it.
 ///
 /// Reading the file here rather than in [`LuaPlugin`] keeps the VM ignorant of the filesystem, so
 /// a plugin can be tested from a string.
 fn discover() -> Vec<(String, String)> {
-    let mut found = Vec::new();
+    let mut found: Vec<(String, String)> = Vec::new();
     for dir in search_paths() {
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
-            let Ok(source) = fs::read_to_string(entry.path().join("init.lua")) else {
+            let path = entry.path();
+            let (id, file) = if path.is_dir() {
+                (entry.file_name(), path.join("init.lua"))
+            } else if path.extension().is_some_and(|ext| ext == "lua") {
+                match path.file_stem() {
+                    Some(stem) => (stem.to_os_string(), path.clone()),
+                    None => continue,
+                }
+            } else {
                 continue;
             };
-            found.push((entry.file_name().to_string_lossy().into_owned(), source));
+            // First form wins, so converting `foo.lua` into `foo/` and forgetting to delete the
+            // file leaves one plugin rather than two fighting over one settings bucket.
+            let id = id.to_string_lossy().into_owned();
+            if found.iter().any(|(seen, _)| seen == &id) {
+                continue;
+            }
+            if let Ok(source) = fs::read_to_string(&file) {
+                found.push((id, source));
+            }
         }
     }
     found

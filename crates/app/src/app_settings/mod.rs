@@ -11,10 +11,12 @@ use gpui_component::{
     setting::{SettingField, SettingGroup, SettingItem, SettingPage},
     v_flex,
 };
+use plugin_host::{SettingKind, SettingSpec};
+use serde_json::Value as Json;
 use settings::{Setting, columns, project::CurrentProject};
 
 pub fn build_pages(cx: &App) -> Vec<SettingPage> {
-    vec![
+    let mut pages = vec![
         SettingPage::new("Table")
             .group(
                 SettingGroup::new().title("Appearance").item(
@@ -28,7 +30,61 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
             )
             .group(saving_group(cx)),
         columns_page(cx),
-    ]
+    ];
+    pages.extend(plugin_pages(cx));
+    pages
+}
+
+/// One page per plugin that declares settings, titled with the plugin's name — the same identity
+/// the Problems panel shows. Nothing here knows what any knob means: a spec says where the value
+/// lives and how to edit it, and the host does the storing.
+fn plugin_pages(cx: &App) -> Vec<SettingPage> {
+    plugin_host::setting_specs(cx)
+        .into_iter()
+        .map(|(name, description, specs)| {
+            let page = SettingPage::new(name.clone()).group(
+                SettingGroup::new().title("Options").items(
+                    specs
+                        .into_iter()
+                        .map(|spec| plugin_item(name.clone(), spec)),
+                ),
+            );
+            match description {
+                Some(description) => page.description(description),
+                None => page,
+            }
+        })
+        .collect()
+}
+
+fn plugin_item(id: SharedString, spec: SettingSpec) -> SettingItem {
+    let (label, description, kind) = (spec.label.clone(), spec.description.clone(), spec.kind);
+    let read = {
+        let (id, spec) = (id.clone(), spec.clone());
+        move |cx: &App| plugin_host::setting_value(&id, &spec, cx)
+    };
+    let write = move |value: Json, cx: &mut App| plugin_host::set_setting(&id, &spec, value, cx);
+
+    let item = match kind {
+        SettingKind::Switch => SettingItem::new(
+            label,
+            SettingField::switch(
+                move |cx: &App| read(cx).as_bool().unwrap_or(false),
+                move |on: bool, cx: &mut App| write(on.into(), cx),
+            ),
+        ),
+        SettingKind::Text => SettingItem::new(
+            label,
+            SettingField::input(
+                move |cx: &App| SharedString::from(read(cx).as_str().unwrap_or("").to_string()),
+                move |text: SharedString, cx: &mut App| write(text.to_string().into(), cx),
+            ),
+        ),
+    };
+    match description {
+        Some(description) => item.description(description),
+        None => item,
+    }
 }
 
 /// Autosave as a toggle plus, when on, the method. Both edit the one `AUTOSAVE_KEY` the table reads
