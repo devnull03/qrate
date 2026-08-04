@@ -1,7 +1,8 @@
+use std::rc::Rc;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::dock::{Panel, PanelControl, PanelEvent};
-use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 
@@ -40,12 +41,11 @@ impl Filter {
     }
 }
 
-/// One list entry, resolved out of the store before the builder takes `&mut Context` — the
-/// borrow on the global has to end before then.
+/// One list entry, resolved out of the store once per change rather than once per frame. Colours
+/// are not cached here because they come from the theme, which can change without the store doing.
 struct Row {
-    severity: Severity,
-    color: Hsla,
     icon: IconName,
+    severity: Severity,
     /// Which cell, row, or column this points at, already phrased for display.
     scope: SharedString,
     /// A row- or column-wide note, which reads differently from a cell coordinate.
@@ -59,18 +59,76 @@ struct Row {
 pub struct ProblemsPanel {
     focus_handle: FocusHandle,
     filter: Filter,
-    /// Re-renders on any store change. One `observe_global` and no re-binding — unlike
+    /// The visible list, in display order. Behind an `Rc` so each render hands the virtual list a
+    /// handle instead of a copy. Rebuilt only when the store or the filter changes — a sheet with
+    /// a few hundred findings would otherwise sort and rebuild all of them every frame.
+    rows: Rc<Vec<Row>>,
+    /// Per-tab totals, which count every severity regardless of the active filter.
+    counts: [usize; 4],
+    /// Refreshes on any store change. One `observe_global` and no re-binding — unlike
     /// `TableStateHandle`, the `Diagnostics` global is plain data that is never rebuilt.
     _sub: Subscription,
 }
 
 impl ProblemsPanel {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self {
+        let mut this = Self {
             focus_handle: cx.focus_handle(),
             filter: Filter::All,
-            _sub: cx.observe_global::<Diagnostics>(|_this, cx| cx.notify()),
-        }
+            rows: Rc::default(),
+            counts: [0; 4],
+            _sub: cx.observe_global::<Diagnostics>(|this, cx| {
+                this.refresh(cx);
+                cx.notify();
+            }),
+        };
+        this.refresh(cx);
+        this
+    }
+
+    fn refresh(&mut self, cx: &App) {
+        self.counts = Filter::ALL.map(|f| {
+            Diagnostics::all(cx)
+                .iter()
+                .filter(|d| f.admits(d.severity))
+                .count()
+        });
+
+        let mut rows: Vec<Row> = Diagnostics::all(cx)
+            .iter()
+            .filter(|d| self.filter.admits(d.severity))
+            .map(|d| {
+                let (scope, wide) = match (d.location.row, d.location.column.as_ref()) {
+                    (Some(r), Some(c)) => (format!("Row {} · {c}", r + 1).into(), false),
+                    (Some(r), None) => (format!("Row {}", r + 1).into(), true),
+                    (None, Some(c)) => (c.clone(), true),
+                    (None, None) => (d.location.dataset.clone(), true),
+                };
+                Row {
+                    severity: d.severity,
+                    icon: match d.severity {
+                        Severity::Error => IconName::CircleX,
+                        Severity::Warning => IconName::TriangleAlert,
+                        Severity::Info | Severity::Note => IconName::Info,
+                    },
+                    scope,
+                    wide,
+                    message: d.message.clone(),
+                    source: d.source.label(),
+                    location: d.location.clone(),
+                }
+            })
+            .collect();
+        // Errors first, then reading order down the table. A whole-row/column note sorts ahead
+        // of the cells it covers because `None` orders before `Some`.
+        rows.sort_by(|a, b| {
+            (a.severity, &a.location.row, &a.location.column).cmp(&(
+                b.severity,
+                &b.location.row,
+                &b.location.column,
+            ))
+        });
+        self.rows = Rc::new(rows);
     }
 }
 
@@ -103,53 +161,8 @@ impl Panel for ProblemsPanel {
 
 impl Render for ProblemsPanel {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Everything the builder needs, read out before it takes `&mut Context` — the borrow on
-        // the global has to end first.
-        let counts = Filter::ALL.map(|f| {
-            Diagnostics::all(cx)
-                .iter()
-                .filter(|d| f.admits(d.severity))
-                .count()
-        });
-        let mut rows: Vec<Row> = Diagnostics::all(cx)
-            .iter()
-            .filter(|d| self.filter.admits(d.severity))
-            .map(|d| {
-                let (scope, wide) = match (d.location.row, d.location.column.as_ref()) {
-                    (Some(r), Some(c)) => (format!("Row {} · {c}", r + 1).into(), false),
-                    (Some(r), None) => (format!("Row {}", r + 1).into(), true),
-                    (None, Some(c)) => (c.clone(), true),
-                    (None, None) => (d.location.dataset.clone(), true),
-                };
-                Row {
-                    severity: d.severity,
-                    color: severity_color(d.severity, cx),
-                    icon: match d.severity {
-                        Severity::Error => IconName::CircleX,
-                        Severity::Warning => IconName::TriangleAlert,
-                        Severity::Info | Severity::Note => IconName::Info,
-                    },
-                    scope,
-                    wide,
-                    message: d.message.clone(),
-                    source: d.source.label(),
-                    location: d.location.clone(),
-                }
-            })
-            .collect();
-        // Errors first, then reading order down the table. A whole-row/column note sorts ahead
-        // of the cells it covers because `None` orders before `Some`.
-        rows.sort_by(|a, b| {
-            (a.severity, &a.location.row, &a.location.column).cmp(&(
-                b.severity,
-                &b.location.row,
-                &b.location.column,
-            ))
-        });
-
+        let rows = self.rows.clone();
         let muted = cx.theme().muted_foreground;
-        let hover_bg = cx.theme().secondary_hover;
-        let chip_bg = cx.theme().secondary;
 
         v_flex()
             .size_full()
@@ -164,59 +177,85 @@ impl Render for ProblemsPanel {
                     .children(
                         Filter::ALL
                             .iter()
-                            .zip(counts)
+                            .zip(self.counts)
                             .map(|(f, n)| Tab::new().label(format!("{} ({n})", f.label()))),
                     )
                     .on_click(cx.listener(|this, ix: &usize, _w, cx| {
                         this.filter = Filter::ALL[*ix];
+                        this.refresh(cx);
                         cx.notify();
                     })),
             )
-            .child(
-                v_flex()
-                    .id("problems-list")
-                    .size_full()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
-                    .when(rows.is_empty(), |list| {
-                        list.p_3().text_color(muted).child("No problems")
-                    })
-                    .children(rows.into_iter().enumerate().map(|(ix, r)| {
-                        h_flex()
-                            .id(ix)
-                            .w_full()
-                            .gap_2()
-                            .px_2()
-                            .py_1()
-                            .items_start()
-                            .cursor_pointer()
-                            .hover(|row| row.bg(hover_bg))
-                            .child(Icon::new(r.icon).small().text_color(r.color))
-                            // A row- or column-wide note gets a chip so it doesn't read as a
-                            // cell coordinate that just lost half its address.
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .text_sm()
-                                    .text_color(muted)
-                                    .when(r.wide, |s| s.px_1().rounded_sm().bg(chip_bg))
-                                    .child(r.scope),
-                            )
-                            .child(div().flex_1().min_w_0().text_sm().child(r.message))
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .text_xs()
-                                    .text_color(muted)
-                                    .child(r.source),
-                            )
-                            .on_click(move |_, _, cx| {
-                                if let Some(hooks) = cx.try_global::<DiagnosticHooks>().copied() {
-                                    (hooks.reveal)(&r.location, cx);
-                                }
+            .when(rows.is_empty(), |panel| {
+                panel.child(div().p_3().text_color(muted).child("No problems"))
+            })
+            .when(!rows.is_empty(), |panel| {
+                // Only the visible slice is built. A row is one line high — the message is
+                // ellipsised rather than wrapped — which is what lets `uniform_list` place
+                // thousands of them from a single measurement.
+                panel.child(
+                    uniform_list("problems-list", rows.len(), move |range, _window, cx| {
+                        let (hover_bg, chip_bg) =
+                            (cx.theme().secondary_hover, cx.theme().secondary);
+                        let muted = cx.theme().muted_foreground;
+                        rows[range.clone()]
+                            .iter()
+                            .zip(range)
+                            .map(|(r, ix)| {
+                                let location = r.location.clone();
+                                h_flex()
+                                    .id(ix)
+                                    .w_full()
+                                    .gap_2()
+                                    .px_2()
+                                    .py_1()
+                                    .cursor_pointer()
+                                    .hover(|row| row.bg(hover_bg))
+                                    .child(
+                                        Icon::new(r.icon.clone())
+                                            .small()
+                                            .text_color(severity_color(r.severity, cx)),
+                                    )
+                                    // A row- or column-wide note gets a chip so it doesn't read
+                                    // as a cell coordinate that just lost half its address.
+                                    .child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .text_sm()
+                                            .text_color(muted)
+                                            .when(r.wide, |s| s.px_1().rounded_sm().bg(chip_bg))
+                                            .child(r.scope.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_sm()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .child(r.message.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .child(r.source.clone()),
+                                    )
+                                    .on_click(move |_, _, cx| {
+                                        if let Some(hooks) =
+                                            cx.try_global::<DiagnosticHooks>().copied()
+                                        {
+                                            (hooks.reveal)(&location, cx);
+                                        }
+                                    })
                             })
-                    })),
-            )
+                            .collect()
+                    })
+                    .size_full()
+                    .min_h_0(),
+                )
+            })
     }
 }
 

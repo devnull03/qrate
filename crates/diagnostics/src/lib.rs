@@ -10,6 +10,7 @@ mod validator;
 pub use panel::ProblemsPanel;
 pub use validator::{ColumnInfo, ColumnValidator, Validators};
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use gpui::{App, Global, Hsla, SharedString};
@@ -119,6 +120,12 @@ pub fn severity_color(severity: Severity, cx: &App) -> Hsla {
 #[derive(Default)]
 pub struct Diagnostics {
     items: Vec<Diagnostic>,
+    /// `items` indices grouped by row. Publishing happens on an edit; [`Self::at`] runs three
+    /// times per rendered cell per frame, so the whole point is to turn that scan into a lookup
+    /// over one row's handful of entries. Keyed by row alone because `Option<usize>` is `Copy` —
+    /// a key carrying the column name would allocate a `SharedString` on every lookup and give
+    /// the cost straight back.
+    by_row: HashMap<Option<usize>, Vec<usize>>,
     /// Which project's stored notes are loaded. `CurrentProject` is mutated by every
     /// project-scoped setting write, so its observer fires far more often than the project
     /// actually changes.
@@ -136,6 +143,17 @@ impl Diagnostics {
         this.items
             .retain(|d| &d.source != source || d.location.dataset != dataset);
         this.items.extend(items);
+        this.reindex();
+    }
+
+    fn reindex(&mut self) {
+        self.by_row.clear();
+        for (ix, diagnostic) in self.items.iter().enumerate() {
+            self.by_row
+                .entry(diagnostic.location.row)
+                .or_default()
+                .push(ix);
+        }
     }
 
     /// Everything currently open, unsorted — the panel sorts and filters for display.
@@ -156,19 +174,26 @@ impl Diagnostics {
     /// gutter passes row-only, a column header column-only — so a cell does *not* inherit its
     /// row's or column's diagnostics, and each is marked where it was attached.
     ///
-    // ponytail: linear scan, run once per rendered cell. Index by (row, column) if a sheet with
-    // thousands of notes starts dropping frames.
+    /// Narrowed by [`Self::by_row`] first, so what remains to compare is one row's entries rather
+    /// than the whole sheet's.
     pub fn at<'a>(
         dataset: &'a str,
         row: Option<usize>,
         column: Option<&'a str>,
         cx: &'a App,
     ) -> impl Iterator<Item = &'a Diagnostic> {
-        Self::all(cx).iter().filter(move |d| {
-            d.location.dataset == dataset
-                && d.location.row == row
-                && d.location.column.as_deref() == column
-        })
+        cx.try_global::<Self>()
+            .into_iter()
+            .flat_map(move |this| {
+                this.by_row
+                    .get(&row)
+                    .map_or([].as_slice(), Vec::as_slice)
+                    .iter()
+                    .map(move |&ix| &this.items[ix])
+            })
+            .filter(move |d| {
+                d.location.dataset == dataset && d.location.column.as_deref() == column
+            })
     }
 
     /// Severity of the loudest diagnostic here, which is the colour the corner marker takes.
@@ -208,6 +233,7 @@ impl Diagnostics {
                 message,
             });
         }
+        this.reindex();
 
         // No open project (tests, early startup) leaves the change in memory only.
         let Some(file) = this.loaded.clone() else {
@@ -293,6 +319,45 @@ mod tests {
     use crate::{DATASET_MAIN, Diagnostic, Diagnostics, Location, Severity, Source, init};
     use gpui::{SharedString, TestAppContext};
     use settings::project::{CurrentProject, ProjectData, StoredNote};
+
+    /// The row index is a second copy of the truth in `items`, so every mutation has to rebuild
+    /// it. This is the test that fails if a future one forgets.
+    #[gpui::test]
+    fn the_row_index_survives_every_mutation(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let at_00 =
+                |cx: &gpui::App| Diagnostics::at(DATASET_MAIN, Some(0), Some("Title"), cx).count();
+
+            Diagnostics::set(
+                &Source::Validator("v".into()),
+                DATASET_MAIN,
+                vec![diag(
+                    Severity::Error,
+                    Source::Validator("v".into()),
+                    DATASET_MAIN,
+                    "bad",
+                )],
+                cx,
+            );
+            assert_eq!(at_00(cx), 1);
+
+            let location = Location {
+                dataset: DATASET_MAIN.into(),
+                row: Some(0),
+                column: Some("Title".into()),
+            };
+            Diagnostics::set_note(location.clone(), "hand written".into(), cx);
+            assert_eq!(at_00(cx), 2, "the note joins the validator's finding");
+
+            // An empty message deletes the note, which shifts every later index in `items`.
+            Diagnostics::set_note(location, "".into(), cx);
+            assert_eq!(at_00(cx), 1);
+
+            // Republishing nothing is how a validator clears itself.
+            Diagnostics::set(&Source::Validator("v".into()), DATASET_MAIN, Vec::new(), cx);
+            assert_eq!(at_00(cx), 0);
+        });
+    }
 
     fn diag(severity: Severity, source: Source, dataset: &str, msg: &str) -> Diagnostic {
         Diagnostic {
