@@ -20,8 +20,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use diagnostics::{
-    AsyncValidators, ColumnSnapshot, ColumnValidator as _, DATASET_MAIN, Diagnostic, Diagnostics,
-    Location, Severity, Source, Validators,
+    AsyncValidators, ColumnSnapshot, ColumnValidator as _, DATASET_MAIN, Diagnostics, Source,
+    Validators,
 };
 use gpui::{App, AppContext as _, Global, SharedString, Task};
 use plugin_api::{BarContributions, CommandContext, MenuContributions, PluginHooks};
@@ -61,11 +61,7 @@ pub fn reload(cx: &mut App) {
         std::mem::take(&mut plugins.loaded)
     };
     for plugin in previous {
-        let name = plugin.name();
-        Validators::remove(&name, cx);
-        // A plugin whose syntax error is now fixed has to stop reporting it, and an empty publish
-        // is the only invalidation this store has.
-        Diagnostics::set(&Source::Plugin(name), DATASET_MAIN, Vec::new(), cx);
+        Validators::remove(&plugin.name(), cx);
     }
 
     // Settings are fetched after loading rather than passed in, because a plugin may rename itself
@@ -102,30 +98,13 @@ pub fn reload(cx: &mut App) {
     cx.set_global(AsyncValidators {
         run: validate_async,
     });
-    // Published now rather than waiting for a run: a menu-only plugin never validates, so its
-    // syntax error would otherwise be invisible until someone read stderr that a packaged build
-    // does not have. Filed against the dataset because a broken script has no row to blame.
+    // The log, not the Problems panel: a syntax error is the plugin author's problem, and the
+    // panel is the archivist's list of what is wrong with their data. Help ▸ Copy Debug Info
+    // carries this out to whoever can fix it.
     for plugin in &loaded {
-        let Some(err) = plugin.load_error() else {
-            continue;
-        };
-        let name = plugin.name();
-        log::error!("{name} failed to load: {err}");
-        Diagnostics::set(
-            &Source::Plugin(name.clone()),
-            DATASET_MAIN,
-            vec![Diagnostic {
-                location: Location {
-                    dataset: DATASET_MAIN.into(),
-                    row: None,
-                    column: None,
-                },
-                severity: Severity::Error,
-                source: Source::Plugin(name.clone()),
-                message: format!("{name} failed to load: {err}").into(),
-            }],
-            cx,
-        );
+        if let Some(err) = plugin.load_error() {
+            log::error!("{} failed to load: {err}", plugin.name());
+        }
     }
 
     cx.default_global::<Plugins>().loaded = loaded;

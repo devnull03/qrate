@@ -240,8 +240,8 @@ impl ColumnValidator for LuaPlugin {
         column: &ColumnInfo,
         values: &[SharedString],
     ) -> Vec<(usize, Severity, SharedString)> {
-        // A plugin that never loaded reports nothing here: `reload` already filed that failure
-        // against the dataset, where it belongs, and repeating it per column would bury the run.
+        // A plugin that never loaded reports nothing here; `reload` logged that failure once
+        // instead of once per column.
         let Ok(loaded) = self.state.as_ref() else {
             return Vec::new();
         };
@@ -251,13 +251,11 @@ impl ColumnValidator for LuaPlugin {
 
         match self.call_validate(loaded, validate, column, values) {
             Ok(found) => found,
-            // ponytail: a *runtime* failure is filed at row 0 because `ColumnValidator` returns
-            // `usize`, not `Option<usize>`, and unlike a load failure there is no `App` here to
-            // publish against the dataset. Widen the trait if this ever misleads someone. The log
-            // line below is the accurate copy.
+            // Logged, not returned: a plugin that throws is broken code, and this list is what is
+            // wrong with the archivist's data. Reporting it here also had to invent a row.
             Err(err) => {
                 log::error!("{}: {err}", self.id);
-                vec![(0, Severity::Error, format!("{}: {err}", self.id).into())]
+                Vec::new()
             }
         }
     }
@@ -890,8 +888,8 @@ mod tests {
     }
 
     /// Every failure mode is kept and readable rather than becoming a panic or silence — which is
-    /// the difference between debuggable and not while authoring a plugin. `reload` turns this into
-    /// the dataset-level diagnostic; a broken plugin validates nothing, so it says nothing here.
+    /// the difference between debuggable and not while authoring a plugin. It reaches the author
+    /// through the log, not the Problems panel, so a broken plugin contributes no findings.
     #[test]
     fn a_plugin_that_will_not_load_reports_itself() {
         for source in [
@@ -906,12 +904,9 @@ mod tests {
     }
 
     #[test]
-    fn a_plugin_that_errors_mid_run_reports_itself_and_does_not_panic() {
+    fn a_plugin_that_errors_mid_run_is_survived_rather_than_reported() {
         let source = r#"return { validate = function() error("boom") end }"#;
-        let found = check(source, &["x"]);
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].1, Severity::Error);
-        assert!(found[0].2.contains("boom"));
+        assert!(check(source, &["x"]).is_empty());
     }
 
     /// A menu-only plugin is legitimate, and must not be reported as broken every run.
@@ -941,12 +936,11 @@ mod tests {
     }
 
     /// If the interrupt hook is not wired up this test hangs rather than failing, which is exactly
-    /// what it is here to prevent happening to the app.
+    /// what it is here to prevent happening to the app. Returning at all is the assertion; the
+    /// "ran too long" message goes to the log, since a runaway loop is the author's bug.
     #[test]
     fn a_runaway_plugin_is_cut_off() {
         let source = r#"return { validate = function() while true do end end }"#;
-        let found = check(source, &["x"]);
-        assert_eq!(found.len(), 1);
-        assert!(found[0].2.contains("stopped"), "{:?}", found[0].2);
+        assert!(check(source, &["x"]).is_empty());
     }
 }

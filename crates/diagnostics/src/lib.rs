@@ -77,9 +77,6 @@ pub enum Source {
     /// A named rule, validator, plugin, or language server — the string is what the panel shows.
     /// Never persisted: computed output is recomputed on open, and stored copies go stale.
     Validator(SharedString),
-    /// A plugin that could not load, reported by the host rather than by the plugin. Separate from
-    /// [`Source::Validator`] so a broken script's error is not replaced by its own empty run.
-    Plugin(SharedString),
 }
 
 /// `__notes.source` for every persisted note, and the replace-by-source key [`Diagnostics::set`]
@@ -91,7 +88,7 @@ impl Source {
     pub fn label(&self) -> SharedString {
         match self {
             Source::Note => SOURCE_NOTE.into(),
-            Source::Validator(name) | Source::Plugin(name) => name.clone(),
+            Source::Validator(name) => name.clone(),
         }
     }
 }
