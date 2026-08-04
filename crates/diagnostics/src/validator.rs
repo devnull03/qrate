@@ -27,9 +27,10 @@ pub struct ColumnInfo<'a> {
     pub settings: &'a ColumnSettings,
 }
 
-/// One column-wise check. Implemented in its own crate per validator, so a validator's
-/// dependencies — a dictionary, a regex set, a vocabulary file — stay out of every other crate's
-/// graph, and so installing a third-party one later is adding a crate rather than editing an enum.
+/// One column-wise check. A `dyn` trait rather than an enum so a validator's dependencies — a
+/// dictionary, a pattern set, an embedded Lua VM — stay out of every other crate's graph. The
+/// plugin host implements it once, per loaded script, which is how a Lua file becomes a producer
+/// indistinguishable from a compiled-in one.
 pub trait ColumnValidator: 'static {
     /// What the Problems panel shows in the source column, and the key its output is replaced by.
     /// Must be stable across runs and unique across validators.
@@ -46,7 +47,7 @@ pub trait ColumnValidator: 'static {
 }
 
 /// Every registered validator. Filled by `app` at startup, which is the only place that knows
-/// which validator crates are compiled in.
+/// where validators come from.
 #[derive(Default)]
 pub struct Validators(Vec<Box<dyn ColumnValidator>>);
 
@@ -55,6 +56,19 @@ impl Global for Validators {}
 impl Validators {
     pub fn register(validator: Box<dyn ColumnValidator>, cx: &mut App) {
         cx.default_global::<Self>().0.push(validator);
+    }
+
+    /// Drop a validator and clear what it published. Publishing an empty set is the only
+    /// invalidation this store has, so removal has to do it explicitly — nothing else ever will,
+    /// since the validator is gone before the next run.
+    pub fn remove(name: &SharedString, cx: &mut App) {
+        Diagnostics::set(
+            &Source::Validator(name.clone()),
+            DATASET_MAIN,
+            Vec::new(),
+            cx,
+        );
+        cx.default_global::<Self>().0.retain(|v| &v.name() != name);
     }
 
     /// Run every validator over every column and publish the results.
@@ -85,21 +99,26 @@ impl Validators {
                 .collect()
         };
         let blank = ColumnSettings::default();
+        // Transposed once, not once per validator: every validator wants the same column-major
+        // view, and rebuilding it per validator is the whole sheet cloned again for each.
+        let by_column: Vec<Vec<SharedString>> = (0..columns.len())
+            .map(|ix| {
+                rows.iter()
+                    .map(|r| r.get(ix).cloned().unwrap_or_default())
+                    .collect()
+            })
+            .collect();
 
         cx.update_global::<Self, _>(|this, cx| {
             for validator in &this.0 {
                 let mut items = Vec::new();
                 for (ix, (key, name)) in columns.iter().enumerate() {
-                    let values: Vec<SharedString> = rows
-                        .iter()
-                        .map(|r| r.get(ix).cloned().unwrap_or_default())
-                        .collect();
                     let info = ColumnInfo {
                         name,
                         data_type: &types[ix],
                         settings: settings.get(key.as_ref()).unwrap_or(&blank),
                     };
-                    items.extend(validator.validate(&info, &values).into_iter().map(
+                    items.extend(validator.validate(&info, &by_column[ix]).into_iter().map(
                         |(row, severity, message)| Diagnostic {
                             location: Location {
                                 dataset: DATASET_MAIN.into(),
@@ -237,6 +256,41 @@ mod tests {
                     .all(|d| d.source == Source::Validator("other".into())),
                 "`flag`'s findings cleared themselves by not being republished"
             );
+        });
+    }
+
+    #[gpui::test]
+    fn removing_a_validator_clears_its_findings_and_leaves_the_rest(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let (columns, rows) = grid();
+            Validators::register(
+                Box::new(Flag {
+                    name: "flag",
+                    bad: "bad",
+                }),
+                cx,
+            );
+            Validators::register(
+                Box::new(Flag {
+                    name: "other",
+                    bad: "ok",
+                }),
+                cx,
+            );
+            Validators::run(&columns, &rows, cx);
+            assert_eq!(Diagnostics::all(cx).len(), 4);
+
+            Validators::remove(&"flag".into(), cx);
+            let all = Diagnostics::all(cx);
+            assert_eq!(all.len(), 2, "removal clears without waiting for a run");
+            assert!(
+                all.iter()
+                    .all(|d| d.source == Source::Validator("other".into()))
+            );
+
+            // And it stays gone: the next run has nothing left to republish it.
+            Validators::run(&columns, &rows, cx);
+            assert_eq!(Diagnostics::all(cx).len(), 2);
         });
     }
 

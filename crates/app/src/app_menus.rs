@@ -11,6 +11,8 @@ actions!(
     [
         OpenProjects,
         OpenSettings,
+        OpenPluginsFolder,
+        ReloadPlugins,
         Quit,
         Undo,
         Redo,
@@ -34,6 +36,9 @@ pub fn app_menus() -> Vec<Menu> {
                 MenuItem::action("Save", Save),
                 MenuItem::Separator,
                 MenuItem::action("Settings", OpenSettings),
+                MenuItem::Separator,
+                MenuItem::action("Plugins Folder", OpenPluginsFolder),
+                MenuItem::action("Reload Plugins", ReloadPlugins),
                 MenuItem::Separator,
                 MenuItem::action("Quit", Quit),
             ],

@@ -89,10 +89,14 @@ impl From<PersistSettings> for AppSettings {
     }
 }
 
+/// qrate's own directory under the platform's local data dir. Everything the app writes outside a
+/// project file lives here — the settings database, and the plugins folder.
+pub fn data_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|base| base.join(APP_DIR))
+}
+
 fn db_path() -> Result<PathBuf> {
-    let base = dirs::data_local_dir()
-        .context("Failed to resolve local data dir")?
-        .join(APP_DIR);
+    let base = data_dir().context("Failed to resolve local data dir")?;
     Ok(base.join(DB_FILE))
 }
 

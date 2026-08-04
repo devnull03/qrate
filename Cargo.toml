@@ -5,12 +5,11 @@ members = [
   "crates/ai",
   "crates/cloud-sync",
   "crates/diagnostics",
+  "crates/plugin-api",
+  "crates/plugin-host",
   "crates/project-wizard",
   "crates/settings",
   "crates/table",
-  # One crate per validator: a validator's own dependencies stay out of every other crate's graph,
-  # and adding a third-party one later is adding a crate rather than editing an enum.
-  "crates/validator-vocab",
   "crates/window-wrapper",
   "crates/workspace",
 ]

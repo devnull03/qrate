@@ -5,11 +5,12 @@ pub mod columns;
 pub mod dirty;
 pub mod os_open;
 pub mod path_picker;
+pub mod plugins;
 pub mod project;
 
 mod db;
 
-pub use db::{SettingsWriter, flush_app_settings, load_app_settings};
+pub use db::{SettingsWriter, data_dir, flush_app_settings, load_app_settings};
 /// Increment when the persisted SQLite JSON schema (`db::PersistSettings`) changes.
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
 
