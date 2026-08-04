@@ -18,11 +18,14 @@ actions!(
         Redo,
         Cut,
         Copy,
-        Paste
+        Paste,
+        CopyDebugInfo,
+        ReportIssue,
+        OpenLogsFolder
     ]
 );
 
-const REPO_URL: &str = "https://github.com/devnull03/qrate";
+pub const REPO_URL: &str = "https://github.com/devnull03/qrate";
 
 pub fn app_menus() -> Vec<Menu> {
     vec![
@@ -114,6 +117,12 @@ pub fn app_menus() -> Vec<Menu> {
                         url: "https://qrate.dvnl.work/releases".into(),
                     },
                 ),
+                MenuItem::Separator,
+                // Unit actions, not `OpenBrowser { url }`: this runs once at startup, while the
+                // debug info those items carry changes with every project opened and plugin loaded.
+                MenuItem::action("Copy Debug Info", CopyDebugInfo),
+                MenuItem::action("Report an Issue", ReportIssue),
+                MenuItem::action("Open Logs Folder", OpenLogsFolder),
             ],
         },
     ]
