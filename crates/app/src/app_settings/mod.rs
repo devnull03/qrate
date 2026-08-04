@@ -1,6 +1,6 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, InteractiveElement as _, ParentElement as _, SharedString,
+    App, Axis, InteractiveElement as _, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 use gpui_component::{
@@ -79,7 +79,9 @@ fn plugin_item(id: SharedString, spec: SettingSpec) -> SettingItem {
                 move |cx: &App| SharedString::from(read(cx).as_str().unwrap_or("").to_string()),
                 move |text: SharedString, cx: &mut App| write(text.to_string().into(), cx),
             ),
-        ),
+        )
+        // Same reason as `Setting::Text` in the settings crate: horizontal inputs are fixed-width.
+        .layout(Axis::Vertical),
     };
     match description {
         Some(description) => item.description(description),
