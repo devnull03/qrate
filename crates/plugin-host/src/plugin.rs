@@ -28,6 +28,11 @@ const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 /// forever would otherwise wedge the UI thread with no way out but Task Manager.
 const DEADLINE: Duration = Duration::from_millis(250);
 
+/// The host owns the timeout, not the plugin, so a hung server cannot pin the UI thread longer
+/// than this. The interrupt hook cannot help here — it only runs between Lua instructions, and a
+/// blocking host call is one instruction.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// What a command asked the host to store, by scope. `None` means "leave that scope alone";
 /// `Some` replaces the plugin's whole object there, which is the same replace-the-set rule
 /// diagnostics use and saves inventing merge semantics.
@@ -248,6 +253,7 @@ fn build(source: &str, deadline: &Rc<Cell<Instant>>) -> mlua::Result<Loaded> {
         LuaOptions::default(),
     )?;
     lua.set_memory_limit(MEMORY_LIMIT)?;
+    install_http(&lua, deadline)?;
     lua.sandbox(true)?;
     lua.set_interrupt({
         let deadline = deadline.clone();
@@ -299,6 +305,42 @@ fn build(source: &str, deadline: &Rc<Cell<Instant>>) -> mlua::Result<Loaded> {
         menu,
         settings,
     })
+}
+
+/// `qrate.http.get(url)` -> `{ status, body }`, or `nil, message`. Returning the failure rather
+/// than raising it is what lets a plugin report an unreachable server as a finding instead of as
+/// its own crash. Installed before `sandbox`, which freezes the global table.
+//
+// ponytail: GET only, no allowlist, no rate limit, no cache — the network permission prompt is
+// ASNT-59's job. Add `post` and storage when a plugin needs to write rather than check.
+fn install_http(lua: &Lua, deadline: &Rc<Cell<Instant>>) -> mlua::Result<()> {
+    let deadline = deadline.clone();
+    let get = lua.create_function(move |lua, url: String| {
+        let response = reqwest::blocking::Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            .build()
+            .and_then(|client| client.get(&url).send());
+        // Waiting on a server is not the script running long, so the compute budget restarts here
+        // rather than the interrupt hook killing the plugin the moment the response lands.
+        deadline.set(Instant::now() + DEADLINE);
+        match response {
+            Err(err) => Ok((
+                mlua::Value::Nil,
+                mlua::Value::String(lua.create_string(err.to_string())?),
+            )),
+            Ok(response) => {
+                let table = lua.create_table()?;
+                table.set("status", response.status().as_u16())?;
+                table.set("body", response.text().unwrap_or_default())?;
+                Ok((mlua::Value::Table(table), mlua::Value::Nil))
+            }
+        }
+    })?;
+    let http = lua.create_table()?;
+    http.set("get", get)?;
+    let qrate = lua.create_table()?;
+    qrate.set("http", http)?;
+    lua.globals().set("qrate", qrate)
 }
 
 fn menu_item(item: Table) -> mlua::Result<MenuItem> {
@@ -631,6 +673,26 @@ mod tests {
     #[test]
     fn a_plugin_without_validate_reports_nothing() {
         assert!(check(RESTRICT, &["x"]).is_empty());
+    }
+
+    /// Port 1 refuses immediately, so this stays offline and fast while still pinning the shape a
+    /// plugin has to handle: no response, and a message rather than a raised error.
+    ///
+    /// Aliased at the top of the chunk the way a Neovim plugin writes `local api = vim.api`, which
+    /// also pins that the global is readable while the descriptor itself is still being evaluated.
+    #[test]
+    fn an_unreachable_host_comes_back_as_nil_and_a_message() {
+        let source = r#"
+            local http = qrate.http
+            return {
+              validate = function()
+                local response, err = http.get("http://127.0.0.1:1/")
+                return { { row = 1, message = tostring(response) .. "/" .. tostring(err ~= nil) } }
+              end,
+            }
+        "#;
+        let found = check(source, &["x"]);
+        assert_eq!(found[0].2, "nil/true");
     }
 
     /// If the interrupt hook is not wired up this test hangs rather than failing, which is exactly

@@ -4835,6 +4835,7 @@ dependencies = [
  "gpui",
  "mlua",
  "plugin-api",
+ "reqwest",
  "serde_json",
  "settings",
 ]
