@@ -1,0 +1,9 @@
+{
+  "workspace.library": ["types"],
+  "runtime.builtin": {
+    "io": "disable",
+    "os": "disable",
+    "package": "disable",
+    "coroutine": "disable"
+  }
+}

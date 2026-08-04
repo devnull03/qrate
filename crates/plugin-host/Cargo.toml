@@ -10,6 +10,8 @@ gpui.workspace = true
 plugin-api = { path = "../plugin-api" }
 serde_json.workspace = true
 mlua = { version = "0.11", features = ["luau", "vendored", "serde"] }
+# blocking, like cloud-sync: the VM has no way to yield, so a host call has to return a value.
+reqwest = { version = "0.12", features = ["blocking"] }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
