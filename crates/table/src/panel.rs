@@ -560,8 +560,7 @@ impl TablePanel {
                     .py(px(cell::CELL_PAD_Y))
                     .text_size(font_size),
             );
-        // ponytail: empirical one-row correction — the measured rect and the target agree on paper,
-        // but the box still draws a row low. Find the real source before adding a second knob.
+        // The measured rect sits one row below the cell it edits, so lift it back.
         let origin = cell.origin - point(px(0.), cell.size.height - px(2.));
         Some(deferred(float_at(origin, table, box_el)).into_any_element())
     }
