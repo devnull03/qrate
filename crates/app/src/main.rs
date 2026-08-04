@@ -2,6 +2,7 @@ mod actions;
 mod app_menus;
 mod app_settings;
 mod components;
+mod logging;
 mod status_items;
 mod theming;
 mod title_items;
@@ -32,7 +33,10 @@ impl Global for MainWorkspaceHandle {}
 use crate::app_settings::build_pages;
 use crate::{
     actions::{NewProject, ToggleBottomDock, ToggleLeftDock, ToggleRightDock},
-    app_menus::{OpenPluginsFolder, OpenProjects, OpenSettings, Quit, ReloadPlugins, app_menus},
+    app_menus::{
+        CopyDebugInfo, OpenLogsFolder, OpenPluginsFolder, OpenProjects, OpenSettings, Quit,
+        REPO_URL, ReloadPlugins, ReportIssue, app_menus,
+    },
     status_items::build_status_bar_registry,
     title_items::build_title_bar_registry,
 };
@@ -340,7 +344,7 @@ fn flush_all_state(cx: &mut gpui::App) {
         writer.flush();
     }
     if let Err(err) = settings::flush_app_settings(AppSettings::get(cx)) {
-        eprintln!("failed to flush app settings on quit: {err}");
+        log::error!("failed to flush app settings on quit: {err}");
     }
     // Flush unsaved cell edits (a pending "timed" autosave, or edits made with autosave off).
     if settings::dirty::Dirty::has(settings::dirty::PROJECT_DATA, cx) {
@@ -354,6 +358,10 @@ fn main() {
     let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
 
     app.run(move |cx| {
+        // First, so a failure during the startup below — the case where no window ever appears to
+        // report it — still reaches the log file.
+        logging::init();
+
         gpui_component::init(cx);
 
         cx.set_global(WindowLock::default());
@@ -384,6 +392,7 @@ fn main() {
 
         // The composition root is the only place that knows where validators come from; `table`
         // triggers the runs without naming any of them.
+        plugin_host::on_command_finished(table::revalidate_now);
         plugin_host::reload(cx);
 
         cx.on_action(|_: &ReloadPlugins, cx| {
@@ -391,6 +400,24 @@ fn main() {
             table::revalidate_now(cx);
         });
         cx.on_action(|_: &OpenPluginsFolder, _| plugin_host::open_plugins_folder());
+
+        cx.on_action(|_: &CopyDebugInfo, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(logging::debug_info(cx, 200)));
+        });
+        cx.on_action(|_: &ReportIssue, cx| {
+            // A shorter tail than the clipboard gets: GitHub stops honouring `?body=` somewhere
+            // past 8 KB, and a silently truncated report is worse than a short one.
+            let body = logging::urlencode(&logging::debug_info(cx, 30));
+            cx.open_url(&format!("{REPO_URL}/issues/new?body={body}"));
+        });
+        cx.on_action(|_: &OpenLogsFolder, _| match logging::reveal_target() {
+            Some(target) => {
+                if let Err(err) = settings::os_open::reveal_in_folder(&target) {
+                    log::error!("failed to reveal the log folder: {err}");
+                }
+            }
+            None => log::error!("no local data dir, so there is no log folder to open"),
+        });
         cx.on_action(|_: &OpenSettings, cx| open_settings_window(cx));
         cx.on_action(|_: &NewProject, cx| {
             project_wizard::open_project_wizard(EntryKind::Blank, cx)
