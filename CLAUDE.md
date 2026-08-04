@@ -48,7 +48,11 @@ Each task page has two collapsible sections worth reading before starting work:
 
 The hub also has a **Document Hub** database (design docs, specs) linked from tasks via `Related docs` — check it for additional context when a task references a doc that isn't fully explained inline.
 
-Notion's SQL/view query tools are plan-gated on this workspace; use `notion-search` with the Tasks Tracker's `data_source_url` (or `notion-fetch` on individual task URLs) instead of `query_data_sources`/`query_database_view`.
+`notion-query-data-sources` in SQL mode works on this workspace and is the fastest way to read the tracker — a single-data-source query returns all rows in one call, no pagination. Multi-data-source queries are the Enterprise-gated ones. Use `notion-fetch` on a task URL when you need its page content (the agent instructions and memory log live in the body, not in properties).
+
+### Creating tasks
+
+Notion is where a task is born. Never create a Notion task from a GitHub issue — make it in Notion first, then sync it out to GitHub and record the issue URL in the task's `GitHub Link` property. The Notion UUID goes in the **PR body** (`Closes #N (Notion ID: <uuid>)`), never in the issue description.
 
 ## Code Style — no bloat
 
