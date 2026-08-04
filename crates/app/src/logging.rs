@@ -35,6 +35,9 @@ pub fn init() {
     let config = ConfigBuilder::new()
         .set_time_offset_to_local()
         .unwrap_or_else(|builder| builder)
+        // Which module spoke — `Error` is simplelog for "every level", and without it a report
+        // says "window not found" without saying whether that was us or gpui.
+        .set_target_level(LevelFilter::Error)
         .build();
 
     let mut sinks: Vec<Box<dyn simplelog::SharedLogger>> = vec![TermLogger::new(
