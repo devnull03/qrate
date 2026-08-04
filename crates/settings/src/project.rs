@@ -338,14 +338,14 @@ const NOTES_DDL: &str = r#"
 /// One `__notes` row. Deliberately flat and stringly-typed rather than reusing
 /// `diagnostics::Diagnostic`: that crate depends on this one, so the schema stays owned by the
 /// module that documents it. A `None` coordinate widens the note — row-only marks a whole row,
-/// column-only a whole column, neither the dataset itself.
+/// column-only a whole column, neither the dataset itself. The `source` column stays out of the
+/// struct: [`write_notes`] owns it for the whole batch, so a note can't carry a mismatching one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredNote {
     pub dataset: String,
     pub row: Option<usize>,
     pub column: Option<String>,
     pub severity: String,
-    pub source: String,
     pub message: String,
 }
 
@@ -362,16 +362,15 @@ pub fn read_notes(path: &Path) -> Result<Vec<StoredNote>> {
         return Ok(Vec::new());
     }
 
-    let mut stmt = conn
-        .prepare("SELECT dataset, row_ix, column_name, severity, source, message FROM __notes")?;
+    let mut stmt =
+        conn.prepare("SELECT dataset, row_ix, column_name, severity, message FROM __notes")?;
     let iter = stmt.query_map([], |r| {
         Ok(StoredNote {
             dataset: r.get(0)?,
             row: r.get::<_, Option<i64>>(1)?.map(|v| v as usize),
             column: r.get(2)?,
             severity: r.get(3)?,
-            source: r.get(4)?,
-            message: r.get(5)?,
+            message: r.get(4)?,
         })
     })?;
     iter.collect::<rusqlite::Result<Vec<_>>>()
@@ -594,13 +593,12 @@ mod tests {
         path
     }
 
-    fn note(source: &str, row: Option<usize>, column: Option<&str>, msg: &str) -> StoredNote {
+    fn note(row: Option<usize>, column: Option<&str>, msg: &str) -> StoredNote {
         StoredNote {
             dataset: "dataset_main".into(),
             row,
             column: column.map(str::to_string),
             severity: "note".into(),
-            source: source.into(),
             message: msg.into(),
         }
     }
@@ -618,20 +616,15 @@ mod tests {
             &path,
             "import",
             &[
-                note("import", Some(0), Some("Title"), "cell note"),
-                note("import", Some(3), None, "whole row"),
+                note(Some(0), Some("Title"), "cell note"),
+                note(Some(3), None, "whole row"),
             ],
         )
         .unwrap();
         assert_eq!(read_notes(&path).unwrap().len(), 2);
 
         // A different source is additive — it must not disturb `import`'s entries.
-        write_notes(
-            &path,
-            "spell",
-            &[note("spell", None, Some("Title"), "whole column")],
-        )
-        .unwrap();
+        write_notes(&path, "spell", &[note(None, Some("Title"), "whole column")]).unwrap();
         assert_eq!(read_notes(&path).unwrap().len(), 3);
 
         // Optional coordinates survive the NULL round-trip in both directions.
@@ -648,7 +641,7 @@ mod tests {
         write_notes(&path, "import", &[]).unwrap();
         let left = read_notes(&path).unwrap();
         assert_eq!(left.len(), 1);
-        assert_eq!(left[0].source, "spell");
+        assert_eq!(left[0].message, "whole column");
 
         assert!(!path.with_extension("qrate-journal").exists());
     }
@@ -665,7 +658,7 @@ mod tests {
         // A v1 `.qrate` is missing the table entirely; that is empty, not an error.
         assert_eq!(read_notes(&path).unwrap(), Vec::new());
         // ...and the first write creates it, which is the whole 1 -> 2 migration.
-        write_notes(&path, "import", &[note("import", Some(1), Some("A"), "hi")]).unwrap();
+        write_notes(&path, "import", &[note(Some(1), Some("A"), "hi")]).unwrap();
         assert_eq!(read_notes(&path).unwrap().len(), 1);
     }
 

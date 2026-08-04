@@ -80,7 +80,6 @@ impl ProjectWizard {
                             row: Some(n.row),
                             column: Some(n.column.clone()),
                             severity: "note".into(),
-                            source: diagnostics::SOURCE_NOTE.into(),
                             message: n.text.clone(),
                         })
                         .collect();
