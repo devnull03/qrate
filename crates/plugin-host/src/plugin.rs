@@ -11,14 +11,14 @@
 // ponytail: `validate` runs Lua on the UI thread inside `Validators::run`. Move plugins onto a
 // worker with a request generation counter when one is slow enough to drop a frame.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use diagnostics::{ColumnInfo, ColumnValidator, Severity};
 use gpui::SharedString;
 use mlua::{Function, Lua, LuaOptions, LuaSerdeExt as _, StdLib, Table, VmState};
-use plugin_api::{CommandContext, MenuItem, MenuTarget};
+use plugin_api::{CommandContext, MenuItem, MenuTarget, SettingKind, SettingScope, SettingSpec};
 use serde_json::Value as Json;
 
 /// Enough for a vocabulary list or a compiled pattern set, far short of a runaway allocation.
@@ -40,37 +40,60 @@ pub struct Writes {
 
 struct Loaded {
     lua: Lua,
+    /// Overrides the file-derived id when the descriptor declares one.
+    name: Option<SharedString>,
+    description: Option<SharedString>,
     validate: Option<Function>,
     on_command: Option<Function>,
     menu: Vec<MenuItem>,
+    settings: Vec<SettingSpec>,
 }
 
 pub struct LuaPlugin {
-    name: SharedString,
+    /// The file or folder the plugin was found in, and its identity unless the descriptor renames
+    /// it. Kept even when the descriptor does, so a plugin that fails to load still reports under
+    /// the name its author can find on disk.
+    id: SharedString,
     /// Shared with the interrupt hook, and pushed forward before every call into Lua.
     deadline: Rc<Cell<Instant>>,
-    /// Snapshotted at load, because `validate` runs without an `App` to read them from. Reloading
-    /// is what refreshes them, and a command that writes them triggers a reload.
-    scoped: (Json, Json),
+    /// `(project, user)`, held here because `validate` runs without an `App` to read them from.
+    /// Behind a `RefCell` so a write can refresh the copy in place — reloading the VM to pick up a
+    /// changed setting would re-run every `init.lua` on every keystroke in the Settings window.
+    scoped: RefCell<(Json, Json)>,
     /// A load failure is kept rather than dropped, so a broken plugin can still report itself.
     state: Result<Loaded, String>,
 }
 
 impl LuaPlugin {
-    /// Build a plugin from its source text. Taking the source rather than a path is what lets the
-    /// tests cover every path without touching the filesystem.
-    pub fn load(name: &str, source: &str, project: Json, user: Json) -> Self {
+    /// Build a plugin from its source text and the id its file or folder gives it. Taking the
+    /// source rather than a path is what lets the tests cover every path without touching the
+    /// filesystem.
+    pub fn load(id: &str, source: &str) -> Self {
         let deadline = Rc::new(Cell::new(Instant::now()));
         Self {
-            name: name.to_string().into(),
+            id: id.to_string().into(),
             state: build(source, &deadline).map_err(|err| err.to_string()),
-            scoped: (project, user),
+            scoped: RefCell::new((Json::Null, Json::Null)),
             deadline,
         }
     }
 
+    /// The plugin's own one-line description, shown on its Settings page.
+    pub fn description(&self) -> Option<SharedString> {
+        self.state.as_ref().ok().and_then(|l| l.description.clone())
+    }
+
     pub fn menu(&self) -> &[MenuItem] {
         self.state.as_ref().map_or(&[], |l| l.menu.as_slice())
+    }
+
+    pub fn settings(&self) -> &[SettingSpec] {
+        self.state.as_ref().map_or(&[], |l| l.settings.as_slice())
+    }
+
+    /// Replace the project- and user-scope copies after something wrote to them.
+    pub fn set_scoped(&self, project: Json, user: Json) {
+        *self.scoped.borrow_mut() = (project, user);
     }
 
     /// Run a contributed menu command and return what it wants stored.
@@ -115,9 +138,10 @@ impl LuaPlugin {
     /// `{ column = …, project = …, user = … }` — this plugin's own objects and nothing else's.
     fn settings_table(&self, lua: &Lua, column: &Json) -> mlua::Result<Table> {
         let table = lua.create_table()?;
+        let scoped = self.scoped.borrow();
         table.set("column", to_lua(lua, column)?)?;
-        table.set("project", to_lua(lua, &self.scoped.0)?)?;
-        table.set("user", to_lua(lua, &self.scoped.1)?)?;
+        table.set("project", to_lua(lua, &scoped.0)?)?;
+        table.set("user", to_lua(lua, &scoped.1)?)?;
         Ok(table)
     }
 
@@ -136,7 +160,7 @@ impl LuaPlugin {
         let bucket = column
             .settings
             .plugins
-            .get(self.name.as_ref())
+            .get(self.name().as_ref())
             .unwrap_or(&Json::Null);
         let settings = self.settings_table(lua, bucket)?;
 
@@ -163,7 +187,11 @@ impl LuaPlugin {
 
 impl ColumnValidator for LuaPlugin {
     fn name(&self) -> SharedString {
-        self.name.clone()
+        self.state
+            .as_ref()
+            .ok()
+            .and_then(|loaded| loaded.name.clone())
+            .unwrap_or_else(|| self.id.clone())
     }
 
     fn validate(
@@ -188,7 +216,7 @@ impl ColumnValidator for LuaPlugin {
             // ponytail: a plugin's own failure is filed at row 0 because `ColumnValidator` returns
             // `usize`, not `Option<usize>`. Widen the trait once something else needs a
             // dataset-level finding. Visible and wrong beats invisible.
-            Err(err) => vec![(0, Severity::Error, format!("{}: {err}", self.name).into())],
+            Err(err) => vec![(0, Severity::Error, format!("{}: {err}", self.id).into())],
         }
     }
 }
@@ -243,6 +271,13 @@ fn build(source: &str, deadline: &Rc<Cell<Instant>>) -> mlua::Result<Loaded> {
             .collect::<mlua::Result<Vec<_>>>()?,
         None => Vec::new(),
     };
+    let settings = match descriptor.get::<Option<Vec<Table>>>("settings")? {
+        Some(items) => items
+            .into_iter()
+            .map(setting_spec)
+            .collect::<mlua::Result<Vec<_>>>()?,
+        None => Vec::new(),
+    };
     if validate.is_none() && on_command.is_none() {
         return Err(mlua::Error::runtime(
             "the returned table has neither `validate` nor `on_command`",
@@ -250,9 +285,19 @@ fn build(source: &str, deadline: &Rc<Cell<Instant>>) -> mlua::Result<Loaded> {
     }
     Ok(Loaded {
         lua,
+        // An empty `name` is no name at all, so the file it came from stays the identity rather
+        // than the plugin becoming unaddressable.
+        name: descriptor
+            .get::<Option<String>>("name")?
+            .filter(|name| !name.is_empty())
+            .map(Into::into),
+        description: descriptor
+            .get::<Option<String>>("description")?
+            .map(Into::into),
         validate,
         on_command,
         menu,
+        settings,
     })
 }
 
@@ -272,17 +317,33 @@ fn menu_item(item: Table) -> mlua::Result<MenuItem> {
     })
 }
 
+fn setting_spec(item: Table) -> mlua::Result<SettingSpec> {
+    let key: String = item.get("key")?;
+    let label: String = item.get("label")?;
+    let scope: String = item.get("scope")?;
+    let kind: String = item.get("type")?;
+    Ok(SettingSpec {
+        key: key.into(),
+        label: label.into(),
+        description: item.get::<Option<String>>("description")?.map(Into::into),
+        scope: SettingScope::from_key(&scope)
+            .ok_or_else(|| mlua::Error::runtime(format!("unknown setting scope {scope:?}")))?,
+        kind: SettingKind::from_key(&kind)
+            .ok_or_else(|| mlua::Error::runtime(format!("unknown setting type {kind:?}")))?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{LuaPlugin, Writes};
     use diagnostics::{ColumnInfo, ColumnValidator, Severity};
     use gpui::SharedString;
-    use plugin_api::{CommandContext, MenuTarget};
+    use plugin_api::{CommandContext, MenuTarget, SettingKind, SettingScope};
     use serde_json::{Value as Json, json};
     use settings::columns::ColumnSettings;
 
     fn plugin(source: &str) -> LuaPlugin {
-        LuaPlugin::load("test", source, Json::Null, Json::Null)
+        LuaPlugin::load("test", source)
     }
 
     fn check(source: &str, values: &[&str]) -> Vec<(usize, Severity, SharedString)> {
@@ -365,14 +426,12 @@ mod tests {
         }
     "#;
 
+    /// Also pins that a scope handed over after construction is visible without the VM being
+    /// rebuilt — or every keystroke in a Settings-window text field would reload every plugin.
     #[test]
     fn a_plugin_sees_its_own_object_in_all_three_scopes() {
-        let plugin = LuaPlugin::load(
-            "test",
-            ECHO_SETTINGS,
-            json!({ "mode": "strict" }),
-            json!({ "mode": "loose" }),
-        );
+        let plugin = plugin(ECHO_SETTINGS);
+        plugin.set_scoped(json!({ "mode": "strict" }), json!({ "mode": "loose" }));
         let found = check_with(plugin, json!({ "allowed": ["Film", "Video"] }), &["x"]);
         assert_eq!(found[0].2, "Film|Video/strict/loose");
     }
@@ -428,6 +487,83 @@ mod tests {
             menu[1].requires_settings,
             "a Clear entry needs something to clear"
         );
+    }
+
+    #[test]
+    fn declared_settings_are_read_off_the_descriptor() {
+        let source = r#"
+            return {
+              settings = {
+                { key = "strict", label = "Strict", type = "switch", scope = "user" },
+                { key = "note", label = "Note", type = "text", scope = "project",
+                  description = "why" },
+              },
+              validate = function() return {} end,
+            }
+        "#;
+        let plugin = plugin(source);
+        let specs = plugin.settings();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].key, "strict");
+        assert_eq!(specs[0].kind, SettingKind::Switch);
+        assert_eq!(specs[0].scope, SettingScope::User);
+        assert_eq!(specs[0].description, None);
+        assert_eq!(specs[1].scope, SettingScope::Project);
+        assert_eq!(specs[1].description.as_deref(), Some("why"));
+    }
+
+    #[test]
+    fn an_unknown_setting_type_stops_the_plugin_loading() {
+        let source = r#"
+            return {
+              settings = { { key = "k", label = "L", type = "slider", scope = "user" } },
+              validate = function() return {} end,
+            }
+        "#;
+        let found = check(source, &["x"]);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].2.contains("slider"), "{:?}", found[0].2);
+    }
+
+    /// The descriptor may rename the plugin, and that name is its identity everywhere — including
+    /// which column bucket it reads, which is what this asserts by way of `ECHO_SETTINGS`.
+    #[test]
+    fn a_declared_name_overrides_the_one_the_file_gave_it() {
+        let source = r#"
+            return {
+              name = "renamed",
+              description = "why",
+              validate = function(_, _, settings)
+                return { { row = 1, message = table.concat(settings.column.allowed or {}, "|") } }
+              end,
+            }
+        "#;
+        let plugin = LuaPlugin::load("on-disk", source);
+        assert_eq!(plugin.name(), "renamed");
+        assert_eq!(plugin.description().as_deref(), Some("why"));
+
+        let mut settings = ColumnSettings::default();
+        settings
+            .plugins
+            .insert("renamed".into(), json!({ "allowed": ["Film"] }));
+        let column = ColumnInfo {
+            name: "Country",
+            data_type: "Text",
+            settings: &settings,
+        };
+        let found = plugin.validate(&column, &["x".into()]);
+        assert_eq!(found[0].2, "Film");
+    }
+
+    #[test]
+    fn an_unnamed_plugin_keeps_the_name_its_file_gave_it() {
+        for source in [
+            r#"return { name = "", validate = function() return {} end }"#,
+            r#"return { validate = function() return {} end }"#,
+            "return { oops",
+        ] {
+            assert_eq!(LuaPlugin::load("on-disk", source).name(), "on-disk");
+        }
     }
 
     fn ctx(values: &[&str]) -> CommandContext {

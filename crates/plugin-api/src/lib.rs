@@ -7,7 +7,9 @@
 //! `diagnostics::DiagnosticHooks` uses for revealing a cell.
 //!
 //! Nothing here runs plugin code. Menus are built synchronously while the user waits, so what a
-//! menu needs to know has to already be sitting in a global by the time it is opened.
+//! menu needs to know has to already be sitting in a global by the time it is opened. Settings
+//! ([`SettingSpec`]) do not need that inversion — the Settings window lives in `app`, which links
+//! the host — but they live here so the two kinds of contribution stay described in one place.
 
 use gpui::{App, Global, SharedString};
 
@@ -44,6 +46,55 @@ pub struct MenuItem {
     // ponytail: one flag instead of VS Code's `when` expressions. If a second condition turns up,
     // add a second flag; only reach for an expression grammar at the third.
     pub requires_settings: bool,
+}
+
+/// Which of the two non-column scopes a declared setting is stored in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SettingScope {
+    User,
+    Project,
+}
+
+impl SettingScope {
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "user" => Some(Self::User),
+            "project" => Some(Self::Project),
+            _ => None,
+        }
+    }
+}
+
+/// How a declared setting is edited.
+//
+// ponytail: switch and text only. A dropdown is one more arm in `plugin_item`, add it when a
+// plugin declares a knob with a fixed option list.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SettingKind {
+    Switch,
+    Text,
+}
+
+impl SettingKind {
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "switch" => Some(Self::Switch),
+            "text" => Some(Self::Text),
+            _ => None,
+        }
+    }
+}
+
+/// One knob a plugin declares for the Settings window. `key` names a field inside the plugin's own
+/// object in `scope` — the same object `validate` already reads as `settings.user`/`settings.project`,
+/// so a declared setting needs no second storage concept.
+#[derive(Clone, Debug)]
+pub struct SettingSpec {
+    pub key: SharedString,
+    pub label: SharedString,
+    pub description: Option<SharedString>,
+    pub scope: SettingScope,
+    pub kind: SettingKind,
 }
 
 /// What was clicked, handed to the plugin so a command can act on it.
