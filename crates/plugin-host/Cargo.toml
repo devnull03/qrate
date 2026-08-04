@@ -9,7 +9,8 @@ settings = { path = "../settings" }
 gpui.workspace = true
 plugin-api = { path = "../plugin-api" }
 serde_json.workspace = true
-mlua = { version = "0.11", features = ["luau", "vendored", "serde"] }
+# `send` makes the VM `Send + Sync`, which is what lets a plugin run on the background executor.
+mlua = { version = "0.11", features = ["luau", "vendored", "serde", "send"] }
 # blocking, like cloud-sync: the VM has no way to yield, so a host call has to return a value.
 reqwest = { version = "0.12", features = ["blocking"] }
 

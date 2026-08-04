@@ -3,6 +3,9 @@ use gpui_component::{
     IconName,
     dock::{DockArea, DockPlacement},
 };
+use plugin_api::{Bar, Side};
+
+use crate::status_items::PluginBar;
 use window_wrapper::{
     BarRegistry,
     title_bar::{TitleBarRegistry, TitleMenus},
@@ -16,6 +19,13 @@ pub fn build_title_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> Tit
 
     let menus = cx.new(|_| TitleMenus);
     registry.items_mut().add_left(menus);
+
+    let plugins = cx.new(|cx| PluginBar::new(Bar::Title, Side::Left, cx));
+    registry.items_mut().add_left(plugins);
+
+    // Before the dock buttons, so plugin text sits inboard of them.
+    let plugins = cx.new(|cx| PluginBar::new(Bar::Title, Side::Right, cx));
+    registry.items_mut().add_right(plugins);
 
     for (id, placement, icon) in [
         ("title-panel-left", DockPlacement::Left, IconName::PanelLeft),

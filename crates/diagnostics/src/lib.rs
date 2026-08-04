@@ -8,7 +8,9 @@
 mod panel;
 mod validator;
 pub use panel::ProblemsPanel;
-pub use validator::{ColumnInfo, ColumnValidator, Validators};
+pub use validator::{
+    AsyncValidators, ColumnInfo, ColumnSnapshot, ColumnValidator, Validators, address,
+};
 
 use std::collections::HashMap;
 use std::path::PathBuf;

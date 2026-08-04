@@ -230,8 +230,8 @@ pub(crate) fn menu(
                 })
                 .fold(menu, |menu, (plugin, item)| {
                     let ctx = CommandContext {
-                        column: name.clone(),
-                        column_key: key.clone(),
+                        column: Some(name.clone()),
+                        column_key: Some(key.clone()),
                         column_settings: stored
                             .get(plugin.as_ref())
                             .cloned()
@@ -239,17 +239,14 @@ pub(crate) fn menu(
                         row: None,
                         values: values.clone(),
                     };
-                    let invoke_table = table.clone();
                     menu.item(
+                        // Nothing to revalidate here: the command answers after this click has
+                        // returned, so the host re-runs validation once its writes have landed.
                         PopupMenuItem::new(item.label.clone()).on_click(move |_, _, cx| {
                             let Some(hooks) = cx.try_global::<PluginHooks>().copied() else {
                                 return;
                             };
                             (hooks.invoke)(&plugin, &item.command, &ctx, cx);
-                            invoke_table.update(cx, |state, cx| {
-                                state.delegate().revalidate(cx);
-                                cx.notify();
-                            });
                         }),
                     )
                 })
