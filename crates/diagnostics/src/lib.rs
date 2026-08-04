@@ -252,7 +252,6 @@ impl Diagnostics {
                 row: d.location.row,
                 column: d.location.column.as_ref().map(|c| c.to_string()),
                 severity: d.severity.key().into(),
-                source: SOURCE_NOTE.into(),
                 message: d.message.to_string(),
             })
             .collect();
@@ -394,7 +393,6 @@ mod tests {
                     row: Some(2),
                     column: Some("Title".into()),
                     severity: "warning".into(),
-                    source: "note".into(),
                     message: "check this".into(),
                 },
                 StoredNote {
@@ -402,7 +400,6 @@ mod tests {
                     row: Some(4),
                     column: None,
                     severity: "note".into(),
-                    source: "note".into(),
                     message: "whole row".into(),
                 },
             ],
@@ -524,7 +521,6 @@ mod tests {
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].message, "row wide");
         assert_eq!((stored[0].row, &stored[0].column), (Some(7), &None));
-        assert_eq!(stored[0].source, "note");
     }
 
     #[gpui::test]
