@@ -161,13 +161,17 @@ impl Diagnostics {
         cx.try_global::<Self>().map_or(&[], |d| d.items.as_slice())
     }
 
-    /// Errors and warnings only, for the status bar's alert badge — a project full of imported
-    /// notes should not light up a warning triangle.
-    pub fn count(cx: &App) -> usize {
+    /// `(errors, warnings)` for the status bar, which shows them apart — one error and one warning
+    /// are not the same news, and a single total hides which of the two you have. Infos and notes
+    /// are excluded entirely: a project full of imported notes should not light up an alert.
+    pub fn counts(cx: &App) -> (usize, usize) {
         Self::all(cx)
             .iter()
-            .filter(|d| matches!(d.severity, Severity::Error | Severity::Warning))
-            .count()
+            .fold((0, 0), |(errors, warnings), d| match d.severity {
+                Severity::Error => (errors + 1, warnings),
+                Severity::Warning => (errors, warnings + 1),
+                Severity::Info | Severity::Note => (errors, warnings),
+            })
     }
 
     /// Everything pointing at exactly this location. A cell passes both coordinates, the row-index
@@ -420,7 +424,11 @@ mod tests {
 
             let all = Diagnostics::all(cx);
             assert_eq!(all.len(), 2);
-            assert_eq!(Diagnostics::count(cx), 1, "only the warning is countable");
+            assert_eq!(
+                Diagnostics::counts(cx),
+                (0, 1),
+                "the note doesn't count, the warning does"
+            );
 
             // Severity and the optional coordinates survive the disk round-trip, and the source
             // comes back as `Import` so a re-import replaces exactly these.
@@ -562,7 +570,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_status_count_ignores_notes_and_info(cx: &mut TestAppContext) {
+    fn the_status_counts_split_by_severity_and_ignore_notes_and_info(cx: &mut TestAppContext) {
         cx.update(|cx| {
             Diagnostics::set(
                 &Source::Note,
@@ -576,7 +584,7 @@ mod tests {
                 cx,
             );
             assert_eq!(Diagnostics::all(cx).len(), 4);
-            assert_eq!(Diagnostics::count(cx), 2);
+            assert_eq!(Diagnostics::counts(cx), (1, 1));
         });
     }
 }
