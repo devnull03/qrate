@@ -64,6 +64,9 @@ pub struct QrateTableDelegate {
     /// Whether each column offers a filter dropdown at all, parallel to `columns`. Off for every
     /// column until switched on per column — filtering is opt-in.
     filters_enabled: Vec<bool>,
+    /// Splits one cell into several filterable values. Empty (the default) means a cell is one
+    /// value, which is how filtering behaved before this existed.
+    subdelimiter: SharedString,
     /// Shared "search values" box for whichever column-filter popover is open.
     pub(crate) filter_search: Entity<InputState>,
     /// Scroll position of that popover's value list. Held here, not built in the popover's render
@@ -90,6 +93,7 @@ impl QrateTableDelegate {
             visible_rows: Vec::new(),
             filters: Vec::new(),
             filters_enabled: Vec::new(),
+            subdelimiter: SharedString::default(),
             filter_search,
             filter_scroll: VirtualListScrollHandle::new(),
         }
@@ -124,24 +128,34 @@ impl QrateTableDelegate {
         }
     }
 
-    /// Narrow a column to a single value. Switches the dropdown on too, so the narrowing is
-    /// visible in the header and reversible without going back through the cell.
+    /// Narrow a column to one cell's values. Switches the dropdown on too, so the narrowing is
+    /// visible in the header and reversible without going back through the cell. A sub-delimited
+    /// cell re-checks each of its parts — the whole string isn't in the checklist to re-check.
     pub(crate) fn keep_only_value(&mut self, data_col: usize, value: &SharedString) {
+        let parts: Vec<SharedString> = cell_parts(value, &self.subdelimiter)
+            .into_iter()
+            .map(SharedString::from)
+            .collect();
         self.set_column_filter_enabled(data_col, true);
         self.exclude_all_in_column(data_col);
-        self.toggle_filter_value(data_col, value);
+        for part in parts {
+            self.toggle_filter_value(data_col, &part);
+        }
     }
 
     fn recompute_visible(&mut self) {
-        self.visible_rows = compute_visible_rows(&self.rows, &self.filters);
+        self.visible_rows = compute_visible_rows(&self.rows, &self.filters, &self.subdelimiter);
     }
 
     /// The distinct values in a data column, sorted. Drawn from *all* source rows, so an excluded
-    /// value can be re-checked to bring its rows back.
+    /// value can be re-checked to bring its rows back, and split on the sub-delimiter — a column of
+    /// `Film; Video` is a checklist of two subjects, not one entry per combination.
     pub(crate) fn column_values(&self, data_col: usize) -> Vec<SharedString> {
         self.rows
             .iter()
-            .filter_map(|row| row.get(data_col).cloned())
+            .filter_map(|row| row.get(data_col))
+            .flat_map(|value| cell_parts(value, &self.subdelimiter))
+            .map(SharedString::from)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()
@@ -205,10 +219,15 @@ impl QrateTableDelegate {
         }
     }
 
-    /// Apply saved per-column settings, looked up by each column's stable `c{ix}` key. Takes a
-    /// closure rather than the settings type so this crate doesn't depend on its shape, and so the
-    /// `c{ix}` convention stays owned by the delegate that mints it.
-    pub fn apply_column_settings(&mut self, filter_enabled: impl Fn(&str) -> bool) {
+    /// Apply the saved settings filtering depends on: which columns offer a dropdown, looked up by
+    /// each column's stable `c{ix}` key, and the sub-delimiter that splits a cell into values.
+    /// Takes a closure rather than the settings type so this crate doesn't depend on its shape, and
+    /// so the `c{ix}` convention stays owned by the delegate that mints it.
+    pub fn apply_column_settings(
+        &mut self,
+        filter_enabled: impl Fn(&str) -> bool,
+        subdelimiter: SharedString,
+    ) {
         let wanted: Vec<bool> = self
             .columns
             .iter()
@@ -216,6 +235,15 @@ impl QrateTableDelegate {
             .collect();
         for (data_col, enabled) in wanted.into_iter().enumerate() {
             self.set_column_filter_enabled(data_col, enabled);
+        }
+        if self.subdelimiter != subdelimiter {
+            // What counts as one value just changed, so every stored exclusion is addressed in the
+            // old vocabulary. Dropping them beats leaving filters that match nothing.
+            self.subdelimiter = subdelimiter;
+            for excluded in &mut self.filters {
+                excluded.clear();
+            }
+            self.recompute_visible();
         }
     }
 
@@ -458,11 +486,25 @@ fn move_col(rows: &mut [Vec<SharedString>], from: usize, to: usize) {
     }
 }
 
+/// A cell's filterable values: the whole cell, or its sub-delimited parts when a delimiter is set.
+/// Parts are trimmed, because `Film; Video` is written with a space that nobody means as part of
+/// the value.
+fn cell_parts<'a>(value: &'a SharedString, subdelimiter: &str) -> Vec<&'a str> {
+    if subdelimiter.is_empty() {
+        return vec![value.as_ref()];
+    }
+    value.split(subdelimiter).map(str::trim).collect()
+}
+
 /// Source-row indices that pass every column's excluded-value filter, in order. Split out of the
 /// delegate (which needs a live gpui `App`) so the logic is unit-testable on plain data.
+///
+/// A multi-valued cell survives while *any* of its values is still checked: unchecking `Film`
+/// hides the rows that are only Film, not everything that is also Video.
 fn compute_visible_rows(
     rows: &[Vec<SharedString>],
     filters: &[HashSet<SharedString>],
+    subdelimiter: &str,
 ) -> Vec<usize> {
     if filters.iter().all(HashSet::is_empty) {
         return (0..rows.len()).collect();
@@ -470,7 +512,12 @@ fn compute_visible_rows(
     (0..rows.len())
         .filter(|&r| {
             filters.iter().enumerate().all(|(c, excluded)| {
-                excluded.is_empty() || rows[r].get(c).is_none_or(|v| !excluded.contains(v))
+                excluded.is_empty()
+                    || rows[r].get(c).is_none_or(|v| {
+                        cell_parts(v, subdelimiter)
+                            .into_iter()
+                            .any(|part| !excluded.contains(part))
+                    })
             })
         })
         .collect()
@@ -682,7 +729,7 @@ mod tests {
     fn no_filter_is_identity_view() {
         let data = rows(&[&["a", "x"], &["b", "y"], &["c", "z"]]);
         assert_eq!(
-            compute_visible_rows(&data, &filters(&[&[], &[]])),
+            compute_visible_rows(&data, &filters(&[&[], &[]]), ""),
             vec![0, 1, 2]
         );
     }
@@ -692,7 +739,7 @@ mod tests {
         let data = rows(&[&["a", "x"], &["b", "y"], &["a", "z"]]);
         // Exclude "a" in column 0 → only the middle row (source 1) survives.
         assert_eq!(
-            compute_visible_rows(&data, &filters(&[&["a"], &[]])),
+            compute_visible_rows(&data, &filters(&[&["a"], &[]]), ""),
             vec![1]
         );
     }
@@ -702,9 +749,39 @@ mod tests {
         let data = rows(&[&["a", "x"], &["b", "x"], &["b", "y"]]);
         // Exclude "a" in col 0 and "y" in col 1 → source 0 and source 2 hidden.
         assert_eq!(
-            compute_visible_rows(&data, &filters(&[&["a"], &["y"]])),
+            compute_visible_rows(&data, &filters(&[&["a"], &["y"]]), ""),
             vec![1]
         );
+    }
+
+    /// The point of the sub-delimiter: `Film; Video` is two subjects. Unchecking one must not take
+    /// the row with it while the other is still checked, or a multi-valued column can only ever be
+    /// filtered down to nothing.
+    #[test]
+    fn a_sub_delimited_cell_survives_while_any_of_its_values_is_checked() {
+        let data = rows(&[&["Film; Video"], &["Film"], &["Photograph"]]);
+        assert_eq!(
+            compute_visible_rows(&data, &filters(&[&["Film"]]), ";"),
+            vec![0, 2],
+            "the Film-only row goes; Film; Video stays for its Video half"
+        );
+        assert_eq!(
+            compute_visible_rows(&data, &filters(&[&["Film", "Video"]]), ";"),
+            vec![2]
+        );
+        assert_eq!(
+            compute_visible_rows(&data, &filters(&[&["Film"]]), ""),
+            vec![0, 2],
+            "with no delimiter the combined cell is its own opaque value"
+        );
+    }
+
+    #[test]
+    fn cell_parts_trims_and_falls_back_to_the_whole_cell() {
+        let value = SharedString::from("Film; Video");
+        assert_eq!(cell_parts(&value, ";"), vec!["Film", "Video"]);
+        assert_eq!(cell_parts(&value, ""), vec!["Film; Video"]);
+        assert_eq!(cell_parts(&value, "|"), vec!["Film; Video"]);
     }
 
     #[test]
@@ -714,7 +791,7 @@ mod tests {
             &["banana", "yellow"],
             &["apricot", "red"],
         ]);
-        let all = compute_visible_rows(&data, &filters(&[&[], &[]]));
+        let all = compute_visible_rows(&data, &filters(&[&[], &[]]), "");
         let opts = SearchOpts::default();
         assert_eq!(
             find_matches(&data, &all, 2, "AP", opts),
@@ -722,7 +799,7 @@ mod tests {
         );
         // Hide the "apricot" row: the search must not report it, and the surviving hit is
         // addressed by its *view* row, not its source row.
-        let visible = compute_visible_rows(&data, &filters(&[&["apricot"], &[]]));
+        let visible = compute_visible_rows(&data, &filters(&[&["apricot"], &[]]), "");
         assert_eq!(visible, vec![0, 1]);
         assert_eq!(find_matches(&data, &visible, 2, "ap", opts), vec![(0, 0)]);
     }
@@ -762,7 +839,7 @@ mod tests {
     #[test]
     fn filtered_view_index_diverges_from_source_index() {
         let g = rows(&[&["hide"], &["show"], &["hide"], &["show"]]);
-        let visible = compute_visible_rows(&g, &filters(&[&["hide"]]));
+        let visible = compute_visible_rows(&g, &filters(&[&["hide"]]), "");
         assert_eq!(visible, vec![1, 3]);
         assert_eq!(visible[1], 3, "view row 1 must resolve to source row 3");
     }

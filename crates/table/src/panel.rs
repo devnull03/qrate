@@ -23,6 +23,17 @@ use crate::{
 /// Settings key for the saved column layout (order + widths) in the project's `.qrate` file.
 const COLUMN_LAYOUT_KEY: &str = "table_columns";
 
+/// Push the settings the delegate caches into it. Called wherever either store changes, since the
+/// delegate reads no settings itself — it has no `App` in the paths that need them.
+fn apply_settings(delegate: &mut QrateTableDelegate, cx: &App) {
+    let column_settings = settings::columns::load(cx);
+    let filters_on = settings::columns::filters_master_enabled(cx);
+    delegate.apply_column_settings(
+        |key| filters_on && column_settings.get(key).is_some_and(|s| s.filter_enabled),
+        settings::effective_text(crate::FILTER_SUBDELIMITER_KEY, cx),
+    );
+}
+
 // Free-text find, declared here (not in `app`) since app→table is one-way; `app` binds Ctrl+F to it.
 actions!(qrate, [Search]);
 
@@ -105,11 +116,7 @@ impl TablePanel {
             delegate.set_image_paths(Self::resolve_images(&project.data));
             loaded_project = Some(project.file.clone());
         }
-        let column_settings = settings::columns::load(cx);
-        let filters_on = settings::columns::filters_master_enabled(cx);
-        delegate.apply_column_settings(|key| {
-            filters_on && column_settings.get(key).is_some_and(|s| s.filter_enabled)
-        });
+        apply_settings(&mut delegate, cx);
         // Validator output is never persisted, so opening a project is the only thing that puts it
         // back. Runs before the state entity exists because the delegate already holds the data.
         delegate.revalidate(cx);
@@ -229,12 +236,8 @@ impl TablePanel {
                 let file = project.file.clone();
                 // A project-scoped setting write: re-apply per-column settings only, don't reload (loses state).
                 if this.loaded_project.as_ref() == Some(&file) {
-                    let column_settings = settings::columns::load(cx);
-                    let filters_on = settings::columns::filters_master_enabled(cx);
                     this.state.update(cx, |state, cx| {
-                        state.delegate_mut().apply_column_settings(|key| {
-                            filters_on && column_settings.get(key).is_some_and(|s| s.filter_enabled)
-                        });
+                        apply_settings(state.delegate_mut(), cx);
                         state.refresh(cx);
                         cx.emit(TableChanged);
                         cx.notify();
@@ -246,15 +249,11 @@ impl TablePanel {
                 let (headers, rows) = (project.data.headers.clone(), project.data.rows.clone());
                 let image_paths = Self::resolve_images(&project.data);
                 this.loaded_project = Some(file.clone());
-                let column_settings = settings::columns::load(cx);
-                let filters_on = settings::columns::filters_master_enabled(cx);
                 this.state.update(cx, |state, cx| {
                     state.delegate_mut().set_data(&headers, &rows);
                     Self::apply_saved_layout(state.delegate_mut(), &file);
                     state.delegate_mut().set_image_paths(image_paths);
-                    state.delegate_mut().apply_column_settings(|key| {
-                        filters_on && column_settings.get(key).is_some_and(|s| s.filter_enabled)
-                    });
+                    apply_settings(state.delegate_mut(), cx);
                     state.refresh(cx);
                     cx.emit(TableChanged);
                     cx.notify();
@@ -262,8 +261,16 @@ impl TablePanel {
                 cx.notify();
             });
 
-        let _settings_sub =
-            cx.observe_global::<settings::AppSettings>(|_this: &mut Self, cx| cx.notify());
+        // User-scope writes land here rather than in the project observer, and the sub-delimiter is
+        // one of them — so this has to re-push settings, not just repaint.
+        let _settings_sub = cx.observe_global::<settings::AppSettings>(|this: &mut Self, cx| {
+            this.state.update(cx, |state, cx| {
+                apply_settings(state.delegate_mut(), cx);
+                state.refresh(cx);
+                cx.emit(TableChanged);
+            });
+            cx.notify();
+        });
 
         // Typing in the find bar recomputes matches (jumping to the first); Enter/Shift-Enter
         // steps to the next/previous match.
