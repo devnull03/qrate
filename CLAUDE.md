@@ -64,6 +64,13 @@ A 2026-07-17 whole-repo audit removed exactly this kind of code; don't reintrodu
 - **No speculative scaffolding.** Code "kept for later" outside the module tree, provider stubs full of `todo!()`, and builder methods only tests call are deletions, not investments — git history is the archive. **One deliberate exception, do not flag or delete it:** the `ai` crate (`crates/ai/` — traits + Cohere/mock providers) is the planned home for AI review/embedding and stays despite its `todo!()` bodies.
 - **Explanation comments.** If you have to write a comment of more than 1 line to justify a decision, that is the wrong decision. Go back and rethink the implimentation from the start in a different manner.
 
+## Logging
+
+- **Never `eprintln!`/`println!` for diagnostics — use the `log` crate.** `log::error!` for something that failed, `log::warn!` for something skipped or degraded, `log::info!` for lifecycle events, `log::debug!` for detail. A packaged Windows build has no console, so a `println!` is a message nobody will ever read.
+- Add `log.workspace = true` to any crate that needs it. `log` is a facade with no init cost, so any crate can depend on it.
+- Only `crates/app` initializes logging (`crates/app/src/logging.rs`, called first in `main`). It writes `%LOCALAPPDATA%\qrate\logs\qrate.log` (previous run rotated to `qrate.old.log`) and installs the panic hook.
+- That file is also what Help ▸ Copy Debug Info / Report an Issue paste. Anything logged at `error`/`warn` will end up in a user's bug report, so write the message for the person reading the report — name what failed, not just the error value.
+
 ## gpui test modules
 
 - `#[gpui::test]` needs `gpui = { workspace = true, features = ["test-support"] }` under `[dev-dependencies]`.
@@ -88,3 +95,4 @@ A 2026-07-17 whole-repo audit removed exactly this kind of code; don't reintrodu
   Clippy allows `-A dead_code` (this repo scaffolds UI ahead of its consumers) but hard-fails every other warning. `clippy --all-targets` + `test` already compile everything, so there's no separate build step. Scope the checks to affected crates while iterating, but run the full `--workspace` form once before pushing.
 - Open the PR with `gh pr create`; PRs target `dev` or `main` (the branches CI gates). Body gets a short summary + a **Verification** line stating which of the four checks you ran and that they passed.
 - **After opening the PR, check for a GitHub Copilot code review and audit it.** Fetch its comments (`gh pr view <n> --comments`, or `gh api repos/{owner}/{repo}/pulls/{n}/comments`), then for each suggestion decide implement vs. dismiss: apply the correct/worthwhile ones and push to the same branch, skip false positives and noise. Report back which you applied vs. dismissed and why — don't blindly accept or ignore the whole review.
+- **Separate commits etiquette.** "Commit this" is never a licence to touch code. Split by staging whole files with `git add <path>` and nothing else. Never rewrite, rewind, or reconstruct a file to make a tidier split, and never `git stash` — the working tree may hold work in progress that is not yours, and stashing sweeps it up. If two topics share one file, put that file in one commit and say so in the report. An imperfect split is always cheaper than disturbed work.
