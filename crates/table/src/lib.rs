@@ -20,6 +20,10 @@ pub use panel::{Search, TablePanel};
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
 pub const TABLE_STRIPES_KEY: &str = "table_stripes";
 
+/// Settings key (in either scope) for the string that separates several values inside one cell,
+/// e.g. `;` in `Film; Video`. Empty means a cell is one indivisible value.
+pub const FILTER_SUBDELIMITER_KEY: &str = "filter_subdelimiter";
+
 use gpui::{App, Bounds, Global, Pixels, Point, WeakEntity, px, size};
 use gpui_component::table::TableState;
 

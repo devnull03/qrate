@@ -169,6 +169,16 @@ fn columns_page(cx: &App) -> SettingPage {
 
     if columns::filters_master_enabled(cx) {
         group = group.item(
+            Setting::Text {
+                key: table::FILTER_SUBDELIMITER_KEY,
+                label: "Sub-delimiter",
+                description: "Split cells that hold several values, e.g. \";\" for \"Film; Video\", \
+                              so the dropdown lists each value on its own. Leave empty to filter \
+                              whole cells.",
+            }
+            .into(),
+        );
+        group = group.item(
             SettingItem::new(
                 "Filtered columns",
                 SettingField::element(move |_opts: &_, _window: &mut _, cx: &mut _| {
