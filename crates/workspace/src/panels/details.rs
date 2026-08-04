@@ -162,7 +162,7 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
                     _ => settings::os_open::reveal_in_folder(&path),
                 };
                 if let Err(err) = result {
-                    eprintln!("image action {id} failed: {err}");
+                    log::error!("image action {id} failed: {err}");
                 }
             })
     };

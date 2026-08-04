@@ -460,7 +460,7 @@ impl ProjectSettingsWriter {
         };
         for ((file, key), value) in drained {
             if let Err(err) = write_setting(&file, &key, &value) {
-                eprintln!("failed to save project setting {key}: {err}");
+                log::error!("failed to save project setting {key}: {err}");
             }
         }
     }
@@ -484,7 +484,7 @@ pub fn queue_write(file: &Path, key: &str, value: &str, cx: &gpui::App) {
         Some(w) => w.enqueue(file, key, value.to_string()),
         None => {
             if let Err(err) = write_setting(file, key, value) {
-                eprintln!("failed to save project setting {key}: {err}");
+                log::error!("failed to save project setting {key}: {err}");
             }
         }
     }

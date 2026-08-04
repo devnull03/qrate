@@ -10,6 +10,10 @@ gpui_platform.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
 dirs.workspace = true
+log.workspace = true
+simplelog.workspace = true
+os_info.workspace = true
+sysinfo.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
@@ -18,6 +22,11 @@ project-wizard = { path = "../project-wizard" }
 diagnostics = { path = "../diagnostics" }
 settings = { path = "../settings" }
 table = { path = "../table" }
-# Validators are registered here and nowhere else — see `Validators::register`.
+plugin-api = { path = "../plugin-api" }
+# Plugins are loaded here and nowhere else — see `plugin_host::reload`.
 plugin-host = { path = "../plugin-host" }
 workspace = { path = "../workspace" }
+
+[dev-dependencies]
+# `#[gpui::test]` and TestAppContext are behind this feature.
+gpui = { workspace = true, features = ["test-support"] }

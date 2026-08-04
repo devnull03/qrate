@@ -132,6 +132,6 @@ pub fn save_now(cx: &mut App) {
     let (headers, rows) = state.read(cx).delegate().dataset_snapshot();
     match settings::project::save_dataset(&file, &headers, &rows) {
         Ok(()) => settings::dirty::clear(settings::dirty::PROJECT_DATA, cx),
-        Err(err) => eprintln!("failed to save project data: {err}"),
+        Err(err) => log::error!("failed to save project data: {err}"),
     }
 }
