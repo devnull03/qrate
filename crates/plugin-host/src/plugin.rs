@@ -1,4 +1,4 @@
-//! One Lua plugin: one virtual machine, implementing the same [`ColumnValidator`] trait a
+﻿//! One Lua plugin: one virtual machine, implementing the same [`ColumnValidator`] trait a
 //! compiled-in Rust validator does.
 //!
 //! That is the whole trick. The host is not a new subsystem sitting beside the validator
@@ -32,6 +32,11 @@ const DEADLINE: Duration = Duration::from_millis(250);
 /// than this. The interrupt hook cannot help here — it only runs between Lua instructions, and a
 /// blocking host call is one instruction.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A validator runs per column edit, so a plugin that fetches on every call would hammer a server
+/// as fast as the user types. Generous for a check-the-server plugin, far short of a flood.
+const HTTP_BUDGET: u32 = 30;
+const HTTP_WINDOW: Duration = Duration::from_secs(60);
 
 /// What a command asked the host to store, by scope. `None` means "leave that scope alone";
 /// `Some` replaces the plugin's whole object there, which is the same replace-the-set rule
@@ -309,13 +314,28 @@ fn build(source: &str, deadline: &Rc<Cell<Instant>>) -> mlua::Result<Loaded> {
 
 /// `qrate.http.get(url)` -> `{ status, body }`, or `nil, message`. Returning the failure rather
 /// than raising it is what lets a plugin report an unreachable server as a finding instead of as
-/// its own crash. Installed before `sandbox`, which freezes the global table.
+/// its own crash. Installed before `sandbox`, which freezes the global table. Rate limited per VM,
+/// so one plugin's loop cannot spend another's budget.
 //
-// ponytail: GET only, no allowlist, no rate limit, no cache — the network permission prompt is
-// ASNT-59's job. Add `post` and storage when a plugin needs to write rather than check.
+// ponytail: GET only, no allowlist, no cache — the network permission prompt is ASNT-59's job.
+// Add `post` and storage when a plugin needs to write rather than check.
 fn install_http(lua: &Lua, deadline: &Rc<Cell<Instant>>) -> mlua::Result<()> {
     let deadline = deadline.clone();
+    let budget = Cell::new((Instant::now(), 0u32));
     let get = lua.create_function(move |lua, url: String| {
+        let (started, spent) = budget.get();
+        let (started, spent) = if started.elapsed() > HTTP_WINDOW {
+            (Instant::now(), 0)
+        } else {
+            (started, spent)
+        };
+        budget.set((started, spent + 1));
+        if spent >= HTTP_BUDGET {
+            return Ok((
+                mlua::Value::Nil,
+                mlua::Value::String(lua.create_string("rate limited")?),
+            ));
+        }
         let response = reqwest::blocking::Client::builder()
             .timeout(HTTP_TIMEOUT)
             .build()
@@ -436,6 +456,28 @@ mod tests {
             "a missing severity reads as one"
         );
         assert!(found[0].2.contains("Country"));
+    }
+
+    /// The URL never resolves, so this exercises the budget alone — a refusal costs a request too,
+    /// which is what stops a plugin retrying a dead server in a loop.
+    #[test]
+    fn http_stops_answering_once_a_plugin_spends_its_budget() {
+        let source = r#"
+            return {
+              validate = function(_, _)
+                local first, last
+                for i = 1, 31 do
+                  local _, err = qrate.http.get("nonsense")
+                  if i == 1 then first = err end
+                  last = err
+                end
+                return { { row = 1, message = first }, { row = 2, message = last } }
+              end,
+            }
+        "#;
+        let found = check(source, &["x", "y"]);
+        assert_ne!(found[0].2, "rate limited");
+        assert_eq!(found[1].2, "rate limited");
     }
 
     #[test]
