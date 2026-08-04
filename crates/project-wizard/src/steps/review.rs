@@ -88,7 +88,7 @@ impl ProjectWizard {
                         diagnostics::SOURCE_NOTE,
                         &notes,
                     ) {
-                        eprintln!("Couldn't save the sheet's notes — {e}");
+                        log::error!("couldn't save the sheet's notes — {e}");
                     }
                 }
                 // Load the file straight back so the main window opens on the

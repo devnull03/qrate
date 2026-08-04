@@ -52,6 +52,6 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 pub fn register_global_handlers(cx: &mut App) {
     // ponytail: NewWindow is blocked on the bar registries being globals (single-window) —
     // de-globalize them per-window first.
-    cx.on_action(|_: &NewWindow, _cx| eprintln!("NewWindow: TODO (bar registries are global)"));
+    cx.on_action(|_: &NewWindow, _cx| log::warn!("NewWindow: TODO (bar registries are global)"));
     cx.on_action(|_: &Save, cx| table::save_now(cx));
 }

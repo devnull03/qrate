@@ -213,7 +213,7 @@ impl Workspace {
         let state: DockAreaState = match serde_json::from_str(&raw) {
             Ok(state) => state,
             Err(err) => {
-                eprintln!("ignoring corrupt dock layout: {err}");
+                log::warn!("ignoring corrupt dock layout: {err}");
                 return false;
             }
         };
@@ -226,7 +226,7 @@ impl Workspace {
         dock_area.update(cx, |area, cx| match area.load(state, window, cx) {
             Ok(()) => true,
             Err(err) => {
-                eprintln!("failed to restore dock layout: {err}");
+                log::error!("failed to restore dock layout: {err}");
                 false
             }
         })

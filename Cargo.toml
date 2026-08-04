@@ -40,6 +40,10 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["fo
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
 dirs = "6"
+log = "0.4"
+simplelog = "0.12"
+os_info = "3"
+sysinfo = "0.37"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1.0.221", features = ["derive", "rc"] }
 serde_json = { version = "1.0.144", features = ["preserve_order", "raw_value"] }

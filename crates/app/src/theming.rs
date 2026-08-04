@@ -107,10 +107,10 @@ pub fn init(cx: &mut App) {
         match extract_embedded_themes(&dir) {
             Ok(()) => {
                 if let Err(err) = ThemeRegistry::watch_dir(dir, cx, apply_saved_theme) {
-                    eprintln!("Failed to watch themes directory: {err}");
+                    log::error!("failed to watch the themes directory: {err}");
                 }
             }
-            Err(err) => eprintln!("Failed to extract embedded themes: {err}"),
+            Err(err) => log::error!("failed to extract the embedded themes: {err}"),
         }
     }
 
