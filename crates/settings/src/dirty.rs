@@ -19,6 +19,8 @@ pub const PROJECT_DATA: &str = "project_data";
 pub const COLUMN_LAYOUT: &str = "column_layout";
 /// Per-column preferences.
 pub const COLUMN_SETTINGS: &str = "column_settings";
+/// Whatever plugins store against the open project.
+pub const PLUGIN_SETTINGS: &str = "plugin_settings";
 
 #[derive(Default)]
 pub struct Dirty {

@@ -1,17 +1,15 @@
 [package]
-name = "table"
+name = "plugin-host"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-gpui.workspace = true
-gpui-component.workspace = true
-regex = "1"
-serde.workspace = true
-serde_json.workspace = true
 diagnostics = { path = "../diagnostics" }
-plugin-api = { path = "../plugin-api" }
 settings = { path = "../settings" }
+gpui.workspace = true
+plugin-api = { path = "../plugin-api" }
+serde_json.workspace = true
+mlua = { version = "0.11", features = ["luau", "vendored", "serde"] }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

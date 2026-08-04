@@ -56,6 +56,18 @@ pub(crate) struct EditSpawn {
 }
 impl Global for EditSpawn {}
 
+/// Re-run every registered validator against the live table. The other half of reloading plugins:
+/// dropping one clears its findings, but only a run publishes the replacements.
+pub fn revalidate_now(cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+    state.update(cx, |state, cx| state.delegate().revalidate(cx));
+}
+
 /// Persist the open project's table data to its `.qrate` file, synchronously, and clear the
 /// `PROJECT_DATA` dirty mark. No-op with no project open, no live table, or a blank project. Runs
 /// on the calling thread — qrate's grids are small enough that a full rewrite stays well under a

@@ -28,15 +28,16 @@ pub const COLUMN_FILTERS_ENABLED_KEY: &str = "table_column_filters_enabled";
 
 /// A column's preferences. A column only has an entry once the user adds it on the Columns
 /// settings page; absent means "not configured", which reads as all-defaults.
-#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
 pub struct ColumnSettings {
     /// Whether this column offers the filter dropdown in its header.
     #[serde(default)]
     pub filter_enabled: bool,
-    /// The controlled vocabulary this column is restricted to. Empty means unrestricted, which is
-    /// how the vocabulary validator stays off until a column opts in.
+    /// Plugin id → whatever that plugin keeps for this column. Opaque here on purpose: a typed
+    /// field would mean every third-party knob needs a qrate release. See [`crate::plugins`] for
+    /// the two scopes that are not per-column.
     #[serde(default)]
-    pub allowed_values: Vec<String>,
+    pub plugins: BTreeMap<String, serde_json::Value>,
 }
 
 /// `c{ix}` → settings. `BTreeMap` so the settings page lists columns in a stable order and the
@@ -177,15 +178,23 @@ mod tests {
         assert!(parsed["c2"].filter_enabled);
     }
 
-    /// The other direction, which is what adding `allowed_values` relies on: a blob written before
-    /// the field existed still loads, and reads as unrestricted rather than "allow nothing".
+    /// The other direction, which is what the plugin bucket relies on: a blob written before the
+    /// field existed still loads, and reads as "no plugin has stored anything here".
     #[test]
-    fn a_blob_without_allowed_values_reads_as_unrestricted() {
+    fn a_blob_without_a_plugin_bucket_reads_as_empty() {
         let parsed = parse(Some(r#"{"c2":{"filter_enabled":true}}"#));
-        assert!(parsed["c2"].allowed_values.is_empty());
+        assert!(parsed["c2"].plugins.is_empty());
+    }
 
+    /// A plugin's own shape is never declared to Rust, so whatever it stores has to survive the
+    /// round trip untouched — that is the entire promise the bucket makes.
+    #[test]
+    fn a_plugins_bucket_round_trips_whatever_it_holds() {
         let mut map = map_with("c2", true);
-        map.get_mut("c2").unwrap().allowed_values = vec!["Film".into(), "Video".into()];
+        map.get_mut("c2").unwrap().plugins.insert(
+            "vocab".into(),
+            serde_json::json!({ "allowed_values": ["Film", "Video"], "strict": true }),
+        );
         let json = serde_json::to_string(&map).unwrap();
         assert_eq!(parse(Some(&json)), map);
     }

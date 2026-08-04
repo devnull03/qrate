@@ -32,7 +32,7 @@ impl Global for MainWorkspaceHandle {}
 use crate::app_settings::build_pages;
 use crate::{
     actions::{NewProject, ToggleBottomDock, ToggleLeftDock, ToggleRightDock},
-    app_menus::{OpenProjects, OpenSettings, Quit, app_menus},
+    app_menus::{OpenPluginsFolder, OpenProjects, OpenSettings, Quit, ReloadPlugins, app_menus},
     status_items::build_status_bar_registry,
     title_items::build_title_bar_registry,
 };
@@ -382,10 +382,15 @@ fn main() {
         });
         diagnostics::init(cx);
 
-        // The composition root is the only place that knows which validator crates are compiled
-        // in; `table` triggers the runs without naming any of them.
-        diagnostics::Validators::register(Box::new(validator_vocab::Vocab), cx);
+        // The composition root is the only place that knows where validators come from; `table`
+        // triggers the runs without naming any of them.
+        plugin_host::reload(cx);
 
+        cx.on_action(|_: &ReloadPlugins, cx| {
+            plugin_host::reload(cx);
+            table::revalidate_now(cx);
+        });
+        cx.on_action(|_: &OpenPluginsFolder, _| plugin_host::open_plugins_folder());
         cx.on_action(|_: &OpenSettings, cx| open_settings_window(cx));
         cx.on_action(|_: &NewProject, cx| {
             project_wizard::open_project_wizard(EntryKind::Blank, cx)

@@ -298,17 +298,13 @@ impl QrateTableDelegate {
         diagnostics::Validators::run(&columns, &self.rows, cx);
     }
 
-    /// Every distinct non-blank value in a data column — the vocabulary the header menu offers to
-    /// restrict the column to. Sorted, so the stored list is diff-friendly.
-    pub(crate) fn distinct_values(&self, data_col: usize) -> Vec<String> {
+    /// Every row's text for a data column, in source-row order — the same view a validator gets,
+    /// handed to a contributed menu command so it can decide for itself what to do with it.
+    /// Unlike [`Self::column_values`], nothing is deduplicated or dropped.
+    pub(crate) fn column_cells(&self, data_col: usize) -> Vec<SharedString> {
         self.rows
             .iter()
-            .filter_map(|r| r.get(data_col))
-            .map(|v| v.trim())
-            .filter(|v| !v.is_empty())
-            .map(str::to_string)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
+            .map(|r| r.get(data_col).cloned().unwrap_or_default())
             .collect()
     }
 

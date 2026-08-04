@@ -15,6 +15,7 @@ use gpui_component::table::TableState;
 use gpui_component::{ActiveTheme as _, h_flex};
 
 use diagnostics::{Diagnostics, Location, Severity, severity_color};
+use plugin_api::{CommandContext, MenuContributions, MenuTarget, PluginHooks};
 
 use crate::TableStateHandle;
 use crate::delegate::{QrateTableDelegate, TableChanged};
@@ -206,40 +207,53 @@ pub(crate) fn menu(
             .separator()
         }
         Target::Row(_) => copy_row(menu).separator(),
-        // Restricting a column to the values already in it turns a categorical column into a
-        // typo-catcher in one click, which is the whole configuration the vocabulary validator has.
+        // Everything a column header offers beyond notes is contributed by a plugin. `table` knows
+        // the label and the command string and nothing else — no plugin code runs while a menu is
+        // built, because menus build synchronously and a VM answer cannot be waited on.
         Target::Column(col) => {
-            let key = table.read(cx).delegate().column_key(col);
-            let restricted = !settings::columns::get(&key, cx).allowed_values.is_empty();
-            let (restrict_table, clear_table) = (table.clone(), table.clone());
-            let clear_key = key.clone();
-            menu.item(
-                PopupMenuItem::new(if restricted {
-                    "Re-restrict to current values"
-                } else {
-                    "Restrict to current values"
-                })
-                .on_click(move |_, _, cx| {
-                    restrict_table.update(cx, |state, cx| {
-                        let values = state.delegate().distinct_values(col);
-                        settings::columns::update(&key, |s| s.allowed_values = values, cx);
-                        state.delegate().revalidate(cx);
-                        cx.notify();
-                    });
-                }),
-            )
-            .when(restricted, |menu| {
-                menu.item(
-                    PopupMenuItem::new("Clear restriction").on_click(move |_, _, cx| {
-                        clear_table.update(cx, |state, cx| {
-                            settings::columns::update(&clear_key, |s| s.allowed_values.clear(), cx);
-                            state.delegate().revalidate(cx);
-                            cx.notify();
-                        });
-                    }),
+            let (key, name, values) = {
+                let delegate = table.read(cx).delegate();
+                (
+                    delegate.column_key(col),
+                    delegate.column_name(col),
+                    delegate.column_cells(col),
                 )
-            })
-            .separator()
+            };
+            let stored = settings::columns::get(&key, cx).plugins;
+            MenuContributions::for_target(MenuTarget::Column, cx)
+                .into_iter()
+                .filter(|(plugin, item)| {
+                    !item.requires_settings
+                        || stored
+                            .get(plugin.as_ref())
+                            .is_some_and(settings::plugins::is_set)
+                })
+                .fold(menu, |menu, (plugin, item)| {
+                    let ctx = CommandContext {
+                        column: name.clone(),
+                        column_key: key.clone(),
+                        column_settings: stored
+                            .get(plugin.as_ref())
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null),
+                        row: None,
+                        values: values.clone(),
+                    };
+                    let invoke_table = table.clone();
+                    menu.item(
+                        PopupMenuItem::new(item.label.clone()).on_click(move |_, _, cx| {
+                            let Some(hooks) = cx.try_global::<PluginHooks>().copied() else {
+                                return;
+                            };
+                            (hooks.invoke)(&plugin, &item.command, &ctx, cx);
+                            invoke_table.update(cx, |state, cx| {
+                                state.delegate().revalidate(cx);
+                                cx.notify();
+                            });
+                        }),
+                    )
+                })
+                .separator()
         }
     };
 
