@@ -6,7 +6,7 @@
 //! the only way to get a pointer cursor on these toggles. It also lets us set the hover
 //! highlight explicitly instead of relying on the ghost variant's subtle default.
 
-use diagnostics::Diagnostics;
+use diagnostics::{Diagnostics, Severity, severity_color};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable,
@@ -49,6 +49,21 @@ impl DockToggleButton {
     }
 }
 
+/// One severity's icon and tally, in that severity's colour — greyed while it reads zero, so a
+/// clean project doesn't show two loud badges.
+fn severity_badge(severity: Severity, icon: IconName, count: usize, cx: &App) -> impl IntoElement {
+    let color = if count == 0 {
+        cx.theme().muted_foreground
+    } else {
+        severity_color(severity, cx)
+    };
+    h_flex()
+        .gap_1()
+        .text_color(color)
+        .child(Icon::new(icon).small())
+        .child(count.to_string())
+}
+
 impl Render for DockToggleButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dock = self.dock.clone();
@@ -67,9 +82,17 @@ impl Render for DockToggleButton {
             // Windows hit-tests as HTCAPTION and never delivers a click from. Occluding
             // stops that hit test at this button.
             .occlude()
-            .child(Icon::new(self.icon.clone()).small())
-            .when(self.count, |this| {
-                this.child(Diagnostics::count(cx).to_string())
+            .map(|this| {
+                if !self.count {
+                    return this.child(Icon::new(self.icon.clone()).small());
+                }
+                // Errors and warnings side by side rather than one total: the icon and colour say
+                // which is which, so `self.icon` has nothing left to add here.
+                let (errors, warnings) = Diagnostics::counts(cx);
+                this.children([
+                    severity_badge(Severity::Error, IconName::CircleX, errors, cx),
+                    severity_badge(Severity::Warning, IconName::TriangleAlert, warnings, cx),
+                ])
             })
             .on_click(move |_, window, cx| {
                 dock.update(cx, |area, cx| {
