@@ -48,6 +48,81 @@ pub struct MenuItem {
     pub requires_settings: bool,
 }
 
+/// Which bar an item sits in, and which end of it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Bar {
+    Status,
+    Title,
+}
+
+impl Bar {
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "status" => Some(Self::Status),
+            "title" => Some(Self::Title),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+impl Side {
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            _ => None,
+        }
+    }
+}
+
+/// What one mouse button on a bar item does. Left and right are declared independently, so an item
+/// can act on click and still offer the rest of its commands on the other button.
+#[derive(Clone, Debug)]
+pub enum BarAction {
+    Command(SharedString),
+    /// `(label, command)`, in declaration order.
+    Menu(Vec<(SharedString, SharedString)>),
+}
+
+/// One contributed status- or title-bar item. `text` carries inline markup — see `markup` in the
+/// `app` crate for the accepted spellings.
+#[derive(Clone, Debug)]
+pub struct BarItem {
+    /// Plugin-local; `(plugin, id)` is what a runtime text update addresses.
+    pub id: SharedString,
+    pub bar: Bar,
+    pub side: Side,
+    pub text: SharedString,
+    pub tooltip: Option<SharedString>,
+    pub left: Option<BarAction>,
+    pub right: Option<BarAction>,
+}
+
+/// Every loaded plugin's bar items, as `(plugin id, item)`. Replaced wholesale on each reload, and
+/// patched in place when a plugin updates its own text — either way through `set_global`, so the
+/// containers rendering them are notified.
+#[derive(Default)]
+pub struct BarContributions(pub Vec<(SharedString, BarItem)>);
+impl Global for BarContributions {}
+
+impl BarContributions {
+    pub fn at(bar: Bar, side: Side, cx: &App) -> Vec<(SharedString, BarItem)> {
+        cx.try_global::<Self>().map_or(Vec::new(), |this| {
+            this.0
+                .iter()
+                .filter(|(_, item)| item.bar == bar && item.side == side)
+                .cloned()
+                .collect()
+        })
+    }
+}
+
 /// Which of the two non-column scopes a declared setting is stored in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingScope {
@@ -98,12 +173,16 @@ pub struct SettingSpec {
 }
 
 /// What was clicked, handed to the plugin so a command can act on it.
-#[derive(Clone, Debug)]
+///
+/// Every column field is optional because a bar item has no column under it. A command reached from
+/// the status or title bar gets whatever the table has selected, and nothing when it has nothing —
+/// which a plugin can tell apart from an empty column, unlike a blank string.
+#[derive(Clone, Debug, Default)]
 pub struct CommandContext {
     /// Column header text, which is also how diagnostics address a column.
-    pub column: SharedString,
+    pub column: Option<SharedString>,
     /// The stable `c{ix}` key its settings are stored under.
-    pub column_key: SharedString,
+    pub column_key: Option<SharedString>,
     /// The clicking plugin's own object for this column, so a command sees the same settings
     /// `validate` does without a second lookup on the Lua side.
     pub column_settings: serde_json::Value,

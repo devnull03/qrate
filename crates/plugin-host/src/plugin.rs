@@ -1,24 +1,28 @@
-﻿//! One Lua plugin: one virtual machine, implementing the same [`ColumnValidator`] trait a
+//! One Lua plugin: one virtual machine, implementing the same [`ColumnValidator`] trait a
 //! compiled-in Rust validator does.
 //!
-//! That is the whole trick. The host is not a new subsystem sitting beside the validator
-//! registry — it is another entry *in* it, so the diagnostics store, the replace-by-source
-//! invalidation, the Problems panel, and the in-cell squiggle all work with no change.
+//! That is the whole trick. The host is not a new subsystem sitting beside the diagnostics store —
+//! it publishes into it under the same replace-by-source rule, so the Problems panel and the
+//! in-cell squiggle work with no change. Only *when* it publishes differs: a plugin may block on a
+//! server, so it answers off the UI thread and its findings land a moment later.
 //!
 //! Settings cross as opaque JSON in both directions. The host never reads into a plugin's object,
 //! which is what lets a plugin add a knob without a qrate release.
-//
-// ponytail: `validate` runs Lua on the UI thread inside `Validators::run`. Move plugins onto a
-// worker with a request generation counter when one is slow enough to drop a frame.
+//!
+//! Every shared field is a `Mutex` rather than a `Cell`/`RefCell` because a `LuaPlugin` is held in
+//! an `Arc` and run on the background executor — see `validate_async` in the parent module.
 
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::cell::Cell;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use diagnostics::{ColumnInfo, ColumnValidator, Severity};
 use gpui::SharedString;
 use mlua::{Function, Lua, LuaOptions, LuaSerdeExt as _, StdLib, Table, VmState};
-use plugin_api::{CommandContext, MenuItem, MenuTarget, SettingKind, SettingScope, SettingSpec};
+use plugin_api::{
+    Bar, BarAction, BarItem, CommandContext, MenuItem, MenuTarget, SettingKind, SettingScope,
+    SettingSpec, Side,
+};
 use serde_json::Value as Json;
 
 /// Enough for a vocabulary list or a compiled pattern set, far short of a runaway allocation.
@@ -57,6 +61,7 @@ struct Loaded {
     on_command: Option<Function>,
     menu: Vec<MenuItem>,
     settings: Vec<SettingSpec>,
+    bar: Vec<BarItem>,
 }
 
 pub struct LuaPlugin {
@@ -65,11 +70,15 @@ pub struct LuaPlugin {
     /// the name its author can find on disk.
     id: SharedString,
     /// Shared with the interrupt hook, and pushed forward before every call into Lua.
-    deadline: Rc<Cell<Instant>>,
+    deadline: Arc<Mutex<Instant>>,
     /// `(project, user)`, held here because `validate` runs without an `App` to read them from.
-    /// Behind a `RefCell` so a write can refresh the copy in place — reloading the VM to pick up a
+    /// Behind a lock so a write can refresh the copy in place — reloading the VM to pick up a
     /// changed setting would re-run every `init.lua` on every keystroke in the Settings window.
-    scoped: RefCell<(Json, Json)>,
+    scoped: Mutex<(Json, Json)>,
+    /// `(item id, new text)` a plugin asked for through `qrate.status.set`, written from whatever
+    /// thread the call ran on and drained by the host once it returns. A buffer rather than a
+    /// channel because the answer already crosses back to the UI thread with the call's result.
+    pending: Arc<Mutex<Vec<(SharedString, SharedString)>>>,
     /// A load failure is kept rather than dropped, so a broken plugin can still report itself.
     state: Result<Loaded, String>,
 }
@@ -79,13 +88,29 @@ impl LuaPlugin {
     /// source rather than a path is what lets the tests cover every path without touching the
     /// filesystem.
     pub fn load(id: &str, source: &str) -> Self {
-        let deadline = Rc::new(Cell::new(Instant::now()));
+        let deadline = Arc::new(Mutex::new(Instant::now()));
+        let pending = Arc::new(Mutex::new(Vec::new()));
         Self {
             id: id.to_string().into(),
-            state: build(source, &deadline).map_err(|err| err.to_string()),
-            scoped: RefCell::new((Json::Null, Json::Null)),
+            state: build(source, &deadline, &pending).map_err(|err| err.to_string()),
+            scoped: Mutex::new((Json::Null, Json::Null)),
+            pending,
             deadline,
         }
+    }
+
+    pub fn bar(&self) -> &[BarItem] {
+        self.state.as_ref().map_or(&[], |l| l.bar.as_slice())
+    }
+
+    /// Every `qrate.status.set` since the last call, and empty afterwards.
+    pub fn take_bar_updates(&self) -> Vec<(SharedString, SharedString)> {
+        std::mem::take(&mut self.pending.lock().unwrap())
+    }
+
+    /// Every call into Lua restarts the compute budget the interrupt hook enforces.
+    fn arm(&self) {
+        *self.deadline.lock().unwrap() = Instant::now() + DEADLINE;
     }
 
     /// The plugin's own one-line description, shown on its Settings page.
@@ -103,7 +128,7 @@ impl LuaPlugin {
 
     /// Replace the project- and user-scope copies after something wrote to them.
     pub fn set_scoped(&self, project: Json, user: Json) {
-        *self.scoped.borrow_mut() = (project, user);
+        *self.scoped.lock().unwrap() = (project, user);
     }
 
     /// Run a contributed menu command and return what it wants stored.
@@ -125,7 +150,7 @@ impl LuaPlugin {
     ) -> mlua::Result<Writes> {
         let lua = &loaded.lua;
         let table = lua.create_table()?;
-        table.set("column", ctx.column.as_ref())?;
+        table.set("column", ctx.column.as_ref().map(SharedString::as_ref))?;
         table.set("row", ctx.row.map(|r| r + 1))?;
         table.set(
             "values",
@@ -133,7 +158,7 @@ impl LuaPlugin {
         )?;
         table.set("settings", self.settings_table(lua, &ctx.column_settings)?)?;
 
-        self.deadline.set(Instant::now() + DEADLINE);
+        self.arm();
         let written: Option<Table> = on_command.call((command.as_ref(), table))?;
         let Some(written) = written else {
             return Ok(Writes::default());
@@ -148,7 +173,7 @@ impl LuaPlugin {
     /// `{ column = …, project = …, user = … }` — this plugin's own objects and nothing else's.
     fn settings_table(&self, lua: &Lua, column: &Json) -> mlua::Result<Table> {
         let table = lua.create_table()?;
-        let scoped = self.scoped.borrow();
+        let scoped = self.scoped.lock().unwrap();
         table.set("column", to_lua(lua, column)?)?;
         table.set("project", to_lua(lua, &scoped.0)?)?;
         table.set("user", to_lua(lua, &scoped.1)?)?;
@@ -174,7 +199,7 @@ impl LuaPlugin {
             .unwrap_or(&Json::Null);
         let settings = self.settings_table(lua, bucket)?;
 
-        self.deadline.set(Instant::now() + DEADLINE);
+        self.arm();
         let found: Vec<Table> = validate.call((info, cells, settings))?;
 
         found
@@ -248,7 +273,11 @@ fn json_field(lua: &Lua, table: &Table, key: &str) -> mlua::Result<Option<Json>>
     lua.from_value(value).map(Some)
 }
 
-fn build(source: &str, deadline: &Rc<Cell<Instant>>) -> mlua::Result<Loaded> {
+fn build(
+    source: &str,
+    deadline: &Arc<Mutex<Instant>>,
+    pending: &Arc<Mutex<Vec<(SharedString, SharedString)>>>,
+) -> mlua::Result<Loaded> {
     // Luau has no `io` and no `package` to remove, and its `debug` is already cut to two
     // functions. Leaving out `OS` and `COROUTINE` costs a plugin its clock and its ability to
     // yield, so every capability one ever gets has to arrive as a host function the host can
@@ -258,12 +287,12 @@ fn build(source: &str, deadline: &Rc<Cell<Instant>>) -> mlua::Result<Loaded> {
         LuaOptions::default(),
     )?;
     lua.set_memory_limit(MEMORY_LIMIT)?;
-    install_http(&lua, deadline)?;
+    install_qrate(&lua, deadline, pending)?;
     lua.sandbox(true)?;
     lua.set_interrupt({
         let deadline = deadline.clone();
         move |_| {
-            if Instant::now() > deadline.get() {
+            if Instant::now() > *deadline.lock().unwrap() {
                 Err(mlua::Error::runtime("ran too long and was stopped"))
             } else {
                 Ok(VmState::Continue)
@@ -271,7 +300,7 @@ fn build(source: &str, deadline: &Rc<Cell<Instant>>) -> mlua::Result<Loaded> {
         }
     });
 
-    deadline.set(Instant::now() + DEADLINE);
+    *deadline.lock().unwrap() = Instant::now() + DEADLINE;
     let descriptor: Table = lua.load(source).eval()?;
     let validate: Option<Function> = descriptor.get("validate")?;
     let on_command: Option<Function> = descriptor.get("on_command")?;
@@ -286,6 +315,13 @@ fn build(source: &str, deadline: &Rc<Cell<Instant>>) -> mlua::Result<Loaded> {
         Some(items) => items
             .into_iter()
             .map(setting_spec)
+            .collect::<mlua::Result<Vec<_>>>()?,
+        None => Vec::new(),
+    };
+    let bar = match descriptor.get::<Option<Vec<Table>>>("bar")? {
+        Some(items) => items
+            .into_iter()
+            .map(bar_item)
             .collect::<mlua::Result<Vec<_>>>()?,
         None => Vec::new(),
     };
@@ -309,17 +345,27 @@ fn build(source: &str, deadline: &Rc<Cell<Instant>>) -> mlua::Result<Loaded> {
         on_command,
         menu,
         settings,
+        bar,
     })
 }
 
+/// The whole `qrate` global, installed before `sandbox` freezes the global table.
+///
 /// `qrate.http.get(url)` -> `{ status, body }`, or `nil, message`. Returning the failure rather
 /// than raising it is what lets a plugin report an unreachable server as a finding instead of as
-/// its own crash. Installed before `sandbox`, which freezes the global table. Rate limited per VM,
-/// so one plugin's loop cannot spend another's budget.
+/// its own crash. Rate limited per VM, so one plugin's loop cannot spend another's budget.
+///
+/// `qrate.status.set(id, text)` retitles one of the plugin's own declared bar items. It buffers
+/// rather than applies, because a plugin runs off the UI thread and the bar is not reachable from
+/// there.
 //
 // ponytail: GET only, no allowlist, no cache — the network permission prompt is ASNT-59's job.
 // Add `post` and storage when a plugin needs to write rather than check.
-fn install_http(lua: &Lua, deadline: &Rc<Cell<Instant>>) -> mlua::Result<()> {
+fn install_qrate(
+    lua: &Lua,
+    deadline: &Arc<Mutex<Instant>>,
+    pending: &Arc<Mutex<Vec<(SharedString, SharedString)>>>,
+) -> mlua::Result<()> {
     let deadline = deadline.clone();
     let budget = Cell::new((Instant::now(), 0u32));
     let get = lua.create_function(move |lua, url: String| {
@@ -336,13 +382,10 @@ fn install_http(lua: &Lua, deadline: &Rc<Cell<Instant>>) -> mlua::Result<()> {
                 mlua::Value::String(lua.create_string("rate limited")?),
             ));
         }
-        let response = reqwest::blocking::Client::builder()
-            .timeout(HTTP_TIMEOUT)
-            .build()
-            .and_then(|client| client.get(&url).send());
+        let response = http_client().get(&url).send();
         // Waiting on a server is not the script running long, so the compute budget restarts here
         // rather than the interrupt hook killing the plugin the moment the response lands.
-        deadline.set(Instant::now() + DEADLINE);
+        *deadline.lock().unwrap() = Instant::now() + DEADLINE;
         match response {
             Err(err) => Ok((
                 mlua::Value::Nil,
@@ -356,11 +399,77 @@ fn install_http(lua: &Lua, deadline: &Rc<Cell<Instant>>) -> mlua::Result<()> {
             }
         }
     })?;
+    let set = lua.create_function({
+        let pending = pending.clone();
+        move |_, (id, text): (String, String)| {
+            pending.lock().unwrap().push((id.into(), text.into()));
+            Ok(())
+        }
+    })?;
+
     let http = lua.create_table()?;
     http.set("get", get)?;
+    let status = lua.create_table()?;
+    status.set("set", set)?;
     let qrate = lua.create_table()?;
     qrate.set("http", http)?;
+    qrate.set("status", status)?;
     lua.globals().set("qrate", qrate)
+}
+
+/// One client for every plugin: building one spins up a fresh runtime and thread, and doing that
+/// per request showed up as the cost of a check rather than the server's.
+fn http_client() -> &'static reqwest::blocking::Client {
+    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            .build()
+            .unwrap_or_default()
+    })
+}
+
+fn bar_item(item: Table) -> mlua::Result<BarItem> {
+    let bar: String = item.get("bar")?;
+    let side: String = item.get("side")?;
+    Ok(BarItem {
+        id: item.get::<String>("id")?.into(),
+        bar: Bar::from_key(&bar)
+            .ok_or_else(|| mlua::Error::runtime(format!("unknown bar {bar:?}")))?,
+        side: Side::from_key(&side)
+            .ok_or_else(|| mlua::Error::runtime(format!("unknown bar side {side:?}")))?,
+        text: item.get::<String>("text")?.into(),
+        tooltip: item.get::<Option<String>>("tooltip")?.map(Into::into),
+        left: bar_action(item.get("left")?)?,
+        right: bar_action(item.get("right")?)?,
+    })
+}
+
+/// `{ command = "…" }` or `{ menu = { { label, command }, … } }`. Declaring both is a plugin bug
+/// worth naming, since silently preferring one hides half of what the author wrote.
+fn bar_action(action: Option<Table>) -> mlua::Result<Option<BarAction>> {
+    let Some(action) = action else {
+        return Ok(None);
+    };
+    let command: Option<String> = action.get("command")?;
+    let menu: Option<Vec<Table>> = action.get("menu")?;
+    match (command, menu) {
+        (Some(_), Some(_)) => Err(mlua::Error::runtime(
+            "a bar action is either a `command` or a `menu`, not both",
+        )),
+        (Some(command), None) => Ok(Some(BarAction::Command(command.into()))),
+        (None, Some(entries)) => entries
+            .into_iter()
+            .map(|entry| {
+                Ok((
+                    entry.get::<String>("label")?.into(),
+                    entry.get::<String>("command")?.into(),
+                ))
+            })
+            .collect::<mlua::Result<Vec<_>>>()
+            .map(|entries| Some(BarAction::Menu(entries))),
+        (None, None) => Ok(None),
+    }
 }
 
 fn menu_item(item: Table) -> mlua::Result<MenuItem> {
@@ -400,7 +509,7 @@ mod tests {
     use crate::{LuaPlugin, Writes};
     use diagnostics::{ColumnInfo, ColumnValidator, Severity};
     use gpui::SharedString;
-    use plugin_api::{CommandContext, MenuTarget, SettingKind, SettingScope};
+    use plugin_api::{Bar, BarAction, CommandContext, MenuTarget, SettingKind, SettingScope, Side};
     use serde_json::{Value as Json, json};
     use settings::columns::ColumnSettings;
 
@@ -596,6 +705,66 @@ mod tests {
         assert_eq!(specs[1].description.as_deref(), Some("why"));
     }
 
+    const BAR: &str = r#"
+        return {
+          bar = {
+            { id = "conn", bar = "status", side = "right", text = "**Islandora**",
+              tooltip = "connection",
+              left = { command = "check" },
+              right = { menu = { { label = "Check now", command = "check" },
+                                 { label = "Clear", command = "stop" } } } },
+          },
+          on_command = function(command)
+            qrate.status.set("conn", "ran " .. command)
+            return nil
+          end,
+        }
+    "#;
+
+    #[test]
+    fn bar_items_are_read_off_the_descriptor() {
+        let plugin = plugin(BAR);
+        let bar = plugin.bar();
+        assert_eq!(bar.len(), 1);
+        assert_eq!(bar[0].bar, Bar::Status);
+        assert_eq!(bar[0].side, Side::Right);
+        assert_eq!(bar[0].tooltip.as_deref(), Some("connection"));
+        assert!(matches!(&bar[0].left, Some(BarAction::Command(c)) if c == "check"));
+        let Some(BarAction::Menu(entries)) = &bar[0].right else {
+            panic!("the right button declared a menu: {:?}", bar[0].right);
+        };
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1], ("Clear".into(), "stop".into()));
+    }
+
+    /// The text a plugin sets mid-run is buffered rather than applied, because the bar is not
+    /// reachable from the thread a plugin runs on.
+    #[test]
+    fn status_updates_are_buffered_until_the_host_drains_them() {
+        let plugin = plugin(BAR);
+        plugin.command(&"check".into(), &ctx(&[])).unwrap();
+
+        let updates = plugin.take_bar_updates();
+        assert_eq!(updates, vec![("conn".into(), "ran check".into())]);
+        assert!(
+            plugin.take_bar_updates().is_empty(),
+            "draining twice must not replay the same update"
+        );
+    }
+
+    #[test]
+    fn an_unknown_bar_side_stops_the_plugin_loading() {
+        let source = r#"
+            return {
+              bar = { { id = "x", bar = "status", side = "middle", text = "x" } },
+              validate = function() return {} end,
+            }
+        "#;
+        let found = check(source, &["x"]);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].2.contains("middle"), "{:?}", found[0].2);
+    }
+
     #[test]
     fn an_unknown_setting_type_stops_the_plugin_loading() {
         let source = r#"
@@ -652,8 +821,8 @@ mod tests {
 
     fn ctx(values: &[&str]) -> CommandContext {
         CommandContext {
-            column: "Country".into(),
-            column_key: "c0".into(),
+            column: Some("Country".into()),
+            column_key: Some("c0".into()),
             column_settings: Json::Null,
             row: None,
             values: values.iter().map(|v| SharedString::from(*v)).collect(),

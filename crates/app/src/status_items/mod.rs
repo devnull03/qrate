@@ -1,4 +1,6 @@
 mod cell_location;
+pub mod markup;
+mod plugin_bar;
 
 use cell_location::CellLocation;
 use gpui::*;
@@ -6,6 +8,8 @@ use gpui_component::{
     IconName,
     dock::{DockArea, DockPlacement},
 };
+use plugin_api::{Bar, Side};
+pub use plugin_bar::PluginBar;
 use window_wrapper::{BarRegistry, status_bar::StatusBarRegistry};
 use workspace::DockToggleButton;
 
@@ -34,6 +38,14 @@ pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> St
         .problem_count(cx)
     });
     registry.items_mut().add_left(problems);
+
+    let plugins = cx.new(|cx| PluginBar::new(Bar::Status, Side::Left, cx));
+    registry.items_mut().add_left(plugins);
+
+    // Plugin text, then the cell readout, then the agent star: text items go right-leftmost and
+    // the star stays rightmost.
+    let plugins = cx.new(|cx| PluginBar::new(Bar::Status, Side::Right, cx));
+    registry.items_mut().add_right(plugins);
 
     // Text readout of the table's selected cell. Added to the right *before* the agent star so it
     // lands leftmost in the right group (text items go right-leftmost, star stays rightmost).

@@ -16,6 +16,26 @@ use settings::columns::ColumnSettings;
 
 use crate::{DATASET_MAIN, Diagnostic, Diagnostics, Location, Severity, Source};
 
+/// One column's whole input, owned. A validator that runs later — off the UI thread, after this
+/// run's borrows are gone — needs the data to outlive the call, which [`ColumnInfo`] cannot do.
+#[derive(Clone)]
+pub struct ColumnSnapshot {
+    pub name: SharedString,
+    pub data_type: SharedString,
+    pub settings: ColumnSettings,
+    pub values: Vec<SharedString>,
+}
+
+impl ColumnSnapshot {
+    pub fn info(&self) -> ColumnInfo<'_> {
+        ColumnInfo {
+            name: &self.name,
+            data_type: &self.data_type,
+            settings: &self.settings,
+        }
+    }
+}
+
 /// The column being checked. Everything a validator is allowed to know about where its values
 /// came from.
 pub struct ColumnInfo<'a> {
@@ -45,6 +65,16 @@ pub trait ColumnValidator: 'static {
         values: &[SharedString],
     ) -> Vec<(usize, Severity, SharedString)>;
 }
+
+/// A producer that cannot answer while the run is on the stack — today the plugin host, which runs
+/// its VMs on the background executor and publishes when they finish. Reached through a function
+/// pointer for the same reason `DiagnosticHooks` is: the caller must not link the producer.
+#[derive(Clone, Copy)]
+pub struct AsyncValidators {
+    pub run: fn(&[ColumnSnapshot], &mut App),
+}
+
+impl Global for AsyncValidators {}
 
 /// Every registered validator. Filled by `app` at startup, which is the only place that knows
 /// where validators come from.
@@ -82,64 +112,82 @@ impl Validators {
     // would need a finer replace key than `Diagnostics::set` has; add both together if a large
     // sheet starts stuttering on commit.
     pub fn run(columns: &[(SharedString, SharedString)], rows: &[Vec<SharedString>], cx: &mut App) {
-        if cx.try_global::<Self>().is_none_or(|v| v.0.is_empty()) {
+        let sync = cx.try_global::<Self>().is_some_and(|v| !v.0.is_empty());
+        let deferred = cx.try_global::<AsyncValidators>().copied();
+        if !sync && deferred.is_none() {
             return;
         }
+
         let settings = settings::columns::load(cx);
-        // Owned, because the loop below needs `cx` mutably to publish.
-        let types: Vec<String> = {
-            let project = cx.try_global::<settings::project::CurrentProject>();
-            columns
-                .iter()
-                .map(|(_, name)| {
-                    project
-                        .and_then(|p| p.data.columns.iter().find(|c| c.name == name.as_ref()))
-                        .map_or(String::new(), |c| c.data_type.clone())
-                })
-                .collect()
-        };
+        let project = cx.try_global::<settings::project::CurrentProject>();
         let blank = ColumnSettings::default();
         // Transposed once, not once per validator: every validator wants the same column-major
         // view, and rebuilding it per validator is the whole sheet cloned again for each.
-        let by_column: Vec<Vec<SharedString>> = (0..columns.len())
-            .map(|ix| {
-                rows.iter()
+        let snapshot: Vec<ColumnSnapshot> = columns
+            .iter()
+            .enumerate()
+            .map(|(ix, (key, name))| ColumnSnapshot {
+                name: name.clone(),
+                data_type: project
+                    .and_then(|p| p.data.columns.iter().find(|c| c.name == name.as_ref()))
+                    .map_or_else(SharedString::default, |c| c.data_type.clone().into()),
+                settings: settings.get(key.as_ref()).unwrap_or(&blank).clone(),
+                values: rows
+                    .iter()
                     .map(|r| r.get(ix).cloned().unwrap_or_default())
-                    .collect()
+                    .collect(),
             })
             .collect();
 
-        cx.update_global::<Self, _>(|this, cx| {
-            for validator in &this.0 {
-                let mut items = Vec::new();
-                for (ix, (key, name)) in columns.iter().enumerate() {
-                    let info = ColumnInfo {
-                        name,
-                        data_type: &types[ix],
-                        settings: settings.get(key.as_ref()).unwrap_or(&blank),
-                    };
-                    items.extend(validator.validate(&info, &by_column[ix]).into_iter().map(
-                        |(row, severity, message)| Diagnostic {
-                            location: Location {
-                                dataset: DATASET_MAIN.into(),
-                                row: Some(row),
-                                column: Some(name.clone()),
-                            },
-                            severity,
-                            source: Source::Validator(validator.name()),
-                            message,
-                        },
-                    ));
+        if sync {
+            cx.update_global::<Self, _>(|this, cx| {
+                for validator in &this.0 {
+                    let items = snapshot
+                        .iter()
+                        .flat_map(|column| {
+                            address(
+                                validator.name(),
+                                column,
+                                validator.validate(&column.info(), &column.values),
+                            )
+                        })
+                        .collect();
+                    Diagnostics::set(
+                        &Source::Validator(validator.name()),
+                        DATASET_MAIN,
+                        items,
+                        cx,
+                    );
                 }
-                Diagnostics::set(
-                    &Source::Validator(validator.name()),
-                    DATASET_MAIN,
-                    items,
-                    cx,
-                );
-            }
-        });
+            });
+        }
+        if let Some(deferred) = deferred {
+            (deferred.run)(&snapshot, cx);
+        }
     }
+}
+
+/// Turn one validator's `(row, severity, message)` reports into addressed diagnostics. A validator
+/// never builds a [`Location`] or a [`Source`]; this is where that split is honoured, and it is
+/// public so a deferred producer addresses its findings identically.
+pub fn address(
+    validator: SharedString,
+    column: &ColumnSnapshot,
+    found: Vec<(usize, Severity, SharedString)>,
+) -> Vec<Diagnostic> {
+    found
+        .into_iter()
+        .map(|(row, severity, message)| Diagnostic {
+            location: Location {
+                dataset: DATASET_MAIN.into(),
+                row: Some(row),
+                column: Some(column.name.clone()),
+            },
+            severity,
+            source: Source::Validator(validator.clone()),
+            message,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -149,6 +197,7 @@ mod tests {
         ColumnInfo, ColumnValidator, DATASET_MAIN, Diagnostics, Severity, Source, Validators,
     };
     use gpui::{SharedString, TestAppContext};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Flags any cell equal to `bad`, so a test can steer exactly how many items a run produces.
     struct Flag {
@@ -300,6 +349,24 @@ mod tests {
             let (columns, rows) = grid();
             Validators::run(&columns, &rows, cx);
             assert!(Diagnostics::all(cx).is_empty());
+        });
+    }
+
+    /// The plugin host is the only thing that registers validators, and it publishes through the
+    /// deferred hook rather than the registry — so an empty registry must not skip the run, or
+    /// nothing validates in the shipping app.
+    #[gpui::test]
+    fn a_deferred_producer_runs_with_an_empty_registry(cx: &mut TestAppContext) {
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+        fn record(columns: &[crate::ColumnSnapshot], _: &mut gpui::App) {
+            SEEN.store(columns.len(), Ordering::SeqCst);
+        }
+
+        cx.update(|cx| {
+            let (columns, rows) = grid();
+            cx.set_global(crate::AsyncValidators { run: record });
+            Validators::run(&columns, &rows, cx);
+            assert_eq!(SEEN.load(Ordering::SeqCst), 2, "both columns crossed over");
         });
     }
 }

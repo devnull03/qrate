@@ -24,8 +24,9 @@ pub const TABLE_STRIPES_KEY: &str = "table_stripes";
 /// e.g. `;` in `Film; Video`. Empty means a cell is one indivisible value.
 pub const FILTER_SUBDELIMITER_KEY: &str = "filter_subdelimiter";
 
-use gpui::{App, Bounds, Global, Pixels, Point, WeakEntity, px, size};
+use gpui::{App, Bounds, Global, Pixels, Point, SharedString, WeakEntity, px, size};
 use gpui_component::table::TableState;
+use plugin_api::CommandContext;
 
 /// Global handle to the live table state, so cross-crate status-bar items (the fake-data button
 /// and the selected-cell widget in the `app` crate) can reach the table.
@@ -70,6 +71,45 @@ pub fn revalidate_now(cx: &mut App) {
         return;
     };
     state.update(cx, |state, cx| state.delegate().revalidate(cx));
+}
+
+/// What a command invoked from outside the table acts on: the selected column, or nothing at all.
+///
+/// A bar item has no column under it the way a right-click menu does, so the selection is the only
+/// answer available — and "no selection" has to stay tellable from "an empty column", which is why
+/// every column field here is optional.
+pub fn selected_context(plugin: &SharedString, cx: &App) -> CommandContext {
+    let selected = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+        .and_then(|state| {
+            let state = state.read(cx);
+            let col = match state.delegate().selection()? {
+                Selection::Cell { col, .. } | Selection::Column(col) => col,
+                Selection::Row(_) => return None,
+            };
+            let delegate = state.delegate();
+            Some((
+                delegate.column_key(col),
+                delegate.column_name(col),
+                delegate.column_cells(col),
+            ))
+        });
+
+    let Some((key, name, values)) = selected else {
+        return CommandContext::default();
+    };
+    CommandContext {
+        column_settings: settings::columns::get(&key, cx)
+            .plugins
+            .get(plugin.as_ref())
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        column: Some(name),
+        column_key: Some(key),
+        row: None,
+        values,
+    }
 }
 
 /// Persist the open project's table data to its `.qrate` file, synchronously, and clear the
