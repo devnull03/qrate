@@ -7,10 +7,9 @@
 
 use std::sync::Arc;
 
-use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    AxisExt as _, IconName, Sizable, Size,
+    IconName, Sizable, Size,
     button::Button,
     h_flex,
     input::{Input, InputState},
@@ -21,7 +20,6 @@ pub type AppPathPickFn = Arc<dyn Fn(SharedString, &mut App) + Send + Sync>;
 
 #[derive(IntoElement)]
 pub struct PathPickerApp {
-    pub layout: Axis,
     pub field_size: Size,
     pub button_size: Option<Size>,
     pub button_id: SharedString,
@@ -48,23 +46,18 @@ impl RenderOnce for PathPickerApp {
 
         let on_pick = Arc::clone(&self.on_pick);
 
-        let layout = self.layout;
         let field_size = self.field_size;
 
         h_flex()
             .gap_2()
             .w_full()
             .child(
-                Input::new(&self.input)
-                    .disabled(true)
-                    .with_size(field_size)
-                    .map(move |this| {
-                        if layout.is_horizontal() {
-                            this.w_64()
-                        } else {
-                            this.w_full()
-                        }
-                    }),
+                div().flex_1().min_w(px(0.)).child(
+                    Input::new(&self.input)
+                        .disabled(true)
+                        .with_size(field_size)
+                        .w_full(),
+                ),
             )
             .child(btn.on_click(move |_, _, cx| {
                 let receiver = cx.prompt_for_paths(PathPromptOptions {

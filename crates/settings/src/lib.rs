@@ -198,7 +198,10 @@ impl From<Setting> for SettingItem {
                     move |val: SharedString, cx: &mut App| set_scoped_text(key, val, cx),
                 ),
             )
-            .description(description),
+            .description(description)
+            // gpui-component pins horizontal-layout inputs to a fixed `w_64`, which clips inside a
+            // narrow settings pane; the stacked layout gives them `w_full` instead.
+            .layout(Axis::Vertical),
 
             Setting::Switch {
                 key,
@@ -286,7 +289,6 @@ fn build_path_picker(
                 }
             });
             PathPickerApp {
-                layout: options.layout,
                 field_size: options.size,
                 button_size: Some(options.size),
                 button_id: SharedString::from(format!("browse-{}", key)),
@@ -301,6 +303,7 @@ fn build_path_picker(
         }),
     )
     .description(description)
+    .layout(Axis::Vertical)
 }
 
 // --- Setting Value ---
