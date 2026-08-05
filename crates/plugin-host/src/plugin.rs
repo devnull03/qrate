@@ -325,16 +325,26 @@ impl LuaPlugin {
         values: &[SharedString],
     ) -> mlua::Result<Vec<(usize, Severity, SharedString)>> {
         let lua = &loaded.lua;
-        let info = lua.create_table()?;
-        info.set("name", column.name)?;
-        info.set("data_type", column.data_type)?;
-        let cells = lua.create_sequence_from(values.iter().map(SharedString::as_ref))?;
-        let bucket = column
-            .settings
-            .plugins
-            .get(self.name().as_ref())
-            .unwrap_or(&Json::Null);
-        let settings = self.settings_table(lua, bucket)?;
+        // Timed apart from the call itself: handing a column over means converting every one of its
+        // values and both settings scopes into Lua, which on a wide sheet is most of what a
+        // validation pass costs — and the log is the only place that would ever say so.
+        let (info, cells, settings) = timed(
+            &self.id,
+            &format!("prepare {} ({} values)", column.name, values.len()),
+            || {
+                let info = lua.create_table()?;
+                info.set("name", column.name)?;
+                info.set("data_type", column.data_type)?;
+                let cells = lua.create_sequence_from(values.iter().map(SharedString::as_ref))?;
+                let bucket = column
+                    .settings
+                    .plugins
+                    .get(self.name().as_ref())
+                    .unwrap_or(&Json::Null);
+                let settings = self.settings_table(lua, bucket)?;
+                mlua::Result::Ok((info, cells, settings))
+            },
+        )?;
 
         self.arm();
         let found: Vec<Table> = timed(&self.id, &format!("validate {}", column.name), || {

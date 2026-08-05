@@ -25,7 +25,7 @@ use diagnostics::{
     AsyncValidators, ColumnSnapshot, ColumnValidator as _, DATASET_MAIN, Diagnostics, Source,
     Validators,
 };
-use gpui::{App, AppContext as _, Global, SharedString, Task};
+use gpui::{App, AppContext as _, Global, SharedString, Subscription, Task};
 use plugin_api::{
     BarContributions, ColumnMapContributions, CommandContext, MenuContributions, PluginHooks,
     Suggestions,
@@ -51,6 +51,12 @@ struct Plugins {
     run: Option<Task<()>>,
     /// Found on disk but switched off, so the Settings page can offer them back.
     off: Vec<SharedString>,
+    /// Re-hands the scoped settings whenever either store changes.
+    ///
+    /// Without this, a plugin only ever saw the settings that existed when it loaded — and plugins
+    /// load at startup, before a project is open. A project-scope setting like a server address
+    /// would then read as unset for the whole session, however plainly it was filled in.
+    _stores: Vec<Subscription>,
     suggesting: Option<Task<()>>,
     /// Bumped per suggestion request and re-read before publishing. Dropping the task is not enough
     /// on its own: the background half may already be past the point of no return when a newer
@@ -207,9 +213,18 @@ pub fn reload(cx: &mut App) {
         }
     }
 
+    // Watched rather than pushed from every write site: a project opens, a settings page writes, a
+    // cloud sync lands — all of them mutate one of these two globals, and none of them should have
+    // to know that plugins hold a copy.
+    let stores = vec![
+        cx.observe_global::<settings::project::CurrentProject>(refresh_scoped),
+        cx.observe_global::<settings::AppSettings>(refresh_scoped),
+    ];
+
     let plugins = cx.default_global::<Plugins>();
     plugins.loaded = loaded;
     plugins.off = off;
+    plugins._stores = stores;
     refresh_scoped(cx);
 }
 
