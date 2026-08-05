@@ -85,10 +85,6 @@ pub struct TablePanel {
     /// Pending debounced autosave (the "timed" mode). Replacing it drops the prior task, which
     /// cancels its timer — that drop *is* the debounce, coalescing a burst of edits into one write.
     _autosave_task: Option<Task<()>>,
-    /// The `(cell, text)` plugins were last asked to complete. Editing has no change event of its
-    /// own here — the editor is shared and seeded per cell — so the ask happens while rendering the
-    /// box, and this is what stops it asking the same question on every frame.
-    asked_to_suggest: Option<((usize, usize), SharedString)>,
 }
 
 impl TablePanel {
@@ -138,6 +134,10 @@ impl TablePanel {
 
         let table_state = state.clone();
         let _edit_sub = cx.subscribe(&editor, move |this, _editor, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.ask_for_suggestions(cx);
+                return;
+            }
             if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
                 return;
             }
@@ -306,7 +306,6 @@ impl TablePanel {
             search_error: false,
             _search_sub,
             _autosave_task: None,
-            asked_to_suggest: None,
         }
     }
 
@@ -447,7 +446,7 @@ impl TablePanel {
 
     /// The floating cell editor, sized to its content and pinned to where the edit opened. `None`
     /// unless a cell is being edited *and* `cell.rs` has measured it (one frame later).
-    fn cell_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn cell_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.state.read(cx);
         let EditState::Editing { row, col } = state.delegate().editing else {
             return None;
@@ -558,38 +557,40 @@ impl TablePanel {
         Some(deferred(float_at(origin, table, box_el)).into_any_element())
     }
 
-    /// The completion list under the editor, and the request that fills it.
-    ///
-    /// Asking here rather than from a change event is deliberate: the editor is one shared
-    /// `InputState` reseeded per cell, so "the text changed" and "a different cell opened" arrive
-    /// as the same signal. Rendering already knows both, and `asked_to_suggest` keeps one question
-    /// per change rather than one per frame.
+    /// Ask every plugin what could go in the cell being edited, on each keystroke. The host
+    /// debounces and drops superseded answers, so this fires as often as the text changes.
+    fn ask_for_suggestions(&mut self, cx: &mut Context<Self>) {
+        let Some(hooks) = cx.try_global::<PluginHooks>().copied() else {
+            return;
+        };
+        let state = self.state.read(cx);
+        let EditState::Editing { row, col } = state.delegate().editing else {
+            return;
+        };
+        let delegate = state.delegate();
+        let ctx = CommandContext {
+            // Left empty: a suggestion request goes to every plugin, so only the host can say which
+            // bucket belongs to which of them.
+            column_settings: serde_json::Value::Null,
+            column: Some(delegate.column_name(col)),
+            column_key: Some(delegate.column_key(col)),
+            row: Some(row),
+            values: Vec::new(),
+            argument: Some(delegate.editor.read(cx).value()),
+        };
+        (hooks.suggest)(&ctx, cx);
+    }
+
+    /// The completion list under the editor, drawn from whatever the last request came back with.
     fn suggestions(
-        &mut self,
+        &self,
         row: usize,
         col: usize,
         typed: &SharedString,
         below: Pixels,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let hooks = cx.try_global::<PluginHooks>().copied()?;
         let key = self.state.read(cx).delegate().column_key(col);
-
-        if self.asked_to_suggest.as_ref() != Some(&((row, col), typed.clone())) {
-            self.asked_to_suggest = Some(((row, col), typed.clone()));
-            let ctx = CommandContext {
-                // Left empty: a suggestion request goes to every plugin, so only the host can say
-                // which bucket belongs to which of them.
-                column_settings: serde_json::Value::Null,
-                column: Some(self.state.read(cx).delegate().column_name(col)),
-                column_key: Some(key.clone()),
-                row: Some(row),
-                values: Vec::new(),
-                argument: Some(typed.clone()),
-            };
-            (hooks.suggest)(&ctx, cx);
-        }
-
         let offered = cx.try_global::<Suggestions>()?;
         // An answer for the cell the user has since left must not hang over the one they are in.
         if offered.column_key.as_ref() != Some(&key) || offered.row != Some(row) {
@@ -644,7 +645,6 @@ impl TablePanel {
     /// Called when an edit ends, so nothing offered for the cell just left survives into the next
     /// one — including an answer that has not come back yet.
     fn forget_suggestions(&mut self, cx: &mut App) {
-        self.asked_to_suggest = None;
         if let Some(hooks) = cx.try_global::<PluginHooks>().copied() {
             (hooks.forget_suggestions)(cx);
         }
