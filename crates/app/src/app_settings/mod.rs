@@ -361,6 +361,9 @@ fn column_picker(
                         .when(checked, |r| r.child(Icon::new(IconName::Check).xsmall()))
                         .on_click(move |_, _, cx: &mut App| {
                             columns::update(&toggle_key, toggle, cx);
+                            // A validator reads these settings, so its published findings are
+                            // stale the moment one changes — and only a run replaces them.
+                            table::revalidate_now(cx);
                         })
                 }))
         })
