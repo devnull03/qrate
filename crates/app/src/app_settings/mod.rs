@@ -209,7 +209,13 @@ fn mapping_group(plugin: SharedString, spec: ColumnMapSpec, cx: &App) -> Setting
         );
     }
 
+    // Read once for the whole page. `columns::get` parses the project's entire column-settings blob
+    // on every call, and asking it per column inside each picker meant re-parsing it once per
+    // column per frame — which is felt as the Settings window itself being slow.
+    let stored = columns::load(cx);
     for column in column_items(project) {
+        let picked =
+            ColumnMapContributions::picked(&plugin, &spec, stored.get(column.key.as_ref()));
         let (plugin, spec, options) = (plugin.clone(), spec.clone(), options.clone());
         group = group.item(SettingItem::new(
             column.name.clone(),
@@ -219,6 +225,7 @@ fn mapping_group(plugin: SharedString, spec: ColumnMapSpec, cx: &App) -> Setting
                     spec.clone(),
                     column.clone(),
                     options.clone(),
+                    picked.clone(),
                     window,
                     cx,
                 )
@@ -502,6 +509,7 @@ fn map_picker(
     spec: ColumnMapSpec,
     column: ColumnItem,
     options: Vec<OptionItem>,
+    picked: Vec<SharedString>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -551,7 +559,6 @@ fn map_picker(
         }
     }
 
-    let picked = ColumnMapContributions::selected(&plugin, &spec, &column.key, cx);
     sync_selection(&state, &options, &picked, window, cx);
 
     let label: SharedString = match picked.len() {

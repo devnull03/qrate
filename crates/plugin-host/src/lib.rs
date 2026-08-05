@@ -291,8 +291,10 @@ fn validate_async(columns: &[ColumnSnapshot], cx: &mut App) {
     }
     let columns = columns.to_vec();
 
+    let columns_asked = columns.len();
     let task = cx.spawn(async move |cx| {
         cx.background_executor().timer(DEBOUNCE).await;
+        let started = std::time::Instant::now();
         let found = cx
             .background_spawn(async move {
                 plugins
@@ -313,6 +315,13 @@ fn validate_async(columns: &[ColumnSnapshot], cx: &mut App) {
             })
             .await;
 
+        // The per-plugin, per-column numbers are in `plugin::timed`; this is the one that says
+        // whether a whole pass is what the user is feeling.
+        log::debug!(
+            "validated {columns_asked} columns with {} plugins in {:.1?}",
+            found.len(),
+            started.elapsed()
+        );
         cx.update(|cx| {
             for (name, items, updates) in found {
                 Diagnostics::set(&Source::Validator(name.clone()), DATASET_MAIN, items, cx);

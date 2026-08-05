@@ -291,9 +291,21 @@ impl ColumnMapContributions {
         column_key: &str,
         cx: &App,
     ) -> Vec<SharedString> {
-        settings::columns::get(column_key, cx)
-            .plugins
-            .get(plugin.as_ref())
+        Self::picked(plugin, spec, Some(&settings::columns::get(column_key, cx)))
+    }
+
+    /// The same answer read out of settings somebody else already loaded.
+    ///
+    /// `settings::columns::get` parses the project's whole column-settings blob per call, so a page
+    /// drawing one picker per column has to load it once and use this — otherwise it re-parses that
+    /// blob once per column, on every frame.
+    pub fn picked(
+        plugin: &SharedString,
+        spec: &ColumnMapSpec,
+        column: Option<&settings::columns::ColumnSettings>,
+    ) -> Vec<SharedString> {
+        column
+            .and_then(|column| column.plugins.get(plugin.as_ref()))
             .and_then(|bucket| bucket.get(spec.key.as_ref()))
             .map(|value| match value {
                 serde_json::Value::Array(items) => items

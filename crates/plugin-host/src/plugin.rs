@@ -31,7 +31,33 @@ const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 
 /// How long one call into Lua may run before the interrupt hook kills it. A plugin that spins
 /// forever would otherwise wedge the UI thread with no way out but Task Manager.
-const DEADLINE: Duration = Duration::from_millis(250);
+///
+/// This is a runaway-loop backstop, not a performance budget: it was 250ms, which a legitimate
+/// validator over a few thousand distinct values reached on its own, and being cut off mid-column
+/// makes a plugin look broken rather than slow. Two seconds still kills an infinite loop before
+/// anyone reaches for Task Manager. Being *slow* is reported by [`timed`] instead.
+const DEADLINE: Duration = Duration::from_secs(2);
+
+/// How long one call into a plugin may take before it is worth telling somebody about. A validator
+/// runs per column on every edit, so anything at this scale is felt as the grid stuttering.
+const SLOW: Duration = Duration::from_millis(150);
+
+/// Time one call into a plugin and record it.
+///
+/// At debug normally and warn when it is slow, so a laggy build can be diagnosed from an ordinary
+/// bug report's log tail: which plugin, which entry point, and how long. Without the label there is
+/// no way to tell a slow server from a slow script from a slow host conversion.
+fn timed<T>(plugin: &str, what: &str, run: impl FnOnce() -> T) -> T {
+    let started = Instant::now();
+    let value = run();
+    let elapsed = started.elapsed();
+    if elapsed >= SLOW {
+        log::warn!("{plugin}: {what} took {elapsed:.1?}");
+    } else {
+        log::debug!("{plugin}: {what} took {elapsed:.1?}");
+    }
+    value
+}
 
 /// The host owns the timeout, not the plugin, so a hung server cannot pin the UI thread longer
 /// than this. The interrupt hook cannot help here — it only runs between Lua instructions, and a
@@ -186,7 +212,8 @@ impl LuaPlugin {
             .map_err(|err: mlua::Error| err.to_string())?;
 
         self.arm();
-        let found: Vec<String> = suggest.call(table).map_err(|err| err.to_string())?;
+        let found: Vec<String> =
+            timed(&self.id, "suggest", || suggest.call(table)).map_err(|err| err.to_string())?;
         Ok(found.into_iter().map(SharedString::from).collect())
     }
 
@@ -263,7 +290,9 @@ impl LuaPlugin {
         table.set("settings", self.settings_table(lua, &ctx.column_settings)?)?;
 
         self.arm();
-        let written: Option<Table> = on_command.call((command.as_ref(), table))?;
+        let written: Option<Table> = timed(&self.id, &format!("command {command}"), || {
+            on_command.call((command.as_ref(), table))
+        })?;
         let Some(written) = written else {
             return Ok(Writes::default());
         };
@@ -308,7 +337,9 @@ impl LuaPlugin {
         let settings = self.settings_table(lua, bucket)?;
 
         self.arm();
-        let found: Vec<Table> = validate.call((info, cells, settings))?;
+        let found: Vec<Table> = timed(&self.id, &format!("validate {}", column.name), || {
+            validate.call((info, cells, settings))
+        })?;
 
         found
             .into_iter()
@@ -390,7 +421,7 @@ fn build(id: &str, source: &str, env: &Env, shared: &Shared) -> mlua::Result<Loa
         LuaOptions::default(),
     )?;
     lua.set_memory_limit(MEMORY_LIMIT)?;
-    install_qrate(&lua, env, shared)?;
+    install_qrate(&lua, id, env, shared)?;
     install_print(&lua, id)?;
     install_require(&lua, id, &env.modules)?;
     lua.sandbox(true)?;
@@ -547,59 +578,65 @@ fn install_require(lua: &Lua, id: &str, modules: &[(String, String)]) -> mlua::R
 /// nil.
 //
 // ponytail: GET only, no allowlist. Add `post` when a plugin needs to write rather than read.
-fn install_qrate(lua: &Lua, env: &Env, shared: &Shared) -> mlua::Result<()> {
+fn install_qrate(lua: &Lua, id: &str, env: &Env, shared: &Shared) -> mlua::Result<()> {
     let deadline = shared.deadline.clone();
+    let id = id.to_string();
     let budget = Cell::new((Instant::now(), 0u32));
-    let get = lua.create_function(move |lua, (url, options): (String, Option<Table>)| {
-        let (started, spent) = budget.get();
-        let (started, spent) = if started.elapsed() > HTTP_WINDOW {
-            (Instant::now(), 0)
-        } else {
-            (started, spent)
-        };
-        budget.set((started, spent + 1));
-        if spent >= HTTP_BUDGET {
-            return Ok((
-                mlua::Value::Nil,
-                mlua::Value::String(lua.create_string("rate limited")?),
-            ));
-        }
-        // Basic auth is here rather than in the plugin because Luau has no base64 and no way to
-        // build a header — not because the host has an opinion about whose credentials these are.
-        // Where they came from is the plugin's business; a blank pair is the same as none, so a
-        // plugin needs one code path whether or not the user has filled them in.
-        let credentials = options
-            .map(|options| options.get::<Option<Table>>("auth"))
-            .transpose()?
-            .flatten()
-            .map(|auth| {
-                Ok::<_, mlua::Error>((
-                    auth.get::<Option<String>>("username")?.unwrap_or_default(),
-                    auth.get::<Option<String>>("password")?.unwrap_or_default(),
-                ))
-            })
-            .transpose()?
-            .filter(|(username, password)| !username.is_empty() && !password.is_empty());
+    let get = lua.create_function({
+        let id = id.clone();
+        move |lua, (url, options): (String, Option<Table>)| {
+            let (started, spent) = budget.get();
+            let (started, spent) = if started.elapsed() > HTTP_WINDOW {
+                (Instant::now(), 0)
+            } else {
+                (started, spent)
+            };
+            budget.set((started, spent + 1));
+            if spent >= HTTP_BUDGET {
+                return Ok((
+                    mlua::Value::Nil,
+                    mlua::Value::String(lua.create_string("rate limited")?),
+                ));
+            }
+            // Basic auth is here rather than in the plugin because Luau has no base64 and no way to
+            // build a header — not because the host has an opinion about whose credentials these are.
+            // Where they came from is the plugin's business; a blank pair is the same as none, so a
+            // plugin needs one code path whether or not the user has filled them in.
+            let credentials = options
+                .map(|options| options.get::<Option<Table>>("auth"))
+                .transpose()?
+                .flatten()
+                .map(|auth| {
+                    Ok::<_, mlua::Error>((
+                        auth.get::<Option<String>>("username")?.unwrap_or_default(),
+                        auth.get::<Option<String>>("password")?.unwrap_or_default(),
+                    ))
+                })
+                .transpose()?
+                .filter(|(username, password)| !username.is_empty() && !password.is_empty());
 
-        let request = http_client().get(&url);
-        let request = match credentials {
-            Some((username, password)) => request.basic_auth(username, Some(password)),
-            None => request,
-        };
-        let response = request.send();
-        // Waiting on a server is not the script running long, so the compute budget restarts here
-        // rather than the interrupt hook killing the plugin the moment the response lands.
-        *deadline.lock().unwrap() = Instant::now() + DEADLINE;
-        match response {
-            Err(err) => Ok((
-                mlua::Value::Nil,
-                mlua::Value::String(lua.create_string(err.to_string())?),
-            )),
-            Ok(response) => {
-                let table = lua.create_table()?;
-                table.set("status", response.status().as_u16())?;
-                table.set("body", response.text().unwrap_or_default())?;
-                Ok((mlua::Value::Table(table), mlua::Value::Nil))
+            let request = http_client().get(&url);
+            let request = match credentials {
+                Some((username, password)) => request.basic_auth(username, Some(password)),
+                None => request,
+            };
+            // Logged whole rather than sampled: a plugin that looks slow is usually waiting on somebody
+            // else's server, and the URL is what separates "the site is slow" from "we ask too often".
+            let response = timed(&id, &format!("GET {url}"), || request.send());
+            // Waiting on a server is not the script running long, so the compute budget restarts here
+            // rather than the interrupt hook killing the plugin the moment the response lands.
+            *deadline.lock().unwrap() = Instant::now() + DEADLINE;
+            match response {
+                Err(err) => Ok((
+                    mlua::Value::Nil,
+                    mlua::Value::String(lua.create_string(err.to_string())?),
+                )),
+                Ok(response) => {
+                    let table = lua.create_table()?;
+                    table.set("status", response.status().as_u16())?;
+                    table.set("body", response.text().unwrap_or_default())?;
+                    Ok((mlua::Value::Table(table), mlua::Value::Nil))
+                }
             }
         }
     })?;
@@ -626,21 +663,29 @@ fn install_qrate(lua: &Lua, env: &Env, shared: &Shared) -> mlua::Result<()> {
         }
     })?;
 
+    // Both directions convert the *whole* value, so reading a cache of ten thousand verdicts costs
+    // ten thousand conversions — on every call. Worth logging, because the fix is on the plugin's
+    // side (keep it in a local across calls) and nothing else would ever point there.
     let stored = lua.create_function({
-        let storage = shared.storage.clone();
+        let (storage, id) = (shared.storage.clone(), id.to_string());
         move |lua, key: String| {
             let storage = storage.lock().unwrap();
             let value = storage.0.get(&key).cloned().unwrap_or(Json::Null);
-            lua.to_value_with(
-                &value,
-                SerializeOptions::new().serialize_unit_to_null(false),
-            )
+            let what = format!("storage.get({key}) over {} entries", entries(&value));
+            timed(&id, &what, || {
+                lua.to_value_with(
+                    &value,
+                    SerializeOptions::new().serialize_unit_to_null(false),
+                )
+            })
         }
     })?;
     let store = lua.create_function({
-        let storage = shared.storage.clone();
+        let (storage, id) = (shared.storage.clone(), id.to_string());
         move |lua, (key, value): (String, mlua::Value)| {
-            let value: Json = lua.from_value(value)?;
+            let value: Json = timed(&id, &format!("storage.set({key})"), || {
+                lua.from_value(value)
+            })?;
             let mut storage = storage.lock().unwrap();
             if !storage.0.is_object() {
                 storage.0 = Json::Object(Default::default());
@@ -674,6 +719,16 @@ fn install_qrate(lua: &Lua, env: &Env, shared: &Shared) -> mlua::Result<()> {
     qrate.set("json", json)?;
     qrate.set("storage", storage)?;
     lua.globals().set("qrate", qrate)
+}
+
+/// How big a stored value is, in the terms a plugin author thinks in. Only ever used in a log line,
+/// which is why it counts one level rather than walking the whole tree.
+fn entries(value: &Json) -> usize {
+    match value {
+        Json::Object(map) => map.len(),
+        Json::Array(items) => items.len(),
+        _ => 0,
+    }
 }
 
 /// JSON's `null` reaches Lua as `nil` rather than as mlua's null userdata, so a plugin reads a
@@ -1529,19 +1584,39 @@ mod tests {
             "the verdicts were cached, or every edit would re-ask the server"
         );
 
-        let offered = plugin
-            .suggest(&CommandContext {
-                column: Some("Type".into()),
-                column_key: Some("c0".into()),
-                column_settings: json!({ "vocabularies": ["resource_types"] }),
-                row: Some(0),
-                values: Vec::new(),
-                argument: Some("St".into()),
-            })
-            .expect("suggesting does not raise");
+        let ask = |prefix: &str| {
+            plugin
+                .suggest(&CommandContext {
+                    column: Some("Type".into()),
+                    column_key: Some("c0".into()),
+                    column_settings: json!({ "vocabularies": ["resource_types"] }),
+                    row: Some(0),
+                    values: Vec::new(),
+                    argument: Some(prefix.into()),
+                })
+                .expect("suggesting does not raise")
+        };
+
+        let offered = ask("St");
         assert!(
             offered.iter().any(|item| item == "Still Image"),
             "prefix search came back with {offered:?}"
+        );
+
+        // Typing on must not cost another round trip: every longer prefix is a subset of what the
+        // stem already fetched, and narrowing it happens in Lua. Timed rather than counted because
+        // the difference is three orders of magnitude — anything near a network round trip here
+        // means the memo stopped working and every keystroke is hitting the server again.
+        let started = std::time::Instant::now();
+        let narrowed = ask("Still");
+        let elapsed = started.elapsed();
+        assert!(
+            narrowed.iter().any(|item| item == "Still Image"),
+            "{narrowed:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(20),
+            "narrowing a fetched stem took {elapsed:?}, so it went back to the server"
         );
     }
 
