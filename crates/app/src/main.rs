@@ -424,6 +424,8 @@ fn main() {
         // the jump comes back through here. See `diagnostics::DiagnosticHooks`.
         cx.set_global(diagnostics::DiagnosticHooks {
             reveal: reveal_in_table,
+            text_at: table::cell_text,
+            set_text: table::set_cell_text,
         });
         diagnostics::init(cx);
 

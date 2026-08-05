@@ -73,6 +73,54 @@ pub fn revalidate_now(cx: &mut App) {
     state.update(cx, |state, cx| state.delegate().revalidate(cx));
 }
 
+/// Commit `text` into a cell, mark the project dirty, and re-run validation — everything a
+/// committed edit does except going through the inline editor. What a fix menu applies through.
+pub fn write_cell(row: usize, col: usize, text: SharedString, cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+    state.update(cx, |state, cx| {
+        state.delegate_mut().set_cell(row, col, text);
+        cx.emit(delegate::TableChanged);
+        cx.notify();
+    });
+    settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+    revalidate_now(cx);
+}
+
+/// The text a diagnostic points at, addressed the way a diagnostic is — by column *name*, since
+/// that is what survives a column move. `None` for anything but a cell.
+pub fn cell_text(location: &diagnostics::Location, cx: &App) -> Option<SharedString> {
+    let state = cx.try_global::<TableStateHandle>()?.0.upgrade()?;
+    let delegate = state.read(cx).delegate();
+    let col = delegate.data_col(location.column.as_ref()?)?;
+    delegate.cell(location.row?, col).cloned()
+}
+
+/// [`cell_text`]'s other half: write text back to whatever a diagnostic points at.
+pub fn set_cell_text(location: &diagnostics::Location, text: SharedString, cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+    let target = {
+        let delegate = state.read(cx).delegate();
+        location
+            .column
+            .as_ref()
+            .and_then(|name| delegate.data_col(name))
+            .zip(location.row)
+    };
+    if let Some((col, row)) = target {
+        write_cell(row, col, text, cx);
+    }
+}
+
 /// What a command invoked from outside the table acts on: the selected column, or nothing at all.
 ///
 /// A bar item has no column under it the way a right-click menu does, so the selection is the only

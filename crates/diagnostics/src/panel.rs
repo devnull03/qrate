@@ -3,6 +3,7 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::dock::{Panel, PanelControl, PanelEvent};
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 
@@ -242,12 +243,36 @@ impl Render for ProblemsPanel {
                                             .text_color(muted)
                                             .child(r.source.clone()),
                                     )
-                                    .on_click(move |_, _, cx| {
-                                        if let Some(hooks) =
-                                            cx.try_global::<DiagnosticHooks>().copied()
-                                        {
-                                            (hooks.reveal)(&location, cx);
+                                    .on_click({
+                                        let location = location.clone();
+                                        move |_, _, cx| {
+                                            if let Some(hooks) =
+                                                cx.try_global::<DiagnosticHooks>().copied()
+                                            {
+                                                (hooks.reveal)(&location, cx);
+                                            }
                                         }
+                                    })
+                                    // The same corrections a cell offers. Read on open, because a
+                                    // row is built from a diagnostic and the cell may have been
+                                    // edited since the one that produced it was published.
+                                    .context_menu(move |menu, window, cx| {
+                                        let Some(hooks) =
+                                            cx.try_global::<DiagnosticHooks>().copied()
+                                        else {
+                                            return menu;
+                                        };
+                                        let Some(text) = (hooks.text_at)(&location, cx) else {
+                                            return menu;
+                                        };
+                                        let location = location.clone();
+                                        crate::spelling::menu(
+                                            &text,
+                                            menu,
+                                            window,
+                                            cx,
+                                            move |fixed, cx| (hooks.set_text)(&location, fixed, cx),
+                                        )
                                     })
                             })
                             .collect()

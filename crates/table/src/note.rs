@@ -14,7 +14,7 @@ use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::table::TableState;
 use gpui_component::{ActiveTheme as _, h_flex};
 
-use diagnostics::{Diagnostics, Location, Severity, SpellActions, severity_color};
+use diagnostics::{Diagnostics, Location, Severity, severity_color};
 use plugin_api::{CommandContext, MenuContributions, MenuTarget, PluginHooks};
 
 use crate::TableStateHandle;
@@ -173,24 +173,12 @@ pub(crate) fn menu(
         cx,
     );
 
-    // Asked once, here, rather than carried on each diagnostic: the checker owns the dictionary
-    // and this crate must never link it. `None` whenever spell checking is off, the target is not
-    // a cell, or the text is clean — all three mean the same thing to the menu.
-    let spelling = match target {
-        Target::Cell { row, col } => cx
-            .try_global::<SpellActions>()
-            .copied()
-            .map(|actions| (actions, (actions.suggest)(&cell_text, cx), row, col))
-            .filter(|(_, found, _, _)| !found.is_empty()),
-        _ => None,
-    };
-    let spelled_text = cell_text.clone();
-
     let copy_row = |menu: PopupMenu| {
         menu.item(PopupMenuItem::new("Copy row").on_click(move |_, _, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(row_tsv.clone()))
         }))
     };
+    let spell_text = cell_text.clone();
     let menu = match target {
         Target::Cell { row, col } => {
             let (edit_table, filter_table) = (table.clone(), table.clone());
@@ -267,44 +255,13 @@ pub(crate) fn menu(
         }
     };
 
-    let menu = match spelling {
-        Some((actions, found, row, col)) => {
-            let spell_table = table.clone();
-            menu.submenu("Spelling", window, cx, move |sub, _window, _cx| {
-                let flagged = || found.iter();
-                let sub = flagged().fold(sub, |sub, (word, suggestions)| {
-                    suggestions.iter().fold(sub, |sub, suggestion| {
-                        let (table, text) = (spell_table.clone(), spelled_text.clone());
-                        let (word, suggestion) = (word.clone(), suggestion.clone());
-                        sub.item(
-                            PopupMenuItem::new(format!("{word} → {suggestion}")).on_click(
-                                move |_, _, cx| {
-                                    // Every occurrence, because a word misspelled twice in one cell
-                                    // is misspelled twice — and a menu item carries no offset.
-                                    let fixed: SharedString =
-                                        text.replace(word.as_ref(), suggestion.as_ref()).into();
-                                    table.update(cx, |state, cx| {
-                                        state.delegate_mut().set_cell(row, col, fixed.clone());
-                                        cx.emit(TableChanged);
-                                        cx.notify();
-                                    });
-                                    settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
-                                    crate::revalidate_now(cx);
-                                },
-                            ),
-                        )
-                    })
-                });
-                flagged().fold(sub.separator(), |sub, (word, _)| {
-                    let word = word.clone();
-                    sub.item(
-                        PopupMenuItem::new(format!("Add “{word}” to dictionary"))
-                            .on_click(move |_, _, cx| (actions.add_word)(&word, cx)),
-                    )
-                })
+    let menu = match target {
+        Target::Cell { row, col } => {
+            diagnostics::spelling::menu(&spell_text, menu, window, cx, move |fixed, cx| {
+                crate::write_cell(row, col, fixed, cx);
             })
         }
-        None => menu,
+        _ => menu,
     };
 
     menu.submenu("Notes", window, cx, move |sub, _window, _cx| {
