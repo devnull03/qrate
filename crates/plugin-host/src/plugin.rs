@@ -13,15 +13,16 @@
 //! an `Arc` and run on the background executor — see `validate_async` in the parent module.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use diagnostics::{ColumnInfo, ColumnValidator, Severity};
 use gpui::SharedString;
-use mlua::{Function, Lua, LuaOptions, LuaSerdeExt as _, StdLib, Table, VmState};
+use mlua::{Function, Lua, LuaOptions, LuaSerdeExt as _, SerializeOptions, StdLib, Table, VmState};
 use plugin_api::{
-    Bar, BarAction, BarItem, CommandContext, MenuItem, MenuTarget, SettingKind, SettingScope,
-    SettingSpec, Side,
+    Bar, BarAction, BarItem, ColumnMapSpec, CommandContext, MenuItem, MenuTarget, SettingKind,
+    SettingScope, SettingSpec, Side,
 };
 use serde_json::Value as Json;
 
@@ -38,9 +39,19 @@ const DEADLINE: Duration = Duration::from_millis(250);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A validator runs per column edit, so a plugin that fetches on every call would hammer a server
-/// as fast as the user types. Generous for a check-the-server plugin, far short of a flood.
-const HTTP_BUDGET: u32 = 30;
+/// as fast as the user types. Sized for the first pass over a wide sheet — a batched vocabulary
+/// check spends one request per ~50 distinct values, and everything after that comes from the
+/// plugin's own cache — and still far short of a flood.
+const HTTP_BUDGET: u32 = 120;
 const HTTP_WINDOW: Duration = Duration::from_secs(60);
+
+/// The descriptor shape this build understands. A plugin written against a later one is refused
+/// rather than run half-understood; every version this host has ever known keeps working, the way
+/// Zed keeps every old WIT world in the tree.
+const API_VERSION: u64 = 1;
+
+/// The one permission that exists. Declared by a plugin, granted by the user, checked here.
+pub const PERMISSION_NET: &str = "net";
 
 /// What a command asked the host to store, by scope. `None` means "leave that scope alone";
 /// `Some` replaces the plugin's whole object there, which is the same replace-the-set rule
@@ -52,6 +63,15 @@ pub struct Writes {
     pub user: Option<Json>,
 }
 
+/// Everything the host settles before a plugin's first line runs: what it may `require`, what it is
+/// allowed to reach, and what it stored the last time it ran.
+#[derive(Default)]
+pub struct Env {
+    pub modules: Vec<(String, String)>,
+    pub granted: Vec<String>,
+    pub storage: Json,
+}
+
 struct Loaded {
     lua: Lua,
     /// Overrides the file-derived id when the descriptor declares one.
@@ -59,9 +79,30 @@ struct Loaded {
     description: Option<SharedString>,
     validate: Option<Function>,
     on_command: Option<Function>,
+    suggest: Option<Function>,
     menu: Vec<MenuItem>,
     settings: Vec<SettingSpec>,
     bar: Vec<BarItem>,
+    column_map: Option<ColumnMapSpec>,
+    /// What the descriptor asked for, which is what the Settings page offers to grant. Kept apart
+    /// from what was actually granted: the plugin declares, the user decides.
+    permissions: Vec<SharedString>,
+}
+
+/// What a host function writes into while a plugin runs. Every field is an `Arc<Mutex<_>>` rather
+/// than a `Cell`/`RefCell` because the closures holding them run on the background executor — see
+/// `validate_async` in the parent module.
+struct Shared {
+    /// Read by the interrupt hook, and pushed forward before every call into Lua.
+    deadline: Arc<Mutex<Instant>>,
+    /// `(item id, new text)` a plugin asked for through `qrate.status.set`, drained by the host
+    /// once the call returns. A buffer rather than a channel because the answer already crosses
+    /// back to the UI thread with the call's result.
+    bar: Arc<Mutex<Vec<(SharedString, SharedString)>>>,
+    /// `qrate.storage`, and whether it changed since the host last wrote it out. Held rather than
+    /// written through on every `set`, because a plugin caching one verdict per value would
+    /// otherwise rewrite the whole file per row.
+    storage: Arc<Mutex<(Json, bool)>>,
 }
 
 pub struct LuaPlugin {
@@ -69,34 +110,79 @@ pub struct LuaPlugin {
     /// it. Kept even when the descriptor does, so a plugin that fails to load still reports under
     /// the name its author can find on disk.
     id: SharedString,
-    /// Shared with the interrupt hook, and pushed forward before every call into Lua.
-    deadline: Arc<Mutex<Instant>>,
+    shared: Shared,
     /// `(project, user)`, held here because `validate` runs without an `App` to read them from.
     /// Behind a lock so a write can refresh the copy in place — reloading the VM to pick up a
     /// changed setting would re-run every `init.lua` on every keystroke in the Settings window.
     scoped: Mutex<(Json, Json)>,
-    /// `(item id, new text)` a plugin asked for through `qrate.status.set`, written from whatever
-    /// thread the call ran on and drained by the host once it returns. A buffer rather than a
-    /// channel because the answer already crosses back to the UI thread with the call's result.
-    pending: Arc<Mutex<Vec<(SharedString, SharedString)>>>,
     /// A load failure is kept rather than dropped, so a broken plugin can still report itself.
     state: Result<Loaded, String>,
 }
 
 impl LuaPlugin {
-    /// Build a plugin from its source text and the id its file or folder gives it. Taking the
-    /// source rather than a path is what lets the tests cover every path without touching the
-    /// filesystem.
-    pub fn load(id: &str, source: &str) -> Self {
-        let deadline = Arc::new(Mutex::new(Instant::now()));
-        let pending = Arc::new(Mutex::new(Vec::new()));
+    /// Build a plugin from its source text, the id its file or folder gives it, and the environment
+    /// the host settled for it. Taking the sources rather than a path is what lets the tests cover
+    /// every path without touching the filesystem.
+    pub fn load(id: &str, source: &str, env: Env) -> Self {
+        let shared = Shared {
+            deadline: Arc::new(Mutex::new(Instant::now())),
+            bar: Arc::new(Mutex::new(Vec::new())),
+            storage: Arc::new(Mutex::new((env.storage.clone(), false))),
+        };
         Self {
             id: id.to_string().into(),
-            state: build(id, source, &deadline, &pending).map_err(|err| err.to_string()),
+            state: build(id, source, &env, &shared).map_err(|err| err.to_string()),
             scoped: Mutex::new((Json::Null, Json::Null)),
-            pending,
-            deadline,
+            shared,
         }
+    }
+
+    /// This plugin's storage if it changed since the last call, and nothing when it did not — so
+    /// the host writes a file only when there is something new in it.
+    pub fn take_storage(&self) -> Option<Json> {
+        let mut storage = self.shared.storage.lock().unwrap();
+        std::mem::replace(&mut storage.1, false).then(|| storage.0.clone())
+    }
+
+    /// The name on disk. Unlike [`ColumnValidator::name`] this never changes with the descriptor,
+    /// which is what host-owned state — grants, the enable switch, the storage file — is keyed by.
+    pub fn id(&self) -> SharedString {
+        self.id.clone()
+    }
+
+    /// What the descriptor asked to be allowed to do.
+    pub fn permissions(&self) -> &[SharedString] {
+        self.state
+            .as_ref()
+            .map_or(&[], |l| l.permissions.as_slice())
+    }
+
+    pub fn column_map(&self) -> Option<&ColumnMapSpec> {
+        self.state.as_ref().ok().and_then(|l| l.column_map.as_ref())
+    }
+
+    /// What this plugin would put in the cell being typed in. Empty when it offers nothing, which
+    /// is every plugin that declares no `suggest`.
+    pub fn suggest(&self, ctx: &CommandContext) -> Result<Vec<SharedString>, String> {
+        let loaded = self.state.as_ref().map_err(String::clone)?;
+        let Some(suggest) = loaded.suggest.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let lua = &loaded.lua;
+        let table = lua
+            .create_table()
+            .and_then(|table| {
+                table.set("column", ctx.column.as_ref().map(SharedString::as_ref))?;
+                table.set("row", ctx.row.map(|r| r + 1))?;
+                table.set("prefix", ctx.argument.as_ref().map(SharedString::as_ref))?;
+                table.set("settings", self.settings_table(lua, &ctx.column_settings)?)?;
+                Ok(table)
+            })
+            .map_err(|err: mlua::Error| err.to_string())?;
+
+        self.arm();
+        let found: Vec<String> = suggest.call(table).map_err(|err| err.to_string())?;
+        Ok(found.into_iter().map(SharedString::from).collect())
     }
 
     pub fn bar(&self) -> &[BarItem] {
@@ -111,12 +197,12 @@ impl LuaPlugin {
 
     /// Every `qrate.status.set` since the last call, and empty afterwards.
     pub fn take_bar_updates(&self) -> Vec<(SharedString, SharedString)> {
-        std::mem::take(&mut self.pending.lock().unwrap())
+        std::mem::take(&mut self.shared.bar.lock().unwrap())
     }
 
     /// Every call into Lua restarts the compute budget the interrupt hook enforces.
     fn arm(&self) {
-        *self.deadline.lock().unwrap() = Instant::now() + DEADLINE;
+        *self.shared.deadline.lock().unwrap() = Instant::now() + DEADLINE;
     }
 
     /// The plugin's own one-line description, shown on its Settings page.
@@ -158,6 +244,7 @@ impl LuaPlugin {
         let table = lua.create_table()?;
         table.set("column", ctx.column.as_ref().map(SharedString::as_ref))?;
         table.set("row", ctx.row.map(|r| r + 1))?;
+        table.set("argument", ctx.argument.as_ref().map(SharedString::as_ref))?;
         table.set(
             "values",
             lua.create_sequence_from(ctx.values.iter().map(SharedString::as_ref))?,
@@ -278,12 +365,7 @@ fn json_field(lua: &Lua, table: &Table, key: &str) -> mlua::Result<Option<Json>>
     lua.from_value(value).map(Some)
 }
 
-fn build(
-    id: &str,
-    source: &str,
-    deadline: &Arc<Mutex<Instant>>,
-    pending: &Arc<Mutex<Vec<(SharedString, SharedString)>>>,
-) -> mlua::Result<Loaded> {
+fn build(id: &str, source: &str, env: &Env, shared: &Shared) -> mlua::Result<Loaded> {
     // Luau has no `io` and no `package` to remove, and its `debug` is already cut to two
     // functions. Leaving out `OS` and `COROUTINE` costs a plugin its clock and its ability to
     // yield, so every capability one ever gets has to arrive as a host function the host can
@@ -293,11 +375,12 @@ fn build(
         LuaOptions::default(),
     )?;
     lua.set_memory_limit(MEMORY_LIMIT)?;
-    install_qrate(&lua, deadline, pending)?;
+    install_qrate(&lua, env, shared)?;
     install_print(&lua, id)?;
+    install_require(&lua, id, &env.modules)?;
     lua.sandbox(true)?;
     lua.set_interrupt({
-        let deadline = deadline.clone();
+        let deadline = shared.deadline.clone();
         move |_| {
             if Instant::now() > *deadline.lock().unwrap() {
                 Err(mlua::Error::runtime("ran too long and was stopped"))
@@ -307,12 +390,23 @@ fn build(
         }
     });
 
-    *deadline.lock().unwrap() = Instant::now() + DEADLINE;
+    *shared.deadline.lock().unwrap() = Instant::now() + DEADLINE;
     // Named, or mlua labels the chunk with this file and line — so a plugin's syntax error would
     // point at qrate's source instead of the author's.
     let descriptor: Table = lua.load(source).set_name(id).eval()?;
+
+    // Checked before anything is read off the descriptor: a plugin written against a shape this
+    // build does not know would otherwise be half-loaded, and the half that parsed would run.
+    let declared = descriptor.get::<Option<u64>>("api_version")?.unwrap_or(1);
+    if declared > API_VERSION {
+        return Err(mlua::Error::runtime(format!(
+            "needs plugin API version {declared}, and this build of qrate speaks {API_VERSION}"
+        )));
+    }
+
     let validate: Option<Function> = descriptor.get("validate")?;
     let on_command: Option<Function> = descriptor.get("on_command")?;
+    let suggest: Option<Function> = descriptor.get("suggest")?;
     let menu = match descriptor.get::<Option<Vec<Table>>>("menu")? {
         Some(items) => items
             .into_iter()
@@ -334,9 +428,25 @@ fn build(
             .collect::<mlua::Result<Vec<_>>>()?,
         None => Vec::new(),
     };
-    if validate.is_none() && on_command.is_none() {
+    let permissions: Vec<SharedString> = descriptor
+        .get::<Option<Vec<String>>>("permissions")?
+        .unwrap_or_default()
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    if let Some(unknown) = permissions.iter().find(|p| p.as_ref() != PERMISSION_NET) {
+        return Err(mlua::Error::runtime(format!(
+            "asks for a permission this build does not know: {unknown:?}"
+        )));
+    }
+    let column_map = descriptor
+        .get::<Option<Table>>("column_map")?
+        .map(column_map_spec)
+        .transpose()?;
+
+    if validate.is_none() && on_command.is_none() && suggest.is_none() {
         return Err(mlua::Error::runtime(
-            "the returned table has neither `validate` nor `on_command`",
+            "the returned table has none of `validate`, `on_command` or `suggest`",
         ));
     }
     Ok(Loaded {
@@ -352,9 +462,12 @@ fn build(
             .map(Into::into),
         validate,
         on_command,
+        suggest,
         menu,
         settings,
         bar,
+        column_map,
+        permissions,
     })
 }
 
@@ -372,24 +485,54 @@ fn install_print(lua: &Lua, id: &str) -> mlua::Result<()> {
     lua.globals().set("print", print)
 }
 
+/// `require("<name>")` for a sibling `.lua` file in the plugin's own folder, and nothing else.
+///
+/// Luau ships no `package`, which is the point — a plugin cannot reach the filesystem to decide for
+/// itself what to load. The host reads the folder and hands the sources over, so a name resolves
+/// only against those, and a module evaluates once however many times it is required.
+fn install_require(lua: &Lua, id: &str, modules: &[(String, String)]) -> mlua::Result<()> {
+    let id = id.to_string();
+    let sources: HashMap<String, String> = modules.iter().cloned().collect();
+    let loaded = lua.create_table()?;
+    let require = lua.create_function(move |lua, name: String| {
+        if let Some(value) = loaded.get::<Option<mlua::Value>>(name.as_str())? {
+            return Ok(value);
+        }
+        let source = sources
+            .get(&name)
+            .ok_or_else(|| mlua::Error::runtime(format!("{id} has no module named {name:?}")))?;
+        let value: mlua::Value = lua.load(source).set_name(format!("{id}/{name}")).eval()?;
+        loaded.set(name, value.clone())?;
+        Ok(value)
+    })?;
+    lua.globals().set("require", require)
+}
+
 /// The whole `qrate` global, installed before `sandbox` freezes the global table.
 ///
 /// `qrate.http.get(url)` -> `{ status, body }`, or `nil, message`. Returning the failure rather
 /// than raising it is what lets a plugin report an unreachable server as a finding instead of as
 /// its own crash. Rate limited per VM, so one plugin's loop cannot spend another's budget.
 ///
+/// `qrate.json.decode(text)` -> a table, or `nil, message` — the same shape, since a server that
+/// answers with an error page rather than JSON is a thing to report, not to crash on.
+///
 /// `qrate.status.set(id, text)` retitles one of the plugin's own declared bar items. It buffers
 /// rather than applies, because a plugin runs off the UI thread and the bar is not reachable from
 /// there.
+///
+/// `qrate.storage.get(key)` / `.set(key, value)` is the plugin's own cache, kept beside the app's
+/// data rather than in the project file — a cached answer from a server is about this machine, not
+/// about the archivist's project, and a project file is a thing people commit.
+///
+/// `http` is installed **only** when the user has granted `net`. Absent, a plugin's `qrate.http`
+/// is nil; the stub installed in its place answers with the same `nil, message` shape everything
+/// else uses, so an ungranted plugin reports a refusal instead of raising an error about indexing
+/// nil.
 //
-// ponytail: GET only, no allowlist, no cache — the network permission prompt is ASNT-59's job.
-// Add `post` and storage when a plugin needs to write rather than check.
-fn install_qrate(
-    lua: &Lua,
-    deadline: &Arc<Mutex<Instant>>,
-    pending: &Arc<Mutex<Vec<(SharedString, SharedString)>>>,
-) -> mlua::Result<()> {
-    let deadline = deadline.clone();
+// ponytail: GET only, no allowlist. Add `post` when a plugin needs to write rather than read.
+fn install_qrate(lua: &Lua, env: &Env, shared: &Shared) -> mlua::Result<()> {
+    let deadline = shared.deadline.clone();
     let budget = Cell::new((Instant::now(), 0u32));
     let get = lua.create_function(move |lua, url: String| {
         let (started, spent) = budget.get();
@@ -422,22 +565,92 @@ fn install_qrate(
             }
         }
     })?;
+    // ponytail: the grant is a switch on the Settings page, not a prompt at first load — nothing in
+    // the app opens a modal yet, and a first-launch storm of them is worse than a switch this
+    // message points at. Build the prompt when a second permission makes the page too indirect.
+    let refused = lua.create_function(|lua, _: mlua::MultiValue| {
+        Ok((
+            mlua::Value::Nil,
+            mlua::Value::String(lua.create_string(
+                "network access is off for this plugin — turn it on in Settings ▸ Plugins",
+            )?),
+        ))
+    })?;
+
     let set = lua.create_function({
-        let pending = pending.clone();
+        let bar = shared.bar.clone();
         move |_, (id, text): (String, String)| {
-            pending.lock().unwrap().push((id.into(), text.into()));
+            bar.lock().unwrap().push((id.into(), text.into()));
             Ok(())
         }
     })?;
 
+    let stored = lua.create_function({
+        let storage = shared.storage.clone();
+        move |lua, key: String| {
+            let storage = storage.lock().unwrap();
+            let value = storage.0.get(&key).cloned().unwrap_or(Json::Null);
+            lua.to_value_with(
+                &value,
+                SerializeOptions::new().serialize_unit_to_null(false),
+            )
+        }
+    })?;
+    let store = lua.create_function({
+        let storage = shared.storage.clone();
+        move |lua, (key, value): (String, mlua::Value)| {
+            let value: Json = lua.from_value(value)?;
+            let mut storage = storage.lock().unwrap();
+            if !storage.0.is_object() {
+                storage.0 = Json::Object(Default::default());
+            }
+            storage.0[&key] = value;
+            storage.1 = true;
+            Ok(())
+        }
+    })?;
+
+    let decode = lua.create_function(decode_json)?;
+
     let http = lua.create_table()?;
-    http.set("get", get)?;
+    http.set(
+        "get",
+        match env.granted.iter().any(|p| p == PERMISSION_NET) {
+            true => get,
+            false => refused,
+        },
+    )?;
     let status = lua.create_table()?;
     status.set("set", set)?;
+    let json = lua.create_table()?;
+    json.set("decode", decode)?;
+    let storage = lua.create_table()?;
+    storage.set("get", stored)?;
+    storage.set("set", store)?;
     let qrate = lua.create_table()?;
     qrate.set("http", http)?;
     qrate.set("status", status)?;
+    qrate.set("json", json)?;
+    qrate.set("storage", storage)?;
     lua.globals().set("qrate", qrate)
+}
+
+/// JSON's `null` reaches Lua as `nil` rather than as mlua's null userdata, so a plugin reads a
+/// missing field and an explicitly null one the same way.
+fn decode_json(lua: &Lua, text: String) -> mlua::Result<(mlua::Value, mlua::Value)> {
+    match serde_json::from_str::<Json>(&text) {
+        Ok(value) => Ok((
+            lua.to_value_with(
+                &value,
+                SerializeOptions::new().serialize_unit_to_null(false),
+            )?,
+            mlua::Value::Nil,
+        )),
+        Err(err) => Ok((
+            mlua::Value::Nil,
+            mlua::Value::String(lua.create_string(err.to_string())?),
+        )),
+    }
 }
 
 /// One client for every plugin: building one spins up a fresh runtime and thread, and doing that
@@ -511,6 +724,17 @@ fn menu_item(item: Table) -> mlua::Result<MenuItem> {
     })
 }
 
+fn column_map_spec(item: Table) -> mlua::Result<ColumnMapSpec> {
+    Ok(ColumnMapSpec {
+        key: item.get::<String>("key")?.into(),
+        label: item.get::<String>("label")?.into(),
+        description: item.get::<Option<String>>("description")?.map(Into::into),
+        options: item.get::<String>("options")?.into(),
+        refresh: item.get::<String>("refresh")?.into(),
+        multiple: item.get::<Option<bool>>("multiple")?.unwrap_or(false),
+    })
+}
+
 fn setting_spec(item: Table) -> mlua::Result<SettingSpec> {
     let key: String = item.get("key")?;
     let label: String = item.get("label")?;
@@ -529,15 +753,44 @@ fn setting_spec(item: Table) -> mlua::Result<SettingSpec> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{LuaPlugin, Writes};
+    use crate::plugin::HTTP_BUDGET;
+    use crate::{Env, LuaPlugin, PERMISSION_NET, Writes};
     use diagnostics::{ColumnInfo, ColumnValidator, Severity};
     use gpui::SharedString;
     use plugin_api::{Bar, BarAction, CommandContext, MenuTarget, SettingKind, SettingScope, Side};
     use serde_json::{Value as Json, json};
     use settings::columns::ColumnSettings;
 
+    /// Loaded with `net` granted, since most of these predate the permission and are about
+    /// something else. `an_ungranted_plugin_cannot_reach_the_network` covers the other case.
     fn plugin(source: &str) -> LuaPlugin {
-        LuaPlugin::load("test", source)
+        LuaPlugin::load("test", source, granted())
+    }
+
+    fn granted() -> Env {
+        Env {
+            granted: vec![PERMISSION_NET.to_string()],
+            ..Default::default()
+        }
+    }
+
+    /// The shipped Islandora plugin's own files, compiled in — so a change to any of them that
+    /// stops it loading fails here rather than on someone's data.
+    fn islandora_modules() -> Vec<(String, String)> {
+        vec![
+            (
+                "api".to_string(),
+                include_str!("../../../plugins/islandora/api.lua").to_string(),
+            ),
+            (
+                "cache".to_string(),
+                include_str!("../../../plugins/islandora/cache.lua").to_string(),
+            ),
+            (
+                "match".to_string(),
+                include_str!("../../../plugins/islandora/match.lua").to_string(),
+            ),
+        ]
     }
 
     fn check(source: &str, values: &[&str]) -> Vec<(usize, Severity, SharedString)> {
@@ -594,20 +847,25 @@ mod tests {
     /// which is what stops a plugin retrying a dead server in a loop.
     #[test]
     fn http_stops_answering_once_a_plugin_spends_its_budget() {
-        let source = r#"
-            return {
+        // Built from the constant rather than a literal, so raising the budget cannot leave this
+        // test quietly passing without ever reaching the limit.
+        let source = format!(
+            r#"
+            return {{
               validate = function(_, _)
                 local first, last
-                for i = 1, 31 do
+                for i = 1, {} do
                   local _, err = qrate.http.get("nonsense")
                   if i == 1 then first = err end
                   last = err
                 end
-                return { { row = 1, message = first }, { row = 2, message = last } }
+                return {{ {{ row = 1, message = first }}, {{ row = 2, message = last }} }}
               end,
-            }
-        "#;
-        let found = check(source, &["x", "y"]);
+            }}
+        "#,
+            HTTP_BUDGET + 1
+        );
+        let found = check(&source, &["x", "y"]);
         assert_ne!(found[0].2, "rate limited");
         assert_eq!(found[1].2, "rate limited");
     }
@@ -824,7 +1082,7 @@ mod tests {
               end,
             }
         "#;
-        let plugin = LuaPlugin::load("on-disk", source);
+        let plugin = LuaPlugin::load("on-disk", source, Env::default());
         assert_eq!(plugin.name(), "renamed");
         assert_eq!(plugin.description().as_deref(), Some("why"));
 
@@ -848,7 +1106,10 @@ mod tests {
             r#"return { validate = function() return {} end }"#,
             "return { oops",
         ] {
-            assert_eq!(LuaPlugin::load("on-disk", source).name(), "on-disk");
+            assert_eq!(
+                LuaPlugin::load("on-disk", source, Env::default()).name(),
+                "on-disk"
+            );
         }
     }
 
@@ -859,6 +1120,7 @@ mod tests {
             column_settings: Json::Null,
             row: None,
             values: values.iter().map(|v| SharedString::from(*v)).collect(),
+            argument: None,
         }
     }
 
@@ -933,6 +1195,345 @@ mod tests {
         "#;
         let found = check(source, &["x"]);
         assert_eq!(found[0].2, "nil/true");
+    }
+
+    /// A folder plugin's modules evaluate once each and see the `qrate` global, and a name the host
+    /// was never handed fails by saying so rather than by reaching for a file.
+    #[test]
+    fn require_resolves_only_the_modules_the_host_handed_over() {
+        let modules = [
+            ("count".to_string(), "return { n = 0 }".to_string()),
+            (
+                "greet".to_string(),
+                r#"return function(w) return "hi " .. w end"#.to_string(),
+            ),
+        ];
+        let source = r#"
+            local count = require("count")
+            local greet = require("greet")
+            return {
+              validate = function(_, _)
+                count.n = count.n + 1
+                local ok, err = pcall(function() require("elsewhere") end)
+                return {
+                  { row = 1, message = greet("there") .. "/" .. require("count").n },
+                  { row = 2, message = tostring(ok) .. "/" .. tostring(string.find(tostring(err), "elsewhere") ~= nil) },
+                }
+              end,
+            }
+        "#;
+        let plugin = LuaPlugin::load(
+            "test",
+            source,
+            Env {
+                modules: modules.to_vec(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(plugin.load_error(), None);
+        let found = check_with(plugin, Json::Null, &["x", "y"]);
+        assert_eq!(found[0].2, "hi there/1", "the same table comes back twice");
+        assert_eq!(found[1].2, "false/true");
+    }
+
+    /// Decoding is the only way a plugin reads what `http.get` hands back, and bad JSON is a server
+    /// answering with an error page — reported, not raised.
+    #[test]
+    fn json_decodes_to_tables_and_reports_what_it_cannot_read() {
+        let source = r#"
+            return {
+              validate = function(_, _)
+                local body = qrate.json.decode('{"data":[{"name":"Film"}],"next":null}')
+                local bad, err = qrate.json.decode("<html>")
+                return {
+                  { row = 1, message = body.data[1].name .. "/" .. tostring(body.next) },
+                  { row = 2, message = tostring(bad) .. "/" .. tostring(err ~= nil) },
+                }
+              end,
+            }
+        "#;
+        let found = check(source, &["x", "y"]);
+        assert_eq!(
+            found[0].2, "Film/nil",
+            "a JSON null reads as nil, not userdata"
+        );
+        assert_eq!(found[1].2, "nil/true");
+    }
+
+    #[test]
+    fn a_plugin_written_against_a_later_api_refuses_to_load() {
+        let source = r#"return { api_version = 9, validate = function() return {} end }"#;
+        let err = plugin(source).load_error().unwrap_or_default().to_string();
+        assert!(err.contains('9') && err.contains('1'), "{err:?}");
+    }
+
+    #[test]
+    fn an_unknown_permission_stops_the_plugin_loading() {
+        let source = r#"
+            return {
+              permissions = { "net", "disk" },
+              validate = function() return {} end,
+            }
+        "#;
+        assert!(
+            plugin(source)
+                .load_error()
+                .is_some_and(|err| err.contains("disk")),
+            "{:?}",
+            plugin(source).load_error()
+        );
+    }
+
+    const REACH: &str = r#"
+        return {
+          permissions = { "net" },
+          validate = function()
+            local response, err = qrate.http.get("http://127.0.0.1:1/")
+            return { { row = 1, message = tostring(response) .. "/" .. tostring(err) } }
+          end,
+        }
+    "#;
+
+    /// Ungranted, the refusal comes back through the same `nil, message` channel every other
+    /// failure uses — so a plugin reports it rather than dying on an index into nil.
+    #[test]
+    fn an_ungranted_plugin_cannot_reach_the_network() {
+        let ungranted = check_with(
+            LuaPlugin::load("test", REACH, Env::default()),
+            Json::Null,
+            &["x"],
+        );
+        assert!(
+            ungranted[0].2.contains("Settings ▸ Plugins"),
+            "{}",
+            ungranted[0].2
+        );
+
+        // Granted, the same call reaches the network and fails on its own terms — port 1 refuses
+        // immediately, so this stays offline.
+        let granted = check(REACH, &["x"]);
+        assert!(granted[0].2.starts_with("nil/"), "{}", granted[0].2);
+        assert!(
+            !granted[0].2.contains("Settings ▸ Plugins"),
+            "{}",
+            granted[0].2
+        );
+    }
+
+    /// What a plugin caches has to outlive its VM, or a term checked once would be checked again on
+    /// every launch. The host writes the file; this pins the handover at both ends.
+    #[test]
+    fn storage_is_handed_back_only_when_it_changed_and_survives_a_reload() {
+        let source = r#"
+            return {
+              validate = function()
+                local seen = qrate.storage.get("seen") or {}
+                local was = seen.Film
+                seen.Film = true
+                qrate.storage.set("seen", seen)
+                return { { row = 1, message = tostring(was) } }
+              end,
+            }
+        "#;
+        let settings = ColumnSettings::default();
+        let column = ColumnInfo {
+            name: "Country",
+            data_type: "Text",
+            settings: &settings,
+        };
+        let run = |plugin: &LuaPlugin| plugin.validate(&column, &["x".into()])[0].2.clone();
+
+        let plugin = plugin(source);
+        assert!(
+            plugin.take_storage().is_none(),
+            "nothing has run, so there is nothing to write"
+        );
+        assert_eq!(run(&plugin), "nil", "a fresh VM has nothing cached");
+        assert_eq!(
+            plugin.take_storage(),
+            Some(json!({ "seen": { "Film": true } })),
+            "what the host writes out"
+        );
+        assert!(
+            plugin.take_storage().is_none(),
+            "draining twice must not rewrite the same file"
+        );
+
+        // Handed back to a new VM the way a restart does.
+        let reloaded = LuaPlugin::load(
+            "test",
+            source,
+            Env {
+                storage: json!({ "seen": { "Film": true } }),
+                ..Default::default()
+            },
+        );
+        assert_eq!(run(&reloaded), "true", "the cache came back");
+    }
+
+    /// The shipped Islandora plugin over a pre-filled cache — everything in it except the fetching,
+    /// which is the one part that needs a server. Compiled in, so a change to any of its four files
+    /// that stops it loading or breaks its matching fails here rather than on someone's data.
+    #[test]
+    fn the_islandora_plugin_checks_a_column_against_its_mapped_vocabularies() {
+        const SERVER: &str = "https://islandora.example.org";
+        let load = |storage: Json| {
+            LuaPlugin::load(
+                "islandora",
+                include_str!("../../../plugins/islandora/init.lua"),
+                Env {
+                    modules: islandora_modules(),
+                    granted: vec![PERMISSION_NET.to_string()],
+                    storage,
+                },
+            )
+        };
+
+        // Everything the column holds is already cached, so nothing here touches the network: the
+        // point of the cache is that a re-validate after one edit costs no requests at all.
+        let cached = json!({
+            format!("terms:{SERVER}|subject"): { "Film": true, "Pottery": false },
+            format!("terms:{SERVER}|genre"): { "Film": false, "Pottery": true },
+        });
+
+        let checked = |vocabularies: Json| {
+            let plugin = load(cached.clone());
+            assert_eq!(plugin.load_error(), None);
+            plugin.set_scoped(json!({ "server": SERVER, "subdelimiter": ";" }), Json::Null);
+            let mut settings = ColumnSettings::default();
+            settings
+                .plugins
+                .insert("islandora".into(), json!({ "vocabularies": vocabularies }));
+            let column = ColumnInfo {
+                name: "Subject",
+                data_type: "Text",
+                settings: &settings,
+            };
+            let values = ["Film; Pottery", "Film", ""];
+            plugin.validate(&column, &values.map(SharedString::from))
+        };
+
+        let one = checked(json!(["subject"]));
+        assert_eq!(one.len(), 1, "{one:?}");
+        assert_eq!(one[0].0, 0, "a sub-delimited cell is checked term by term");
+        assert_eq!(one[0].1, Severity::Error);
+        assert_eq!(
+            one[0].2,
+            r#""Pottery" is not a term in the Islandora subject vocabulary"#
+        );
+
+        // Mapped to both, every value is held by one of them — the union is the rule, not the
+        // intersection, or a column split across two vocabularies could never be clean.
+        assert!(
+            checked(json!(["subject", "genre"])).is_empty(),
+            "{:?}",
+            checked(json!(["subject", "genre"]))
+        );
+
+        // An unmapped column is every column the user has not touched, and must cost nothing.
+        assert!(checked(Json::Null).is_empty());
+    }
+
+    /// The same plugin against a real Islandora, which is the half the offline tests cannot reach:
+    /// that the URLs `api.lua` builds are ones Drupal answers, and that a name the site does not
+    /// hold really is absent from the reply rather than merely unmarked.
+    ///
+    /// Ignored, so CI never depends on somebody's server being up. Run it by hand after touching
+    /// `api.lua`:
+    ///
+    /// ```text
+    /// cargo test -p plugin-host -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "hits a live Islandora"]
+    fn the_islandora_plugin_agrees_with_a_real_server() {
+        const SERVER: &str = "https://isle.dvnl.work";
+        let plugin = LuaPlugin::load(
+            "islandora",
+            include_str!("../../../plugins/islandora/init.lua"),
+            Env {
+                modules: islandora_modules(),
+                granted: vec![PERMISSION_NET.to_string()],
+                storage: Json::Null,
+            },
+        );
+        plugin.set_scoped(json!({ "server": SERVER }), Json::Null);
+
+        let mut settings = ColumnSettings::default();
+        settings.plugins.insert(
+            "islandora".into(),
+            json!({ "vocabularies": ["resource_types"] }),
+        );
+        let column = ColumnInfo {
+            name: "Type",
+            data_type: "Text",
+            settings: &settings,
+        };
+        let values = ["Text", "Nonsense Value", "Still Image"];
+        let found = plugin.validate(&column, &values.map(SharedString::from));
+
+        assert_eq!(found.len(), 1, "only the invented term is wrong: {found:?}");
+        assert!(found[0].2.contains("Nonsense Value"), "{}", found[0].2);
+        assert!(
+            plugin.take_storage().is_some(),
+            "the verdicts were cached, or every edit would re-ask the server"
+        );
+
+        let offered = plugin
+            .suggest(&CommandContext {
+                column: Some("Type".into()),
+                column_key: Some("c0".into()),
+                column_settings: json!({ "vocabularies": ["resource_types"] }),
+                row: Some(0),
+                values: Vec::new(),
+                argument: Some("St".into()),
+            })
+            .expect("suggesting does not raise");
+        assert!(
+            offered.iter().any(|item| item == "Still Image"),
+            "prefix search came back with {offered:?}"
+        );
+    }
+
+    /// The completion list is only ever offered for what the user is actually typing, and asking
+    /// costs a request — so a prefix too short to narrow anything must not reach the network. Port
+    /// 1 refuses instantly, so a slip here fails loudly rather than hanging.
+    #[test]
+    fn the_islandora_plugin_stays_quiet_until_there_is_a_prefix_worth_asking_about() {
+        let plugin = LuaPlugin::load(
+            "islandora",
+            include_str!("../../../plugins/islandora/init.lua"),
+            Env {
+                modules: islandora_modules(),
+                granted: vec![PERMISSION_NET.to_string()],
+                storage: Json::Null,
+            },
+        );
+        plugin.set_scoped(json!({ "server": "http://127.0.0.1:1" }), Json::Null);
+
+        let ask = |prefix: &str, mapped: Json| {
+            plugin
+                .suggest(&CommandContext {
+                    column: Some("Subject".into()),
+                    column_key: Some("c0".into()),
+                    column_settings: json!({ "vocabularies": mapped }),
+                    row: Some(0),
+                    values: Vec::new(),
+                    argument: Some(prefix.into()),
+                })
+                .expect("suggesting does not raise")
+        };
+
+        assert!(
+            ask("F", json!(["subject"])).is_empty(),
+            "one letter is not a question"
+        );
+        assert!(
+            ask("Film", Json::Null).is_empty(),
+            "an unmapped column offers nothing"
+        );
+        // Mapped and long enough, it does ask — and gets nothing, because nothing is listening.
+        assert!(ask("Film", json!(["subject"])).is_empty());
     }
 
     /// If the interrupt hook is not wired up this test hangs rather than failing, which is exactly

@@ -15,7 +15,9 @@ use gpui_component::table::TableState;
 use gpui_component::{ActiveTheme as _, h_flex};
 
 use diagnostics::{Diagnostics, Location, Severity, severity_color};
-use plugin_api::{CommandContext, MenuContributions, MenuTarget, PluginHooks};
+use plugin_api::{
+    ColumnMapContributions, CommandContext, MenuContributions, MenuTarget, PluginHooks,
+};
 
 use crate::TableStateHandle;
 use crate::delegate::{QrateTableDelegate, TableChanged};
@@ -221,6 +223,7 @@ pub(crate) fn menu(
                 )
             };
             let stored = settings::columns::get(&key, cx).plugins;
+            let menu = mapping_submenus(&key, menu, window, cx);
             MenuContributions::for_target(MenuTarget::Column, cx)
                 .into_iter()
                 .filter(|(plugin, item)| {
@@ -239,6 +242,7 @@ pub(crate) fn menu(
                             .unwrap_or(serde_json::Value::Null),
                         row: None,
                         values: values.clone(),
+                        argument: None,
                     };
                     menu.item(
                         // Nothing to revalidate here: the command answers after this click has
@@ -285,6 +289,58 @@ pub(crate) fn menu(
             )
         })
     })
+}
+
+/// A submenu per plugin that offers a column mapping, listing what it last fetched with a tick
+/// beside whatever this column is already held to.
+///
+/// The same declaration draws the Settings page's pickers, and both write through
+/// [`ColumnMapContributions::select`] — so a vocabulary ticked here shows as picked there, without
+/// either surface knowing the other exists. No plugin code runs: a menu is built while the user
+/// waits, and a VM answer cannot be waited on.
+fn mapping_submenus(
+    key: &SharedString,
+    menu: PopupMenu,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    ColumnMapContributions::all(cx)
+        .into_iter()
+        .fold(menu, |menu, (plugin, spec)| {
+            let options = ColumnMapContributions::options(&plugin, &spec, cx);
+            let picked = ColumnMapContributions::selected(&plugin, &spec, key, cx);
+            let key = key.clone();
+            menu.submenu(spec.label.clone(), window, cx, move |sub, _window, _cx| {
+                if options.is_empty() {
+                    return sub.item(
+                        PopupMenuItem::new("Nothing fetched yet — refresh in Settings")
+                            .disabled(true),
+                    );
+                }
+                options.iter().fold(sub, |sub, (value, label)| {
+                    let held = picked.contains(value);
+                    let (plugin, spec, key, value) =
+                        (plugin.clone(), spec.clone(), key.clone(), value.clone());
+                    let picked = picked.clone();
+                    sub.item(PopupMenuItem::new(label.clone()).checked(held).on_click(
+                        move |_, _, cx| {
+                            let mut chosen = match spec.multiple {
+                                true => picked.clone(),
+                                // A single-select mapping replaces rather than accumulates, so
+                                // clicking a second option is a change of mind, not an addition.
+                                false => Vec::new(),
+                            };
+                            chosen.retain(|held| held != &value);
+                            if !held {
+                                chosen.push(value.clone());
+                            }
+                            ColumnMapContributions::select(&plugin, &spec, &key, chosen, cx);
+                            crate::revalidate_now(cx);
+                        },
+                    ))
+                })
+            })
+        })
 }
 
 /// Point the shared note editor at `location`, seeded with `text`, and focus it.

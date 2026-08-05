@@ -157,6 +157,7 @@ pub fn selected_context(plugin: &SharedString, cx: &App) -> CommandContext {
         column_key: Some(key),
         row: None,
         values,
+        argument: None,
     }
 }
 

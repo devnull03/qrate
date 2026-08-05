@@ -10,6 +10,8 @@ use gpui_component::{
     v_flex,
 };
 
+use plugin_api::{CommandContext, PluginHooks, Suggestions};
+
 use crate::{
     TableStateHandle, cell,
     delegate::{
@@ -83,6 +85,10 @@ pub struct TablePanel {
     /// Pending debounced autosave (the "timed" mode). Replacing it drops the prior task, which
     /// cancels its timer — that drop *is* the debounce, coalescing a burst of edits into one write.
     _autosave_task: Option<Task<()>>,
+    /// The `(cell, text)` plugins were last asked to complete. Editing has no change event of its
+    /// own here — the editor is shared and seeded per cell — so the ask happens while rendering the
+    /// box, and this is what stops it asking the same question on every frame.
+    asked_to_suggest: Option<((usize, usize), SharedString)>,
 }
 
 impl TablePanel {
@@ -141,6 +147,7 @@ impl TablePanel {
                 cx.emit(TableChanged);
                 cx.notify();
             });
+            this.forget_suggestions(cx);
             // The commit marked PROJECT_DATA dirty; persist per the Autosave setting.
             this.schedule_autosave(cx);
         });
@@ -299,6 +306,7 @@ impl TablePanel {
             search_error: false,
             _search_sub,
             _autosave_task: None,
+            asked_to_suggest: None,
         }
     }
 
@@ -439,7 +447,7 @@ impl TablePanel {
 
     /// The floating cell editor, sized to its content and pinned to where the edit opened. `None`
     /// unless a cell is being edited *and* `cell.rs` has measured it (one frame later).
-    fn cell_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn cell_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.state.read(cx);
         let EditState::Editing { row, col } = state.delegate().editing else {
             return None;
@@ -543,10 +551,103 @@ impl TablePanel {
                     .px(px(cell::CELL_PAD_X))
                     .py(px(cell::CELL_PAD_Y))
                     .text_size(font_size),
-            );
+            )
+            .children(self.suggestions(row, col, &value, box_size.height, cx));
         // The measured rect sits one row below the cell it edits, so lift it back.
         let origin = cell.origin - point(px(0.), cell.size.height - px(2.));
         Some(deferred(float_at(origin, table, box_el)).into_any_element())
+    }
+
+    /// The completion list under the editor, and the request that fills it.
+    ///
+    /// Asking here rather than from a change event is deliberate: the editor is one shared
+    /// `InputState` reseeded per cell, so "the text changed" and "a different cell opened" arrive
+    /// as the same signal. Rendering already knows both, and `asked_to_suggest` keeps one question
+    /// per change rather than one per frame.
+    fn suggestions(
+        &mut self,
+        row: usize,
+        col: usize,
+        typed: &SharedString,
+        below: Pixels,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let hooks = cx.try_global::<PluginHooks>().copied()?;
+        let key = self.state.read(cx).delegate().column_key(col);
+
+        if self.asked_to_suggest.as_ref() != Some(&((row, col), typed.clone())) {
+            self.asked_to_suggest = Some(((row, col), typed.clone()));
+            let ctx = CommandContext {
+                // Left empty: a suggestion request goes to every plugin, so only the host can say
+                // which bucket belongs to which of them.
+                column_settings: serde_json::Value::Null,
+                column: Some(self.state.read(cx).delegate().column_name(col)),
+                column_key: Some(key.clone()),
+                row: Some(row),
+                values: Vec::new(),
+                argument: Some(typed.clone()),
+            };
+            (hooks.suggest)(&ctx, cx);
+        }
+
+        let offered = cx.try_global::<Suggestions>()?;
+        // An answer for the cell the user has since left must not hang over the one they are in.
+        if offered.column_key.as_ref() != Some(&key) || offered.row != Some(row) {
+            return None;
+        }
+        let items: Vec<SharedString> = offered
+            .items
+            .iter()
+            .filter(|item| item.as_ref() != typed.as_ref())
+            .cloned()
+            .collect();
+        if items.is_empty() {
+            return None;
+        }
+
+        let editor = self.state.read(cx).delegate().editor.clone();
+        Some(
+            div()
+                .absolute()
+                .top(below + px(2.))
+                .left_0()
+                .min_w(px(SUGGEST_W))
+                .max_h(px(SUGGEST_H))
+                .occlude()
+                .overflow_hidden()
+                .bg(cx.theme().background)
+                .border_1()
+                .border_color(cx.theme().border)
+                .rounded(cx.theme().radius)
+                .shadow_lg()
+                .children(items.into_iter().map(|item| {
+                    let (editor, chosen) = (editor.clone(), item.clone());
+                    div()
+                        .px_2()
+                        .py_1()
+                        .text_sm()
+                        .cursor_pointer()
+                        .hover(|row| row.bg(cx.theme().accent))
+                        .child(item)
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            // Filled in, not committed: the user may still want to add a second
+                            // sub-delimited value before leaving the cell.
+                            editor.update(cx, |input, cx| {
+                                input.set_value(chosen.clone(), window, cx)
+                            });
+                        })
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// Called when an edit ends, so nothing offered for the cell just left survives into the next
+    /// one — including an answer that has not come back yet.
+    fn forget_suggestions(&mut self, cx: &mut App) {
+        self.asked_to_suggest = None;
+        if let Some(hooks) = cx.try_global::<PluginHooks>().copied() {
+            (hooks.forget_suggestions)(cx);
+        }
     }
 }
 
@@ -781,6 +882,11 @@ const PAD_Y: f32 = cell::CELL_PAD_Y * 2. + 2.;
 
 /// Height of the `C6` tab that marks the box once the grid has scrolled under it.
 const TAB_H: f32 = 16.;
+
+/// The completion list under the cell editor. Wide enough for a vocabulary term, short enough that
+/// it does not cover the rows a user is comparing against.
+const SUGGEST_W: f32 = 220.;
+const SUGGEST_H: f32 = 180.;
 
 #[cfg(test)]
 mod tests {
