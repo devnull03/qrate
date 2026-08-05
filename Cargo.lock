@@ -201,6 +201,7 @@ dependencies = [
  "serde_json",
  "settings",
  "simplelog",
+ "spellcheck",
  "sysinfo 0.37.2",
  "table",
  "window-wrapper",
@@ -6449,6 +6450,27 @@ checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "spellbook"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d204abcbdf8e88729306a8d0ca01a79d8a49969fe1f84696909d6dbc4321c1a"
+dependencies = [
+ "foldhash 0.2.0",
+ "hashbrown 0.16.1",
+]
+
+[[package]]
+name = "spellcheck"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "diagnostics",
+ "gpui",
+ "log",
+ "settings",
+ "spellbook",
 ]
 
 [[package]]

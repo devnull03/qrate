@@ -9,6 +9,7 @@ members = [
   "crates/plugin-host",
   "crates/project-wizard",
   "crates/settings",
+  "crates/spellcheck",
   "crates/table",
   "crates/window-wrapper",
   "crates/workspace",
