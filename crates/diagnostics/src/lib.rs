@@ -6,6 +6,7 @@
 //! panel asks the app to reveal a cell.
 
 mod panel;
+pub mod spelling;
 mod validator;
 pub use panel::ProblemsPanel;
 pub use validator::{
@@ -313,6 +314,12 @@ fn load_project_notes(cx: &mut App) {
 #[derive(Clone, Copy)]
 pub struct DiagnosticHooks {
     pub reveal: fn(&Location, &mut App),
+    /// The text currently at a location, so the Problems panel can build a fix menu from the cell
+    /// itself rather than from the diagnostic's message, which is prose for a human.
+    pub text_at: fn(&Location, &App) -> Option<SharedString>,
+    /// Write text back to a location and revalidate. The other half of [`Self::text_at`], and the
+    /// reason a panel row can offer the same corrections a cell does.
+    pub set_text: fn(&Location, SharedString, &mut App),
 }
 
 impl Global for DiagnosticHooks {}
