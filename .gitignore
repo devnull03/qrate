@@ -6,3 +6,6 @@
 .claude/
 GEMINI.md
 *handoff.md
+
+# The Islandora plugin is its own repository, checked out here so a dev build loads it.
+plugins/islandora/
