@@ -37,12 +37,13 @@ The AGPL asks one thing in return: if you distribute a modified qrate, or offer 
 to others over a network, those users get your changes under the same license. It exists to keep
 qrate open, not to restrict the institutions it is built for.
 
-**Commercial licensing.** If the AGPL does not fit — you want to build qrate into a closed
-product, or ship it under terms of your own — I hold the copyright and can grant a separate
-commercial license. Get in touch.
+**Contributing.** Contributions are welcome, with no paperwork. Open a pull request and it is
+understood to be offered under the AGPL, the same license the project already carries —
+contributors keep the copyright in what they write. There is no Contributor License Agreement and
+no copyright assignment.
+
+**Commercial licensing.** If the AGPL does not fit your situation, ask. Anything I hold the
+copyright in I can license separately; where a part of qrate was written by someone else, that
+needs their agreement too.
 
 **Bundled third-party material** and its separate licenses are recorded in [NOTICES](NOTICES).
-
-**Contributing.** Contributions are welcome, and they need a signed Contributor License Agreement
-before they can be merged. This is not a formality: without one, the ability to offer the
-commercial license above disappears the moment someone else's copyright enters the codebase.
