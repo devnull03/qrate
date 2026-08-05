@@ -1,6 +1,6 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Axis, InteractiveElement as _, ParentElement as _, SharedString,
+    App, Axis, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 use gpui_component::{
@@ -173,17 +173,130 @@ fn spelling_group(cx: &App) -> SettingGroup {
             ),
         );
         group = group.item(
-            Setting::Text {
-                key: spellcheck::SPELLCHECK_LANGUAGE_KEY,
-                label: "Language",
-                description: "A dictionary name, e.g. \"en_US\". English ships with qrate; for any \
-                              other language put its Hunspell .aff and .dic files in the \
-                              \"dictionaries\" folder beside your logs. Takes effect on restart.",
-            }
-            .into(),
+            SettingItem::new(
+                "Language",
+                SettingField::element(move |_opts: &_, _window: &mut _, cx: &mut _| {
+                    language_picker(language_rows(cx))
+                }),
+            )
+            .description(
+                "Canadian and American English are built in. Any other language downloads on \
+                 first use and is kept beside your logs. Takes effect on restart.",
+            ),
         );
     }
     group
+}
+
+/// One language as the picker draws it. Resolved against the context up front so the element
+/// closure below borrows nothing — see the note on [`column_picker`].
+struct LanguageRow {
+    code: SharedString,
+    name: SharedString,
+    licence: SharedString,
+    state: spellcheck::catalogue::State,
+    downloading: bool,
+    selected: bool,
+}
+
+fn language_rows(cx: &App) -> Vec<LanguageRow> {
+    let current = spellcheck::language(cx);
+    spellcheck::catalogue::listing()
+        .into_iter()
+        .map(|((code, name, licence), state)| LanguageRow {
+            code: code.into(),
+            name: name.into(),
+            licence: licence.into(),
+            state,
+            downloading: spellcheck::is_downloading(code, cx),
+            selected: current == code,
+        })
+        .collect()
+}
+
+/// The language list, in the shape a phone's language screen uses: everything available, each row
+/// saying whether it is already here or a download away, and one tap doing whichever applies.
+///
+/// Each row shows its word list's licence, because several of these are GPL and that is a thing to
+/// see before downloading rather than after.
+fn language_picker(rows: Vec<LanguageRow>) -> impl gpui::IntoElement {
+    use spellcheck::catalogue::State;
+
+    let label = rows.iter().find(|r| r.selected).map_or_else(
+        || SharedString::from("English (Canada)"),
+        |r| r.name.clone(),
+    );
+
+    Popover::new("spellcheck-language")
+        .trigger(
+            Button::new("spellcheck-language-btn")
+                .label(label)
+                .outline()
+                .xsmall(),
+        )
+        .content(move |_state, _window, cx| {
+            let (accent, accent_fg, muted) = (
+                cx.theme().accent,
+                cx.theme().accent_foreground,
+                cx.theme().muted_foreground,
+            );
+            let radius = cx.theme().radius;
+            v_flex()
+                .id("spellcheck-language-list")
+                .w(px(320.))
+                .max_h(px(360.))
+                .p_1()
+                .overflow_y_scroll()
+                .children(rows.iter().map(|row| {
+                    let (code, state, downloading) = (row.code.clone(), row.state, row.downloading);
+                    h_flex()
+                        .id(SharedString::from(format!("lang-{}", row.code)))
+                        .h(px(34.))
+                        .px(px(8.))
+                        .gap_x_2()
+                        .rounded(radius)
+                        .items_center()
+                        .justify_between()
+                        .cursor_pointer()
+                        .hover(|r| r.bg(accent).text_color(accent_fg))
+                        .child(
+                            v_flex()
+                                .min_w_0()
+                                .child(div().text_sm().child(row.name.clone()))
+                                .child(
+                                    div().text_xs().text_color(muted).child(row.licence.clone()),
+                                ),
+                        )
+                        .child(match (downloading, state, row.selected) {
+                            (true, _, _) => div()
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(muted)
+                                .child("Downloading…")
+                                .into_any_element(),
+                            (_, _, true) => Icon::new(IconName::Check).xsmall().into_any_element(),
+                            (_, State::Available, _) => {
+                                Icon::new(IconName::ArrowDown).xsmall().into_any_element()
+                            }
+                            // Built in and installed both mean "here already"; only the reason
+                            // differs, and the reason is not the user's problem.
+                            _ => div().flex_shrink_0().into_any_element(),
+                        })
+                        .on_click(move |_, _, cx: &mut App| {
+                            if downloading {
+                                return;
+                            }
+                            match state {
+                                State::Available => spellcheck::start_download(code.clone(), cx),
+                                _ => settings::set_scoped_text(
+                                    spellcheck::SPELLCHECK_LANGUAGE_KEY,
+                                    code.clone(),
+                                    cx,
+                                ),
+                            }
+                        })
+                }))
+        })
 }
 
 /// Per-column filters, project-scoped. A master switch gates the feature; when on, a multi-select

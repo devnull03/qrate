@@ -6469,6 +6469,7 @@ dependencies = [
  "diagnostics",
  "gpui",
  "log",
+ "reqwest",
  "settings",
  "spellbook",
 ]
