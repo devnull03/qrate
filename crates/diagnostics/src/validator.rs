@@ -76,6 +76,26 @@ pub struct AsyncValidators {
 
 impl Global for AsyncValidators {}
 
+/// One misspelled word, and the corrections offered for it in rank order.
+pub type Misspelling = (SharedString, Vec<SharedString>);
+
+/// The two things a spell checker can offer that reading a [`Diagnostic`](crate::Diagnostic)
+/// cannot: what a misspelled word should have been, and a way to accept it.
+///
+/// Function pointers for the same reason [`AsyncValidators`] is one — the table builds the
+/// right-click menu and must not link the dictionary. Asked when a menu opens rather than carried
+/// on each diagnostic, which keeps a diagnostic's message a sentence for a human instead of a
+/// format the table has to parse back.
+#[derive(Clone, Copy)]
+pub struct SpellActions {
+    /// Every misspelled word in the text, each with its ranked suggestions, in first-seen order.
+    pub suggest: fn(&str, &App) -> Vec<Misspelling>,
+    /// Accept a word permanently, and re-run validation so its findings clear.
+    pub add_word: fn(&str, &mut App),
+}
+
+impl Global for SpellActions {}
+
 /// Every registered validator. Filled by `app` at startup, which is the only place that knows
 /// where validators come from.
 #[derive(Default)]

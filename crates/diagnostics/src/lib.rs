@@ -9,7 +9,8 @@ mod panel;
 mod validator;
 pub use panel::ProblemsPanel;
 pub use validator::{
-    AsyncValidators, ColumnInfo, ColumnSnapshot, ColumnValidator, Validators, address,
+    AsyncValidators, ColumnInfo, ColumnSnapshot, ColumnValidator, Misspelling, SpellActions,
+    Validators, address,
 };
 
 use std::collections::HashMap;
