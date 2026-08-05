@@ -2,10 +2,12 @@
 //! table's right-click menu reaches through [`diagnostics::SpellActions`].
 //!
 //! A leaf crate that only `app` depends on, which is the whole reason `ColumnValidator` is `dyn`:
-//! the half-megabyte en_US dictionary embedded below must never enter `table`'s graph.
+//! the two half-megabyte English dictionaries embedded below must never enter `table`'s graph.
 //!
-//! English ships compiled in; any other language is an `.aff`/`.dic` pair in the data dir. That
+//! Canadian and American English ship compiled in; every other language is a download away. That
 //! is the only difference between one language and the next — no code knows what English is.
+
+pub mod catalogue;
 
 use std::borrow::Cow;
 use std::io::Write as _;
@@ -20,18 +22,21 @@ use spellbook::Dictionary;
 /// works without first visiting Settings — the same convention `COLUMN_FILTERS_ENABLED_KEY` uses.
 pub const SPELLCHECK_ENABLED_KEY: &str = "spellcheck_enabled";
 
-/// Setting key holding the dictionary language, e.g. `en_US`. Absent means [`DEFAULT_LANGUAGE`].
+/// Setting key holding the dictionary language, a `catalogue` code such as `en-GB`. Absent means [`DEFAULT_LANGUAGE`].
 pub const SPELLCHECK_LANGUAGE_KEY: &str = "spellcheck_language";
 
 /// Setting key for skipping capitalized words. Absent means on: a catalogue is mostly people,
 /// places, studios, and titles, and no word list will ever hold all of them.
 pub const SPELLCHECK_NAMES_KEY: &str = "spellcheck_ignore_capitalized";
 
-/// The one language that ships in the binary.
-pub const DEFAULT_LANGUAGE: &str = "en_US";
+/// The language used when nothing is configured. Canadian rather than American because the two
+/// SCOWL word lists carry one spelling each, and `catalogue` is not a word en-US accepts.
+pub const DEFAULT_LANGUAGE: &str = "en-CA";
 
-static EN_US_AFF: &str = include_str!("../dictionaries/en_US.aff");
-static EN_US_DIC: &str = include_str!("../dictionaries/en_US.dic");
+static EN_CA_AFF: &str = include_str!("../dictionaries/en-CA.aff");
+static EN_CA_DIC: &str = include_str!("../dictionaries/en-CA.dic");
+static EN_AFF: &str = include_str!("../dictionaries/en.aff");
+static EN_DIC: &str = include_str!("../dictionaries/en.dic");
 
 /// The name the Problems panel shows, and the key this validator's output is replaced by.
 const VALIDATOR_NAME: &str = "spell";
@@ -104,6 +109,53 @@ pub fn ignore_capitalized(cx: &App) -> bool {
         || settings::effective_text(SPELLCHECK_NAMES_KEY, cx) != "false"
 }
 
+/// Dictionaries being fetched right now, so the settings list can say so rather than looking like
+/// a click that did nothing. A download takes seconds and there is no progress to report from a
+/// blocking request, so "in flight or not" is the whole state there is.
+#[derive(Default)]
+pub struct Downloading(pub std::collections::HashSet<String>);
+
+impl Global for Downloading {}
+
+pub fn is_downloading(code: &str, cx: &App) -> bool {
+    cx.try_global::<Downloading>()
+        .is_some_and(|d| d.0.contains(code))
+}
+
+/// Fetch `code` in the background and switch to it once it lands, the way tapping an uninstalled
+/// language on a phone both downloads and selects it. Failures are logged rather than surfaced:
+/// the row simply goes back to offering the download.
+pub fn start_download(code: SharedString, cx: &mut App) {
+    if is_downloading(&code, cx) {
+        return;
+    }
+    cx.default_global::<Downloading>()
+        .0
+        .insert(code.to_string());
+    let fetching = code.clone();
+    let fetch = cx
+        .background_executor()
+        .spawn(async move { catalogue::download(&fetching) });
+    cx.spawn(async move |cx| {
+        let result = fetch.await;
+        cx.update(|cx| {
+            cx.default_global::<Downloading>().0.remove(code.as_ref());
+            match result {
+                Ok(()) => {
+                    log::info!("downloaded the {} dictionary", catalogue::name_of(&code));
+                    settings::set_scoped_text(SPELLCHECK_LANGUAGE_KEY, code, cx);
+                }
+                Err(err) => log::error!(
+                    "could not download the {} dictionary, so it was not installed: {err}",
+                    catalogue::name_of(&code)
+                ),
+            }
+            cx.refresh_windows();
+        });
+    })
+    .detach();
+}
+
 /// The configured language, or [`DEFAULT_LANGUAGE`] when unset.
 pub fn language(cx: &App) -> SharedString {
     let configured = settings::effective_text(SPELLCHECK_LANGUAGE_KEY, cx);
@@ -147,28 +199,30 @@ impl SpellCheck {
     }
 }
 
-/// The `.aff`/`.dic` pair for `language`, falling back to the embedded English whenever the
-/// requested files are missing — a mistyped language setting degrades to English rather than
-/// silently turning the feature off.
+/// The `.aff`/`.dic` pair for `language`: compiled in for the two built-in English variants,
+/// otherwise read from the folder [`catalogue::download`] writes to.
+///
+/// A language that is configured but not on disk falls back to the default rather than turning
+/// the feature off — a half-finished download must not cost the user their spell checking.
 fn source(language: &str) -> (Cow<'static, str>, Cow<'static, str>) {
-    let english = || (Cow::Borrowed(EN_US_AFF), Cow::Borrowed(EN_US_DIC));
-    if language.is_empty() || language == DEFAULT_LANGUAGE {
-        return english();
+    let default = || (Cow::Borrowed(EN_CA_AFF), Cow::Borrowed(EN_CA_DIC));
+    match language {
+        "" | DEFAULT_LANGUAGE => return default(),
+        "en" => return (Cow::Borrowed(EN_AFF), Cow::Borrowed(EN_DIC)),
+        _ => {}
     }
-    let Some(dir) = settings::data_dir().map(|dir| dir.join("dictionaries")) else {
-        return english();
+    let Some((aff, dic)) = catalogue::paths(language) else {
+        return default();
     };
-    match (
-        std::fs::read_to_string(dir.join(format!("{language}.aff"))),
-        std::fs::read_to_string(dir.join(format!("{language}.dic"))),
-    ) {
+    match (std::fs::read_to_string(&aff), std::fs::read_to_string(&dic)) {
         (Ok(aff), Ok(dic)) => (aff.into(), dic.into()),
         _ => {
             log::warn!(
-                "no {language}.aff/.dic in {}, so spell checking uses English instead",
-                dir.display()
+                "the {} dictionary is not downloaded, so spell checking falls back to {}",
+                catalogue::name_of(language),
+                catalogue::name_of(DEFAULT_LANGUAGE)
             );
-            english()
+            default()
         }
     }
 }
@@ -254,7 +308,7 @@ pub fn misspellings(text: &str, cx: &App) -> Vec<Misspelling> {
         if dictionary.check(word) || found.iter().any(|(seen, _)| seen == word) {
             continue;
         }
-        // Measured on the shipped en_US: ngram suggestion costs 25-40ms a word against well under
+        // Measured on the shipped dictionary: ngram suggestion costs 25-40ms a word against well under
         // one, and only earns its keep on a word too mangled for the edit-distance pass to reach
         // ("documentaire" → "documentary"). So it runs as a fallback, not as the first answer.
         let mut suggestions = Vec::new();
@@ -353,7 +407,7 @@ mod tests {
     use settings::columns::ColumnSettings;
 
     fn dictionary() -> SpellCheck {
-        SpellCheck::load("en_US", false).expect("the embedded en_US dictionary parses")
+        SpellCheck::load("en-CA", false).expect("the embedded en-CA dictionary parses")
     }
 
     fn findings(
@@ -386,6 +440,32 @@ mod tests {
         assert_eq!(found[0].0, 1);
         assert_eq!(found[0].1, Severity::Warning);
         assert_eq!(found[0].2, "misspelled: recieve");
+    }
+
+    /// Which variant ships is a real choice, not a default: SCOWL size 60 carries one spelling per
+    /// word, so en_CA and en_US disagree on most of these. `catalogue` is the one that decides it
+    /// for a cataloguing tool — en_US rejects it.
+    #[test]
+    fn canadian_spellings_are_the_ones_that_pass() {
+        let spell = dictionary();
+        let defaults = ColumnSettings::default();
+        let flags = |cell: &str| !findings(&spell, "", &defaults, &[cell]).is_empty();
+        for word in [
+            "catalogue",
+            "colour",
+            "centre",
+            "theatre",
+            "labour",
+            "licence",
+        ] {
+            assert!(!flags(word), "{word} is how it is spelled here");
+        }
+        for word in ["catalog", "color", "theater"] {
+            assert!(
+                flags(word),
+                "{word} is the American spelling and should be flagged"
+            );
+        }
     }
 
     /// The rules that keep an archive's identifiers and format codes out of the Problems panel.
@@ -456,7 +536,7 @@ mod tests {
     /// answer is to stop treating a capital letter as a claim about spelling.
     #[test]
     fn capitalized_words_are_names_when_the_rule_is_on() {
-        let names = SpellCheck::load("en_US", true).expect("parses");
+        let names = SpellCheck::load("en-CA", true).expect("parses");
         let defaults = ColumnSettings::default();
         // Varda and Anansi are absent from SCOWL, so both flag with the rule off.
         assert_eq!(
