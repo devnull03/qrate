@@ -36,10 +36,6 @@ pub(crate) const HOVER_DELAY: std::time::Duration = std::time::Duration::from_mi
 const EDITOR_W: f32 = 280.;
 const EDITOR_H: f32 = 132.;
 
-/// Misspellings the Spelling submenu offers to fix. Past a few the menu is taller than the window,
-/// and a cell that wrong is one the user should retype rather than click through.
-const SPELLED_WORDS: usize = 3;
-
 /// What was right-clicked. Copy/edit/filter only make sense over a cell; a row or a column can
 /// only carry a note.
 #[derive(Clone, Copy)]
@@ -275,7 +271,7 @@ pub(crate) fn menu(
         Some((actions, found, row, col)) => {
             let spell_table = table.clone();
             menu.submenu("Spelling", window, cx, move |sub, _window, _cx| {
-                let flagged = || found.iter().take(SPELLED_WORDS);
+                let flagged = || found.iter();
                 let sub = flagged().fold(sub, |sub, (word, suggestions)| {
                     suggestions.iter().fold(sub, |sub, suggestion| {
                         let (table, text) = (spell_table.clone(), spelled_text.clone());
