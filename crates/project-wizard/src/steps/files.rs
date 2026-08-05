@@ -3,30 +3,29 @@
 //! (spreadsheet file vs. sheet link) differs.
 
 use gpui::{prelude::FluentBuilder, *};
+use gpui_component::alert::Alert;
 use gpui_component::button::Button;
 use gpui_component::input::Input;
 use gpui_component::label::Label;
-use gpui_component::{ActiveTheme, Disableable, Icon, IconName, StyledExt, h_flex, v_flex};
+use gpui_component::text::Text;
+use gpui_component::{ActiveTheme, Disableable, Sizable, StyledExt, h_flex, v_flex};
 
 use crate::data;
 use crate::wizard::{EntryKind, ProjectWizard};
 
+/// Every per-step status line in the wizard. `id` only has to be unique among its siblings.
 pub(crate) fn inline_message(
+    id: impl Into<ElementId>,
     text: impl Into<SharedString>,
     kind: MsgKind,
-    cx: &App,
 ) -> impl IntoElement {
-    let (color, icon) = match kind {
-        MsgKind::Success => (cx.theme().success, IconName::CircleCheck),
-        MsgKind::Warning => (cx.theme().warning, IconName::TriangleAlert),
-        MsgKind::Error => (cx.theme().danger, IconName::TriangleAlert),
-    };
-    h_flex()
-        .gap_1()
-        .text_sm()
-        .text_color(color)
-        .child(Icon::new(icon))
-        .child(text.into())
+    let text = Text::from(text.into());
+    match kind {
+        MsgKind::Success => Alert::success(id, text),
+        MsgKind::Warning => Alert::warning(id, text),
+        MsgKind::Error => Alert::error(id, text),
+    }
+    .small()
 }
 
 pub(crate) enum MsgKind {
@@ -217,7 +216,7 @@ impl ProjectWizard {
             self.folder_path.clone()
         };
         let dimmed = self.skip_files;
-        let status = show_status.then(|| self.render_folder_status(cx));
+        let status = show_status.then(|| self.render_folder_status());
         v_flex()
             .gap_1()
             .when(dimmed, |el| el.opacity(0.4))
@@ -335,14 +334,13 @@ impl ProjectWizard {
                     )
                     .child(match (&self.csv_preview, &self.csv_error) {
                         (Some(p), _) => inline_message(
-                            format!("✓ {} rows, {} columns found", p.rows.len(), p.headers.len()),
+                            "csv-status",
+                            format!("{} rows, {} columns found", p.rows.len(), p.headers.len()),
                             MsgKind::Success,
-                            cx,
                         )
                         .into_any_element(),
-                        (None, Some(e)) => {
-                            inline_message(e.clone(), MsgKind::Error, cx).into_any_element()
-                        }
+                        (None, Some(e)) => inline_message("csv-status", e.clone(), MsgKind::Error)
+                            .into_any_element(),
                         (None, None) => div().into_any_element(),
                     }),
             )
@@ -381,8 +379,9 @@ impl ProjectWizard {
                     )
                     .child(match (&self.sheet_check, &self.sheet_error) {
                         (Some(c), _) => inline_message(
+                            "sheet-status",
                             format!(
-                                "✓ Found \"{}\" — {} rows{}",
+                                "Found \"{}\" — {} rows{}",
                                 c.title,
                                 c.row_count,
                                 if c.used_first_tab {
@@ -392,11 +391,11 @@ impl ProjectWizard {
                                 }
                             ),
                             MsgKind::Success,
-                            cx,
                         )
                         .into_any_element(),
                         (None, Some(e)) => {
-                            inline_message(e.clone(), MsgKind::Error, cx).into_any_element()
+                            inline_message("sheet-status", e.clone(), MsgKind::Error)
+                                .into_any_element()
                         }
                         (None, None) => div().into_any_element(),
                     }),
@@ -404,24 +403,26 @@ impl ProjectWizard {
             .child(self.folder_field("browse-folder-sheet", true, cx))
     }
 
-    fn render_folder_status(&self, cx: &App) -> AnyElement {
+    fn render_folder_status(&self) -> AnyElement {
         match (&self.folder_match, &self.folder_error) {
             (Some(m), _) if m.matched_rows == m.total_rows => inline_message(
-                format!("✓ {} of {} files matched", m.matched_rows, m.total_rows),
+                "folder-status",
+                format!("{} of {} files matched", m.matched_rows, m.total_rows),
                 MsgKind::Success,
-                cx,
             )
             .into_any_element(),
             (Some(m), _) => inline_message(
+                "folder-status",
                 format!(
-                    "⚠ Matched {} of {} files — review mismatches",
+                    "Matched {} of {} files — review mismatches",
                     m.matched_rows, m.total_rows
                 ),
                 MsgKind::Warning,
-                cx,
             )
             .into_any_element(),
-            (None, Some(e)) => inline_message(e.clone(), MsgKind::Error, cx).into_any_element(),
+            (None, Some(e)) => {
+                inline_message("folder-status", e.clone(), MsgKind::Error).into_any_element()
+            }
             (None, None) => div().into_any_element(),
         }
     }

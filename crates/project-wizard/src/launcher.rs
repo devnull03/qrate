@@ -7,8 +7,9 @@
 //! `fn` pointer (mirrors `SettingsWindow::new`'s `build_pages: fn() -> ...`).
 
 use gpui::{prelude::FluentBuilder, *};
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::label::Label;
-use gpui_component::{ActiveTheme, Root, StyledExt, TitleBar, h_flex, v_flex};
+use gpui_component::{ActiveTheme, IconName, Root, Sizable, StyledExt, TitleBar, h_flex, v_flex};
 use window_wrapper::WindowRegistry;
 
 use crate::project;
@@ -141,15 +142,10 @@ impl Render for Launcher {
                         )
                         .child({
                             let remove_path = project.path.clone();
-                            div()
-                                .id(("remove-recent", ix))
-                                .flex_none()
-                                .px_1p5()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .cursor_pointer()
-                                .hover(|el| el.text_color(cx.theme().danger))
-                                .child("✕")
+                            Button::new(("remove-recent", ix))
+                                .icon(IconName::Close)
+                                .ghost()
+                                .xsmall()
                                 // Stop the click from also opening the project.
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();

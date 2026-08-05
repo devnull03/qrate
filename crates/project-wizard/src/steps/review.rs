@@ -1,8 +1,8 @@
 //! Stage 5 · Review & Create — every path converges here.
 
 use gpui::{prelude::FluentBuilder, *};
-use gpui_component::label::Label;
-use gpui_component::{ActiveTheme, StyledExt, h_flex, v_flex};
+use gpui_component::description_list::DescriptionList;
+use gpui_component::{Sizable, StyledExt, v_flex};
 
 use crate::launcher;
 use crate::project;
@@ -170,33 +170,22 @@ impl ProjectWizard {
                     .child("Ready to create your project"),
             )
             .child(
-                v_flex()
-                    .gap_1()
-                    .p_3()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .text_sm()
-                    .child(summary_row("Name", &name))
-                    .child(summary_row("Location", &self.save_path))
-                    .child(summary_row("Source", source))
-                    .when_some(spreadsheet_line.clone(), |el, line| {
-                        el.child(summary_row("Spreadsheet", &line))
+                // One column, so every row reads label-then-value down the card; `bordered` (the
+                // default) is what draws the card.
+                DescriptionList::new()
+                    .columns(1)
+                    .small()
+                    .item("Name", name.to_string(), 1)
+                    .item("Location", self.save_path.clone(), 1)
+                    .item("Source", source, 1)
+                    .when_some(spreadsheet_line.clone(), |list, line| {
+                        list.item("Spreadsheet", line, 1)
                     })
-                    .when_some(files_line.clone(), |el, line| {
-                        el.child(summary_row("Files", &line))
-                    })
+                    .when_some(files_line.clone(), |list, line| list.item("Files", line, 1))
                     // Blank projects go through Columns too, so always show it.
-                    .child(summary_row("Columns", &columns_line)),
+                    .item("Columns", columns_line, 1),
             )
         // The shared wizard footer supplies the "Create Project" (Next) and
         // "← Back" controls — see `ProjectWizard::render_footer`.
     }
-}
-
-fn summary_row(label: &str, value: &str) -> impl IntoElement {
-    h_flex()
-        .gap_1()
-        .child(Label::new(format!("{label}:")).font_semibold())
-        .child(value.to_string())
 }

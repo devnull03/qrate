@@ -6,8 +6,9 @@ use gpui::{prelude::FluentBuilder, *};
 use gpui_component::collapsible::Collapsible;
 use gpui_component::input::Input;
 use gpui_component::label::Label;
-use gpui_component::{ActiveTheme, Icon, IconName, StyledExt, h_flex, v_flex};
+use gpui_component::{ActiveTheme, StyledExt, v_flex};
 
+use crate::steps::files::{MsgKind, inline_message};
 use crate::wizard::{LinkMethod, ProjectWizard, option_card};
 
 impl ProjectWizard {
@@ -45,27 +46,25 @@ impl ProjectWizard {
                 })),
             )
             .child(match &self.folder_match {
-                Some(m) => h_flex()
-                    .gap_1()
-                    .text_sm()
-                    .text_color(cx.theme().success)
-                    .child(Icon::new(IconName::CircleCheck))
-                    .child(format!("{} of {} rows matched a file", m.matched_rows, m.total_rows))
-                    .into_any_element(),
+                Some(m) => inline_message(
+                    "link-matched",
+                    format!("{} of {} rows matched a file", m.matched_rows, m.total_rows),
+                    MsgKind::Success,
+                )
+                .into_any_element(),
                 None => div().into_any_element(),
             })
             .child(match &self.folder_match {
-                Some(m) if m.extra_files > 0 => h_flex()
-                    .gap_1()
-                    .text_sm()
-                    .text_color(cx.theme().warning)
-                    .child(Icon::new(IconName::TriangleAlert))
-                    .child(format!(
+                Some(m) if m.extra_files > 0 => inline_message(
+                    "link-extra",
+                    format!(
                         "{} file{} in this folder aren't mentioned in your spreadsheet — they'll be left out unless you link them",
                         m.extra_files,
                         if m.extra_files == 1 { "" } else { "s" }
-                    ))
-                    .into_any_element(),
+                    ),
+                    MsgKind::Warning,
+                )
+                .into_any_element(),
                 _ => div().into_any_element(),
             })
             .child(

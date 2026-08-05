@@ -201,15 +201,15 @@ impl ProjectWizard {
             let status = match (&preview, &error) {
                 (Some(p), _) => Some(
                     inline_message(
-                        format!("✓ Loaded {} columns", p.entries.len()),
+                        "config-status",
+                        format!("Loaded {} columns", p.entries.len()),
                         MsgKind::Success,
-                        cx,
                     )
                     .into_any_element(),
                 ),
-                (None, Some(e)) => {
-                    Some(inline_message(e.clone(), MsgKind::Error, cx).into_any_element())
-                }
+                (None, Some(e)) => Some(
+                    inline_message("config-status", e.clone(), MsgKind::Error).into_any_element(),
+                ),
                 (None, None) => None,
             };
 
@@ -322,12 +322,11 @@ impl ProjectWizard {
                             .py_1()
                             .border_b_1()
                             .border_color(cx.theme().border)
+                            // The warning colour already says "unmapped" — a trailing glyph saying it
+                            // again depends on font coverage for nothing.
                             .when(unmapped, |el| el.text_color(cx.theme().warning))
                             .child(header.clone())
-                            .child(format!(
-                                "→ {target}{}",
-                                if unmapped { " ⚠" } else { "" }
-                            )),
+                            .child(format!("→ {target}")),
                     );
                 }
                 table
