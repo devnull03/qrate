@@ -47,6 +47,11 @@ const ACRONYM_LEN: usize = 4;
 /// Suggestions offered per misspelling. Past a handful the menu is a wall of near-identical words.
 const MAX_SUGGESTIONS: usize = 5;
 
+/// Misspellings [`misspellings`] will suggest for. Suggesting is ~1000x the cost of checking, so
+/// this is a latency budget, not a layout choice: a menu opens on a click and cannot go and think
+/// about a cell with forty typos in it. The diagnostic's message still names every one.
+const MAX_SUGGESTED_WORDS: usize = 3;
+
 /// Declared column types that never hold prose. `data_type` is free-form text in `__columns` and
 /// almost every project leaves it `"Text"`, so this only bites for projects configured from a
 /// `column_config.csv` — the token rules in [`checkable`] are what actually keep IDs quiet.
@@ -243,11 +248,23 @@ pub fn misspellings(text: &str, cx: &App) -> Vec<Misspelling> {
     };
     let mut found: Vec<(SharedString, Vec<SharedString>)> = Vec::new();
     for word in words(text, this.ignore_capitalized) {
+        if found.len() == MAX_SUGGESTED_WORDS {
+            break;
+        }
         if dictionary.check(word) || found.iter().any(|(seen, _)| seen == word) {
             continue;
         }
+        // Measured on the shipped en_US: ngram suggestion costs 25-40ms a word against well under
+        // one, and only earns its keep on a word too mangled for the edit-distance pass to reach
+        // ("documentaire" → "documentary"). So it runs as a fallback, not as the first answer.
         let mut suggestions = Vec::new();
-        dictionary.suggest(word, &mut suggestions);
+        dictionary
+            .suggester()
+            .with_ngram_suggestions(false)
+            .suggest(word, &mut suggestions);
+        if suggestions.is_empty() {
+            dictionary.suggest(word, &mut suggestions);
+        }
         suggestions.truncate(MAX_SUGGESTIONS);
         found.push((
             word.into(),
