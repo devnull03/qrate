@@ -1,0 +1,37 @@
+Third-party material distributed with qrate.
+
+================================================================================
+en_US Hunspell dictionary — crates/spellcheck/dictionaries/en_US.{aff,dic}
+================================================================================
+
+Derived from SCOWL (Spell Checker Oriented Word Lists), http://wordlist.sourceforge.net,
+obtained from https://github.com/LibreOffice/dictionaries (en/).
+
+The collective work is Copyright 2000-2018 by Kevin Atkinson.
+
+  Copyright 2000-2018 by Kevin Atkinson
+
+  Permission to use, copy, modify, distribute and sell these word
+  lists, the associated scripts, the output created from the scripts,
+  and its documentation for any purpose is hereby granted without fee,
+  provided that the above copyright notice appears in all copies and
+  that both that copyright notice and this permission notice appear in
+  supporting documentation. Kevin Atkinson makes no representations
+  about the suitability of this array for any purpose. It is provided
+  "as is" without express or implied warranty.
+
+Portions derive from WordNet 1.6, Copyright 1997 by Princeton University,
+used under Princeton's permission notice, which grants use, copying,
+modification and distribution without fee or royalty provided the copyright
+notice and disclaimer accompany all copies. THE SOFTWARE AND DATABASE ARE
+PROVIDED "AS IS" AND PRINCETON UNIVERSITY MAKES NO REPRESENTATIONS OR
+WARRANTIES, EXPRESS OR IMPLIED. The name of Princeton University may not be
+used in advertising or publicity pertaining to distribution of the software.
+
+Further credits (Alan Beale, the 12Dicts package, the ENABLE word list, and
+the Ispell copyright covering part of SCOWL) are recorded in full in
+README_en_US.txt in the upstream repository.
+
+Any additional language qrate loads at runtime carries its own licence, which
+is NOT covered here — several dictionaries in the upstream repository are GPL.
+Check the licence of a dictionary before shipping it.
