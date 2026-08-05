@@ -80,7 +80,7 @@ fn scoped_bool(key: &str, cx: &App) -> bool {
 
 /// Writes a bool to whichever scope the Settings window currently targets. Falls back to the
 /// user scope when `Project` is active but no project is open, so a stale scope can't panic.
-fn set_scoped_bool(key: &'static str, val: bool, cx: &mut App) {
+pub fn set_scoped_bool(key: &'static str, val: bool, cx: &mut App) {
     let target = match SettingsScope::current(cx) {
         SettingsScope::Project if cx.has_global::<project::CurrentProject>() => {
             SettingsScope::Project
