@@ -1,7 +1,6 @@
 mod actions;
 mod app_menus;
 mod app_settings;
-mod components;
 mod logging;
 mod status_items;
 mod theming;

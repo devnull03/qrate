@@ -79,24 +79,3 @@ impl RenderOnce for PathPickerApp {
             }))
     }
 }
-
-#[derive(IntoElement)]
-pub struct PathPickerBrowseRow<B: IntoElement + 'static> {
-    pub input: Entity<InputState>,
-    pub browse: B,
-}
-
-impl<B: IntoElement + 'static> RenderOnce for PathPickerBrowseRow<B> {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        h_flex()
-            .gap_2()
-            .w_full()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .child(Input::new(&self.input).disabled(true).w_full()),
-            )
-            .child(self.browse)
-    }
-}
