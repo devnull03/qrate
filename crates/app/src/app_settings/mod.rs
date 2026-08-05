@@ -1,13 +1,15 @@
+use std::collections::HashMap;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Axis, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, div, px,
+    AnyElement, App, AppContext as _, Axis, Entity, Global, IntoElement, ParentElement as _,
+    SharedString, Styled as _, Subscription, Window, div, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _,
-    button::Button,
+    ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _,
+    combobox::{Combobox, ComboboxEvent, ComboboxState},
     h_flex,
-    popover::Popover,
+    searchable_list::{SearchableListItem, SearchableVec},
     setting::{SettingField, SettingGroup, SettingItem, SettingPage},
     v_flex,
 };
@@ -175,8 +177,8 @@ fn spelling_group(cx: &App) -> SettingGroup {
         group = group.item(
             SettingItem::new(
                 "Language",
-                SettingField::element(move |_opts: &_, _window: &mut _, cx: &mut _| {
-                    language_picker(language_rows(cx))
+                SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
+                    language_picker(window, cx)
                 }),
             )
             .description(
@@ -188,19 +190,106 @@ fn spelling_group(cx: &App) -> SettingGroup {
     group
 }
 
-/// One language as the picker draws it. Resolved against the context up front so the element
-/// closure below borrows nothing — see the note on [`column_picker`].
+/// Combobox states outlive the page builders that render them: `SettingsWindow` re-invokes
+/// [`build_pages`] on every render, so an entity created in there would be rebuilt each frame and
+/// forget both its selection and whether it was open. Keyed by picker id, with each one's
+/// `Change` subscription parked alongside so it stays alive.
+#[derive(Default)]
+struct Pickers {
+    columns: HashMap<&'static str, Picker<ColumnItem>>,
+    language: Option<Picker<LanguageRow>>,
+}
+
+impl Global for Pickers {}
+
+struct Picker<I: SearchableListItem + PartialEq + 'static>
+where
+    I::Value: PartialEq + Clone,
+{
+    state: Entity<ComboboxState<SearchableVec<I>>>,
+    /// What the list was last built from. `set_items` replaces the delegate wholesale, which
+    /// throws away the active search filter — so it only runs when this actually changed.
+    items: Vec<I>,
+    _sub: Subscription,
+}
+
+/// One data column, as the two pickers on the Columns page list it. The value is the stable
+/// `c{ix}` key, not the display name, so two columns sharing a header stay distinct.
+#[derive(Clone, PartialEq)]
+struct ColumnItem {
+    key: SharedString,
+    name: SharedString,
+}
+
+impl SearchableListItem for ColumnItem {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.name.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.key
+    }
+}
+
+/// One language as the picker draws it.
+#[derive(Clone, PartialEq)]
 struct LanguageRow {
     code: SharedString,
     name: SharedString,
     licence: SharedString,
     state: spellcheck::catalogue::State,
     downloading: bool,
-    selected: bool,
+}
+
+impl SearchableListItem for LanguageRow {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.name.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.code
+    }
+
+    /// Name over licence, because several of these word lists are GPL and that is a thing to see
+    /// before downloading rather than after.
+    fn render(&self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        h_flex()
+            .w_full()
+            .gap_x_2()
+            .justify_between()
+            .child(
+                v_flex()
+                    .min_w_0()
+                    .child(div().text_sm().child(self.name.clone()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(self.licence.clone()),
+                    ),
+            )
+            .when(self.downloading, |row| {
+                row.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(muted)
+                        .child("Downloading…"),
+                )
+            })
+            .when(
+                !self.downloading && self.state == spellcheck::catalogue::State::Available,
+                |row| row.child(Icon::new(IconName::ArrowDown).xsmall()),
+            )
+    }
 }
 
 fn language_rows(cx: &App) -> Vec<LanguageRow> {
-    let current = spellcheck::language(cx);
     spellcheck::catalogue::listing()
         .into_iter()
         .map(|((code, name, licence), state)| LanguageRow {
@@ -209,94 +298,111 @@ fn language_rows(cx: &App) -> Vec<LanguageRow> {
             licence: licence.into(),
             state,
             downloading: spellcheck::is_downloading(code, cx),
-            selected: current == code,
         })
         .collect()
+}
+
+/// Point a combobox's selection at `want` — but only when it isn't already there. `set_selected_
+/// indices` notifies unconditionally, so an unguarded per-render sync repaints forever.
+///
+/// Indices come from `items` (the list the state was built from) rather than from the widget,
+/// which only knows the search-filtered view. The guard keeps this a no-op during interaction, so
+/// the two agree in practice.
+fn sync_selection<I: SearchableListItem<Value = SharedString> + 'static>(
+    state: &Entity<ComboboxState<SearchableVec<I>>>,
+    items: &[I],
+    want: &[SharedString],
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let current = state.read(cx).selected_values();
+    if current.len() == want.len() && want.iter().all(|v| current.contains(v)) {
+        return;
+    }
+    let indices: Vec<IndexPath> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| want.contains(item.value()))
+        .map(|(ix, _)| IndexPath::new(ix))
+        .collect();
+    state.update(cx, |state, cx| {
+        state.set_selected_indices(indices, window, cx);
+    });
 }
 
 /// The language list, in the shape a phone's language screen uses: everything available, each row
 /// saying whether it is already here or a download away, and one tap doing whichever applies.
 ///
-/// Each row shows its word list's licence, because several of these are GPL and that is a thing to
-/// see before downloading rather than after.
-fn language_picker(rows: Vec<LanguageRow>) -> impl gpui::IntoElement {
+/// Picking a language that isn't here yet starts its download instead of switching to it. Nothing
+/// undoes the highlight by hand — the selection re-syncs from the setting on the next render, and
+/// the setting did not change.
+fn language_picker(window: &mut Window, cx: &mut App) -> AnyElement {
     use spellcheck::catalogue::State;
 
-    let label = rows.iter().find(|r| r.selected).map_or_else(
-        || SharedString::from("English (Canada)"),
-        |r| r.name.clone(),
-    );
+    let rows = language_rows(cx);
+    if !cx.has_global::<Pickers>() {
+        cx.set_global(Pickers::default());
+    }
+    let state = match cx.global::<Pickers>().language.as_ref() {
+        Some(picker) => picker.state.clone(),
+        None => {
+            let state = cx.new(|cx| {
+                ComboboxState::new(SearchableVec::new(rows.clone()), vec![], window, cx)
+                    .searchable(true)
+            });
+            let _sub = cx.subscribe(&state, |_state, event, cx| {
+                let ComboboxEvent::Change(values) = event else {
+                    return;
+                };
+                let Some(code) = values.first().cloned() else {
+                    return;
+                };
+                match spellcheck::catalogue::listing()
+                    .into_iter()
+                    .find(|((c, _, _), _)| *c == code.as_ref())
+                    .map(|(_, state)| state)
+                {
+                    Some(State::Available) => spellcheck::start_download(code, cx),
+                    // Built in and installed both mean "here already"; only the reason differs,
+                    // and the reason is not the user's problem.
+                    Some(_) => {
+                        settings::set_scoped_text(spellcheck::SPELLCHECK_LANGUAGE_KEY, code, cx)
+                    }
+                    None => {}
+                }
+            });
+            cx.global_mut::<Pickers>().language = Some(Picker {
+                state: state.clone(),
+                items: rows.clone(),
+                _sub,
+            });
+            state
+        }
+    };
 
-    Popover::new("spellcheck-language")
-        .trigger(
-            Button::new("spellcheck-language-btn")
-                .label(label)
-                .outline()
-                .xsmall(),
-        )
-        .content(move |_state, _window, cx| {
-            let (accent, accent_fg, muted) = (
-                cx.theme().accent,
-                cx.theme().accent_foreground,
-                cx.theme().muted_foreground,
-            );
-            let radius = cx.theme().radius;
-            v_flex()
-                .id("spellcheck-language-list")
-                .w(px(320.))
-                .max_h(px(360.))
-                .p_1()
-                .overflow_y_scroll()
-                .children(rows.iter().map(|row| {
-                    let (code, state, downloading) = (row.code.clone(), row.state, row.downloading);
-                    h_flex()
-                        .id(SharedString::from(format!("lang-{}", row.code)))
-                        .h(px(34.))
-                        .px(px(8.))
-                        .gap_x_2()
-                        .rounded(radius)
-                        .items_center()
-                        .justify_between()
-                        .cursor_pointer()
-                        .hover(|r| r.bg(accent).text_color(accent_fg))
-                        .child(
-                            v_flex()
-                                .min_w_0()
-                                .child(div().text_sm().child(row.name.clone()))
-                                .child(
-                                    div().text_xs().text_color(muted).child(row.licence.clone()),
-                                ),
-                        )
-                        .child(match (downloading, state, row.selected) {
-                            (true, _, _) => div()
-                                .flex_shrink_0()
-                                .text_xs()
-                                .text_color(muted)
-                                .child("Downloading…")
-                                .into_any_element(),
-                            (_, _, true) => Icon::new(IconName::Check).xsmall().into_any_element(),
-                            (_, State::Available, _) => {
-                                Icon::new(IconName::ArrowDown).xsmall().into_any_element()
-                            }
-                            // Built in and installed both mean "here already"; only the reason
-                            // differs, and the reason is not the user's problem.
-                            _ => div().flex_shrink_0().into_any_element(),
-                        })
-                        .on_click(move |_, _, cx: &mut App| {
-                            if downloading {
-                                return;
-                            }
-                            match state {
-                                State::Available => spellcheck::start_download(code.clone(), cx),
-                                _ => settings::set_scoped_text(
-                                    spellcheck::SPELLCHECK_LANGUAGE_KEY,
-                                    code.clone(),
-                                    cx,
-                                ),
-                            }
-                        })
-                }))
-        })
+    // The catalogue is fixed, but download state is not — rebuild so a finished download stops
+    // showing its arrow.
+    if cx
+        .global::<Pickers>()
+        .language
+        .as_ref()
+        .is_some_and(|p| p.items != rows)
+    {
+        state.update(cx, |state, cx| {
+            state.set_items(SearchableVec::new(rows.clone()), window, cx);
+        });
+        if let Some(picker) = cx.global_mut::<Pickers>().language.as_mut() {
+            picker.items = rows.clone();
+        }
+    }
+    sync_selection(&state, &rows, &[spellcheck::language(cx)], window, cx);
+
+    Combobox::new(&state)
+        .small()
+        .menu_width(px(320.))
+        .menu_max_h(px(360.))
+        .search_placeholder("Search languages…")
+        .into_any_element()
 }
 
 /// Per-column filters, project-scoped. A master switch gates the feature; when on, a multi-select
@@ -312,15 +418,7 @@ fn columns_page(cx: &App) -> SettingPage {
         );
     };
 
-    // `c{ix}` is the column's index into the on-disk header order — the same identity the table
-    // mints in `set_data`, so it survives reordering and reopening.
-    let headers: Vec<(String, SharedString)> = project
-        .data
-        .headers
-        .iter()
-        .enumerate()
-        .map(|(ix, name)| (format!("c{ix}"), SharedString::from(name.clone())))
-        .collect();
+    let headers = column_items(project);
 
     let mut group = SettingGroup::new().title("Filters").item(
         SettingItem::new(
@@ -348,14 +446,14 @@ fn columns_page(cx: &App) -> SettingPage {
         group = group.item(
             SettingItem::new(
                 "Filtered columns",
-                SettingField::element(move |_opts: &_, _window: &mut _, cx: &mut _| {
-                    let on: fn(&columns::ColumnSettings) -> bool = |s| s.filter_enabled;
+                SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
                     column_picker(
                         "filtered-columns",
                         picked.clone(),
-                        picker_label(&picked, on, cx),
-                        on,
-                        |s| s.filter_enabled = !s.filter_enabled,
+                        |s| s.filter_enabled,
+                        |s, on| s.filter_enabled = on,
+                        window,
+                        cx,
                     )
                 }),
             )
@@ -366,14 +464,14 @@ fn columns_page(cx: &App) -> SettingPage {
     group = group.item(
         SettingItem::new(
             "Spell-checked columns",
-            SettingField::element(move |_opts: &_, _window: &mut _, cx: &mut _| {
-                let on: fn(&columns::ColumnSettings) -> bool = |s| s.spellcheck;
+            SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
                 column_picker(
                     "spellchecked-columns",
                     headers.clone(),
-                    picker_label(&headers, on, cx),
-                    on,
-                    |s| s.spellcheck = !s.spellcheck,
+                    |s| s.spellcheck,
+                    |s, on| s.spellcheck = on,
+                    window,
+                    cx,
                 )
             }),
         )
@@ -382,17 +480,23 @@ fn columns_page(cx: &App) -> SettingPage {
     SettingPage::new("Columns").group(group)
 }
 
-/// Trigger label for the picker: "First +N others", or "No columns" when nothing is selected.
-fn picker_label(
-    headers: &[(String, SharedString)],
-    on: fn(&columns::ColumnSettings) -> bool,
-    cx: &App,
-) -> SharedString {
-    let selected: Vec<&SharedString> = headers
+/// The open project's data columns. `c{ix}` is the column's index into the on-disk header order —
+/// the same identity the table mints in `set_data`, so it survives reordering and reopening.
+fn column_items(project: &CurrentProject) -> Vec<ColumnItem> {
+    project
+        .data
+        .headers
         .iter()
-        .filter(|(key, _)| on(&columns::get(key, cx)))
-        .map(|(_, name)| name)
-        .collect();
+        .enumerate()
+        .map(|(ix, name)| ColumnItem {
+            key: SharedString::from(format!("c{ix}")),
+            name: SharedString::from(name.clone()),
+        })
+        .collect()
+}
+
+/// Trigger label for the picker: "First +N others", or "No columns" when nothing is selected.
+fn picker_label(selected: &[SharedString]) -> SharedString {
     match selected.len() {
         0 => "No columns".into(),
         1 => selected[0].clone(),
@@ -406,78 +510,98 @@ fn picker_label(
     }
 }
 
-/// The picker trigger ("First +N others") and its checklist. A popover, not a `Dropdown`, so the
-/// list scrolls and clicking a row toggles that column without dismissing.
+/// A multi-select over the project's columns. `on`/`set` are the only difference between the two
+/// pickers on this page — one field's getter and setter, passed as plain `fn`s so both stay one
+/// component rather than two copies.
 ///
-/// `on`/`toggle` are the only difference between the two pickers on this page — one field's
-/// getter and setter, passed as plain `fn`s so both stay one component rather than two copies.
-///
-/// Takes the label already resolved rather than an `&App`: in edition 2024 a returned
-/// `impl IntoElement` captures every input lifetime, and a borrowed context outlives the closure
-/// gpui hands this to.
+/// The settings map stays the source of truth: selection is synced *from* it here and written
+/// *back* in the `Change` subscription, so nothing has to reconcile two answers.
 fn column_picker(
     id: &'static str,
-    headers: Vec<(String, SharedString)>,
-    label: SharedString,
+    headers: Vec<ColumnItem>,
     on: fn(&columns::ColumnSettings) -> bool,
-    toggle: fn(&mut columns::ColumnSettings),
-) -> impl gpui::IntoElement {
-    Popover::new(id)
-        .trigger(
-            Button::new(SharedString::from(format!("{id}-btn")))
-                .label(label)
-                .outline()
-                .xsmall(),
-        )
-        .content(move |_state, _window, cx| {
-            // Match gpui-component's own menu items: text_sm rows, accent highlight on hover, a
-            // right-aligned check marking selection (see `menu/popup_menu.rs`).
-            let (accent, accent_fg, muted) = (
-                cx.theme().accent,
-                cx.theme().accent_foreground,
-                cx.theme().muted_foreground,
+    set: fn(&mut columns::ColumnSettings, bool),
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    if !cx.has_global::<Pickers>() {
+        cx.set_global(Pickers::default());
+    }
+    let state = match cx.global::<Pickers>().columns.get(id) {
+        Some(picker) => picker.state.clone(),
+        None => {
+            let state = cx.new(|cx| {
+                ComboboxState::new(SearchableVec::new(headers.clone()), vec![], window, cx)
+                    .multiple(true)
+                    .searchable(true)
+            });
+            let _sub = cx.subscribe(&state, move |_state, event, cx| {
+                let ComboboxEvent::Change(values) = event else {
+                    return;
+                };
+                // Re-read the columns rather than capturing them: this closure outlives the project
+                // whose headers built it.
+                let Some(keys) = cx.try_global::<CurrentProject>().map(|p| {
+                    column_items(p)
+                        .into_iter()
+                        .map(|c| c.key)
+                        .collect::<Vec<_>>()
+                }) else {
+                    return;
+                };
+                for key in keys {
+                    let want = values.contains(&key);
+                    if on(&columns::get(&key, cx)) != want {
+                        columns::update(&key, |s| set(s, want), cx);
+                    }
+                }
+                // A validator reads these settings, so its published findings are stale the moment
+                // one changes — and only a run replaces them.
+                table::revalidate_now(cx);
+            });
+            cx.global_mut::<Pickers>().columns.insert(
+                id,
+                Picker {
+                    state: state.clone(),
+                    items: headers.clone(),
+                    _sub,
+                },
             );
-            let radius = cx.theme().radius;
-            let rows = headers.clone();
-            v_flex()
-                .id(SharedString::from(format!("{id}-list")))
-                .w(px(240.))
-                .max_h(px(320.))
-                .p_1()
-                // `overflow_y_scroll` only — `overflow_hidden` would set *both* axes and undo it.
-                .overflow_y_scroll()
-                .when(rows.is_empty(), |list| {
-                    list.child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .text_sm()
-                            .text_color(muted)
-                            .child("No columns in this project"),
-                    )
-                })
-                .children(rows.into_iter().map(move |(key, name)| {
-                    let checked = on(&columns::get(&key, cx));
-                    let toggle_key = key.clone();
-                    h_flex()
-                        .id(SharedString::from(format!("{id}-pick-{key}")))
-                        .h(px(26.))
-                        .px(px(8.))
-                        .gap_x_1()
-                        .rounded(radius)
-                        .items_center()
-                        .justify_between()
-                        .text_sm()
-                        .cursor_pointer()
-                        .hover(|r| r.bg(accent).text_color(accent_fg))
-                        .child(name)
-                        .when(checked, |r| r.child(Icon::new(IconName::Check).xsmall()))
-                        .on_click(move |_, _, cx: &mut App| {
-                            columns::update(&toggle_key, toggle, cx);
-                            // A validator reads these settings, so its published findings are
-                            // stale the moment one changes — and only a run replaces them.
-                            table::revalidate_now(cx);
-                        })
-                }))
-        })
+            state
+        }
+    };
+
+    // A project switch is the only thing that changes the column list.
+    if cx.global::<Pickers>().columns[id].items != headers {
+        state.update(cx, |state, cx| {
+            state.set_items(SearchableVec::new(headers.clone()), window, cx);
+        });
+        if let Some(picker) = cx.global_mut::<Pickers>().columns.get_mut(id) {
+            picker.items = headers.clone();
+        }
+    }
+
+    let picked: Vec<SharedString> = headers
+        .iter()
+        .filter(|c| on(&columns::get(&c.key, cx)))
+        .map(|c| c.key.clone())
+        .collect();
+    sync_selection(&state, &headers, &picked, window, cx);
+
+    let label = picker_label(
+        &headers
+            .iter()
+            .filter(|c| picked.contains(&c.key))
+            .map(|c| c.name.clone())
+            .collect::<Vec<_>>(),
+    );
+
+    Combobox::new(&state)
+        .small()
+        .menu_width(px(240.))
+        .menu_max_h(px(320.))
+        .search_placeholder("Search columns…")
+        .empty(|_, _| div().p_2().child("No columns in this project"))
+        .render_trigger(move |_ctx, _, _| div().child(label.clone()))
+        .into_any_element()
 }
