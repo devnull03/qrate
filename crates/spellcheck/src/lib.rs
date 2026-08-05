@@ -1,0 +1,471 @@
+//! Spell checking as a [`ColumnValidator`], plus the suggestion and add-a-word actions the
+//! table's right-click menu reaches through [`diagnostics::SpellActions`].
+//!
+//! A leaf crate that only `app` depends on, which is the whole reason `ColumnValidator` is `dyn`:
+//! the half-megabyte en_US dictionary embedded below must never enter `table`'s graph.
+//!
+//! English ships compiled in; any other language is an `.aff`/`.dic` pair in the data dir. That
+//! is the only difference between one language and the next — no code knows what English is.
+
+use std::borrow::Cow;
+use std::io::Write as _;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+
+use diagnostics::{ColumnInfo, ColumnValidator, Misspelling, Severity};
+use gpui::{App, Global, SharedString};
+use spellbook::Dictionary;
+
+/// Setting key (either scope) for the spell-check master switch. Absent means on, so the feature
+/// works without first visiting Settings — the same convention `COLUMN_FILTERS_ENABLED_KEY` uses.
+pub const SPELLCHECK_ENABLED_KEY: &str = "spellcheck_enabled";
+
+/// Setting key holding the dictionary language, e.g. `en_US`. Absent means [`DEFAULT_LANGUAGE`].
+pub const SPELLCHECK_LANGUAGE_KEY: &str = "spellcheck_language";
+
+/// Setting key for skipping capitalized words. Absent means on: a catalogue is mostly people,
+/// places, studios, and titles, and no word list will ever hold all of them.
+pub const SPELLCHECK_NAMES_KEY: &str = "spellcheck_ignore_capitalized";
+
+/// The one language that ships in the binary.
+pub const DEFAULT_LANGUAGE: &str = "en_US";
+
+static EN_US_AFF: &str = include_str!("../dictionaries/en_US.aff");
+static EN_US_DIC: &str = include_str!("../dictionaries/en_US.dic");
+
+/// The name the Problems panel shows, and the key this validator's output is replaced by.
+const VALIDATOR_NAME: &str = "spell";
+
+/// Shortest token worth checking. Below this the dictionary answers "yes" for almost anything.
+const MIN_WORD_LEN: usize = 3;
+
+/// An all-caps token this long or shorter is read as an acronym — `MP4`, `VHS`, `NTSC`, `JPEG` —
+/// and skipped. Longer all-caps text is checked normally, because Hunspell already accepts an
+/// upper-cased form of a known word, so an ALL CAPS TITLE still gets its typos found.
+const ACRONYM_LEN: usize = 4;
+
+/// Suggestions offered per misspelling. Past a handful the menu is a wall of near-identical words.
+const MAX_SUGGESTIONS: usize = 5;
+
+/// Declared column types that never hold prose. `data_type` is free-form text in `__columns` and
+/// almost every project leaves it `"Text"`, so this only bites for projects configured from a
+/// `column_config.csv` — the token rules in [`checkable`] are what actually keep IDs quiet.
+const NON_TEXT_TYPES: &[&str] = &[
+    "number",
+    "integer",
+    "int",
+    "float",
+    "decimal",
+    "date",
+    "datetime",
+    "time",
+    "year",
+    "id",
+    "identifier",
+    "url",
+    "uri",
+    "link",
+    "bool",
+    "boolean",
+];
+
+/// The loaded dictionary, shared between the registered validator and the menu actions.
+///
+/// `RwLock` because [`ColumnValidator::validate`] takes `&self` while adding a word needs `&mut` —
+/// the alternative is rebuilding the validator on every "Add to dictionary", which would mean
+/// re-parsing half a megabyte to learn one word.
+#[derive(Clone)]
+pub struct SpellCheck {
+    dictionary: Arc<RwLock<Dictionary>>,
+    /// Read once at load, so changing it takes a restart — the same deal the language gets, and
+    /// for the same reason: [`ColumnValidator::validate`] is handed no context to re-read from.
+    ignore_capitalized: bool,
+}
+
+impl Global for SpellCheck {}
+
+/// Whether spell checking is on. Compared against the text a stored bool renders as, so that
+/// *unset* reads as on the way `AUTOSAVE_KEY != "off"` does — `effective_bool` cannot express
+/// that, since it answers `false` for a key nobody has written yet.
+pub fn enabled(cx: &App) -> bool {
+    // `AppSettings::get` panics without the global, which a test app context has no reason to set.
+    !cx.has_global::<settings::AppSettings>()
+        || settings::effective_text(SPELLCHECK_ENABLED_KEY, cx) != "false"
+}
+
+/// Whether capitalized words are treated as names and skipped. Unset reads as on.
+pub fn ignore_capitalized(cx: &App) -> bool {
+    !cx.has_global::<settings::AppSettings>()
+        || settings::effective_text(SPELLCHECK_NAMES_KEY, cx) != "false"
+}
+
+/// The configured language, or [`DEFAULT_LANGUAGE`] when unset.
+pub fn language(cx: &App) -> SharedString {
+    let configured = settings::effective_text(SPELLCHECK_LANGUAGE_KEY, cx);
+    if configured.is_empty() {
+        DEFAULT_LANGUAGE.into()
+    } else {
+        configured
+    }
+}
+
+impl SpellCheck {
+    /// Parse `language`'s dictionary and replay the user's custom words over it. Slow enough
+    /// (half a megabyte of affix rules) that the caller should do this off the UI thread.
+    pub fn load(language: &str, ignore_capitalized: bool) -> Option<Self> {
+        let (aff, dic) = source(language);
+        let mut dictionary = match Dictionary::new(&aff, &dic) {
+            Ok(dictionary) => dictionary,
+            Err(err) => {
+                log::error!(
+                    "the {language} dictionary is unreadable, so spell checking is off: {err}"
+                );
+                return None;
+            }
+        };
+        let custom = custom_words();
+        log::info!(
+            "spell checking with the {language} dictionary and {} of your own words",
+            custom.len()
+        );
+        for word in custom {
+            if let Err(err) = dictionary.add(&word) {
+                log::warn!(
+                    "skipped \"{word}\" from your custom dictionary, which is not a word the dictionary format accepts: {err}"
+                );
+            }
+        }
+        Some(Self {
+            dictionary: Arc::new(RwLock::new(dictionary)),
+            ignore_capitalized,
+        })
+    }
+}
+
+/// The `.aff`/`.dic` pair for `language`, falling back to the embedded English whenever the
+/// requested files are missing — a mistyped language setting degrades to English rather than
+/// silently turning the feature off.
+fn source(language: &str) -> (Cow<'static, str>, Cow<'static, str>) {
+    let english = || (Cow::Borrowed(EN_US_AFF), Cow::Borrowed(EN_US_DIC));
+    if language.is_empty() || language == DEFAULT_LANGUAGE {
+        return english();
+    }
+    let Some(dir) = settings::data_dir().map(|dir| dir.join("dictionaries")) else {
+        return english();
+    };
+    match (
+        std::fs::read_to_string(dir.join(format!("{language}.aff"))),
+        std::fs::read_to_string(dir.join(format!("{language}.dic"))),
+    ) {
+        (Ok(aff), Ok(dic)) => (aff.into(), dic.into()),
+        _ => {
+            log::warn!(
+                "no {language}.aff/.dic in {}, so spell checking uses English instead",
+                dir.display()
+            );
+            english()
+        }
+    }
+}
+
+/// The user's own dictionary: one word per line, `#` starts a comment. A plain text file rather
+/// than a settings blob so it can be edited, backed up, and diffed like any other list.
+pub fn custom_dictionary_path() -> Option<PathBuf> {
+    settings::data_dir().map(|dir| dir.join("dictionary.txt"))
+}
+
+fn custom_words() -> Vec<String> {
+    let Some(path) = custom_dictionary_path() else {
+        return Vec::new();
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        // Not having one yet is the normal case, so only a real read failure is worth a line.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(err) => {
+            log::warn!(
+                "could not read your custom dictionary at {}, so its words will be flagged: {err}",
+                path.display()
+            );
+            return Vec::new();
+        }
+    };
+    text.lines()
+        .map(|line| line.split('#').next().unwrap_or_default().trim())
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Teach the dictionary `word` and append it to the user's file. Returns whether anything
+/// changed, so the caller knows whether a revalidation is worth running.
+pub fn add_word(word: &str, cx: &mut App) -> bool {
+    let Some(this) = cx.try_global::<SpellCheck>().cloned() else {
+        return false;
+    };
+    let Ok(mut dictionary) = this.dictionary.write() else {
+        log::error!("the dictionary is poisoned, so \"{word}\" was not added");
+        return false;
+    };
+    if let Err(err) = dictionary.add(word) {
+        log::warn!("could not add \"{word}\" to the dictionary: {err}");
+        return false;
+    }
+    drop(dictionary);
+
+    if let Some(path) = custom_dictionary_path() {
+        let appended = std::fs::create_dir_all(path.parent().unwrap_or(&path)).and_then(|()| {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?;
+            writeln!(file, "{word}")
+        });
+        if let Err(err) = appended {
+            log::warn!(
+                "\"{word}\" was accepted for this session but could not be saved to {}, so it will be flagged again after a restart: {err}",
+                path.display()
+            );
+        }
+    }
+    true
+}
+
+/// Every misspelled word in `text`, each with its ranked suggestions, in first-seen order.
+/// Called when the right-click menu opens rather than stored per cell, so a diagnostic's message
+/// stays a sentence for a human instead of a format the table has to parse back.
+pub fn misspellings(text: &str, cx: &App) -> Vec<Misspelling> {
+    let Some(this) = cx.try_global::<SpellCheck>() else {
+        return Vec::new();
+    };
+    let Ok(dictionary) = this.dictionary.read() else {
+        return Vec::new();
+    };
+    let mut found: Vec<(SharedString, Vec<SharedString>)> = Vec::new();
+    for word in words(text, this.ignore_capitalized) {
+        if dictionary.check(word) || found.iter().any(|(seen, _)| seen == word) {
+            continue;
+        }
+        let mut suggestions = Vec::new();
+        dictionary.suggest(word, &mut suggestions);
+        suggestions.truncate(MAX_SUGGESTIONS);
+        found.push((
+            word.into(),
+            suggestions.into_iter().map(SharedString::from).collect(),
+        ));
+    }
+    found
+}
+
+/// Split `text` into the tokens worth checking. Word characters are alphanumerics plus the
+/// apostrophe, so `don't` survives as one word.
+fn words(text: &str, ignore_capitalized: bool) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .map(|token| token.trim_matches('\''))
+        .filter(move |token| checkable(token, ignore_capitalized))
+}
+
+/// Whether a token is prose rather than data. This, not the column's declared type, is what keeps
+/// `AV-2019-0043` and `MP4` out of the Problems panel.
+///
+/// `ignore_capitalized` is the names rule, and it is blunt on purpose: a cell is a field, not a
+/// sentence, so there is no sentence start to exempt and `Varda` alone in a Director column has to
+/// pass. The cost is a typo that happens to be capitalized, which is why it is a setting.
+fn checkable(token: &str, ignore_capitalized: bool) -> bool {
+    let len = token.chars().count();
+    if len < MIN_WORD_LEN || token.chars().any(char::is_numeric) {
+        return false;
+    }
+    if len <= ACRONYM_LEN && token.chars().all(char::is_uppercase) {
+        return false;
+    }
+    !ignore_capitalized || !token.starts_with(char::is_uppercase)
+}
+
+fn is_non_text(data_type: &str) -> bool {
+    NON_TEXT_TYPES
+        .iter()
+        .any(|known| data_type.trim().eq_ignore_ascii_case(known))
+}
+
+impl ColumnValidator for SpellCheck {
+    fn name(&self) -> SharedString {
+        VALIDATOR_NAME.into()
+    }
+
+    fn validate(
+        &self,
+        column: &ColumnInfo,
+        values: &[SharedString],
+    ) -> Vec<(usize, Severity, SharedString)> {
+        if !column.settings.spellcheck || is_non_text(column.data_type) {
+            return Vec::new();
+        }
+        let Ok(dictionary) = self.dictionary.read() else {
+            return Vec::new();
+        };
+        values
+            .iter()
+            .enumerate()
+            .filter_map(|(row, value)| {
+                let mut bad: Vec<&str> = Vec::new();
+                for word in words(value, self.ignore_capitalized) {
+                    if !dictionary.check(word) && !bad.contains(&word) {
+                        bad.push(word);
+                    }
+                }
+                (!bad.is_empty()).then(|| {
+                    (
+                        row,
+                        Severity::Warning,
+                        format!("misspelled: {}", bad.join(", ")).into(),
+                    )
+                })
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Never `use super::*` here — the chained glob would let gpui's `test` macro shadow the
+    // `#[test]` its own expansion emits. See the note in `table`'s `note.rs` test module.
+    use crate::{SpellCheck, checkable, is_non_text, words};
+    use diagnostics::{ColumnInfo, ColumnValidator, Severity};
+    use gpui::SharedString;
+    use settings::columns::ColumnSettings;
+
+    fn dictionary() -> SpellCheck {
+        SpellCheck::load("en_US", false).expect("the embedded en_US dictionary parses")
+    }
+
+    fn findings(
+        spell: &SpellCheck,
+        data_type: &str,
+        settings: &ColumnSettings,
+        values: &[&str],
+    ) -> Vec<(usize, Severity, SharedString)> {
+        let values: Vec<SharedString> = values.iter().map(|v| SharedString::from(*v)).collect();
+        spell.validate(
+            &ColumnInfo {
+                name: "Title",
+                data_type,
+                settings,
+            },
+            &values,
+        )
+    }
+
+    #[test]
+    fn the_embedded_dictionary_knows_english() {
+        let spell = dictionary();
+        let found = findings(
+            &spell,
+            "Text",
+            &ColumnSettings::default(),
+            &["I did receive the reel", "I did recieve the reel"],
+        );
+        assert_eq!(found.len(), 1, "only the misspelled row is reported");
+        assert_eq!(found[0].0, 1);
+        assert_eq!(found[0].1, Severity::Warning);
+        assert_eq!(found[0].2, "misspelled: recieve");
+    }
+
+    /// The rules that keep an archive's identifiers and format codes out of the Problems panel.
+    #[test]
+    fn data_shaped_tokens_are_never_checked() {
+        for token in ["AV-2019-0043", "MP4", "1080i", "a", "of", "TIFF", "NTSC"] {
+            assert!(
+                !checkable(token, false),
+                "{token} should not reach the dictionary"
+            );
+        }
+        for token in ["receive", "Toronto", "don't", "BROADCAST"] {
+            assert!(checkable(token, false), "{token} should be checked");
+        }
+    }
+
+    #[test]
+    fn an_apostrophe_stays_inside_its_word() {
+        assert_eq!(
+            words("don't stop", false).collect::<Vec<_>>(),
+            vec!["don't", "stop"]
+        );
+        assert_eq!(
+            words("'quoted' word", false).collect::<Vec<_>>(),
+            vec!["quoted", "word"]
+        );
+    }
+
+    /// The two opt-outs, one per level.
+    #[test]
+    fn a_column_can_opt_out_by_setting_or_by_type() {
+        let spell = dictionary();
+        let off = ColumnSettings {
+            spellcheck: false,
+            ..Default::default()
+        };
+        assert!(findings(&spell, "Text", &off, &["recieve"]).is_empty());
+        assert!(
+            findings(&spell, "Date", &ColumnSettings::default(), &["recieve"]).is_empty(),
+            "a declared Date column holds no prose"
+        );
+        assert!(is_non_text("  DATETIME "));
+        assert!(!is_non_text("Text"));
+        assert!(!is_non_text(""), "an unconfigured column is still checked");
+    }
+
+    /// What "Add to dictionary" has to achieve. Exercised on the dictionary directly because the
+    /// public `add_word` also writes the user's file, which a test must not touch.
+    #[test]
+    fn a_learned_word_stops_being_reported() {
+        let spell = dictionary();
+        let defaults = ColumnSettings::default();
+        let cell = ["shot on betacam"];
+        assert_eq!(
+            findings(&spell, "", &defaults, &cell)[0].2,
+            "misspelled: betacam"
+        );
+        spell
+            .dictionary
+            .write()
+            .expect("uncontended")
+            .add("betacam")
+            .expect("a bare word is a valid .dic line");
+        assert!(findings(&spell, "", &defaults, &cell).is_empty());
+    }
+
+    /// The names rule. No word list holds every filmmaker, town, and studio, so the only general
+    /// answer is to stop treating a capital letter as a claim about spelling.
+    #[test]
+    fn capitalized_words_are_names_when_the_rule_is_on() {
+        let names = SpellCheck::load("en_US", true).expect("parses");
+        let defaults = ColumnSettings::default();
+        // Varda and Anansi are absent from SCOWL, so both flag with the rule off.
+        assert_eq!(
+            findings(&dictionary(), "", &defaults, &["Agnès Varda"]).len(),
+            1
+        );
+        assert!(findings(&names, "", &defaults, &["Agnès Varda"]).is_empty());
+        assert!(findings(&names, "", &defaults, &["Anansi the Spider"]).is_empty());
+        // A lowercase typo still gets caught, which is the whole point of scoping it to capitals.
+        assert_eq!(
+            findings(&names, "", &defaults, &["Varda recieved it"])[0].2,
+            "misspelled: recieved"
+        );
+        assert!(checkable("recieve", true));
+        assert!(!checkable("Recieve", true));
+    }
+
+    #[test]
+    fn every_misspelling_in_a_row_is_named_once() {
+        let spell = dictionary();
+        let found = findings(
+            &spell,
+            "",
+            &ColumnSettings::default(),
+            &["teh recieve teh reel"],
+        );
+        assert_eq!(found[0].2, "misspelled: teh, recieve");
+    }
+}

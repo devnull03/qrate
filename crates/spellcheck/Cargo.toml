@@ -1,0 +1,17 @@
+[package]
+name = "spellcheck"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+diagnostics = { path = "../diagnostics" }
+settings = { path = "../settings" }
+gpui.workspace = true
+log.workspace = true
+# Hunspell-compatible and language-agnostic: a second language is an .aff/.dic pair dropped in
+# the data dir, not a fork. Its only two dependencies are a hasher, so the dictionary is the
+# weight here, not the crate.
+spellbook = "0.4"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
