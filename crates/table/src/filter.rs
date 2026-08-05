@@ -92,7 +92,7 @@ pub(crate) fn render_th(
         .items_center()
         .gap_1()
         .when(editing_col, |th| th.bg(cx.theme().secondary_hover))
-        .child(div().flex_1().truncate().child(name))
+        .child(div().flex_1().min_w_0().truncate().child(name))
         .when_some(worst, |th, severity| th.child(note::marker(severity, cx)))
         .when_some(tip, |th, text| {
             th.tooltip(move |window, cx| {
@@ -105,7 +105,14 @@ pub(crate) fn render_th(
         })
         .when_some(note_editor, |th, editor| th.child(editor))
         .when(delegate.column_filter_enabled(data_col), |th| {
-            th.child(filter_dropdown(delegate, data_col, active, window, cx))
+            // Wrapped and pinned to its own width: `Combobox` lays its trigger row out `w_full`,
+            // which in a flex row against a `flex_1` title resolves to "all of it" — the funnel
+            // button ended up spanning the header and the column name had nowhere to render.
+            th.child(
+                div()
+                    .flex_none()
+                    .child(filter_dropdown(delegate, data_col, active, window, cx)),
+            )
         })
         .into_any_element()
 }

@@ -37,6 +37,14 @@ pub const SETTINGS_WINDOW_BOUNDS_KEY: &str = "settings_window_bounds";
 /// or `"off"`. Read by the table crate to decide when a committed cell edit reaches disk.
 pub const AUTOSAVE_KEY: &str = "autosave";
 
+/// Setting key (either scope) for the string that separates several values inside one cell, e.g.
+/// `;` in `Film; Video`. Empty means a cell is one indivisible value.
+///
+/// Lives here rather than in `table` because it is no longer only the table's: a plugin checking a
+/// column has to split a cell the same way the grid does, and `plugin-host` cannot depend on
+/// `table` to ask.
+pub const FILTER_SUBDELIMITER_KEY: &str = "filter_subdelimiter";
+
 // --- Settings Scope ---
 
 /// Which store a settings field reads and writes. The same fields render in both scopes; only

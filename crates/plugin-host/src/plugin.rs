@@ -115,6 +115,10 @@ pub struct LuaPlugin {
     /// Behind a lock so a write can refresh the copy in place — reloading the VM to pick up a
     /// changed setting would re-run every `init.lua` on every keystroke in the Settings window.
     scoped: Mutex<(Json, Json)>,
+    /// The sub-delimiter the table filters by, handed over for the same reason `scoped` is: a
+    /// plugin has no `App` to read it from, and a plugin that split cells differently from the
+    /// grid would disagree with what the user can see.
+    app: Mutex<SharedString>,
     /// A load failure is kept rather than dropped, so a broken plugin can still report itself.
     state: Result<Loaded, String>,
 }
@@ -133,6 +137,7 @@ impl LuaPlugin {
             id: id.to_string().into(),
             state: build(id, source, &env, &shared).map_err(|err| err.to_string()),
             scoped: Mutex::new((Json::Null, Json::Null)),
+            app: Mutex::new(SharedString::default()),
             shared,
         }
     }
@@ -223,6 +228,12 @@ impl LuaPlugin {
         *self.scoped.lock().unwrap() = (project, user);
     }
 
+    /// Everything the app decides about how cells are read, which is not the plugin's to store —
+    /// currently the sub-delimiter, so a plugin splits a cell the same way the table does.
+    pub fn set_app_settings(&self, subdelimiter: SharedString) {
+        *self.app.lock().unwrap() = subdelimiter;
+    }
+
     /// Run a contributed menu command and return what it wants stored.
     pub fn command(&self, command: &SharedString, ctx: &CommandContext) -> Result<Writes, String> {
         let loaded = self.state.as_ref().map_err(String::clone)?;
@@ -263,10 +274,14 @@ impl LuaPlugin {
         })
     }
 
-    /// `{ column = …, project = …, user = … }` — this plugin's own objects and nothing else's.
+    /// `{ column = …, project = …, user = …, app = … }` — this plugin's own objects, nobody else's,
+    /// and the handful of app-wide values a plugin has to agree with rather than restate.
     fn settings_table(&self, lua: &Lua, column: &Json) -> mlua::Result<Table> {
         let table = lua.create_table()?;
         let scoped = self.scoped.lock().unwrap();
+        let app = lua.create_table()?;
+        app.set("subdelimiter", self.app.lock().unwrap().as_ref())?;
+        table.set("app", app)?;
         table.set("column", to_lua(lua, column)?)?;
         table.set("project", to_lua(lua, &scoped.0)?)?;
         table.set("user", to_lua(lua, &scoped.1)?)?;
@@ -510,9 +525,10 @@ fn install_require(lua: &Lua, id: &str, modules: &[(String, String)]) -> mlua::R
 
 /// The whole `qrate` global, installed before `sandbox` freezes the global table.
 ///
-/// `qrate.http.get(url)` -> `{ status, body }`, or `nil, message`. Returning the failure rather
-/// than raising it is what lets a plugin report an unreachable server as a finding instead of as
-/// its own crash. Rate limited per VM, so one plugin's loop cannot spend another's budget.
+/// `qrate.http.get(url [, { auth = { username, password } }])` -> `{ status, body }`, or
+/// `nil, message`. Returning the failure rather than raising it is what lets a plugin report an
+/// unreachable server as a finding instead of as its own crash. Rate limited per VM, so one
+/// plugin's loop cannot spend another's budget.
 ///
 /// `qrate.json.decode(text)` -> a table, or `nil, message` — the same shape, since a server that
 /// answers with an error page rather than JSON is a thing to report, not to crash on.
@@ -534,7 +550,7 @@ fn install_require(lua: &Lua, id: &str, modules: &[(String, String)]) -> mlua::R
 fn install_qrate(lua: &Lua, env: &Env, shared: &Shared) -> mlua::Result<()> {
     let deadline = shared.deadline.clone();
     let budget = Cell::new((Instant::now(), 0u32));
-    let get = lua.create_function(move |lua, url: String| {
+    let get = lua.create_function(move |lua, (url, options): (String, Option<Table>)| {
         let (started, spent) = budget.get();
         let (started, spent) = if started.elapsed() > HTTP_WINDOW {
             (Instant::now(), 0)
@@ -548,7 +564,29 @@ fn install_qrate(lua: &Lua, env: &Env, shared: &Shared) -> mlua::Result<()> {
                 mlua::Value::String(lua.create_string("rate limited")?),
             ));
         }
-        let response = http_client().get(&url).send();
+        // Basic auth is here rather than in the plugin because Luau has no base64 and no way to
+        // build a header — not because the host has an opinion about whose credentials these are.
+        // Where they came from is the plugin's business; a blank pair is the same as none, so a
+        // plugin needs one code path whether or not the user has filled them in.
+        let credentials = options
+            .map(|options| options.get::<Option<Table>>("auth"))
+            .transpose()?
+            .flatten()
+            .map(|auth| {
+                Ok::<_, mlua::Error>((
+                    auth.get::<Option<String>>("username")?.unwrap_or_default(),
+                    auth.get::<Option<String>>("password")?.unwrap_or_default(),
+                ))
+            })
+            .transpose()?
+            .filter(|(username, password)| !username.is_empty() && !password.is_empty());
+
+        let request = http_client().get(&url);
+        let request = match credentials {
+            Some((username, password)) => request.basic_auth(username, Some(password)),
+            None => request,
+        };
+        let response = request.send();
         // Waiting on a server is not the script running long, so the compute budget restarts here
         // rather than the interrupt hook killing the plugin the moment the response lands.
         *deadline.lock().unwrap() = Instant::now() + DEADLINE;
@@ -565,6 +603,9 @@ fn install_qrate(lua: &Lua, env: &Env, shared: &Shared) -> mlua::Result<()> {
             }
         }
     })?;
+    // ponytail: basic auth only, and the secret sits in the app's settings database rather than the
+    // OS keychain. Reach for `keyring` when a password stored at rest becomes the weak link.
+    //
     // ponytail: the grant is a switch on the Settings page, not a prompt at first load — nothing in
     // the app opens a modal yet, and a first-launch storm of them is worse than a switch this
     // message points at. Build the prompt when a second permission makes the page too indirect.
@@ -740,7 +781,7 @@ fn setting_spec(item: Table) -> mlua::Result<SettingSpec> {
     let label: String = item.get("label")?;
     let scope: String = item.get("scope")?;
     let kind: String = item.get("type")?;
-    Ok(SettingSpec {
+    let spec = SettingSpec {
         key: key.into(),
         label: label.into(),
         description: item.get::<Option<String>>("description")?.map(Into::into),
@@ -748,7 +789,17 @@ fn setting_spec(item: Table) -> mlua::Result<SettingSpec> {
             .ok_or_else(|| mlua::Error::runtime(format!("unknown setting scope {scope:?}")))?,
         kind: SettingKind::from_key(&kind)
             .ok_or_else(|| mlua::Error::runtime(format!("unknown setting type {kind:?}")))?,
-    })
+    };
+    // Project scope is the `.qrate` file, which gets committed and handed around. A password does
+    // not go in one, and refusing here means no plugin author can put one there by accident.
+    if spec.kind == SettingKind::Password && spec.scope == SettingScope::Project {
+        return Err(mlua::Error::runtime(format!(
+            "setting {:?} is a password in project scope; passwords are user scope only, or they \
+             end up in the shared project file",
+            spec.key
+        )));
+    }
+    Ok(spec)
 }
 
 #[cfg(test)]
@@ -774,23 +825,32 @@ mod tests {
         }
     }
 
-    /// The shipped Islandora plugin's own files, compiled in — so a change to any of them that
-    /// stops it loading fails here rather than on someone's data.
-    fn islandora_modules() -> Vec<(String, String)> {
-        vec![
-            (
-                "api".to_string(),
-                include_str!("../../../plugins/islandora/api.lua").to_string(),
-            ),
-            (
-                "cache".to_string(),
-                include_str!("../../../plugins/islandora/cache.lua").to_string(),
-            ),
-            (
-                "match".to_string(),
-                include_str!("../../../plugins/islandora/match.lua").to_string(),
-            ),
-        ]
+    /// The Islandora plugin as it sits beside a dev checkout.
+    ///
+    /// Read at runtime, not `include_str!`'d: the plugin is its own repository now, so it is not
+    /// guaranteed to be here at all. Every test that uses this is `#[ignore]`d for the same reason
+    /// — a test that silently passes when its subject is missing is worse than no test.
+    fn islandora(file: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/islandora")
+            .join(file);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("{} is not checked out here: {err}", path.display()))
+    }
+
+    fn islandora_plugin(storage: Json) -> LuaPlugin {
+        let modules = ["api", "cache", "match"]
+            .map(|name| (name.to_string(), islandora(&format!("{name}.lua"))))
+            .to_vec();
+        LuaPlugin::load(
+            "islandora",
+            &islandora("init.lua"),
+            Env {
+                modules,
+                granted: vec![PERMISSION_NET.to_string()],
+                storage,
+            },
+        )
     }
 
     fn check(source: &str, values: &[&str]) -> Vec<(usize, Severity, SharedString)> {
@@ -1371,23 +1431,19 @@ mod tests {
         assert_eq!(run(&reloaded), "true", "the cache came back");
     }
 
-    /// The shipped Islandora plugin over a pre-filled cache — everything in it except the fetching,
-    /// which is the one part that needs a server. Compiled in, so a change to any of its four files
-    /// that stops it loading or breaks its matching fails here rather than on someone's data.
+    /// The Islandora plugin over a pre-filled cache — everything in it except the fetching, which
+    /// is the one part that needs a server.
+    ///
+    /// Ignored because the plugin is its own repository; run it after touching either side:
+    ///
+    /// ```text
+    /// cargo test -p plugin-host -- --ignored
+    /// ```
     #[test]
+    #[ignore = "needs the islandora plugin checked out beside qrate"]
     fn the_islandora_plugin_checks_a_column_against_its_mapped_vocabularies() {
         const SERVER: &str = "https://islandora.example.org";
-        let load = |storage: Json| {
-            LuaPlugin::load(
-                "islandora",
-                include_str!("../../../plugins/islandora/init.lua"),
-                Env {
-                    modules: islandora_modules(),
-                    granted: vec![PERMISSION_NET.to_string()],
-                    storage,
-                },
-            )
-        };
+        let load = islandora_plugin;
 
         // Everything the column holds is already cached, so nothing here touches the network: the
         // point of the cache is that a re-validate after one edit costs no requests at all.
@@ -1399,7 +1455,9 @@ mod tests {
         let checked = |vocabularies: Json| {
             let plugin = load(cached.clone());
             assert_eq!(plugin.load_error(), None);
-            plugin.set_scoped(json!({ "server": SERVER, "subdelimiter": ";" }), Json::Null);
+            plugin.set_scoped(json!({ "server": SERVER }), Json::Null);
+            // The app's sub-delimiter, not the plugin's — it has none of its own any more.
+            plugin.set_app_settings(";".into());
             let mut settings = ColumnSettings::default();
             settings
                 .plugins
@@ -1448,15 +1506,7 @@ mod tests {
     #[ignore = "hits a live Islandora"]
     fn the_islandora_plugin_agrees_with_a_real_server() {
         const SERVER: &str = "https://isle.dvnl.work";
-        let plugin = LuaPlugin::load(
-            "islandora",
-            include_str!("../../../plugins/islandora/init.lua"),
-            Env {
-                modules: islandora_modules(),
-                granted: vec![PERMISSION_NET.to_string()],
-                storage: Json::Null,
-            },
-        );
+        let plugin = islandora_plugin(Json::Null);
         plugin.set_scoped(json!({ "server": SERVER }), Json::Null);
 
         let mut settings = ColumnSettings::default();
@@ -1499,16 +1549,9 @@ mod tests {
     /// costs a request — so a prefix too short to narrow anything must not reach the network. Port
     /// 1 refuses instantly, so a slip here fails loudly rather than hanging.
     #[test]
+    #[ignore = "needs the islandora plugin checked out beside qrate"]
     fn the_islandora_plugin_stays_quiet_until_there_is_a_prefix_worth_asking_about() {
-        let plugin = LuaPlugin::load(
-            "islandora",
-            include_str!("../../../plugins/islandora/init.lua"),
-            Env {
-                modules: islandora_modules(),
-                granted: vec![PERMISSION_NET.to_string()],
-                storage: Json::Null,
-            },
-        );
+        let plugin = islandora_plugin(Json::Null);
         plugin.set_scoped(json!({ "server": "http://127.0.0.1:1" }), Json::Null);
 
         let ask = |prefix: &str, mapped: Json| {
