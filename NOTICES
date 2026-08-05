@@ -1,11 +1,12 @@
 Third-party material distributed with qrate.
 
 ================================================================================
-en_US Hunspell dictionary — crates/spellcheck/dictionaries/en_US.{aff,dic}
+Bundled Hunspell dictionaries — crates/spellcheck/dictionaries/{en-CA,en}.{aff,dic}
 ================================================================================
 
 Derived from SCOWL (Spell Checker Oriented Word Lists), http://wordlist.sourceforge.net,
-obtained from https://github.com/LibreOffice/dictionaries (en/).
+obtained via https://github.com/wooorm/dictionaries, which is also where qrate downloads
+any additional language from at the user's request.
 
 The collective work is Copyright 2000-2018 by Kevin Atkinson.
 
@@ -35,3 +36,13 @@ README_en_US.txt in the upstream repository.
 Any additional language qrate loads at runtime carries its own licence, which
 is NOT covered here — several dictionaries in the upstream repository are GPL.
 Check the licence of a dictionary before shipping it.
+
+================================================================================
+Downloadable dictionaries
+================================================================================
+
+qrate can fetch any of the dictionaries published by wooorm/dictionaries at the
+user's request. Those word lists are NOT distributed with qrate and each carries
+its own licence — several are GPL. The licence of each is shown in the language
+list before it is downloaded, and is recorded upstream at
+https://github.com/wooorm/dictionaries#list-of-dictionaries
