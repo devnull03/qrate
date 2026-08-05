@@ -293,6 +293,43 @@ impl Render for App {
     }
 }
 
+/// Register the spell checker, once its dictionary has parsed off the UI thread — half a
+/// megabyte of affix rules is not something to put in front of first paint.
+///
+/// The only place that links both the checker and the table, which is what lets `spellcheck` know
+/// nothing about grids and `table` nothing about dictionaries.
+fn register_spell_checker(cx: &mut gpui::App) {
+    if !spellcheck::enabled(cx) {
+        log::info!("spell checking is turned off in settings");
+        return;
+    }
+    let language = spellcheck::language(cx);
+    let ignore_capitalized = spellcheck::ignore_capitalized(cx);
+    let load = cx
+        .background_executor()
+        .spawn(async move { spellcheck::SpellCheck::load(&language, ignore_capitalized) });
+    cx.spawn(async move |cx| {
+        let Some(spell) = load.await else {
+            return;
+        };
+        cx.update(|cx| {
+            diagnostics::Validators::register(Box::new(spell.clone()), cx);
+            cx.set_global(spell);
+            cx.set_global(diagnostics::SpellActions {
+                suggest: spellcheck::misspellings,
+                add_word: |word, cx| {
+                    if spellcheck::add_word(word, cx) {
+                        table::revalidate_now(cx);
+                    }
+                },
+            });
+            // A project may already be open by the time the dictionary lands.
+            table::revalidate_now(cx);
+        });
+    })
+    .detach();
+}
+
 /// Select and scroll to whatever a problem points at. Three index spaces meet here: the
 /// diagnostic's source row and column *name*, the delegate's filtered view row, and the table's
 /// display column (data col + 1, past the pinned `#`).
@@ -394,6 +431,7 @@ fn main() {
         // triggers the runs without naming any of them.
         plugin_host::on_command_finished(table::revalidate_now);
         plugin_host::reload(cx);
+        register_spell_checker(cx);
 
         cx.on_action(|_: &ReloadPlugins, cx| {
             plugin_host::reload(cx);

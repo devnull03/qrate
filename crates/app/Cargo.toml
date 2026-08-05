@@ -21,6 +21,8 @@ window-wrapper = { path = "../window-wrapper" }
 project-wizard = { path = "../project-wizard" }
 diagnostics = { path = "../diagnostics" }
 settings = { path = "../settings" }
+# The dictionary is half a megabyte, so only the composition root links it — see `crates/spellcheck`.
+spellcheck = { path = "../spellcheck" }
 table = { path = "../table" }
 plugin-api = { path = "../plugin-api" }
 # Plugins are loaded here and nowhere else — see `plugin_host::reload`.
