@@ -7,7 +7,10 @@ use gpui::{prelude::FluentBuilder, *};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::label::Label;
-use gpui_component::{ActiveTheme, Disableable, Root, StyledExt, TitleBar, h_flex, v_flex};
+use gpui_component::stepper::{Stepper, StepperItem};
+use gpui_component::{
+    ActiveTheme, Disableable, Root, Sizable, StyledExt, TitleBar, h_flex, v_flex,
+};
 use window_wrapper::WindowRegistry;
 
 use crate::data::{ColumnConfigPreview, FolderMatch, SheetCheckResult, SpreadsheetPreview};
@@ -58,6 +61,9 @@ pub struct ProjectWizard {
     // Name step
     pub(crate) name_input: Entity<InputState>,
     pub(crate) save_path: String,
+    /// Display half of `save_path`, because [`PathPickerApp`] renders a readonly `Input`. Written
+    /// wherever `save_path` is.
+    pub(crate) save_path_input: Entity<InputState>,
     pub(crate) name_error: Option<SharedString>,
     /// Live-validates the name as it's typed; kept alive by holding it here.
     _name_sub: Subscription,
@@ -113,12 +119,18 @@ impl ProjectWizard {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
+        let save_path_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Choose a folder…")
+                .default_value(default_save_dir.clone())
+        });
 
         Self {
             step: WizardStep::Name,
             entry_kind,
             name_input,
             save_path: default_save_dir,
+            save_path_input,
             name_error: None,
             _name_sub: name_sub,
             csv_path: String::new(),
@@ -273,28 +285,25 @@ impl ProjectWizard {
             .unwrap_or(0)
     }
 
+    /// Only a step already completed is clickable — jumping *forward* would skip the validation
+    /// `can_advance` runs on the way out of each step.
     fn render_breadcrumb(&self, cx: &Context<Self>) -> impl IntoElement {
         let items = self.breadcrumb_items();
         let current_ix = self.step_index();
-        let mut row = h_flex().gap_2().items_center().text_sm().flex_wrap();
-        row = row.child(div().text_color(cx.theme().success).child("✓ Start"));
-        for (ix, (label, _)) in items.iter().enumerate() {
-            row = row.child(div().text_color(cx.theme().muted_foreground).child("·"));
-            let el = if ix < current_ix {
-                div()
-                    .text_color(cx.theme().success)
-                    .child(format!("✓ {label}"))
-            } else if ix == current_ix {
-                div()
-                    .font_semibold()
-                    .text_color(cx.theme().primary)
-                    .child(*label)
-            } else {
-                div().text_color(cx.theme().muted_foreground).child(*label)
-            };
-            row = row.child(el);
-        }
-        row
+        Stepper::new("wizard-steps")
+            .small()
+            .selected_index(current_ix)
+            .items(
+                items
+                    .iter()
+                    .map(|(label, _)| StepperItem::new().child(*label)),
+            )
+            .on_click(cx.listener(move |this, ix: &usize, _window, cx| {
+                if let Some((_, step)) = items.get(*ix).filter(|_| *ix < current_ix) {
+                    this.step = *step;
+                    cx.notify();
+                }
+            }))
     }
 
     pub(crate) fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {

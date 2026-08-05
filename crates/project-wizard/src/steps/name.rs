@@ -1,9 +1,13 @@
 //! Stage 2 · Name — every entry path goes through this step.
 
+use std::sync::Arc;
+
 use gpui::{prelude::FluentBuilder, *};
+use gpui_component::alert::Alert;
 use gpui_component::input::Input;
 use gpui_component::label::Label;
-use gpui_component::{ActiveTheme, Icon, IconName, StyledExt, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Sizable, Size, StyledExt, v_flex};
+use settings::path_picker::PathPickerApp;
 
 use crate::project;
 use crate::wizard::ProjectWizard;
@@ -29,9 +33,18 @@ impl ProjectWizard {
 
     pub(crate) fn render_name_step(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        // `save_path` is the model; the readonly input is only how `PathPickerApp` draws it. Guarded
+        // so an unconditional `set_value` doesn't notify its way into a repaint loop.
+        let want = self.save_path.clone();
+        self.save_path_input.update(cx, |input, cx| {
+            if input.value() != want {
+                input.set_value(want, window, cx);
+            }
+        });
+
         v_flex()
             .gap_3()
             .child(div().text_lg().font_semibold().child("Name your project"))
@@ -42,74 +55,32 @@ impl ProjectWizard {
                     .child(Input::new(&self.name_input).w_full()),
             )
             .when_some(self.name_error.clone(), |el, err| {
-                el.child(
-                    h_flex()
-                        .gap_1()
-                        .p_2()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(cx.theme().danger)
-                        .bg(cx.theme().danger.opacity(0.06))
-                        .text_sm()
-                        .text_color(cx.theme().danger)
-                        .child(Icon::new(IconName::TriangleAlert))
-                        .child(err),
-                )
+                el.child(Alert::error("name-error", err).small())
             })
             .child(
                 v_flex()
                     .gap_1()
                     .child(Label::new("Save project to").text_sm())
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .px_2()
-                                    .py_1p5()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(if self.save_path.is_empty() {
-                                        "Choose a folder…".to_string()
-                                    } else {
-                                        self.save_path.clone()
-                                    }),
-                            )
-                            .child(
-                                gpui_component::button::Button::new("browse-save-path")
-                                    .label("Browse…")
-                                    .outline()
-                                    .on_click(cx.listener(|_this, _, _, cx| {
-                                        let receiver = cx.prompt_for_paths(PathPromptOptions {
-                                            files: false,
-                                            directories: true,
-                                            multiple: false,
-                                            prompt: Some(
-                                                "Choose where to save this project".into(),
-                                            ),
-                                        });
-                                        cx.spawn(async move |this, cx| {
-                                            if let Ok(Ok(Some(paths))) = receiver.await
-                                                && let Some(path) = paths.first()
-                                            {
-                                                let s = path.to_string_lossy().to_string();
-                                                this.update(cx, |this, cx| {
-                                                    this.save_path = s;
-                                                    this.name_error = None;
-                                                    cx.notify();
-                                                })
-                                                .ok();
-                                            }
-                                        })
-                                        .detach();
-                                    })),
-                            ),
-                    )
+                    .child(PathPickerApp {
+                        field_size: Size::Medium,
+                        button_size: None,
+                        button_id: "browse-save-path".into(),
+                        files: false,
+                        directories: true,
+                        prompt: "Choose where to save this project".into(),
+                        input: self.save_path_input.clone(),
+                        on_pick: {
+                            let this = cx.entity().downgrade();
+                            Arc::new(move |path, cx| {
+                                this.update(cx, |this, cx| {
+                                    this.save_path = path.to_string();
+                                    this.name_error = None;
+                                    cx.notify();
+                                })
+                                .ok();
+                            })
+                        },
+                    })
                     .child(
                         Label::new("This is where your project file and settings live.")
                             .text_sm()
