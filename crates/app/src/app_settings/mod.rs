@@ -7,12 +7,14 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _,
+    button::Button,
     combobox::{Combobox, ComboboxEvent, ComboboxState},
     h_flex,
     searchable_list::{SearchableListItem, SearchableVec},
     setting::{SettingField, SettingGroup, SettingItem, SettingPage},
     v_flex,
 };
+use plugin_api::{ColumnMapContributions, ColumnMapSpec, CommandContext, PluginHooks};
 use plugin_host::{SettingKind, SettingSpec};
 use serde_json::Value as Json;
 use settings::{Setting, columns, project::CurrentProject};
@@ -33,31 +35,196 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
             .group(saving_group(cx)),
         columns_page(cx),
         SettingPage::new("Spelling").group(spelling_group(cx)),
+        plugins_page(cx),
     ];
     pages.extend(plugin_pages(cx));
     pages
 }
 
-/// One page per plugin that declares settings, titled with the plugin's name — the same identity
-/// the Problems panel shows. Nothing here knows what any knob means: a spec says where the value
-/// lives and how to edit it, and the host does the storing.
+/// Every plugin on disk, running or not: whether it runs at all, what it is allowed to reach, and
+/// why it did not load when it did not.
+///
+/// Keyed by the name on disk rather than the descriptor's, because a plugin that fails to load has
+/// no descriptor and switching a broken one off has to work.
+fn plugins_page(cx: &App) -> SettingPage {
+    let listing = plugin_host::listing(cx);
+    if listing.is_empty() {
+        return SettingPage::new("Plugins").group(
+            SettingGroup::new()
+                .title("Installed")
+                .description("No plugins found. Help ▸ Open Plugins Folder is where they go."),
+        );
+    }
+
+    listing.into_iter().fold(
+        SettingPage::new("Plugins").description(
+            "Scripts found in the plugins folder. A plugin is code from somebody else, so it \
+             reaches the network only if you say so.",
+        ),
+        |page, plugin| {
+            let id = plugin.id.clone();
+            let mut group = SettingGroup::new().title(plugin.id.clone()).item({
+                let switched = id.clone();
+                let item = SettingItem::new(
+                    "Enabled",
+                    SettingField::switch(
+                        {
+                            let id = id.clone();
+                            move |cx: &App| settings::plugins::state(&id, cx).enabled
+                        },
+                        move |on: bool, cx: &mut App| {
+                            settings::plugins::set_enabled(&switched, on, cx);
+                            // Loading and unloading is what the switch *means*, and `reload` is
+                            // already the one path that does either.
+                            plugin_host::reload(cx);
+                        },
+                    ),
+                );
+                // The load error goes on the switch rather than in a row of its own: it is the
+                // reason someone is looking at this plugin, and a description is the only place on
+                // a settings row that text of that length fits.
+                match (&plugin.load_error, &plugin.description) {
+                    (Some(err), _) => item.description(SharedString::from(format!("✗ {err}"))),
+                    (None, Some(description)) => item.description(description.clone()),
+                    (None, None) => item,
+                }
+            });
+
+            for permission in plugin.permissions {
+                let (id, key) = (id.clone(), permission.clone());
+                group = group.item(
+                    SettingItem::new(
+                        "Network access",
+                        SettingField::switch(
+                            {
+                                let (id, key) = (id.clone(), key.clone());
+                                move |cx: &App| {
+                                    settings::plugins::state(&id, cx)
+                                        .granted
+                                        .iter()
+                                        .any(|held| held.as_str() == key.as_ref())
+                                }
+                            },
+                            move |on: bool, cx: &mut App| {
+                                settings::plugins::set_granted(&id, &key, on, cx);
+                                // The grant is read when a VM is built, so it takes effect on the
+                                // next load and not before.
+                                plugin_host::reload(cx);
+                            },
+                        ),
+                    )
+                    .description(SharedString::from(format!(
+                        "Let {permission_owner} reach the internet. It asked for this; nothing \
+                         stops it contacting any address once you agree.",
+                        permission_owner = plugin.id
+                    ))),
+                );
+            }
+            page.group(group)
+        },
+    )
+}
+
+/// One page per plugin that declares settings or a column mapping, titled with the plugin's name —
+/// the same identity the Problems panel shows. Nothing here knows what any knob means: a spec says
+/// where the value lives and how to edit it, and the host does the storing.
 fn plugin_pages(cx: &App) -> Vec<SettingPage> {
-    plugin_host::setting_specs(cx)
+    let maps = ColumnMapContributions::all(cx);
+    let mut pages: Vec<(SharedString, Option<SharedString>, Vec<SettingSpec>)> =
+        plugin_host::setting_specs(cx);
+    // A plugin whose only contribution is a mapping still needs somewhere to put it.
+    for (plugin, _) in &maps {
+        if !pages.iter().any(|(name, _, _)| name == plugin) {
+            pages.push((plugin.clone(), None, Vec::new()));
+        }
+    }
+
+    pages
         .into_iter()
         .map(|(name, description, specs)| {
-            let page = SettingPage::new(name.clone()).group(
-                SettingGroup::new().title("Options").items(
-                    specs
-                        .into_iter()
-                        .map(|spec| plugin_item(name.clone(), spec)),
-                ),
-            );
-            match description {
-                Some(description) => page.description(description),
+            let mut page = SettingPage::new(name.clone());
+            if let Some(description) = description {
+                page = page.description(description);
+            }
+            if !specs.is_empty() {
+                page = page.group(
+                    SettingGroup::new().title("Options").items(
+                        specs
+                            .into_iter()
+                            .map(|spec| plugin_item(name.clone(), spec)),
+                    ),
+                );
+            }
+            match maps.iter().find(|(plugin, _)| plugin == &name) {
+                Some((plugin, spec)) => page.group(mapping_group(plugin.clone(), spec.clone(), cx)),
                 None => page,
             }
         })
         .collect()
+}
+
+/// A plugin's mapping tool: one picker per column over a list the plugin fetched, and the button
+/// that refetches it.
+///
+/// No plugin code runs to draw this. The options are whatever the plugin last stored, which is what
+/// lets the same list appear in a right-click menu that has to be built while the user waits.
+fn mapping_group(plugin: SharedString, spec: ColumnMapSpec, cx: &App) -> SettingGroup {
+    let refresh = {
+        let (plugin, command) = (plugin.clone(), spec.refresh.clone());
+        SettingItem::new(
+            spec.label.clone(),
+            SettingField::element(move |_opts: &_, _window: &mut _, _cx: &mut _| {
+                let (plugin, command) = (plugin.clone(), command.clone());
+                Button::new("refresh-map")
+                    .small()
+                    .label("Refresh from server")
+                    .on_click(move |_, _, cx| {
+                        let Some(hooks) = cx.try_global::<PluginHooks>().copied() else {
+                            return;
+                        };
+                        (hooks.invoke)(&plugin, &command, &CommandContext::default(), cx);
+                    })
+                    .into_any_element()
+            }),
+        )
+    };
+    let refresh = match &spec.description {
+        Some(description) => refresh.description(description.clone()),
+        None => refresh,
+    };
+
+    let mut group = SettingGroup::new().title("Mapping").item(refresh);
+
+    let Some(project) = cx.try_global::<CurrentProject>() else {
+        return group.description("Open a project to map its columns.");
+    };
+    let options: Vec<OptionItem> = ColumnMapContributions::options(&plugin, &spec, cx)
+        .into_iter()
+        .map(|(value, label)| OptionItem { value, label })
+        .collect();
+    if options.is_empty() {
+        group = group.description(
+            "Nothing to map to yet — refresh, and check the session log if the list stays empty.",
+        );
+    }
+
+    for column in column_items(project) {
+        let (plugin, spec, options) = (plugin.clone(), spec.clone(), options.clone());
+        group = group.item(SettingItem::new(
+            column.name.clone(),
+            SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
+                map_picker(
+                    plugin.clone(),
+                    spec.clone(),
+                    column.clone(),
+                    options.clone(),
+                    window,
+                    cx,
+                )
+            }),
+        ));
+    }
+    group
 }
 
 fn plugin_item(id: SharedString, spec: SettingSpec) -> SettingItem {
@@ -197,6 +364,8 @@ fn spelling_group(cx: &App) -> SettingGroup {
 #[derive(Default)]
 struct Pickers {
     columns: HashMap<&'static str, Picker<ColumnItem>>,
+    /// One per `(plugin, mapping, column)`, so the ids are built at runtime rather than named here.
+    maps: HashMap<String, Picker<OptionItem>>,
     language: Option<Picker<LanguageRow>>,
 }
 
@@ -231,6 +400,109 @@ impl SearchableListItem for ColumnItem {
     fn value(&self) -> &Self::Value {
         &self.key
     }
+}
+
+/// One entry in a plugin's mapping list — a vocabulary, in the only plugin that has one. The value
+/// is what gets stored; the label is only ever shown.
+#[derive(Clone, PartialEq)]
+struct OptionItem {
+    value: SharedString,
+    label: SharedString,
+}
+
+impl SearchableListItem for OptionItem {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.value
+    }
+}
+
+/// One column's mapping, over whatever the plugin last stored.
+///
+/// Same shape as [`column_picker`] and for the same reason: the stored settings stay the source of
+/// truth, synced *from* here and written *back* in the `Change` subscription, so there is never a
+/// second answer to reconcile. Keyed per plugin and column, since each column gets its own widget.
+fn map_picker(
+    plugin: SharedString,
+    spec: ColumnMapSpec,
+    column: ColumnItem,
+    options: Vec<OptionItem>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    if !cx.has_global::<Pickers>() {
+        cx.set_global(Pickers::default());
+    }
+    let id = format!("{plugin}/{}/{}", spec.key, column.key);
+    let state = match cx.global::<Pickers>().maps.get(&id) {
+        Some(picker) => picker.state.clone(),
+        None => {
+            let state = cx.new(|cx| {
+                ComboboxState::new(SearchableVec::new(options.clone()), vec![], window, cx)
+                    .multiple(spec.multiple)
+                    .searchable(true)
+            });
+            let _sub = cx.subscribe(&state, {
+                let (plugin, spec, key) = (plugin.clone(), spec.clone(), column.key.clone());
+                move |_state, event, cx| {
+                    let ComboboxEvent::Change(values) = event else {
+                        return;
+                    };
+                    ColumnMapContributions::select(&plugin, &spec, &key, values.clone(), cx);
+                    // A validator reads this mapping, so its published findings are stale the
+                    // moment it changes — and only a run replaces them.
+                    table::revalidate_now(cx);
+                }
+            });
+            cx.global_mut::<Pickers>().maps.insert(
+                id.clone(),
+                Picker {
+                    state: state.clone(),
+                    items: options.clone(),
+                    _sub,
+                },
+            );
+            state
+        }
+    };
+
+    // A refresh replaces the list; rebuilding on every render would throw away the search filter.
+    if cx.global::<Pickers>().maps[&id].items != options {
+        state.update(cx, |state, cx| {
+            state.set_items(SearchableVec::new(options.clone()), window, cx);
+        });
+        if let Some(picker) = cx.global_mut::<Pickers>().maps.get_mut(&id) {
+            picker.items = options.clone();
+        }
+    }
+
+    let picked = ColumnMapContributions::selected(&plugin, &spec, &column.key, cx);
+    sync_selection(&state, &options, &picked, window, cx);
+
+    let label: SharedString = match picked.len() {
+        0 => "Not mapped".into(),
+        _ => options
+            .iter()
+            .filter(|option| picked.contains(&option.value))
+            .map(|option| option.label.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+            .into(),
+    };
+
+    Combobox::new(&state)
+        .small()
+        .menu_width(px(240.))
+        .menu_max_h(px(320.))
+        .search_placeholder("Search…")
+        .empty(|_, _| div().p_2().child("Nothing to map to yet"))
+        .render_trigger(move |_ctx, _, _| div().child(label.clone()))
+        .into_any_element()
 }
 
 /// One language as the picker draws it.

@@ -10,6 +10,10 @@
 //! menu needs to know has to already be sitting in a global by the time it is opened. Settings
 //! ([`SettingSpec`]) do not need that inversion — the Settings window lives in `app`, which links
 //! the host — but they live here so the two kinds of contribution stay described in one place.
+//!
+//! The one dependency beyond gpui is `settings`, which [`ColumnMapContributions`] reads and writes
+//! so its two renderers — a Settings page and a right-click submenu, in different crates — cannot
+//! drift apart about where a mapping is stored. Still no VM: stored JSON in, stored JSON out.
 
 use gpui::{App, Global, SharedString};
 
@@ -190,6 +194,149 @@ pub struct CommandContext {
     /// Every row's text for this column, in source-row order — the same view `validate` gets, so
     /// a command like "restrict to the values already here" needs nothing else.
     pub values: Vec<SharedString>,
+    /// What this invocation is *about*: the option a mapping menu entry carried, or the text a
+    /// suggestion request was typed against. One field rather than two, because no call is both.
+    pub argument: Option<SharedString>,
+}
+
+/// A plugin's offer of what could go in the cell being typed in, and which cell it was asked for.
+///
+/// The cell is echoed back from the request rather than tracked here, so the table can drop an
+/// answer that arrived after the user moved on — the host's generation counter stops a *stale*
+/// answer for the same cell, and this stops a *late* answer for a different one.
+#[derive(Default)]
+pub struct Suggestions {
+    pub column_key: Option<SharedString>,
+    pub row: Option<usize>,
+    pub items: Vec<SharedString>,
+}
+impl Global for Suggestions {}
+
+/// One plugin's offer to map each column onto something it holds a list of.
+///
+/// The options are not fetched here and no plugin code runs to produce them: both the Settings page
+/// and the column-header menu read whatever the plugin last stored under [`Self::options`], which
+/// is what lets a menu — built synchronously while the user waits — show a list that came from a
+/// server. Refreshing that list is an ordinary command the user clicks.
+#[derive(Clone, Debug)]
+pub struct ColumnMapSpec {
+    /// Field written into each column's own bucket of this plugin's settings. `validate` reads it
+    /// back as `settings.column[key]`.
+    pub key: SharedString,
+    pub label: SharedString,
+    pub description: Option<SharedString>,
+    /// Key in the plugin's project-scope object holding `[{ value, label }, …]`.
+    pub options: SharedString,
+    /// Command that repopulates that list.
+    pub refresh: SharedString,
+    /// Whether a column may carry several options at once.
+    pub multiple: bool,
+}
+
+/// Every loaded plugin's column map, as `(plugin id, spec)`. Replaced wholesale on each reload.
+#[derive(Default)]
+pub struct ColumnMapContributions(pub Vec<(SharedString, ColumnMapSpec)>);
+impl Global for ColumnMapContributions {}
+
+impl ColumnMapContributions {
+    pub fn all(cx: &App) -> Vec<(SharedString, ColumnMapSpec)> {
+        cx.try_global::<Self>()
+            .map_or(Vec::new(), |this| this.0.clone())
+    }
+
+    /// The options a plugin last stored, as `(value, label)`. An option that is only a string reads
+    /// as its own label, since a machine name is a usable label and demanding both is noise.
+    pub fn options(
+        plugin: &SharedString,
+        spec: &ColumnMapSpec,
+        cx: &App,
+    ) -> Vec<(SharedString, SharedString)> {
+        let stored = settings::plugins::project(plugin, cx);
+        stored
+            .get(spec.options.as_ref())
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| match item {
+                        serde_json::Value::String(value) => {
+                            Some((SharedString::from(value.clone()), value.clone().into()))
+                        }
+                        serde_json::Value::Object(fields) => {
+                            let value = fields.get("value")?.as_str()?.to_string();
+                            let label = fields
+                                .get("label")
+                                .and_then(|l| l.as_str())
+                                .unwrap_or(&value)
+                                .to_string();
+                            Some((value.into(), label.into()))
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// What a column is currently mapped to. Always a list, so the single- and multi-select forms
+    /// read the same on both sides.
+    pub fn selected(
+        plugin: &SharedString,
+        spec: &ColumnMapSpec,
+        column_key: &str,
+        cx: &App,
+    ) -> Vec<SharedString> {
+        settings::columns::get(column_key, cx)
+            .plugins
+            .get(plugin.as_ref())
+            .and_then(|bucket| bucket.get(spec.key.as_ref()))
+            .map(|value| match value {
+                serde_json::Value::Array(items) => items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| SharedString::from(s.to_string())))
+                    .collect(),
+                serde_json::Value::String(one) => vec![one.clone().into()],
+                _ => Vec::new(),
+            })
+            .unwrap_or_default()
+    }
+
+    /// Store a column's mapping. Both the Settings page and the column-header menu land here, so
+    /// there is one write path and the two surfaces cannot disagree about the shape.
+    pub fn select(
+        plugin: &SharedString,
+        spec: &ColumnMapSpec,
+        column_key: &str,
+        chosen: Vec<SharedString>,
+        cx: &mut App,
+    ) {
+        let id = plugin.to_string();
+        let key = spec.key.to_string();
+        let value: Vec<String> = chosen.iter().map(SharedString::to_string).collect();
+        settings::columns::update(
+            column_key,
+            |column| {
+                let bucket = column
+                    .plugins
+                    .entry(id)
+                    .or_insert_with(|| serde_json::Value::Object(Default::default()));
+                if !bucket.is_object() {
+                    *bucket = serde_json::Value::Object(Default::default());
+                }
+                // An empty mapping is removed rather than stored as `[]`, so `requires_settings`
+                // and the "has this column been mapped" question stay the same question.
+                match value.is_empty() {
+                    true => {
+                        if let Some(object) = bucket.as_object_mut() {
+                            object.remove(&key);
+                        }
+                    }
+                    false => bucket[&key] = value.into(),
+                }
+            },
+            cx,
+        );
+    }
 }
 
 /// Every loaded plugin's contributed entries, as `(plugin id, item)`. Replaced wholesale on each
@@ -211,8 +358,16 @@ impl MenuContributions {
 }
 
 /// How a click reaches the plugin host. Installed by the host, called by `table`.
+///
+/// `suggest` takes no plugin id: every loaded plugin that offers suggestions is asked, and the
+/// answers arrive later in [`Suggestions`] rather than as a return value, because a plugin may
+/// block on a server and a keystroke cannot wait on one.
 #[derive(Clone, Copy)]
 pub struct PluginHooks {
     pub invoke: fn(&SharedString, &SharedString, &CommandContext, &mut App),
+    pub suggest: fn(&CommandContext, &mut App),
+    /// Drop what was offered *and* make sure an answer still in flight cannot put it back —
+    /// clearing the global alone would not, since the run that would overwrite it is the host's.
+    pub forget_suggestions: fn(&mut App),
 }
 impl Global for PluginHooks {}
