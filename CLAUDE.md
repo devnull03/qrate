@@ -71,6 +71,36 @@ A 2026-07-17 whole-repo audit removed exactly this kind of code; don't reintrodu
 - Only `crates/app` initializes logging (`crates/app/src/logging.rs`, called first in `main`). It writes `%LOCALAPPDATA%\qrate\logs\qrate.log` (previous run rotated to `qrate.old.log`) and installs the panic hook.
 - That file is also what Help ▸ Copy Debug Info / Report an Issue paste. Anything logged at `error`/`warn` will end up in a user's bug report, so write the message for the person reading the report — name what failed, not just the error value.
 
+## Plugin API — it lives in three repos, change all of them
+
+The Lua plugin surface (`crates/plugin-host`, `crates/plugin-api`) is published outside this repo,
+and Luau has no package manager — a plugin is a folder somebody drops in by hand, so the type
+definitions travel as **copies**. Changing the API and updating only qrate silently breaks
+everyone's editor completion, and nothing in CI would say so.
+
+| Repo | Checked out at | What it holds |
+|---|---|---|
+| [`qrate-plugin-template`](https://github.com/devnull03/qrate-plugin-template) | `../qrate-plugin-template` | `types/qrate.lua` — the canonical copy — and the example plugin |
+| [`qrate-islandora-plugin`](https://github.com/devnull03/qrate-islandora-plugin) | `plugins/islandora` (gitignored here) | its own copy of `types/qrate.lua` |
+| [`qrate-site`](https://github.com/devnull03/qrate) | `../qrate-site` | nothing about plugins yet — include it once it documents them |
+
+**When you add, rename, or remove anything a plugin can see** — a host function, a descriptor field,
+a `SettingKind`, a hook's arguments, what a scope contains:
+
+1. Update `types/qrate.lua` in the template first; that is the copy people start from. Declare the
+   *reasoning* alongside the type, as the rest of that file does — it is the plugin API's real
+   documentation, not a stub.
+2. Copy it into `plugins/islandora/types/qrate.lua`.
+3. Bump `API_VERSION` in `crates/plugin-host/src/plugin.rs` only for a change that breaks an
+   existing plugin. Adding an optional field does not; changing what a hook is handed does.
+4. Update each repo's README where it lists what a plugin can do.
+5. `cargo test -p plugin-host -- --ignored` — the template and Islandora tests load those real files
+   from disk, so they are the check that the copies still work. They are ignored, so nothing else
+   will catch it.
+
+Each of those repos has its own git history and its own commit. Do not add them as submodules —
+qrate neither pins nor carries them.
+
 ## gpui test modules
 
 - `#[gpui::test]` needs `gpui = { workspace = true, features = ["test-support"] }` under `[dev-dependencies]`.
