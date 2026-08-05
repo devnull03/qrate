@@ -146,12 +146,16 @@ impl SettingScope {
 
 /// How a declared setting is edited.
 //
-// ponytail: switch and text only. A dropdown is one more arm in `plugin_item`, add it when a
-// plugin declares a knob with a fixed option list.
+// ponytail: a dropdown is one more arm in `plugin_item`, add it when a plugin declares a knob with
+// a fixed option list.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingKind {
     Switch,
     Text,
+    /// Typed behind dots, and never handed to the plugin that declared it — see the host's
+    /// `settings_table`. User scope only, enforced at load: a secret in a `.qrate` is a secret in
+    /// whatever repository that project gets committed to.
+    Password,
 }
 
 impl SettingKind {
@@ -159,6 +163,7 @@ impl SettingKind {
         match key {
             "switch" => Some(Self::Switch),
             "text" => Some(Self::Text),
+            "password" => Some(Self::Password),
             _ => None,
         }
     }

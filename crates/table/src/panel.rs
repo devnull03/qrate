@@ -32,7 +32,7 @@ fn apply_settings(delegate: &mut QrateTableDelegate, cx: &App) {
     let filters_on = settings::columns::filters_master_enabled(cx);
     delegate.apply_column_settings(
         |key| filters_on && column_settings.get(key).is_some_and(|s| s.filter_enabled),
-        settings::effective_text(crate::FILTER_SUBDELIMITER_KEY, cx),
+        settings::effective_text(settings::FILTER_SUBDELIMITER_KEY, cx),
     );
 }
 

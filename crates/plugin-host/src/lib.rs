@@ -283,6 +283,12 @@ fn validate_async(columns: &[ColumnSnapshot], cx: &mut App) {
     if plugins.is_empty() {
         return;
     }
+    // Re-read here rather than only on a settings write: this is where it is about to be used, and
+    // the alternative is an observer in a crate that has no business watching app settings.
+    let subdelimiter = settings::effective_text(settings::FILTER_SUBDELIMITER_KEY, cx);
+    for plugin in &plugins {
+        plugin.set_app_settings(subdelimiter.clone());
+    }
     let columns = columns.to_vec();
 
     let task = cx.spawn(async move |cx| {
@@ -484,18 +490,21 @@ pub fn set_setting(plugin: &str, spec: &SettingSpec, value: Json, cx: &mut App) 
     refresh_scoped(cx);
 }
 
-/// Hand every loaded plugin the current project- and user-scope objects, so a write takes effect on
-/// the next `validate` without reloading the VMs.
-fn refresh_scoped(cx: &mut App) {
+/// Hand every loaded plugin the current project- and user-scope objects and the app-wide values it
+/// is not allowed to have its own opinion about, so a write takes effect on the next `validate`
+/// without reloading the VMs.
+pub fn refresh_scoped(cx: &mut App) {
     let plugins = cx
         .try_global::<Plugins>()
         .map_or(Vec::new(), |plugins| plugins.loaded.clone());
+    let subdelimiter = settings::effective_text(settings::FILTER_SUBDELIMITER_KEY, cx);
     for plugin in plugins {
         let name = plugin.name();
         plugin.set_scoped(
             settings::plugins::project(&name, cx),
             settings::plugins::user(&name, cx),
         );
+        plugin.set_app_settings(subdelimiter.clone());
     }
 }
 

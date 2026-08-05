@@ -10,6 +10,7 @@ use gpui_component::{
     button::Button,
     combobox::{Combobox, ComboboxEvent, ComboboxState},
     h_flex,
+    input::{Input, InputEvent, InputState},
     searchable_list::{SearchableListItem, SearchableVec},
     setting::{SettingField, SettingGroup, SettingItem, SettingPage},
     v_flex,
@@ -229,6 +230,7 @@ fn mapping_group(plugin: SharedString, spec: ColumnMapSpec, cx: &App) -> Setting
 
 fn plugin_item(id: SharedString, spec: SettingSpec) -> SettingItem {
     let (label, description, kind) = (spec.label.clone(), spec.description.clone(), spec.kind);
+    let secret = (id.clone(), spec.clone());
     let read = {
         let (id, spec) = (id.clone(), spec.clone());
         move |cx: &App| plugin_host::setting_value(&id, &spec, cx)
@@ -251,6 +253,15 @@ fn plugin_item(id: SharedString, spec: SettingSpec) -> SettingItem {
             ),
         )
         // Same reason as `Setting::Text` in the settings crate: horizontal inputs are fixed-width.
+        .layout(Axis::Vertical),
+        // `SettingField::input` builds its own unmasked `InputState`, so a password needs one of
+        // its own — which is why this is an `element` and the others are not.
+        SettingKind::Password => SettingItem::new(
+            label,
+            SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
+                secret_input(secret.0.clone(), secret.1.clone(), window, cx)
+            }),
+        )
         .layout(Axis::Vertical),
     };
     match description {
@@ -366,7 +377,14 @@ struct Pickers {
     columns: HashMap<&'static str, Picker<ColumnItem>>,
     /// One per `(plugin, mapping, column)`, so the ids are built at runtime rather than named here.
     maps: HashMap<String, Picker<OptionItem>>,
+    /// One per declared `password` setting.
+    secrets: HashMap<String, Secret>,
     language: Option<Picker<LanguageRow>>,
+}
+
+struct Secret {
+    state: Entity<InputState>,
+    _sub: Subscription,
 }
 
 impl Global for Pickers {}
@@ -400,6 +418,58 @@ impl SearchableListItem for ColumnItem {
     fn value(&self) -> &Self::Value {
         &self.key
     }
+}
+
+/// A masked field for a declared `password` setting, written back as it is typed.
+///
+/// Its `InputState` is kept in [`Pickers`] for the same reason the comboboxes are: `build_pages`
+/// runs on every render, and an entity created in there would be rebuilt each frame — here that
+/// would drop the caret mid-word.
+fn secret_input(
+    plugin: SharedString,
+    spec: SettingSpec,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    if !cx.has_global::<Pickers>() {
+        cx.set_global(Pickers::default());
+    }
+    let id = format!("{plugin}/{}", spec.key);
+    let state = match cx.global::<Pickers>().secrets.get(&id) {
+        Some(secret) => secret.state.clone(),
+        None => {
+            let stored = plugin_host::setting_value(&plugin, &spec, cx)
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let state = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .placeholder("Not set")
+                    .default_value(stored)
+            });
+            let _sub = cx.subscribe(&state, {
+                let (plugin, spec) = (plugin.clone(), spec.clone());
+                move |state: Entity<InputState>, event: &InputEvent, cx: &mut App| {
+                    if !matches!(event, InputEvent::Change) {
+                        return;
+                    }
+                    let typed = state.read(cx).value().to_string();
+                    plugin_host::set_setting(&plugin, &spec, typed.into(), cx);
+                }
+            });
+            cx.global_mut::<Pickers>().secrets.insert(
+                id.clone(),
+                Secret {
+                    state: state.clone(),
+                    _sub,
+                },
+            );
+            state
+        }
+    };
+
+    Input::new(&state).small().into_any_element()
 }
 
 /// One entry in a plugin's mapping list — a vocabulary, in the only plugin that has one. The value
@@ -706,7 +776,7 @@ fn columns_page(cx: &App) -> SettingPage {
     if columns::filters_master_enabled(cx) {
         group = group.item(
             Setting::Text {
-                key: table::FILTER_SUBDELIMITER_KEY,
+                key: settings::FILTER_SUBDELIMITER_KEY,
                 label: "Sub-delimiter",
                 description: "Split cells that hold several values, e.g. \";\" for \"Film; Video\", \
                               so the dropdown lists each value on its own. Leave empty to filter \
