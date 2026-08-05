@@ -6,7 +6,6 @@ use gpui::{
     Window, div, px,
 };
 use gpui_component::{
-    VirtualListScrollHandle,
     input::InputState,
     table::{Column, TableDelegate, TableState},
 };
@@ -67,20 +66,14 @@ pub struct QrateTableDelegate {
     /// Splits one cell into several filterable values. Empty (the default) means a cell is one
     /// value, which is how filtering behaved before this existed.
     subdelimiter: SharedString,
-    /// Shared "search values" box for whichever column-filter popover is open.
-    pub(crate) filter_search: Entity<InputState>,
-    /// Scroll position of that popover's value list. Held here, not built in the popover's render
-    /// closure: `v_virtual_list` mints a fresh handle per call, and the popover rebuilds its
-    /// content every frame, so an inline handle resets the offset to zero as fast as you scroll.
-    pub(crate) filter_scroll: VirtualListScrollHandle,
+    /// Bumped whenever anything a filter dropdown lists could have changed. The dropdown caches its
+    /// value list and only recomputes it when this moves — [`Self::column_values`] is O(rows), and
+    /// the alternative is paying it on every frame the header renders.
+    values_generation: u64,
 }
 
 impl QrateTableDelegate {
-    pub(crate) fn new(
-        editor: Entity<InputState>,
-        note_editor: Entity<InputState>,
-        filter_search: Entity<InputState>,
-    ) -> Self {
+    pub(crate) fn new(editor: Entity<InputState>, note_editor: Entity<InputState>) -> Self {
         Self {
             columns: Vec::new(),
             rows: Vec::new(),
@@ -94,9 +87,13 @@ impl QrateTableDelegate {
             filters: Vec::new(),
             filters_enabled: Vec::new(),
             subdelimiter: SharedString::default(),
-            filter_search,
-            filter_scroll: VirtualListScrollHandle::new(),
+            values_generation: 0,
         }
+    }
+
+    /// See [`Self::values_generation`].
+    pub(crate) fn values_generation(&self) -> u64 {
+        self.values_generation
     }
 
     /// View→source conversion at the single library boundary. `None` for a view index that's
@@ -179,6 +176,22 @@ impl QrateTableDelegate {
             .is_some_and(|e| e.contains(value))
     }
 
+    /// Keep exactly `kept` in a column, excluding every other value it has, then renarrow. The
+    /// dropdown reports what the user ticked; the delegate stores the complement.
+    pub(crate) fn set_column_kept(&mut self, data_col: usize, kept: &[SharedString]) {
+        let excluded_now: HashSet<SharedString> = self
+            .column_values(data_col)
+            .into_iter()
+            .filter(|v| !kept.contains(v))
+            .collect();
+        if let Some(excluded) = self.filters.get_mut(data_col) {
+            *excluded = excluded_now;
+        }
+        self.recompute_visible();
+        // The edited cell may have just been filtered out from under the editor.
+        self.editing = EditState::Idle;
+    }
+
     /// Re-check every value in a column, then renarrow.
     pub(crate) fn clear_column_filter(&mut self, data_col: usize) {
         if let Some(excluded) = self.filters.get_mut(data_col) {
@@ -244,6 +257,7 @@ impl QrateTableDelegate {
                 excluded.clear();
             }
             self.recompute_visible();
+            self.values_generation += 1;
         }
     }
 
@@ -283,6 +297,7 @@ impl QrateTableDelegate {
         self.visible_rows = (0..self.rows.len()).collect();
         // Stale — indexes into the old row set; `TablePanel` re-resolves right after.
         self.image_paths = vec![None; self.rows.len()];
+        self.values_generation += 1;
     }
 
     /// Replaces the per-row resolved image paths. A length mismatch (a stale call racing a newer
@@ -347,6 +362,7 @@ impl QrateTableDelegate {
     pub(crate) fn set_cell(&mut self, row: usize, col: usize, value: SharedString) {
         if let Some(cell) = self.rows.get_mut(row).and_then(|r| r.get_mut(col)) {
             *cell = value;
+            self.values_generation += 1;
         }
     }
 
@@ -455,6 +471,8 @@ impl QrateTableDelegate {
                 *row = perm.iter().map(|&i| row[i].clone()).collect();
             }
         }
+        // A column now holds a different column's values.
+        self.values_generation += 1;
         // Row order is untouched, so `visible_rows` stays valid — no recompute needed.
         if self.filters.len() == perm.len() {
             self.filters = perm.iter().map(|&i| self.filters[i].clone()).collect();
@@ -657,6 +675,7 @@ impl TableDelegate for QrateTableDelegate {
         let col = self.columns.remove(from);
         self.columns.insert(to, col);
         move_col(&mut self.rows, from, to);
+        self.values_generation += 1;
         // The column's filter (and whether it has one) moves with it; row order is untouched.
         if from < self.filters.len() && to < self.filters.len() {
             let f = self.filters.remove(from);

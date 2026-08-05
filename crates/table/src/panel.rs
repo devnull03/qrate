@@ -78,10 +78,8 @@ pub struct TablePanel {
     /// True when regex mode is on and the query doesn't parse — flips the readout to "Invalid
     /// regex" instead of a misleading "No results".
     search_error: bool,
-    /// Repaints the find bar's "N of M" readout and re-narrows the column-filter dropdown's list
-    /// as its search box is typed into.
+    /// Repaints the find bar's "N of M" readout as its search box is typed into.
     _search_sub: Subscription,
-    _filter_search_sub: Subscription,
     /// Pending debounced autosave (the "timed" mode). Replacing it drops the prior task, which
     /// cancels its timer — that drop *is* the debounce, coalescing a burst of edits into one write.
     _autosave_task: Option<Task<()>>,
@@ -103,10 +101,8 @@ impl TablePanel {
                 .submit_on_enter(true)
                 .placeholder("Note")
         });
-        let filter_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search values"));
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in table"));
-        let mut delegate =
-            QrateTableDelegate::new(editor.clone(), note_editor.clone(), filter_search.clone());
+        let mut delegate = QrateTableDelegate::new(editor.clone(), note_editor.clone());
         // Show the open project's data, restoring its saved column order/widths. Without a
         // project (dev launch straight into the main window) the table starts empty.
         let mut loaded_project = None;
@@ -286,17 +282,6 @@ impl TablePanel {
                 },
             );
 
-        // Repaint on filter-search change so the dropdown re-narrows; reset scroll to top to avoid a blank box.
-        let _filter_search_sub =
-            cx.subscribe(&filter_search, |this, _input, _event: &InputEvent, cx| {
-                this.state
-                    .read(cx)
-                    .delegate()
-                    .filter_scroll
-                    .scroll_to_item(0, ScrollStrategy::Top);
-                cx.notify()
-            });
-
         Self {
             focus_handle: cx.focus_handle(),
             state,
@@ -313,7 +298,6 @@ impl TablePanel {
             search_opts: SearchOpts::default(),
             search_error: false,
             _search_sub,
-            _filter_search_sub,
             _autosave_task: None,
         }
     }
