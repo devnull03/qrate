@@ -1385,6 +1385,36 @@ mod tests {
         assert_eq!(found[1].2, "nil/true");
     }
 
+    /// The plugin template, which is what anybody writing a plugin starts from — so it has to load
+    /// and do what it says before it is handed to them.
+    ///
+    /// Ignored for the same reason the Islandora tests are: it is a separate repository, and a
+    /// checkout without it beside qrate has to build.
+    #[test]
+    #[ignore = "needs qrate-plugin-template checked out beside qrate"]
+    fn the_plugin_template_loads_and_flags_what_it_says_it_does() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../qrate-plugin-template/init.lua");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("{} is not checked out here: {err}", path.display()));
+
+        let plugin = LuaPlugin::load("test", &source, Env::default());
+        assert_eq!(plugin.load_error(), None);
+        plugin.set_scoped(json!({ "max": "5" }), Json::Null);
+
+        // A column nobody switched it on for costs nothing, which every plugin has to get right —
+        // `validate` is called for every column whether it concerns the plugin or not.
+        assert!(check_with(plugin, Json::Null, &["far too long"]).is_empty());
+
+        let plugin = LuaPlugin::load("test", &source, Env::default());
+        plugin.set_scoped(json!({ "max": "5" }), Json::Null);
+        let found = check_with(plugin, json!({ "watched": true }), &["ok", "far too long"]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].0, 1);
+        assert_eq!(found[0].1, Severity::Warning);
+        assert!(found[0].2.contains("over 5"), "{}", found[0].2);
+    }
+
     #[test]
     fn a_plugin_written_against_a_later_api_refuses_to_load() {
         let source = r#"return { api_version = 9, validate = function() return {} end }"#;
