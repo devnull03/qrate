@@ -28,16 +28,35 @@ pub const COLUMN_FILTERS_ENABLED_KEY: &str = "table_column_filters_enabled";
 
 /// A column's preferences. A column only has an entry once the user adds it on the Columns
 /// settings page; absent means "not configured", which reads as all-defaults.
-#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct ColumnSettings {
     /// Whether this column offers the filter dropdown in its header.
     #[serde(default)]
     pub filter_enabled: bool,
+    /// Whether cells in this column are spell-checked. Unlike every other field here it defaults
+    /// *on*, so the feature works on a project nobody has configured — which is why this struct
+    /// can't derive `Default`.
+    #[serde(default = "yes")]
+    pub spellcheck: bool,
     /// Plugin id → whatever that plugin keeps for this column. Opaque here on purpose: a typed
     /// field would mean every third-party knob needs a qrate release. See [`crate::plugins`] for
     /// the two scopes that are not per-column.
     #[serde(default)]
     pub plugins: BTreeMap<String, serde_json::Value>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for ColumnSettings {
+    fn default() -> Self {
+        Self {
+            filter_enabled: false,
+            spellcheck: true,
+            plugins: BTreeMap::new(),
+        }
+    }
 }
 
 /// `c{ix}` → settings. `BTreeMap` so the settings page lists columns in a stable order and the
