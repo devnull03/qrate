@@ -7,6 +7,7 @@
 mod cell;
 mod delegate;
 mod editing;
+pub mod file_links;
 mod filter;
 mod floating;
 mod note;
