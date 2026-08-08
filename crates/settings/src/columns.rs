@@ -18,6 +18,73 @@ use serde::{Deserialize, Serialize};
 use crate::dirty;
 use crate::project::CurrentProject;
 
+/// What a column's values are shaped like, as declared in `__columns.data_type`.
+///
+/// The stored value stays free-form `TEXT` — this only *interprets* it, so a project written by
+/// hand or by an older build still loads and a type nobody here knows reads as [`Self::Text`]
+/// rather than becoming an error. Validators key off this instead of matching type strings
+/// themselves, which is what stops each one growing its own spelling list.
+///
+/// What a column is *checked against* is a separate question, and lives in
+/// [`ColumnSettings::authority`]: a subject heading is `Text` that also has to exist in LCSH.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ColumnType {
+    #[default]
+    Text,
+    /// A date, validated as EDTF.
+    Date,
+    /// Names a file in the project's files folder.
+    Filename,
+    Number,
+    Url,
+    /// An accession number, call number, or other opaque handle.
+    Identifier,
+}
+
+impl ColumnType {
+    /// Canonical spelling — what the wizard writes and `column_config.csv` should say.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ColumnType::Text => "Text",
+            ColumnType::Date => "Date",
+            ColumnType::Filename => "Filename",
+            ColumnType::Number => "Number",
+            ColumnType::Url => "Url",
+            ColumnType::Identifier => "Identifier",
+        }
+    }
+
+    /// Every type, in the order the wizard offers them.
+    pub const ALL: [ColumnType; 6] = [
+        ColumnType::Text,
+        ColumnType::Date,
+        ColumnType::Filename,
+        ColumnType::Number,
+        ColumnType::Url,
+        ColumnType::Identifier,
+    ];
+
+    /// Read a declared type. Case- and space-insensitive, and it accepts the spellings a person
+    /// writing a CSV by hand actually uses (`int`, `datetime`, `uri`) so a config isn't rejected
+    /// over a synonym. Anything unrecognised is [`Self::Text`], the type that assumes least.
+    pub fn from_str(declared: &str) -> Self {
+        match declared.trim().to_ascii_lowercase().as_str() {
+            "date" | "datetime" | "time" | "year" | "edtf" => ColumnType::Date,
+            "filename" | "file" | "filepath" | "path" => ColumnType::Filename,
+            "number" | "integer" | "int" | "float" | "decimal" => ColumnType::Number,
+            "url" | "uri" | "link" => ColumnType::Url,
+            "identifier" | "id" => ColumnType::Identifier,
+            _ => ColumnType::Text,
+        }
+    }
+
+    /// Whether cells hold prose — the question spell checking and any other language-aware rule
+    /// asks. Everything that is not [`Self::Text`] is a code, a number, or a machine handle.
+    pub fn is_prose(self) -> bool {
+        self == ColumnType::Text
+    }
+}
+
 /// `__settings` key holding the JSON map below.
 pub const COLUMN_SETTINGS_KEY: &str = "table_column_settings";
 
@@ -38,6 +105,11 @@ pub struct ColumnSettings {
     /// can't derive `Default`.
     #[serde(default = "yes")]
     pub spellcheck: bool,
+    /// Which authority file this column's values must exist in, by name (`"LCSH"`), or `None` to
+    /// check nothing. Separate from the column's [`ColumnType`] because the two answer different
+    /// questions: the type is the shape a value has, this is the list it has to appear on.
+    #[serde(default)]
+    pub authority: Option<String>,
     /// Plugin id → whatever that plugin keeps for this column. Opaque here on purpose: a typed
     /// field would mean every third-party knob needs a qrate release. See [`crate::plugins`] for
     /// the two scopes that are not per-column.
@@ -54,6 +126,7 @@ impl Default for ColumnSettings {
         Self {
             filter_enabled: false,
             spellcheck: true,
+            authority: None,
             plugins: BTreeMap::new(),
         }
     }
@@ -134,7 +207,50 @@ pub fn update(col_key: &str, f: impl FnOnce(&mut ColumnSettings), cx: &mut App) 
 
 #[cfg(test)]
 mod tests {
-    use super::{ColumnSettings, ColumnSettingsMap, parse};
+    use super::{ColumnSettings, ColumnSettingsMap, ColumnType, parse};
+
+    #[test]
+    fn every_type_round_trips_through_its_canonical_spelling() {
+        for ty in ColumnType::ALL {
+            assert_eq!(ColumnType::from_str(ty.as_str()), ty);
+        }
+    }
+
+    /// The spellings people actually write in a `column_config.csv`.
+    #[test]
+    fn synonyms_and_casing_read_as_the_canonical_type() {
+        assert_eq!(ColumnType::from_str("  DATETIME "), ColumnType::Date);
+        assert_eq!(ColumnType::from_str("int"), ColumnType::Number);
+        assert_eq!(ColumnType::from_str("uri"), ColumnType::Url);
+        assert_eq!(ColumnType::from_str("ID"), ColumnType::Identifier);
+        assert_eq!(ColumnType::from_str("file"), ColumnType::Filename);
+    }
+
+    /// A type this build has never heard of must not stop the column loading — and "assumes
+    /// least" means prose, which is the only setting that turns checks *on*.
+    #[test]
+    fn an_unknown_or_missing_type_is_text() {
+        assert_eq!(ColumnType::from_str("Coordinates"), ColumnType::Text);
+        assert_eq!(ColumnType::from_str(""), ColumnType::Text);
+        assert!(ColumnType::default().is_prose());
+        assert!(!ColumnType::Date.is_prose());
+    }
+
+    /// The authority is a separate axis from the type: a subject heading is prose *and* checked.
+    #[test]
+    fn an_authority_round_trips_and_defaults_to_none() {
+        assert!(ColumnSettings::default().authority.is_none());
+        let mut map = ColumnSettingsMap::new();
+        map.insert(
+            "c1".into(),
+            ColumnSettings {
+                authority: Some("LCSH".into()),
+                ..Default::default()
+            },
+        );
+        let json = serde_json::to_string(&map).unwrap();
+        assert_eq!(parse(Some(&json)), map);
+    }
 
     fn map_with(key: &str, filter_enabled: bool) -> ColumnSettingsMap {
         let mut m = ColumnSettingsMap::new();

@@ -16,6 +16,7 @@ use std::sync::{Arc, RwLock};
 
 use diagnostics::{ColumnInfo, ColumnValidator, Misspelling, Severity};
 use gpui::{App, Global, SharedString};
+use settings::columns::ColumnType;
 use spellbook::Dictionary;
 
 /// Setting key (either scope) for the spell-check master switch. Absent means on, so the feature
@@ -56,28 +57,6 @@ const MAX_SUGGESTIONS: usize = 5;
 /// this is a latency budget, not a layout choice: a menu opens on a click and cannot go and think
 /// about a cell with forty typos in it. The diagnostic's message still names every one.
 const MAX_SUGGESTED_WORDS: usize = 3;
-
-/// Declared column types that never hold prose. `data_type` is free-form text in `__columns` and
-/// almost every project leaves it `"Text"`, so this only bites for projects configured from a
-/// `column_config.csv` — the token rules in [`checkable`] are what actually keep IDs quiet.
-const NON_TEXT_TYPES: &[&str] = &[
-    "number",
-    "integer",
-    "int",
-    "float",
-    "decimal",
-    "date",
-    "datetime",
-    "time",
-    "year",
-    "id",
-    "identifier",
-    "url",
-    "uri",
-    "link",
-    "bool",
-    "boolean",
-];
 
 /// The loaded dictionary, shared between the registered validator and the menu actions.
 ///
@@ -353,12 +332,6 @@ fn checkable(token: &str, ignore_capitalized: bool) -> bool {
     !ignore_capitalized || !token.starts_with(char::is_uppercase)
 }
 
-fn is_non_text(data_type: &str) -> bool {
-    NON_TEXT_TYPES
-        .iter()
-        .any(|known| data_type.trim().eq_ignore_ascii_case(known))
-}
-
 impl ColumnValidator for SpellCheck {
     fn name(&self) -> SharedString {
         VALIDATOR_NAME.into()
@@ -369,7 +342,9 @@ impl ColumnValidator for SpellCheck {
         column: &ColumnInfo,
         values: &[SharedString],
     ) -> Vec<(usize, Severity, SharedString)> {
-        if !column.settings.spellcheck || is_non_text(column.data_type) {
+        // Only prose is worth checking; a date or an accession number is not misspelled, and the
+        // token rules in `checkable` are what keep the rest quiet.
+        if !column.settings.spellcheck || !ColumnType::from_str(column.data_type).is_prose() {
             return Vec::new();
         }
         let Ok(dictionary) = self.dictionary.read() else {
@@ -401,7 +376,7 @@ impl ColumnValidator for SpellCheck {
 mod tests {
     // Never `use super::*` here — the chained glob would let gpui's `test` macro shadow the
     // `#[test]` its own expansion emits. See the note in `table`'s `note.rs` test module.
-    use crate::{SpellCheck, checkable, is_non_text, words};
+    use crate::{SpellCheck, checkable, words};
     use diagnostics::{ColumnInfo, ColumnValidator, Severity};
     use gpui::SharedString;
     use settings::columns::ColumnSettings;
@@ -507,9 +482,20 @@ mod tests {
             findings(&spell, "Date", &ColumnSettings::default(), &["recieve"]).is_empty(),
             "a declared Date column holds no prose"
         );
-        assert!(is_non_text("  DATETIME "));
-        assert!(!is_non_text("Text"));
-        assert!(!is_non_text(""), "an unconfigured column is still checked");
+        assert!(
+            findings(
+                &spell,
+                "  DATETIME ",
+                &ColumnSettings::default(),
+                &["recieve"]
+            )
+            .is_empty(),
+            "a synonym spelled any way still reads as a date"
+        );
+        assert!(
+            !findings(&spell, "", &ColumnSettings::default(), &["recieve"]).is_empty(),
+            "an unconfigured column is still checked"
+        );
     }
 
     /// What "Add to dictionary" has to achieve. Exercised on the dictionary directly because the

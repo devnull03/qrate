@@ -7,6 +7,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
+use settings::columns::ColumnType;
+
 /// A note carried in from the sheet, resolved against this preview's own indices: `row` indexes
 /// [`SpreadsheetPreview::rows`] and `column` is the header text, so nothing downstream has to
 /// know about spreadsheet coordinates.
@@ -267,6 +269,19 @@ impl ColumnConfigError {
     }
 }
 
+/// Store the canonical spelling of a type we recognise, so `date` and `DATETIME` both land as
+/// `Date` and validators get one string to match. Anything unrecognised is kept exactly as
+/// written — flattening someone's `Coordinates` to `Text` would throw away the only record of
+/// what they meant, and an unknown type already reads as `Text` where it matters.
+fn canonical_type(declared: &str) -> String {
+    let declared = declared.trim();
+    let known = ColumnType::from_str(declared);
+    if known == ColumnType::Text && !declared.eq_ignore_ascii_case(ColumnType::Text.as_str()) {
+        return declared.to_string();
+    }
+    known.as_str().to_string()
+}
+
 /// Loads a `column_config.csv`-shaped file (Column Name, Data Type,
 /// Description) and checks it against the spreadsheet's own headers.
 pub fn load_column_config(
@@ -311,7 +326,7 @@ pub fn load_column_config(
         }
         entries.push(ColumnConfigEntry {
             name: name.clone(),
-            data_type: record.get(type_ix).unwrap_or_default().trim().to_string(),
+            data_type: canonical_type(record.get(type_ix).unwrap_or_default()),
             description: desc_ix
                 .and_then(|i| record.get(i))
                 .unwrap_or_default()
@@ -495,6 +510,56 @@ mod tests {
             load_column_config(unrelated.to_str().unwrap(), &headers),
             Err(ColumnConfigError::NoMatch)
         ));
+    }
+
+    /// A synonym is stored canonically so validators match one spelling; a type this build does
+    /// not know is kept exactly as written rather than flattened to `Text`.
+    #[test]
+    fn known_types_are_canonicalised_and_unknown_ones_survive() {
+        let dir = tempdir("qrate-config-canonical");
+        let path = dir.join("column_config.csv");
+        write!(
+            std::fs::File::create(&path).unwrap(),
+            "Column Name,Data Type\nA,  datetime \nB,int\nC,Coordinates\nD,\n"
+        )
+        .unwrap();
+        let entries = load_column_config(path.to_str().unwrap(), &["A".to_string()])
+            .unwrap()
+            .entries;
+        assert_eq!(entries[0].data_type, "Date");
+        assert_eq!(entries[1].data_type, "Number");
+        assert_eq!(entries[2].data_type, "Coordinates");
+        assert_eq!(entries[3].data_type, "", "a blank type stays unconfigured");
+    }
+
+    /// The committed example is what someone copies to start from, so it has to load against the
+    /// sample collection it was written for — and every type in it has to be one we recognise.
+    #[test]
+    fn the_sample_column_config_loads_against_the_sample_collection() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sample");
+        let headers = load_csv_preview(root.join("aderman_collection.csv").to_str().unwrap())
+            .unwrap()
+            .headers;
+        let entries =
+            load_column_config(root.join("column_config.csv").to_str().unwrap(), &headers)
+                .unwrap()
+                .entries;
+
+        assert_eq!(entries.len(), headers.len(), "every column is described");
+        for entry in &entries {
+            assert!(
+                headers.iter().any(|h| h.eq_ignore_ascii_case(&entry.name)),
+                "{} is not a column of the sample collection",
+                entry.name
+            );
+            assert_eq!(
+                entry.data_type,
+                ColumnType::from_str(&entry.data_type).as_str(),
+                "{} declares a type qrate would not recognise",
+                entry.name
+            );
+            assert!(!entry.description.is_empty(), "{} says nothing", entry.name);
+        }
     }
 
     fn tempdir(name: &str) -> std::path::PathBuf {
