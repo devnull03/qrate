@@ -11,6 +11,8 @@
 //! ranges while the client owns the URI. That is what lets a validator live in its own crate
 //! knowing nothing about datasets, projects, or the table.
 
+use std::collections::BTreeMap;
+
 use gpui::{App, BorrowAppContext as _, Global, SharedString};
 use settings::columns::ColumnSettings;
 
@@ -66,15 +68,26 @@ pub trait ColumnValidator: 'static {
     ) -> Vec<(usize, Severity, SharedString)>;
 }
 
-/// A producer that cannot answer while the run is on the stack — today the plugin host, which runs
-/// its VMs on the background executor and publishes when they finish. Reached through a function
-/// pointer for the same reason `DiagnosticHooks` is: the caller must not link the producer.
-#[derive(Clone, Copy)]
-pub struct AsyncValidators {
-    pub run: fn(&[ColumnSnapshot], &mut App),
-}
+/// Producers that cannot answer while the run is on the stack — the plugin host running its VMs,
+/// an authority checked over the network, a files folder walked from disk. Reached through
+/// function pointers for the same reason `DiagnosticHooks` is: the caller must not link the
+/// producer.
+///
+/// A list rather than one slot: each of those publishes under its own [`Source`], so they compose
+/// the way registered [`ColumnValidator`]s do instead of overwriting each other.
+#[derive(Default)]
+pub struct AsyncValidators(BTreeMap<SharedString, fn(&[ColumnSnapshot], &mut App)>);
 
 impl Global for AsyncValidators {}
+
+impl AsyncValidators {
+    /// Keyed by producer name so re-registering replaces rather than doubles: the plugin host
+    /// re-runs this every time a plugin is switched on or off, and running its VMs twice per edit
+    /// is the bug that shape invites.
+    pub fn register(name: &str, run: fn(&[ColumnSnapshot], &mut App), cx: &mut App) {
+        cx.default_global::<Self>().0.insert(name.into(), run);
+    }
+}
 
 /// One misspelled word, and the corrections offered for it in rank order.
 pub type Misspelling = (SharedString, Vec<SharedString>);
@@ -133,8 +146,12 @@ impl Validators {
     // sheet starts stuttering on commit.
     pub fn run(columns: &[(SharedString, SharedString)], rows: &[Vec<SharedString>], cx: &mut App) {
         let sync = cx.try_global::<Self>().is_some_and(|v| !v.0.is_empty());
-        let deferred = cx.try_global::<AsyncValidators>().copied();
-        if !sync && deferred.is_none() {
+        // Copied out because running one hands `cx` back mutably, and a fn pointer is cheap.
+        let deferred: Vec<_> = cx
+            .try_global::<AsyncValidators>()
+            .map(|v| v.0.values().copied().collect())
+            .unwrap_or_default();
+        if !sync && deferred.is_empty() {
             return;
         }
 
@@ -181,8 +198,8 @@ impl Validators {
                 }
             });
         }
-        if let Some(deferred) = deferred {
-            (deferred.run)(&snapshot, cx);
+        for run in deferred {
+            run(&snapshot, cx);
         }
     }
 }
@@ -372,9 +389,8 @@ mod tests {
         });
     }
 
-    /// The plugin host is the only thing that registers validators, and it publishes through the
-    /// deferred hook rather than the registry — so an empty registry must not skip the run, or
-    /// nothing validates in the shipping app.
+    /// A deferred producer publishes through the hook rather than the registry — so an empty
+    /// registry must not skip the run, or nothing validates in the shipping app.
     #[gpui::test]
     fn a_deferred_producer_runs_with_an_empty_registry(cx: &mut TestAppContext) {
         static SEEN: AtomicUsize = AtomicUsize::new(0);
@@ -384,9 +400,32 @@ mod tests {
 
         cx.update(|cx| {
             let (columns, rows) = grid();
-            cx.set_global(crate::AsyncValidators { run: record });
+            crate::AsyncValidators::register("test", record, cx);
             Validators::run(&columns, &rows, cx);
             assert_eq!(SEEN.load(Ordering::SeqCst), 2, "both columns crossed over");
+        });
+    }
+
+    /// `plugin_host::reload` re-registers on every plugin toggle. Keyed by name, so that replaces
+    /// its entry — a registry that appended would run every VM twice per edit after one toggle.
+    #[gpui::test]
+    fn re_registering_a_name_replaces_it(cx: &mut TestAppContext) {
+        static RUNS: AtomicUsize = AtomicUsize::new(0);
+        fn count(_: &[crate::ColumnSnapshot], _: &mut gpui::App) {
+            RUNS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        cx.update(|cx| {
+            let (columns, rows) = grid();
+            crate::AsyncValidators::register("plugins", count, cx);
+            crate::AsyncValidators::register("plugins", count, cx);
+            Validators::run(&columns, &rows, cx);
+            assert_eq!(RUNS.load(Ordering::SeqCst), 1, "registered twice, ran once");
+
+            // A different name is a different producer and does get its own run.
+            crate::AsyncValidators::register("files", count, cx);
+            Validators::run(&columns, &rows, cx);
+            assert_eq!(RUNS.load(Ordering::SeqCst), 3);
         });
     }
 }
