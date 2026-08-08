@@ -201,9 +201,7 @@ pub fn reload(cx: &mut App) {
         suggest,
         forget_suggestions: clear_suggestions,
     });
-    cx.set_global(AsyncValidators {
-        run: validate_async,
-    });
+    AsyncValidators::register("plugins", validate_async, cx);
     // The log, not the Problems panel: a syntax error is the plugin author's problem, and the
     // panel is the archivist's list of what is wrong with their data. Help ▸ Copy Debug Info
     // carries this out to whoever can fix it.
