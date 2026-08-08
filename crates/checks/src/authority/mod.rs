@@ -412,7 +412,7 @@ fn offer(_: &Location, text: &str, cx: &App) -> Vec<Fix> {
         .collect()
 }
 
-/// Wire the authority check in. Called by `app`, the only place that knows where checks come from.
+/// Wire the authority check in. Reached through [`crate::init`].
 pub fn init(cx: &mut App) {
     for name in source::names() {
         FixProviders::register(name, offer, cx);
@@ -422,7 +422,7 @@ pub fn init(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Verdict, values_in};
+    use crate::authority::{Verdict, values_in};
 
     #[test]
     fn a_multi_valued_cell_splits_into_its_values() {
@@ -469,8 +469,8 @@ mod tests {
 /// `cargo test -p authority -- --ignored` when changing how an answer is read.
 #[cfg(test)]
 mod network {
-    use crate::lcsh::Lcsh;
-    use crate::lookup;
+    use crate::authority::lcsh::Lcsh;
+    use crate::authority::lookup;
 
     #[test]
     #[ignore = "hits id.loc.gov"]

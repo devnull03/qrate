@@ -5,7 +5,7 @@
 //! only the two things that differ: the URL that looks a term up, and how to read the labels out
 //! of what comes back. Adding VIAF or Getty is that pair of methods and a line in [`ALL`].
 
-use crate::lcsh::Lcsh;
+use crate::authority::lcsh::Lcsh;
 
 /// One authority file: a controlled list of headings a value is supposed to come from.
 ///
