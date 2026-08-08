@@ -21,6 +21,12 @@ impl AuthoritySource for Lcsh {
         NAME
     }
 
+    fn describes(&self) -> &'static str {
+        "Library of Congress Subject Headings — the controlled vocabulary for what an item is \
+         about. Matches from the start of a heading, so it completes a partial one but cannot \
+         correct a typo."
+    }
+
     fn rejection(&self, term: &str) -> String {
         format!("“{term}” is not a Library of Congress subject heading")
     }
@@ -28,7 +34,7 @@ impl AuthoritySource for Lcsh {
     fn lookup_url(&self, term: &str) -> String {
         format!(
             "https://id.loc.gov/authorities/subjects/suggest2?q={}&count={SUGGESTIONS}",
-            encode(term)
+            super::encode(term)
         )
     }
 
@@ -52,22 +58,10 @@ impl AuthoritySource for Lcsh {
     }
 }
 
-/// Percent-encode a query value. Hand-rolled because this is the only escaping in the crate and
-/// the alternative is a dependency to encode a dozen characters.
-fn encode(term: &str) -> String {
-    term.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::authority::lcsh::{Lcsh, encode};
+    use crate::authority::encode;
+    use crate::authority::lcsh::Lcsh;
     use crate::authority::source::AuthoritySource;
 
     #[test]
