@@ -265,13 +265,26 @@ impl Render for ProblemsPanel {
                                         let Some(text) = (hooks.text_at)(&location, cx) else {
                                             return menu;
                                         };
-                                        let location = location.clone();
-                                        crate::spelling::menu(
+                                        let menu = {
+                                            let location = location.clone();
+                                            crate::spelling::menu(
+                                                &text,
+                                                menu,
+                                                window,
+                                                cx,
+                                                move |fixed, cx| {
+                                                    (hooks.set_text)(&location, fixed, cx)
+                                                },
+                                            )
+                                        };
+                                        let applied = location.clone();
+                                        crate::fixes::menu(
+                                            &location,
                                             &text,
                                             menu,
                                             window,
                                             cx,
-                                            move |fixed, cx| (hooks.set_text)(&location, fixed, cx),
+                                            move |fixed, cx| (hooks.set_text)(&applied, fixed, cx),
                                         )
                                     })
                             })

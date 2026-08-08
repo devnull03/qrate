@@ -67,7 +67,7 @@ impl ColumnType {
     /// Read a declared type. Case- and space-insensitive, and it accepts the spellings a person
     /// writing a CSV by hand actually uses (`int`, `datetime`, `uri`) so a config isn't rejected
     /// over a synonym. Anything unrecognised is [`Self::Text`], the type that assumes least.
-    pub fn from_str(declared: &str) -> Self {
+    pub fn from_declared(declared: &str) -> Self {
         match declared.trim().to_ascii_lowercase().as_str() {
             "date" | "datetime" | "time" | "year" | "edtf" => ColumnType::Date,
             "filename" | "file" | "filepath" | "path" => ColumnType::Filename,
@@ -212,26 +212,26 @@ mod tests {
     #[test]
     fn every_type_round_trips_through_its_canonical_spelling() {
         for ty in ColumnType::ALL {
-            assert_eq!(ColumnType::from_str(ty.as_str()), ty);
+            assert_eq!(ColumnType::from_declared(ty.as_str()), ty);
         }
     }
 
     /// The spellings people actually write in a `column_config.csv`.
     #[test]
     fn synonyms_and_casing_read_as_the_canonical_type() {
-        assert_eq!(ColumnType::from_str("  DATETIME "), ColumnType::Date);
-        assert_eq!(ColumnType::from_str("int"), ColumnType::Number);
-        assert_eq!(ColumnType::from_str("uri"), ColumnType::Url);
-        assert_eq!(ColumnType::from_str("ID"), ColumnType::Identifier);
-        assert_eq!(ColumnType::from_str("file"), ColumnType::Filename);
+        assert_eq!(ColumnType::from_declared("  DATETIME "), ColumnType::Date);
+        assert_eq!(ColumnType::from_declared("int"), ColumnType::Number);
+        assert_eq!(ColumnType::from_declared("uri"), ColumnType::Url);
+        assert_eq!(ColumnType::from_declared("ID"), ColumnType::Identifier);
+        assert_eq!(ColumnType::from_declared("file"), ColumnType::Filename);
     }
 
     /// A type this build has never heard of must not stop the column loading — and "assumes
     /// least" means prose, which is the only setting that turns checks *on*.
     #[test]
     fn an_unknown_or_missing_type_is_text() {
-        assert_eq!(ColumnType::from_str("Coordinates"), ColumnType::Text);
-        assert_eq!(ColumnType::from_str(""), ColumnType::Text);
+        assert_eq!(ColumnType::from_declared("Coordinates"), ColumnType::Text);
+        assert_eq!(ColumnType::from_declared(""), ColumnType::Text);
         assert!(ColumnType::default().is_prose());
         assert!(!ColumnType::Date.is_prose());
     }

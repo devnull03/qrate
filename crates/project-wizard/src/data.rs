@@ -275,7 +275,7 @@ impl ColumnConfigError {
 /// what they meant, and an unknown type already reads as `Text` where it matters.
 fn canonical_type(declared: &str) -> String {
     let declared = declared.trim();
-    let known = ColumnType::from_str(declared);
+    let known = ColumnType::from_declared(declared);
     if known == ColumnType::Text && !declared.eq_ignore_ascii_case(ColumnType::Text.as_str()) {
         return declared.to_string();
     }
@@ -554,7 +554,7 @@ mod tests {
             );
             assert_eq!(
                 entry.data_type,
-                ColumnType::from_str(&entry.data_type).as_str(),
+                ColumnType::from_declared(&entry.data_type).as_str(),
                 "{} declares a type qrate would not recognise",
                 entry.name
             );
