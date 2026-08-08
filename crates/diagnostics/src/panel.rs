@@ -2,8 +2,9 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{Panel, PanelControl, PanelEvent};
-use gpui_component::menu::ContextMenuExt as _;
+use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 
@@ -56,10 +57,18 @@ struct Row {
     location: Location,
 }
 
-/// Bottom dock: every open problem, filtered by severity, click to jump to it.
+/// Bottom dock: every open problem, filtered by severity and source, click to jump to it.
 pub struct ProblemsPanel {
     focus_handle: FocusHandle,
     filter: Filter,
+    /// Which producer's findings to show, or all of them. Severity says how loud a problem is;
+    /// this says who is talking — with a speller, a files check, an authority, and any number of
+    /// plugins all publishing into one list, "only show me the spelling" is the difference
+    /// between a list and a pile.
+    source: Option<SharedString>,
+    /// Distinct sources currently publishing, in display order. Only what is actually here, so
+    /// the menu never offers a filter that would empty the list.
+    sources: Rc<Vec<SharedString>>,
     /// The visible list, in display order. Behind an `Rc` so each render hands the virtual list a
     /// handle instead of a copy. Rebuilt only when the store or the filter changes — a sheet with
     /// a few hundred findings would otherwise sort and rebuild all of them every frame.
@@ -76,6 +85,8 @@ impl ProblemsPanel {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             filter: Filter::All,
+            source: None,
+            sources: Rc::default(),
             rows: Rc::default(),
             counts: [0; 4],
             _sub: cx.observe_global::<Diagnostics>(|this, cx| {
@@ -87,17 +98,78 @@ impl ProblemsPanel {
         this
     }
 
+    /// Whether the source filter lets this one through. Its own function because both the rows
+    /// and the tab counts have to agree — a tab reading "Errors (12)" over a list of two is worse
+    /// than no count at all.
+    fn admits_source(&self, d: &crate::Diagnostic) -> bool {
+        self.source
+            .as_ref()
+            .is_none_or(|wanted| &d.source.label() == wanted)
+    }
+
+    /// The "which producer" dropdown. Hidden until something is publishing, so a project with
+    /// only spelling findings doesn't grow a menu with one entry in it.
+    fn source_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (sources, selected, panel) = (self.sources.clone(), self.source.clone(), cx.entity());
+        let label = selected
+            .clone()
+            .unwrap_or_else(|| SharedString::from("All sources"));
+
+        div().pr_1().when(sources.len() > 1, |el| {
+            el.child(
+                Button::new("problems-source")
+                    .ghost()
+                    .small()
+                    .label(label)
+                    .dropdown_menu(move |menu, _window, _cx| {
+                        let pick =
+                            |menu: PopupMenu,
+                             name: Option<SharedString>,
+                             panel: &Entity<ProblemsPanel>| {
+                                let (panel, chosen) = (panel.clone(), name.clone());
+                                menu.item(
+                                    PopupMenuItem::new(
+                                        name.unwrap_or_else(|| SharedString::from("All sources")),
+                                    )
+                                    .on_click(
+                                        move |_, _, cx| {
+                                            panel.update(cx, |this, cx| {
+                                                this.source = chosen.clone();
+                                                this.refresh(cx);
+                                                cx.notify();
+                                            });
+                                        },
+                                    ),
+                                )
+                            };
+                        let menu = pick(menu, None, &panel).separator();
+                        sources
+                            .iter()
+                            .fold(menu, |menu, name| pick(menu, Some(name.clone()), &panel))
+                    }),
+            )
+        })
+    }
+
     fn refresh(&mut self, cx: &App) {
+        let mut sources: Vec<SharedString> = Diagnostics::all(cx)
+            .iter()
+            .map(|d| d.source.label())
+            .collect();
+        sources.sort();
+        sources.dedup();
+        self.sources = Rc::new(sources);
+
         self.counts = Filter::ALL.map(|f| {
             Diagnostics::all(cx)
                 .iter()
-                .filter(|d| f.admits(d.severity))
+                .filter(|d| f.admits(d.severity) && self.admits_source(d))
                 .count()
         });
 
         let mut rows: Vec<Row> = Diagnostics::all(cx)
             .iter()
-            .filter(|d| self.filter.admits(d.severity))
+            .filter(|d| self.filter.admits(d.severity) && self.admits_source(d))
             .map(|d| {
                 let (scope, wide) = match (d.location.row, d.location.column.as_ref()) {
                     (Some(r), Some(c)) => (format!("Row {} · {c}", r + 1).into(), false),
@@ -168,24 +240,33 @@ impl Render for ProblemsPanel {
         v_flex()
             .size_full()
             .child(
-                TabBar::new("problems-filter")
-                    .selected_index(
-                        Filter::ALL
-                            .iter()
-                            .position(|f| *f == self.filter)
-                            .unwrap_or(0),
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        TabBar::new("problems-filter")
+                            .selected_index(
+                                Filter::ALL
+                                    .iter()
+                                    .position(|f| *f == self.filter)
+                                    .unwrap_or(0),
+                            )
+                            .children(
+                                Filter::ALL
+                                    .iter()
+                                    .zip(self.counts)
+                                    .map(|(f, n)| Tab::new().label(format!("{} ({n})", f.label()))),
+                            )
+                            .on_click(cx.listener(|this, ix: &usize, _w, cx| {
+                                this.filter = Filter::ALL[*ix];
+                                this.refresh(cx);
+                                cx.notify();
+                            })),
                     )
-                    .children(
-                        Filter::ALL
-                            .iter()
-                            .zip(self.counts)
-                            .map(|(f, n)| Tab::new().label(format!("{} ({n})", f.label()))),
-                    )
-                    .on_click(cx.listener(|this, ix: &usize, _w, cx| {
-                        this.filter = Filter::ALL[*ix];
-                        this.refresh(cx);
-                        cx.notify();
-                    })),
+                    .child(self.source_menu(cx)),
             )
             .when(rows.is_empty(), |panel| {
                 panel.child(div().p_3().text_color(muted).child("No problems"))
@@ -362,5 +443,50 @@ mod tests {
             // Always "All" plus exactly one specific tab — nothing is unreachable or double-listed.
             assert_eq!(admitting.len(), 2, "{severity:?} lands in {admitting:?}");
         }
+    }
+
+    /// Picking a source narrows the list *and* the tab counts: a tab reading "Errors (2)" over a
+    /// list showing one is worse than no count at all.
+    #[gpui::test]
+    fn choosing_a_source_narrows_the_rows_and_the_counts(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            let at = |row| Location {
+                dataset: DATASET_MAIN.into(),
+                row: Some(row),
+                column: Some("Title".into()),
+            };
+            for (source, rows) in [("spell", vec![0, 1]), ("files", vec![2])] {
+                Diagnostics::set(
+                    &Source::Validator(source.into()),
+                    DATASET_MAIN,
+                    rows.into_iter()
+                        .map(|r| Diagnostic {
+                            location: at(r),
+                            severity: Severity::Error,
+                            source: Source::Validator(source.into()),
+                            message: "m".into(),
+                        })
+                        .collect(),
+                    cx,
+                );
+            }
+        });
+
+        let (panel, cx) = cx.add_window_view(ProblemsPanel::new);
+        panel.update(cx, |this, cx| {
+            assert_eq!(this.sources.len(), 2, "both producers are offered");
+            assert_eq!(this.rows.len(), 3);
+            assert_eq!(this.counts[0], 3, "the All tab counts everything");
+
+            this.source = Some("files".into());
+            this.refresh(cx);
+            assert_eq!(this.rows.len(), 1, "only the files finding survives");
+            assert_eq!(this.counts[0], 1, "and the tab count agrees");
+
+            this.source = None;
+            this.refresh(cx);
+            assert_eq!(this.rows.len(), 3, "clearing the filter brings them back");
+        });
     }
 }
