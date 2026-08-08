@@ -19,6 +19,7 @@ serde_json.workspace = true
 schemars.workspace = true
 window-wrapper = { path = "../window-wrapper" }
 project-wizard = { path = "../project-wizard" }
+authority = { path = "../authority" }
 diagnostics = { path = "../diagnostics" }
 settings = { path = "../settings" }
 # The dictionary is half a megabyte, so only the composition root links it — see `crates/spellcheck`.

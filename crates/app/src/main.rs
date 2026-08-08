@@ -438,6 +438,7 @@ fn main() {
             table::file_links::check,
             cx,
         );
+        authority::init(cx);
 
         cx.on_action(|_: &ReloadPlugins, cx| {
             plugin_host::reload(cx);
