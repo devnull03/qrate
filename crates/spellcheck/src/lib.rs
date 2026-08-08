@@ -344,7 +344,7 @@ impl ColumnValidator for SpellCheck {
     ) -> Vec<(usize, Severity, SharedString)> {
         // Only prose is worth checking; a date or an accession number is not misspelled, and the
         // token rules in `checkable` are what keep the rest quiet.
-        if !column.settings.spellcheck || !ColumnType::from_str(column.data_type).is_prose() {
+        if !column.settings.spellcheck || !ColumnType::from_declared(column.data_type).is_prose() {
             return Vec::new();
         }
         let Ok(dictionary) = self.dictionary.read() else {

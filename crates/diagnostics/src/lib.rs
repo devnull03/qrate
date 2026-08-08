@@ -5,9 +5,11 @@
 //! in-cell squiggles later. The cost of that inversion is [`DiagnosticHooks`], through which the
 //! panel asks the app to reveal a cell.
 
+pub mod fixes;
 mod panel;
 pub mod spelling;
 mod validator;
+pub use fixes::{Fix, FixProviders};
 pub use panel::ProblemsPanel;
 pub use validator::{
     AsyncValidators, ColumnInfo, ColumnSnapshot, ColumnValidator, Misspelling, SpellActions,
