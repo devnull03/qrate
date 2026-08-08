@@ -433,6 +433,11 @@ fn main() {
         plugin_host::on_command_finished(table::revalidate_now);
         plugin_host::reload(cx);
         register_spell_checker(cx);
+        diagnostics::AsyncValidators::register(
+            table::file_links::SOURCE,
+            table::file_links::check,
+            cx,
+        );
 
         cx.on_action(|_: &ReloadPlugins, cx| {
             plugin_host::reload(cx);

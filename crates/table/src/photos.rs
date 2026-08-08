@@ -76,7 +76,7 @@ impl PhotoIndex {
         Self { by_name, by_stem }
     }
 
-    fn resolve_cell(&self, cell: &str) -> Option<&PathBuf> {
+    pub(crate) fn resolve_cell(&self, cell: &str) -> Option<&PathBuf> {
         let c = cell.trim().to_lowercase();
         if c.is_empty() {
             return None;
