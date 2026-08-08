@@ -109,8 +109,12 @@ mod tests {
     use gpui::SharedString;
     use std::io::Write;
 
-    fn folder_with(names: &[&str]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("qrate-file-links-test");
+    /// `case` names the folder, because tests run in parallel and a shared one means each test
+    /// deletes the directory the other is writing into. Mirrors `photos::tests::tempdir`.
+    fn folder_with(case: &str, names: &[&str]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir()
+            .join("qrate-file-links-test")
+            .join(case);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for name in names {
@@ -121,7 +125,7 @@ mod tests {
 
     #[test]
     fn only_a_value_that_names_an_absent_file_is_reported() {
-        let dir = folder_with(&["1.jpg", "2.jpg"]);
+        let dir = folder_with("absent", &["1.jpg", "2.jpg"]);
         let index = PhotoIndex::build(dir.to_str().unwrap());
         let values: Vec<SharedString> = ["1", "gone.jpg", "  ", "2.jpg"]
             .iter()
@@ -138,7 +142,7 @@ mod tests {
     /// cell holds an id rather than a filename would be reported as broken.
     #[test]
     fn a_bare_stem_resolves_the_way_the_details_panel_resolves_it() {
-        let dir = folder_with(&["2021_05_034.jpg"]);
+        let dir = folder_with("stem", &["2021_05_034.jpg"]);
         let index = PhotoIndex::build(dir.to_str().unwrap());
         let values = vec![SharedString::from("2021_05_034")];
         assert!(missing(&index, &values).is_empty());
