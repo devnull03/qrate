@@ -12,7 +12,21 @@ pub mod dates;
 
 use gpui::App;
 
-pub use authority::LCSH;
+pub use authority::source::AuthoritySource;
+pub use authority::{GEONAMES, LCSH, WIKIDATA};
+
+/// Setting key (either scope) holding a free geonames.org account name. GeoNames refuses every
+/// anonymous call, so its check stays off until this is filled in.
+pub const GEONAMES_USERNAME_KEY: &str = "geonames_username";
+
+/// Every authority a column can be checked against, each with the one line the settings picker
+/// shows. Built from the sources themselves so the list cannot drift from what actually runs.
+pub fn authorities() -> Vec<(&'static str, &'static str)> {
+    authority::source::all(&authority::source::Config::default())
+        .iter()
+        .map(|source| (source.name(), source.describes()))
+        .collect()
+}
 
 /// Register every built-in check. Called by `app`, which is the only place that knows where
 /// checks come from.

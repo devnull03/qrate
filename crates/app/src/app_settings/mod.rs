@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use checks::LCSH;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Axis, Entity, Global, IntoElement, ParentElement as _,
@@ -36,6 +35,7 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
             )
             .group(saving_group(cx)),
         columns_page(cx),
+        authorities_page(cx),
         SettingPage::new("Spelling").group(spelling_group(cx)),
         plugins_page(cx),
     ];
@@ -769,7 +769,6 @@ fn columns_page(cx: &App) -> SettingPage {
     };
 
     let headers = column_items(project);
-    let lcsh_headers = headers.clone();
 
     let mut group = SettingGroup::new().title("Filters").item(
         SettingItem::new(
@@ -829,28 +828,139 @@ fn columns_page(cx: &App) -> SettingPage {
         .description("Columns whose text is spell-checked. New columns start checked."),
     );
 
-    // ponytail: one list because there is one authority. A second wants a per-column choice
-    // rather than a second list — a column can only be checked against one.
-    group = group.item(
-        SettingItem::new(
-            "Columns checked against LCSH",
-            SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
-                column_picker(
-                    "lcsh-columns",
-                    lcsh_headers.clone(),
-                    |s| s.authority.as_deref() == Some(LCSH),
-                    |s, on| s.authority = on.then(|| LCSH.to_string()),
-                    window,
-                    cx,
-                )
-            }),
-        )
-        .description(
-            "Columns whose values must be Library of Congress Subject Headings. Checked over the \
-             network, so a value is flagged only once the answer arrives.",
-        ),
-    );
     SettingPage::new("Columns").group(group)
+}
+
+/// Which authority each column is checked against, and the one account any of them needs.
+///
+/// A page rather than a section of Columns: these leave the machine, which is worth its own
+/// heading, and GeoNames' account name has nowhere sensible to live among per-column toggles.
+fn authorities_page(cx: &App) -> SettingPage {
+    let described = checks::authorities()
+        .iter()
+        .map(|(name, describes)| format!("**{name}** — {describes}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let page = SettingPage::new("Authorities").group(
+        SettingGroup::new()
+            .title("Accounts")
+            .description(SharedString::from(described))
+            .item(
+                Setting::Text {
+                    key: checks::GEONAMES_USERNAME_KEY,
+                    label: "GeoNames account",
+                    description: "GeoNames refuses anonymous requests, so its check stays off \
+                                  until this is filled in. A free account at geonames.org is \
+                                  enough — this is a username, not a password.",
+                }
+                .into(),
+            ),
+    );
+
+    let Some(project) = cx.try_global::<CurrentProject>() else {
+        return page.group(
+            SettingGroup::new()
+                .title("Columns")
+                .description("Open a project to choose what its columns are checked against."),
+        );
+    };
+
+    let options: Vec<OptionItem> = std::iter::once(OptionItem {
+        value: SharedString::default(),
+        label: "Not checked".into(),
+    })
+    .chain(
+        checks::authorities()
+            .into_iter()
+            .map(|(name, _)| OptionItem {
+                value: name.into(),
+                label: name.into(),
+            }),
+    )
+    .collect();
+
+    // Read once for the whole page — see the note in `mapping_group`.
+    let stored = columns::load(cx);
+    let mut group = SettingGroup::new().title("Columns").description(
+        "A column is checked against one list. Values are checked over the network, so a wrong \
+         one is flagged once the answer arrives rather than as you type.",
+    );
+    for column in column_items(project) {
+        let picked: SharedString = stored
+            .get(column.key.as_ref())
+            .and_then(|s| s.authority.clone())
+            .map(SharedString::from)
+            .unwrap_or_default();
+        let options = options.clone();
+        group = group.item(SettingItem::new(
+            column.name.clone(),
+            SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
+                authority_picker(column.clone(), options.clone(), picked.clone(), window, cx)
+            }),
+        ));
+    }
+    page.group(group)
+}
+
+/// One column's authority choice. Single-select, because a value comes from one list or none —
+/// two lists would mean a value has to be on both, which is not what anybody means by it.
+fn authority_picker(
+    column: ColumnItem,
+    options: Vec<OptionItem>,
+    picked: SharedString,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    if !cx.has_global::<Pickers>() {
+        cx.set_global(Pickers::default());
+    }
+    let id = format!("authority/{}", column.key);
+    let state = match cx.global::<Pickers>().maps.get(&id) {
+        Some(picker) => picker.state.clone(),
+        None => {
+            let state = cx.new(|cx| {
+                ComboboxState::new(SearchableVec::new(options.clone()), vec![], window, cx)
+            });
+            let _sub = cx.subscribe(&state, {
+                let key = column.key.clone();
+                move |_state, event, cx| {
+                    let ComboboxEvent::Change(values) = event else {
+                        return;
+                    };
+                    let chosen = values
+                        .first()
+                        .filter(|v| !v.is_empty())
+                        .map(ToString::to_string);
+                    columns::update(&key, |s| s.authority = chosen.clone(), cx);
+                    // The check reads this setting, so what it published is stale the moment it
+                    // changes — and only a run replaces it.
+                    table::revalidate_now(cx);
+                }
+            });
+            cx.global_mut::<Pickers>().maps.insert(
+                id.clone(),
+                Picker {
+                    state: state.clone(),
+                    items: options.clone(),
+                    _sub,
+                },
+            );
+            state
+        }
+    };
+
+    sync_selection(&state, &options, std::slice::from_ref(&picked), window, cx);
+
+    let label = options
+        .iter()
+        .find(|o| o.value == picked)
+        .map(|o| o.label.clone())
+        .unwrap_or_else(|| "Not checked".into());
+    Combobox::new(&state)
+        .small()
+        .placeholder(label)
+        .into_any_element()
 }
 
 /// The open project's data columns. `c{ix}` is the column's index into the on-disk header order —

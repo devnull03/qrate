@@ -10,10 +10,28 @@
 //! wrong value being re-asked on every keystroke — and never let a server having a bad day look
 //! like a cataloguer being wrong.
 
+mod geonames;
 mod lcsh;
 pub mod source;
+mod wikidata;
 
+pub use geonames::NAME as GEONAMES;
 pub use lcsh::NAME as LCSH;
+pub use wikidata::NAME as WIKIDATA;
+
+/// Percent-encode a query value. Hand-rolled because this is the only escaping in the crate and
+/// the alternative is a dependency to encode a dozen characters.
+fn encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -78,7 +96,7 @@ fn ensure_loaded(cx: &mut App) {
         return;
     }
     let mut terms = HashMap::new();
-    for name in source::names() {
+    for name in source::NAMES {
         let Some(path) = cache_path(name) else {
             continue;
         };
@@ -156,9 +174,10 @@ fn values_in(cell: &str, subdelimiter: &str) -> Vec<String> {
 pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
     ensure_loaded(cx);
     let subdelimiter = settings::effective_text(settings::FILTER_SUBDELIMITER_KEY, cx).to_string();
+    let config = source::Config::read(cx);
 
     let mut jobs = Vec::new();
-    for source in source::all() {
+    for source in source::all(&config) {
         let name = source.name();
         let mine: Vec<ColumnSnapshot> = columns
             .iter()
@@ -168,6 +187,18 @@ pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
         // Nothing points at this authority: publish nothing, which also clears what it said
         // before a column stopped naming it.
         if mine.is_empty() {
+            Diagnostics::set(
+                &Source::Validator(name.into()),
+                DATASET_MAIN,
+                Vec::new(),
+                cx,
+            );
+            continue;
+        }
+        // Configured but unusable — say why once and skip it, rather than spending a request per
+        // term to be refused and reporting the refusals as bad data.
+        if let Some(why) = source.unavailable() {
+            log::warn!("{name} is not checking {} column(s): {why}", mine.len());
             Diagnostics::set(
                 &Source::Validator(name.into()),
                 DATASET_MAIN,
@@ -220,7 +251,7 @@ pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
         cx.background_executor().timer(DEBOUNCE).await;
         let fetched = cx
             .background_spawn(async move {
-                let sources = source::all();
+                let sources = source::all(&config);
                 asked
                     .into_iter()
                     .filter_map(|(name, terms)| {
@@ -414,7 +445,7 @@ fn offer(_: &Location, text: &str, cx: &App) -> Vec<Fix> {
 
 /// Wire the authority check in. Reached through [`crate::init`].
 pub fn init(cx: &mut App) {
-    for name in source::names() {
+    for name in source::NAMES {
         FixProviders::register(name, offer, cx);
     }
     diagnostics::AsyncValidators::register("authority", check, cx);
@@ -465,12 +496,16 @@ mod tests {
     }
 }
 
-/// Hits the real `id.loc.gov`. Ignored so CI never depends on somebody's network, and run with
-/// `cargo test -p authority -- --ignored` when changing how an answer is read.
+/// Hits the real services. Ignored so CI never depends on somebody's network, and run with
+/// `cargo test -p checks -- --ignored` when changing how an answer is read.
+///
+/// GeoNames is absent on purpose: every call needs an account name, so a test that hit it would
+/// either carry someone's credential or fail for everyone who has not set one.
 #[cfg(test)]
 mod network {
     use crate::authority::lcsh::Lcsh;
     use crate::authority::lookup;
+    use crate::authority::wikidata::Wikidata;
 
     #[test]
     #[ignore = "hits id.loc.gov"]
@@ -504,5 +539,30 @@ mod network {
         let typo = lookup(&Lcsh, "Photograpy").expect("id.loc.gov answered");
         assert!(!typo.known);
         assert!(typo.suggestions.is_empty());
+    }
+
+    #[test]
+    #[ignore = "hits wikidata.org"]
+    fn wikidata_knows_a_real_entity_and_not_an_invented_one() {
+        let real = lookup(&Wikidata, "Vancouver").expect("wikidata answered");
+        assert!(real.known, "Vancouver has an entry");
+
+        let invented = lookup(&Wikidata, "Zzzqnotathing").expect("wikidata answered");
+        assert!(!invented.known);
+        assert!(invented.suggestions.is_empty(), "nothing matched at all");
+    }
+
+    /// Unlike LCSH, `wbsearchentities` matches inside a label and across aliases, so a partial
+    /// name does come back with somewhere to go. This is why Wikidata is worth having alongside
+    /// a subject-heading list rather than instead of one.
+    #[test]
+    #[ignore = "hits wikidata.org"]
+    fn wikidata_offers_something_for_a_partial_name() {
+        let partial = lookup(&Wikidata, "Vancouver Isl").expect("wikidata answered");
+        assert!(
+            !partial.suggestions.is_empty(),
+            "a partial name offers matches, got {:?}",
+            partial.suggestions
+        );
     }
 }
