@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use authority::LCSH;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Axis, Entity, Global, IntoElement, ParentElement as _,
@@ -768,6 +769,7 @@ fn columns_page(cx: &App) -> SettingPage {
     };
 
     let headers = column_items(project);
+    let lcsh_headers = headers.clone();
 
     let mut group = SettingGroup::new().title("Filters").item(
         SettingItem::new(
@@ -825,6 +827,28 @@ fn columns_page(cx: &App) -> SettingPage {
             }),
         )
         .description("Columns whose text is spell-checked. New columns start checked."),
+    );
+
+    // ponytail: one list because there is one authority. A second wants a per-column choice
+    // rather than a second list — a column can only be checked against one.
+    group = group.item(
+        SettingItem::new(
+            "Columns checked against LCSH",
+            SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
+                column_picker(
+                    "lcsh-columns",
+                    lcsh_headers.clone(),
+                    |s| s.authority.as_deref() == Some(LCSH),
+                    |s, on| s.authority = on.then(|| LCSH.to_string()),
+                    window,
+                    cx,
+                )
+            }),
+        )
+        .description(
+            "Columns whose values must be Library of Congress Subject Headings. Checked over the \
+             network, so a value is flagged only once the answer arrives.",
+        ),
     );
     SettingPage::new("Columns").group(group)
 }
