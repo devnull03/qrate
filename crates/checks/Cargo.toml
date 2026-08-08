@@ -1,5 +1,5 @@
 [package]
-name = "authority"
+name = "checks"
 version.workspace = true
 edition.workspace = true
 
@@ -12,3 +12,7 @@ serde_json.workspace = true
 # Blocking like `spellcheck`'s download and `plugin-host`'s http.get, and for the same reason:
 # gpui's executor is not a tokio reactor, so these run on the background executor.
 reqwest = { version = "0.12", features = ["blocking"] }
+# The reference EDTF (ISO 8601-2) implementation, for the Date check. MPL-2.0, which is
+# compatible with this repo's AGPL-3.0. Hand-parsing that grammar is how you get a validator
+# that is subtly wrong about seasons, intervals, and unspecified digits.
+edtf = "0.2"

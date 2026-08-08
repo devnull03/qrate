@@ -5,7 +5,7 @@
 //! That single answer settles both questions — a heading that exists comes back as an exact
 //! label, and one that doesn't comes back as the list to offer instead.
 
-use crate::source::AuthoritySource;
+use crate::authority::source::AuthoritySource;
 
 pub struct Lcsh;
 
@@ -67,8 +67,8 @@ fn encode(term: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::lcsh::{Lcsh, encode};
-    use crate::source::AuthoritySource;
+    use crate::authority::lcsh::{Lcsh, encode};
+    use crate::authority::source::AuthoritySource;
 
     #[test]
     fn reads_the_authorized_labels_out_of_an_answer() {

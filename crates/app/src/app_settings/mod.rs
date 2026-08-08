@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use authority::LCSH;
+use checks::LCSH;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Axis, Entity, Global, IntoElement, ParentElement as _,
