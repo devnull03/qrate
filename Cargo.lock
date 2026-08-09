@@ -186,6 +186,7 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "checks",
+ "csv",
  "diagnostics",
  "dirs",
  "gpui",
@@ -5171,6 +5172,7 @@ dependencies = [
  "gpui",
  "gpui-component",
  "log",
+ "plugin-api",
  "serde",
  "serde_json",
  "settings",

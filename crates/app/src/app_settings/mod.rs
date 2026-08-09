@@ -1,4 +1,7 @@
+mod config;
+
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -13,6 +16,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     searchable_list::{SearchableListItem, SearchableVec},
     setting::{SettingField, SettingGroup, SettingItem, SettingPage},
+    tab::{Tab, TabBar},
     v_flex,
 };
 use plugin_api::{ColumnMapContributions, ColumnMapSpec, CommandContext, PluginHooks};
@@ -215,8 +219,10 @@ fn mapping_group(plugin: SharedString, spec: ColumnMapSpec, cx: &App) -> Setting
     // column per frame — which is felt as the Settings window itself being slow.
     let stored = columns::load(cx);
     for column in column_items(project) {
-        let picked =
-            ColumnMapContributions::picked(&plugin, &spec, stored.get(column.key.as_ref()));
+        let mapped = Mapped {
+            picked: ColumnMapContributions::picked(&plugin, &spec, stored.get(column.key.as_ref())),
+            warns: warns(stored.get(column.key.as_ref()), &plugin),
+        };
         let (plugin, spec, options) = (plugin.clone(), spec.clone(), options.clone());
         group = group.item(SettingItem::new(
             column.name.clone(),
@@ -226,7 +232,7 @@ fn mapping_group(plugin: SharedString, spec: ColumnMapSpec, cx: &App) -> Setting
                     spec.clone(),
                     column.clone(),
                     options.clone(),
-                    picked.clone(),
+                    mapped.clone(),
                     window,
                     cx,
                 )
@@ -408,8 +414,12 @@ where
     _sub: Subscription,
 }
 
-/// One data column, as the two pickers on the Columns page list it. The value is the stable
-/// `c{ix}` key, not the display name, so two columns sharing a header stay distinct.
+/// Whether one column has the property a [`column_picker`] is over, and how to set it.
+type ReadsColumn = Rc<dyn Fn(&ColumnItem, &App) -> bool>;
+type WritesColumn = Rc<dyn Fn(&ColumnItem, bool, &mut App)>;
+
+/// One data column, as the pickers on the Columns page list it. The value is the stable `c{ix}`
+/// key, not the display name, so two columns sharing a header stay distinct.
 #[derive(Clone, PartialEq)]
 struct ColumnItem {
     key: SharedString,
@@ -500,6 +510,14 @@ impl SearchableListItem for OptionItem {
     }
 }
 
+/// What one column is mapped to, and how loud that plugin's findings on it are. Both are read out
+/// of the same already-loaded settings entry, so they travel together.
+#[derive(Clone)]
+struct Mapped {
+    picked: Vec<SharedString>,
+    warns: bool,
+}
+
 /// One column's mapping, over whatever the plugin last stored.
 ///
 /// Same shape as [`column_picker`] and for the same reason: the stored settings stay the source of
@@ -510,10 +528,11 @@ fn map_picker(
     spec: ColumnMapSpec,
     column: ColumnItem,
     options: Vec<OptionItem>,
-    picked: Vec<SharedString>,
+    mapped: Mapped,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
+    let Mapped { picked, warns } = mapped;
     if !cx.has_global::<Pickers>() {
         cx.set_global(Pickers::default());
     }
@@ -573,13 +592,21 @@ fn map_picker(
             .into(),
     };
 
-    Combobox::new(&state)
-        .small()
-        .menu_width(px(240.))
-        .menu_max_h(px(320.))
-        .search_placeholder("Search…")
-        .empty(|_, _| div().p_2().child("Nothing to map to yet"))
-        .render_trigger(move |_ctx, _, _| div().child(label.clone()))
+    h_flex()
+        .gap_2()
+        // Nothing mapped means the plugin has nothing to check this column against.
+        .when(!picked.is_empty(), |row| {
+            row.child(severity_switch(column.key.clone(), plugin.clone(), warns))
+        })
+        .child(
+            Combobox::new(&state)
+                .small()
+                .menu_width(px(240.))
+                .menu_max_h(px(320.))
+                .search_placeholder("Search…")
+                .empty(|_, _| div().p_2().child("Nothing to map to yet"))
+                .render_trigger(move |_ctx, _, _| div().child(label.clone())),
+        )
         .into_any_element()
 }
 
@@ -800,8 +827,10 @@ fn columns_page(cx: &App) -> SettingPage {
                     column_picker(
                         "filtered-columns",
                         picked.clone(),
-                        |s| s.filter_enabled,
-                        |s, on| s.filter_enabled = on,
+                        Rc::new(|c: &ColumnItem, cx: &App| columns::get(&c.key, cx).filter_enabled),
+                        Rc::new(|c: &ColumnItem, on: bool, cx: &mut App| {
+                            columns::update(&c.key, |s| s.filter_enabled = on, cx);
+                        }),
                         window,
                         cx,
                     )
@@ -811,15 +840,18 @@ fn columns_page(cx: &App) -> SettingPage {
         );
     }
 
+    let picked = headers.clone();
     group = group.item(
         SettingItem::new(
             "Spell-checked columns",
             SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
                 column_picker(
                     "spellchecked-columns",
-                    headers.clone(),
-                    |s| s.spellcheck,
-                    |s, on| s.spellcheck = on,
+                    picked.clone(),
+                    Rc::new(|c: &ColumnItem, cx: &App| columns::get(&c.key, cx).spellcheck),
+                    Rc::new(|c: &ColumnItem, on: bool, cx: &mut App| {
+                        columns::update(&c.key, |s| s.spellcheck = on, cx);
+                    }),
                     window,
                     cx,
                 )
@@ -828,7 +860,76 @@ fn columns_page(cx: &App) -> SettingPage {
         .description("Columns whose text is spell-checked. New columns start checked."),
     );
 
-    SettingPage::new("Columns").group(group)
+    SettingPage::new("Columns")
+        .group(group)
+        .group(data_types_group(headers))
+        .group(config_file_group())
+}
+
+/// What each column holds, as one picker per type. Inverted from the obvious row-per-column shape
+/// because a project has far more columns than types, and because a column has exactly one type —
+/// which the pickers enforce between them: setting a column here clears it from whichever type
+/// held it, since each reads its selection back from the same declared value.
+///
+/// Unchecking falls back to `Text`, the type that assumes least. It is why `Text`'s own picker
+/// cannot be emptied: a column always has a type, and that is the one it has when nothing is said.
+fn data_types_group(headers: Vec<ColumnItem>) -> SettingGroup {
+    let mut group = SettingGroup::new().title("Data types").description(
+        "What a column holds. Checks key off this: dates are validated as EDTF, filenames are \
+         resolved against the files folder, and only text is spell-checked.",
+    );
+    for ty in columns::ColumnType::ALL {
+        let headers = headers.clone();
+        group = group.item(SettingItem::new(
+            ty.as_str(),
+            SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
+                column_picker(
+                    ty.as_str(),
+                    headers.clone(),
+                    Rc::new(move |c: &ColumnItem, cx: &App| declared_type(&c.name, cx) == ty),
+                    Rc::new(move |c: &ColumnItem, want: bool, cx: &mut App| {
+                        let ty = if want { ty } else { columns::ColumnType::Text };
+                        CurrentProject::set_column_type(&c.name, ty.as_str(), cx);
+                    }),
+                    window,
+                    cx,
+                )
+            }),
+        ));
+    }
+    group
+}
+
+/// A column's declared type, read from `__columns` by name. Unconfigured and unrecognised both read
+/// as `Text` — the same tolerance [`columns::ColumnType::from_declared`] gives everywhere else.
+fn declared_type(name: &str, cx: &App) -> columns::ColumnType {
+    cx.try_global::<CurrentProject>()
+        .and_then(|p| p.data.columns.iter().find(|c| c.name == name))
+        .map_or(columns::ColumnType::Text, |c| {
+            columns::ColumnType::from_declared(&c.data_type)
+        })
+}
+
+/// Writing everything on this page back out as the `column_config.csv` the wizard reads, so the
+/// next collection starts configured instead of starting again.
+fn config_file_group() -> SettingGroup {
+    SettingGroup::new().title("Config file").item(
+        SettingItem::new(
+            "Export",
+            SettingField::element(|_opts: &_, _window: &mut _, _cx: &mut _| {
+                Button::new("export-column-config")
+                    .small()
+                    .label("Export…")
+                    .on_click(|_, _, cx| config::export(cx))
+                    .into_any_element()
+            }),
+        )
+        .description(
+            "Save this project's columns — types, descriptions, authorities, and whatever active \
+             plugins map — as a CSV. Load it in the New Project wizard to set another collection \
+             up the same way.",
+        ),
+    )
 }
 
 /// Which authority each column is checked against, and the one account any of them needs.
@@ -892,15 +993,52 @@ fn authorities_page(cx: &App) -> SettingPage {
             .and_then(|s| s.authority.clone())
             .map(SharedString::from)
             .unwrap_or_default();
+        let warns = warns(stored.get(column.key.as_ref()), &picked);
         let options = options.clone();
         group = group.item(SettingItem::new(
             column.name.clone(),
             SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
-                authority_picker(column.clone(), options.clone(), picked.clone(), window, cx)
+                authority_picker(
+                    column.clone(),
+                    options.clone(),
+                    picked.clone(),
+                    warns,
+                    window,
+                    cx,
+                )
             }),
         ));
     }
     page.group(group)
+}
+
+/// Whether `producer`'s findings on this column are set to warn. Absent reads as error, which is
+/// what every built-in check reports when nothing overrides it.
+fn warns(settings: Option<&columns::ColumnSettings>, producer: &str) -> bool {
+    settings.is_some_and(|s| s.severity.get(producer).is_some_and(|key| key == "warning"))
+}
+
+/// How loud one producer's findings are on one column. Two icons rather than words — the same two
+/// the Problems panel draws, so the switch shows its own effect.
+fn severity_switch(column: SharedString, producer: SharedString, warns: bool) -> impl IntoElement {
+    TabBar::new(SharedString::from(format!("severity/{producer}/{column}")))
+        .segmented()
+        .selected_index(usize::from(warns))
+        .on_click(move |ix: &usize, _window, cx: &mut App| {
+            let chosen = if *ix == 1 { "warning" } else { "error" };
+            columns::update(
+                &column,
+                |s| {
+                    s.severity.insert(producer.to_string(), chosen.into());
+                },
+                cx,
+            );
+            // The severity is applied where findings are addressed, so only a re-run republishes
+            // them at the new one.
+            table::revalidate_now(cx);
+        })
+        .child(Tab::new().icon(IconName::CircleX))
+        .child(Tab::new().icon(IconName::TriangleAlert))
 }
 
 /// One column's authority choice. Single-select, because a value comes from one list or none —
@@ -909,6 +1047,7 @@ fn authority_picker(
     column: ColumnItem,
     options: Vec<OptionItem>,
     picked: SharedString,
+    warns: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -957,9 +1096,14 @@ fn authority_picker(
         .find(|o| o.value == picked)
         .map(|o| o.label.clone())
         .unwrap_or_else(|| "Not checked".into());
-    Combobox::new(&state)
-        .small()
-        .placeholder(label)
+    h_flex()
+        .gap_2()
+        // Nothing is checked, so there is no severity to set — the switch would govern a producer
+        // that isn't running.
+        .when(!picked.is_empty(), |row| {
+            row.child(severity_switch(column.key.clone(), picked.clone(), warns))
+        })
+        .child(Combobox::new(&state).small().placeholder(label))
         .into_any_element()
 }
 
@@ -993,17 +1137,18 @@ fn picker_label(selected: &[SharedString]) -> SharedString {
     }
 }
 
-/// A multi-select over the project's columns. `on`/`set` are the only difference between the two
-/// pickers on this page — one field's getter and setter, passed as plain `fn`s so both stay one
-/// component rather than two copies.
+/// A multi-select over the project's columns. `on`/`set` are the only difference between every
+/// picker built on it — one property's getter and setter, so filters, spell checking, and each data
+/// type stay one component rather than three copies. `Rc` because `on` is needed both inside the
+/// `Change` subscription and outside it to draw the current selection.
 ///
-/// The settings map stays the source of truth: selection is synced *from* it here and written
-/// *back* in the `Change` subscription, so nothing has to reconcile two answers.
+/// The stored value stays the source of truth: selection is synced *from* it here and written
+/// *back* in the subscription, so nothing has to reconcile two answers.
 fn column_picker(
     id: &'static str,
     headers: Vec<ColumnItem>,
-    on: fn(&columns::ColumnSettings) -> bool,
-    set: fn(&mut columns::ColumnSettings, bool),
+    on: ReadsColumn,
+    set: WritesColumn,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -1018,29 +1163,27 @@ fn column_picker(
                     .multiple(true)
                     .searchable(true)
             });
-            let _sub = cx.subscribe(&state, move |_state, event, cx| {
-                let ComboboxEvent::Change(values) = event else {
-                    return;
-                };
-                // Re-read the columns rather than capturing them: this closure outlives the project
-                // whose headers built it.
-                let Some(keys) = cx.try_global::<CurrentProject>().map(|p| {
-                    column_items(p)
-                        .into_iter()
-                        .map(|c| c.key)
-                        .collect::<Vec<_>>()
-                }) else {
-                    return;
-                };
-                for key in keys {
-                    let want = values.contains(&key);
-                    if on(&columns::get(&key, cx)) != want {
-                        columns::update(&key, |s| set(s, want), cx);
+            let _sub = cx.subscribe(&state, {
+                let on = on.clone();
+                move |_state, event, cx| {
+                    let ComboboxEvent::Change(values) = event else {
+                        return;
+                    };
+                    // Re-read the columns rather than capturing them: this closure outlives the
+                    // project whose headers built it.
+                    let Some(current) = cx.try_global::<CurrentProject>().map(column_items) else {
+                        return;
+                    };
+                    for column in current {
+                        let want = values.contains(&column.key);
+                        if on(&column, cx) != want {
+                            set(&column, want, cx);
+                        }
                     }
+                    // A validator reads these settings, so its published findings are stale the
+                    // moment one changes — and only a run replaces them.
+                    table::revalidate_now(cx);
                 }
-                // A validator reads these settings, so its published findings are stale the moment
-                // one changes — and only a run replaces them.
-                table::revalidate_now(cx);
             });
             cx.global_mut::<Pickers>().columns.insert(
                 id,
@@ -1066,7 +1209,7 @@ fn column_picker(
 
     let picked: Vec<SharedString> = headers
         .iter()
-        .filter(|c| on(&columns::get(&c.key, cx)))
+        .filter(|c| on(c, cx))
         .map(|c| c.key.clone())
         .collect();
     sync_selection(&state, &headers, &picked, window, cx);
