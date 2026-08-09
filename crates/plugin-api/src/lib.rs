@@ -327,32 +327,42 @@ impl ColumnMapContributions {
         chosen: Vec<SharedString>,
         cx: &mut App,
     ) {
-        let id = plugin.to_string();
-        let key = spec.key.to_string();
-        let value: Vec<String> = chosen.iter().map(SharedString::to_string).collect();
+        let (plugin, spec) = (plugin.clone(), spec.clone());
         settings::columns::update(
             column_key,
-            |column| {
-                let bucket = column
-                    .plugins
-                    .entry(id)
-                    .or_insert_with(|| serde_json::Value::Object(Default::default()));
-                if !bucket.is_object() {
-                    *bucket = serde_json::Value::Object(Default::default());
-                }
-                // An empty mapping is removed rather than stored as `[]`, so `requires_settings`
-                // and the "has this column been mapped" question stay the same question.
-                match value.is_empty() {
-                    true => {
-                        if let Some(object) = bucket.as_object_mut() {
-                            object.remove(&key);
-                        }
-                    }
-                    false => bucket[&key] = value.into(),
-                }
-            },
+            |column| Self::put(&plugin, &spec, column, &chosen),
             cx,
         );
+    }
+
+    /// The same write against settings that are not the open project's. The wizard imports a column
+    /// config before the project it belongs to exists, so the shape has to be reachable without
+    /// `CurrentProject` — and there must still be only one place that knows it.
+    pub fn put(
+        plugin: &SharedString,
+        spec: &ColumnMapSpec,
+        column: &mut settings::columns::ColumnSettings,
+        chosen: &[SharedString],
+    ) {
+        let key = spec.key.to_string();
+        let value: Vec<String> = chosen.iter().map(SharedString::to_string).collect();
+        let bucket = column
+            .plugins
+            .entry(plugin.to_string())
+            .or_insert_with(|| serde_json::Value::Object(Default::default()));
+        if !bucket.is_object() {
+            *bucket = serde_json::Value::Object(Default::default());
+        }
+        // An empty mapping is removed rather than stored as `[]`, so `requires_settings` and the
+        // "has this column been mapped" question stay the same question.
+        match value.is_empty() {
+            true => {
+                if let Some(object) = bucket.as_object_mut() {
+                    object.remove(&key);
+                }
+            }
+            false => bucket[&key] = value.into(),
+        }
     }
 }
 

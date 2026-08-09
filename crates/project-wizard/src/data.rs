@@ -3,7 +3,7 @@
 //! crate and adapted into a [`SpreadsheetPreview`] (see the `From` impl below),
 //! then run through the same [`match_folder`] path as local CSV files.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -232,11 +232,22 @@ pub fn match_folder(
     })
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ColumnConfigEntry {
     pub name: String,
     pub data_type: String,
     pub description: String,
+    /// Which authority list this column is checked against, if the file says.
+    pub authority: Option<String>,
+    /// Whether to spell-check it. `None` leaves the default (on) alone.
+    pub spellcheck: Option<bool>,
+    /// How loud the authority above reports, as a `Severity` key spelling. Per producer, so each
+    /// plugin's own severity travels in [`Self::extra`] beside its mapping instead.
+    pub authority_severity: Option<String>,
+    /// Every other header, kept verbatim. A plugin's columns arrive here under `<id>::<label>` and
+    /// `<id>::Severity` — resolving those back to a plugin needs the loaded plugins, which this
+    /// module has no business knowing about.
+    pub extra: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -282,8 +293,31 @@ fn canonical_type(declared: &str) -> String {
     known.as_str().to_string()
 }
 
-/// Loads a `column_config.csv`-shaped file (Column Name, Data Type,
-/// Description) and checks it against the spreadsheet's own headers.
+/// The headers this module understands. Everything else in the file is a plugin's, and lands in
+/// [`ColumnConfigEntry::extra`] under its own spelling.
+const KNOWN: [&str; 6] = [
+    "Column Name",
+    "Data Type",
+    "Description",
+    "Authority",
+    "Spellcheck",
+    "Authority Severity",
+];
+
+/// Reads a yes/no cell. Anything else — including empty — is "the file didn't say", which leaves
+/// the setting at its default rather than guessing.
+fn yes_no(cell: &str) -> Option<bool> {
+    match cell.trim().to_ascii_lowercase().as_str() {
+        "yes" | "true" | "on" | "1" => Some(true),
+        "no" | "false" | "off" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+/// Loads a `column_config.csv`-shaped file (Column Name, Data Type, Description, and optionally
+/// Authority, Spellcheck, Severity plus a column per plugin mapping) and checks it against the
+/// spreadsheet's own headers. Only Column Name and Data Type are required, so a hand-written
+/// three-column file still loads.
 pub fn load_column_config(
     path: &str,
     against_headers: &[String],
@@ -299,15 +333,17 @@ pub fn load_column_config(
         .map_err(|e| ColumnConfigError::Io(e.to_string()))?
         .clone();
 
-    let name_ix = headers
+    let at = |wanted: &str| headers.iter().position(|h| h.eq_ignore_ascii_case(wanted));
+    let (name_ix, type_ix) = (at("Column Name"), at("Data Type"));
+    let (desc_ix, authority_ix) = (at("Description"), at("Authority"));
+    let (spellcheck_ix, severity_ix) = (at("Spellcheck"), at("Authority Severity"));
+    // Whatever is left belongs to a plugin, carried through by the name it was written under.
+    let extra_ixs: Vec<(usize, String)> = headers
         .iter()
-        .position(|h| h.eq_ignore_ascii_case("Column Name"));
-    let type_ix = headers
-        .iter()
-        .position(|h| h.eq_ignore_ascii_case("Data Type"));
-    let desc_ix = headers
-        .iter()
-        .position(|h| h.eq_ignore_ascii_case("Description"));
+        .enumerate()
+        .filter(|(_, h)| !KNOWN.iter().any(|known| h.eq_ignore_ascii_case(known)))
+        .map(|(ix, h)| (ix, h.to_string()))
+        .collect();
 
     let (Some(name_ix), Some(type_ix)) = (name_ix, type_ix) else {
         return Err(ColumnConfigError::MissingDataType);
@@ -324,14 +360,25 @@ pub fn load_column_config(
         if !seen.insert(name.to_lowercase()) {
             return Err(ColumnConfigError::DuplicateNames(name));
         }
+        let cell = |ix: Option<usize>| {
+            ix.and_then(|i| record.get(i))
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        };
         entries.push(ColumnConfigEntry {
             name: name.clone(),
             data_type: canonical_type(record.get(type_ix).unwrap_or_default()),
-            description: desc_ix
-                .and_then(|i| record.get(i))
-                .unwrap_or_default()
-                .trim()
-                .to_string(),
+            description: cell(desc_ix),
+            authority: Some(cell(authority_ix)).filter(|s| !s.is_empty()),
+            spellcheck: yes_no(&cell(spellcheck_ix)),
+            authority_severity: Some(cell(severity_ix).to_ascii_lowercase())
+                .filter(|s| !s.is_empty()),
+            extra: extra_ixs
+                .iter()
+                .map(|(ix, header)| (header.clone(), cell(Some(*ix))))
+                .filter(|(_, value)| !value.is_empty())
+                .collect(),
         });
     }
 
@@ -530,6 +577,70 @@ mod tests {
         assert_eq!(entries[1].data_type, "Number");
         assert_eq!(entries[2].data_type, "Coordinates");
         assert_eq!(entries[3].data_type, "", "a blank type stays unconfigured");
+    }
+
+    /// The columns an export adds, and the ones it cannot know about — a plugin's columns arrive
+    /// under its own id, so anything unrecognised has to survive verbatim rather than being dropped
+    /// as noise.
+    #[test]
+    fn the_optional_columns_are_read_and_the_rest_is_kept() {
+        let dir = tempdir("qrate-config-optional");
+        let path = dir.join("column_config.csv");
+        write!(
+            std::fs::File::create(&path).unwrap(),
+            "Column Name,Data Type,Description,Authority,Spellcheck,Authority Severity,\
+             islandora::Vocabularies,islandora::Severity\n\
+             Subject,Text,what it is about,LCSH,no,WARNING,subject; genre,error\n\
+             Taken,Date,,,,,,\n"
+        )
+        .unwrap();
+
+        let entries = load_column_config(path.to_str().unwrap(), &["Subject".to_string()])
+            .unwrap()
+            .entries;
+        assert_eq!(entries[0].authority.as_deref(), Some("LCSH"));
+        assert_eq!(entries[0].spellcheck, Some(false));
+        // Stored lowercase, because that is the spelling `Severity::from_key` reads.
+        assert_eq!(entries[0].authority_severity.as_deref(), Some("warning"));
+        assert_eq!(
+            entries[0]
+                .extra
+                .get("islandora::Vocabularies")
+                .map(String::as_str),
+            Some("subject; genre")
+        );
+        assert_eq!(
+            entries[0]
+                .extra
+                .get("islandora::Severity")
+                .map(String::as_str),
+            Some("error")
+        );
+
+        // An empty cell is "the file didn't say", which leaves each setting at its default.
+        assert_eq!(entries[1].authority, None);
+        assert_eq!(entries[1].spellcheck, None);
+        assert_eq!(entries[1].authority_severity, None);
+        assert!(entries[1].extra.is_empty());
+    }
+
+    /// A file written before any of the optional columns existed is still the file people have.
+    #[test]
+    fn a_three_column_config_still_loads() {
+        let dir = tempdir("qrate-config-old");
+        let path = dir.join("column_config.csv");
+        write!(
+            std::fs::File::create(&path).unwrap(),
+            "Column Name,Data Type,Description\nSubject,Text,what it is about\n"
+        )
+        .unwrap();
+
+        let entries = load_column_config(path.to_str().unwrap(), &["Subject".to_string()])
+            .unwrap()
+            .entries;
+        assert_eq!(entries[0].description, "what it is about");
+        assert_eq!(entries[0].authority, None);
+        assert!(entries[0].extra.is_empty());
     }
 
     /// The committed example is what someone copies to start from, so it has to load against the
