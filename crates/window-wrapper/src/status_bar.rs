@@ -43,6 +43,10 @@ impl Render for StatusBar {
             .map(|r| (group(&r.items().left, cx), group(&r.items().right, cx)))
             .unwrap_or_else(|| (h_flex(), h_flex()));
 
-        StatusBarElement::new().px_3().left(left).right(right)
+        StatusBarElement::new()
+            .px_3()
+            .text_color(crate::bar::bar_foreground(cx))
+            .left(left)
+            .right(right)
     }
 }

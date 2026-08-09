@@ -3,7 +3,7 @@
 //! selection. Text-only readout — sits leftmost in the right group.
 
 use gpui::*;
-use gpui_component::{ActiveTheme, table::TableState};
+use gpui_component::table::TableState;
 use table::{QrateTableDelegate, Selection, TableChanged, TableStateHandle};
 
 pub struct CellLocation {
@@ -61,8 +61,7 @@ impl CellLocation {
 
 impl Render for CellLocation {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .text_color(cx.theme().muted_foreground)
-            .child(self.status_text(cx))
+        // No colour of its own — the bar sets one and every item inherits it.
+        div().child(self.status_text(cx))
     }
 }

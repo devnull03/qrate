@@ -2,7 +2,17 @@
 //! Each bar stores its components in a [`BarItems`] and exposes it as a GPUI global
 //! via [`BarRegistry`]; any crate can then drop a view onto either side of either bar.
 
-use gpui::{AnyView, App, Global};
+use gpui::{AnyView, App, Global, Hsla};
+use gpui_component::ActiveTheme as _;
+
+/// The text colour both bars share. `muted_foreground` alone reads too dim at the bars' `text_xs`,
+/// so it is nudged partway to `foreground` — a ratio rather than a fixed colour, so every theme
+/// keeps its own hue.
+pub fn bar_foreground(cx: &App) -> Hsla {
+    cx.theme()
+        .muted_foreground
+        .blend(cx.theme().foreground.opacity(0.45))
+}
 
 /// One registered component, plus whether it currently has anything to show.
 ///
