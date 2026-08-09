@@ -1,5 +1,5 @@
 use gpui::*;
-use gpui_component::ActiveTheme as _;
+use gpui_component::{h_flex, separator::Separator, status_bar::StatusBar as StatusBarElement};
 
 use crate::bar::{BarItems, BarRegistry};
 
@@ -22,31 +22,27 @@ pub struct StatusBar;
 
 impl Render for StatusBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // One group per end, each its own children so the divider run is per-group. Registered
+        // items are already one view per logical group (the panel buttons, the plugin bar, the
+        // cell readout), so a divider between neighbours lands between groups and never between
+        // two panel icons.
+        let group = |items: &Vec<crate::bar::BarItem>, cx: &App| {
+            let mut children: Vec<AnyElement> = Vec::new();
+            for item in items.iter().filter(|item| item.occupied(cx)) {
+                if !children.is_empty() {
+                    children.push(Separator::vertical().h_3().into_any_element());
+                }
+                children.push(item.view.clone().into_any_element());
+            }
+            // The library's own regions are `gap_2`; wrapping keeps this bar's roomier spacing.
+            h_flex().gap_3().items_center().children(children)
+        };
+
         let (left, right) = cx
             .try_global::<StatusBarRegistry>()
-            .map(|r| (r.items().left.clone(), r.items().right.clone()))
-            .unwrap_or_default();
+            .map(|r| (group(&r.items().left, cx), group(&r.items().right, cx)))
+            .unwrap_or_else(|| (h_flex(), h_flex()));
 
-        gpui_component::h_flex()
-            .id("status-bar")
-            .bg(cx.theme().title_bar)
-            .w_full()
-            .px_3()
-            .py_1()
-            .justify_between()
-            .border_t_1()
-            .border_color(cx.theme().title_bar_border)
-            .child(
-                gpui_component::h_flex()
-                    .gap_3()
-                    .items_center()
-                    .children(left),
-            )
-            .child(
-                gpui_component::h_flex()
-                    .gap_3()
-                    .items_center()
-                    .children(right),
-            )
+        StatusBarElement::new().px_3().left(left).right(right)
     }
 }

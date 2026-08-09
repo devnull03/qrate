@@ -124,9 +124,16 @@ impl AppTitleBar {
 
 impl RenderOnce for AppTitleBar {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        // No dividers up here, so the occupancy each item reports is of no interest — just views.
+        let views = |items: &Vec<crate::bar::BarItem>| {
+            items
+                .iter()
+                .map(|item| item.view.clone())
+                .collect::<Vec<_>>()
+        };
         let (left, right) = cx
             .try_global::<TitleBarRegistry>()
-            .map(|r| (r.items().left.clone(), r.items().right.clone()))
+            .map(|r| (views(&r.items().left), views(&r.items().right)))
             .unwrap_or_default();
 
         // left menus | centered project name | right dock toggles. Left and right groups both
