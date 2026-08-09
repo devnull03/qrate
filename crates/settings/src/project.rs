@@ -109,6 +109,28 @@ impl CurrentProject {
         };
         queue_write(&file, key, &value, cx);
     }
+
+    /// Declares a column's type, updating the cache validators read and writing `__columns`.
+    /// Synchronous rather than queued: [`ProjectSettingsWriter`] is keyed by `__settings` key and
+    /// this is another table, and picking a type is one deliberate click, not a drag.
+    pub fn set_column_type(name: &str, data_type: &str, cx: &mut gpui::App) {
+        let file = {
+            let p = cx.global_mut::<Self>();
+            match p.data.columns.iter_mut().find(|c| c.name == name) {
+                Some(column) => column.data_type = data_type.to_string(),
+                None => p.data.columns.push(ProjectColumn {
+                    name: name.to_string(),
+                    data_type: data_type.to_string(),
+                    notes: String::new(),
+                }),
+            }
+            p.file.clone()
+        };
+        if let Err(err) = write_column_type(&file, name, data_type) {
+            log::error!("failed to save the type of column {name}: {err}");
+        }
+        crate::dirty::mark(crate::dirty::COLUMN_SETTINGS, cx);
+    }
 }
 
 /// Opens a `.qrate` read-write with the pragmas every connection wants:
@@ -319,6 +341,20 @@ pub fn write_setting(path: &Path, key: &str, value: &str) -> Result<()> {
         params![key, value],
     )
     .context("Upsert setting")?;
+    Ok(())
+}
+
+/// Upserts one column's declared type. A column the project was created without — a spreadsheet
+/// header nobody configured — gets a row, which is what lets a type be set on any column the table
+/// shows rather than only the ones the wizard wrote.
+pub fn write_column_type(path: &Path, name: &str, data_type: &str) -> Result<()> {
+    let conn = open_rw(path)?;
+    conn.execute(
+        "INSERT INTO __columns(name, data_type, notes) VALUES (?1, ?2, NULL)
+         ON CONFLICT(name) DO UPDATE SET data_type = excluded.data_type",
+        params![name, data_type],
+    )
+    .context("Upsert column type")?;
     Ok(())
 }
 
@@ -660,6 +696,41 @@ mod tests {
         // ...and the first write creates it, which is the whole 1 -> 2 migration.
         write_notes(&path, "import", &[note(Some(1), Some("A"), "hi")]).unwrap();
         assert_eq!(read_notes(&path).unwrap().len(), 1);
+    }
+
+    /// The wizard writes `__columns` once and nothing has updated it since, so both halves matter:
+    /// retyping a configured column, and typing one the wizard never wrote a row for.
+    #[test]
+    fn a_column_type_is_upserted_and_survives_a_reload() {
+        let path = tempfile("types.qrate");
+        create_project_file(
+            &path,
+            "Types",
+            "CSV + folder",
+            None,
+            None,
+            &[ProjectColumn {
+                name: "Digital ID".into(),
+                data_type: "Text".into(),
+                notes: "the scan".into(),
+            }],
+            &["Digital ID".to_string()],
+            &[vec!["1".to_string()]],
+        )
+        .unwrap();
+
+        write_column_type(&path, "Digital ID", "Filename").unwrap();
+        write_column_type(&path, "Taken", "Date").unwrap();
+
+        let columns = load_project_file(&path).unwrap().columns;
+        let by_name = |n: &str| {
+            columns
+                .iter()
+                .find(|c| c.name == n)
+                .map(|c| (c.data_type.as_str(), c.notes.as_str()))
+        };
+        assert_eq!(by_name("Digital ID"), Some(("Filename", "the scan")));
+        assert_eq!(by_name("Taken"), Some(("Date", "")));
     }
 
     #[test]
