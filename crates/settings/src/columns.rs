@@ -115,6 +115,12 @@ pub struct ColumnSettings {
     /// the two scopes that are not per-column.
     #[serde(default)]
     pub plugins: BTreeMap<String, serde_json::Value>,
+    /// Producer name → the severity its findings take on this column, overriding what the check
+    /// itself reported. Absent means "as reported". Held as the string spellings
+    /// `diagnostics::Severity::key` uses rather than the enum, because that crate depends on this
+    /// one and not the other way round.
+    #[serde(default)]
+    pub severity: BTreeMap<String, String>,
 }
 
 fn yes() -> bool {
@@ -128,6 +134,7 @@ impl Default for ColumnSettings {
             spellcheck: true,
             authority: None,
             plugins: BTreeMap::new(),
+            severity: BTreeMap::new(),
         }
     }
 }
@@ -319,6 +326,27 @@ mod tests {
     fn a_blob_without_a_plugin_bucket_reads_as_empty() {
         let parsed = parse(Some(r#"{"c2":{"filter_enabled":true}}"#));
         assert!(parsed["c2"].plugins.is_empty());
+    }
+
+    /// One column can override two producers differently — the map is keyed by producer for
+    /// exactly that reason.
+    #[test]
+    fn a_severity_override_round_trips_per_producer() {
+        let mut map = map_with("c2", false);
+        let overrides = &mut map.get_mut("c2").unwrap().severity;
+        overrides.insert("LCSH".into(), "warning".into());
+        overrides.insert("islandora".into(), "error".into());
+        let json = serde_json::to_string(&map).unwrap();
+        assert_eq!(parse(Some(&json)), map);
+    }
+
+    /// A blob written before the field existed reads as "nothing overridden", which is what keeps
+    /// every check reporting its own severity on an untouched project.
+    #[test]
+    fn a_blob_without_severity_overrides_nothing() {
+        let parsed = parse(Some(r#"{"c2":{"filter_enabled":true}}"#));
+        assert!(parsed["c2"].severity.is_empty());
+        assert!(ColumnSettings::default().severity.is_empty());
     }
 
     /// A plugin's own shape is never declared to Rust, so whatever it stores has to survive the
