@@ -1,5 +1,17 @@
 use gpui::*;
-use gpui_component::dock::{Panel, PanelControl, PanelEvent};
+use gpui_component::IconName;
+use gpui_component::dock::{DockPlacement, Panel, PanelControl, PanelEvent};
+
+use crate::panel_registry::PanelMeta;
+
+/// Where Agent starts out and what it puts in the status bar.
+pub static AGENT_META: PanelMeta = PanelMeta {
+    name: "AgentPanel",
+    icon: IconName::Star,
+    label: "Agent",
+    default_placement: DockPlacement::Right,
+    badge: false,
+};
 
 /// Right dock. Will host the AI agent (eventually backed by the `ai` crate).
 /// Placeholder for now.

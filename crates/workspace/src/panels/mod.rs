@@ -1,8 +1,9 @@
 //! Dock panels for the main workspace view. Add a new panel by creating a file here,
-//! implementing `gpui_component::dock::Panel`, and wiring it into the layout in `lib.rs`.
+//! implementing `gpui_component::dock::Panel`, giving it a `PanelMeta`, and listing that meta in
+//! `panel_registry::PANELS` — the layout and the status bar build themselves from there.
 
 pub mod agent;
 pub mod details;
 
-pub use agent::AgentPanel;
-pub use details::DetailsPanel;
+pub use agent::{AGENT_META, AgentPanel};
+pub use details::{DETAILS_META, DetailsPanel};

@@ -5,7 +5,7 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable,
     button::{Button, ButtonVariants},
-    dock::{Panel, PanelControl, PanelEvent},
+    dock::{DockPlacement, Panel, PanelControl, PanelEvent},
     resizable::{resizable_panel, v_resizable},
     scroll::ScrollableElement,
     table::TableState,
@@ -13,9 +13,20 @@ use gpui_component::{
 use table::{QrateTableDelegate, Selection, TableChanged, TableStateHandle};
 
 use crate::BottomDockCrop;
+use crate::panel_registry::PanelMeta;
 
 /// Project-scoped height of the details panel's image pane, in pixels.
 const IMAGE_PANE_HEIGHT_KEY: &str = "details_image_height";
+
+/// Where Details starts out and what it puts in the status bar. `default_placement` is only the
+/// starting point — the user can dock it anywhere, and that choice is what gets persisted.
+pub static DETAILS_META: PanelMeta = PanelMeta {
+    name: "DetailsPanel",
+    icon: IconName::Info,
+    label: "Details",
+    default_placement: DockPlacement::Left,
+    badge: false,
+};
 
 /// Left dock: the selected row's photo (if the files folder resolved one) plus its fields as a
 /// label/value list, per the main-workspace design.

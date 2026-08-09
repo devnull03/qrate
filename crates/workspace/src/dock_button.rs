@@ -1,5 +1,6 @@
-//! A reusable bar button that toggles one dock of the workspace's `DockArea` open/closed.
-//! Registered into the title/status bar registries so the panels can be opened from the bars.
+//! A bar button that opens and closes part of the workspace: either one fixed dock (the title
+//! bar's generic left/bottom/right buttons) or one panel wherever it currently lives (the status
+//! bar), which also right-clicks to move that panel to another dock.
 //!
 //! Rendered as a plain `div` rather than `gpui_component::Button` on purpose: the library
 //! Button hardcodes `cursor_default` for every non-link variant with no override, so a div is
@@ -12,12 +13,23 @@ use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable,
     dock::{DockArea, DockPlacement},
     h_flex,
+    menu::{ContextMenuExt as _, PopupMenuItem},
 };
+
+use crate::panel_registry::{PanelMeta, PanelRegistry};
+
+/// What the button acts on.
+enum Toggles {
+    /// One dock, whatever is in it.
+    Dock(DockPlacement),
+    /// One panel, wherever it is now.
+    Panel(&'static PanelMeta),
+}
 
 pub struct DockToggleButton {
     id: SharedString,
     dock: WeakEntity<DockArea>,
-    placement: DockPlacement,
+    toggles: Toggles,
     icon: IconName,
     /// Whether to show the live error/warning count beside the icon.
     count: bool,
@@ -34,18 +46,30 @@ impl DockToggleButton {
         Self {
             id: id.into(),
             dock,
-            placement,
+            toggles: Toggles::Dock(placement),
             icon,
             count: false,
             _sub: None,
         }
     }
 
-    /// Show the diagnostics count, kept current as problems come and go.
-    pub fn problem_count(mut self, cx: &mut Context<Self>) -> Self {
-        self.count = true;
-        self._sub = Some(cx.observe_global::<Diagnostics>(|_this, cx| cx.notify()));
-        self
+    /// The status bar's per-panel button, built from what the panel declared about itself.
+    pub fn for_panel(
+        dock: WeakEntity<DockArea>,
+        meta: &'static PanelMeta,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            id: meta.name.into(),
+            dock,
+            toggles: Toggles::Panel(meta),
+            icon: meta.icon.clone(),
+            count: meta.badge,
+            // Kept current as problems come and go.
+            _sub: meta
+                .badge
+                .then(|| cx.observe_global::<Diagnostics>(|_this, cx| cx.notify())),
+        }
     }
 }
 
@@ -67,8 +91,15 @@ fn severity_badge(severity: Severity, icon: IconName, count: usize, cx: &App) ->
 impl Render for DockToggleButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dock = self.dock.clone();
-        let placement = self.placement;
         let hover_bg = cx.theme().secondary_hover;
+        let panel = match self.toggles {
+            Toggles::Dock(_) => None,
+            Toggles::Panel(meta) => Some(meta),
+        };
+        let placement = match self.toggles {
+            Toggles::Dock(placement) => Some(placement),
+            Toggles::Panel(meta) => PanelRegistry::placement(meta.name, cx),
+        };
 
         h_flex()
             .id(self.id.clone())
@@ -94,11 +125,56 @@ impl Render for DockToggleButton {
                     severity_badge(Severity::Warning, IconName::TriangleAlert, warnings, cx),
                 ])
             })
-            .on_click(move |_, window, cx| {
-                dock.update(cx, |area, cx| {
-                    area.toggle_dock(placement, window, cx);
+            .when_some(panel, |this, meta| {
+                this.tooltip(move |window, cx| {
+                    gpui_component::tooltip::Tooltip::new(meta.label).build(window, cx)
                 })
-                .ok();
+            })
+            .on_click({
+                let dock = dock.clone();
+                move |_, window, cx| {
+                    let Some(area) = dock.upgrade() else {
+                        return;
+                    };
+                    match panel {
+                        Some(meta) => PanelRegistry::toggle(meta.name, &area, window, cx),
+                        None => {
+                            if let Some(placement) = placement {
+                                area.update(cx, |area, cx| area.toggle_dock(placement, window, cx));
+                                crate::Workspace::persist_layout(&area, cx);
+                            }
+                        }
+                    }
+                }
+            })
+            // `context_menu` wraps rather than extends, so the arms only agree as `AnyElement`.
+            .map(|this| match panel {
+                None => this.into_any_element(),
+                Some(meta) => this
+                    .context_menu(move |menu, _, _| {
+                        [
+                            ("Dock Left", DockPlacement::Left),
+                            ("Dock Right", DockPlacement::Right),
+                            ("Dock Bottom", DockPlacement::Bottom),
+                        ]
+                        .into_iter()
+                        .fold(menu, |menu, (label, target)| {
+                            let dock = dock.clone();
+                            menu.item(
+                                PopupMenuItem::new(label)
+                                    .checked(placement == Some(target))
+                                    .disabled(placement == Some(target))
+                                    .on_click(move |_, window, cx| {
+                                        if let Some(area) = dock.upgrade() {
+                                            PanelRegistry::move_panel(
+                                                meta.name, target, &area, window, cx,
+                                            );
+                                        }
+                                    }),
+                            )
+                        })
+                    })
+                    .into_any_element(),
             })
     }
 }

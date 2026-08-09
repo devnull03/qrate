@@ -3,24 +3,27 @@
 
 mod dock_button;
 mod image_viewer;
+mod panel_registry;
 mod panels;
 
 pub use image_viewer::open_image_viewer;
 
 pub use dock_button::DockToggleButton;
+pub use panel_registry::{BarSide, PANELS, PanelMeta, PanelRegistry, bar_side};
 
 use std::sync::Arc;
 
 use gpui::*;
 use gpui_component::dock::{
-    DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, register_panel,
+    DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, PanelView, register_panel,
 };
 use settings::AppSettings;
 use table::TablePanel;
 
 use diagnostics::ProblemsPanel;
 
-use crate::panels::{AgentPanel, DetailsPanel};
+use crate::panel_registry::PROBLEMS_META;
+use crate::panels::{AGENT_META, AgentPanel, DETAILS_META, DetailsPanel};
 
 /// Settings key under which the serialized [`DockAreaState`] is persisted —
 /// both in the open project's `.qrate` `__settings` (preferred) and in the
@@ -83,42 +86,60 @@ impl Workspace {
         // Restore if saved, else build default; building first then loading would orphan a throwaway table.
         if !Self::restore_layout(&dock_area, window, cx) {
             let weak = dock_area.downgrade();
-            // Default static layout: center table, left details, right agent, bottom problems.
             let table = cx.new(|cx| TablePanel::new(window, cx));
-            let details = cx.new(|cx| DetailsPanel::new(window, cx));
-            let agent = cx.new(|cx| AgentPanel::new(window, cx));
-            let problems = cx.new(|cx| ProblemsPanel::new(window, cx));
+            // Which dock each panel starts in is the panel's own declaration, so they're built
+            // as a flat list and grouped by it rather than one `set_*_dock` call apiece.
+            let panels: [(&PanelMeta, Arc<dyn PanelView>); 3] = [
+                (
+                    &DETAILS_META,
+                    Arc::new(cx.new(|cx| DetailsPanel::new(window, cx))),
+                ),
+                (
+                    &PROBLEMS_META,
+                    Arc::new(cx.new(|cx| ProblemsPanel::new(window, cx))),
+                ),
+                (
+                    &AGENT_META,
+                    Arc::new(cx.new(|cx| AgentPanel::new(window, cx))),
+                ),
+            ];
 
             dock_area.update(cx, |area, cx| {
                 // `DockItem::panel` embeds the table bare (no title bar); only until saved, then it restores wrapped.
-                area.set_center(DockItem::panel(Arc::new(table.clone())), window, cx);
-                area.set_left_dock(
-                    DockItem::tab(details, &weak, window, cx),
-                    Some(px(300.)),
-                    true,
-                    window,
-                    cx,
-                );
-                area.set_right_dock(
-                    DockItem::tab(agent, &weak, window, cx),
-                    Some(px(340.)),
-                    true,
-                    window,
-                    cx,
-                );
-                area.set_bottom_dock(
-                    DockItem::tab(problems, &weak, window, cx),
-                    Some(px(200.)),
-                    true,
-                    window,
-                    cx,
-                );
+                area.set_center(DockItem::panel(Arc::new(table)), window, cx);
+                for placement in [
+                    DockPlacement::Left,
+                    DockPlacement::Right,
+                    DockPlacement::Bottom,
+                ] {
+                    let items: Vec<Arc<dyn PanelView>> = panels
+                        .iter()
+                        .filter(|(meta, _)| meta.default_placement == placement)
+                        .map(|(_, view)| view.clone())
+                        .collect();
+                    if items.is_empty() {
+                        continue;
+                    }
+                    let item = DockItem::tabs(items, &weak, window, cx);
+                    match placement {
+                        DockPlacement::Left => {
+                            area.set_left_dock(item, Some(px(300.)), true, window, cx)
+                        }
+                        DockPlacement::Right => {
+                            area.set_right_dock(item, Some(px(340.)), true, window, cx)
+                        }
+                        _ => area.set_bottom_dock(item, Some(px(200.)), true, window, cx),
+                    }
+                }
             });
         }
 
         // We drive dock open/close from our own title/status-bar buttons, so hide the built-in
         // toggle arrows. Done in both paths — `load` doesn't carry this runtime-only flag.
         dock_area.update(cx, |area, cx| area.set_toggle_button_visible(false, cx));
+
+        // Whichever path ran above built the panels; this is what learns where they landed.
+        PanelRegistry::sync(&dock_area, cx);
 
         // Persist on `LayoutChanged` (inner changes only); `toggle_dock` and the app-quit flush cover the rest.
         let _layout_sub = cx.subscribe(&dock_area, |_this, area, event: &DockEvent, cx| {
@@ -184,7 +205,10 @@ impl Workspace {
     /// while it's already open focuses it instead of re-running `Workspace::new`,
     /// so nothing else re-triggers `restore_layout` for the newly opened project.
     pub fn reload_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        Self::restore_layout(&self.dock_area, window, cx);
+        if Self::restore_layout(&self.dock_area, window, cx) {
+            // `load` rebuilt every panel from its saved name, so the old entries are orphans.
+            PanelRegistry::sync(&self.dock_area, cx);
+        }
     }
 
     /// Applies a previously saved dock arrangement, returning `true` if one was loaded. `false`
