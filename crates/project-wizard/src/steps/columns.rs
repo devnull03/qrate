@@ -71,7 +71,7 @@ impl ProjectWizard {
                         .map(|name| data::ColumnConfigEntry {
                             name,
                             data_type: "Text".into(),
-                            description: String::new(),
+                            ..Default::default()
                         })
                         .collect(),
                 });

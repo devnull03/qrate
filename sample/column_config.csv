@@ -1,7 +1,7 @@
-Column Name,Data Type,Description
-Digital ID,Filename,"Names the slide's scan in the photos folder — 1 resolves to photos/1.jpg. Typed Filename so a row whose scan is missing is reported instead of quietly showing no image."
-Photographer,Text,"Surname, Given. Prefer an LCNAF or VIAF form; set this column's authority to check it."
-Photographer’s Note,Text,The photographer's own caption. Transcribe it as written rather than correcting it.
-Original Item,Text,"Physical description of what was scanned, e.g. 35 mm color slide."
-Original Collection,Text,The named collection this item belongs to.
-Repository,Text,The holding institution.
+Column Name,Data Type,Description,Authority,Spellcheck,Authority Severity
+Digital ID,Filename,"Names the slide's scan in the photos folder — 1 resolves to photos/1.jpg. Typed Filename so a row whose scan is missing is reported instead of quietly showing no image.",,no,
+Photographer,Text,"Surname, Given. Checked against Wikidata, as a warning — an unlisted photographer is worth noticing, not worth blocking on.",Wikidata,no,warning
+Photographer’s Note,Text,The photographer's own caption. Transcribe it as written rather than correcting it.,,yes,
+Original Item,Text,"Physical description of what was scanned, e.g. 35 mm color slide.",,yes,
+Original Collection,Text,"The named collection this item belongs to. Spell checking is off: it is a proper name, not prose.",,no,
+Repository,Text,"The holding institution. Spell checking is off for the same reason as the collection above.",,no,

@@ -4,10 +4,79 @@ use gpui::{prelude::FluentBuilder, *};
 use gpui_component::description_list::DescriptionList;
 use gpui_component::{Sizable, StyledExt, v_flex};
 
+use plugin_api::ColumnMapContributions;
+use settings::columns::{ColumnSettings, ColumnSettingsMap};
+
+use crate::data::ColumnConfigPreview;
 use crate::launcher;
 use crate::project;
 use crate::recent;
 use crate::wizard::{ColumnSource, EntryKind, LinkMethod, ProjectWizard, WizardStep};
+
+/// The half of a column config that `__columns` cannot hold: what each column is checked against,
+/// whether it is spell-checked, how loud its findings are, and whichever of the file's remaining
+/// columns an active plugin recognises as its own mapping.
+///
+/// Keyed by `c{ix}` against `headers` — the spreadsheet's own order, which is the identity the
+/// table mints and the settings page reads. A config row naming a column the sheet doesn't have is
+/// dropped here; the wizard already warned about it on the Columns step.
+fn column_settings(
+    headers: &[String],
+    preview: Option<&ColumnConfigPreview>,
+    cx: &gpui::App,
+) -> ColumnSettingsMap {
+    let mut map = ColumnSettingsMap::new();
+    let Some(preview) = preview else {
+        return map;
+    };
+    let maps = ColumnMapContributions::all(cx);
+
+    for (ix, header) in headers.iter().enumerate() {
+        let Some(entry) = preview
+            .entries
+            .iter()
+            .find(|e| e.name.eq_ignore_ascii_case(header))
+        else {
+            continue;
+        };
+
+        let mut settings = ColumnSettings {
+            authority: entry.authority.clone(),
+            ..Default::default()
+        };
+        if let Some(on) = entry.spellcheck {
+            settings.spellcheck = on;
+        }
+        // Severity is per producer: the authority names its own, and each plugin's rides in the
+        // `<id>::Severity` column beside its mapping.
+        if let (Some(authority), Some(severity)) =
+            (settings.authority.clone(), entry.authority_severity.clone())
+        {
+            settings.severity.insert(authority, severity);
+        }
+        for (plugin, spec) in &maps {
+            if let Some(cell) = entry.extra.get(&format!("{plugin}::{}", spec.label)) {
+                let chosen: Vec<gpui::SharedString> = cell
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(|v| v.to_string().into())
+                    .collect();
+                ColumnMapContributions::put(plugin, spec, &mut settings, &chosen);
+            }
+            if let Some(severity) = entry.extra.get(&format!("{plugin}::Severity")) {
+                settings
+                    .severity
+                    .insert(plugin.to_string(), severity.to_ascii_lowercase());
+            }
+        }
+
+        if settings != ColumnSettings::default() {
+            map.insert(format!("c{ix}"), settings);
+        }
+    }
+    map
+}
 
 impl ProjectWizard {
     pub(crate) fn create_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -89,6 +158,24 @@ impl ProjectWizard {
                         &notes,
                     ) {
                         log::error!("couldn't save the sheet's notes — {e}");
+                    }
+                }
+                // Everything in the column config that `__columns` has no room for. Written before
+                // the project is opened, so the first validation run already sees it. Non-fatal for
+                // the same reason the notes above are.
+                let settings = column_settings(&headers, self.config_preview.as_ref(), cx);
+                if !settings.is_empty() {
+                    match serde_json::to_string(&settings) {
+                        Ok(json) => {
+                            if let Err(e) = settings::project::write_setting(
+                                std::path::Path::new(&file),
+                                settings::columns::COLUMN_SETTINGS_KEY,
+                                &json,
+                            ) {
+                                log::error!("couldn't save the imported column settings — {e}");
+                            }
+                        }
+                        Err(e) => log::error!("couldn't save the imported column settings — {e}"),
                     }
                 }
                 // Load the file straight back so the main window opens on the
