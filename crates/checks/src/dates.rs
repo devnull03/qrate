@@ -2,8 +2,9 @@
 //!
 //! EDTF (ISO 8601-2) is what Islandora and MODS want in a date field, and it is more forgiving
 //! than it looks: `1987`, `1987-05`, `1987?` (uncertain), `1987~` (approximate), `1987/1989`
-//! (interval), and `198X` (unspecified digit) are all valid. So a value this rejects is usually
-//! prose — `circa 1987`, `May 1987`, `1987-5-3` — which is exactly what an ingest would choke on.
+//! (interval), `198X` (unspecified digit), and `[1667,1668]` (one of these) are all valid. So a
+//! value this rejects is usually prose — `circa 1987`, `May 1987`, `1987-5-3` — which is exactly
+//! what an ingest would choke on.
 
 use diagnostics::{ColumnInfo, ColumnValidator, Fix, FixProviders, Location, Severity};
 use gpui::{App, SharedString};
@@ -15,9 +16,42 @@ pub const SOURCE: &str = "date";
 pub struct DateCheck;
 
 /// Whether `value` is something EDTF accepts. Level 1 rather than level 0 because uncertainty and
-/// approximation are the whole reason an archive wants EDTF over a plain date.
+/// approximation are the whole reason an archive wants EDTF over a plain date, plus the level 2
+/// sets below — `edtf`'s own `level_2` parses nothing but scientific years.
 fn valid(value: &str) -> bool {
-    edtf::level_1::Edtf::parse(value).is_ok()
+    match members(value) {
+        Some(members) => members.iter().all(|member| valid_member(member)),
+        None => edtf::level_1::Edtf::parse(value).is_ok(),
+    }
+}
+
+/// What is inside an EDTF set (`[1667,1668]`, one of these) or list (`{1960,1961-12}`, all of
+/// these), or `None` when the value is neither. Members are trimmed: the spec writes them without
+/// spaces, but a space after a comma is a typing habit and not a different date.
+fn members(value: &str) -> Option<Vec<&str>> {
+    let inner = value
+        .strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+        .or_else(|| value.strip_prefix('{').and_then(|v| v.strip_suffix('}')))?;
+    Some(inner.split(',').map(str::trim).collect())
+}
+
+/// One member of a set: a date, or a range between two of them — `1670..1672`, and the open-ended
+/// `..1672` and `1670..`. A range inside a set is written with `..`, so the slash interval and
+/// anything else level 1 accepts as a whole value is rejected here.
+fn valid_member(member: &str) -> bool {
+    fn date(value: &str) -> bool {
+        matches!(
+            edtf::level_1::Edtf::parse(value),
+            Ok(edtf::level_1::Edtf::Date(_) | edtf::level_1::Edtf::YYear(_))
+        )
+    }
+    match member.split_once("..") {
+        Some(("", end)) => date(end),
+        Some((start, "")) => date(start),
+        Some((start, end)) => date(start) && date(end),
+        None => date(member),
+    }
 }
 
 impl ColumnValidator for DateCheck {
@@ -120,6 +154,42 @@ mod tests {
             "198X",
         ] {
             assert!(valid(value), "{value} is valid EDTF");
+        }
+    }
+
+    /// Level 2 sets and lists — a slide catalogued as "1857 or 1858" is written `[1857,1858]`, and
+    /// `edtf`'s own level 2 parses none of this, so it is peeled apart here.
+    #[test]
+    fn edtf_accepts_sets_and_lists() {
+        for value in [
+            "[1857,1858]",
+            "[1857, 1858]",
+            "{1960,1961-12}",
+            "[1667]",
+            "[1670..1672]",
+            "[..1672]",
+            "[1670..]",
+            "[1667,1670..1672,198X]",
+        ] {
+            assert!(valid(value), "{value} is valid EDTF");
+        }
+    }
+
+    /// A set is only as valid as its members, and half-written brackets are a transcription slip
+    /// worth reporting rather than waving through.
+    #[test]
+    fn a_set_with_a_bad_member_or_a_missing_bracket_is_rejected() {
+        for value in [
+            "[]",
+            "[1857,]",
+            "[May 1987]",
+            "[1857",
+            "1857]",
+            "[1857,1858}",
+            // A range inside a set is written `..`; the slash interval belongs at the top level.
+            "[1667/1668]",
+        ] {
+            assert!(!valid(value), "{value} is not EDTF");
         }
     }
 
