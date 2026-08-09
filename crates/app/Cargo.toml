@@ -9,6 +9,7 @@ gpui.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
+csv.workspace = true
 dirs.workspace = true
 log.workspace = true
 simplelog.workspace = true
