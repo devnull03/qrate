@@ -207,11 +207,20 @@ impl Validators {
 /// Turn one validator's `(row, severity, message)` reports into addressed diagnostics. A validator
 /// never builds a [`Location`] or a [`Source`]; this is where that split is honoured, and it is
 /// public so a deferred producer addresses its findings identically.
+///
+/// It is also where [`ColumnSettings::severity`] is applied. Every producer — compiled-in, network,
+/// and plugin alike — reaches diagnostics through here, so the override lands once instead of each
+/// check having to read the setting and remember to honour it.
 pub fn address(
     validator: SharedString,
     column: &ColumnSnapshot,
     found: Vec<(usize, Severity, SharedString)>,
 ) -> Vec<Diagnostic> {
+    let override_to = column
+        .settings
+        .severity
+        .get(validator.as_ref())
+        .map(|key| Severity::from_key(key));
     found
         .into_iter()
         .map(|(row, severity, message)| Diagnostic {
@@ -220,7 +229,7 @@ pub fn address(
                 row: Some(row),
                 column: Some(column.name.clone()),
             },
-            severity,
+            severity: override_to.unwrap_or(severity),
             source: Source::Validator(validator.clone()),
             message,
         })
@@ -404,6 +413,42 @@ mod tests {
             Validators::run(&columns, &rows, cx);
             assert_eq!(SEEN.load(Ordering::SeqCst), 2, "both columns crossed over");
         });
+    }
+
+    fn snapshot(overrides: &[(&str, &str)]) -> crate::ColumnSnapshot {
+        let mut settings = settings::columns::ColumnSettings::default();
+        for (producer, severity) in overrides {
+            settings
+                .severity
+                .insert(producer.to_string(), severity.to_string());
+        }
+        crate::ColumnSnapshot {
+            name: "Photographer".into(),
+            data_type: "Text".into(),
+            settings,
+            values: vec!["Aderman, Ray".into()],
+        }
+    }
+
+    /// The whole point of putting the override in `address`: a check keeps reporting `Error` and
+    /// the column's setting is what decides how loud that lands.
+    #[test]
+    fn a_columns_override_replaces_the_severity_the_check_reported() {
+        let found = vec![(0, Severity::Error, SharedString::from("not in LCSH"))];
+        let addressed = crate::address("LCSH".into(), &snapshot(&[("LCSH", "warning")]), found);
+        assert_eq!(addressed[0].severity, Severity::Warning);
+    }
+
+    /// An override names one producer, so it must not quiet the others checking the same column.
+    #[test]
+    fn an_override_for_one_producer_leaves_the_rest_alone() {
+        let column = snapshot(&[("LCSH", "warning")]);
+        let found = vec![(0, Severity::Error, SharedString::from("no such file"))];
+        let addressed = crate::address("files".into(), &column, found.clone());
+        assert_eq!(addressed[0].severity, Severity::Error);
+        // And a column with nothing overridden is untouched either way.
+        let addressed = crate::address("files".into(), &snapshot(&[]), found);
+        assert_eq!(addressed[0].severity, Severity::Error);
     }
 
     /// `plugin_host::reload` re-registers on every plugin toggle. Keyed by name, so that replaces
