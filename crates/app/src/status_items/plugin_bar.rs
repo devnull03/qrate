@@ -12,7 +12,6 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme,
     button::{Button, ButtonVariants as _},
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
 };
@@ -72,7 +71,6 @@ impl Render for PluginBar {
                         // The title bar wraps its children in a drag hitbox that Windows
                         // hit-tests as the caption, which never delivers a click.
                         .occlude()
-                        .text_color(cx.theme().muted_foreground)
                         .when_some(item.tooltip, |this, tip| {
                             this.tooltip(move |window, cx| {
                                 gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)

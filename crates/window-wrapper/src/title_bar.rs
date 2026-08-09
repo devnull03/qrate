@@ -138,7 +138,10 @@ impl RenderOnce for AppTitleBar {
 
         // left menus | centered project name | right dock toggles. Left and right groups both
         // flex_1 so the natural-width center label sits in the true middle of the bar.
+        // Text sizing and colour match the status bar, so the two bars frame the window alike.
         TitleBar::new()
+            .text_xs()
+            .text_color(crate::bar::bar_foreground(cx))
             .child(
                 gpui_component::h_flex()
                     .flex_1()

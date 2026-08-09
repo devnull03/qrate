@@ -3,7 +3,7 @@ pub mod status_bar;
 pub mod title_bar;
 pub mod window_registry;
 
-pub use bar::{BarItem, BarItems, BarRegistry};
+pub use bar::{BarItem, BarItems, BarRegistry, bar_foreground};
 use gpui::*;
 pub use gpui_component::TitleBar;
 pub use window_registry::WindowRegistry;
