@@ -31,10 +31,7 @@ pub fn open_in_default_app(path: &Path) -> std::io::Result<()> {
 
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "open_in_default_app is only supported on Windows and macOS",
-        ));
+        Command::new("xdg-open").arg(path).spawn()?;
     }
 
     Ok(())
@@ -43,7 +40,7 @@ pub fn open_in_default_app(path: &Path) -> std::io::Result<()> {
 /// Opens the file manager and selects `path`.
 ///
 /// For a file, highlights that file in its parent folder. For a directory, shows that folder
-/// selected in its parent (Windows) or opens it (macOS).
+/// selected in its parent (Windows) or opens it (macOS, Linux).
 pub fn reveal_in_folder(path: &Path) -> std::io::Result<()> {
     if !path.exists() {
         return Err(std::io::Error::new(
@@ -68,10 +65,31 @@ pub fn reveal_in_folder(path: &Path) -> std::io::Result<()> {
 
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "reveal_in_folder is only supported on Windows and macOS",
-        ));
+        // The freedesktop way to *select* a file; Nautilus/Dolphin/Thunar/Nemo all serve it.
+        let selected = Command::new("dbus-send")
+            .args([
+                "--session",
+                "--dest=org.freedesktop.FileManager1",
+                "--type=method_call",
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1.ShowItems",
+            ])
+            .arg(format!(
+                "array:string:file://{}",
+                path.to_string_lossy().replace(' ', "%20")
+            ))
+            .arg("string:")
+            .status()
+            .is_ok_and(|s| s.success());
+        if !selected {
+            // ponytail: opens the folder without highlighting; good enough where dbus isn't there.
+            let dir = if path.is_dir() {
+                path
+            } else {
+                path.parent().unwrap_or(path)
+            };
+            Command::new("xdg-open").arg(dir).spawn()?;
+        }
     }
 
     Ok(())

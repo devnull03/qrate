@@ -1,8 +1,6 @@
 name: CI
 
 # Runs on every push to `dev` and on PRs targeting `dev` or `main`.
-# gpui needs heavy Linux system libraries to even compile, and the only
-# supported targets here are Windows + macOS, so CI runs on those two.
 on:
   push:
     branches: [dev]
@@ -25,9 +23,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [windows-latest, macos-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
+
+      # gpui_linux (wayland + x11), font-kit's fontconfig, and reqwest's
+      # default native-tls are the only things that need system libraries.
+      - name: Install Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev libfontconfig-dev libwayland-dev \
+            libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

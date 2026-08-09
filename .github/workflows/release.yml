@@ -1,7 +1,7 @@
 name: Release
 
-# Releases are tag-driven: push a tag like `v1.2.3` to build Windows + macOS
-# artifacts and publish them to a DRAFT GitHub release. Merging to `main` alone
+# Releases are tag-driven: push a tag like `v1.2.3` to build Windows, macOS and
+# Linux artifacts and publish them to a DRAFT GitHub release. Merging to `main` alone
 # does nothing here — only a `v*` tag triggers a release.
 on:
   push:
@@ -154,10 +154,52 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # Linux: binary + .desktop + icon in a tarball.
+  # Built on the oldest supported runner so the glibc/OpenSSL it links against
+  # is old enough for the distros people actually run.
+  # ---------------------------------------------------------------------------
+  build-linux:
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev libfontconfig-dev libwayland-dev \
+            libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev
+
+      - name: Build
+        run: cargo build --release -p app
+
+      - name: Package tarball
+        run: |
+          ver="${{ needs.version.outputs.version }}"
+          stage="qrate-$ver-x86_64-linux"
+          mkdir -p "$stage"
+          cp target/release/app "$stage/qrate"
+          cp assets/icons/app-icon.png "$stage/qrate.png"
+          printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=qrate' \
+            'Exec=qrate' 'Icon=qrate' 'Categories=Office;Database;' \
+            > "$stage/qrate.desktop"
+          mkdir -p dist
+          tar -czf "dist/$stage.tar.gz" "$stage"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # Collect artifacts, checksum them, publish a DRAFT release.
   # ---------------------------------------------------------------------------
   release:
-    needs: [version, bundle-macos, build-windows]
+    needs: [version, bundle-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     steps:
       # Only the final artifacts — not the intermediate per-arch macOS binaries.
@@ -169,11 +211,15 @@ jobs:
         with:
           name: windows-build
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-build
+          path: dist
 
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum *.dmg *.zip *-setup.exe > SHA256SUMS.txt
+          sha256sum *.dmg *.zip *-setup.exe *.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Publish draft release
@@ -187,6 +233,7 @@ jobs:
             dist/*.dmg
             dist/*.zip
             dist/*-setup.exe
+            dist/*.tar.gz
             dist/SHA256SUMS.txt
           body: |
             ## qrate ${{ needs.version.outputs.tag }}
@@ -194,6 +241,7 @@ jobs:
             ### Downloads
             - **Windows:** `*-setup.exe` (installer) or `*-x86_64.zip` (portable)
             - **macOS:** `*-universal.dmg` (Intel + Apple Silicon)
+            - **Linux:** `*-x86_64-linux.tar.gz` (Wayland + X11; needs a Vulkan driver)
 
             Verify your download against `SHA256SUMS.txt`.
 

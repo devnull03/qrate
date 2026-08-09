@@ -116,7 +116,7 @@ qrate neither pins nor carries them.
 
 ### Pull requests
 
-- **Before opening any PR, reproduce CI locally and make it green.** CI (`.github/workflows/ci.yml`; Windows + macOS only — gpui won't build on Linux CI) runs exactly these three, in order — run the same before every PR and don't open it until all pass:
+- **Before opening any PR, reproduce CI locally and make it green.** CI (`.github/workflows/ci.yml`; Windows, macOS and Linux) runs exactly these three, in order — run the same before every PR and don't open it until all pass:
   ```bash
   cargo fmt --all --check
   cargo clippy --workspace --all-targets -- -D warnings -A dead_code
