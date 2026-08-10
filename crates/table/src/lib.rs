@@ -10,18 +10,19 @@ mod editing;
 pub mod file_links;
 mod filter;
 mod floating;
+mod history;
 mod note;
 mod panel;
 pub mod photos;
 mod row_index;
 
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
-pub use panel::{Search, TablePanel};
+pub use panel::{Copy, Cut, Paste, Redo, Search, TablePanel, Undo};
 
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
 pub const TABLE_STRIPES_KEY: &str = "table_stripes";
 
-use gpui::{App, Bounds, Global, Pixels, Point, SharedString, WeakEntity, px, size};
+use gpui::{App, Bounds, Entity, Global, Pixels, Point, SharedString, WeakEntity, px, size};
 use gpui_component::table::TableState;
 use plugin_api::CommandContext;
 
@@ -80,12 +81,36 @@ pub fn write_cell(row: usize, col: usize, text: SharedString, cx: &mut App) {
         return;
     };
     state.update(cx, |state, cx| {
-        state.delegate_mut().set_cell(row, col, text);
+        state.delegate_mut().apply_edit(vec![(row, col, text)]);
         cx.emit(delegate::TableChanged);
         cx.notify();
     });
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
     revalidate_now(cx);
+}
+
+/// Freeze the leading `count` data columns and remember it in the open project. `count` is a
+/// display-order count, so unfreezing is just this with zero. Without a project there's nowhere to
+/// persist it, and the freeze lasts until the window closes.
+pub(crate) fn set_frozen_columns(
+    table: &Entity<TableState<QrateTableDelegate>>,
+    count: usize,
+    cx: &mut App,
+) {
+    let clamped = table.update(cx, |state, cx| {
+        state.delegate_mut().set_frozen(count);
+        // The library caches a `Column` per index; without this the fixed region doesn't move.
+        state.refresh(cx);
+        cx.notify();
+        state.delegate().frozen()
+    });
+    if cx.has_global::<settings::project::CurrentProject>() {
+        settings::project::CurrentProject::set_text(
+            panel::FROZEN_COLUMNS_KEY,
+            clamped.to_string().into(),
+            cx,
+        );
+    }
 }
 
 /// The text a diagnostic points at, addressed the way a diagnostic is — by column *name*, since

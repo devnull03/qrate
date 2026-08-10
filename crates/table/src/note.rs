@@ -214,15 +214,31 @@ pub(crate) fn menu(
         // the label and the command string and nothing else — no plugin code runs while a menu is
         // built, because menus build synchronously and a VM answer cannot be waited on.
         Target::Column(col) => {
-            let (key, name, values) = {
+            let (key, name, values, frozen) = {
                 let delegate = table.read(cx).delegate();
                 (
                     delegate.column_key(col),
                     delegate.column_name(col),
                     delegate.column_cells(col),
+                    delegate.frozen(),
                 )
             };
             let stored = settings::columns::get(&key, cx).plugins;
+            let freeze_table = table.clone();
+            let menu = menu
+                .item(
+                    PopupMenuItem::new("Freeze up to here").on_click(move |_, _, cx| {
+                        crate::set_frozen_columns(&freeze_table, col + 1, cx)
+                    }),
+                )
+                .when(frozen > 0, |menu| {
+                    let table = table.clone();
+                    menu.item(
+                        PopupMenuItem::new("Unfreeze columns")
+                            .on_click(move |_, _, cx| crate::set_frozen_columns(&table, 0, cx)),
+                    )
+                })
+                .separator();
             let menu = mapping_submenus(&key, menu, window, cx);
             MenuContributions::for_target(MenuTarget::Column, cx)
                 .into_iter()

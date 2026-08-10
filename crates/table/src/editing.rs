@@ -47,7 +47,7 @@ pub(crate) fn commit(
         return;
     };
     let value = delegate.editor.read(cx).value();
-    delegate.set_cell(row, col, value);
+    delegate.apply_edit(vec![(row, col, value)]);
     delegate.editing = EditState::Idle;
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
 }
