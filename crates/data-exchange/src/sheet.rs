@@ -3,8 +3,9 @@
 //! Scope is deliberately tiny: pull a *public* ("anyone with the link") Google
 //! Sheet via the built-in export endpoint. [`fetch_sheet`] grabs the `.xlsx`
 //! export once and pulls out both the row values and the cell notes.
-//! No OAuth, no Sheets API v4 — a private sheet just yields a clear error.
-//! ponytail: export-endpoint only. Add OAuth/API v4 when private sheets matter.
+//! A private sheet just yields a clear error.
+//! ponytail: export-endpoint only. Read it through [`crate::google`]'s token when private
+//! sheets matter — the OAuth this needs is already there.
 
 use std::fs;
 

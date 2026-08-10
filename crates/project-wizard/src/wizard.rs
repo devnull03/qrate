@@ -13,8 +13,9 @@ use gpui_component::{
 };
 use window_wrapper::WindowRegistry;
 
-use crate::data::{ColumnConfigPreview, FolderMatch, SheetCheckResult, SpreadsheetPreview};
+use crate::data::{ColumnConfigPreview, FolderMatch, SheetCheckResult};
 use crate::launcher;
+use data_exchange::SpreadsheetPreview;
 
 pub const WIZARD_WINDOW_KIND: &str = "project-creation";
 

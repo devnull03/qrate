@@ -142,12 +142,12 @@ impl ProjectWizard {
         // the UI doesn't freeze, then apply the result back on the UI thread.
         let fetch = cx
             .background_executor()
-            .spawn(async move { cloud_sync::fetch_sheet(&link) });
+            .spawn(async move { data_exchange::fetch_sheet(&link) });
         cx.spawn(async move |this, cx| {
             let result = fetch.await;
             let ready = this
                 .update(cx, |this, cx| {
-                    match result.map(data::SpreadsheetPreview::from) {
+                    match result.map(data_exchange::SpreadsheetPreview::from) {
                         Ok(preview) => {
                             this.sheet_check = Some(data::SheetCheckResult {
                                 title: "Google Sheet".into(),

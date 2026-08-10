@@ -12,7 +12,7 @@ log.workspace = true
 # the data dir, not a fork. Its only two dependencies are a hasher, so the dictionary is the
 # weight here, not the crate.
 spellbook = "0.4"
-# Downloading a dictionary the user picked. Blocking like `cloud-sync`'s fetch and for the same
+# Downloading a dictionary the user picked. Blocking like `data-exchange`'s fetch and for the same
 # reason: gpui's executor is not a tokio reactor, so this runs on the background executor.
 reqwest = { version = "0.12", features = ["blocking"] }
 
