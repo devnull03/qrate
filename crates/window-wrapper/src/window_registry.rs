@@ -14,29 +14,23 @@ pub struct WindowRegistry {
 impl Global for WindowRegistry {}
 
 impl WindowRegistry {
-    /// If a live window is registered under `kind`, focus it and return true.
-    /// If the registered handle is stale (window already closed), clears it
-    /// and returns false so the caller can open a fresh window.
-    pub fn focus_or_clear(kind: &'static str, cx: &mut App) -> bool {
-        let Some(handle) = cx.global::<Self>().handles.get(kind).copied() else {
-            return false;
-        };
-
-        let focused = handle
+    /// If a live window is registered under `kind`, focus it and hand back its handle — the
+    /// caller usually has something to say to the window it just raised. If the registered
+    /// handle is stale (window already closed), clears it and returns `None` so the caller
+    /// can open a fresh window.
+    pub fn focus_or_clear(kind: &'static str, cx: &mut App) -> Option<AnyWindowHandle> {
+        let handle = cx.global::<Self>().handles.get(kind).copied()?;
+        if handle
             .update(cx, |_, window, _| window.activate_window())
-            .is_ok();
-        if !focused {
-            cx.global_mut::<Self>().handles.remove(kind);
+            .is_ok()
+        {
+            return Some(handle);
         }
-        focused
+        cx.global_mut::<Self>().handles.remove(kind);
+        None
     }
 
     pub fn register(kind: &'static str, handle: AnyWindowHandle, cx: &mut App) {
         cx.global_mut::<Self>().handles.insert(kind, handle);
-    }
-
-    /// The live handle for `kind`, if one is registered (regardless of focus).
-    pub fn get(kind: &'static str, cx: &App) -> Option<AnyWindowHandle> {
-        cx.global::<Self>().handles.get(kind).copied()
     }
 }

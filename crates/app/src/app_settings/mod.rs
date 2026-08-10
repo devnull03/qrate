@@ -388,13 +388,18 @@ fn spelling_group(cx: &App) -> SettingGroup {
 /// `Change` subscription parked alongside so it stays alive.
 #[derive(Default)]
 struct Pickers {
-    columns: HashMap<&'static str, Picker<ColumnItem>>,
+    columns: HashMap<String, Picker<ColumnItem>>,
     /// One per `(plugin, mapping, column)`, so the ids are built at runtime rather than named here.
     maps: HashMap<String, Picker<OptionItem>>,
     /// One per declared `password` setting.
     secrets: HashMap<String, Secret>,
-    language: Option<Picker<LanguageRow>>,
+    /// The one language picker, in a map only so it is the same shape as the others — see
+    /// [`picker`], which is generic over which of these it reaches into.
+    language: HashMap<String, Picker<LanguageRow>>,
 }
+
+/// The single language picker's key in [`Pickers::language`].
+const LANGUAGE: &str = "language";
 
 struct Secret {
     state: Entity<InputState>,
@@ -533,52 +538,26 @@ fn map_picker(
     cx: &mut App,
 ) -> AnyElement {
     let Mapped { picked, warns } = mapped;
-    if !cx.has_global::<Pickers>() {
-        cx.set_global(Pickers::default());
-    }
-    let id = format!("{plugin}/{}/{}", spec.key, column.key);
-    let state = match cx.global::<Pickers>().maps.get(&id) {
-        Some(picker) => picker.state.clone(),
-        None => {
-            let state = cx.new(|cx| {
-                ComboboxState::new(SearchableVec::new(options.clone()), vec![], window, cx)
-                    .multiple(spec.multiple)
-                    .searchable(true)
-            });
-            let _sub = cx.subscribe(&state, {
-                let (plugin, spec, key) = (plugin.clone(), spec.clone(), column.key.clone());
-                move |_state, event, cx| {
-                    let ComboboxEvent::Change(values) = event else {
-                        return;
-                    };
-                    ColumnMapContributions::select(&plugin, &spec, &key, values.clone(), cx);
-                    // A validator reads this mapping, so its published findings are stale the
-                    // moment it changes — and only a run replaces them.
-                    table::revalidate_now(cx);
-                }
-            });
-            cx.global_mut::<Pickers>().maps.insert(
-                id.clone(),
-                Picker {
-                    state: state.clone(),
-                    items: options.clone(),
-                    _sub,
-                },
-            );
-            state
-        }
-    };
-
-    // A refresh replaces the list; rebuilding on every render would throw away the search filter.
-    if cx.global::<Pickers>().maps[&id].items != options {
-        state.update(cx, |state, cx| {
-            state.set_items(SearchableVec::new(options.clone()), window, cx);
-        });
-        if let Some(picker) = cx.global_mut::<Pickers>().maps.get_mut(&id) {
-            picker.items = options.clone();
-        }
-    }
-
+    let state = picker(
+        |pickers| &mut pickers.maps,
+        format!("{plugin}/{}/{}", spec.key, column.key),
+        options.clone(),
+        PickerKind {
+            multiple: spec.multiple,
+            searchable: true,
+        },
+        {
+            let (plugin, spec, key) = (plugin.clone(), spec.clone(), column.key.clone());
+            move |values: &[SharedString], cx: &mut App| {
+                ColumnMapContributions::select(&plugin, &spec, &key, values.to_vec(), cx);
+                // A validator reads this mapping, so its published findings are stale the moment
+                // it changes — and only a run replaces them.
+                table::revalidate_now(cx);
+            }
+        },
+        window,
+        cx,
+    );
     sync_selection(&state, &options, &picked, window, cx);
 
     let label: SharedString = match picked.len() {
@@ -707,6 +686,79 @@ fn sync_selection<I: SearchableListItem<Value = SharedString> + 'static>(
     });
 }
 
+/// How a picker's widget behaves, as opposed to what it lists.
+#[derive(Clone, Copy)]
+struct PickerKind {
+    multiple: bool,
+    searchable: bool,
+}
+
+/// Get — or, the first time, build — the combobox behind one picker.
+///
+/// Every picker on this window is the same widget over a different list, and each one needs the
+/// same three things: state that outlives `build_pages` (see [`Pickers`]), a list replaced only
+/// when it actually changed (`set_items` throws away the active search filter), and a `Change`
+/// subscription parked alongside so it stays alive. `slot` says which of [`Pickers`]' maps this
+/// kind of picker lives in, since the item type is what keeps them apart.
+///
+/// What is *selected* is deliberately not here: each caller reads that from a different corner of
+/// settings, and the stored value stays the source of truth — callers sync it with
+/// [`sync_selection`] once they have the state back.
+fn picker<I>(
+    slot: fn(&mut Pickers) -> &mut HashMap<String, Picker<I>>,
+    id: String,
+    items: Vec<I>,
+    kind: PickerKind,
+    on_change: impl Fn(&[SharedString], &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<ComboboxState<SearchableVec<I>>>
+where
+    I: SearchableListItem<Value = SharedString> + PartialEq + Clone + 'static,
+{
+    if !cx.has_global::<Pickers>() {
+        cx.set_global(Pickers::default());
+    }
+    let existing = slot(cx.global_mut::<Pickers>())
+        .get(&id)
+        .map(|picker| picker.state.clone());
+    let state = match existing {
+        Some(state) => state,
+        None => {
+            let state = cx.new(|cx| {
+                ComboboxState::new(SearchableVec::new(items.clone()), vec![], window, cx)
+                    .multiple(kind.multiple)
+                    .searchable(kind.searchable)
+            });
+            let _sub = cx.subscribe(&state, move |_state, event, cx| {
+                if let ComboboxEvent::Change(values) = event {
+                    on_change(values, cx);
+                }
+            });
+            slot(cx.global_mut::<Pickers>()).insert(
+                id.clone(),
+                Picker {
+                    state: state.clone(),
+                    items: items.clone(),
+                    _sub,
+                },
+            );
+            return state;
+        }
+    };
+
+    // A refresh replaces the list; rebuilding on every render would throw away the search filter.
+    if slot(cx.global_mut::<Pickers>())[&id].items != items {
+        state.update(cx, |state, cx| {
+            state.set_items(SearchableVec::new(items.clone()), window, cx);
+        });
+        if let Some(picker) = slot(cx.global_mut::<Pickers>()).get_mut(&id) {
+            picker.items = items;
+        }
+    }
+    state
+}
+
 /// The language list, in the shape a phone's language screen uses: everything available, each row
 /// saying whether it is already here or a download away, and one tap doing whichever applies.
 ///
@@ -716,62 +768,36 @@ fn sync_selection<I: SearchableListItem<Value = SharedString> + 'static>(
 fn language_picker(window: &mut Window, cx: &mut App) -> AnyElement {
     use spellcheck::catalogue::State;
 
+    // The catalogue is fixed, but download state is not, so the rows change under the picker and
+    // `picker` rebuilds its list — which is how a finished download stops showing its arrow.
     let rows = language_rows(cx);
-    if !cx.has_global::<Pickers>() {
-        cx.set_global(Pickers::default());
-    }
-    let state = match cx.global::<Pickers>().language.as_ref() {
-        Some(picker) => picker.state.clone(),
-        None => {
-            let state = cx.new(|cx| {
-                ComboboxState::new(SearchableVec::new(rows.clone()), vec![], window, cx)
-                    .searchable(true)
-            });
-            let _sub = cx.subscribe(&state, |_state, event, cx| {
-                let ComboboxEvent::Change(values) = event else {
-                    return;
-                };
-                let Some(code) = values.first().cloned() else {
-                    return;
-                };
-                match spellcheck::catalogue::listing()
-                    .into_iter()
-                    .find(|((c, _, _), _)| *c == code.as_ref())
-                    .map(|(_, state)| state)
-                {
-                    Some(State::Available) => spellcheck::start_download(code, cx),
-                    // Built in and installed both mean "here already"; only the reason differs,
-                    // and the reason is not the user's problem.
-                    Some(_) => {
-                        settings::set_scoped_text(spellcheck::SPELLCHECK_LANGUAGE_KEY, code, cx)
-                    }
-                    None => {}
-                }
-            });
-            cx.global_mut::<Pickers>().language = Some(Picker {
-                state: state.clone(),
-                items: rows.clone(),
-                _sub,
-            });
-            state
-        }
-    };
-
-    // The catalogue is fixed, but download state is not — rebuild so a finished download stops
-    // showing its arrow.
-    if cx
-        .global::<Pickers>()
-        .language
-        .as_ref()
-        .is_some_and(|p| p.items != rows)
-    {
-        state.update(cx, |state, cx| {
-            state.set_items(SearchableVec::new(rows.clone()), window, cx);
-        });
-        if let Some(picker) = cx.global_mut::<Pickers>().language.as_mut() {
-            picker.items = rows.clone();
-        }
-    }
+    let state = picker(
+        |pickers| &mut pickers.language,
+        LANGUAGE.to_string(),
+        rows.clone(),
+        PickerKind {
+            multiple: false,
+            searchable: true,
+        },
+        |values: &[SharedString], cx: &mut App| {
+            let Some(code) = values.first().cloned() else {
+                return;
+            };
+            match spellcheck::catalogue::listing()
+                .into_iter()
+                .find(|((c, _, _), _)| *c == code.as_ref())
+                .map(|(_, state)| state)
+            {
+                Some(State::Available) => spellcheck::start_download(code, cx),
+                // Built in and installed both mean "here already"; only the reason differs, and
+                // the reason is not the user's problem.
+                Some(_) => settings::set_scoped_text(spellcheck::SPELLCHECK_LANGUAGE_KEY, code, cx),
+                None => {}
+            }
+        },
+        window,
+        cx,
+    );
     sync_selection(&state, &rows, &[spellcheck::language(cx)], window, cx);
 
     Combobox::new(&state)
@@ -1051,44 +1077,30 @@ fn authority_picker(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    if !cx.has_global::<Pickers>() {
-        cx.set_global(Pickers::default());
-    }
-    let id = format!("authority/{}", column.key);
-    let state = match cx.global::<Pickers>().maps.get(&id) {
-        Some(picker) => picker.state.clone(),
-        None => {
-            let state = cx.new(|cx| {
-                ComboboxState::new(SearchableVec::new(options.clone()), vec![], window, cx)
-            });
-            let _sub = cx.subscribe(&state, {
-                let key = column.key.clone();
-                move |_state, event, cx| {
-                    let ComboboxEvent::Change(values) = event else {
-                        return;
-                    };
-                    let chosen = values
-                        .first()
-                        .filter(|v| !v.is_empty())
-                        .map(ToString::to_string);
-                    columns::update(&key, |s| s.authority = chosen.clone(), cx);
-                    // The check reads this setting, so what it published is stale the moment it
-                    // changes — and only a run replaces it.
-                    table::revalidate_now(cx);
-                }
-            });
-            cx.global_mut::<Pickers>().maps.insert(
-                id.clone(),
-                Picker {
-                    state: state.clone(),
-                    items: options.clone(),
-                    _sub,
-                },
-            );
-            state
-        }
-    };
-
+    let state = picker(
+        |pickers| &mut pickers.maps,
+        format!("authority/{}", column.key),
+        options.clone(),
+        PickerKind {
+            multiple: false,
+            searchable: false,
+        },
+        {
+            let key = column.key.clone();
+            move |values: &[SharedString], cx: &mut App| {
+                let chosen = values
+                    .first()
+                    .filter(|v| !v.is_empty())
+                    .map(ToString::to_string);
+                columns::update(&key, |s| s.authority = chosen.clone(), cx);
+                // The check reads this setting, so what it published is stale the moment it
+                // changes — and only a run replaces it.
+                table::revalidate_now(cx);
+            }
+        },
+        window,
+        cx,
+    );
     sync_selection(&state, &options, std::slice::from_ref(&picked), window, cx);
 
     let label = options
@@ -1152,60 +1164,36 @@ fn column_picker(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    if !cx.has_global::<Pickers>() {
-        cx.set_global(Pickers::default());
-    }
-    let state = match cx.global::<Pickers>().columns.get(id) {
-        Some(picker) => picker.state.clone(),
-        None => {
-            let state = cx.new(|cx| {
-                ComboboxState::new(SearchableVec::new(headers.clone()), vec![], window, cx)
-                    .multiple(true)
-                    .searchable(true)
-            });
-            let _sub = cx.subscribe(&state, {
-                let on = on.clone();
-                move |_state, event, cx| {
-                    let ComboboxEvent::Change(values) = event else {
-                        return;
-                    };
-                    // Re-read the columns rather than capturing them: this closure outlives the
-                    // project whose headers built it.
-                    let Some(current) = cx.try_global::<CurrentProject>().map(column_items) else {
-                        return;
-                    };
-                    for column in current {
-                        let want = values.contains(&column.key);
-                        if on(&column, cx) != want {
-                            set(&column, want, cx);
-                        }
+    let state = picker(
+        |pickers| &mut pickers.columns,
+        id.to_string(),
+        headers.clone(),
+        PickerKind {
+            multiple: true,
+            searchable: true,
+        },
+        {
+            let on = on.clone();
+            move |values: &[SharedString], cx: &mut App| {
+                // Re-read the columns rather than capturing them: this closure outlives the
+                // project whose headers built it.
+                let Some(current) = cx.try_global::<CurrentProject>().map(column_items) else {
+                    return;
+                };
+                for column in current {
+                    let want = values.contains(&column.key);
+                    if on(&column, cx) != want {
+                        set(&column, want, cx);
                     }
-                    // A validator reads these settings, so its published findings are stale the
-                    // moment one changes — and only a run replaces them.
-                    table::revalidate_now(cx);
                 }
-            });
-            cx.global_mut::<Pickers>().columns.insert(
-                id,
-                Picker {
-                    state: state.clone(),
-                    items: headers.clone(),
-                    _sub,
-                },
-            );
-            state
-        }
-    };
-
-    // A project switch is the only thing that changes the column list.
-    if cx.global::<Pickers>().columns[id].items != headers {
-        state.update(cx, |state, cx| {
-            state.set_items(SearchableVec::new(headers.clone()), window, cx);
-        });
-        if let Some(picker) = cx.global_mut::<Pickers>().columns.get_mut(id) {
-            picker.items = headers.clone();
-        }
-    }
+                // A validator reads these settings, so its published findings are stale the
+                // moment one changes — and only a run replaces them.
+                table::revalidate_now(cx);
+            }
+        },
+        window,
+        cx,
+    );
 
     let picked: Vec<SharedString> = headers
         .iter()

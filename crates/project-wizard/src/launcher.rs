@@ -286,7 +286,7 @@ fn create_card(
 }
 
 pub fn open_launcher_window(cx: &mut App) {
-    if WindowRegistry::focus_or_clear(LAUNCHER_WINDOW_KIND, cx) {
+    if WindowRegistry::focus_or_clear(LAUNCHER_WINDOW_KIND, cx).is_some() {
         return;
     }
     let bounds = Bounds::centered(None, size(px(760.0), px(480.0)), cx);

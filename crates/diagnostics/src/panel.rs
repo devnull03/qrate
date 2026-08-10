@@ -38,7 +38,7 @@ impl Filter {
             Filter::All => true,
             Filter::Errors => severity == Severity::Error,
             Filter::Warnings => severity == Severity::Warning,
-            Filter::Notes => matches!(severity, Severity::Note | Severity::Info),
+            Filter::Notes => severity == Severity::Note,
         }
     }
 }
@@ -182,7 +182,7 @@ impl ProblemsPanel {
                     icon: match d.severity {
                         Severity::Error => IconName::CircleX,
                         Severity::Warning => IconName::TriangleAlert,
-                        Severity::Info | Severity::Note => IconName::Info,
+                        Severity::Note => IconName::Info,
                     },
                     scope,
                     wide,
@@ -411,7 +411,7 @@ mod tests {
                     (Severity::Note, at(Some(4), Some("Title"))),
                     (Severity::Error, at(Some(1), None)),
                     (Severity::Warning, at(None, Some("Digital ID"))),
-                    (Severity::Info, at(None, None)),
+                    (Severity::Note, at(None, None)),
                 ]
                 .into_iter()
                 .map(|(severity, location)| Diagnostic {
@@ -429,12 +429,7 @@ mod tests {
 
     #[test]
     fn tabs_partition_every_severity() {
-        for severity in [
-            Severity::Error,
-            Severity::Warning,
-            Severity::Info,
-            Severity::Note,
-        ] {
+        for severity in [Severity::Error, Severity::Warning, Severity::Note] {
             let admitting: Vec<_> = Filter::ALL
                 .iter()
                 .filter(|f| f.admits(severity))

@@ -4,19 +4,8 @@ use std::path::PathBuf;
 
 use crate::error::Result;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RowData(pub serde_json::Value);
-
-impl RowData {
-    pub fn new(value: serde_json::Value) -> Self {
-        Self(value)
-    }
-
-    pub fn inner(&self) -> &serde_json::Value {
-        &self.0
-    }
-}
-
+/// The image a row is reviewed against. `base64_data` is filled in only for a provider that
+/// takes image bytes inline; a local one reads the path itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageContext {
     pub path: PathBuf,
@@ -31,12 +20,6 @@ impl ImageContext {
             base64_data: None,
             mime_type: None,
         }
-    }
-
-    pub fn with_base64(mut self, data: String, mime_type: String) -> Self {
-        self.base64_data = Some(data);
-        self.mime_type = Some(mime_type);
-        self
     }
 }
 
@@ -61,35 +44,19 @@ pub struct ReviewerCapabilities {
     pub name: String,
     pub is_local: bool,
     pub supports_multimodal: bool,
-    pub supports_embeddings: bool,
     pub max_image_size: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClusterAssignment {
-    pub data_point_index: usize,
-    pub cluster_id: Option<usize>,
-}
-
+/// What the agent panel asks of a model: does this row describe this image, and where doesn't it.
+///
+/// `row_data` is the row as JSON — column name to value — so a provider needs no notion of grids.
 #[async_trait]
 pub trait DataReviewer: Send + Sync {
     async fn initialize(&self) -> Result<()>;
     async fn validate_row(
         &self,
-        row_data: RowData,
+        row_data: serde_json::Value,
         image_context: ImageContext,
     ) -> Result<ValidationResult>;
     fn capabilities(&self) -> ReviewerCapabilities;
-}
-
-#[async_trait]
-pub trait Embedder: Send + Sync {
-    async fn embed_text(&self, text: &str) -> Result<Vec<f32>>;
-    async fn embed_image(&self, image: ImageContext) -> Result<Vec<f32>>;
-    fn embedding_dimensions(&self) -> usize;
-}
-
-pub trait Clusterer: Send + Sync {
-    fn cluster(&self, vectors: &[Vec<f32>]) -> Result<Vec<ClusterAssignment>>;
-    fn algorithm_name(&self) -> &str;
 }
