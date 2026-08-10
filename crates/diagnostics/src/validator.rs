@@ -141,9 +141,10 @@ impl Validators {
     /// flagged, so the replace-by-source rule makes the run self-invalidating: a fixed cell
     /// disappears because the next run simply doesn't report it.
     ///
-    // ponytail: re-checks every column on every edit. Publishing per (source, column) instead
-    // would need a finer replace key than `Diagnostics::set` has; add both together if a large
-    // sheet starts stuttering on commit.
+    // ponytail: still re-checks every column, so the cost is O(whole sheet) per call. `table`
+    // debounces the call rather than narrowing it, which is what took this off the commit path.
+    // Narrow it here — publish per (source, column), which needs a finer replace key than
+    // `Diagnostics::set` has — only if the debounced pass itself becomes too slow.
     pub fn run(columns: &[(SharedString, SharedString)], rows: &[Vec<SharedString>], cx: &mut App) {
         let sync = cx.try_global::<Self>().is_some_and(|v| !v.0.is_empty());
         // Copied out because running one hands `cx` back mutably, and a fn pointer is cheap.
