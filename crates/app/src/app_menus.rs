@@ -8,7 +8,6 @@ use crate::theming::{SwitchTheme, THEME_CHOICES};
 // The Edit menu's items act on the grid, so they're the grid's actions — `table` declares and
 // handles them, and this menu only names them.
 use table::{Copy, Cut, Paste, Redo, Undo};
-
 actions!(
     nav,
     [
@@ -54,9 +53,6 @@ pub fn app_menus() -> Vec<Menu> {
                 MenuItem::Separator,
                 MenuItem::action("Settings", OpenSettings),
                 MenuItem::Separator,
-                MenuItem::action("Plugins Folder", OpenPluginsFolder),
-                MenuItem::action("Reload Plugins", ReloadPlugins),
-                MenuItem::Separator,
                 MenuItem::action("Quit", Quit),
             ],
         },
@@ -70,6 +66,8 @@ pub fn app_menus() -> Vec<Menu> {
                 MenuItem::action("Cut", Cut),
                 MenuItem::action("Copy", Copy),
                 MenuItem::action("Paste", Paste),
+                MenuItem::Separator,
+                MenuItem::action("Find in Table", table::Search),
             ],
         },
         Menu {
@@ -95,6 +93,19 @@ pub fn app_menus() -> Vec<Menu> {
                 MenuItem::action("Toggle Left Dock", ToggleLeftDock),
                 MenuItem::action("Toggle Bottom Dock", ToggleBottomDock),
                 MenuItem::action("Toggle Right Dock", ToggleRightDock),
+            ],
+        },
+        Menu {
+            name: "Data".into(),
+            disabled: false,
+            items: vec![MenuItem::action("Column Settings…", OpenSettings)],
+        },
+        Menu {
+            name: "Extensions".into(),
+            disabled: false,
+            items: vec![
+                MenuItem::action("Plugins Folder", OpenPluginsFolder),
+                MenuItem::action("Reload Plugins", ReloadPlugins),
             ],
         },
         Menu {

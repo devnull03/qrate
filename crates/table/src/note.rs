@@ -210,17 +210,18 @@ pub(crate) fn menu(
             .separator()
         }
         Target::Row(_) => copy_row(menu).separator(),
-        // Everything a column header offers beyond notes is contributed by a plugin. `table` knows
-        // the label and the command string and nothing else — no plugin code runs while a menu is
-        // built, because menus build synchronously and a VM answer cannot be waited on.
+        // Built-in column controls come first; plugin entries are appended without running plugin
+        // code while the synchronous menu is built.
         Target::Column(col) => {
-            let (key, name, values, frozen) = {
+            let (key, name, values, frozen, filter_enabled, filter_active) = {
                 let delegate = table.read(cx).delegate();
                 (
                     delegate.column_key(col),
                     delegate.column_name(col),
                     delegate.column_cells(col),
                     delegate.frozen(),
+                    delegate.column_filter_enabled(col),
+                    delegate.column_has_filter(col),
                 )
             };
             let stored = settings::columns::get(&key, cx).plugins;
@@ -239,6 +240,39 @@ pub(crate) fn menu(
                     )
                 })
                 .separator();
+            let filter_table = table.clone();
+            let filter_key = key.clone();
+            let menu = menu.submenu("Filter", window, cx, move |sub, _window, _cx| {
+                let key = filter_key.clone();
+                let sub = sub.item(
+                    PopupMenuItem::new(if filter_enabled {
+                        "Hide filter dropdown"
+                    } else {
+                        "Show filter dropdown"
+                    })
+                    .on_click(move |_, _, cx| {
+                        settings::columns::update(
+                            &key,
+                            |settings| {
+                                settings.filter_enabled = !filter_enabled;
+                            },
+                            cx,
+                        );
+                    }),
+                );
+                let clear_table = filter_table.clone();
+                sub.when(filter_active, |sub| {
+                    sub.item(
+                        PopupMenuItem::new("Clear filter").on_click(move |_, _, cx| {
+                            clear_table.update(cx, |state, cx| {
+                                state.delegate_mut().clear_column_filter(col);
+                                cx.emit(TableChanged);
+                                cx.notify();
+                            });
+                        }),
+                    )
+                })
+            });
             let menu = mapping_submenus(&key, menu, window, cx);
             MenuContributions::for_target(MenuTarget::Column, cx)
                 .into_iter()
