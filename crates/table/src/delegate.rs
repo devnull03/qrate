@@ -403,8 +403,8 @@ impl QrateTableDelegate {
     /// stable `c{ix}` key rather than the current display order. `dataset_main` keeps a fixed
     /// physical column order (the separately-saved [`ColumnLayout`] maps it to display order), so
     /// a save after a column move must not reshuffle the stored columns. Cells are stringified for
-    /// the `.qrate` writer.
-    pub(crate) fn dataset_snapshot(&self) -> (Vec<String>, Vec<Vec<String>>) {
+    /// the `.qrate` writer, and for every export.
+    pub fn dataset_snapshot(&self) -> (Vec<String>, Vec<Vec<String>>) {
         let mut order: Vec<usize> = (0..self.columns.len()).collect();
         order.sort_by_key(|&i| orig_col_ix(&self.columns[i]));
         let headers = order

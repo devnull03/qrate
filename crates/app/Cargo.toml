@@ -9,7 +9,6 @@ gpui.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
-csv.workspace = true
 dirs.workspace = true
 log.workspace = true
 simplelog.workspace = true
@@ -21,6 +20,7 @@ schemars.workspace = true
 window-wrapper = { path = "../window-wrapper" }
 project-wizard = { path = "../project-wizard" }
 checks = { path = "../checks" }
+data-exchange = { path = "../data-exchange" }
 diagnostics = { path = "../diagnostics" }
 settings = { path = "../settings" }
 # The dictionary is half a megabyte, so only the composition root links it — see `crates/spellcheck`.

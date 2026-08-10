@@ -1,6 +1,7 @@
 mod actions;
 mod app_menus;
 mod app_settings;
+mod export;
 mod logging;
 mod status_items;
 mod theming;
@@ -254,6 +255,10 @@ impl Render for App {
             }))
             .on_action(cx.listener(|this, _: &ToggleRightDock, window, cx| {
                 this.toggle_dock(DockPlacement::Right, window, cx)
+            }))
+            // Here rather than globally: the Zotero mapping dialog opens in this window.
+            .on_action(cx.listener(|_, action: &export::Export, window, cx| {
+                export::run(action.format, window, cx)
             }))
             .child(
                 v_flex()

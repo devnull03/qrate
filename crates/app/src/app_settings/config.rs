@@ -31,21 +31,12 @@ pub fn export(cx: &mut App) {
     let receiver = cx.prompt_for_new_path(&directory, Some("column_config.csv"));
     cx.spawn(async move |_cx| {
         if let Ok(Ok(Some(path))) = receiver.await
-            && let Err(err) = write(&path, &headers, &rows)
+            && let Err(err) = data_exchange::export::write_csv(&path, &headers, &rows)
         {
             log::error!("could not export the column config to {path:?}: {err}");
         }
     })
     .detach();
-}
-
-fn write(path: &Path, headers: &[String], rows: &[Row]) -> Result<(), csv::Error> {
-    let mut writer = csv::Writer::from_path(path)?;
-    writer.write_record(headers)?;
-    for row in rows {
-        writer.write_record(row)?;
-    }
-    writer.flush().map_err(Into::into)
 }
 
 /// The fixed columns, then a mapping and a severity per active plugin. A plugin that is switched

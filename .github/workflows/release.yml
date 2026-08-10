@@ -13,6 +13,12 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Baked into the binary by `option_env!` in `crates/data-exchange/src/google.rs`. Google treats
+  # an installed app's secret as non-confidential (RFC 8252 §8.5) — loopback + PKCE is what
+  # actually protects the exchange — so shipping it is the design, but it still never lives in
+  # the repo. Absent (any local build): the Google Sheets export reports it isn't configured.
+  QRATE_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+  QRATE_GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
 
 jobs:
   # ---------------------------------------------------------------------------

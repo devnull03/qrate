@@ -267,7 +267,7 @@ pub fn name_of(code: &str) -> &str {
 /// Fetch a dictionary's two files and write them where [`crate::source`] will find them.
 ///
 /// Blocking on purpose — the caller runs it on the background executor, the same shape
-/// `cloud_sync::fetch_sheet` uses. Both files are downloaded before either is written, so a
+/// `data_exchange::fetch_sheet` uses. Both files are downloaded before either is written, so a
 /// failure half way cannot leave an install that looks complete and parses to nothing.
 pub fn download(code: &str) -> Result<(), String> {
     let (aff_path, dic_path) = paths(code).ok_or("qrate has nowhere to store dictionaries")?;

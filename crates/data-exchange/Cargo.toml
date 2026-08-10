@@ -1,17 +1,26 @@
 [package]
-name = "cloud-sync"
+name = "data-exchange"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+log.workspace = true
+csv.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+settings = { path = "../settings" }
 # blocking, not async: gpui's executor isn't a tokio reactor, so we run the
 # one-shot fetch on the background executor with the blocking client.
-reqwest = { version = "0.12", features = ["blocking"] }
+reqwest = { version = "0.12", features = ["blocking", "json"] }
 thiserror = "2"
 # One .xlsx download carries both the row values and the cell notes (CSV drops
 # metadata). calamine reads the values; zip + quick-xml pull notes out of
 # xl/comments*.xml (hand-rolling xlsx value parsing / XML entity decoding is the
 # flimsy trap we avoid).
 calamine = "0.26"
-zip = "2"
+zip.workspace = true
 quick-xml = "0.37"
+# PKCE for the Google sign-in: a SHA-256 challenge, url-safe base64, and an OS-random verifier.
+base64 = "0.22"
+sha2 = "0.10"
+getrandom = "0.3"

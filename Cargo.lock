@@ -186,7 +186,7 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "checks",
- "csv",
+ "data-exchange",
  "diagnostics",
  "dirs",
  "gpui",
@@ -958,17 +958,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cloud-sync"
-version = "0.1.0-alpha.1"
-dependencies = [
- "calamine",
- "quick-xml 0.37.5",
- "reqwest",
- "thiserror 2.0.18",
- "zip",
-]
-
-[[package]]
 name = "cocoa"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1405,6 +1394,25 @@ checksum = "fb22e947478ccf9dc44d8922042c677a63fbb88f2cb468521d1145816e5087cb"
 dependencies = [
  "link-section",
  "linktime-proc-macro",
+]
+
+[[package]]
+name = "data-exchange"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "base64",
+ "calamine",
+ "csv",
+ "getrandom 0.3.4",
+ "log",
+ "quick-xml 0.37.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "settings",
+ "sha2",
+ "thiserror 2.0.18",
+ "zip",
 ]
 
 [[package]]
@@ -5165,8 +5173,8 @@ name = "project-wizard"
 version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
- "cloud-sync",
  "csv",
+ "data-exchange",
  "diagnostics",
  "dirs",
  "gpui",

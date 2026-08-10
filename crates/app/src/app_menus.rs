@@ -2,6 +2,7 @@ use gpui::*;
 use window_wrapper::OpenBrowser;
 
 use crate::actions::{NewProject, Save, ToggleBottomDock, ToggleLeftDock, ToggleRightDock};
+use crate::export::{EXPORT_FORMATS, Export, ExportFormat};
 use crate::theming::{SwitchTheme, THEME_CHOICES};
 
 // ponytail: Undo/Redo/Cut/Copy/Paste are declared and wired into the Edit menu but have no
@@ -37,6 +38,22 @@ pub fn app_menus() -> Vec<Menu> {
                 MenuItem::Separator,
                 MenuItem::action("Open Projects…", OpenProjects),
                 MenuItem::action("Save", Save),
+                MenuItem::submenu(Menu {
+                    name: "Export".into(),
+                    disabled: false,
+                    items: EXPORT_FORMATS
+                        .iter()
+                        .map(|(format, label, _)| MenuItem::Action {
+                            name: (*label).into(),
+                            action: Box::new(Export { format: *format }),
+                            os_action: None,
+                            checked: false,
+                            // ponytail: written but switched off until qrate has a Google OAuth
+                            // client — see the "Google Sheets export" tracker task.
+                            disabled: *format == ExportFormat::GoogleSheet,
+                        })
+                        .collect(),
+                }),
                 MenuItem::Separator,
                 MenuItem::action("Settings", OpenSettings),
                 MenuItem::Separator,
