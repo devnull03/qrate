@@ -541,7 +541,12 @@ impl Render for SettingsWindow {
 
         v_flex()
             .size_full()
-            .child(TitleBar::new().child(Label::new("Settings").font_semibold()))
+            .child(
+                TitleBar::new()
+                    .text_xs()
+                    .text_color(cx.theme().foreground)
+                    .child(Label::new("Settings").font_semibold()),
+            )
             // Fixed scope switcher, right-aligned over the settings content section.
             .child(
                 h_flex()
