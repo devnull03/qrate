@@ -8,7 +8,7 @@ use gpui_component::{
     dock::{Panel, PanelControl, PanelEvent},
     h_flex,
     input::{Escape, Input, InputEvent, InputState},
-    table::{DataTable, TableDelegate as _, TableEvent, TableState},
+    table::{DataTable, TableEvent, TableState},
     v_flex,
 };
 
@@ -44,7 +44,12 @@ fn apply_settings(delegate: &mut QrateTableDelegate, cx: &App) {
 
 // The grid's own actions, declared here (not in `app`) since app→table is one-way; `app` binds the
 // keys and puts Undo/Redo/Cut/Copy/Paste in the Edit menu.
-actions!(qrate, [Search, Undo, Redo, Cut, Copy, Paste]);
+actions!(qrate, [Search, Undo, Redo, Cut, Copy, Paste, EditCell]);
+
+/// `gpui_component`'s key context for the grid, which it puts on the table's own focus handle. Our
+/// keys bind against this rather than `TablePanel` so they can't fire while the cell editor holds
+/// focus — the editor is a sibling of the table, so this context isn't in its dispatch chain.
+pub const GRID_CONTEXT: &str = "DataTable";
 
 /// Center panel: the virtualized text table, with a pinned row-number column, native
 /// cell/row/column selection, movable + resizable columns, and double-click-to-edit cells.
@@ -140,24 +145,37 @@ impl TablePanel {
         cx.set_global(TableStateHandle(state.downgrade()));
 
         let table_state = state.clone();
-        let _edit_sub = cx.subscribe(&editor, move |this, _editor, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.ask_for_suggestions(cx);
-                return;
-            }
-            if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                return;
-            }
-            table_state.update(cx, |state, cx| {
-                editing::commit(state.delegate_mut(), cx);
-                state.delegate().revalidate(cx);
-                cx.emit(TableChanged);
-                cx.notify();
-            });
-            this.forget_suggestions(cx);
-            // The commit marked PROJECT_DATA dirty; persist per the Autosave setting.
-            this.schedule_autosave(cx);
-        });
+        let _edit_sub = cx.subscribe_in(
+            &editor,
+            window,
+            move |this, _editor, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.ask_for_suggestions(cx);
+                    return;
+                }
+                if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    return;
+                }
+                // A blur means focus already went where the user clicked; only Enter leaves it
+                // homeless.
+                let by_enter = matches!(event, InputEvent::PressEnter { .. });
+                table_state.update(cx, |state, cx| {
+                    editing::commit(state.delegate_mut(), cx);
+                    state.delegate().revalidate(cx);
+                    cx.emit(TableChanged);
+                    cx.notify();
+                });
+                this.forget_suggestions(cx);
+                // Focus was on the editor, which has just gone away. Hand it back to the grid or
+                // the arrow keys and Enter go nowhere — the `DataTable` key context lives on *its*
+                // focus handle, not the panel's.
+                if by_enter {
+                    this.focus_table(window, cx);
+                }
+                // The commit marked PROJECT_DATA dirty; persist per the Autosave setting.
+                this.schedule_autosave(cx);
+            },
+        );
 
         // Notes are not `PROJECT_DATA`: `set_note` writes `__notes` itself, so this must not also
         // trip the table autosave (which would rewrite the whole dataset for a typed comment).
@@ -185,11 +203,11 @@ impl TablePanel {
             |_this, state, event: &TableEvent, window, cx| {
                 match event {
                     TableEvent::SelectCell(row, col) if *col == row_index::COL_IX => {
-                        // Native selection ignores `selectable(false)`, so bounce a hit on the `#` column to col 1.
-                        let (row, cols) = (*row, state.read(cx).delegate().columns_count(cx));
-                        if cols > 1 {
-                            state.update(cx, |s, cx| s.set_selected_cell(row, 1, cx));
-                        }
+                        // Native selection ignores `selectable(false)`, so the `#` column reports a
+                        // cell hit. Turn it into a whole-row selection — the row header's job, and
+                        // the mirror of clicking a column header.
+                        let row = *row;
+                        state.update(cx, |s, cx| s.set_selected_row(row, cx));
                         return;
                     }
                     TableEvent::SelectCell(view, col) => {
@@ -432,6 +450,24 @@ impl TablePanel {
         self.search_open = false;
         self.focus_handle.focus(window, cx);
         cx.notify();
+    }
+
+    /// Move focus to the grid itself. `DataTable` binds the arrow keys against its own focus
+    /// handle, so anything that takes focus away has to hand it back explicitly.
+    fn focus_table(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.read(cx).focus_handle(cx).focus(window, cx);
+    }
+
+    /// Enter opens the selected cell for editing, the spreadsheet convention. Bound in the grid's
+    /// own key context, so it can't fire while the editor already has focus and Enter means commit.
+    fn edit_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            let Some(Selection::Cell { row, col }) = state.delegate().selection() else {
+                return;
+            };
+            editing::start(state.delegate_mut(), row, col, window, cx);
+            cx.notify();
+        });
     }
 
     /// Commit a batch of cell writes as one undoable step, then do everything a committed edit
@@ -854,6 +890,7 @@ impl Render for TablePanel {
             .on_action(cx.listener(|this, _: &Escape, window, cx| this.dismiss_search(window, cx)))
             .on_action(cx.listener(|this, _: &Undo, _, cx| this.history_step(false, cx)))
             .on_action(cx.listener(|this, _: &Redo, _, cx| this.history_step(true, cx)))
+            .on_action(cx.listener(|this, _: &EditCell, window, cx| this.edit_selected(window, cx)))
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy_range(false, cx)))
             .on_action(cx.listener(|this, _: &Cut, _, cx| this.copy_range(true, cx)))
             .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste_range(cx)))

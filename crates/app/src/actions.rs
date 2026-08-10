@@ -39,15 +39,18 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // Settings. Declared in `app_menus` (it's a menu action first); the handler is already
         // registered globally in `main.rs`, so this only adds the key.
         KeyBinding::new("ctrl-,", OpenSettings, None),
-        // The grid's own actions are declared in `crate::table` (app→table is one-way), and scoped
-        // to it so the cell editor keeps its own Ctrl+F/Ctrl+Z/Ctrl+C while it has focus.
+        // The grid's own actions are declared in `crate::table` (app→table is one-way). Ctrl+F is
+        // scoped to the panel so it works wherever focus sits inside it; everything below acts on a
+        // grid selection and is scoped to the grid, which keeps the cell editor's own Ctrl+Z/Ctrl+C
+        // and its Enter-to-commit intact while it has focus.
         KeyBinding::new("ctrl-f", table::Search, Some("TablePanel")),
-        KeyBinding::new("ctrl-z", table::Undo, Some("TablePanel")),
-        KeyBinding::new("ctrl-y", table::Redo, Some("TablePanel")),
-        KeyBinding::new("ctrl-shift-z", table::Redo, Some("TablePanel")),
-        KeyBinding::new("ctrl-x", table::Cut, Some("TablePanel")),
-        KeyBinding::new("ctrl-c", table::Copy, Some("TablePanel")),
-        KeyBinding::new("ctrl-v", table::Paste, Some("TablePanel")),
+        KeyBinding::new("enter", table::EditCell, Some(table::GRID_CONTEXT)),
+        KeyBinding::new("ctrl-z", table::Undo, Some(table::GRID_CONTEXT)),
+        KeyBinding::new("ctrl-y", table::Redo, Some(table::GRID_CONTEXT)),
+        KeyBinding::new("ctrl-shift-z", table::Redo, Some(table::GRID_CONTEXT)),
+        KeyBinding::new("ctrl-x", table::Cut, Some(table::GRID_CONTEXT)),
+        KeyBinding::new("ctrl-c", table::Copy, Some(table::GRID_CONTEXT)),
+        KeyBinding::new("ctrl-v", table::Paste, Some(table::GRID_CONTEXT)),
     ]
 }
 

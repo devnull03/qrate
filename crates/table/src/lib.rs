@@ -17,7 +17,7 @@ pub mod photos;
 mod row_index;
 
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
-pub use panel::{Copy, Cut, Paste, Redo, Search, TablePanel, Undo};
+pub use panel::{Copy, Cut, EditCell, GRID_CONTEXT, Paste, Redo, Search, TablePanel, Undo};
 
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
 pub const TABLE_STRIPES_KEY: &str = "table_stripes";
