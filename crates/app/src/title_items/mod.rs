@@ -2,14 +2,12 @@ use gpui::*;
 use gpui_component::{
     IconName,
     dock::{DockArea, DockPlacement},
+    menu::AppMenuBar,
 };
 use plugin_api::{Bar, Side};
 
 use crate::status_items::PluginBar;
-use window_wrapper::{
-    BarRegistry,
-    title_bar::{TitleBarRegistry, TitleMenus},
-};
+use window_wrapper::{BarRegistry, title_bar::TitleBarRegistry};
 use workspace::DockToggleButton;
 
 /// Populate the title bar registry. The app menus are the one always-present item, so they
@@ -17,8 +15,9 @@ use workspace::DockToggleButton;
 pub fn build_title_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> TitleBarRegistry {
     let mut registry = TitleBarRegistry::default();
 
-    let menus = cx.new(|_| TitleMenus);
-    registry.items_mut().add_left(menus);
+    // The library's menu bar, not a row of independent dropdowns: it holds the "a menu is open"
+    // state that makes hovering a sibling switch to it, and arrow keys walk between them.
+    registry.items_mut().add_left(AppMenuBar::new(cx));
 
     let plugins = cx.new(|cx| PluginBar::new(Bar::Title, Side::Left, cx));
     registry.items_mut().add_left(plugins);

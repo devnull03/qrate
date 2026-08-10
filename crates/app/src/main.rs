@@ -470,7 +470,11 @@ fn main() {
         cx.on_action(|_: &OpenProjects, cx| project_wizard::open_launcher_window(cx));
         // ----------------------------------------------
 
+        // Both, not one: `set_menus` feeds the macOS system menu bar, `set_app_menus` feeds the
+        // in-window `AppMenuBar` we draw on Windows and Linux.
         cx.set_menus(app_menus());
+        gpui_component::GlobalState::global_mut(cx)
+            .set_app_menus(app_menus().into_iter().map(|menu| menu.owned()).collect());
 
         // Keyboard shortcuts (Layer 1). See `actions.rs` to add more.
         cx.bind_keys(actions::key_bindings());
