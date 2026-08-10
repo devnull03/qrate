@@ -8,7 +8,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, BorderStyle, Bounds, Context, InteractiveElement as _, IntoElement,
     ParentElement as _, Pixels, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    canvas, div, outline, point, px, size,
+    canvas, div, fill, outline, point, px, size,
 };
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme as _, table::TableState};
@@ -52,6 +52,9 @@ pub(crate) fn render_cell(
             .try_global::<EditSpawn>()
             .is_none_or(|s| s.cell != (row_ix, col_ix));
     let accent = cx.theme().primary;
+    // The same pair the library paints on the selected cell — alpha-clamped, so the text shows
+    // through the fill.
+    let (range_bg, range_border) = (cx.theme().table_active, cx.theme().table_active_border);
 
     let location = delegate.location(Some(row_ix), Some(col_ix));
     // Authored and computed diagnostics get different decorations, as they do in every editor: a
@@ -80,7 +83,6 @@ pub(crate) fn render_cell(
         // Own the containing block for the capture canvas below: without this it resolves against
         // the library's cell div, whose padding makes "the bounds" ambiguous.
         .relative()
-        .when(ranged, |cell| cell.bg(cx.theme().secondary))
         .child(text)
         .when_some(marked, |cell, severity| {
             cell.child(note::marker(severity, cx))
@@ -106,10 +108,11 @@ pub(crate) fn render_cell(
             )
         })
         .when_some(note_editor, |cell, editor| cell.child(editor))
-        // Outlines the source cell for as long as the edit is open, so it stays findable once the
-        // box has been scrolled away from it. Painted rather than bordered because the border would
-        // land inside the cell's padding instead of around the cell.
-        .when(editing, |cell| {
+        // Both decorations are painted rather than bordered, because a border would land inside the
+        // cell's padding instead of around the cell. The range fill matches what the library draws
+        // on the selected cell, so a shift-click rectangle reads as one selection rather than as
+        // one selected cell next to some shaded ones.
+        .when(editing || ranged, |cell| {
             cell.child(
                 canvas(
                     move |bounds, window, cx| {
@@ -128,7 +131,15 @@ pub(crate) fn render_cell(
                         bounds
                     },
                     move |_, bounds, window, _| {
-                        window.paint_quad(outline(bounds, accent, BorderStyle::Solid));
+                        if ranged {
+                            window.paint_quad(fill(bounds, range_bg));
+                            window.paint_quad(outline(bounds, range_border, BorderStyle::Solid));
+                        }
+                        // Outlines the source cell for as long as the edit is open, so it stays
+                        // findable once the box has scrolled away from it.
+                        if editing {
+                            window.paint_quad(outline(bounds, accent, BorderStyle::Solid));
+                        }
                     },
                 )
                 .absolute()
