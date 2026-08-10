@@ -423,7 +423,12 @@ impl Render for ProjectWizard {
         v_flex()
             .size_full()
             .bg(cx.theme().background)
-            .child(TitleBar::new().child(Label::new("qrate — New Project").font_semibold()))
+            .child(
+                TitleBar::new()
+                    .text_xs()
+                    .text_color(cx.theme().foreground)
+                    .child(Label::new("qrate — New Project").font_semibold()),
+            )
             .child(
                 v_flex()
                     .id("wizard-body")

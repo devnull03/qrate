@@ -163,7 +163,12 @@ impl Render for Launcher {
         v_flex()
             .size_full()
             .bg(cx.theme().background)
-            .child(TitleBar::new().child(Label::new("qrate").font_semibold()))
+            .child(
+                TitleBar::new()
+                    .text_xs()
+                    .text_color(cx.theme().foreground)
+                    .child(Label::new("qrate").font_semibold()),
+            )
             .child(
                 h_flex()
                     .id("launcher-body")

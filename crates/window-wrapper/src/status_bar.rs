@@ -1,5 +1,7 @@
 use gpui::*;
-use gpui_component::{h_flex, separator::Separator, status_bar::StatusBar as StatusBarElement};
+use gpui_component::{
+    ActiveTheme as _, h_flex, separator::Separator, status_bar::StatusBar as StatusBarElement,
+};
 
 use crate::bar::{BarItems, BarRegistry};
 
@@ -45,7 +47,7 @@ impl Render for StatusBar {
 
         StatusBarElement::new()
             .px_3()
-            .text_color(crate::bar::bar_foreground(cx))
+            .text_color(cx.theme().foreground)
             .left(left)
             .right(right)
     }
