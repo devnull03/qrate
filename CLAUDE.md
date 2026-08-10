@@ -54,6 +54,13 @@ The hub also has a **Document Hub** database (design docs, specs) linked from ta
 
 Notion is where a task is born. Never create a Notion task from a GitHub issue — make it in Notion first, then sync it out to GitHub and record the issue URL in the task's `GitHub Link` property. The Notion UUID goes in the **PR body** (`Closes #N (Notion ID: <uuid>)`), never in the issue description.
 
+**One task means an entry in every tracker.** Creating the Notion page is half the job — fan it out and cross-link, without being asked:
+
+1. Notion page in the Tasks Tracker.
+2. `gh issue create --title "ASNT-<n>: <task name>"`, body ending `**Notion:** <page url>`. Match the structure existing issues use (Overview / Scope / Task Details / Definition of Done / Estimate / Type).
+3. Write the issue URL back into the Notion `GitHub Link` property.
+4. Linear (`Linear Link`) has no CLI or MCP here — it comes from Linear's own integration or by hand. Say which links you created and which one still needs a human.
+
 ## Code Style — no bloat
 
 A 2026-07-17 whole-repo audit removed exactly this kind of code; don't reintroduce it:
