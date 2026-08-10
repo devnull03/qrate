@@ -1,3 +1,5 @@
+use std::ops::RangeInclusive;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
@@ -19,11 +21,15 @@ use crate::{
     },
     editing::{self, EditState},
     floating::float_at,
+    history::Cells,
     photos, row_index,
 };
 
 /// Settings key for the saved column layout (order + widths) in the project's `.qrate` file.
 const COLUMN_LAYOUT_KEY: &str = "table_columns";
+
+/// Settings key for how many leading columns are frozen, stored as a decimal count.
+pub(crate) const FROZEN_COLUMNS_KEY: &str = "table_frozen_columns";
 
 /// Push the settings the delegate caches into it. Called wherever either store changes, since the
 /// delegate reads no settings itself — it has no `App` in the paths that need them.
@@ -36,8 +42,9 @@ fn apply_settings(delegate: &mut QrateTableDelegate, cx: &App) {
     );
 }
 
-// Free-text find, declared here (not in `app`) since app→table is one-way; `app` binds Ctrl+F to it.
-actions!(qrate, [Search]);
+// The grid's own actions, declared here (not in `app`) since app→table is one-way; `app` binds the
+// keys and puts Undo/Redo/Cut/Copy/Paste in the Edit menu.
+actions!(qrate, [Search, Undo, Redo, Cut, Copy, Paste]);
 
 /// Center panel: the virtualized text table, with a pinned row-number column, native
 /// cell/row/column selection, movable + resizable columns, and double-click-to-edit cells.
@@ -185,13 +192,34 @@ impl TablePanel {
                         }
                         return;
                     }
-                    TableEvent::SelectCell(row, col) => {
-                        // `row` is a VIEW index; store the SOURCE row so the selection survives a
-                        // filter change and cross-crate readers index the real data.
-                        let col = *col - 1;
+                    TableEvent::SelectCell(view, col) => {
+                        // `view` is a VIEW index; store the SOURCE row so the selection survives a
+                        // filter change and cross-crate readers index the real data. The range
+                        // stays in view coordinates — see `QrateTableDelegate::range`.
+                        //
+                        // ponytail: shift-click only. Extending with shift+arrow means forking the
+                        // library's cell-navigation key handling; do that if anyone asks.
+                        let (view, col) = (*view, *col - 1);
+                        let extend = window.modifiers().shift;
                         state.update(cx, |s, _| {
-                            if let Some(row) = s.delegate().source(*row) {
-                                s.delegate_mut().selection = Some(Selection::Cell { row, col });
+                            let delegate = s.delegate_mut();
+                            delegate.range = match (extend, delegate.range) {
+                                // Grow the existing rectangle from its original anchor.
+                                (true, Some((anchor, _))) => Some((anchor, (view, col))),
+                                // First shift-click: anchor at wherever the cursor already was.
+                                (true, None) => delegate
+                                    .selection
+                                    .and_then(|s| match s {
+                                        Selection::Cell { row, col } => {
+                                            Some((delegate.view_row(row)?, col))
+                                        }
+                                        _ => None,
+                                    })
+                                    .map(|anchor| (anchor, (view, col))),
+                                (false, _) => None,
+                            };
+                            if let Some(row) = delegate.source(view) {
+                                delegate.selection = Some(Selection::Cell { row, col });
                             }
                         });
                     }
@@ -406,13 +434,110 @@ impl TablePanel {
         cx.notify();
     }
 
-    /// Apply the project's saved column layout onto freshly loaded data, if any.
-    fn apply_saved_layout(delegate: &mut QrateTableDelegate, file: &std::path::Path) {
-        let Ok(Some(json)) = settings::project::read_setting(file, COLUMN_LAYOUT_KEY) else {
+    /// Commit a batch of cell writes as one undoable step, then do everything a committed edit
+    /// does. The single path cut, paste and bulk fill all take.
+    fn write_cells(&mut self, cells: Cells, cx: &mut Context<Self>) {
+        if cells.is_empty() {
+            return;
+        }
+        self.state.update(cx, |state, cx| {
+            state.delegate_mut().apply_edit(cells);
+            state.delegate().revalidate(cx);
+            cx.emit(TableChanged);
+            cx.notify();
+        });
+        settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+        self.schedule_autosave(cx);
+    }
+
+    /// Put the selected range on the clipboard as TSV — what Sheets and Excel both read and write,
+    /// so a range copied here pastes into either. `cut` blanks the range afterwards, as one undo.
+    fn copy_range(&mut self, cut: bool, cx: &mut Context<Self>) {
+        let Some((rows, cols)) = self.state.read(cx).delegate().range_cells() else {
             return;
         };
-        if let Ok(layout) = serde_json::from_str::<ColumnLayout>(&json) {
+        let delegate = self.state.read(cx).delegate();
+        let mut lines = Vec::with_capacity(rows.len());
+        for &row in &rows {
+            let line: Vec<&str> = cols
+                .clone()
+                .map(|col| delegate.cell(row, col).map_or("", |v| v.as_ref()))
+                .collect();
+            lines.push(line.join("\t"));
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(lines.join("\n")));
+
+        if cut {
+            let mut blanked = Vec::new();
+            for &row in &rows {
+                blanked.extend(cols.clone().map(|col| (row, col, SharedString::default())));
+            }
+            self.write_cells(blanked, cx);
+        }
+    }
+
+    /// Paste the clipboard over the selection. One clipboard value across a multi-cell selection
+    /// fills it (this is the bulk edit); anything else lands as a block at the selection's
+    /// top-left, clipped at the grid's edges. Either way it's a single undo step.
+    fn paste_range(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        let Some((rows, cols)) = self.state.read(cx).delegate().range_cells() else {
+            return;
+        };
+        let block = parse_tsv(&text);
+        let reach = self
+            .state
+            .read(cx)
+            .delegate()
+            .rows_from(rows[0], block.len());
+        if reach.len() < block.len() {
+            log::warn!(
+                "paste of {} rows clipped to {} — no rows left below the selection",
+                block.len(),
+                reach.len()
+            );
+        }
+        let cells = paste_cells(&block, &rows, cols, &reach);
+        self.write_cells(cells, cx);
+    }
+
+    /// Undo or redo the last grid edit, then do everything a committed edit does — revalidate,
+    /// signal the cross-crate readers, mark dirty, autosave. Nothing happens on an empty stack.
+    fn history_step(&mut self, redo: bool, cx: &mut Context<Self>) {
+        let stepped = self.state.update(cx, |state, cx| {
+            let stepped = if redo {
+                state.delegate_mut().redo()
+            } else {
+                state.delegate_mut().undo()
+            };
+            if stepped {
+                state.delegate().revalidate(cx);
+                cx.emit(TableChanged);
+                cx.notify();
+            }
+            stepped
+        });
+        if stepped {
+            settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+            self.schedule_autosave(cx);
+        }
+    }
+
+    /// Apply the project's saved column layout — order, widths, and how many columns are frozen —
+    /// onto freshly loaded data. `set_frozen` clamps, so a stale count from a shrunken dataset is
+    /// harmless.
+    fn apply_saved_layout(delegate: &mut QrateTableDelegate, file: &std::path::Path) {
+        if let Ok(Some(json)) = settings::project::read_setting(file, COLUMN_LAYOUT_KEY)
+            && let Ok(layout) = serde_json::from_str::<ColumnLayout>(&json)
+        {
             delegate.apply_column_layout(&layout);
+        }
+        if let Ok(Some(count)) = settings::project::read_setting(file, FROZEN_COLUMNS_KEY)
+            && let Ok(count) = count.parse()
+        {
+            delegate.set_frozen(count);
         }
     }
 
@@ -727,6 +852,11 @@ impl Render for TablePanel {
             .on_action(cx.listener(|this, _: &Search, window, cx| this.toggle_search(window, cx)))
             // The find input propagates Escape (it doesn't consume it), so dismiss the bar here.
             .on_action(cx.listener(|this, _: &Escape, window, cx| this.dismiss_search(window, cx)))
+            .on_action(cx.listener(|this, _: &Undo, _, cx| this.history_step(false, cx)))
+            .on_action(cx.listener(|this, _: &Redo, _, cx| this.history_step(true, cx)))
+            .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy_range(false, cx)))
+            .on_action(cx.listener(|this, _: &Cut, _, cx| this.copy_range(true, cx)))
+            .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste_range(cx)))
             .p_2()
             .gap_2()
             // Find bar renders here, not in `title_suffix`: the parent `TabPanel` never observes us to redraw it.
@@ -847,6 +977,55 @@ impl Render for TablePanel {
     }
 }
 
+/// Clipboard text as a grid. The trailing newline a spreadsheet adds to a copied range is dropped,
+/// or it would paste a row of blanks under the real ones.
+fn parse_tsv(text: &str) -> Vec<Vec<&str>> {
+    text.strip_suffix('\n')
+        .unwrap_or(text)
+        .split('\n')
+        .map(|line| {
+            line.strip_suffix('\r')
+                .unwrap_or(line)
+                .split('\t')
+                .collect()
+        })
+        .collect()
+}
+
+/// The cells a paste writes. `rows`/`cols` are the selected rectangle (source rows, data columns);
+/// `reach` is how far down the block can actually go. Split out of `TablePanel` (which needs a live
+/// gpui `App`) so the two cases are unit-testable on plain data.
+fn paste_cells(
+    block: &[Vec<&str>],
+    rows: &[usize],
+    cols: RangeInclusive<usize>,
+    reach: &[usize],
+) -> Cells {
+    // One value over a multi-cell selection means "make them all this" — the bulk edit.
+    if let [line] = block
+        && let [value] = line.as_slice()
+        && (rows.len() > 1 || cols.clone().count() > 1)
+    {
+        let mut cells = Vec::new();
+        for &row in rows {
+            cells.extend(
+                cols.clone()
+                    .map(|col| (row, col, SharedString::from(*value))),
+            );
+        }
+        return cells;
+    }
+
+    let mut cells = Vec::new();
+    for (line, &row) in block.iter().zip(reach) {
+        for (offset, value) in line.iter().enumerate() {
+            cells.push((row, cols.start() + offset, SharedString::from(*value)));
+        }
+    }
+    // Columns past the last one are dropped by `apply_edit`, which writes only cells that exist.
+    cells
+}
+
 /// Google-Sheets box sizing. Text that fits gets a cell-sized box; text that overflows keeps the
 /// row height and grows rightward to the table's edge; text that still overflows there grows
 /// downward to its wrapped height. Never leaves the table rect, so no clamping is needed after.
@@ -890,7 +1069,69 @@ const SUGGEST_H: f32 = 180.;
 
 #[cfg(test)]
 mod tests {
-    use gpui::{Bounds, Pixels, point, px, size};
+    use gpui::{Bounds, Pixels, SharedString, point, px, size};
+
+    /// `paste_cells` output as `(row, col, text)` with plain strs, for readable assertions.
+    fn wrote(cells: &[(usize, usize, SharedString)]) -> Vec<(usize, usize, &str)> {
+        cells.iter().map(|(r, c, v)| (*r, *c, v.as_ref())).collect()
+    }
+
+    #[test]
+    fn a_trailing_newline_does_not_paste_a_blank_row() {
+        assert_eq!(
+            super::parse_tsv("a\tb\nc\td\n"),
+            vec![["a", "b"], ["c", "d"]]
+        );
+        assert_eq!(
+            super::parse_tsv("a\tb\r\nc\td"),
+            vec![["a", "b"], ["c", "d"]]
+        );
+    }
+
+    #[test]
+    fn one_clipboard_value_fills_a_multi_cell_selection() {
+        let block = super::parse_tsv("x");
+        let cells = super::paste_cells(&block, &[3, 7], 1..=2, &[3, 7]);
+        assert_eq!(
+            wrote(&cells),
+            vec![(3, 1, "x"), (3, 2, "x"), (7, 1, "x"), (7, 2, "x")]
+        );
+    }
+
+    /// The same single value over a single cell is an ordinary paste, not a fill.
+    #[test]
+    fn one_clipboard_value_over_one_cell_writes_only_that_cell() {
+        let block = super::parse_tsv("x");
+        let cells = super::paste_cells(&block, &[3], 1..=1, &[3]);
+        assert_eq!(wrote(&cells), vec![(3, 1, "x")]);
+    }
+
+    #[test]
+    fn a_block_lands_at_the_selections_top_left_whatever_the_selection_size() {
+        let block = super::parse_tsv("a\tb\nc\td");
+        let cells = super::paste_cells(&block, &[5], 2..=2, &[5, 6]);
+        assert_eq!(
+            wrote(&cells),
+            vec![(5, 2, "a"), (5, 3, "b"), (6, 2, "c"), (6, 3, "d")]
+        );
+    }
+
+    /// `reach` is short at the end of the view; the rows that don't exist are simply not written.
+    #[test]
+    fn a_block_taller_than_the_grid_is_clipped_not_grown() {
+        let block = super::parse_tsv("a\nb\nc");
+        let cells = super::paste_cells(&block, &[8], 0..=0, &[8, 9]);
+        assert_eq!(wrote(&cells), vec![(8, 0, "a"), (9, 0, "b")]);
+    }
+
+    /// Rows come from `reach` (view order), so a filtered view pastes down what the user sees
+    /// rather than into the source rows hidden between them.
+    #[test]
+    fn a_block_follows_view_order_across_a_filter() {
+        let block = super::parse_tsv("a\nb");
+        let cells = super::paste_cells(&block, &[2], 0..=0, &[2, 9]);
+        assert_eq!(wrote(&cells), vec![(2, 0, "a"), (9, 0, "b")]);
+    }
 
     /// A 120x32 cell whose top-left is 200px from the table's right edge and 100px from its bottom.
     fn cell_and_table() -> (Bounds<Pixels>, Bounds<Pixels>) {

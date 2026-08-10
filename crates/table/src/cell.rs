@@ -25,11 +25,14 @@ pub(crate) const CELL_PAD_X: f32 = 8.;
 pub(crate) const CELL_PAD_Y: f32 = 4.;
 
 /// `row_ix` is a source (not view) row index — `render_td` maps through `visible_rows` first.
-/// `col_ix` is a data-column index, not shifted for the pinned row-index column.
+/// `col_ix` is a data-column index, not shifted for the pinned row-index column. `ranged` says the
+/// cell is inside the shift-click range; the library paints the one *selected* cell itself, so this
+/// only has to tint the rest of the rectangle.
 pub(crate) fn render_cell(
     delegate: &mut QrateTableDelegate,
     row_ix: usize,
     col_ix: usize,
+    ranged: bool,
     _window: &mut Window,
     cx: &mut Context<TableState<QrateTableDelegate>>,
 ) -> AnyElement {
@@ -77,6 +80,7 @@ pub(crate) fn render_cell(
         // Own the containing block for the capture canvas below: without this it resolves against
         // the library's cell div, whose padding makes "the bounds" ambiguous.
         .relative()
+        .when(ranged, |cell| cell.bg(cx.theme().secondary))
         .child(text)
         .when_some(marked, |cell, severity| {
             cell.child(note::marker(severity, cx))

@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashSet};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 use gpui::{
@@ -13,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use diagnostics::{DATASET_MAIN, Location};
 
+use crate::history::{Cells, Edit, History};
 use crate::{cell, editing::EditState, filter, row_index};
 
 /// Emitted whenever the table's selection, a cell's text, or the column layout changes, so
@@ -46,6 +48,11 @@ pub struct QrateTableDelegate {
     /// Last selection reported by the table's native `TableEvent`s, written only by
     /// `TablePanel`'s event bridge (the library's `selected_cell()` goes stale in row mode).
     pub(crate) selection: Option<Selection>,
+    /// Shift-click range as `(anchor, head)`, each a `(view_row, data_col)` pair. View coordinates
+    /// because every rendered cell tests against this, and a source row would cost a linear lookup
+    /// per cell. `None` means the selection is just the one selected cell. Dropped wherever a
+    /// filter or a column move invalidates a view index.
+    pub(crate) range: Option<((usize, usize), (usize, usize))>,
     pub(crate) editing: EditState,
     /// Shared single-line editor, reused across whichever cell is being edited.
     pub(crate) editor: Entity<InputState>,
@@ -70,6 +77,12 @@ pub struct QrateTableDelegate {
     /// value list and only recomputes it when this moves — [`Self::column_values`] is O(rows), and
     /// the alternative is paying it on every frame the header renders.
     values_generation: u64,
+    /// Undo/redo stack for cell edits. Fed by [`Self::apply_edit`] and nothing else.
+    history: History,
+    /// How many leading data columns are frozen. A count in *display* order, not a set of keys:
+    /// the library's fixed region is always the leading columns, and moving a column in or out of
+    /// it is how a sheet re-freezes. Zero means only the pinned `#` column stays put.
+    frozen: usize,
 }
 
 impl QrateTableDelegate {
@@ -78,6 +91,7 @@ impl QrateTableDelegate {
             columns: Vec::new(),
             rows: Vec::new(),
             selection: None,
+            range: None,
             editing: EditState::Idle,
             editor,
             note_edit: None,
@@ -88,7 +102,18 @@ impl QrateTableDelegate {
             filters_enabled: Vec::new(),
             subdelimiter: SharedString::default(),
             values_generation: 0,
+            history: History::default(),
+            frozen: 0,
         }
+    }
+
+    /// Freeze the leading `count` data columns, clamped to what exists. Zero unfreezes.
+    pub(crate) fn set_frozen(&mut self, count: usize) {
+        self.frozen = count.min(self.columns.len());
+    }
+
+    pub(crate) fn frozen(&self) -> usize {
+        self.frozen
     }
 
     /// See [`Self::values_generation`].
@@ -142,6 +167,8 @@ impl QrateTableDelegate {
 
     fn recompute_visible(&mut self) {
         self.visible_rows = compute_visible_rows(&self.rows, &self.filters, &self.subdelimiter);
+        // `range` is in view coordinates, which this just redefined.
+        self.range = None;
     }
 
     /// The distinct values in a data column, sorted. Drawn from *all* source rows, so an excluded
@@ -291,7 +318,10 @@ impl QrateTableDelegate {
             .map(|r| r.iter().map(|c| SharedString::from(c.clone())).collect())
             .collect();
         self.selection = None;
+        self.range = None;
         self.editing = EditState::Idle;
+        // Recorded edits index into the outgoing dataset.
+        self.history = History::default();
         self.filters = vec![HashSet::new(); self.columns.len()];
         self.filters_enabled = vec![false; self.columns.len()];
         self.visible_rows = (0..self.rows.len()).collect();
@@ -364,6 +394,92 @@ impl QrateTableDelegate {
             *cell = value;
             self.values_generation += 1;
         }
+    }
+
+    /// Whether a cell falls inside the shift-click range. Both arguments are view/display
+    /// coordinates, which is what `render_td` already has in hand.
+    pub(crate) fn in_range(&self, view_row: usize, col: usize) -> bool {
+        let Some(((ar, ac), (hr, hc))) = self.range else {
+            return false;
+        };
+        normalize(ar, hr).contains(&view_row) && normalize(ac, hc).contains(&col)
+    }
+
+    /// The range's cells as `(source_rows, cols)` — source rows so writes land on the real data,
+    /// in view order so a range over a filtered view covers what the user actually selected.
+    /// Falls back to the single selected cell when no range is drawn.
+    pub(crate) fn range_cells(&self) -> Option<(Vec<usize>, RangeInclusive<usize>)> {
+        let Some(((ar, ac), (hr, hc))) = self.range else {
+            let Selection::Cell { row, col } = self.selection? else {
+                return None;
+            };
+            return Some((vec![row], col..=col));
+        };
+        let rows = normalize(ar, hr)
+            .filter_map(|view| self.source(view))
+            .collect();
+        Some((rows, normalize(ac, hc)))
+    }
+
+    /// The next `count` source rows at and after `source`, in view order — how far down a paste
+    /// taller than the selection can reach. Comes back short at the end of the view: a paste fills
+    /// what exists rather than growing the grid.
+    pub(crate) fn rows_from(&self, source: usize, count: usize) -> Vec<usize> {
+        let Some(view) = self.view_row(source) else {
+            return Vec::new();
+        };
+        self.visible_rows
+            .iter()
+            .skip(view)
+            .take(count)
+            .copied()
+            .collect()
+    }
+
+    /// Write cells and record the whole batch as a single undo step. Every editing path goes
+    /// through here — inline commit, diagnostic fix, paste, bulk fill — so none of them carries
+    /// undo logic of its own. Cells whose text is unchanged are dropped, so a commit that typed
+    /// nothing doesn't consume an undo.
+    pub(crate) fn apply_edit(&mut self, cells: Cells) {
+        let mut edit = Vec::with_capacity(cells.len());
+        for (row, col, after) in cells {
+            let Some(before) = self.cell(row, col).cloned() else {
+                continue;
+            };
+            if before == after {
+                continue;
+            }
+            self.set_cell(row, col, after.clone());
+            edit.push((row, col, before, after));
+        }
+        self.history.push(Edit(edit));
+    }
+
+    /// Restore the cells the last edit changed. `false` when there was nothing to undo, which is
+    /// what tells the caller to skip the dirty-mark and the revalidate.
+    pub(crate) fn undo(&mut self) -> bool {
+        let cells = self.history.undo();
+        self.replay(cells)
+    }
+
+    /// [`undo`](Self::undo)'s mirror.
+    pub(crate) fn redo(&mut self) -> bool {
+        let cells = self.history.redo();
+        self.replay(cells)
+    }
+
+    /// Apply one side of a recorded edit without re-recording it — going through `apply_edit` here
+    /// would make undo its own undoable action and the stack would never drain.
+    fn replay(&mut self, cells: Option<Cells>) -> bool {
+        let Some(cells) = cells else {
+            return false;
+        };
+        for (row, col, text) in cells {
+            self.set_cell(row, col, text);
+        }
+        // An open edit would commit over what was just restored.
+        self.editing = EditState::Idle;
+        true
     }
 
     /// The current selection — a cell, a whole row, or a whole column.
@@ -495,6 +611,12 @@ fn orig_col_ix(col: &Column) -> usize {
 
 /// Move every row's cell at `from` to position `to`, mirroring a column move so cell lookups
 /// stay positional (display order == storage order).
+/// An inclusive range between two endpoints given in either order — a drag up-and-left selects the
+/// same rectangle as the same drag down-and-right.
+fn normalize(a: usize, b: usize) -> RangeInclusive<usize> {
+    a.min(b)..=a.max(b)
+}
+
 fn move_col(rows: &mut [Vec<SharedString>], from: usize, to: usize) {
     for row in rows {
         if from < row.len() && to < row.len() {
@@ -614,9 +736,15 @@ impl TableDelegate for QrateTableDelegate {
 
     fn column(&self, col_ix: usize, _cx: &App) -> Column {
         if col_ix == row_index::COL_IX {
-            row_index::column()
+            return row_index::column();
+        }
+        let column = self.columns[col_ix - 1].clone();
+        // The library's fixed region is however many leading columns carry this, so a count is the
+        // whole of the freezing feature.
+        if col_ix - 1 < self.frozen {
+            column.fixed_left()
         } else {
-            self.columns[col_ix - 1].clone()
+            column
         }
     }
 
@@ -653,7 +781,8 @@ impl TableDelegate for QrateTableDelegate {
             let highlighted = self.active_cell().is_some_and(|(r, _)| r == source);
             row_index::render_td(self, source, highlighted, cx)
         } else {
-            cell::render_cell(self, source, col_ix - 1, window, cx)
+            let ranged = self.in_range(row_ix, col_ix - 1);
+            cell::render_cell(self, source, col_ix - 1, ranged, window, cx)
         }
     }
 
@@ -685,8 +814,10 @@ impl TableDelegate for QrateTableDelegate {
             let e = self.filters_enabled.remove(from);
             self.filters_enabled.insert(to, e);
         }
-        // An in-flight edit indexes into the old column order — drop it.
+        // An in-flight edit indexes into the old column order — drop it, and the recorded ones too.
         self.editing = EditState::Idle;
+        self.range = None;
+        self.history = History::default();
     }
 }
 
@@ -861,5 +992,118 @@ mod tests {
         let visible = compute_visible_rows(&g, &filters(&[&["hide"]]), "");
         assert_eq!(visible, vec![1, 3]);
         assert_eq!(visible[1], 3, "view row 1 must resolve to source row 3");
+    }
+}
+
+/// The delegate's own state — the shift-click range and column freezing — needs a live `App` to
+/// build, unlike the free functions above. Same harness as `filter.rs`.
+#[cfg(test)]
+mod app_tests {
+    // Never `use super::*` here — see the note on `note.rs`'s test module.
+    use crate::{TablePanel, TableStateHandle};
+    use gpui::{Entity, TestAppContext};
+    use gpui_component::table::{ColumnFixed, TableDelegate as _, TableState};
+
+    fn project() -> settings::project::CurrentProject {
+        settings::project::CurrentProject {
+            file: std::env::temp_dir().join("qrate-delegate-range.qrate"),
+            data: settings::project::ProjectData {
+                name: "T".into(),
+                columns: Vec::new(),
+                headers: vec!["Medium".into(), "Title".into()],
+                rows: vec![
+                    vec!["Film".into(), "one".into()],
+                    vec!["Video".into(), "two".into()],
+                    vec!["Video".into(), "three".into()],
+                    vec!["Film".into(), "four".into()],
+                ],
+                values: Default::default(),
+            },
+        }
+    }
+
+    fn table(cx: &mut TestAppContext) -> Entity<TableState<super::QrateTableDelegate>> {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(project());
+        });
+        cx.add_window_view(TablePanel::new);
+        cx.update(|cx| {
+            cx.try_global::<TableStateHandle>()
+                .and_then(|h| h.0.upgrade())
+                .expect("the panel publishes its state handle")
+        })
+    }
+
+    /// The range is stored in view coordinates but has to hand back source rows, so a range drawn
+    /// over a filtered view must skip the rows hidden between its ends.
+    #[gpui::test]
+    fn a_range_over_a_filtered_view_yields_the_source_rows_the_user_sees(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                // Rows 1 and 2 drop out; the view is now source rows 0 and 3.
+                delegate.set_column_kept(0, &["Film".into()]);
+                delegate.range = Some(((0, 0), (1, 1)));
+
+                let (rows, cols) = delegate.range_cells().expect("a range is drawn");
+                assert_eq!(rows, vec![0, 3]);
+                assert_eq!(cols, 0..=1);
+                assert!(delegate.in_range(1, 1));
+                assert!(!delegate.in_range(2, 0), "past the end of the range");
+            });
+        });
+    }
+
+    /// Drawn bottom-right to top-left, the same rectangle.
+    #[gpui::test]
+    fn a_range_drawn_backwards_covers_the_same_cells(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.range = Some(((2, 1), (1, 0)));
+                let (rows, cols) = delegate.range_cells().expect("a range is drawn");
+                assert_eq!(rows, vec![1, 2]);
+                assert_eq!(cols, 0..=1);
+            });
+        });
+    }
+
+    /// Changing a filter redefines every view index, so a range recorded against the old one has
+    /// to go rather than silently point at different cells.
+    #[gpui::test]
+    fn refiltering_drops_the_range(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.range = Some(((0, 0), (2, 1)));
+                delegate.set_column_kept(0, &["Film".into()]);
+                assert!(delegate.range.is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn frozen_columns_are_the_leading_ones_and_the_count_is_clamped(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, cx| {
+                let delegate = state.delegate_mut();
+                delegate.set_frozen(99);
+                assert_eq!(delegate.frozen(), 2, "clamped to the columns that exist");
+
+                delegate.set_frozen(1);
+                // Table column 0 is the pinned `#`, so data column 0 is table column 1.
+                assert_eq!(delegate.column(1, cx).fixed, Some(ColumnFixed::Left));
+                assert_eq!(delegate.column(2, cx).fixed, None);
+
+                delegate.set_frozen(0);
+                assert_eq!(delegate.column(1, cx).fixed, None);
+            });
+        });
     }
 }

@@ -39,8 +39,15 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // Settings. Declared in `app_menus` (it's a menu action first); the handler is already
         // registered globally in `main.rs`, so this only adds the key.
         KeyBinding::new("ctrl-,", OpenSettings, None),
-        // `Search` is declared in `crate::table` (app→table is one-way); scoped so it spares the cell editor's Ctrl+F.
+        // The grid's own actions are declared in `crate::table` (app→table is one-way), and scoped
+        // to it so the cell editor keeps its own Ctrl+F/Ctrl+Z/Ctrl+C while it has focus.
         KeyBinding::new("ctrl-f", table::Search, Some("TablePanel")),
+        KeyBinding::new("ctrl-z", table::Undo, Some("TablePanel")),
+        KeyBinding::new("ctrl-y", table::Redo, Some("TablePanel")),
+        KeyBinding::new("ctrl-shift-z", table::Redo, Some("TablePanel")),
+        KeyBinding::new("ctrl-x", table::Cut, Some("TablePanel")),
+        KeyBinding::new("ctrl-c", table::Copy, Some("TablePanel")),
+        KeyBinding::new("ctrl-v", table::Paste, Some("TablePanel")),
     ]
 }
 

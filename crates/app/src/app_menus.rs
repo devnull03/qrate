@@ -5,8 +5,10 @@ use crate::actions::{NewProject, Save, ToggleBottomDock, ToggleLeftDock, ToggleR
 use crate::export::{EXPORT_FORMATS, Export, ExportFormat};
 use crate::theming::{SwitchTheme, THEME_CHOICES};
 
-// ponytail: Undo/Redo/Cut/Copy/Paste are declared and wired into the Edit menu but have no
-// handlers yet — they dispatch to nothing (harmless no-ops) until real edit actions exist.
+// The Edit menu's items act on the grid, so they're the grid's actions — `table` declares and
+// handles them, and this menu only names them.
+use table::{Copy, Cut, Paste, Redo, Undo};
+
 actions!(
     nav,
     [
@@ -15,11 +17,6 @@ actions!(
         OpenPluginsFolder,
         ReloadPlugins,
         Quit,
-        Undo,
-        Redo,
-        Cut,
-        Copy,
-        Paste,
         CopyDebugInfo,
         ReportIssue,
         OpenLogsFolder
