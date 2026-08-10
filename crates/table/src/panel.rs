@@ -97,6 +97,8 @@ pub struct TablePanel {
     /// Pending debounced autosave (the "timed" mode). Replacing it drops the prior task, which
     /// cancels its timer — that drop *is* the debounce, coalescing a burst of edits into one write.
     _autosave_task: Option<Task<()>>,
+    /// Pending debounced revalidation, on the same drop-cancels-the-timer trick as the autosave.
+    _revalidate_task: Option<Task<()>>,
 }
 
 impl TablePanel {
@@ -161,10 +163,10 @@ impl TablePanel {
                 let by_enter = matches!(event, InputEvent::PressEnter { .. });
                 table_state.update(cx, |state, cx| {
                     editing::commit(state.delegate_mut(), cx);
-                    state.delegate().revalidate(cx);
                     cx.emit(TableChanged);
                     cx.notify();
                 });
+                this.schedule_revalidate(cx);
                 this.forget_suggestions(cx);
                 // Focus was on the editor, which has just gone away. Hand it back to the grid or
                 // the arrow keys and Enter go nowhere — the `DataTable` key context lives on *its*
@@ -352,7 +354,21 @@ impl TablePanel {
             search_error: false,
             _search_sub,
             _autosave_task: None,
+            _revalidate_task: None,
         }
+    }
+
+    /// Re-run the validators once the edits stop, rather than inside the commit.
+    ///
+    /// `Validators::run` re-checks the whole sheet — a 2000-row prose column costs about 6ms of
+    /// spell checking on its own, so a sheet with a few of them drops a frame on every committed
+    /// edit, paste and undo. Nothing needs squiggles to appear in the same frame as the character
+    /// that caused them; every editor makes them a moment late.
+    fn schedule_revalidate(&mut self, cx: &mut Context<Self>) {
+        self._revalidate_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(REVALIDATE_DEBOUNCE).await;
+            this.update(cx, |_this, cx| crate::revalidate_now(cx)).ok();
+        }));
     }
 
     /// React to a committed cell edit per the Autosave setting: write immediately, buffer behind a
@@ -478,11 +494,11 @@ impl TablePanel {
         }
         self.state.update(cx, |state, cx| {
             state.delegate_mut().apply_edit(cells);
-            state.delegate().revalidate(cx);
             cx.emit(TableChanged);
             cx.notify();
         });
         settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+        self.schedule_revalidate(cx);
         self.schedule_autosave(cx);
     }
 
@@ -549,7 +565,6 @@ impl TablePanel {
                 state.delegate_mut().undo()
             };
             if stepped {
-                state.delegate().revalidate(cx);
                 cx.emit(TableChanged);
                 cx.notify();
             }
@@ -557,6 +572,7 @@ impl TablePanel {
         });
         if stepped {
             settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+            self.schedule_revalidate(cx);
             self.schedule_autosave(cx);
         }
     }
@@ -1098,6 +1114,10 @@ const PAD_Y: f32 = cell::CELL_PAD_Y * 2. + 2.;
 
 /// Height of the `C6` tab that marks the box once the grid has scrolled under it.
 const TAB_H: f32 = 16.;
+
+/// How long the edits have to stop before the validators re-run. Short enough that squiggles feel
+/// immediate, long enough that a burst of commits — a paste, held-down undo — costs one pass.
+const REVALIDATE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// The completion list under the cell editor. Wide enough for a vocabulary term, short enough that
 /// it does not cover the rows a user is comparing against.
