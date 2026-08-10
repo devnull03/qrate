@@ -46,7 +46,6 @@ pub struct Location {
 pub enum Severity {
     Error,
     Warning,
-    Info,
     Note,
 }
 
@@ -57,7 +56,6 @@ impl Severity {
         match self {
             Severity::Error => "error",
             Severity::Warning => "warning",
-            Severity::Info => "info",
             Severity::Note => "note",
         }
     }
@@ -66,7 +64,6 @@ impl Severity {
         match key {
             "error" => Severity::Error,
             "warning" => Severity::Warning,
-            "info" => Severity::Info,
             _ => Severity::Note,
         }
     }
@@ -112,7 +109,6 @@ pub fn severity_color(severity: Severity, cx: &App) -> Hsla {
     match severity {
         Severity::Error => t.danger,
         Severity::Warning => t.warning,
-        Severity::Info => t.info,
         Severity::Note => t.muted_foreground,
     }
 }
@@ -168,15 +164,15 @@ impl Diagnostics {
     }
 
     /// `(errors, warnings)` for the status bar, which shows them apart — one error and one warning
-    /// are not the same news, and a single total hides which of the two you have. Infos and notes
-    /// are excluded entirely: a project full of imported notes should not light up an alert.
+    /// are not the same news, and a single total hides which of the two you have. Notes are
+    /// excluded entirely: a project full of imported notes should not light up an alert.
     pub fn counts(cx: &App) -> (usize, usize) {
         Self::all(cx)
             .iter()
             .fold((0, 0), |(errors, warnings), d| match d.severity {
                 Severity::Error => (errors + 1, warnings),
                 Severity::Warning => (errors, warnings + 1),
-                Severity::Info | Severity::Note => (errors, warnings),
+                Severity::Note => (errors, warnings),
             })
     }
 
@@ -578,7 +574,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_status_counts_split_by_severity_and_ignore_notes_and_info(cx: &mut TestAppContext) {
+    fn the_status_counts_split_by_severity_and_ignore_notes(cx: &mut TestAppContext) {
         cx.update(|cx| {
             Diagnostics::set(
                 &Source::Note,
@@ -586,12 +582,11 @@ mod tests {
                 vec![
                     diag(Severity::Error, Source::Note, DATASET_MAIN, "e"),
                     diag(Severity::Warning, Source::Note, DATASET_MAIN, "w"),
-                    diag(Severity::Info, Source::Note, DATASET_MAIN, "i"),
                     diag(Severity::Note, Source::Note, DATASET_MAIN, "n"),
                 ],
                 cx,
             );
-            assert_eq!(Diagnostics::all(cx).len(), 4);
+            assert_eq!(Diagnostics::all(cx).len(), 3);
             assert_eq!(Diagnostics::counts(cx), (1, 1));
         });
     }

@@ -424,9 +424,6 @@ impl AppSettings {
     pub fn get(cx: &App) -> &Self {
         cx.global::<Self>()
     }
-    pub fn get_mut(cx: &mut App) -> &mut Self {
-        cx.global_mut::<Self>()
-    }
 
     /// Window size and target display for startup, from the global (non-project) bounds.
     /// See [`MainWindowBounds::startup_placement`] for the per-project equivalent.

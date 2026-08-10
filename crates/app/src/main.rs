@@ -13,9 +13,7 @@ use settings::{
     AppSettings, MainWindowBounds, SettingsPersistence, SettingsWindow, SettingsWriter,
     load_app_settings,
 };
-use window_wrapper::{
-    OpenBrowser, WindowLock, WindowRegistry, status_bar::StatusBar, title_bar::AppTitleBar,
-};
+use window_wrapper::{OpenBrowser, WindowRegistry, status_bar::StatusBar, title_bar::AppTitleBar};
 
 const SETTINGS_WINDOW_KIND: &str = "settings";
 const MAIN_WINDOW_KIND: &str = "main";
@@ -45,7 +43,7 @@ use workspace::Workspace;
 /// Opens the Settings window, focusing the existing one if it's already open.
 // `gpui::App` spelled out: a bare `App` binds to this file's own `struct App`, not the context type.
 pub(crate) fn open_settings_window(cx: &mut gpui::App) {
-    if WindowRegistry::focus_or_clear(SETTINGS_WINDOW_KIND, cx) {
+    if WindowRegistry::focus_or_clear(SETTINGS_WINDOW_KIND, cx).is_some() {
         return;
     }
     // Reopen at the saved size (persisted per-resize), else a compact default.
@@ -98,21 +96,19 @@ fn set_main_window_title(window: &mut Window, cx: &gpui::App) {
 }
 
 pub(crate) fn open_main_window(cx: &mut gpui::App) {
-    if WindowRegistry::focus_or_clear(MAIN_WINDOW_KIND, cx) {
-        // Window already exists (a project switch); reload its layout instead of keeping the old one's.
-        if let Some(handle) = WindowRegistry::get(MAIN_WINDOW_KIND, cx) {
-            handle
-                .update(cx, |_, window, cx| {
-                    if let Some(workspace) = cx
-                        .try_global::<MainWorkspaceHandle>()
-                        .and_then(|h| h.0.upgrade())
-                    {
-                        workspace.update(cx, |ws, cx| ws.reload_layout(window, cx));
-                    }
-                    set_main_window_title(window, cx);
-                })
-                .ok();
-        }
+    // Window already exists (a project switch); reload its layout instead of keeping the old one's.
+    if let Some(handle) = WindowRegistry::focus_or_clear(MAIN_WINDOW_KIND, cx) {
+        handle
+            .update(cx, |_, window, cx| {
+                if let Some(workspace) = cx
+                    .try_global::<MainWorkspaceHandle>()
+                    .and_then(|h| h.0.upgrade())
+                {
+                    workspace.update(cx, |ws, cx| ws.reload_layout(window, cx));
+                }
+                set_main_window_title(window, cx);
+            })
+            .ok();
         return;
     }
 
@@ -184,11 +180,8 @@ impl App {
             }
         });
 
-        // Native X skips `on_app_quit` on Windows (zed#40385/#40290), so flush here too — unless locked.
+        // Native X skips `on_app_quit` on Windows (zed#40385/#40290), so flush here too.
         window.on_window_should_close(cx, |window, cx| {
-            if WindowLock::is_locked(cx) {
-                return false;
-            }
             // Unsaved cell edits (autosave off, or a pending "timed" save) are the only thing the
             // user might want to discard — layout/settings auto-persist on the flush below.
             if settings::dirty::Dirty::has(settings::dirty::PROJECT_DATA, cx) {
@@ -399,8 +392,6 @@ fn main() {
         logging::init();
 
         gpui_component::init(cx);
-
-        cx.set_global(WindowLock::default());
 
         // Settings ------------------------------------
         let settings = load_app_settings().unwrap_or_default();

@@ -1,9 +1,7 @@
 use async_trait::async_trait;
 
 use crate::error::{AppError, Result};
-use crate::traits::{
-    DataReviewer, Embedder, ImageContext, ReviewerCapabilities, RowData, ValidationResult,
-};
+use crate::traits::{DataReviewer, ImageContext, ReviewerCapabilities, ValidationResult};
 
 pub struct CohereProvider {
     api_key: String,
@@ -24,24 +22,20 @@ impl CohereProvider {
         })?;
         Ok(Self::new(api_key))
     }
-
-    async fn verify_api_key(&self) -> Result<()> {
-        if self.api_key.is_empty() {
-            return Err(AppError::Provider("Cohere API key is empty".into()));
-        }
-        Ok(())
-    }
 }
 
 #[async_trait]
 impl DataReviewer for CohereProvider {
     async fn initialize(&self) -> Result<()> {
-        self.verify_api_key().await
+        if self.api_key.is_empty() {
+            return Err(AppError::Provider("Cohere API key is empty".into()));
+        }
+        Ok(())
     }
 
     async fn validate_row(
         &self,
-        _row_data: RowData,
+        _row_data: serde_json::Value,
         _image_context: ImageContext,
     ) -> Result<ValidationResult> {
         todo!("Implement Cohere Command R+ validation")
@@ -52,23 +46,7 @@ impl DataReviewer for CohereProvider {
             name: "Cohere Command R+".to_string(),
             is_local: false,
             supports_multimodal: true,
-            supports_embeddings: true,
             max_image_size: Some(20 * 1024 * 1024), // 20MB
         }
-    }
-}
-
-#[async_trait]
-impl Embedder for CohereProvider {
-    async fn embed_text(&self, _text: &str) -> Result<Vec<f32>> {
-        todo!("Implement Cohere Embed v3")
-    }
-
-    async fn embed_image(&self, _image: ImageContext) -> Result<Vec<f32>> {
-        todo!("Implement Cohere Embed v3")
-    }
-
-    fn embedding_dimensions(&self) -> usize {
-        1024
     }
 }
