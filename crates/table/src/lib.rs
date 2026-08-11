@@ -20,7 +20,7 @@ pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 pub use panel::{
     Clear, Copy, Cut, DeleteColumn, DeleteRow, DuplicateRow, EditCell, GRID_CONTEXT,
     InsertColumnLeft, InsertColumnRight, InsertNote, InsertRowAbove, InsertRowBelow, Paste, Redo,
-    RenameColumn, Search, TablePanel, Undo, UnfreezeColumns,
+    RenameColumn, Replace, Search, TablePanel, Undo, UnfreezeColumns,
 };
 
 /// Settings key (in either scope) for the alternating-row-stripe toggle.

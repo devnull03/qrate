@@ -88,6 +88,7 @@ pub fn app_menus() -> Vec<Menu> {
                 MenuItem::action("Clear", Clear),
                 MenuItem::Separator,
                 MenuItem::action("Find in Table", table::Search),
+                MenuItem::action("Replace in Table", table::Replace),
             ],
         },
         Menu {
