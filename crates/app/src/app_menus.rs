@@ -7,7 +7,10 @@ use crate::theming::{SwitchTheme, THEME_CHOICES};
 
 // The Edit menu's items act on the grid, so they're the grid's actions — `table` declares and
 // handles them, and this menu only names them.
-use table::{Clear, Copy, Cut, InsertNote, Paste, Redo, Undo, UnfreezeColumns};
+use table::{
+    Clear, Copy, Cut, DeleteColumn, DeleteRow, DuplicateRow, InsertColumnLeft, InsertColumnRight,
+    InsertNote, InsertRowAbove, InsertRowBelow, Paste, Redo, RenameColumn, Undo, UnfreezeColumns,
+};
 
 actions!(
     nav,
@@ -91,12 +94,13 @@ pub fn app_menus() -> Vec<Menu> {
             name: "Insert".into(),
             disabled: false,
             items: vec![
-                // ASNT-70 (#81): rows and columns can't be added or removed yet.
-                planned("Row Above"),
-                planned("Row Below"),
+                // These act on the selection: the menu bar has no clicked target to go on.
+                MenuItem::action("Row Above", InsertRowAbove),
+                MenuItem::action("Row Below", InsertRowBelow),
+                MenuItem::action("Duplicate Row", DuplicateRow),
                 MenuItem::Separator,
-                planned("Column Left"),
-                planned("Column Right"),
+                MenuItem::action("Column Left", InsertColumnLeft),
+                MenuItem::action("Column Right", InsertColumnRight),
                 MenuItem::Separator,
                 MenuItem::action("Note…", InsertNote),
             ],
@@ -140,10 +144,10 @@ pub fn app_menus() -> Vec<Menu> {
             disabled: false,
             items: vec![
                 MenuItem::action("Column Settings…", OpenSettings),
+                MenuItem::action("Rename Column…", RenameColumn),
                 MenuItem::Separator,
-                // ASNT-70 (#81), the same task as Insert's entries.
-                planned("Delete Row"),
-                planned("Delete Column"),
+                MenuItem::action("Delete Row", DeleteRow),
+                MenuItem::action("Delete Column", DeleteColumn),
                 MenuItem::Separator,
                 // ASNT-79: fold several rows describing one item together, and split them back.
                 planned("Merge Rows…"),

@@ -84,10 +84,8 @@ fn rows(cx: &App) -> Vec<Row> {
         .data
         .headers
         .iter()
-        .enumerate()
-        .map(|(ix, name)| {
-            let key = format!("c{ix}");
-            let settings = stored.get(&key);
+        .map(|name| {
+            let settings = stored.get(name);
             let declared = project.data.columns.iter().find(|c| &c.name == name);
             let mut row = vec![
                 name.clone(),

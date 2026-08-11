@@ -18,8 +18,9 @@ mod row_index;
 
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 pub use panel::{
-    Clear, Copy, Cut, EditCell, GRID_CONTEXT, InsertNote, Paste, Redo, Search, TablePanel, Undo,
-    UnfreezeColumns,
+    Clear, Copy, Cut, DeleteColumn, DeleteRow, DuplicateRow, EditCell, GRID_CONTEXT,
+    InsertColumnLeft, InsertColumnRight, InsertNote, InsertRowAbove, InsertRowBelow, Paste, Redo,
+    RenameColumn, Search, TablePanel, Undo, UnfreezeColumns,
 };
 
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
@@ -49,14 +50,15 @@ impl Default for TableViewportBounds {
     }
 }
 
-/// Where the in-progress cell edit opened: which cell, its full window-space rect, and the table's
-/// scroll offset at that instant. Written once per edit by `cell.rs` (the cell is on screen when an
-/// edit starts), read by `panel.rs` to place and size the floating editor — which is why the box
-/// stays put when the grid scrolls out from under it, Sheets-style. `scroll` is filled in on the
-/// next panel render, since the scroll handles live on `TableState` and aren't reachable from a
-/// cell. Cleared by `editing::start` so re-editing the same cell re-measures.
+/// Where the in-progress edit opened: what it is editing, its full window-space rect, and the
+/// table's scroll offset at that instant. Written once per edit by `cell.rs` (or `filter.rs` for a
+/// header rename — whatever is being edited is on screen when the edit starts), read by `panel.rs`
+/// to place and size the floating editor, which is why the box stays put when the grid scrolls out
+/// from under it, Sheets-style. `scroll` is filled in on the next panel render, since the scroll
+/// handles live on `TableState` and aren't reachable from a cell. Cleared by `editing::start` so
+/// re-editing the same cell re-measures.
 pub(crate) struct EditSpawn {
-    pub cell: (usize, usize),
+    pub at: editing::EditState,
     pub bounds: Bounds<Pixels>,
     pub scroll: Option<Point<Pixels>>,
 }
@@ -74,15 +76,27 @@ pub fn revalidate_now(cx: &mut App) {
     state.update(cx, |state, cx| state.delegate().revalidate(cx));
 }
 
+/// Save now unless autosave is switched off, for the paths that act on an explicitly clicked
+/// target rather than on typing.
+///
+/// No debounce, unlike `TablePanel`'s: the timer exists to coalesce a burst of keystrokes, and a
+/// menu click is one deliberate change. That also keeps the pending write off `TablePanel`, which
+/// none of these free functions can reach.
+fn autosave(cx: &mut App) {
+    if settings::effective_text(settings::AUTOSAVE_KEY, cx).as_ref() != "off" {
+        save_now(cx);
+    }
+}
+
 /// Commit `text` into a cell, mark the project dirty, and re-run validation — everything a
 /// committed edit does except going through the inline editor. What a fix menu applies through.
 pub fn write_cell(row: usize, col: usize, text: SharedString, cx: &mut App) {
     write_cells(vec![(row, col, text)], cx);
 }
 
-/// [`write_cell`]'s bulk form: one undo step for the whole batch, one validation pass at the end.
-/// For menu items, which act on an explicitly clicked target; the keyboard and clipboard paths go
-/// through `TablePanel`'s own method of the same name, which debounces the validation instead.
+/// [`write_cell`]'s bulk form: one undo step for the whole batch, one validation pass at the end,
+/// one save. For menu items, which act on an explicitly clicked target; the keyboard and clipboard
+/// paths go through `TablePanel`'s own method of the same name, which debounces both instead.
 pub fn write_cells(cells: Vec<(usize, usize, SharedString)>, cx: &mut App) {
     if cells.is_empty() {
         return;
@@ -100,6 +114,123 @@ pub fn write_cells(cells: Vec<(usize, usize, SharedString)>, cx: &mut App) {
     });
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
     revalidate_now(cx);
+    autosave(cx);
+}
+
+/// A change to the grid's shape rather than its contents. One enum rather than five entry points
+/// because every one of them has the same tail: re-index the notes, re-save the column layout,
+/// revalidate, mark dirty, save.
+pub enum Structural {
+    InsertRow {
+        at: usize,
+    },
+    /// Copy a row in below itself — the one insert that starts with content.
+    DuplicateRow {
+        row: usize,
+    },
+    /// Source row indices, in any order.
+    DeleteRows(Vec<usize>),
+    InsertColumn {
+        at: usize,
+    },
+    DeleteColumn {
+        col: usize,
+    },
+    RenameColumn {
+        col: usize,
+        name: SharedString,
+    },
+}
+
+/// Apply a shape change to the table and everything keyed off the shape.
+///
+/// Validation runs *now*, not on `TablePanel`'s debounce: after a row shift the open diagnostics
+/// don't merely lag, they point at the wrong rows.
+pub fn structural(op: Structural, cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+
+    // What the notes have to follow, decided before the delegate's indices move under us.
+    let renamed = match &op {
+        Structural::RenameColumn { col, name } => {
+            let before = state.read(cx).delegate().column_name(*col);
+            (before != *name).then(|| (before, name.clone()))
+        }
+        _ => None,
+    };
+
+    let applied = state.update(cx, |state, cx| {
+        let delegate = state.delegate_mut();
+        let applied = match &op {
+            Structural::InsertRow { at } => {
+                delegate.insert_rows(*at, None);
+                true
+            }
+            Structural::DuplicateRow { row } => {
+                delegate.insert_rows(row + 1, Some(*row));
+                true
+            }
+            Structural::DeleteRows(rows) => {
+                delegate.remove_rows(rows);
+                true
+            }
+            Structural::InsertColumn { at } => {
+                delegate.insert_column(*at);
+                true
+            }
+            Structural::DeleteColumn { col } => {
+                delegate.remove_column(*col);
+                true
+            }
+            Structural::RenameColumn { col, name } => delegate.rename_column(*col, name.clone()),
+        };
+        if applied {
+            // The library caches a `Column` per index, so a changed column set needs this.
+            state.refresh(cx);
+            cx.emit(delegate::TableChanged);
+            cx.notify();
+        }
+        applied
+    });
+    if !applied {
+        log::warn!("a column already goes by that name — the rename was left alone");
+        return;
+    }
+
+    match &op {
+        Structural::InsertRow { at } => {
+            diagnostics::Diagnostics::rows_inserted(diagnostics::DATASET_MAIN, *at, 1, cx)
+        }
+        Structural::DuplicateRow { row } => {
+            diagnostics::Diagnostics::rows_inserted(diagnostics::DATASET_MAIN, row + 1, 1, cx)
+        }
+        Structural::DeleteRows(rows) => {
+            diagnostics::Diagnostics::rows_removed(diagnostics::DATASET_MAIN, rows, cx)
+        }
+        _ => {}
+    }
+    if let Some((before, after)) = renamed {
+        diagnostics::Diagnostics::column_renamed(diagnostics::DATASET_MAIN, &before, &after, cx);
+        settings::columns::rename(&before, &after, cx);
+        if let Some(file) = cx
+            .try_global::<settings::project::CurrentProject>()
+            .map(|p| p.file.clone())
+            && let Err(err) = settings::project::rename_column(&file, &before, &after)
+        {
+            log::error!("failed to rename column {before} to {after}: {err}");
+        }
+    }
+
+    // The saved layout is only applied when its keys are a permutation of the live ones, so a
+    // stale one would be thrown away wholesale on the next open, taking the widths with it.
+    TablePanel::persist_columns(&state, cx);
+    settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+    revalidate_now(cx);
+    autosave(cx);
 }
 
 /// Every cell of one row, blanked — what the row header's "Clear row" writes.

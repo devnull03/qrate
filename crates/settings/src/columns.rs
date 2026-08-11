@@ -5,10 +5,12 @@
 //! file's `__settings` table (the same shape `table_columns` uses), read back through
 //! `CurrentProject`'s in-memory cache so nothing here touches disk during a render.
 //!
-//! Keyed by the table's stable column key (`c{ix}`, the column's index into the on-disk header
-//! order). Stored as a *map*, deliberately unlike the positional `ColumnLayout`: that one drops
-//! the entire layout when the key set stops matching, which is fine for widths and wrong for
-//! preferences. A map loses only the columns that actually went away.
+//! Keyed by the table's column key, which is the column's header name — the identity `__columns`
+//! and `__notes` already use, so adding or removing a column shifts nobody's preferences. Stored
+//! as a *map*, deliberately unlike the positional `ColumnLayout`: that one drops the entire layout
+//! when the key set stops matching, which is fine for widths and wrong for preferences. A map
+//! loses only the columns that actually went away — and a deleted column's entry is left behind
+//! on purpose, so undoing the delete brings its preferences back with it.
 
 use std::collections::BTreeMap;
 
@@ -139,7 +141,7 @@ impl Default for ColumnSettings {
     }
 }
 
-/// `c{ix}` → settings. `BTreeMap` so the settings page lists columns in a stable order and the
+/// Column name → settings. `BTreeMap` so the settings page lists columns in a stable order and the
 /// serialized JSON is diff-friendly.
 pub type ColumnSettingsMap = BTreeMap<String, ColumnSettings>;
 
@@ -209,6 +211,17 @@ fn store(map: &ColumnSettingsMap, cx: &mut App) {
 pub fn update(col_key: &str, f: impl FnOnce(&mut ColumnSettings), cx: &mut App) {
     let mut map = load(cx);
     f(map.entry(col_key.to_string()).or_default());
+    store(&map, cx);
+}
+
+/// Carry a column's settings over to its new name. The key *is* the name, so a rename that
+/// skipped this would silently reset the column's authority, spellcheck and plugin mappings.
+pub fn rename(before: &str, after: &str, cx: &mut App) {
+    let mut map = load(cx);
+    let Some(settings) = map.remove(before) else {
+        return;
+    };
+    map.insert(after.to_string(), settings);
     store(&map, cx);
 }
 

@@ -12,7 +12,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    Window, div, px,
+    Window, canvas, div, px,
 };
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{
@@ -25,7 +25,7 @@ use gpui_component::{
 };
 
 use crate::note::{self, Target};
-use crate::{TableStateHandle, delegate::QrateTableDelegate};
+use crate::{EditSpawn, TableStateHandle, delegate::QrateTableDelegate, editing::EditState};
 
 /// One distinct value in a column's checklist.
 #[derive(Clone, PartialEq)]
@@ -76,6 +76,13 @@ pub(crate) fn render_th(
 ) -> AnyElement {
     let name = delegate.column_name(data_col);
     let active = delegate.column_has_filter(data_col);
+    // A rename floats the shared cell editor over this header, so the header measures its own rect
+    // the way `cell.rs` does — once, on the frame the rename opens.
+    let renaming = EditState::Renaming { col: data_col };
+    let capture = delegate.editing == renaming
+        && cx
+            .try_global::<EditSpawn>()
+            .is_none_or(|s| s.at != renaming);
     // Highlight this header while its column holds the active (edited/selected) cell. The header
     // row is sticky, so the highlight stays put as the grid scrolls under it.
     let editing_col = delegate.active_cell().is_some_and(|(_, c)| c == data_col);
@@ -104,6 +111,27 @@ pub(crate) fn render_th(
             note::menu(Target::Column(data_col), menu, window, cx)
         })
         .when_some(note_editor, |th, editor| th.child(editor))
+        .when(capture, |th| {
+            th.child(
+                canvas(
+                    move |bounds, window, cx| {
+                        cx.set_global(EditSpawn {
+                            at: renaming,
+                            bounds: crate::cell::full_cell(bounds),
+                            scroll: None,
+                        });
+                        // `panel.rs` only reads this on its *next* render, and nothing else
+                        // schedules one. See the same deferral in `cell.rs`.
+                        window.defer(cx, |window, _| window.refresh());
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+        })
         .when(delegate.column_filter_enabled(data_col), |th| {
             // Wrapped and pinned to its own width: `Combobox` lays its trigger row out `w_full`,
             // which in a flex row against a `flex_1` title resolves to "all of it" — the funnel

@@ -128,11 +128,77 @@ pub(crate) fn tooltip_text(location: &Location, cx: &App) -> Option<SharedString
     (!messages.is_empty()).then(|| messages.join("\n").into())
 }
 
-/// A menu entry for a structural edit qrate can't make yet — greyed out so the grid's eventual
-/// shape is visible. All of them switch on together with ASNT-70 (#81), which adds and removes
-/// rows and columns.
-fn planned(label: &'static str) -> PopupMenuItem {
-    PopupMenuItem::new(label).disabled(true)
+/// The rows a row command acts on: the whole selection when the clicked row is inside it, else
+/// just the row that was clicked — the same "respect what's already selected" rule right-click
+/// itself follows in `cell.rs`.
+pub(crate) fn target_rows(delegate: &QrateTableDelegate, row: usize) -> Vec<usize> {
+    match delegate.range_cells() {
+        Some((rows, _)) if rows.len() > 1 && rows.contains(&row) => rows,
+        _ => vec![row],
+    }
+}
+
+/// "Delete row" over one, "Delete 3 rows" over a selection — so a delete can't take more than the
+/// label said it would.
+fn rows_label(verb: &str, rows: &[usize]) -> SharedString {
+    match rows.len() {
+        1 => format!("{verb} row").into(),
+        n => format!("{verb} {n} rows").into(),
+    }
+}
+
+/// The row and column commands every target that has a row or a column offers. Built here rather
+/// than three times over, because the cell menu is the row menu and the column menu at once.
+fn structural_items(menu: PopupMenu, rows: Option<&[usize]>, col: Option<usize>) -> PopupMenu {
+    use crate::Structural;
+
+    let menu = match rows {
+        Some(rows) => {
+            let (above, below, dup, delete) =
+                (rows[0], rows[rows.len() - 1], rows[0], rows.to_vec());
+            menu.item(
+                PopupMenuItem::new("Insert row above").on_click(move |_, _, cx| {
+                    crate::structural(Structural::InsertRow { at: above }, cx)
+                }),
+            )
+            .item(
+                PopupMenuItem::new("Insert row below").on_click(move |_, _, cx| {
+                    crate::structural(Structural::InsertRow { at: below + 1 }, cx)
+                }),
+            )
+            .item(
+                PopupMenuItem::new("Duplicate row").on_click(move |_, _, cx| {
+                    crate::structural(Structural::DuplicateRow { row: dup }, cx)
+                }),
+            )
+            .item(
+                PopupMenuItem::new(rows_label("Delete", rows)).on_click(move |_, _, cx| {
+                    crate::structural(Structural::DeleteRows(delete.clone()), cx)
+                }),
+            )
+        }
+        None => menu,
+    };
+    match col {
+        Some(col) => menu
+            .when(rows.is_some(), PopupMenu::separator)
+            .item(
+                PopupMenuItem::new("Insert column left").on_click(move |_, _, cx| {
+                    crate::structural(Structural::InsertColumn { at: col }, cx)
+                }),
+            )
+            .item(
+                PopupMenuItem::new("Insert column right").on_click(move |_, _, cx| {
+                    crate::structural(Structural::InsertColumn { at: col + 1 }, cx)
+                }),
+            )
+            .item(
+                PopupMenuItem::new("Delete column").on_click(move |_, _, cx| {
+                    crate::structural(Structural::DeleteColumn { col }, cx)
+                }),
+            ),
+        None => menu,
+    }
 }
 
 /// Paste the clipboard onto one right-clicked cell. The keyboard path (`TablePanel::paste_range`)
@@ -174,7 +240,7 @@ pub(crate) fn menu(
         Target::Row(row) => (Some(row), None),
         Target::Column(col) => (None, Some(col)),
     };
-    let (location, cell_text, row_tsv) = {
+    let (location, cell_text) = {
         let state = table.read(cx);
         let delegate = state.delegate();
         (
@@ -183,15 +249,6 @@ pub(crate) fn menu(
                 (Some(r), Some(c)) => delegate.cell(r, c).cloned().unwrap_or_default(),
                 _ => SharedString::default(),
             },
-            row.map(|r| {
-                delegate
-                    .row_fields(r)
-                    .into_iter()
-                    .map(|(_, v)| v.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\t")
-            })
-            .unwrap_or_default(),
         )
     };
     let note = Diagnostics::note_at(
@@ -201,18 +258,13 @@ pub(crate) fn menu(
         cx,
     );
 
-    let copy_row = |menu: PopupMenu| {
-        menu.item(PopupMenuItem::new("Copy row").on_click(move |_, _, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(row_tsv.clone()))
-        }))
-    };
     let spell_text = cell_text.clone();
     let menu = match target {
         Target::Cell { row, col } => {
             let (edit_table, filter_table) = (table.clone(), table.clone());
             let (copied, cut, value) = (cell_text.clone(), cell_text.clone(), cell_text);
-            copy_row(
-                menu.item(PopupMenuItem::new("Copy").on_click(move |_, _, cx| {
+            let menu = menu
+                .item(PopupMenuItem::new("Copy").on_click(move |_, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(copied.to_string()))
                 }))
                 .item(PopupMenuItem::new("Cut").on_click(move |_, _, cx| {
@@ -221,52 +273,46 @@ pub(crate) fn menu(
                 }))
                 .item(
                     PopupMenuItem::new("Paste").on_click(move |_, _, cx| paste_onto(row, col, cx)),
-                ),
-            )
-            .separator()
-            .item(planned("Insert row above"))
-            .item(planned("Insert row below"))
-            .item(planned("Insert column left"))
-            .item(planned("Insert column right"))
-            .separator()
-            .item(planned("Delete row"))
-            .item(planned("Delete column"))
-            .item(
-                PopupMenuItem::new("Clear contents").on_click(move |_, _, cx| {
-                    crate::write_cell(row, col, SharedString::default(), cx)
-                }),
-            )
-            .separator()
-            .item(
-                PopupMenuItem::new("Edit cell").on_click(move |_, window, cx| {
-                    edit_table.update(cx, |state, cx| {
-                        crate::editing::start(state.delegate_mut(), row, col, window, cx);
-                        cx.notify();
-                    });
-                }),
-            )
-            .item(
-                PopupMenuItem::new("Filter by this value").on_click(move |_, _, cx| {
-                    filter_table.update(cx, |state, cx| {
-                        state.delegate_mut().keep_only_value(col, &value);
-                        cx.emit(TableChanged);
-                        cx.notify();
-                    });
-                }),
-            )
-            .separator()
+                )
+                .separator();
+            let rows = target_rows(table.read(cx).delegate(), row);
+            structural_items(menu, Some(&rows), Some(col))
+                .separator()
+                .item(
+                    PopupMenuItem::new("Clear contents").on_click(move |_, _, cx| {
+                        crate::write_cell(row, col, SharedString::default(), cx)
+                    }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new("Edit cell").on_click(move |_, window, cx| {
+                        edit_table.update(cx, |state, cx| {
+                            crate::editing::start(state.delegate_mut(), row, col, window, cx);
+                            cx.notify();
+                        });
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new("Filter by this value").on_click(move |_, _, cx| {
+                        filter_table.update(cx, |state, cx| {
+                            state.delegate_mut().keep_only_value(col, &value);
+                            cx.emit(TableChanged);
+                            cx.notify();
+                        });
+                    }),
+                )
+                .separator()
         }
-        Target::Row(row) => copy_row(menu)
-            .separator()
-            .item(planned("Insert row above"))
-            .item(planned("Insert row below"))
-            .separator()
-            .item(planned("Delete row"))
-            .item(
-                PopupMenuItem::new("Clear row")
-                    .on_click(move |_, _, cx| crate::write_cells(crate::blank_row(row, cx), cx)),
-            )
-            .separator(),
+        Target::Row(row) => {
+            let rows = target_rows(table.read(cx).delegate(), row);
+            structural_items(menu, Some(&rows), None)
+                .item(
+                    PopupMenuItem::new("Clear row").on_click(move |_, _, cx| {
+                        crate::write_cells(crate::blank_row(row, cx), cx)
+                    }),
+                )
+                .separator()
+        }
         // Built-in column controls come first; plugin entries are appended without running plugin
         // code while the synchronous menu is built.
         Target::Column(col) => {
@@ -282,12 +328,16 @@ pub(crate) fn menu(
                 )
             };
             let stored = settings::columns::get(&key, cx).plugins;
-            let freeze_table = table.clone();
-            let menu = menu
-                .item(planned("Insert column left"))
-                .item(planned("Insert column right"))
-                .separator()
-                .item(planned("Delete column"))
+            let (freeze_table, rename_table) = (table.clone(), table.clone());
+            let menu = structural_items(menu, None, Some(col))
+                .item(
+                    PopupMenuItem::new("Rename column…").on_click(move |_, window, cx| {
+                        rename_table.update(cx, |state, cx| {
+                            crate::editing::start_rename(state.delegate_mut(), col, window, cx);
+                            cx.notify();
+                        });
+                    }),
+                )
                 .separator()
                 .item(
                     PopupMenuItem::new("Freeze up to here").on_click(move |_, _, cx| {
