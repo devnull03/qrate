@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use diagnostics::{DATASET_MAIN, Location};
 
-use crate::history::{Cells, Edit, History};
+use crate::history::{Cells, Col, History, Row, Step};
 use crate::{cell, editing::EditState, filter, row_index};
 
 /// Emitted whenever the table's selection, a cell's text, or the column layout changes, so
@@ -77,7 +77,8 @@ pub struct QrateTableDelegate {
     /// value list and only recomputes it when this moves — [`Self::column_values`] is O(rows), and
     /// the alternative is paying it on every frame the header renders.
     values_generation: u64,
-    /// Undo/redo stack for cell edits. Fed by [`Self::apply_edit`] and nothing else.
+    /// Undo/redo stack for cell edits and shape changes alike, so a delete and the typing before
+    /// it come back in the order they went in.
     history: History,
     /// How many leading data columns are frozen. A count in *display* order, not a set of keys:
     /// the library's fixed region is always the leading columns, and moving a column in or out of
@@ -138,9 +139,8 @@ impl QrateTableDelegate {
         self.visible_rows.iter().position(|&s| s == source)
     }
 
-    /// A data-column index from its header text. Diagnostics address columns by name because
-    /// names are `__columns`' PRIMARY KEY and survive a column move; the positional `c{ix}` key
-    /// never leaves this crate.
+    /// A data-column index from its header text — which is also the column's key, so this is the
+    /// one lookup every other addressing scheme in the app resolves through.
     pub fn data_col(&self, header: &str) -> Option<usize> {
         self.columns.iter().position(|c| c.name == header)
     }
@@ -265,9 +265,8 @@ impl QrateTableDelegate {
     }
 
     /// Apply the saved settings filtering depends on: which columns offer a dropdown, looked up by
-    /// each column's stable `c{ix}` key, and the sub-delimiter that splits a cell into values.
-    /// Takes a closure rather than the settings type so this crate doesn't depend on its shape, and
-    /// so the `c{ix}` convention stays owned by the delegate that mints it.
+    /// each column's key, and the sub-delimiter that splits a cell into values. Takes a closure
+    /// rather than the settings type so this crate doesn't depend on its shape.
     pub fn apply_column_settings(
         &mut self,
         filter_enabled: impl Fn(&str) -> bool,
@@ -310,9 +309,8 @@ impl QrateTableDelegate {
     pub fn set_data(&mut self, headers: &[String], rows: &[Vec<String>]) {
         self.columns = headers
             .iter()
-            .enumerate()
-            .map(|(ix, h)| {
-                Column::new(format!("c{ix}"), h.clone())
+            .map(|h| {
+                Column::new(h.clone(), h.clone())
                     .width(px(120.))
                     .resizable(true)
                     .movable(true)
@@ -354,8 +352,9 @@ impl QrateTableDelegate {
         self.rows.get(row).and_then(|r| r.get(col))
     }
 
-    /// A data column's stable `c{ix}` settings key — the only route out for a private field, and
-    /// the one place outside [`Self::apply_column_settings`] that the convention leaks.
+    /// A data column's settings key, which is its header name — the identity `__columns`,
+    /// `__notes` and `diagnostics::Location` already address columns by, so an insert or a delete
+    /// shifts nothing. Renaming a column is therefore a re-keying, and moves its settings with it.
     pub(crate) fn column_key(&self, data_col: usize) -> SharedString {
         self.columns
             .get(data_col)
@@ -412,13 +411,20 @@ impl QrateTableDelegate {
 
     /// The range's cells as `(source_rows, cols)` — source rows so writes land on the real data,
     /// in view order so a range over a filtered view covers what the user actually selected.
-    /// Falls back to the single selected cell when no range is drawn.
+    ///
+    /// With no range drawn this is whatever the selection covers, which is what makes Copy, Cut,
+    /// Paste and Clear work on a whole row or column without each of them having its own menu item:
+    /// a selected row is every column of it, a selected column every row the filter leaves visible.
     pub(crate) fn range_cells(&self) -> Option<(Vec<usize>, RangeInclusive<usize>)> {
         let Some(((ar, ac), (hr, hc))) = self.range else {
-            let Selection::Cell { row, col } = self.selection? else {
+            if self.columns.is_empty() {
                 return None;
+            }
+            return match self.selection? {
+                Selection::Cell { row, col } => Some((vec![row], col..=col)),
+                Selection::Row(row) => Some((vec![row], 0..=self.columns.len() - 1)),
+                Selection::Column(col) => Some((self.visible_rows.clone(), col..=col)),
             };
-            return Some((vec![row], col..=col));
         };
         let rows = normalize(ar, hr)
             .filter_map(|view| self.source(view))
@@ -457,34 +463,268 @@ impl QrateTableDelegate {
             self.set_cell(row, col, after.clone());
             edit.push((row, col, before, after));
         }
-        self.history.push(Edit(edit));
+        self.history.push(Step::Cells(edit));
     }
 
-    /// Restore the cells the last edit changed. `false` when there was nothing to undo, which is
-    /// what tells the caller to skip the dirty-mark and the revalidate.
+    /// Reverse the last recorded step. `false` when there was nothing to undo, which is what tells
+    /// the caller to skip the dirty-mark and the revalidate.
     pub(crate) fn undo(&mut self) -> bool {
-        let cells = self.history.undo();
-        self.replay(cells)
+        let Some(step) = self.history.undo() else {
+            return false;
+        };
+        self.replay(&step, false);
+        true
     }
 
     /// [`undo`](Self::undo)'s mirror.
     pub(crate) fn redo(&mut self) -> bool {
-        let cells = self.history.redo();
-        self.replay(cells)
-    }
-
-    /// Apply one side of a recorded edit without re-recording it — going through `apply_edit` here
-    /// would make undo its own undoable action and the stack would never drain.
-    fn replay(&mut self, cells: Option<Cells>) -> bool {
-        let Some(cells) = cells else {
+        let Some(step) = self.history.redo() else {
             return false;
         };
-        for (row, col, text) in cells {
-            self.set_cell(row, col, text);
+        self.replay(&step, true);
+        true
+    }
+
+    /// Apply one side of a recorded step without re-recording it — going through `apply_edit` here
+    /// would make undo its own undoable action and the stack would never drain.
+    fn replay(&mut self, step: &Step, forward: bool) {
+        match step {
+            Step::Cells(cells) => {
+                for (row, col, before, after) in cells {
+                    let text = if forward { after } else { before };
+                    self.set_cell(*row, *col, text.clone());
+                }
+            }
+            Step::RowsAdded { at, rows } => {
+                if forward {
+                    self.splice_rows(*at, rows);
+                } else {
+                    self.cut_rows(&(*at..at + rows.len()).collect::<Vec<_>>());
+                }
+            }
+            Step::RowsRemoved(rows) => {
+                if forward {
+                    self.cut_rows(&rows.iter().map(|(at, _)| *at).collect::<Vec<_>>());
+                } else {
+                    for (at, row) in rows {
+                        self.splice_rows(*at, std::slice::from_ref(row));
+                    }
+                }
+            }
+            Step::ColumnAdded { at, col } => {
+                if forward {
+                    self.splice_column(*at, col);
+                } else {
+                    let _ = self.cut_column(*at);
+                }
+            }
+            Step::ColumnRemoved { at, col } => {
+                if forward {
+                    let _ = self.cut_column(*at);
+                } else {
+                    self.splice_column(*at, col);
+                }
+            }
+            Step::Renamed { col, before, after } => {
+                self.set_column_name(*col, if forward { after } else { before }.clone());
+            }
         }
         // An open edit would commit over what was just restored.
         self.editing = EditState::Idle;
+    }
+
+    /// Put `rows` in at `at`, keeping everything row-indexed parallel. The unrecorded half of a
+    /// row insert — [`Self::insert_rows`] is the one that reaches the undo stack.
+    fn splice_rows(&mut self, at: usize, rows: &[Row]) {
+        let at = at.min(self.rows.len());
+        for (offset, row) in rows.iter().enumerate() {
+            self.rows.insert(at + offset, row.cells.clone());
+            self.image_paths.insert(at + offset, row.image.clone());
+        }
+        self.rows_changed();
+    }
+
+    /// Take out the rows at `ats`, in any order, and hand them back ascending — the order they go
+    /// back in. [`splice_rows`](Self::splice_rows)' inverse.
+    fn cut_rows(&mut self, ats: &[usize]) -> Vec<(usize, Row)> {
+        let mut ats: Vec<usize> = ats
+            .iter()
+            .copied()
+            .filter(|&r| r < self.rows.len())
+            .collect();
+        ats.sort_unstable();
+        ats.dedup();
+        let mut cut: Vec<(usize, Row)> = ats
+            .iter()
+            .rev()
+            .map(|&at| {
+                (
+                    at,
+                    Row {
+                        cells: self.rows.remove(at),
+                        image: self.image_paths.remove(at),
+                    },
+                )
+            })
+            .collect();
+        cut.reverse();
+        self.rows_changed();
+        cut
+    }
+
+    /// Put a column back at `at` exactly as it was. The unrecorded half of a column insert.
+    fn splice_column(&mut self, at: usize, col: &Col) {
+        let at = at.min(self.columns.len());
+        self.columns.insert(at, col.column.clone());
+        for (row, cell) in self.rows.iter_mut().zip(&col.cells) {
+            row.insert(at.min(row.len()), cell.clone());
+        }
+        self.filters.insert(at, col.excluded.clone());
+        self.filters_enabled.insert(at, col.filter_enabled);
+        if at < self.frozen {
+            self.frozen += 1;
+        }
+        self.columns_changed();
+    }
+
+    /// [`splice_column`](Self::splice_column)'s inverse.
+    fn cut_column(&mut self, at: usize) -> Option<Col> {
+        if at >= self.columns.len() {
+            return None;
+        }
+        let col = Col {
+            column: self.columns.remove(at),
+            cells: self
+                .rows
+                .iter_mut()
+                .map(|row| {
+                    if at < row.len() {
+                        row.remove(at)
+                    } else {
+                        SharedString::default()
+                    }
+                })
+                .collect(),
+            excluded: self.filters.remove(at),
+            filter_enabled: self.filters_enabled.remove(at),
+        };
+        if at < self.frozen {
+            self.frozen -= 1;
+        }
+        self.columns_changed();
+        Some(col)
+    }
+
+    /// What every row insert or delete invalidates. The view is rebuilt rather than patched: a
+    /// filtered view's indices all move, and `recompute_visible` already drops the range for that.
+    fn rows_changed(&mut self) {
+        self.recompute_visible();
+        self.editing = EditState::Idle;
+        self.values_generation += 1;
+        self.clamp_selection();
+    }
+
+    /// [`rows_changed`](Self::rows_changed)'s column counterpart. Still renarrows: a column that
+    /// was hiding rows stops doing so when it goes.
+    fn columns_changed(&mut self) {
+        self.recompute_visible();
+        self.editing = EditState::Idle;
+        self.values_generation += 1;
+        self.clamp_selection();
+    }
+
+    /// Pull the selection back inside the grid it now points past, or drop it if there's no grid
+    /// left. A stale selection would put the row-number highlight and the Details panel on a row
+    /// that no longer exists.
+    fn clamp_selection(&mut self) {
+        let (rows, cols) = (self.rows.len(), self.columns.len());
+        self.selection = match self.selection {
+            _ if rows == 0 || cols == 0 => None,
+            Some(Selection::Cell { row, col }) => Some(Selection::Cell {
+                row: row.min(rows - 1),
+                col: col.min(cols - 1),
+            }),
+            Some(Selection::Row(row)) => Some(Selection::Row(row.min(rows - 1))),
+            Some(Selection::Column(col)) => Some(Selection::Column(col.min(cols - 1))),
+            None => None,
+        };
+    }
+
+    /// Insert a blank row at `at`, or a copy of `source` when duplicating a row.
+    pub(crate) fn insert_rows(&mut self, at: usize, source: Option<usize>) {
+        let cells = match source.and_then(|r| self.rows.get(r)) {
+            Some(row) => row.clone(),
+            None => vec![SharedString::default(); self.columns.len()],
+        };
+        let image = source.and_then(|r| self.image_paths.get(r).cloned().flatten());
+        let rows = vec![Row { cells, image }];
+        self.splice_rows(at, &rows);
+        self.history.push(Step::RowsAdded { at, rows });
+    }
+
+    /// Delete the rows at `ats` as one undo step, carrying their cells and photos on it.
+    pub(crate) fn remove_rows(&mut self, ats: &[usize]) {
+        let removed = self.cut_rows(ats);
+        self.history.push(Step::RowsRemoved(removed));
+    }
+
+    /// Add a blank column at `at`, named for the user to rename. Returns its name.
+    pub(crate) fn insert_column(&mut self, at: usize) -> SharedString {
+        let name = self.fresh_column_name();
+        let col = Col {
+            column: Column::new(name.clone(), name.clone())
+                .width(px(120.))
+                .resizable(true)
+                .movable(true),
+            cells: vec![SharedString::default(); self.rows.len()],
+            excluded: HashSet::new(),
+            filter_enabled: false,
+        };
+        self.splice_column(at, &col);
+        self.history.push(Step::ColumnAdded { at, col });
+        name
+    }
+
+    /// Delete a column and every row's cell in it, as one undo step.
+    pub(crate) fn remove_column(&mut self, at: usize) {
+        let Some(col) = self.cut_column(at) else {
+            return;
+        };
+        self.history.push(Step::ColumnRemoved { at, col });
+    }
+
+    /// Rename a column, which re-keys it — the caller moves its stored settings to match. `false`
+    /// if the name is blank or another column already answers to it, since a name is an identity.
+    pub(crate) fn rename_column(&mut self, col: usize, name: SharedString) -> bool {
+        let Some(before) = self.columns.get(col).map(|c| c.name.clone()) else {
+            return false;
+        };
+        if name.trim().is_empty() || self.data_col(&name).is_some_and(|c| c != col) {
+            return false;
+        }
+        self.set_column_name(col, name.clone());
+        self.history.push(Step::Renamed {
+            col,
+            before,
+            after: name,
+        });
         true
+    }
+
+    /// The name *and* the key, which are the same string — see [`Self::column_key`].
+    fn set_column_name(&mut self, col: usize, name: SharedString) {
+        if let Some(column) = self.columns.get_mut(col) {
+            column.key = name.clone();
+            column.name = name;
+        }
+    }
+
+    /// A name no column answers to yet: `Column 4`, else `Column 5`, and so on.
+    fn fresh_column_name(&self) -> SharedString {
+        (self.columns.len() + 1..)
+            .map(|n| SharedString::from(format!("Column {n}")))
+            .find(|name| self.data_col(name).is_none())
+            .unwrap_or_default()
     }
 
     /// The current selection — a cell, a whole row, or a whole column.
@@ -520,25 +760,17 @@ impl QrateTableDelegate {
             .collect()
     }
 
-    /// Headers + rows in the project's *original* column order, recovered from each column's
-    /// stable `c{ix}` key rather than the current display order. `dataset_main` keeps a fixed
-    /// physical column order (the separately-saved [`ColumnLayout`] maps it to display order), so
-    /// a save after a column move must not reshuffle the stored columns. Cells are stringified for
-    /// the `.qrate` writer, and for every export.
+    /// Headers + rows in display order, stringified for the `.qrate` writer and every export.
+    /// `save_dataset` drops and recreates `dataset_main`, so the stored physical order is free to
+    /// follow the display order rather than having to be recovered from the column keys.
     pub fn dataset_snapshot(&self) -> (Vec<String>, Vec<Vec<String>>) {
-        let mut order: Vec<usize> = (0..self.columns.len()).collect();
-        order.sort_by_key(|&i| orig_col_ix(&self.columns[i]));
-        let headers = order
-            .iter()
-            .map(|&i| self.columns[i].name.to_string())
-            .collect();
+        let headers = self.columns.iter().map(|c| c.name.to_string()).collect();
         let rows = self
             .rows
             .iter()
             .map(|row| {
-                order
-                    .iter()
-                    .map(|&i| row.get(i).map(|c| c.to_string()).unwrap_or_default())
+                (0..self.columns.len())
+                    .map(|i| row.get(i).map(|c| c.to_string()).unwrap_or_default())
                     .collect()
             })
             .collect();
@@ -604,24 +836,14 @@ impl QrateTableDelegate {
     }
 }
 
-/// The original column index encoded in a `c{ix}` key (minted in [`QrateTableDelegate::set_data`]).
-/// An unexpected key sorts last (`usize::MAX`) rather than colliding at 0.
-fn orig_col_ix(col: &Column) -> usize {
-    col.key
-        .as_ref()
-        .strip_prefix('c')
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(usize::MAX)
-}
-
-/// Move every row's cell at `from` to position `to`, mirroring a column move so cell lookups
-/// stay positional (display order == storage order).
 /// An inclusive range between two endpoints given in either order — a drag up-and-left selects the
 /// same rectangle as the same drag down-and-right.
 fn normalize(a: usize, b: usize) -> RangeInclusive<usize> {
     a.min(b)..=a.max(b)
 }
 
+/// Move every row's cell at `from` to position `to`, mirroring a column move so cell lookups
+/// stay positional (display order == storage order).
 fn move_col(rows: &mut [Vec<SharedString>], from: usize, to: usize) {
     for row in rows {
         if from < row.len() && to < row.len() {
@@ -852,20 +1074,6 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_order_follows_ckey_not_display_order() {
-        // A display where columns sit out of their original `c{ix}` order (as after moves).
-        let cols = [
-            Column::new("c2", "C"),
-            Column::new("c0", "A"),
-            Column::new("c1", "B"),
-        ];
-        let mut order: Vec<usize> = (0..cols.len()).collect();
-        order.sort_by_key(|&i| orig_col_ix(&cols[i]));
-        let names: Vec<&str> = order.iter().map(|&i| cols[i].name.as_ref()).collect();
-        assert_eq!(names, vec!["A", "B", "C"]);
-    }
-
-    #[test]
     fn move_col_shifts_every_row() {
         let mut g = rows(&[&["a", "b", "c"], &["d", "e", "f"]]);
         move_col(&mut g, 0, 2);
@@ -1041,6 +1249,27 @@ mod app_tests {
         })
     }
 
+    /// A column's key is its name, so moving one carries its identity (and its settings) to the
+    /// new position, and the saved snapshot is just the display order.
+    #[gpui::test]
+    fn a_column_key_is_its_name_and_travels_with_it(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                assert_eq!(state.delegate().column_key(0), "Medium");
+
+                let delegate = state.delegate_mut();
+                delegate.columns.swap(0, 1);
+                super::move_col(&mut delegate.rows, 0, 1);
+                assert_eq!(delegate.column_key(0), "Title");
+
+                let (headers, rows) = delegate.dataset_snapshot();
+                assert_eq!(headers, vec!["Title", "Medium"]);
+                assert_eq!(rows[0], vec!["one", "Film"]);
+            });
+        });
+    }
+
     /// The range is stored in view coordinates but has to hand back source rows, so a range drawn
     /// over a filtered view must skip the rows hidden between its ends.
     #[gpui::test]
@@ -1058,6 +1287,33 @@ mod app_tests {
                 assert_eq!(cols, 0..=1);
                 assert!(delegate.in_range(1, 1));
                 assert!(!delegate.in_range(2, 0), "past the end of the range");
+            });
+        });
+    }
+
+    /// What makes Copy/Cut/Paste/Clear work on a whole row or column: with no rectangle drawn, the
+    /// selection itself is the range. A selected column covers only the rows the filter left
+    /// visible, so copying it gives back what the user can see.
+    #[gpui::test]
+    fn a_row_or_column_selection_is_its_own_range(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+
+                delegate.selection = Some(super::Selection::Row(2));
+                let (rows, cols) = delegate.range_cells().expect("a row is selected");
+                assert_eq!((rows, cols), (vec![2], 0..=1), "every column of that row");
+
+                delegate.selection = Some(super::Selection::Column(1));
+                let (rows, cols) = delegate.range_cells().expect("a column is selected");
+                assert_eq!((rows, cols), (vec![0, 1, 2, 3], 1..=1));
+
+                // Under a filter it covers the visible rows only.
+                delegate.set_column_kept(0, &["Film".into()]);
+                delegate.selection = Some(super::Selection::Column(1));
+                let (rows, _) = delegate.range_cells().expect("a column is selected");
+                assert_eq!(rows, vec![0, 3]);
             });
         });
     }
@@ -1087,6 +1343,143 @@ mod app_tests {
                 let delegate = state.delegate_mut();
                 delegate.range = Some(((0, 0), (2, 1)));
                 delegate.set_column_kept(0, &["Film".into()]);
+                assert!(delegate.range.is_none());
+            });
+        });
+    }
+
+    /// Every row-indexed vector has to move together, or a row's photo ends up on its neighbour.
+    #[gpui::test]
+    fn inserting_and_deleting_rows_keeps_the_parallel_state_aligned(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.set_image_paths(vec![
+                    Some("0.jpg".into()),
+                    Some("1.jpg".into()),
+                    Some("2.jpg".into()),
+                    Some("3.jpg".into()),
+                ]);
+
+                delegate.insert_rows(1, None);
+                assert_eq!(delegate.rows.len(), 5);
+                assert_eq!(delegate.cell(1, 0).map(|c| c.as_ref()), Some(""));
+                assert_eq!(delegate.cell(2, 1).map(|c| c.as_ref()), Some("two"));
+                assert_eq!(delegate.row_image(1), None, "the new row has no photo");
+                assert_eq!(delegate.row_image(2), Some("1.jpg".as_ref()));
+
+                delegate.undo();
+                assert_eq!(delegate.cell(1, 1).map(|c| c.as_ref()), Some("two"));
+                assert_eq!(delegate.row_image(1), Some("1.jpg".as_ref()));
+            });
+        });
+    }
+
+    /// A multi-row delete is one undo step, and the deleted rows come back where they were rather
+    /// than all at the first index.
+    #[gpui::test]
+    fn deleting_several_rows_undoes_as_one_step(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.remove_rows(&[2, 0]);
+                let names = |d: &super::QrateTableDelegate| {
+                    (0..d.rows.len())
+                        .map(|r| d.cell(r, 1).cloned().unwrap_or_default())
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(names(delegate), vec!["two", "four"]);
+
+                assert!(delegate.undo());
+                assert_eq!(names(delegate), vec!["one", "two", "three", "four"]);
+                assert!(!delegate.undo(), "one step, not two");
+            });
+        });
+    }
+
+    /// Undo is strictly LIFO, which is what lets a cell edit recorded against row 3 replay
+    /// correctly after a delete that moved row 3: the delete is already undone by then.
+    #[gpui::test]
+    fn an_edit_under_a_row_delete_undoes_to_the_right_cell(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.apply_edit(vec![(3, 1, "edited".into())]);
+                delegate.remove_rows(&[0]);
+                // "four" is row 2 now, and its edit was recorded against row 3.
+                assert_eq!(delegate.cell(2, 1).map(|c| c.as_ref()), Some("edited"));
+
+                delegate.undo();
+                delegate.undo();
+                assert_eq!(delegate.cell(3, 1).map(|c| c.as_ref()), Some("four"));
+            });
+        });
+    }
+
+    /// The column, its cells, its position and its filter all come back — a delete that lost any
+    /// of them would be data loss the moment autosave ran.
+    #[gpui::test]
+    fn deleting_a_column_undoes_whole(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.set_column_filter_enabled(0, true);
+
+                delegate.remove_column(0);
+                assert_eq!(delegate.column_count(), 1);
+                assert_eq!(delegate.column_name(0), "Title");
+                assert_eq!(delegate.cell(0, 0).map(|c| c.as_ref()), Some("one"));
+
+                assert!(delegate.undo());
+                assert_eq!(delegate.column_name(0), "Medium");
+                assert_eq!(delegate.cell(3, 0).map(|c| c.as_ref()), Some("Film"));
+                assert!(delegate.column_filter_enabled(0));
+            });
+        });
+    }
+
+    /// A name is an identity now, so a new column can't be handed one that is taken, and a rename
+    /// onto an existing name is refused rather than quietly merging two columns' settings.
+    #[gpui::test]
+    fn column_names_stay_unique(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                let name = delegate.insert_column(1);
+                assert_eq!(name, "Column 3");
+                assert_eq!(delegate.column_key(1), "Column 3");
+
+                assert!(!delegate.rename_column(1, "Medium".into()), "already taken");
+                assert!(!delegate.rename_column(1, "  ".into()), "blank");
+                assert!(delegate.rename_column(1, "Date".into()));
+                assert_eq!(delegate.column_key(1), "Date");
+
+                delegate.undo();
+                assert_eq!(delegate.column_name(1), "Column 3");
+            });
+        });
+    }
+
+    /// A structural change redefines every view index, so the range recorded against the old one
+    /// has to go — the same rule refiltering follows.
+    #[gpui::test]
+    fn deleting_a_row_under_a_filter_renarrows_and_drops_the_range(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.set_column_kept(0, &["Film".into()]);
+                assert_eq!(delegate.visible_rows, vec![0, 3]);
+                delegate.range = Some(((0, 0), (1, 1)));
+
+                // Source row 0 is one of the two the filter left visible.
+                delegate.remove_rows(&[0]);
+                assert_eq!(delegate.visible_rows, vec![2], "\"four\" moved up to row 2");
                 assert!(delegate.range.is_none());
             });
         });

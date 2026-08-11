@@ -1119,16 +1119,15 @@ fn authority_picker(
         .into_any_element()
 }
 
-/// The open project's data columns. `c{ix}` is the column's index into the on-disk header order —
-/// the same identity the table mints in `set_data`, so it survives reordering and reopening.
+/// The open project's data columns. A column's key is its header name — the same identity the
+/// table mints in `set_data`, so it survives reordering, reopening, and columns coming and going.
 fn column_items(project: &CurrentProject) -> Vec<ColumnItem> {
     project
         .data
         .headers
         .iter()
-        .enumerate()
-        .map(|(ix, name)| ColumnItem {
-            key: SharedString::from(format!("c{ix}")),
+        .map(|name| ColumnItem {
+            key: SharedString::from(name.clone()),
             name: SharedString::from(name.clone()),
         })
         .collect()

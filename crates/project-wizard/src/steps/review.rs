@@ -17,9 +17,9 @@ use crate::wizard::{ColumnSource, EntryKind, LinkMethod, ProjectWizard, WizardSt
 /// whether it is spell-checked, how loud its findings are, and whichever of the file's remaining
 /// columns an active plugin recognises as its own mapping.
 ///
-/// Keyed by `c{ix}` against `headers` — the spreadsheet's own order, which is the identity the
-/// table mints and the settings page reads. A config row naming a column the sheet doesn't have is
-/// dropped here; the wizard already warned about it on the Columns step.
+/// Keyed by header name, the identity the table mints and the settings page reads. A config row
+/// naming a column the sheet doesn't have is dropped here; the wizard already warned about it on
+/// the Columns step.
 fn column_settings(
     headers: &[String],
     preview: Option<&ColumnConfigPreview>,
@@ -31,7 +31,7 @@ fn column_settings(
     };
     let maps = ColumnMapContributions::all(cx);
 
-    for (ix, header) in headers.iter().enumerate() {
+    for header in headers {
         let Some(entry) = preview
             .entries
             .iter()
@@ -72,7 +72,7 @@ fn column_settings(
         }
 
         if settings != ColumnSettings::default() {
-            map.insert(format!("c{ix}"), settings);
+            map.insert(header.clone(), settings);
         }
     }
     map

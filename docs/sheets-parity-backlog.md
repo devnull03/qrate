@@ -5,7 +5,7 @@ features the menus **do not** show, and why.
 
 The menu bar and the grid's context menus were regrouped to follow Google Sheets' information
 architecture. Anything planned and tracked appears as a greyed-out item naming its task
-(ASNT-70 row/column ops, ASNT-44 text wrapping, ASNT-72 gallery view, ASNT-79 merge/explode rows,
+(ASNT-44 text wrapping, ASNT-72 gallery view, ASNT-79 merge/explode rows,
 ASNT-73 AI review). Everything below has no task, so it has no menu entry either — a greyed-out
 item that points at nothing is a promise nobody made.
 
@@ -16,10 +16,9 @@ item that points at nothing is a promise nobody made.
 | Sort A→Z / Z→A, sort range | A sort descriptor persisted apart from the source data, and visible rows built by filtering then sorting row identities — `menu-handoff.md` M5. The most obviously missing item; a cataloguer expects to sort by title. |
 | Find and replace | Find exists (Ctrl+F). Replace needs the match set to route through `apply_edit` as one undo step. |
 | Paste special (values only, transposed) | Ordinary paste landed first; qrate has no cell formatting, so "values only" is currently a distinction without a difference. Revisit if cells ever carry formatting. |
-| Duplicate row | Trivial once ASNT-70 supplies row insertion. Fold into that task rather than tracking separately. |
 | Hide / resize row | Columns already resize. Hiding rows competes with filters, which are visible and reversible — `menu-handoff.md` argues hidden-row state is easy to lose. Resizing rows is coupled to ASNT-44 (wrapped text needs variable row height). |
 | Remove duplicates, trim whitespace | Real archival cleanup work, but each needs a preview and one-step undo before it is safe to offer. |
-| Split text to columns | Depends on ASNT-70 (it creates columns) and on stable column identity. |
+| Split text to columns | ASNT-70 supplied both the column insert and the stable (name-based) column identity, so all that is left is its own delimiter UI. |
 | Data validation UI | The rules exist as plugin/validator output in the Problems panel. A Sheets-style per-column rule editor is a settings surface, not a menu item. |
 
 ## Should not have

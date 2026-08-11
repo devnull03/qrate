@@ -136,7 +136,8 @@ impl Validators {
 
     /// Run every validator over every column and publish the results.
     ///
-    /// `columns` pairs each column's stable `c{ix}` settings key with its header name, in the same
+    /// `columns` pairs each column's settings key with its header name (today the same string,
+    /// kept as a pair so a validator never has to know that), in the same
     /// order as each row's cells. One [`Diagnostics::set`] per validator, carrying every column it
     /// flagged, so the replace-by-source rule makes the run self-invalidating: a fixed cell
     /// disappears because the next run simply doesn't report it.

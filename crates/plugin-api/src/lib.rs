@@ -190,7 +190,7 @@ pub struct SettingSpec {
 pub struct CommandContext {
     /// Column header text, which is also how diagnostics address a column.
     pub column: Option<SharedString>,
-    /// The stable `c{ix}` key its settings are stored under.
+    /// The key its settings are stored under — the column's header name.
     pub column_key: Option<SharedString>,
     /// The clicking plugin's own object for this column, so a command sees the same settings
     /// `validate` does without a second lookup on the Lua side.

@@ -56,7 +56,15 @@ actions!(
         Clear,
         EditCell,
         InsertNote,
-        UnfreezeColumns
+        UnfreezeColumns,
+        InsertRowAbove,
+        InsertRowBelow,
+        DuplicateRow,
+        DeleteRow,
+        InsertColumnLeft,
+        InsertColumnRight,
+        DeleteColumn,
+        RenameColumn
     ]
 );
 
@@ -175,11 +183,16 @@ impl TablePanel {
                 // A blur means focus already went where the user clicked; only Enter leaves it
                 // homeless.
                 let by_enter = matches!(event, InputEvent::PressEnter { .. });
-                table_state.update(cx, |state, cx| {
-                    editing::commit(state.delegate_mut(), cx);
+                let rename = table_state.update(cx, |state, cx| {
+                    let rename = editing::commit(state.delegate_mut(), cx);
                     cx.emit(TableChanged);
                     cx.notify();
+                    rename
                 });
+                // Outside that `update`: re-keying a column reaches back into this same table.
+                if let Some((col, name)) = rename {
+                    crate::structural(crate::Structural::RenameColumn { col, name }, cx);
+                }
                 this.schedule_revalidate(cx);
                 this.forget_suggestions(cx);
                 // Focus was on the editor, which has just gone away. Hand it back to the grid or
@@ -500,6 +513,45 @@ impl TablePanel {
         });
     }
 
+    /// The rows and the column an app-menu structural command acts on. The menu bar has no clicked
+    /// target the way a right-click does, so the selection is the only answer available — and a
+    /// whole-row or whole-column selection only answers one half of the question.
+    fn structural_target(&self, cx: &App) -> Option<(Vec<usize>, usize)> {
+        let delegate = self.state.read(cx).delegate();
+        let (row, col) = match delegate.selection()? {
+            Selection::Cell { row, col } => (row, col),
+            Selection::Row(row) => (row, 0),
+            Selection::Column(col) => (0, col),
+        };
+        Some((note::target_rows(delegate, row), col))
+    }
+
+    /// Run a menu-bar structural command against the selection. `crate::structural` does the rest,
+    /// saving included — the menu bar and the right-click menu are the same deliberate click.
+    fn structural(
+        &mut self,
+        pick: impl FnOnce(&[usize], usize) -> crate::Structural,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((rows, col)) = self.structural_target(cx) else {
+            log::debug!("no selection — the structural menu command had nothing to act on");
+            return;
+        };
+        crate::structural(pick(&rows, col), cx);
+    }
+
+    /// Open the rename editor on the selected column, the menu-bar half of the header's
+    /// "Rename column…".
+    fn rename_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, col)) = self.structural_target(cx) else {
+            return;
+        };
+        self.state.update(cx, |state, cx| {
+            editing::start_rename(state.delegate_mut(), col, window, cx);
+            cx.notify();
+        });
+    }
+
     /// Commit a batch of cell writes as one undoable step, then do everything a committed edit
     /// does. The single path cut, paste and bulk fill all take.
     fn write_cells(&mut self, cells: Cells, cx: &mut Context<Self>) {
@@ -628,7 +680,7 @@ impl TablePanel {
 
     /// Save the current column order + widths into the open project's `.qrate` file
     /// (debounced, off the UI thread). Without a project there's nowhere sensible to put it.
-    fn persist_columns(state: &Entity<TableState<QrateTableDelegate>>, cx: &mut App) {
+    pub(crate) fn persist_columns(state: &Entity<TableState<QrateTableDelegate>>, cx: &mut App) {
         let Some(file) = cx
             .try_global::<settings::project::CurrentProject>()
             .map(|p| p.file.clone())
@@ -644,11 +696,16 @@ impl TablePanel {
     }
 
     /// The floating cell editor, sized to its content and pinned to where the edit opened. `None`
-    /// unless a cell is being edited *and* `cell.rs` has measured it (one frame later).
+    /// unless something is being edited *and* the cell (or header) has measured it, one frame
+    /// later.
     fn cell_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.state.read(cx);
-        let EditState::Editing { row, col } = state.delegate().editing else {
-            return None;
+        let editing = state.delegate().editing;
+        let (row, col) = match editing {
+            EditState::Idle => return None,
+            EditState::Editing { row, col } => (row, col),
+            // A header has no row; the label below is the only thing that wants one.
+            EditState::Renaming { col } => (0, col),
         };
         let scroll = point(
             state.horizontal_scroll_handle.offset().x,
@@ -661,9 +718,13 @@ impl TablePanel {
                 .y,
         );
         let editor = state.delegate().editor.clone();
-        let label = format!("{} {}", state.delegate().column_name(col), row + 1);
+        let name = state.delegate().column_name(col);
+        let label = match editing {
+            EditState::Renaming { .. } => format!("Rename {name}"),
+            _ => format!("{name} {}", row + 1),
+        };
         let spawn = cx.try_global::<crate::EditSpawn>()?;
-        if spawn.cell != (row, col) {
+        if spawn.at != editing {
             return None;
         }
         let cell = spawn.bounds;
@@ -751,9 +812,9 @@ impl TablePanel {
                     .text_size(font_size),
             )
             .children(self.suggestions(row, col, &value, box_size.height, cx));
-        // The measured rect sits one row below the cell it edits, so lift it back.
-        let origin = cell.origin - point(px(0.), cell.size.height - px(2.));
-        Some(deferred(float_at(origin, table, box_el)).into_any_element())
+        // `cell` is the cell's own rect now that the measuring canvas is pinned to it, so the box
+        // opens exactly over what it edits — no correction, and no magic numbers to re-tune.
+        Some(deferred(float_at(cell.origin, table, box_el)).into_any_element())
     }
 
     /// Ask every plugin what could go in the cell being edited, on each keystroke. The host
@@ -939,6 +1000,38 @@ impl Render for TablePanel {
             .on_action(cx.listener(|this, _: &UnfreezeColumns, _, cx| {
                 crate::set_frozen_columns(&this.state.clone(), 0, cx)
             }))
+            .on_action(cx.listener(|this, _: &InsertRowAbove, _, cx| {
+                this.structural(|rows, _| crate::Structural::InsertRow { at: rows[0] }, cx)
+            }))
+            .on_action(cx.listener(|this, _: &InsertRowBelow, _, cx| {
+                this.structural(
+                    |rows, _| crate::Structural::InsertRow {
+                        at: rows[rows.len() - 1] + 1,
+                    },
+                    cx,
+                )
+            }))
+            .on_action(cx.listener(|this, _: &DuplicateRow, _, cx| {
+                this.structural(
+                    |rows, _| crate::Structural::DuplicateRow { row: rows[0] },
+                    cx,
+                )
+            }))
+            .on_action(cx.listener(|this, _: &DeleteRow, _, cx| {
+                this.structural(|rows, _| crate::Structural::DeleteRows(rows.to_vec()), cx)
+            }))
+            .on_action(cx.listener(|this, _: &InsertColumnLeft, _, cx| {
+                this.structural(|_, col| crate::Structural::InsertColumn { at: col }, cx)
+            }))
+            .on_action(cx.listener(|this, _: &InsertColumnRight, _, cx| {
+                this.structural(|_, col| crate::Structural::InsertColumn { at: col + 1 }, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DeleteColumn, _, cx| {
+                this.structural(|_, col| crate::Structural::DeleteColumn { col }, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &RenameColumn, window, cx| this.rename_selected(window, cx)),
+            )
             .p_2()
             .gap_2()
             // Find bar renders here, not in `title_suffix`: the parent `TabPanel` never observes us to redraw it.

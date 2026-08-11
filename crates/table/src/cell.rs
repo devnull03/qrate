@@ -17,7 +17,10 @@ use diagnostics::{Diagnostics, Source};
 
 use crate::EditSpawn;
 use crate::note::{self, Target};
-use crate::{delegate::QrateTableDelegate, editing::EditState};
+use crate::{
+    delegate::{QrateTableDelegate, Selection},
+    editing::EditState,
+};
 
 /// The library's `Size::Medium` table-cell padding, which our inner cell div sits inside. The
 /// captured rect is grown by it so the editor covers the whole cell, not just its text box.
@@ -36,21 +39,18 @@ pub(crate) fn render_cell(
     _window: &mut Window,
     cx: &mut Context<TableState<QrateTableDelegate>>,
 ) -> AnyElement {
-    let editing = delegate.editing
-        == (EditState::Editing {
-            row: row_ix,
-            col: col_ix,
-        });
+    let edit = EditState::Editing {
+        row: row_ix,
+        col: col_ix,
+    };
+    let editing = delegate.editing == edit;
 
     // Keep the plain text underneath so the row height and neighbouring cells are unaffected; the
     // editor floats over it.
     let text = delegate.cell(row_ix, col_ix).cloned().unwrap_or_default();
     // Measure once per edit: any later frame would report the cell's *scrolled* position, and the
     // box is meant to stay where the edit opened.
-    let capture = editing
-        && cx
-            .try_global::<EditSpawn>()
-            .is_none_or(|s| s.cell != (row_ix, col_ix));
+    let capture = editing && cx.try_global::<EditSpawn>().is_none_or(|s| s.at != edit);
     let accent = cx.theme().primary;
     // The same pair the library paints on the selected cell — alpha-clamped, so the text shows
     // through the fill.
@@ -97,15 +97,23 @@ pub(crate) fn render_cell(
             .tooltip_show_delay(note::HOVER_DELAY)
         })
         // Right-click selects, so the cell the menu is about is the cell the menu looks like it is
-        // about. A click inside an existing range leaves it alone, the way a sheet does — otherwise
-        // aiming at a range to act on it would be what destroys it.
+        // about. A click inside anything already selected — a range, this cell's row, its column —
+        // leaves it alone, the way a sheet does: otherwise aiming at a selection to act on it would
+        // be what destroys it.
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |state, _, _, cx| {
                 let Some(view) = state.delegate().view_row(row_ix) else {
                     return;
                 };
-                if !state.delegate().in_range(view, col_ix) {
+                let held = matches!(
+                    state.delegate().selection(),
+                    Some(Selection::Row(r)) if r == row_ix
+                ) || matches!(
+                    state.delegate().selection(),
+                    Some(Selection::Column(c)) if c == col_ix
+                );
+                if !held && !state.delegate().in_range(view, col_ix) {
                     // Library column indices include the pinned `#` column at 0.
                     state.set_selected_cell(view, col_ix + 1, cx);
                 }
@@ -134,7 +142,7 @@ pub(crate) fn render_cell(
                         let bounds = full_cell(bounds);
                         if capture {
                             cx.set_global(EditSpawn {
-                                cell: (row_ix, col_ix),
+                                at: edit,
                                 bounds,
                                 scroll: None,
                             });
@@ -157,7 +165,12 @@ pub(crate) fn render_cell(
                         }
                     },
                 )
+                // Pinned, not merely `absolute`: with no insets gpui gives an absolute element the
+                // static position *after* its in-flow siblings, which put this a whole row below
+                // the cell and made every consumer correct for it by hand.
                 .absolute()
+                .top_0()
+                .left_0()
                 .size_full(),
             )
         })
@@ -165,7 +178,7 @@ pub(crate) fn render_cell(
 }
 
 /// Grow a cell's inner (text) rect back out to the cell's own rect.
-fn full_cell(bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+pub(crate) fn full_cell(bounds: Bounds<Pixels>) -> Bounds<Pixels> {
     Bounds {
         origin: bounds.origin - point(px(CELL_PAD_X), px(CELL_PAD_Y)),
         size: bounds.size + size(px(CELL_PAD_X * 2.), px(CELL_PAD_Y * 2.)),

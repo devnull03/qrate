@@ -26,8 +26,8 @@ use gpui_component::ActiveTheme as _;
 /// rows rather than a new table.
 pub const DATASET_MAIN: &str = "dataset_main";
 
-/// Where a problem points. `column` is the column *name*, not the table delegate's positional
-/// `c{ix}` key: names are `__columns`' PRIMARY KEY and survive a column move.
+/// Where a problem points. `column` is the column *name*, which is `__columns`' PRIMARY KEY and
+/// the table delegate's own column key too — one identity, addressed the same way everywhere.
 ///
 /// Both coordinates are optional, and that is what distinguishes the kinds of note: row-only
 /// marks a whole row, column-only a whole column, neither the dataset itself.
@@ -240,12 +240,67 @@ impl Diagnostics {
             });
         }
         this.reindex();
+        this.persist();
+    }
 
+    /// Follow a row insert: every note at or below `at` is now one row further down. Computed
+    /// findings are left alone — the revalidate that follows a structural edit republishes them.
+    pub fn rows_inserted(dataset: &str, at: usize, count: usize, cx: &mut App) {
+        Self::remap_rows(dataset, cx, |row| {
+            Some(if row >= at { row + count } else { row })
+        });
+    }
+
+    /// Follow a row delete: notes on a deleted row go with it, and everything below it moves up by
+    /// however many of the deleted rows were above it.
+    pub fn rows_removed(dataset: &str, removed: &[usize], cx: &mut App) {
+        Self::remap_rows(dataset, cx, |row| {
+            (!removed.contains(&row)).then(|| row - removed.iter().filter(|&&r| r < row).count())
+        });
+    }
+
+    /// Follow a column rename, which re-keys every note addressed to the old name.
+    pub fn column_renamed(dataset: &str, before: &str, after: &SharedString, cx: &mut App) {
+        let this = cx.default_global::<Self>();
+        for item in &mut this.items {
+            if item.location.dataset == dataset && item.location.column.as_deref() == Some(before) {
+                item.location.column = Some(after.clone());
+            }
+        }
+        this.persist();
+    }
+
+    /// Move every note in `dataset` to the row `f` gives back, dropping the ones it answers `None`
+    /// for. The shared half of [`rows_inserted`](Self::rows_inserted) and its delete counterpart.
+    fn remap_rows(dataset: &str, cx: &mut App, f: impl Fn(usize) -> Option<usize>) {
+        let this = cx.default_global::<Self>();
+        this.items.retain_mut(|item| {
+            if item.location.dataset != dataset {
+                return true;
+            }
+            let Some(row) = item.location.row else {
+                return true;
+            };
+            match f(row) {
+                Some(moved) => {
+                    item.location.row = Some(moved);
+                    true
+                }
+                None => false,
+            }
+        });
+        this.reindex();
+        this.persist();
+    }
+
+    /// Write every authored note back to `__notes`, replacing what was there. Computed findings
+    /// are never persisted — they are recomputed on open and a stored copy would go stale.
+    fn persist(&self) {
         // No open project (tests, early startup) leaves the change in memory only.
-        let Some(file) = this.loaded.clone() else {
+        let Some(file) = self.loaded.as_ref() else {
             return;
         };
-        let notes: Vec<_> = this
+        let notes: Vec<_> = self
             .items
             .iter()
             .filter(|d| d.source == Source::Note)
@@ -257,7 +312,7 @@ impl Diagnostics {
                 message: d.message.to_string(),
             })
             .collect();
-        if let Err(err) = settings::project::write_notes(&file, SOURCE_NOTE, &notes) {
+        if let Err(err) = settings::project::write_notes(file, SOURCE_NOTE, &notes) {
             log::error!("failed to save notes: {err}");
         }
     }
@@ -529,6 +584,48 @@ mod tests {
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].message, "row wide");
         assert_eq!((stored[0].row, &stored[0].column), (Some(7), &None));
+    }
+
+    /// A note is addressed by row position, so a row inserted above it has to carry it down — and
+    /// a deleted row takes its own notes with it rather than leaving them on its successor.
+    #[gpui::test]
+    fn notes_follow_the_rows_they_are_attached_to(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let note = |row: usize| Location {
+                dataset: DATASET_MAIN.into(),
+                row: Some(row),
+                column: Some("Title".into()),
+            };
+            Diagnostics::set_note(note(1), "one".into(), cx);
+            Diagnostics::set_note(note(5), "five".into(), cx);
+
+            Diagnostics::rows_inserted(DATASET_MAIN, 3, 1, cx);
+            assert_eq!(
+                Diagnostics::note_at(DATASET_MAIN, Some(1), Some("Title"), cx),
+                Some("one".into()),
+                "above the insert, unmoved"
+            );
+            assert_eq!(
+                Diagnostics::note_at(DATASET_MAIN, Some(6), Some("Title"), cx),
+                Some("five".into())
+            );
+
+            // Two rows go, one of them the one holding "one".
+            Diagnostics::rows_removed(DATASET_MAIN, &[1, 2], cx);
+            assert_eq!(Diagnostics::all(cx).len(), 1, "\"one\" went with its row");
+            assert_eq!(
+                Diagnostics::note_at(DATASET_MAIN, Some(4), Some("Title"), cx),
+                Some("five".into()),
+                "shifted up by both deletions"
+            );
+
+            // A rename re-keys the column half of the address.
+            Diagnostics::column_renamed(DATASET_MAIN, "Title", &"Caption".into(), cx);
+            assert_eq!(
+                Diagnostics::note_at(DATASET_MAIN, Some(4), Some("Caption"), cx),
+                Some("five".into())
+            );
+        });
     }
 
     #[gpui::test]

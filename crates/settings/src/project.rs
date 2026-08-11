@@ -358,6 +358,19 @@ pub fn write_column_type(path: &Path, name: &str, data_type: &str) -> Result<()>
     Ok(())
 }
 
+/// Re-key a column's declared type and description to its new name. `__columns` is keyed by name,
+/// so without this a rename would look like the old column vanishing and a fresh, untyped one
+/// appearing. No row for that name (a column nobody configured) is nothing to move.
+pub fn rename_column(path: &Path, before: &str, after: &str) -> Result<()> {
+    let conn = open_rw(path)?;
+    conn.execute(
+        "UPDATE __columns SET name = ?2 WHERE name = ?1",
+        params![before, after],
+    )
+    .context("Rename column")?;
+    Ok(())
+}
+
 /// Shared by project creation and [`write_notes`], which creates the table on demand so a v1
 /// file gains it on first write instead of needing a migration pass on open.
 const NOTES_DDL: &str = r#"
