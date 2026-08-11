@@ -184,11 +184,20 @@ pub(crate) fn menu(
     let menu = match target {
         Target::Cell { row, col } => {
             let (edit_table, filter_table) = (table.clone(), table.clone());
-            let (copied, value) = (cell_text.clone(), cell_text);
+            let (copied, cut, value) = (cell_text.clone(), cell_text.clone(), cell_text);
             copy_row(
                 menu.item(PopupMenuItem::new("Copy").on_click(move |_, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(copied.to_string()))
-                })),
+                }))
+                .item(PopupMenuItem::new("Cut").on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(cut.to_string()));
+                    crate::write_cell(row, col, SharedString::default(), cx);
+                }))
+                .item(
+                    PopupMenuItem::new("Clear contents").on_click(move |_, _, cx| {
+                        crate::write_cell(row, col, SharedString::default(), cx)
+                    }),
+                ),
             )
             .item(
                 PopupMenuItem::new("Edit cell").on_click(move |_, window, cx| {
@@ -209,7 +218,12 @@ pub(crate) fn menu(
             )
             .separator()
         }
-        Target::Row(_) => copy_row(menu).separator(),
+        Target::Row(row) => copy_row(menu)
+            .item(
+                PopupMenuItem::new("Clear row")
+                    .on_click(move |_, _, cx| crate::write_cells(crate::blank_row(row, cx), cx)),
+            )
+            .separator(),
         // Built-in column controls come first; plugin entries are appended without running plugin
         // code while the synchronous menu is built.
         Target::Column(col) => {

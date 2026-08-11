@@ -116,6 +116,11 @@ impl QrateTableDelegate {
         self.frozen
     }
 
+    /// Data columns only — the pinned `#` column is the library's, not the data's.
+    pub(crate) fn column_count(&self) -> usize {
+        self.columns.len()
+    }
+
     /// See [`Self::values_generation`].
     pub(crate) fn values_generation(&self) -> u64 {
         self.values_generation
