@@ -22,7 +22,7 @@ use crate::{
     editing::{self, EditState},
     floating::float_at,
     history::Cells,
-    photos, row_index,
+    note, photos, row_index,
 };
 
 /// Settings key for the saved column layout (order + widths) in the project's `.qrate` file.
@@ -55,6 +55,7 @@ actions!(
         Paste,
         Clear,
         EditCell,
+        InsertNote,
         UnfreezeColumns
     ]
 );
@@ -928,6 +929,9 @@ impl Render for TablePanel {
             .on_action(cx.listener(|this, _: &Undo, _, cx| this.history_step(false, cx)))
             .on_action(cx.listener(|this, _: &Redo, _, cx| this.history_step(true, cx)))
             .on_action(cx.listener(|this, _: &EditCell, window, cx| this.edit_selected(window, cx)))
+            .on_action(cx.listener(|this, _: &InsertNote, window, cx| {
+                note::open_on_selection(&this.state.clone(), window, cx)
+            }))
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy_range(false, cx)))
             .on_action(cx.listener(|this, _: &Cut, _, cx| this.copy_range(true, cx)))
             .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste_range(cx)))
@@ -1057,7 +1061,7 @@ impl Render for TablePanel {
 
 /// Clipboard text as a grid. The trailing newline a spreadsheet adds to a copied range is dropped,
 /// or it would paste a row of blanks under the real ones.
-fn parse_tsv(text: &str) -> Vec<Vec<&str>> {
+pub(crate) fn parse_tsv(text: &str) -> Vec<Vec<&str>> {
     text.strip_suffix('\n')
         .unwrap_or(text)
         .split('\n')
@@ -1073,7 +1077,7 @@ fn parse_tsv(text: &str) -> Vec<Vec<&str>> {
 /// The cells a paste writes. `rows`/`cols` are the selected rectangle (source rows, data columns);
 /// `reach` is how far down the block can actually go. Split out of `TablePanel` (which needs a live
 /// gpui `App`) so the two cases are unit-testable on plain data.
-fn paste_cells(
+pub(crate) fn paste_cells(
     block: &[Vec<&str>],
     rows: &[usize],
     cols: RangeInclusive<usize>,
