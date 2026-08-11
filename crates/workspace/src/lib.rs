@@ -10,6 +10,7 @@ pub use image_viewer::open_image_viewer;
 
 pub use dock_button::DockToggleButton;
 pub use panel_registry::{BarSide, PANELS, PanelMeta, PanelRegistry, bar_side};
+pub use panels::DETAILS_META;
 
 use std::sync::Arc;
 
@@ -23,7 +24,7 @@ use table::TablePanel;
 use diagnostics::ProblemsPanel;
 
 use crate::panel_registry::PROBLEMS_META;
-use crate::panels::{AGENT_META, AgentPanel, DETAILS_META, DetailsPanel};
+use crate::panels::{AGENT_META, AgentPanel, DetailsPanel};
 
 /// Settings key under which the serialized [`DockAreaState`] is persisted —
 /// both in the open project's `.qrate` `__settings` (preferred) and in the

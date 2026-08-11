@@ -677,28 +677,6 @@ impl TablePanel {
         self.write_cells(cells, cx);
     }
 
-    /// Undo or redo the last grid edit, then do everything a committed edit does — revalidate,
-    /// signal the cross-crate readers, mark dirty, autosave. Nothing happens on an empty stack.
-    fn history_step(&mut self, redo: bool, cx: &mut Context<Self>) {
-        let stepped = self.state.update(cx, |state, cx| {
-            let stepped = if redo {
-                state.delegate_mut().redo()
-            } else {
-                state.delegate_mut().undo()
-            };
-            if stepped {
-                cx.emit(TableChanged);
-                cx.notify();
-            }
-            stepped
-        });
-        if stepped {
-            settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
-            self.schedule_revalidate(cx);
-            self.schedule_autosave(cx);
-        }
-    }
-
     /// Apply the project's saved column layout — order, widths, and how many columns are frozen —
     /// onto freshly loaded data. `set_frozen` clamps, so a stale count from a shrunken dataset is
     /// harmless.
@@ -1043,8 +1021,6 @@ impl Render for TablePanel {
             }))
             // The find input propagates Escape (it doesn't consume it), so dismiss the bar here.
             .on_action(cx.listener(|this, _: &Escape, window, cx| this.dismiss_search(window, cx)))
-            .on_action(cx.listener(|this, _: &Undo, _, cx| this.history_step(false, cx)))
-            .on_action(cx.listener(|this, _: &Redo, _, cx| this.history_step(true, cx)))
             .on_action(cx.listener(|this, _: &EditCell, window, cx| this.edit_selected(window, cx)))
             .on_action(cx.listener(|this, _: &InsertNote, window, cx| {
                 note::open_on_selection(&this.state.clone(), window, cx)

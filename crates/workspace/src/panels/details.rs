@@ -6,6 +6,7 @@ use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable,
     button::{Button, ButtonVariants},
     dock::{DockPlacement, Panel, PanelControl, PanelEvent},
+    input::{Escape, Input, InputEvent, InputState},
     resizable::{resizable_panel, v_resizable},
     scroll::ScrollableElement,
     table::TableState,
@@ -42,13 +43,27 @@ pub struct DetailsPanel {
     _table_sub: Option<Subscription>,
     /// Re-renders when the bottom dock opens/closes, so the strip-crop padding tracks it.
     _crop_sub: Subscription,
+    /// The field editor, shared across whichever field is open — the same one-per-panel
+    /// arrangement the grid uses for its cell editor.
+    editor: Entity<InputState>,
+    /// `(source_row, data_col)` of the field being edited, in the grid's own coordinates so a
+    /// filter change between opening and committing can't redirect the write.
+    editing: Option<(usize, usize)>,
+    /// Commits the open field on Enter or when the editor loses focus.
+    _editor_sub: Subscription,
 }
 
 impl DetailsPanel {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let _handle_sub = cx.observe_global::<TableStateHandle>(|this: &mut Self, cx| {
             this.bind(cx);
             cx.notify();
+        });
+        let editor = cx.new(|cx| InputState::new(window, cx));
+        let _editor_sub = cx.subscribe(&editor, |this, _input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                this.commit(cx);
+            }
         });
         let mut this = Self {
             focus_handle: cx.focus_handle(),
@@ -56,9 +71,55 @@ impl DetailsPanel {
             _handle_sub,
             _table_sub: None,
             _crop_sub: cx.observe_global::<BottomDockCrop>(|_this: &mut Self, cx| cx.notify()),
+            editor,
+            editing: None,
+            _editor_sub,
         };
         this.bind(cx);
         this
+    }
+
+    /// Open `header`'s field for editing, seeded with its current text. The column is resolved by
+    /// name — `row_fields` is in display order, which is not the data-column order after a move.
+    fn edit_field(
+        &mut self,
+        header: &SharedString,
+        value: &SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Whatever was open loses focus rather than being silently dropped.
+        self.commit(cx);
+        let located = self.state.as_ref().and_then(|w| w.upgrade()).and_then(|s| {
+            let delegate = s.read(cx).delegate();
+            let row = match delegate.selection()? {
+                Selection::Cell { row, .. } | Selection::Row(row) => row,
+                Selection::Column(_) => return None,
+            };
+            Some((row, delegate.data_col(header)?))
+        });
+        let Some(at) = located else {
+            log::warn!("details: no column named {header} to edit");
+            return;
+        };
+        self.editing = Some(at);
+        self.editor.update(cx, |editor, cx| {
+            editor.set_value(value.clone(), window, cx);
+            editor.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// Write the open field back through the grid's own mutation path, so dirty-tracking,
+    /// validation and undo stay single-sourced. Clearing `editing` first keeps the `TableChanged`
+    /// this provokes from re-entering as a second commit.
+    fn commit(&mut self, cx: &mut Context<Self>) {
+        let Some((row, col)) = self.editing.take() else {
+            return;
+        };
+        let value = self.editor.read(cx).value().clone();
+        table::write_cell(row, col, value, cx);
+        cx.notify();
     }
 
     fn bind(&mut self, cx: &mut Context<Self>) {
@@ -283,16 +344,20 @@ impl Render for DetailsPanel {
                 .into_any_element();
         };
 
-        // Hand-built 2-column grid, not `DescriptionList`/`DataTable`: the fields are fixed, tabular pairs.
-        // ponytail: revisit if these fields ever need sorting or inline editing.
-        let border = cx.theme().border;
+        // Hand-built attribute list, not `DescriptionList`/`DataTable`: the fields are fixed pairs,
+        // and it reads as a list rather than a second grid — alternating rows carry the structure,
+        // no borders.
+        let editing_col = self.editing.map(|(_, col)| col);
         let rows = fields.into_iter().enumerate().map(|(ix, (k, v))| {
+            let open = self
+                .state
+                .as_ref()
+                .and_then(|w| w.upgrade())
+                .and_then(|s| s.read(cx).delegate().data_col(&k))
+                .is_some_and(|col| editing_col == Some(col));
             div()
                 .flex()
-                // `items_stretch` so the label cell's `border_r` divider spans the full (wrapped) row height.
-                .items_stretch()
-                .border_b_1()
-                .border_color(border)
+                .items_start()
                 .when(ix % 2 == 1, |r| r.bg(cx.theme().muted.opacity(0.4)))
                 .child(
                     div()
@@ -300,29 +365,34 @@ impl Render for DetailsPanel {
                         .flex_shrink_0()
                         .px_2()
                         .py_1p5()
-                        .border_r_1()
-                        .border_color(border)
                         .text_color(cx.theme().muted_foreground)
-                        .child(k),
+                        .child(k.clone()),
                 )
                 // `min_w_0` overrides flex `min-width: auto` so the value wraps instead of overflowing right.
-                // Click-to-copy rather than drag-select: `TextView` parses markdown/html and mangles raw metadata.
-                .child(
-                    div()
+                .child(match open {
+                    true => div()
+                        .flex_1()
+                        .min_w_0()
+                        .px_1()
+                        .py_0p5()
+                        .child(Input::new(&self.editor).xsmall())
+                        .into_any_element(),
+                    // Plain text rather than `TextView`, which parses markdown/html and mangles
+                    // raw metadata. Click opens the editor; copy is Ctrl+C once it's open.
+                    false => div()
                         .id(ix)
                         .flex_1()
                         .min_w_0()
                         .px_2()
                         .py_1p5()
-                        .cursor_pointer()
-                        .on_click({
-                            let value = v.clone();
-                            move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()))
-                            }
-                        })
-                        .child(v),
-                )
+                        .cursor_text()
+                        .on_click(cx.listener({
+                            let (k, v) = (k, v.clone());
+                            move |this, _, window, cx| this.edit_field(&k, &v, window, cx)
+                        }))
+                        .child(v)
+                        .into_any_element(),
+                })
         });
 
         // Split so the image stays put while only the fields scroll, with a drag handle to trade heights.
@@ -333,45 +403,59 @@ impl Render for DetailsPanel {
             .and_then(|v| v.text().parse::<f32>().ok())
             .unwrap_or(180.);
 
-        v_resizable("details-split")
-            .on_resize(|state, _, cx| {
-                if cx.has_global::<settings::project::CurrentProject>()
-                    && let Some(height) = state.read(cx).sizes().first().copied()
-                {
-                    settings::project::CurrentProject::set_text(
-                        IMAGE_PANE_HEIGHT_KEY,
-                        format!("{}", f32::from(height)).into(),
-                        cx,
-                    );
+        // Own context + tracked focus so Ctrl+Z reaches the grid's history from in here. While the
+        // field editor holds focus its own deeper `Input` context wins, which keeps Ctrl+Z as
+        // text-undo mid-edit.
+        div()
+            .size_full()
+            .key_context(DETAILS_META.name)
+            .track_focus(&self.focus_handle)
+            // The editor propagates Escape rather than consuming it, so discard the edit here.
+            .on_action(cx.listener(|this, _: &Escape, window, cx| {
+                if this.editing.take().is_some() {
+                    this.focus_handle.focus(window, cx);
+                    cx.notify();
                 }
-            })
+            }))
             .child(
-                resizable_panel()
-                    .size(px(image_height))
-                    .size_range(px(80.)..px(600.))
-                    .p_3()
-                    .child(render_image_frame(image_path, cx)),
-            )
-            .child(
-                // `pr_2` on the panel insets the scrollbar from the resize edge so dragging it doesn't catch.
-                resizable_panel().pr_2().child(
-                    div()
-                        .size_full()
-                        // `min_h_0` overrides flex `min-height: auto` so this scrolls instead of growing past the panel.
-                        .min_h_0()
-                        .overflow_y_scrollbar()
-                        .px_3()
-                        // Pad by the bottom-strip crop (29px closed / 0 open) so it doesn't eat the last field row.
-                        .pb(px(12.) + crop)
-                        .child(
+                v_resizable("details-split")
+                    .on_resize(|state, _, cx| {
+                        if cx.has_global::<settings::project::CurrentProject>()
+                            && let Some(height) = state.read(cx).sizes().first().copied()
+                        {
+                            settings::project::CurrentProject::set_text(
+                                IMAGE_PANE_HEIGHT_KEY,
+                                format!("{}", f32::from(height)).into(),
+                                cx,
+                            );
+                        }
+                    })
+                    .child(
+                        resizable_panel()
+                            .size(px(image_height))
+                            .size_range(px(80.)..px(600.))
+                            .p_3()
+                            .child(render_image_frame(image_path, cx)),
+                    )
+                    .child(
+                        // `pr_2` on the panel insets the scrollbar from the resize edge so dragging it doesn't catch.
+                        resizable_panel().pr_2().child(
                             div()
-                                .rounded(cx.theme().radius)
-                                .border_1()
-                                .border_color(border)
-                                .overflow_hidden()
-                                .children(rows),
+                                .size_full()
+                                // `min_h_0` overrides flex `min-height: auto` so this scrolls instead of growing past the panel.
+                                .min_h_0()
+                                .overflow_y_scrollbar()
+                                .px_3()
+                                // Pad by the bottom-strip crop (29px closed / 0 open) so it doesn't eat the last field row.
+                                .pb(px(12.) + crop)
+                                .child(
+                                    div()
+                                        .rounded(cx.theme().radius)
+                                        .overflow_hidden()
+                                        .children(rows),
+                                ),
                         ),
-                ),
+                    ),
             )
             .into_any_element()
     }
@@ -384,6 +468,8 @@ mod tests {
 
     use gpui::{Context, IntoElement, Render, TestAppContext, Window};
     use gpui_component::{IconName, IconNamed as _};
+
+    use gpui::VisualTestContext;
 
     use super::{DetailsPanel, is_previewable_image, placeholder_icon, render_image_frame};
 
@@ -458,5 +544,74 @@ mod tests {
         // No `TableStateHandle` global set — `DetailsPanel::bind` finds nothing, so `render`
         // takes the "No selection" branch. Mirrors dev-launch-with-no-project.
         cx.add_window_view(DetailsPanel::new);
+    }
+
+    /// A real table behind the panel, with autosave off so a committed edit doesn't write the
+    /// temp project file. Same shape as `table::delegate`'s own fixture.
+    fn project_with_table(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            let mut app = settings::AppSettings::default();
+            app.values.insert(
+                settings::AUTOSAVE_KEY.into(),
+                settings::Val::Text("off".into()),
+            );
+            cx.set_global(app);
+            cx.set_global(settings::project::CurrentProject {
+                file: std::env::temp_dir().join("qrate-details-edit.qrate"),
+                data: settings::project::ProjectData {
+                    name: "T".into(),
+                    columns: Vec::new(),
+                    headers: vec!["Medium".into(), "Title".into()],
+                    rows: vec![
+                        vec!["Film".into(), "one".into()],
+                        vec!["Video".into(), "two".into()],
+                    ],
+                    values: Default::default(),
+                },
+            });
+        });
+        cx.add_window_view(table::TablePanel::new);
+    }
+
+    /// The DoD: a field edited in the panel lands in the grid, and undo — the grid's own history,
+    /// which the panel must not have bypassed — puts it back. Also pins the name→column lookup:
+    /// each field must write its own column, not the one at its position in the list.
+    #[gpui::test]
+    fn editing_a_field_writes_the_grid_and_undoes(cx: &mut TestAppContext) {
+        project_with_table(cx);
+        let state = cx.update(|cx| {
+            cx.try_global::<table::TableStateHandle>()
+                .and_then(|h| h.0.upgrade())
+                .expect("the table panel publishes its state handle")
+        });
+        let (panel, cx) = cx.add_window_view(DetailsPanel::new);
+        // Select source row 1 ("Video", "two"), as clicking that cell in the grid would.
+        state.update(cx, |state, cx| state.set_selected_cell(1, 2, cx));
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.edit_field(&"Title".into(), &"two".into(), window, cx);
+            assert_eq!(panel.editing, Some((1, 1)), "Title is data column 1");
+            panel.editor.update(cx, |editor, cx| {
+                editor.set_value("two, revised", window, cx)
+            });
+            panel.commit(cx);
+
+            panel.edit_field(&"Medium".into(), &"Video".into(), window, cx);
+            assert_eq!(panel.editing, Some((1, 0)), "Medium is data column 0");
+            panel.editing = None;
+        });
+
+        let title = |cx: &mut VisualTestContext| {
+            state.read_with(cx, |s, _| s.delegate().cell(1, 1).cloned())
+        };
+        assert_eq!(title(cx).unwrap_or_default(), "two, revised");
+
+        cx.update(|_, cx| table::history_step(false, cx));
+        assert_eq!(
+            title(cx).unwrap_or_default(),
+            "two",
+            "the panel wrote through the grid's own history"
+        );
     }
 }

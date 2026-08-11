@@ -49,6 +49,16 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-z", table::Undo, Some(table::GRID_CONTEXT)),
         KeyBinding::new("ctrl-y", table::Redo, Some(table::GRID_CONTEXT)),
         KeyBinding::new("ctrl-shift-z", table::Redo, Some(table::GRID_CONTEXT)),
+        // The Details panel edits the same grid, so it undoes the same history. Scoped to the
+        // panel, not global: inside its field editor the deeper `Input` context wins, which keeps
+        // Ctrl+Z as text-undo mid-edit.
+        KeyBinding::new("ctrl-z", table::Undo, Some(workspace::DETAILS_META.name)),
+        KeyBinding::new("ctrl-y", table::Redo, Some(workspace::DETAILS_META.name)),
+        KeyBinding::new(
+            "ctrl-shift-z",
+            table::Redo,
+            Some(workspace::DETAILS_META.name),
+        ),
         KeyBinding::new("ctrl-x", table::Cut, Some(table::GRID_CONTEXT)),
         KeyBinding::new("ctrl-c", table::Copy, Some(table::GRID_CONTEXT)),
         KeyBinding::new("ctrl-v", table::Paste, Some(table::GRID_CONTEXT)),
@@ -65,4 +75,8 @@ pub fn register_global_handlers(cx: &mut App) {
     // de-globalize them per-window first.
     cx.on_action(|_: &NewWindow, _cx| log::warn!("NewWindow: TODO (bar registries are global)"));
     cx.on_action(|_: &Save, cx| table::save_now(cx));
+    // Edit ▸ Undo/Redo dispatches wherever focus happens to sit, which is not always the grid —
+    // globally is the only place that catches it from any panel.
+    cx.on_action(|_: &table::Undo, cx| table::history_step(false, cx));
+    cx.on_action(|_: &table::Redo, cx| table::history_step(true, cx));
 }
