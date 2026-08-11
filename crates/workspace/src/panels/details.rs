@@ -1,4 +1,6 @@
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -6,7 +8,7 @@ use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable,
     button::{Button, ButtonVariants},
     dock::{DockPlacement, Panel, PanelControl, PanelEvent},
-    input::{Escape, Input, InputEvent, InputState},
+    input::{Escape, InputEvent, InputState},
     resizable::{resizable_panel, v_resizable},
     scroll::ScrollableElement,
     table::TableState,
@@ -51,6 +53,11 @@ pub struct DetailsPanel {
     editing: Option<(usize, usize)>,
     /// Commits the open field on Enter or when the editor loses focus.
     _editor_sub: Subscription,
+    /// Window-space rect of the field row being edited, and of the scrolling field list the
+    /// editor is confined to. Written from `canvas` prepaint, which only gets an `&mut App` —
+    /// a shared cell is how the measurement reaches the next render without a global.
+    anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
+    viewport: Rc<Cell<Bounds<Pixels>>>,
 }
 
 impl DetailsPanel {
@@ -74,6 +81,8 @@ impl DetailsPanel {
             editor,
             editing: None,
             _editor_sub,
+            anchor: Rc::default(),
+            viewport: Rc::new(Cell::new(Bounds::default())),
         };
         this.bind(cx);
         this
@@ -103,6 +112,8 @@ impl DetailsPanel {
             return;
         };
         self.editing = Some(at);
+        // Re-measured for the new field; the box renders on the frame after the capture.
+        self.anchor.set(None);
         self.editor.update(cx, |editor, cx| {
             editor.set_value(value.clone(), window, cx);
             editor.focus(window, cx);
@@ -120,6 +131,23 @@ impl DetailsPanel {
         let value = self.editor.read(cx).value().clone();
         table::write_cell(row, col, value, cx);
         cx.notify();
+    }
+
+    /// The floating field editor — the grid's own box, anchored over the field it edits and
+    /// clamped to the field list. `None` until the field has measured itself, one frame after the
+    /// click.
+    fn field_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.editing?;
+        let anchor = self.anchor.get()?;
+        let (box_el, _) = table::editor_box(&self.editor, anchor, self.viewport.get(), window, cx);
+        Some(
+            deferred(table::floating::float_at(
+                anchor.origin,
+                self.viewport.get(),
+                box_el,
+            ))
+            .into_any_element(),
+        )
     }
 
     fn bind(&mut self, cx: &mut Context<Self>) {
@@ -320,7 +348,7 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
 }
 
 impl Render for DetailsPanel {
-    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selection = self.state.as_ref().and_then(|w| w.upgrade()).and_then(|s| {
             let state = s.read(cx);
             let row = match state.delegate().selection()? {
@@ -360,39 +388,64 @@ impl Render for DetailsPanel {
                 .items_start()
                 .when(ix % 2 == 1, |r| r.bg(cx.theme().muted.opacity(0.4)))
                 .child(
+                    // Both columns are shares of the panel's width, not fixed pixels: this dock
+                    // resizes, and a fixed label column either wastes half a wide panel or crushes
+                    // the values in a narrow one.
                     div()
-                        .w(px(110.))
+                        .w(relative(0.35))
                         .flex_shrink_0()
                         .px_2()
                         .py_1p5()
                         .text_color(cx.theme().muted_foreground)
                         .child(k.clone()),
                 )
-                // `min_w_0` overrides flex `min-width: auto` so the value wraps instead of overflowing right.
-                .child(match open {
-                    true => div()
-                        .flex_1()
-                        .min_w_0()
-                        .px_1()
-                        .py_0p5()
-                        .child(Input::new(&self.editor).xsmall())
-                        .into_any_element(),
-                    // Plain text rather than `TextView`, which parses markdown/html and mangles
-                    // raw metadata. Click opens the editor; copy is Ctrl+C once it's open.
-                    false => div()
+                // Plain text rather than `TextView`, which parses markdown/html and mangles raw
+                // metadata. Click opens the floating editor over it; copy is Ctrl+C once it's open.
+                // `min_w_0` overrides flex `min-width: auto` so the value wraps instead of
+                // overflowing right.
+                .child(
+                    div()
                         .id(ix)
                         .flex_1()
                         .min_w_0()
+                        // Positions the measuring canvas below against this field, not against
+                        // whatever ancestor happens to be positioned.
+                        .relative()
                         .px_2()
                         .py_1p5()
                         .cursor_text()
                         .on_click(cx.listener({
-                            let (k, v) = (k, v.clone());
+                            let (k, v) = (k.clone(), v.clone());
                             move |this, _, window, cx| this.edit_field(&k, &v, window, cx)
                         }))
                         .child(v)
-                        .into_any_element(),
-                })
+                        // The editor floats over the field rather than replacing it in the row, so
+                        // it can grow past the row's width — the grid's editor, same box.
+                        .when(open, |value| {
+                            let anchor = self.anchor.clone();
+                            value.child(
+                                canvas(
+                                    move |bounds, window, cx| {
+                                        if anchor.replace(Some(bounds)).is_none() {
+                                            // Read on the *next* render, and nothing else schedules
+                                            // one. Deferred because `Window::refresh` is a no-op
+                                            // while a frame is drawing — which is when this runs.
+                                            window.defer(cx, |window, _| window.refresh());
+                                        }
+                                    },
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                // `top_0`/`left_0` are load-bearing: an absolute element with no
+                                // insets takes a *static* position after its in-flow siblings, so
+                                // without them this measures a rect one line below the value text
+                                // and the box opens under the field it edits.
+                                .top_0()
+                                .left_0()
+                                .size_full(),
+                            )
+                        }),
+                )
         });
 
         // Split so the image stays put while only the fields scroll, with a drag handle to trade heights.
@@ -444,16 +497,32 @@ impl Render for DetailsPanel {
                                 .size_full()
                                 // `min_h_0` overrides flex `min-height: auto` so this scrolls instead of growing past the panel.
                                 .min_h_0()
+                                .relative()
                                 .overflow_y_scrollbar()
                                 .px_3()
+                                // Clear of the resize handle above, so the first field doesn't sit
+                                // flush against it.
+                                .pt_2()
                                 // Pad by the bottom-strip crop (29px closed / 0 open) so it doesn't eat the last field row.
                                 .pb(px(12.) + crop)
+                                // The rect the floating editor grows within and is clamped to, so a
+                                // long value wraps inside this panel rather than over the grid.
+                                .child({
+                                    let viewport = self.viewport.clone();
+                                    canvas(
+                                        move |bounds, _, _| viewport.set(bounds),
+                                        |_, _, _, _| {},
+                                    )
+                                    .absolute()
+                                    .size_full()
+                                })
                                 .child(
                                     div()
                                         .rounded(cx.theme().radius)
                                         .overflow_hidden()
                                         .children(rows),
-                                ),
+                                )
+                                .children(self.field_editor(window, cx)),
                         ),
                     ),
             )

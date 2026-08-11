@@ -11,7 +11,7 @@ use gpui::{
     LayoutId, Pixels, Point, Position, Style, Window,
 };
 
-pub(crate) struct ClampedFloat {
+pub struct ClampedFloat {
     rect: Bounds<Pixels>,
     origin: Option<Point<Pixels>>,
     child: gpui::AnyElement,
@@ -29,7 +29,7 @@ pub(crate) fn clamped_float(rect: Bounds<Pixels>, child: impl IntoElement) -> Cl
 /// Float `child` at an explicit window-space `origin` (still clamped to `rect`). Unlike a `.left()`
 /// / `.top()` pair this needs no knowledge of which ancestor the offsets would resolve against —
 /// the cell editor's origin is measured in window space and has to land there exactly.
-pub(crate) fn float_at(
+pub fn float_at(
     origin: Point<Pixels>,
     rect: Bounds<Pixels>,
     child: impl IntoElement,

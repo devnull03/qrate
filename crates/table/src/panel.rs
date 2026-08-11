@@ -764,54 +764,12 @@ impl TablePanel {
             .map(|b| b.0)
             .unwrap_or_default();
 
-        let style = window.text_style();
-        let font_size = style.font_size.to_pixels(window.rem_size());
-        // What `Input` actually lays its lines out at (its own `LINE_HEIGHT: Rems(1.25)`), not the
-        // window's text style — the two differ and only this one predicts the wrapped height.
-        let line_height = window.rem_size() * 1.25;
         let value = editor.read(cx).value();
-        // `shape_line` panics on newlines, so hard-wrapped lines are measured one at a time; the
-        // widest is what the box would need to show the value unwrapped.
-        let natural_w = value.split('\n').fold(px(0.), |widest, line| {
-            let w = window
-                .text_system()
-                .shape_line(
-                    SharedString::from(line.to_string()),
-                    font_size,
-                    &[style.to_run(line.len())],
-                    None,
-                )
-                .width;
-            if w > widest { w } else { widest }
-        });
-        let box_size = editor_size(cell, table, natural_w, line_height, |wrap_w| {
-            window
-                .text_system()
-                .shape_text(
-                    value.clone(),
-                    font_size,
-                    &[style.to_run(value.len())],
-                    Some(wrap_w),
-                    None,
-                )
-                .map(|lines| lines.iter().map(|l| 1 + l.wrap_boundaries.len()).sum())
-                .unwrap_or(1)
-        });
+        let (box_el, box_size) = editor_box(&editor, cell, table, window, cx);
 
         let scrolled = scroll != spawn_scroll;
         let accent = cx.theme().primary;
-        let box_el = div()
-            .relative()
-            .w(box_size.width)
-            .h(box_size.height)
-            // Swallow mouse events so clicking inside the box doesn't fall through to the cells
-            // painted behind it and move the table's selection.
-            .occlude()
-            .bg(cx.theme().background)
-            .border_1()
-            .border_color(accent)
-            .rounded(cx.theme().radius)
-            .shadow_lg()
+        let box_el = box_el
             // Once the grid has moved under the box, name the cell it belongs to — the column's
             // own header, which beats a spreadsheet letter when the columns are named.
             .when(scrolled, |b| {
@@ -829,14 +787,6 @@ impl TablePanel {
                         .child(label),
                 )
             })
-            .child(
-                Input::new(&editor)
-                    .appearance(false)
-                    .h_full()
-                    .px(px(cell::CELL_PAD_X))
-                    .py(px(cell::CELL_PAD_Y))
-                    .text_size(font_size),
-            )
             .children(self.suggestions(row, col, &value, box_size.height, cx));
         // `cell` is the cell's own rect now that the measuring canvas is pinned to it, so the box
         // opens exactly over what it edits — no correction, and no magic numbers to re-tune.
@@ -1288,6 +1238,77 @@ pub(crate) fn paste_cells(
     }
     // Columns past the last one are dropped by `apply_edit`, which writes only cells that exist.
     cells
+}
+
+/// The app's one floating-editor box: an `Input` with no chrome of its own inside a bordered,
+/// shadowed card sized Google-Sheets style to `anchor` within `within`. The grid and the Details
+/// panel share it so an edit looks and grows the same wherever it opens.
+///
+/// The size comes back with it because a caller hanging anything below the box (the grid's
+/// suggestion list) needs a height it can't compute itself. Place the result with
+/// `deferred(float_at(anchor.origin, within, box))`.
+pub fn editor_box(
+    editor: &Entity<InputState>,
+    anchor: Bounds<Pixels>,
+    within: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &App,
+) -> (Div, Size<Pixels>) {
+    let style = window.text_style();
+    let font_size = style.font_size.to_pixels(window.rem_size());
+    // What `Input` actually lays its lines out at (its own `LINE_HEIGHT: Rems(1.25)`), not the
+    // window's text style — the two differ and only this one predicts the wrapped height.
+    let line_height = window.rem_size() * 1.25;
+    let value = editor.read(cx).value();
+    // `shape_line` panics on newlines, so hard-wrapped lines are measured one at a time; the
+    // widest is what the box would need to show the value unwrapped.
+    let natural_w = value.split('\n').fold(px(0.), |widest, line| {
+        let w = window
+            .text_system()
+            .shape_line(
+                SharedString::from(line.to_string()),
+                font_size,
+                &[style.to_run(line.len())],
+                None,
+            )
+            .width;
+        if w > widest { w } else { widest }
+    });
+    let size = editor_size(anchor, within, natural_w, line_height, |wrap_w| {
+        window
+            .text_system()
+            .shape_text(
+                value.clone(),
+                font_size,
+                &[style.to_run(value.len())],
+                Some(wrap_w),
+                None,
+            )
+            .map(|lines| lines.iter().map(|l| 1 + l.wrap_boundaries.len()).sum())
+            .unwrap_or(1)
+    });
+
+    let box_el = div()
+        .relative()
+        .w(size.width)
+        .h(size.height)
+        // Swallow mouse events so clicking inside the box doesn't fall through to whatever is
+        // painted behind it and move the selection.
+        .occlude()
+        .bg(cx.theme().background)
+        .border_1()
+        .border_color(cx.theme().primary)
+        .rounded(cx.theme().radius)
+        .shadow_lg()
+        .child(
+            Input::new(editor)
+                .appearance(false)
+                .h_full()
+                .px(px(cell::CELL_PAD_X))
+                .py(px(cell::CELL_PAD_Y))
+                .text_size(font_size),
+        );
+    (box_el, size)
 }
 
 /// Google-Sheets box sizing. Text that fits gets a cell-sized box; text that overflows keeps the

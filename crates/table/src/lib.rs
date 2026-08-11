@@ -9,7 +9,7 @@ mod delegate;
 mod editing;
 pub mod file_links;
 mod filter;
-mod floating;
+pub mod floating;
 mod history;
 mod note;
 mod panel;
@@ -20,7 +20,7 @@ pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 pub use panel::{
     Clear, Copy, Cut, DeleteColumn, DeleteRow, DuplicateRow, EditCell, GRID_CONTEXT,
     InsertColumnLeft, InsertColumnRight, InsertNote, InsertRowAbove, InsertRowBelow, Paste, Redo,
-    RenameColumn, Replace, Search, TablePanel, Undo, UnfreezeColumns,
+    RenameColumn, Replace, Search, TablePanel, Undo, UnfreezeColumns, editor_box,
 };
 
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
