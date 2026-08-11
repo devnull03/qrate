@@ -7,7 +7,7 @@ use crate::theming::{SwitchTheme, THEME_CHOICES};
 
 // The Edit menu's items act on the grid, so they're the grid's actions — `table` declares and
 // handles them, and this menu only names them.
-use table::{Clear, Copy, Cut, Paste, Redo, Undo, UnfreezeColumns};
+use table::{Clear, Copy, Cut, InsertNote, Paste, Redo, Undo, UnfreezeColumns};
 
 actions!(
     nav,
@@ -19,11 +19,26 @@ actions!(
         Quit,
         CopyDebugInfo,
         ReportIssue,
-        OpenLogsFolder
+        OpenLogsFolder,
+        /// What every greyed-out menu item below dispatches. Deliberately unhandled: the label is
+        /// the promise, and the task named beside it is what makes the promise good.
+        Planned
     ]
 );
 
 pub const REPO_URL: &str = "https://github.com/devnull03/qrate";
+
+/// A menu item for a feature qrate doesn't have yet — greyed out, so the shape of the app is
+/// visible before every part of it works. Each call site names the task that switches it on.
+fn planned(name: &'static str) -> MenuItem {
+    MenuItem::Action {
+        name: name.into(),
+        action: Box::new(Planned),
+        os_action: None,
+        checked: false,
+        disabled: true,
+    }
+}
 
 pub fn app_menus() -> Vec<Menu> {
     vec![
@@ -73,6 +88,20 @@ pub fn app_menus() -> Vec<Menu> {
             ],
         },
         Menu {
+            name: "Insert".into(),
+            disabled: false,
+            items: vec![
+                // ASNT-70 (#81): rows and columns can't be added or removed yet.
+                planned("Row Above"),
+                planned("Row Below"),
+                MenuItem::Separator,
+                planned("Column Left"),
+                planned("Column Right"),
+                MenuItem::Separator,
+                MenuItem::action("Note…", InsertNote),
+            ],
+        },
+        Menu {
             name: "View".into(),
             disabled: false,
             items: vec![
@@ -99,12 +128,27 @@ pub fn app_menus() -> Vec<Menu> {
                 // Freezing *to* a column needs one to point at, which is the column header's
                 // menu; only the release is a global command.
                 MenuItem::action("Unfreeze All Columns", UnfreezeColumns),
+                // ASNT-44: cells are single-line until the row height can follow the text.
+                planned("Wrap Cell Text"),
+                MenuItem::Separator,
+                // ASNT-72 (#83): the view-mode plumbing, then a gallery over the row images.
+                planned("Gallery View"),
             ],
         },
         Menu {
             name: "Data".into(),
             disabled: false,
-            items: vec![MenuItem::action("Column Settings…", OpenSettings)],
+            items: vec![
+                MenuItem::action("Column Settings…", OpenSettings),
+                MenuItem::Separator,
+                // ASNT-70 (#81), the same task as Insert's entries.
+                planned("Delete Row"),
+                planned("Delete Column"),
+                MenuItem::Separator,
+                // ASNT-79: fold several rows describing one item together, and split them back.
+                planned("Merge Rows…"),
+                planned("Explode Row…"),
+            ],
         },
         Menu {
             name: "Extensions".into(),
@@ -112,6 +156,9 @@ pub fn app_menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("Plugins Folder", OpenPluginsFolder),
                 MenuItem::action("Reload Plugins", ReloadPlugins),
+                MenuItem::Separator,
+                // ASNT-73: the `ai` crate has the traits and a mock; no provider answers yet.
+                planned("AI Review…"),
             ],
         },
         Menu {

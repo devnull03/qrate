@@ -20,7 +20,7 @@ use plugin_api::{
 };
 
 use crate::TableStateHandle;
-use crate::delegate::{QrateTableDelegate, TableChanged};
+use crate::delegate::{QrateTableDelegate, Selection, TableChanged};
 use crate::floating::clamped_float;
 
 /// Side of the square the corner triangle fills.
@@ -128,6 +128,32 @@ pub(crate) fn tooltip_text(location: &Location, cx: &App) -> Option<SharedString
     (!messages.is_empty()).then(|| messages.join("\n").into())
 }
 
+/// A menu entry for a structural edit qrate can't make yet — greyed out so the grid's eventual
+/// shape is visible. All of them switch on together with ASNT-70 (#81), which adds and removes
+/// rows and columns.
+fn planned(label: &'static str) -> PopupMenuItem {
+    PopupMenuItem::new(label).disabled(true)
+}
+
+/// Paste the clipboard onto one right-clicked cell. The keyboard path (`TablePanel::paste_range`)
+/// pastes over the *selection*; this one has an explicit target, and shares the block parsing so
+/// both read a multi-cell TSV the same way.
+fn paste_onto(row: usize, col: usize, cx: &mut App) {
+    let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+        return;
+    };
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+    let block = crate::panel::parse_tsv(&text);
+    let reach = state.read(cx).delegate().rows_from(row, block.len());
+    let cells = crate::panel::paste_cells(&block, &[row], col..=col, &reach);
+    crate::write_cells(cells, cx);
+}
+
 /// Build the right-click menu for `target`. Live state is read off the table global here rather
 /// than captured at render time, the same way `filter::filter_dropdown` does it.
 pub(crate) fn menu(
@@ -194,11 +220,23 @@ pub(crate) fn menu(
                     crate::write_cell(row, col, SharedString::default(), cx);
                 }))
                 .item(
-                    PopupMenuItem::new("Clear contents").on_click(move |_, _, cx| {
-                        crate::write_cell(row, col, SharedString::default(), cx)
-                    }),
+                    PopupMenuItem::new("Paste").on_click(move |_, _, cx| paste_onto(row, col, cx)),
                 ),
             )
+            .separator()
+            .item(planned("Insert row above"))
+            .item(planned("Insert row below"))
+            .item(planned("Insert column left"))
+            .item(planned("Insert column right"))
+            .separator()
+            .item(planned("Delete row"))
+            .item(planned("Delete column"))
+            .item(
+                PopupMenuItem::new("Clear contents").on_click(move |_, _, cx| {
+                    crate::write_cell(row, col, SharedString::default(), cx)
+                }),
+            )
+            .separator()
             .item(
                 PopupMenuItem::new("Edit cell").on_click(move |_, window, cx| {
                     edit_table.update(cx, |state, cx| {
@@ -219,6 +257,11 @@ pub(crate) fn menu(
             .separator()
         }
         Target::Row(row) => copy_row(menu)
+            .separator()
+            .item(planned("Insert row above"))
+            .item(planned("Insert row below"))
+            .separator()
+            .item(planned("Delete row"))
             .item(
                 PopupMenuItem::new("Clear row")
                     .on_click(move |_, _, cx| crate::write_cells(crate::blank_row(row, cx), cx)),
@@ -241,6 +284,11 @@ pub(crate) fn menu(
             let stored = settings::columns::get(&key, cx).plugins;
             let freeze_table = table.clone();
             let menu = menu
+                .item(planned("Insert column left"))
+                .item(planned("Insert column right"))
+                .separator()
+                .item(planned("Delete column"))
+                .separator()
                 .item(
                     PopupMenuItem::new("Freeze up to here").on_click(move |_, _, cx| {
                         crate::set_frozen_columns(&freeze_table, col + 1, cx)
@@ -433,6 +481,30 @@ fn open(
         state.delegate_mut().note_edit = Some(location);
         cx.notify();
     });
+}
+
+/// Insert ▸ Note, which has no right-clicked target to work from and so opens the editor on the
+/// selected cell, carrying whatever note that cell already holds.
+pub(crate) fn open_on_selection(
+    table: &Entity<TableState<QrateTableDelegate>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let location = {
+        let delegate = table.read(cx).delegate();
+        let Some(Selection::Cell { row, col }) = delegate.selection() else {
+            return;
+        };
+        delegate.location(Some(row), Some(col))
+    };
+    let text = Diagnostics::note_at(
+        &location.dataset,
+        location.row,
+        location.column.as_deref(),
+        cx,
+    )
+    .unwrap_or_default();
+    open(table, location, text, window, cx);
 }
 
 /// The floating note editor, or `None` unless it is open on exactly these coordinates — every

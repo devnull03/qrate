@@ -18,7 +18,7 @@ mod row_index;
 
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 pub use panel::{
-    Clear, Copy, Cut, EditCell, GRID_CONTEXT, Paste, Redo, Search, TablePanel, Undo,
+    Clear, Copy, Cut, EditCell, GRID_CONTEXT, InsertNote, Paste, Redo, Search, TablePanel, Undo,
     UnfreezeColumns,
 };
 
