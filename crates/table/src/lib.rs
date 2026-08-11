@@ -117,6 +117,35 @@ pub fn write_cells(cells: Vec<(usize, usize, SharedString)>, cx: &mut App) {
     autosave(cx);
 }
 
+/// Undo or redo the last grid edit, then do everything a committed edit does. A free function
+/// rather than a `TablePanel` method because the panels that edit the grid from outside it — and
+/// the Edit menu, which dispatches wherever focus happens to sit — can't reach the grid's view.
+/// Nothing happens on an empty stack.
+pub fn history_step(redo: bool, cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+    let stepped = state.update(cx, |state, cx| {
+        let stepped = match redo {
+            true => state.delegate_mut().redo(),
+            false => state.delegate_mut().undo(),
+        };
+        if stepped {
+            cx.emit(delegate::TableChanged);
+            cx.notify();
+        }
+        stepped
+    });
+    if stepped {
+        settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+        revalidate_now(cx);
+        autosave(cx);
+    }
+}
+
 /// A change to the grid's shape rather than its contents. One enum rather than five entry points
 /// because every one of them has the same tail: re-index the notes, re-save the column layout,
 /// revalidate, mark dirty, save.
