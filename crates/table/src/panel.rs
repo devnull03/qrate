@@ -44,7 +44,20 @@ fn apply_settings(delegate: &mut QrateTableDelegate, cx: &App) {
 
 // The grid's own actions, declared here (not in `app`) since app→table is one-way; `app` binds the
 // keys and puts Undo/Redo/Cut/Copy/Paste in the Edit menu.
-actions!(qrate, [Search, Undo, Redo, Cut, Copy, Paste, EditCell]);
+actions!(
+    qrate,
+    [
+        Search,
+        Undo,
+        Redo,
+        Cut,
+        Copy,
+        Paste,
+        Clear,
+        EditCell,
+        UnfreezeColumns
+    ]
+);
 
 /// `gpui_component`'s key context for the grid, which it puts on the table's own focus handle. Our
 /// keys bind against this rather than `TablePanel` so they can't fire while the cell editor holds
@@ -520,12 +533,20 @@ impl TablePanel {
         cx.write_to_clipboard(ClipboardItem::new_string(lines.join("\n")));
 
         if cut {
-            let mut blanked = Vec::new();
-            for &row in &rows {
-                blanked.extend(cols.clone().map(|col| (row, col, SharedString::default())));
-            }
-            self.write_cells(blanked, cx);
+            self.clear_range(cx);
         }
+    }
+
+    /// Blank every cell in the selection, as one undo step. Cut's second half, and Edit ▸ Clear.
+    fn clear_range(&mut self, cx: &mut Context<Self>) {
+        let Some((rows, cols)) = self.state.read(cx).delegate().range_cells() else {
+            return;
+        };
+        let mut blanked = Vec::new();
+        for row in rows {
+            blanked.extend(cols.clone().map(|col| (row, col, SharedString::default())));
+        }
+        self.write_cells(blanked, cx);
     }
 
     /// Paste the clipboard over the selection. One clipboard value across a multi-cell selection
@@ -910,6 +931,10 @@ impl Render for TablePanel {
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy_range(false, cx)))
             .on_action(cx.listener(|this, _: &Cut, _, cx| this.copy_range(true, cx)))
             .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste_range(cx)))
+            .on_action(cx.listener(|this, _: &Clear, _, cx| this.clear_range(cx)))
+            .on_action(cx.listener(|this, _: &UnfreezeColumns, _, cx| {
+                crate::set_frozen_columns(&this.state.clone(), 0, cx)
+            }))
             .p_2()
             .gap_2()
             // Find bar renders here, not in `title_suffix`: the parent `TabPanel` never observes us to redraw it.

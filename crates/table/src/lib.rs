@@ -17,7 +17,10 @@ pub mod photos;
 mod row_index;
 
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
-pub use panel::{Copy, Cut, EditCell, GRID_CONTEXT, Paste, Redo, Search, TablePanel, Undo};
+pub use panel::{
+    Clear, Copy, Cut, EditCell, GRID_CONTEXT, Paste, Redo, Search, TablePanel, Undo,
+    UnfreezeColumns,
+};
 
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
 pub const TABLE_STRIPES_KEY: &str = "table_stripes";
@@ -74,6 +77,16 @@ pub fn revalidate_now(cx: &mut App) {
 /// Commit `text` into a cell, mark the project dirty, and re-run validation — everything a
 /// committed edit does except going through the inline editor. What a fix menu applies through.
 pub fn write_cell(row: usize, col: usize, text: SharedString, cx: &mut App) {
+    write_cells(vec![(row, col, text)], cx);
+}
+
+/// [`write_cell`]'s bulk form: one undo step for the whole batch, one validation pass at the end.
+/// For menu items, which act on an explicitly clicked target; the keyboard and clipboard paths go
+/// through `TablePanel`'s own method of the same name, which debounces the validation instead.
+pub fn write_cells(cells: Vec<(usize, usize, SharedString)>, cx: &mut App) {
+    if cells.is_empty() {
+        return;
+    }
     let Some(state) = cx
         .try_global::<TableStateHandle>()
         .and_then(|h| h.0.upgrade())
@@ -81,12 +94,26 @@ pub fn write_cell(row: usize, col: usize, text: SharedString, cx: &mut App) {
         return;
     };
     state.update(cx, |state, cx| {
-        state.delegate_mut().apply_edit(vec![(row, col, text)]);
+        state.delegate_mut().apply_edit(cells);
         cx.emit(delegate::TableChanged);
         cx.notify();
     });
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
     revalidate_now(cx);
+}
+
+/// Every cell of one row, blanked — what the row header's "Clear row" writes.
+pub(crate) fn blank_row(row: usize, cx: &App) -> Vec<(usize, usize, SharedString)> {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return Vec::new();
+    };
+    let columns = state.read(cx).delegate().column_count();
+    (0..columns)
+        .map(|col| (row, col, SharedString::default()))
+        .collect()
 }
 
 /// Freeze the leading `count` data columns and remember it in the open project. `count` is a
