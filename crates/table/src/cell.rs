@@ -6,7 +6,7 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, BorderStyle, Bounds, Context, InteractiveElement as _, IntoElement,
+    AnyElement, BorderStyle, Bounds, Context, InteractiveElement as _, IntoElement, MouseButton,
     ParentElement as _, Pixels, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
     canvas, div, fill, outline, point, px, size,
 };
@@ -96,6 +96,21 @@ pub(crate) fn render_cell(
             })
             .tooltip_show_delay(note::HOVER_DELAY)
         })
+        // Right-click selects, so the cell the menu is about is the cell the menu looks like it is
+        // about. A click inside an existing range leaves it alone, the way a sheet does — otherwise
+        // aiming at a range to act on it would be what destroys it.
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |state, _, _, cx| {
+                let Some(view) = state.delegate().view_row(row_ix) else {
+                    return;
+                };
+                if !state.delegate().in_range(view, col_ix) {
+                    // Library column indices include the pinned `#` column at 0.
+                    state.set_selected_cell(view, col_ix + 1, cx);
+                }
+            }),
+        )
         .context_menu(move |menu, window, cx| {
             note::menu(
                 Target::Cell {
