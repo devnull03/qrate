@@ -44,6 +44,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // grid selection and is scoped to the grid, which keeps the cell editor's own Ctrl+Z/Ctrl+C
         // and its Enter-to-commit intact while it has focus.
         KeyBinding::new("ctrl-f", table::Search, Some("TablePanel")),
+        KeyBinding::new("ctrl-h", table::Replace, Some("TablePanel")),
         KeyBinding::new("enter", table::EditCell, Some(table::GRID_CONTEXT)),
         KeyBinding::new("ctrl-z", table::Undo, Some(table::GRID_CONTEXT)),
         KeyBinding::new("ctrl-y", table::Redo, Some(table::GRID_CONTEXT)),

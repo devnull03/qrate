@@ -304,6 +304,27 @@ impl QrateTableDelegate {
         )
     }
 
+    /// The cell writes replacing `needle` with `replacement` produces, in *source* coordinates and
+    /// ready for [`apply_edit`](Self::apply_edit). `only` limits it to one `(view_row, data_col)`
+    /// hit — Replace vs Replace All.
+    pub(crate) fn replace_edits(
+        &self,
+        needle: &str,
+        replacement: &str,
+        opts: SearchOpts,
+        only: Option<(usize, usize)>,
+    ) -> Cells {
+        replace_edits(
+            &self.rows,
+            &self.visible_rows,
+            self.columns.len(),
+            needle,
+            replacement,
+            opts,
+            only,
+        )
+    }
+
     /// Replaces the whole column/row model with real project data. Clears any selection/edit
     /// state, which may index into the old shape.
     pub fn set_data(&mut self, headers: &[String], rows: &[Vec<String>]) {
@@ -950,6 +971,44 @@ fn find_matches(
     hits
 }
 
+/// Rewrite matches in place: `Regex::replace_all` substitutes only the matched spans, so the rest
+/// of the cell's text survives and a cell with two occurrences gets both. Literal mode wraps the
+/// replacement in `NoExpand` so a `$` the user typed stays a `$`; regex mode leaves `$1` capture
+/// references working, which is the point of turning regex on.
+fn replace_edits(
+    rows: &[Vec<SharedString>],
+    visible: &[usize],
+    cols: usize,
+    needle: &str,
+    replacement: &str,
+    opts: SearchOpts,
+    only: Option<(usize, usize)>,
+) -> Cells {
+    let Some(re) = compile_search(needle, opts) else {
+        return Cells::new();
+    };
+    let mut edits = Cells::new();
+    for (view, &source) in visible.iter().enumerate() {
+        for col in 0..cols {
+            if only.is_some_and(|hit| hit != (view, col)) {
+                continue;
+            }
+            let Some(before) = rows.get(source).and_then(|r| r.get(col)) else {
+                continue;
+            };
+            let after = if opts.regex {
+                re.replace_all(before, replacement)
+            } else {
+                re.replace_all(before, regex::NoExpand(replacement))
+            };
+            if after != before.as_ref() {
+                edits.push((source, col, after.into_owned().into()));
+            }
+        }
+    }
+    edits
+}
+
 impl TableDelegate for QrateTableDelegate {
     fn columns_count(&self, _cx: &App) -> usize {
         // +1 for the pinned row-index column at table column 0.
@@ -1197,6 +1256,76 @@ mod tests {
         assert!(compile_search("(", opt(false, false, true)).is_none());
     }
 
+    /// Replace substitutes the match *inside* the cell — the text around it survives, and a cell
+    /// containing the needle twice gets both occurrences.
+    #[test]
+    fn replace_rewrites_only_the_match_inside_the_cell() {
+        let data = rows(&[&["Vancouver, BC"], &["BC ferries, BC coast"], &["Alberta"]]);
+        let edits = replace_edits(
+            &data,
+            &[0, 1, 2],
+            1,
+            "BC",
+            "British Columbia",
+            SearchOpts::default(),
+            None,
+        );
+        assert_eq!(
+            edits,
+            vec![
+                (0, 0, "Vancouver, British Columbia".into()),
+                (
+                    1,
+                    0,
+                    "British Columbia ferries, British Columbia coast".into()
+                ),
+            ],
+            "surrounding text survives; the non-matching row produces no edit"
+        );
+    }
+
+    /// `only` is a `(view_row, data_col)` hit from the find bar, but the edit it produces must
+    /// address the *source* row — the trap `filtered_view_index_diverges_from_source_index` guards.
+    #[test]
+    fn replace_writes_source_rows_under_a_filter() {
+        let data = rows(&[&["hide"], &["show me"], &["hide"], &["show me"]]);
+        let visible = compute_visible_rows(&data, &filters(&[&["hide"]]), "");
+        assert_eq!(visible, vec![1, 3]);
+        let opts = SearchOpts::default();
+        // One hit only: view row 1, which is source row 3.
+        assert_eq!(
+            replace_edits(&data, &visible, 1, "show", "keep", opts, Some((1, 0))),
+            vec![(3, 0, "keep me".into())]
+        );
+        // Replace All never touches the filtered-out rows.
+        assert_eq!(
+            replace_edits(&data, &visible, 1, "show", "keep", opts, None),
+            vec![(1, 0, "keep me".into()), (3, 0, "keep me".into())]
+        );
+    }
+
+    /// `$1` is a capture reference only when the user asked for regex; in literal mode a typed `$`
+    /// is just a dollar sign.
+    #[test]
+    fn replace_expands_captures_only_in_regex_mode() {
+        let data = rows(&[&["Smith, Jane"]]);
+        let regex = SearchOpts {
+            case: false,
+            word: false,
+            regex: true,
+        };
+        assert_eq!(
+            replace_edits(&data, &[0], 1, r"(\w+), (\w+)", "$2 $1", regex, None),
+            vec![(0, 0, "Jane Smith".into())]
+        );
+        let literal = rows(&[&["cost 5"]]);
+        assert_eq!(
+            replace_edits(&literal, &[0], 1, "5", "$5", SearchOpts::default(), None),
+            vec![(0, 0, "cost $5".into())],
+            "a literal replacement must not be read as a capture group"
+        );
+    }
+
     /// The mapping every edit/selection path goes through: in a filtered view a view index and
     /// its source index diverge, so `visible_rows[view]` is the only correct row to write.
     #[test]
@@ -1394,6 +1523,39 @@ mod app_tests {
 
                 assert!(delegate.undo());
                 assert_eq!(names(delegate), vec!["one", "two", "three", "four"]);
+                assert!(!delegate.undo(), "one step, not two");
+            });
+        });
+    }
+
+    /// Replace All rewrites however many cells as a single `Step::Cells`, so one Ctrl+Z puts the
+    /// whole sweep back. This is what the feature was deferred on originally.
+    #[gpui::test]
+    fn replace_all_is_one_undo_step(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                let media = |d: &super::QrateTableDelegate| {
+                    (0..d.rows.len())
+                        .map(|r| d.cell(r, 0).cloned().unwrap_or_default())
+                        .collect::<Vec<_>>()
+                };
+                let edits = delegate.replace_edits(
+                    "Video",
+                    "Videotape",
+                    super::SearchOpts::default(),
+                    None,
+                );
+                assert_eq!(edits.len(), 2);
+                delegate.apply_edit(edits);
+                assert_eq!(
+                    media(delegate),
+                    vec!["Film", "Videotape", "Videotape", "Film"]
+                );
+
+                assert!(delegate.undo());
+                assert_eq!(media(delegate), vec!["Film", "Video", "Video", "Film"]);
                 assert!(!delegate.undo(), "one step, not two");
             });
         });

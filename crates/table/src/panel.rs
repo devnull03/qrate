@@ -3,7 +3,7 @@ use std::ops::RangeInclusive;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, IconName, Selectable as _, Sizable as _,
+    ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     dock::{Panel, PanelControl, PanelEvent},
     h_flex,
@@ -48,6 +48,7 @@ actions!(
     qrate,
     [
         Search,
+        Replace,
         Undo,
         Redo,
         Cut,
@@ -116,6 +117,12 @@ pub struct TablePanel {
     search_error: bool,
     /// Repaints the find bar's "N of M" readout as its search box is typed into.
     _search_sub: Subscription,
+    /// The replacement text, on the find bar's second row while `replace_open`.
+    replace_input: Entity<InputState>,
+    /// Whether that second row is shown. Off by default (Zed's chevron): most finds don't replace.
+    replace_open: bool,
+    /// Replaces the current match on Enter in the replacement box.
+    _replace_sub: Subscription,
     /// Pending debounced autosave (the "timed" mode). Replacing it drops the prior task, which
     /// cancels its timer — that drop *is* the debounce, coalescing a burst of edits into one write.
     _autosave_task: Option<Task<()>>,
@@ -140,6 +147,7 @@ impl TablePanel {
                 .placeholder("Note")
         });
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in table"));
+        let replace_input = cx.new(|cx| InputState::new(window, cx).placeholder("Replace with"));
         let mut delegate = QrateTableDelegate::new(editor.clone(), note_editor.clone());
         // Show the open project's data, restoring its saved column order/widths. Without a
         // project (dev launch straight into the main window) the table starts empty.
@@ -364,6 +372,12 @@ impl TablePanel {
                 },
             );
 
+        let _replace_sub = cx.subscribe(&replace_input, |this, _input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.replace(false, cx);
+            }
+        });
+
         Self {
             focus_handle: cx.focus_handle(),
             state,
@@ -380,6 +394,9 @@ impl TablePanel {
             search_opts: SearchOpts::default(),
             search_error: false,
             _search_sub,
+            replace_input,
+            replace_open: false,
+            _replace_sub,
             _autosave_task: None,
             _revalidate_task: None,
         }
@@ -470,6 +487,37 @@ impl TablePanel {
         self.state.update(cx, |state, cx| {
             state.set_selected_cell(view_row, data_col + 1, cx)
         });
+    }
+
+    /// Rewrite the current match's cell, then re-find and land on the next hit. `all` does the
+    /// whole visible set instead, as a single undo step. Matches are cell-granular, so this
+    /// substitutes every occurrence *within* each affected cell and leaves the rest of its text.
+    fn replace(&mut self, all: bool, cx: &mut Context<Self>) {
+        let needle = self.search_input.read(cx).value().to_string();
+        let replacement = self.replace_input.read(cx).value().to_string();
+        let only = match all {
+            true => None,
+            false => match self.search_matches.get(self.search_ix) {
+                Some(&hit) => Some(hit),
+                None => return,
+            },
+        };
+        let cells = self.state.read(cx).delegate().replace_edits(
+            &needle,
+            &replacement,
+            self.search_opts,
+            only,
+        );
+        if all {
+            log::info!("replace all: rewrote {} cells", cells.len());
+        }
+        self.write_cells(cells, cx);
+        // The rewritten cell stops matching, so everything after it shifts down one — holding the
+        // index still is what lands us on the next match (Zed's replace-and-advance).
+        let at = self.search_ix;
+        self.refresh_search(cx);
+        self.search_ix = at.min(self.search_matches.len().saturating_sub(1));
+        self.select_current_match(cx);
     }
 
     /// Toggle the find bar. Opening focuses the query editor; closing returns focus to the table.
@@ -985,6 +1033,14 @@ impl Render for TablePanel {
             .key_context("TablePanel")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|this, _: &Search, window, cx| this.toggle_search(window, cx)))
+            // Ctrl+H opens the bar with the replacement row already out, rather than toggling it.
+            .on_action(cx.listener(|this, _: &Replace, window, cx| {
+                this.replace_open = true;
+                if !this.search_open {
+                    this.toggle_search(window, cx);
+                }
+                cx.notify();
+            }))
             // The find input propagates Escape (it doesn't consume it), so dismiss the bar here.
             .on_action(cx.listener(|this, _: &Escape, window, cx| this.dismiss_search(window, cx)))
             .on_action(cx.listener(|this, _: &Undo, _, cx| this.history_step(false, cx)))
@@ -1055,78 +1111,135 @@ impl Render for TablePanel {
                         })
                         .on_click(cx.listener(move |this, _, _, cx| this.toggle_opt(pick, cx)))
                 };
+                let has_matches = !self.search_matches.is_empty();
                 this.child(
-                    h_flex()
+                    v_flex()
                         .flex_none()
                         .gap_1()
-                        .items_center()
                         .pb_2()
                         .border_b_1()
                         .border_color(border)
                         .child(
                             h_flex()
-                                .flex_1()
-                                .items_center()
                                 .gap_1()
-                                .child(div().flex_1().child(Input::new(&self.search_input)))
-                                .child(toggle(
-                                    "search-case",
-                                    Some(IconName::CaseSensitive),
-                                    "",
-                                    "Match case",
-                                    opts.case,
-                                    |o| &mut o.case,
-                                ))
-                                .child(toggle(
-                                    "search-word",
-                                    None,
-                                    "W",
-                                    "Match whole word",
-                                    opts.word,
-                                    |o| &mut o.word,
-                                ))
-                                .child(toggle(
-                                    "search-regex",
-                                    None,
-                                    ".*",
-                                    "Use regular expression",
-                                    opts.regex,
-                                    |o| &mut o.regex,
-                                )),
+                                .items_center()
+                                .child(
+                                    Button::new("replace-toggle")
+                                        .ghost()
+                                        .small()
+                                        .icon(match self.replace_open {
+                                            true => IconName::ChevronDown,
+                                            false => IconName::ChevronRight,
+                                        })
+                                        .tooltip("Toggle replace (Ctrl+H)")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.replace_open = !this.replace_open;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    h_flex()
+                                        .flex_1()
+                                        .items_center()
+                                        .gap_1()
+                                        .child(div().flex_1().child(Input::new(&self.search_input)))
+                                        .child(toggle(
+                                            "search-case",
+                                            Some(IconName::CaseSensitive),
+                                            "",
+                                            "Match case",
+                                            opts.case,
+                                            |o| &mut o.case,
+                                        ))
+                                        .child(toggle(
+                                            "search-word",
+                                            None,
+                                            "W",
+                                            "Match whole word",
+                                            opts.word,
+                                            |o| &mut o.word,
+                                        ))
+                                        .child(toggle(
+                                            "search-regex",
+                                            None,
+                                            ".*",
+                                            "Use regular expression",
+                                            opts.regex,
+                                            |o| &mut o.regex,
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .min_w(px(64.))
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child(count),
+                                )
+                                .child(
+                                    Button::new("search-prev")
+                                        .icon(IconName::ChevronUp)
+                                        .ghost()
+                                        .small()
+                                        .tooltip("Previous match (Shift+Enter)")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.goto_match(-1, cx)),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("search-next")
+                                        .icon(IconName::ChevronDown)
+                                        .ghost()
+                                        .small()
+                                        .tooltip("Next match (Enter)")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.goto_match(1, cx)),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("search-close")
+                                        .icon(IconName::Close)
+                                        .ghost()
+                                        .small()
+                                        .tooltip("Close find (Esc)")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.dismiss_search(window, cx)
+                                        })),
+                                ),
                         )
-                        .child(
-                            div()
-                                .min_w(px(64.))
-                                .text_xs()
-                                .text_color(muted)
-                                .child(count),
-                        )
-                        .child(
-                            Button::new("search-prev")
-                                .icon(IconName::ChevronUp)
-                                .ghost()
-                                .small()
-                                .tooltip("Previous match (Shift+Enter)")
-                                .on_click(cx.listener(|this, _, _, cx| this.goto_match(-1, cx))),
-                        )
-                        .child(
-                            Button::new("search-next")
-                                .icon(IconName::ChevronDown)
-                                .ghost()
-                                .small()
-                                .tooltip("Next match (Enter)")
-                                .on_click(cx.listener(|this, _, _, cx| this.goto_match(1, cx))),
-                        )
-                        .child(
-                            Button::new("search-close")
-                                .icon(IconName::Close)
-                                .ghost()
-                                .small()
-                                .tooltip("Close find (Esc)")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.dismiss_search(window, cx)
-                                })),
-                        ),
+                        .when(self.replace_open, |bar| {
+                            bar.child(
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    // Indent past the chevron so the two inputs line up.
+                                    .pl_7()
+                                    .child(div().flex_1().child(Input::new(&self.replace_input)))
+                                    .child(
+                                        Button::new("replace-one")
+                                            .ghost()
+                                            .small()
+                                            .label("Replace")
+                                            .disabled(!has_matches)
+                                            .tooltip("Replace in this cell (Enter)")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.replace(false, cx)
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("replace-all")
+                                            .ghost()
+                                            .small()
+                                            .label("All")
+                                            .disabled(!has_matches)
+                                            .tooltip("Replace every match in the visible rows")
+                                            .on_click(
+                                                cx.listener(|this, _, _, cx| {
+                                                    this.replace(true, cx)
+                                                }),
+                                            ),
+                                    ),
+                            )
+                        }),
                 )
             })
             .child(

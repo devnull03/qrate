@@ -14,7 +14,6 @@ item that points at nothing is a promise nobody made.
 | Sheets feature | What it needs first |
 |---|---|
 | Sort A→Z / Z→A, sort range | A sort descriptor persisted apart from the source data, and visible rows built by filtering then sorting row identities — `menu-handoff.md` M5. The most obviously missing item; a cataloguer expects to sort by title. |
-| Find and replace | Find exists (Ctrl+F). Replace needs the match set to route through `apply_edit` as one undo step. |
 | Paste special (values only, transposed) | Ordinary paste landed first; qrate has no cell formatting, so "values only" is currently a distinction without a difference. Revisit if cells ever carry formatting. |
 | Hide / resize row | Columns already resize. Hiding rows competes with filters, which are visible and reversible — `menu-handoff.md` argues hidden-row state is easy to lose. Resizing rows is coupled to ASNT-44 (wrapped text needs variable row height). |
 | Remove duplicates, trim whitespace | Real archival cleanup work, but each needs a preview and one-step undo before it is safe to offer. |
