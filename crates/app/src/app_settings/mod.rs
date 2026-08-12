@@ -37,7 +37,8 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                     .into(),
                 ),
             )
-            .group(saving_group(cx)),
+            .group(saving_group(cx))
+            .group(previews_group()),
         columns_page(cx),
         authorities_page(cx),
         SettingPage::new("Spelling").group(spelling_group(cx)),
@@ -288,6 +289,33 @@ fn plugin_item(id: SharedString, spec: SettingSpec) -> SettingItem {
 /// (`off`/`timed`/`immediate`): the switch is off iff the value is `off`, so an unset value reads as
 /// on. The method row only exists while autosave is on — the Settings window observes settings
 /// globals (see `SettingsWindow`), so flipping the switch rebuilds this page live.
+/// Nothing prunes the thumbnail cache: an entry is keyed by the file's mtime and size, so a stale
+/// one is never served, and a miss costs only a re-decode. That makes a button the honest control —
+/// the user reclaims the space when they want it rather than tuning a policy.
+fn previews_group() -> SettingGroup {
+    SettingGroup::new().title("Previews").item(
+        SettingItem::new(
+            "Cached thumbnails",
+            SettingField::element(|_opts: &_, _window: &mut _, _cx: &mut _| {
+                Button::new("clear-preview-cache")
+                    .small()
+                    .label("Clear cache")
+                    .on_click(|_, _, _| match preview::cache::clear() {
+                        Ok(count) => log::info!("cleared {count} cached preview thumbnails"),
+                        Err(err) => {
+                            log::error!("could not clear the preview thumbnail cache: {err}");
+                        }
+                    })
+                    .into_any_element()
+            }),
+        )
+        .description(
+            "Downscaled copies of your files, so photos and scans open instantly the second time. \
+             Deleting them frees disk space; they are rebuilt as you browse.",
+        ),
+    )
+}
+
 fn saving_group(cx: &App) -> SettingGroup {
     let mut group = SettingGroup::new().title("Saving").item(
         SettingItem::new(

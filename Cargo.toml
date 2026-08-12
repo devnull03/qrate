@@ -8,6 +8,7 @@ members = [
   "crates/diagnostics",
   "crates/plugin-api",
   "crates/plugin-host",
+  "crates/preview",
   "crates/project-wizard",
   "crates/settings",
   "crates/spellcheck",

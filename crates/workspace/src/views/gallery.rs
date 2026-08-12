@@ -9,8 +9,8 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{ActiveTheme, Icon, table::TableState};
-use table::photos::{is_previewable_image, placeholder_icon};
+use gpui_component::{ActiveTheme, table::TableState};
+use preview::{can_preview, thumb};
 use table::{QrateTableDelegate, Selection};
 
 /// Card geometry. Wide enough to tell two scans of the same document apart, small enough that a
@@ -22,9 +22,11 @@ const GAP: f32 = 8.;
 /// The gallery body. `width` is the measured body width, for the column count.
 ///
 /// A `uniform_list` of card-rows rather than one wrapping scroll container: a wrapping container
-/// mounts an `img` per table row and gpui decodes each at full size, so a 2000-scan collection —
-/// precisely what this view is for — would decode all 2000 on the first frame. This builds only
-/// the visible band.
+/// mounts an element per table row, so a 2000-scan collection — precisely what this view is for —
+/// would ask for all 2000 previews on the first frame. This builds only the visible band.
+///
+/// That bounds what is *requested*; what is *kept* is bounded separately, by the byte budget in
+/// `preview`. Both are needed — windowing alone still accumulates every card scrolled past.
 ///
 /// Returns `AnyElement`: it is one arm of a `match` in `ViewsPanel::render`, and gpui's chained
 /// builder types are deep enough that two concrete ones meeting there overflows rustc's stack.
@@ -91,27 +93,9 @@ fn card(state: &Entity<TableState<QrateTableDelegate>>, view: usize, cx: &mut Ap
         Some(Selection::Cell { row, .. } | Selection::Row(row)) if row == source
     );
 
-    // Both the decode-failure fallback and the whole frame for a file `img()` can't read. Captures
-    // by value: the fallback closure is `'static` and may re-run, so it can't borrow `cx`.
-    let placeholder = {
-        let color = cx.theme().muted_foreground;
-        let icon = placeholder_icon(path.as_deref());
-        move || {
-            div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(color)
-                // `IconName` isn't `Copy` and `with_fallback` wants `Fn`, so clone per call.
-                .child(Icon::new(icon.clone()).size_6())
-                .into_any_element()
-        }
-    };
-    let show_image = path.as_deref().is_some_and(is_previewable_image);
     // Only a decodable image is worth opening; a placeholder card has nothing to zoom into, so
     // clicking one selects the row and leaves the grid up.
-    let viewable = path.clone().filter(|_| show_image);
+    let viewable = path.clone().filter(|path| can_preview(path));
 
     let state = state.clone();
     div()
@@ -132,25 +116,11 @@ fn card(state: &Entity<TableState<QrateTableDelegate>>, view: usize, cx: &mut Ap
         .when(!selected, |card| {
             card.hover(|card| card.bg(cx.theme().accent))
         })
-        .child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .overflow_hidden()
-                .flex()
-                .items_center()
-                .justify_center()
-                .map(|frame| match (show_image, path) {
-                    (true, Some(path)) => frame.child(
-                        img(path)
-                            .max_w_full()
-                            .max_h_full()
-                            .object_fit(ObjectFit::Contain)
-                            .with_fallback(placeholder),
-                    ),
-                    _ => frame.child(placeholder()),
-                }),
-        )
+        .child(div().flex_1().min_h_0().overflow_hidden().child(thumb(
+            path.as_deref(),
+            preview::CARD,
+            cx,
+        )))
         .child(
             div()
                 .flex_none()

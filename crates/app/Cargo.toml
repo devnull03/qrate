@@ -22,6 +22,7 @@ project-wizard = { path = "../project-wizard" }
 checks = { path = "../checks" }
 data-exchange = { path = "../data-exchange" }
 diagnostics = { path = "../diagnostics" }
+preview = { path = "../preview" }
 settings = { path = "../settings" }
 # The dictionary is half a megabyte, so only the composition root links it — see `crates/spellcheck`.
 spellcheck = { path = "../spellcheck" }
