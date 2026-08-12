@@ -62,6 +62,11 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-x", table::Cut, Some(table::GRID_CONTEXT)),
         KeyBinding::new("ctrl-c", table::Copy, Some(table::GRID_CONTEXT)),
         KeyBinding::new("ctrl-v", table::Paste, Some(table::GRID_CONTEXT)),
+        // Blank the selection, the spreadsheet convention — and both keys, since Sheets and Excel
+        // accept either. Scoped to the grid like the clipboard keys above, which is what keeps
+        // Backspace deleting *text* while the cell editor or the find bar holds focus.
+        KeyBinding::new("backspace", table::Clear, Some(table::GRID_CONTEXT)),
+        KeyBinding::new("delete", table::Clear, Some(table::GRID_CONTEXT)),
     ]
     .into_iter()
     // Ctrl+1, Ctrl+2, … pick a view directly, in `ViewMode::ALL` order — so a new view gets its

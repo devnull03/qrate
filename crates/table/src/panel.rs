@@ -1317,11 +1317,69 @@ const SUGGEST_H: f32 = 180.;
 
 #[cfg(test)]
 mod tests {
-    use gpui::{Bounds, Pixels, SharedString, point, px, size};
+    // Never `use super::*` here — the parent's `use gpui::*` would shadow `#[test]`.
+    use gpui::{Bounds, Pixels, SharedString, TestAppContext, point, px, size};
 
     /// `paste_cells` output as `(row, col, text)` with plain strs, for readable assertions.
     fn wrote(cells: &[(usize, usize, SharedString)]) -> Vec<(usize, usize, &str)> {
         cells.iter().map(|(r, c, v)| (*r, *c, v.as_ref())).collect()
+    }
+
+    /// What Backspace and Delete do to the selection, and the promise that it is one undo step.
+    /// Autosave off so the temp project file is never written.
+    #[gpui::test]
+    fn clearing_the_selection_blanks_it_and_undoes_as_one_step(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            let mut app = settings::AppSettings::default();
+            app.values.insert(
+                settings::AUTOSAVE_KEY.into(),
+                settings::Val::Text("off".into()),
+            );
+            cx.set_global(app);
+            cx.set_global(settings::project::CurrentProject {
+                file: std::env::temp_dir().join("qrate-clear-range.qrate"),
+                data: settings::project::ProjectData {
+                    name: "T".into(),
+                    columns: Vec::new(),
+                    headers: vec!["Medium".into(), "Title".into()],
+                    rows: vec![
+                        vec!["Film".into(), "one".into()],
+                        vec!["Video".into(), "two".into()],
+                    ],
+                    values: Default::default(),
+                },
+            });
+        });
+        let (panel, cx) = cx.add_window_view(super::TablePanel::new);
+        let state = panel.read_with(cx, |panel, _| panel.state.clone());
+
+        // A two-cell selection: row 1, both columns — what shift-clicking across them leaves.
+        cx.update(|_, cx| {
+            state.update(cx, |state, _| {
+                state.delegate_mut().selection =
+                    Some(crate::delegate::Selection::Cell { row: 1, col: 0 });
+                state.delegate_mut().range = Some(((1, 0), (1, 1)));
+            });
+        });
+
+        let row1 = |cx: &mut gpui::VisualTestContext| {
+            state.read_with(cx, |state, _| {
+                (0..2)
+                    .map(|col| state.delegate().cell(1, col).cloned().unwrap_or_default())
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(row1(cx), vec!["Video", "two"]);
+
+        panel.update(cx, |panel, cx| panel.clear_range(cx));
+        assert_eq!(row1(cx), vec!["", ""], "both cells blanked");
+
+        cx.update(|_, cx| crate::history_step(false, cx));
+        assert_eq!(row1(cx), vec!["Video", "two"], "one undo puts both back");
+
+        cx.update(|_, cx| crate::history_step(true, cx));
+        assert_eq!(row1(cx), vec!["", ""], "and redo blanks them again");
     }
 
     #[test]
