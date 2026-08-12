@@ -289,9 +289,9 @@ fn plugin_item(id: SharedString, spec: SettingSpec) -> SettingItem {
 /// (`off`/`timed`/`immediate`): the switch is off iff the value is `off`, so an unset value reads as
 /// on. The method row only exists while autosave is on — the Settings window observes settings
 /// globals (see `SettingsWindow`), so flipping the switch rebuilds this page live.
-/// Nothing prunes the thumbnail cache: an entry is keyed by the file's mtime and size, so a stale
-/// one is never served, and a miss costs only a re-decode. That makes a button the honest control —
-/// the user reclaims the space when they want it rather than tuning a policy.
+/// The cache looks after itself — entries are keyed by the file's mtime and size, so a stale one
+/// is never served, and it drops its oldest once it passes a couple of gigabytes. The button is
+/// for reclaiming the space now rather than for correctness.
 fn previews_group() -> SettingGroup {
     SettingGroup::new().title("Previews").item(
         SettingItem::new(
@@ -311,7 +311,8 @@ fn previews_group() -> SettingGroup {
         )
         .description(
             "Downscaled copies of your files, so photos and scans open instantly the second time. \
-             Deleting them frees disk space; they are rebuilt as you browse.",
+             They are capped at 2 GB and rebuilt as you browse, so deleting them is safe — it \
+             only makes the next look at each file slower.",
         ),
     )
 }

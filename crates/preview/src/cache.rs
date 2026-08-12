@@ -5,14 +5,23 @@
 //! than rebuilt each session. Tropy does the same thing with WebP variants.
 //!
 //! Entries are keyed by content identity (path, size, mtime) as well as by the requested edge, so
-//! a re-scanned file simply misses and a stale entry is never served. Nothing invalidates or
-//! prunes: a miss is cheap and orphans are inert, so the only cleanup is the user asking for it.
+//! a re-scanned file simply misses and a stale entry is never served. Nothing needs invalidating
+//! as a result — but editing a file orphans its old entry, and orphans are inert and permanent, so
+//! the directory only ever grows. [`prune`] puts a ceiling on that.
 
 use std::fs;
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::path::{Path, PathBuf};
 
 use image::RgbaImage;
+
+/// How much disk the cache may hold before old entries are dropped.
+///
+/// Sized so a real collection never reaches it: two variants per file at roughly 32 KB and 100 KB
+/// puts ten thousand items near 1.3 GB only if every one has been viewed at both sizes. The cap is
+/// a backstop against unbounded growth from orphans, not a working limit — a cache that evicts
+/// during normal use would cost more in re-decoding than it saves in disk.
+const CAP: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Where the downscaled copies live — the platform's own cache location, so an OS cleanup tool
 /// treats them as what they are. `None` if it can't be created, which degrades to decoding from
@@ -92,6 +101,55 @@ pub fn write(key: &str, image: &RgbaImage) {
     if let Err(err) = written {
         log::warn!("could not cache a preview thumbnail, previews will be slower: {err}");
     }
+
+    // Once per run, on the first entry written. Doing it per write would stat the whole directory
+    // on every thumbnail; doing it at startup would charge the cost to launch even when nothing
+    // is ever cached. A session that only reads existing entries has not grown anything.
+    static PRUNED: std::sync::Once = std::sync::Once::new();
+    PRUNED.call_once(|| prune(&dir, CAP));
+}
+
+/// Drop the oldest entries until `dir` holds at most `cap` bytes.
+///
+/// Oldest by write time, so this is FIFO rather than least-recently-used: keeping true LRU would
+/// mean touching every entry's mtime on read, which is a write to disk for what is meant to be the
+/// cheap path. With a cap set well above a working collection the distinction rarely arises, and
+/// an evicted entry costs one re-decode.
+///
+/// Takes the directory rather than reading it from [`dir`] so a test can drive it without emptying
+/// the real cache.
+pub fn prune(dir: &Path, cap: u64) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            Some((meta.modified().ok()?, meta.len(), entry.path()))
+        })
+        .collect();
+
+    let mut total: u64 = files.iter().map(|(_, len, _)| len).sum();
+    if total <= cap {
+        return;
+    }
+
+    files.sort_by_key(|(written, _, _)| *written);
+    let mut dropped = 0;
+    for (_, len, path) in files {
+        if total <= cap {
+            break;
+        }
+        if fs::remove_file(&path).is_ok() {
+            total = total.saturating_sub(len);
+            dropped += 1;
+        }
+    }
+    log::info!("preview cache was over {cap} bytes; dropped {dropped} of the oldest entries");
 }
 
 /// Delete every cached rendering. Returns how many entries went, for the message the caller shows.
@@ -178,5 +236,42 @@ mod tests {
         assert_eq!(back.get_pixel(1, 1).0, [10, 20, 30, 255]);
 
         assert!(cache::read("qrate-test-never-written").is_none());
+    }
+
+    /// Without a ceiling the cache grows forever: every edit to a source file orphans its old
+    /// entry, and nothing else ever removes one. Driven against a temp directory with a tiny cap,
+    /// so it neither depends on nor destroys the real cache.
+    #[test]
+    fn pruning_drops_the_oldest_entries_until_it_is_under_the_cap() {
+        let dir = std::env::temp_dir().join("qrate-prune-probe");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Written oldest-first, with a pause so the filesystem's mtime resolution can tell them
+        // apart — without that the sort order would be arbitrary and the test meaningless.
+        for name in ["oldest", "middle", "newest"] {
+            std::fs::write(dir.join(name), vec![b'x'; 1000]).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        // Room for two of the three.
+        cache::prune(&dir, 2500);
+
+        assert!(!dir.join("oldest").exists(), "the oldest entry went");
+        assert!(dir.join("middle").exists(), "the newer two stayed");
+        assert!(dir.join("newest").exists());
+
+        // Already under the cap: nothing may be touched.
+        cache::prune(&dir, 10_000);
+        assert!(dir.join("middle").exists() && dir.join("newest").exists());
+
+        // A cap smaller than any single entry still terminates rather than looping.
+        cache::prune(&dir, 0);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+
+        // A directory that isn't there is not an error — the cache may never have been created.
+        cache::prune(std::path::Path::new("/nonexistent/qrate-prune"), 100);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
