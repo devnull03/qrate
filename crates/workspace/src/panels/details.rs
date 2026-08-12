@@ -44,8 +44,6 @@ pub struct DetailsPanel {
     _handle_sub: Subscription,
     /// Re-renders on any table change (selection, edits, column moves).
     _table_sub: Option<Subscription>,
-    /// Adds and removes the image pane as the centre's photo overlay opens and closes.
-    _viewer_sub: Subscription,
     /// Re-renders when the bottom dock opens/closes, so the strip-crop padding tracks it.
     _crop_sub: Subscription,
     /// The field editor, shared across whichever field is open — the same one-per-panel
@@ -81,9 +79,6 @@ impl DetailsPanel {
             _handle_sub,
             _table_sub: None,
             _crop_sub: cx.observe_global::<BottomDockCrop>(|_this: &mut Self, cx| cx.notify()),
-            _viewer_sub: cx.observe_global::<crate::image_viewer::ActiveImageViewer>(
-                |_this: &mut Self, cx| cx.notify(),
-            ),
             editor,
             editing: None,
             _editor_sub,
@@ -298,9 +293,11 @@ impl Render for DetailsPanel {
         });
 
         let crop = cx.try_global::<BottomDockCrop>().map_or(px(0.), |c| c.0);
-        // The centre is showing this photo full-size, so this panel's own preview is redundant.
-        let centre_viewer =
-            crate::image_viewer::viewer_in(crate::ViewerScope::Centre, cx).is_some();
+        // The gallery is already a wall of the same thumbnails, so this panel's own copy is
+        // redundant there — read from the setting `views::switch` writes, which is also what
+        // survives a relaunch, rather than reaching into the centre panel.
+        let gallery = crate::ViewMode::parse(&settings::effective_text(crate::VIEW_MODE_KEY, cx))
+            == crate::ViewMode::Gallery;
 
         let Some((fields, image_path)) = selection.filter(|(f, _)| !f.is_empty()) else {
             return div()
@@ -422,10 +419,9 @@ impl Render for DetailsPanel {
                             );
                         }
                     })
-                    // Dropped entirely while the centre panel is showing the photo full-size (a
-                    // clicked gallery card): a thumbnail of what you are already looking at is
-                    // just less room for the fields. The pane comes back when the viewer closes.
-                    .when(!centre_viewer, |split| {
+                    // Dropped entirely in the gallery: the cards are already showing this photo,
+                    // so the pane is just less room for the fields. It comes back with the grid.
+                    .when(!gallery, |split| {
                         split.child(
                             resizable_panel()
                                 .size(px(image_height))
@@ -526,7 +522,12 @@ mod tests {
 
     #[gpui::test]
     fn details_panel_shows_no_selection_without_a_table(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            // `render` reads the view mode through `settings`, which `main` initializes before
+            // any window exists — so a panel with no settings at all is not a state the app has.
+            cx.set_global(settings::AppSettings::default());
+        });
         // No `TableStateHandle` global set — `DetailsPanel::bind` finds nothing, so `render`
         // takes the "No selection" branch. Mirrors dev-launch-with-no-project.
         cx.add_window_view(DetailsPanel::new);
