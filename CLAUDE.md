@@ -44,6 +44,7 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | `spellcheck` | dictionary catalogue behind `diagnostics::spelling` |
 | `plugin-host` | the Luau runtime that loads and runs plugins |
 | `plugin-api` | the types a plugin sees — see the three-repo rule below |
+| `preview` | turns a linked file into pixels — the format ladder and the thumbnail cache. Native decoders (PDF, video, RAW) belong here so they never reach `table` |
 | `ai` | traits + Cohere/mock providers for planned AI review/embedding. Deliberately unfinished |
 
 ## Project Status Tracking
@@ -84,6 +85,26 @@ A 2026-07-17 whole-repo audit removed exactly this kind of code; don't reintrodu
 - **One builder function per UI component, conditions inline.** Don't split a gpui component into a helper fn per visual part — use closures, `FluentBuilder::map`/`when`, and `match` inside a single function (see `render_image_frame` in `crates/workspace/src/panels/details.rs`). If a builder is genuinely shared across multiple `Render` impls, return `AnyElement` — propagating gpui's nested builder generics into several callers overflows rustc's stack at type-check time.
 - **No speculative scaffolding.** Code "kept for later" outside the module tree, provider stubs full of `todo!()`, and builder methods only tests call are deletions, not investments — git history is the archive. **One deliberate exception, do not flag or delete it:** the `ai` crate (`crates/ai/` — traits + Cohere/mock providers) is the planned home for AI review/embedding and stays despite its `todo!()` bodies.
 - **Explanation comments.** If you have to write a comment of more than 1 line to justify a decision, that is the wrong decision. Go back and rethink the implementation from the start in a different manner.
+
+## Preview binaries
+
+`crates/preview` renders PDFs through PDFium and video through ffmpeg. Neither is linked: PDFium
+is `dlopen`ed and ffmpeg is spawned as a subprocess, both looked for **beside the running
+executable** first and then on the system. A checkout without them builds, launches and passes CI
+— those file types just fall back to a type icon.
+
+```bash
+./scripts/fetch-binaries.sh                 # into target/debug, for cargo run
+./scripts/fetch-binaries.sh target/release  # before building an installer
+```
+
+Consequence for tests: `preview`'s PDF and media tests assert *behaviour that depends on what is
+installed*. With the binary present they require a real render; without it they require a clean
+decline. Both directions are real assertions — if a test says "skipping", that is the no-binary
+path, not a pass. Run the script before trusting a green PDF/video test.
+
+`scripts/installer.nsi` and `scripts/bundle-mac.sh` pick both binaries up from beside the built
+executable, optionally — a package built without them installs a working, degraded qrate.
 
 ## Logging
 
