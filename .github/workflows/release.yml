@@ -104,6 +104,22 @@ jobs:
             -output universal-app
           lipo -info universal-app
 
+      # `bundle-mac.sh` picks the sidecars up from beside the binary it is given, so they have to
+      # land next to `universal-app`. PDFium's universal build, not a per-arch one: a single-arch
+      # dylib inside a universal .app would fail to load on the other half of the Macs it runs on.
+      #
+      # ffmpeg is deliberately not bundled here. `brew install ffmpeg` is the normal way to get it
+      # on a Mac, the media tier finds it on PATH, and carrying our own would add ~50 MB to the dmg
+      # for users who mostly already have it.
+      - name: Fetch preview binaries
+        env:
+          QRATE_PDFIUM_ARCH: univ
+          QRATE_SKIP_FFMPEG: 1
+        run: |
+          chmod +x scripts/fetch-binaries.sh
+          ./scripts/fetch-binaries.sh .
+          lipo -info libpdfium.dylib || true
+
       - name: Bundle .app and .dmg
         run: |
           chmod +x scripts/bundle-mac.sh
@@ -132,24 +148,41 @@ jobs:
       - name: Install NSIS
         run: choco install nsis -y --no-progress
 
+      # PDFium and ffmpeg are loaded at runtime from beside the executable. Windows has no package
+      # manager we can rely on, so both ship with the app — without them a released build shows a
+      # type icon for every PDF and video. This is what makes the installer large (ffmpeg is most
+      # of it); the download failing is not fatal, it just produces a degraded build.
+      - name: Fetch preview binaries
+        shell: bash
+        run: |
+          mkdir -p dist/portable
+          chmod +x scripts/fetch-binaries.sh
+          ./scripts/fetch-binaries.sh dist/portable
+
       - name: Package zip + installer
         shell: pwsh
         run: |
           $ver = "${{ needs.version.outputs.version }}"
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/app.exe dist/qrate.exe
-          Compress-Archive -Path dist/qrate.exe `
+          Copy-Item target/release/app.exe dist/portable/qrate.exe
+          # Zip the staging folder's *contents*, so the sidecars sit beside qrate.exe on extract —
+          # which is exactly where the preview tiers look for them.
+          Compress-Archive -Path dist/portable/* `
             -DestinationPath "dist/qrate-$ver-x86_64.zip" -Force
           $nsis = "C:\Program Files (x86)\NSIS\makensis.exe"
           & $nsis `
             "/DVERSION=$ver" `
             "/DVIVERSION=${{ needs.version.outputs.vi_version }}" `
-            "/DSRCEXE=$PWD\dist\qrate.exe" `
+            "/DSRCEXE=$PWD\dist\portable\qrate.exe" `
+            "/DSRCDIR=$PWD\dist\portable" `
             "/DICONFILE=$PWD\assets\icons\app-icon.ico" `
             "/DOUTFILE=$PWD\dist\qrate-$ver-setup.exe" `
             scripts\installer.nsi
           if ($LASTEXITCODE -ne 0) { throw "makensis failed ($LASTEXITCODE)" }
-          Remove-Item dist/qrate.exe
+          Remove-Item -Recurse -Force dist/portable
+
+      - name: Report what shipped
+        shell: bash
+        run: ls -lh dist/
 
       - uses: actions/upload-artifact@v4
         with:
@@ -184,11 +217,16 @@ jobs:
 
       - name: Package tarball
         run: |
+          chmod +x scripts/fetch-binaries.sh
           ver="${{ needs.version.outputs.version }}"
           stage="qrate-$ver-x86_64-linux"
           mkdir -p "$stage"
           cp target/release/app "$stage/qrate"
           cp assets/icons/app-icon.png "$stage/qrate.png"
+          # PDFium ships in the tarball beside the binary, where the preview tier looks for it.
+          # ffmpeg does not: it is one `apt install` away and every distro packages it, so we
+          # would be shipping ~50 MB to duplicate something already on most machines.
+          QRATE_SKIP_FFMPEG=1 ./scripts/fetch-binaries.sh "$stage"
           printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=qrate' \
             'Exec=qrate' 'Icon=qrate' 'Categories=Office;Database;' \
             > "$stage/qrate.desktop"
@@ -250,6 +288,19 @@ jobs:
             - **Linux:** `*-x86_64-linux.tar.gz` (Wayland + X11; needs a Vulkan driver)
 
             Verify your download against `SHA256SUMS.txt`.
+
+            ### File previews
+            PDF previews work out of the box everywhere — PDFium ships in every download.
+
+            Video previews and JPEG 2000/AVIF/HEIC need **ffmpeg**. It is bundled on Windows;
+            on macOS and Linux install it and qrate will find it on your `PATH`:
+
+            ```
+            brew install ffmpeg          # macOS
+            sudo apt install ffmpeg      # Debian/Ubuntu
+            ```
+
+            Without it those files fall back to a file-type icon; nothing else is affected.
 
             > [!NOTE]
             > These builds are **unsigned**.

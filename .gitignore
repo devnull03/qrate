@@ -1,6 +1,14 @@
 # rust
 /target
 
+# Packaging output, plus the runtime binaries scripts/fetch-binaries.sh drops beside a build.
+/dist
+pdfium.dll
+libpdfium.so
+libpdfium.dylib
+ffmpeg
+ffmpeg.exe
+
 # AI stuff
 .cursor/
 .claude/

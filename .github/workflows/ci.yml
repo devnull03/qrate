@@ -45,6 +45,19 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
+      # Without PDFium the preview crate's PDF tests assert a clean *decline* rather than a real
+      # render — they pass either way, so a build that silently broke rendering would stay green.
+      # ~4 MB, so it is worth fetching to make those tests mean something. ffmpeg is skipped: the
+      # download is ~100 MB and every GitHub runner already has one on PATH, which the media tier
+      # finds by itself.
+      - name: Fetch PDFium for the preview tests
+        env:
+          QRATE_SKIP_FFMPEG: 1
+        run: |
+          chmod +x scripts/fetch-binaries.sh
+          ./scripts/fetch-binaries.sh target/debug/deps
+        shell: bash
+
       - name: Format check
         run: cargo fmt --all --check
 
