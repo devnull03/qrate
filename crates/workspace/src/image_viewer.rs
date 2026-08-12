@@ -128,8 +128,13 @@ impl Render for ImageViewer {
         div()
             .track_focus(&self.focus_handle)
             .id("image-viewer")
-            // Fills the workspace overlay slot; `absolute` so it stacks over the dock content.
+            // Fills whichever overlay slot mounted it; `absolute` so it stacks over that slot's
+            // content. `top_0`/`left_0` are load-bearing: with no insets an absolute box takes a
+            // *static* position, i.e. after its in-flow siblings — so in the centre slot, whose
+            // sibling is the full-width view body, the overlay lands just off its right edge.
             .absolute()
+            .top_0()
+            .left_0()
             .size_full()
             .overflow_hidden()
             // Register an opaque hitbox over the whole overlay so clicks and scrolls land here
@@ -198,7 +203,8 @@ impl Render for ImageViewer {
                         // `flex_shrink_0` keeps `relative(zoom)` past 1; `relative` + `left`/`top` pan it.
                         //
                         // `FULL`, so zooming in reaches the file's real detail rather than
-                        // magnifying a thumbnail — this is the one place that asks for no cap.
+                        // magnifying a thumbnail — this is the one place that asks for no cap,
+                        // and for an image it is the original file gpui draws, not our copy.
                         img(preview::source(&self.path, preview::FULL, page))
                             .flex_shrink_0()
                             .relative()
