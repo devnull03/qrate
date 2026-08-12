@@ -50,28 +50,42 @@ pub fn read(key: &str) -> Option<RgbaImage> {
 /// Store `image` as `key`. Failure is logged and ignored — an unwritable cache directory should
 /// cost speed, never a preview.
 ///
-/// JPEG unless the image actually uses its alpha channel, which is the difference between roughly
-/// 40 KB and 400 KB per entry; across a ten-thousand-row collection that is the difference between
-/// a cache the user never notices and one they do.
+/// Two encodings, picked by whether the alpha channel is actually used:
+///
+/// - **JPEG at quality 85** for an opaque image, which almost everything in a collection is. A
+///   scan or a photograph is what lossy compression was designed for, and at 512px the artefacts
+///   are invisible while the entry is roughly a tenth the size of a lossless one.
+/// - **Lossless WebP** when there is real transparency. It is smaller than PNG and faster to
+///   encode, and it is the only lossless format here that keeps an alpha channel.
+///
+/// Tropy caches lossy WebP throughout, which would be smaller again — perhaps 30% under JPEG.
+/// `image` only implements WebP's lossless mode, so matching that would mean linking libwebp for
+/// a saving measured in tens of kilobytes per entry. Not worth a C dependency.
 pub fn write(key: &str, image: &RgbaImage) {
     let Some(dir) = dir() else {
         return;
     };
     let transparent = image.pixels().any(|px| px.0[3] < u8::MAX);
     let mut bytes = Vec::new();
+    let cursor = &mut std::io::Cursor::new(&mut bytes);
+
     let encoded = if transparent {
-        image.write_to(
-            &mut std::io::Cursor::new(&mut bytes),
-            image::ImageFormat::Png,
+        image::codecs::webp::WebPEncoder::new_lossless(cursor).encode(
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            image::ExtendedColorType::Rgba8,
         )
     } else {
-        image::DynamicImage::ImageRgba8(image.clone())
-            .to_rgb8()
-            .write_to(
-                &mut std::io::Cursor::new(&mut bytes),
-                image::ImageFormat::Jpeg,
-            )
+        let opaque = image::DynamicImage::ImageRgba8(image.clone()).to_rgb8();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(cursor, 85).encode(
+            opaque.as_raw(),
+            opaque.width(),
+            opaque.height(),
+            image::ExtendedColorType::Rgb8,
+        )
     };
+
     let written = encoded
         .map_err(|err| err.to_string())
         .and_then(|()| fs::write(dir.join(key), &bytes).map_err(|err| err.to_string()));
