@@ -320,6 +320,47 @@ mod tests {
         });
     }
 
+    /// Any view that isn't the library's `DataTable` — the gallery's cards — selects a row by
+    /// handing `set_selected_row` a *view* index, exactly as the grid's row header does, and
+    /// relies on `TablePanel`'s event bridge to store the source row behind it. Pinned across a
+    /// filter, where the two indices deliberately differ: get this wrong and clicking a card
+    /// shows the neighbouring record in the Details panel.
+    #[gpui::test]
+    fn selecting_a_view_row_stores_the_source_row_behind_it(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(project());
+        });
+        cx.add_window_view(TablePanel::new);
+
+        let state = cx.update(|cx| {
+            cx.try_global::<TableStateHandle>()
+                .and_then(|h| h.0.upgrade())
+                .expect("the panel publishes its state handle")
+        });
+        // Keep only "Film", which is source rows 0 and 3 — so view row 1 is source row 3.
+        cx.update(|cx| {
+            state.update(cx, |state, cx| {
+                state.delegate_mut().set_column_kept(0, &["Film".into()]);
+                cx.notify();
+            });
+        });
+        cx.update(|cx| {
+            assert_eq!(state.read(cx).delegate().visible(), &[0, 3]);
+            state.update(cx, |state, cx| state.set_selected_row(1, cx));
+        });
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            assert_eq!(
+                state.read(cx).delegate().selection(),
+                Some(crate::Selection::Row(3)),
+                "view row 1 is source row 3 while the filter is on"
+            );
+        });
+    }
+
     /// The delegate stores exclusions while the dropdown reports what is kept, so this inversion is
     /// the one place the two models meet.
     #[gpui::test]

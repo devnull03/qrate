@@ -5,7 +5,6 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
-    dock::{Panel, PanelControl, PanelEvent},
     h_flex,
     input::{Escape, Input, InputEvent, InputState},
     table::{DataTable, TableEvent, TableState},
@@ -74,8 +73,9 @@ actions!(
 /// focus — the editor is a sibling of the table, so this context isn't in its dispatch chain.
 pub const GRID_CONTEXT: &str = "DataTable";
 
-/// Center panel: the virtualized text table, with a pinned row-number column, native
+/// The grid view: a virtualized text table with a pinned row-number column, native
 /// cell/row/column selection, movable + resizable columns, and double-click-to-edit cells.
+/// Mounted by `workspace`'s view host, which owns the dock chrome around it.
 pub struct TablePanel {
     focus_handle: FocusHandle,
     state: Entity<TableState<QrateTableDelegate>>,
@@ -521,7 +521,9 @@ impl TablePanel {
     }
 
     /// Toggle the find bar. Opening focuses the query editor; closing returns focus to the table.
-    fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Public for the view host's toolbar button, which can't dispatch the `Search` action —
+    /// that only fires while focus is already inside this panel.
+    pub fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_open = !self.search_open;
         if self.search_open {
             self.search_input
@@ -890,49 +892,6 @@ impl TablePanel {
 impl Focusable for TablePanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
-    }
-}
-
-impl EventEmitter<PanelEvent> for TablePanel {}
-
-impl Panel for TablePanel {
-    fn panel_name(&self) -> &'static str {
-        "TablePanel"
-    }
-
-    // Main workspace body — no fixed name, so leave the title empty for now.
-    fn title(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::default()
-    }
-
-    /// Center panel: not closable so the main view always keeps its body.
-    fn closable(&self, _cx: &App) -> bool {
-        false
-    }
-
-    /// A zoom control makes no sense for the main body. Note this *does* render: `zoomable:
-    /// None` only greys the ⋯ menu's "Zoom In" entry and drops the zoom toolbar button — the ⋯
-    /// itself is unconditional in `TabPanel::render_toolbar`.
-    fn zoomable(&self, _cx: &App) -> Option<PanelControl> {
-        None
-    }
-
-    /// Rendered by `TabPanel::render_toolbar` immediately left of the ⋯ menu, forced to
-    /// `.xsmall().ghost()` by the library. `title_suffix` is the other option, but it sits by the
-    /// title instead — this is the hook for buttons that belong *beside* the ⋯.
-    fn toolbar_buttons(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
-        // Toggle via a weak handle, not the `Search` action, which only fires when focus is inside `TablePanel`.
-        let this = cx.entity().downgrade();
-        Some(vec![
-            Button::new("table-search")
-                .icon(IconName::Search)
-                .tooltip("Find in table")
-                .on_click(move |_, window, cx| {
-                    if let Some(this) = this.upgrade() {
-                        this.update(cx, |panel, cx| panel.toggle_search(window, cx));
-                    }
-                }),
-        ])
     }
 }
 

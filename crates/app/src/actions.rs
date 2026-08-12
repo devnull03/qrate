@@ -63,6 +63,24 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-c", table::Copy, Some(table::GRID_CONTEXT)),
         KeyBinding::new("ctrl-v", table::Paste, Some(table::GRID_CONTEXT)),
     ]
+    .into_iter()
+    // Ctrl+1, Ctrl+2, … pick a view directly, in `ViewMode::ALL` order — so a new view gets its
+    // key from the same list that gives it a switcher tab and a menu item, with nothing to add
+    // here. Global, and handled on the `App` root: the View menu has to work with focus in any
+    // panel, and switching views moves the docks around, which needs a `Window`.
+    .chain(
+        workspace::ViewMode::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(ix, mode)| {
+                KeyBinding::new(
+                    &format!("ctrl-{}", ix + 1),
+                    workspace::ShowView { mode },
+                    None,
+                )
+            }),
+    )
+    .collect()
 }
 
 /// Handlers that don't need a `Window`. Window-needing actions (the dock toggles) are handled

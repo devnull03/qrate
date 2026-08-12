@@ -15,6 +15,38 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use gpui_component::IconName;
+
+/// Whether `gpui`'s `img()` can decode this path. Anything else gets an icon instead of a
+/// failed load + fallback, which also keeps the placeholder honest about *what* it stands for.
+/// Matches gpui's `image_cache` decoders (`ImageFormat` + svg); extension-only, like the rest of
+/// this module — sniffing magic bytes would mean reading every file off disk to pick an icon.
+pub fn is_previewable_image(path: &Path) -> bool {
+    matches!(
+        extension(path).as_deref(),
+        Some("jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "ico" | "svg")
+    )
+}
+
+fn extension(path: &Path) -> Option<String> {
+    Some(path.extension()?.to_str()?.to_ascii_lowercase())
+}
+
+/// Placeholder icon for a file we can't render inline. `gpui_component`'s bundled icon set has
+/// no media glyphs (no camera/film/music), so these are the nearest stand-ins available —
+/// swap in custom SVGs via `Icon::path` if the set ever grows.
+///
+/// ponytail: four buckets, extension-keyed. Add a real mime crate only if the icon actually
+/// needs to be right for files with no/wrong extension.
+pub fn placeholder_icon(path: Option<&Path>) -> IconName {
+    match path.and_then(extension).as_deref() {
+        Some("pdf" | "epub" | "doc" | "docx" | "txt" | "md") => IconName::BookOpen,
+        Some("mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "aiff") => IconName::Play,
+        Some("mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v") => IconName::Frame,
+        _ => IconName::File,
+    }
+}
+
 /// Filenames a recursive walk should ignore — OS cruft, not collection data.
 fn is_ignored(name: &str) -> bool {
     name.starts_with("._") || name.eq_ignore_ascii_case(".ds_store")

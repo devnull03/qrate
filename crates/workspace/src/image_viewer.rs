@@ -1,11 +1,11 @@
-//! A full-screen-ish image viewer overlay: the photo fit to the content area, then zoomable and
+//! An image viewer overlay: the photo fit to whatever area it is mounted in, then zoomable and
 //! pannable, with the filename and zoom/close controls.
 //!
 //! It is *not* a `gpui_component` dialog: a dialog's layer occludes the whole window, so it would
 //! cover the custom title bar and steal its window controls. Instead the open viewer is held in
-//! the [`ActiveImageViewer`] global and mounted by `Workspace` as an overlay over its own content
-//! — which already sits below the title bar — so close/minimize stay reachable and the overlay
-//! sizes itself to whatever area the workspace has rather than to fixed viewport fractions.
+//! the [`ActiveImageViewer`] global and mounted as an overlay by whichever slot its [`Scope`]
+//! names. The element itself is `absolute().size_full()` and takes no sizing input beyond its
+//! padding, so the same viewer fills the whole workspace or just the centre panel unchanged.
 
 use std::path::PathBuf;
 
@@ -15,16 +15,35 @@ use gpui_component::{
     button::{Button, ButtonVariants},
 };
 
-/// The currently-open viewer, if any. `Workspace` observes this and mounts/unmounts the overlay.
+/// Which slot mounts the viewer. Two, because they answer different asks: the Details panel's
+/// button means "show me this as big as the window allows", while a gallery card means "show me
+/// this instead of the thumbnails" — the side panels stay readable beside it.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum Scope {
+    /// Over the whole dock area, below the title bar.
+    Workspace,
+    /// Over the centre panel only, leaving the docked panels visible.
+    Centre,
+}
+
+/// The currently-open viewer, if any. Both mount slots observe this.
 #[derive(Default)]
 pub struct ActiveImageViewer(pub Option<Entity<ImageViewer>>);
 
 impl Global for ActiveImageViewer {}
 
+/// The open viewer, if it belongs in `scope`. `None` tells that slot to mount nothing — which is
+/// how one global feeds two slots without ever painting itself twice.
+pub fn viewer_in(scope: Scope, cx: &App) -> Option<Entity<ImageViewer>> {
+    let viewer = cx.try_global::<ActiveImageViewer>()?.0.clone()?;
+    (viewer.read(cx).scope == scope).then_some(viewer)
+}
+
 /// Opens `path` in the shared viewer overlay, replacing any viewer already open.
-pub fn open_image_viewer(path: PathBuf, cx: &mut App) {
+pub fn open_image_viewer(path: PathBuf, scope: Scope, cx: &mut App) {
     let viewer = cx.new(|cx| ImageViewer {
         path,
+        scope,
         zoom: 1.0,
         offset: Point::default(),
         drag_from: None,
@@ -34,12 +53,13 @@ pub fn open_image_viewer(path: PathBuf, cx: &mut App) {
     cx.set_global(ActiveImageViewer(Some(viewer)));
 }
 
-fn close(cx: &mut App) {
+pub fn close_image_viewer(cx: &mut App) {
     cx.set_global(ActiveImageViewer(None));
 }
 
 pub struct ImageViewer {
     path: PathBuf,
+    scope: Scope,
     /// 1.0 = fit-to-area (`Contain`); [`ImageViewer::set_zoom`] clamps it.
     zoom: f32,
     /// Pan translation from the centered position.
@@ -92,7 +112,7 @@ impl Render for ImageViewer {
             .bg(cx.theme().background.opacity(0.9))
             .on_key_down(cx.listener(|_, ev: &KeyDownEvent, _, cx| {
                 if ev.keystroke.key == "escape" {
-                    close(cx);
+                    close_image_viewer(cx);
                 }
             }))
             // Any scroll zooms — trackpad pixel deltas, wheel line deltas, and ctrl+scroll alike;
@@ -197,8 +217,38 @@ impl Render for ImageViewer {
                             .ghost()
                             .small()
                             .tooltip("Close")
-                            .on_click(cx.listener(|_, _, _, cx| close(cx))),
+                            .on_click(cx.listener(|_, _, _, cx| close_image_viewer(cx))),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Never `use super::*` here — the parent's `use gpui::*` would shadow `#[test]`.
+    use gpui::TestAppContext;
+
+    use crate::image_viewer::{Scope, close_image_viewer, open_image_viewer, viewer_in};
+
+    /// One global feeds two mount slots — the workspace overlay and the centre panel. Exactly one
+    /// may claim it: drop the scope check and the viewer paints twice, once in each slot, with two
+    /// sets of live controls over each other.
+    #[gpui::test]
+    fn only_the_slot_it_was_opened_for_mounts_the_viewer(cx: &mut TestAppContext) {
+        let path = std::path::PathBuf::from("/nonexistent/qrate-scope-test.jpg");
+        cx.update(|cx| {
+            open_image_viewer(path.clone(), Scope::Centre, cx);
+            assert!(viewer_in(Scope::Centre, cx).is_some());
+            assert!(viewer_in(Scope::Workspace, cx).is_none());
+
+            // Opening in the other scope replaces rather than stacks.
+            open_image_viewer(path, Scope::Workspace, cx);
+            assert!(viewer_in(Scope::Workspace, cx).is_some());
+            assert!(viewer_in(Scope::Centre, cx).is_none());
+
+            close_image_viewer(cx);
+            assert!(viewer_in(Scope::Workspace, cx).is_none());
+            assert!(viewer_in(Scope::Centre, cx).is_none());
+        });
     }
 }

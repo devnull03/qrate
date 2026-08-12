@@ -8789,6 +8789,8 @@ dependencies = [
  "gpui",
  "gpui-component",
  "log",
+ "schemars",
+ "serde",
  "serde_json",
  "settings",
  "table",
