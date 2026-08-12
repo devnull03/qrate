@@ -16,7 +16,7 @@ use image::DynamicImage;
 /// commonly know. Kept short on purpose: each entry is a promise in [`crate::can_preview`] that
 /// something *might* appear, and an entry that never resolves is just a slow route to the icon.
 pub fn handles(extension: &str) -> bool {
-    cfg!(any(windows, target_os = "linux"))
+    cfg!(any(windows, target_os = "linux", target_os = "macos"))
         && matches!(
             extension,
             "psd"
@@ -53,14 +53,15 @@ pub fn thumbnail(path: &Path, max_edge: u32) -> Option<DynamicImage> {
     freedesktop::thumbnail(path, max_edge)
 }
 
-/// macOS has `QLThumbnailGenerator`, which would cover this properly and is not wired up.
-///
-/// It needs `objc2-quick-look-thumbnailing`, and its API is asynchronous through a completion
-/// block, so it means bridging a block to a channel and converting a `CGImage` into a buffer.
-/// That is a few hours of work that cannot be compiled or run from a Windows checkout, and
-/// shipping FFI nobody has executed is worse than shipping a documented gap: every other tier
-/// still runs on macOS, so the only loss is `.psd`-style files falling back to their icon.
-#[cfg(not(any(windows, target_os = "linux")))]
+/// QuickLook, which is what Finder's own previews come from — so anything with a QuickLook plugin
+/// installed, which on a Mac is most creative-suite formats.
+#[cfg(target_os = "macos")]
+pub fn thumbnail(path: &Path, max_edge: u32) -> Option<DynamicImage> {
+    quick_look::thumbnail(path, max_edge)
+}
+
+/// No thumbnailing service on anything else, which in practice means the BSDs.
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn thumbnail(_path: &Path, _max_edge: u32) -> Option<DynamicImage> {
     None
 }
@@ -187,6 +188,109 @@ mod windows_shell {
     }
 }
 
+#[cfg(target_os = "macos")]
+mod quick_look {
+    use std::path::Path;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use image::DynamicImage;
+    use objc2::AnyThread as _;
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+    use objc2_core_graphics::{
+        CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo,
+    };
+    use objc2_foundation::{NSError, NSString, NSURL};
+    use objc2_quick_look_thumbnailing::{
+        QLThumbnailGenerationRequest, QLThumbnailGenerationRequestRepresentationTypes,
+        QLThumbnailGenerator, QLThumbnailRepresentation,
+    };
+
+    /// How long to wait for QuickLook before giving up.
+    ///
+    /// Generation is asynchronous and farmed out to per-format extensions, so a badly-behaved one
+    /// could otherwise hold a decode thread forever. A preview is never worth blocking on: give
+    /// up and let the ladder fall through to the icon.
+    const PATIENCE: Duration = Duration::from_secs(5);
+
+    pub fn thumbnail(path: &Path, max_edge: u32) -> Option<DynamicImage> {
+        let side = f64::from(max_edge);
+
+        // Safety: the request and generator are ordinary Objective-C objects managed by objc2's
+        // `Retained`, and the completion block is kept alive until the channel receives or the
+        // wait times out. Nothing here touches the main thread — this runs on a decode thread.
+        let representation = unsafe {
+            let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+            let request =
+                QLThumbnailGenerationRequest::initWithFileAtURL_size_scale_representationTypes(
+                    QLThumbnailGenerationRequest::alloc(),
+                    &url,
+                    CGSize::new(side, side),
+                    1.0,
+                    // Not `Icon`: a generic document icon is exactly what our own placeholder already
+                    // draws, and dressing it up as a preview would misrepresent the file.
+                    QLThumbnailGenerationRequestRepresentationTypes::Thumbnail,
+                );
+
+            let (tx, rx) = mpsc::channel();
+            let handler = block2::RcBlock::new(
+                move |thumbnail: *mut QLThumbnailRepresentation, _error: *mut NSError| {
+                    // A null representation means QuickLook had nothing for this type, which is a
+                    // normal answer rather than a failure.
+                    let image = std::ptr::NonNull::new(thumbnail)
+                        .map(|thumbnail| thumbnail.as_ref().CGImage());
+                    let _ = tx.send(image);
+                },
+            );
+            QLThumbnailGenerator::sharedGenerator()
+                .generateBestRepresentationForRequest_completionHandler(&request, &handler);
+
+            rx.recv_timeout(PATIENCE).ok().flatten()
+        }?;
+
+        // Safety: drawing a CGImage into a bitmap context we allocated and sized ourselves.
+        unsafe {
+            let width = CGImage::width(Some(&representation));
+            let height = CGImage::height(Some(&representation));
+            if width == 0 || height == 0 {
+                return None;
+            }
+
+            // An explicit RGBA8 context rather than reading the image's own buffer: a CGImage can
+            // be in any colour space and channel order, and drawing into a context we defined is
+            // what makes the result predictable.
+            let mut bytes = vec![0u8; width * height * 4];
+            let space = CGColorSpace::new_device_rgb()?;
+            let context = CGBitmapContextCreate(
+                bytes.as_mut_ptr().cast(),
+                width,
+                height,
+                8,
+                width * 4,
+                Some(&space),
+                // Alpha last, host byte order — which is the zero value, so the alpha info is the
+                // whole descriptor. That lays the buffer out as RGBA8, matching every other tier.
+                CGImageAlphaInfo::PremultipliedLast.0,
+            )?;
+            CGContext::draw_image(
+                Some(&context),
+                CGRect::new(
+                    CGPoint::new(0.0, 0.0),
+                    CGSize::new(width as f64, height as f64),
+                ),
+                Some(&representation),
+            );
+
+            let buffer = image::RgbaImage::from_raw(
+                u32::try_from(width).ok()?,
+                u32::try_from(height).ok()?,
+                bytes,
+            )?;
+            Some(DynamicImage::ImageRgba8(buffer))
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod freedesktop {
     use std::path::{Path, PathBuf};
@@ -262,10 +366,10 @@ mod tests {
     /// picture that never arrives and the gallery offers a double-click that does nothing.
     #[test]
     fn only_claims_formats_on_platforms_with_a_thumbnailer() {
-        if cfg!(any(windows, target_os = "linux")) {
+        if cfg!(any(windows, target_os = "linux", target_os = "macos")) {
             assert!(native::handles("psd") && native::handles("dwg"));
         } else {
-            assert!(!native::handles("psd"), "macOS has no tier wired up yet");
+            assert!(!native::handles("psd"), "no thumbnailing service here");
         }
         assert!(!native::handles("jpg"), "tier 0 owns that");
         assert!(!native::handles("pdf"), "pdfium owns that");
