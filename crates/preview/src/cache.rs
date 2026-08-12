@@ -29,13 +29,14 @@ pub fn dir() -> Option<PathBuf> {
 ///
 /// `DefaultHasher` rather than a cryptographic digest: this names a cache entry, it does not
 /// authenticate one. A collision costs a wrong thumbnail, not a security property.
-pub fn key(path: &Path, max_edge: u32) -> Option<String> {
+pub fn key(path: &Path, max_edge: u32, page: usize) -> Option<String> {
     let meta = fs::metadata(path).ok()?;
     let mut hasher = DefaultHasher::new();
     path.hash(&mut hasher);
     meta.len().hash(&mut hasher);
     meta.modified().ok()?.hash(&mut hasher);
     max_edge.hash(&mut hasher);
+    page.hash(&mut hasher);
     Some(format!("{:016x}", hasher.finish()))
 }
 
@@ -115,15 +116,29 @@ mod tests {
     #[test]
     fn the_key_tracks_the_file_and_the_requested_size() {
         let path = sample("1.jpg");
-        let base = cache::key(&path, 512).expect("sample file is readable");
-        assert_eq!(base, cache::key(&path, 512).unwrap(), "stable across calls");
-        assert_ne!(base, cache::key(&path, 1024).unwrap(), "size is in the key");
-        assert!(cache::key(std::path::Path::new("/nonexistent/x.jpg"), 512).is_none());
+        let base = cache::key(&path, 512, 0).expect("sample file is readable");
+        assert_eq!(
+            base,
+            cache::key(&path, 512, 0).unwrap(),
+            "stable across calls"
+        );
+        assert_ne!(
+            base,
+            cache::key(&path, 1024, 0).unwrap(),
+            "size is in the key"
+        );
+        // Without this, every page of a PDF would overwrite the same entry.
+        assert_ne!(
+            base,
+            cache::key(&path, 512, 1).unwrap(),
+            "page is in the key"
+        );
+        assert!(cache::key(std::path::Path::new("/nonexistent/x.jpg"), 512, 0).is_none());
 
         // Same bytes at a different path is a different entry: the path is part of the identity.
         let copy = std::env::temp_dir().join("qrate-cache-key-probe.jpg");
         std::fs::copy(&path, &copy).unwrap();
-        assert_ne!(base, cache::key(&copy, 512).unwrap());
+        assert_ne!(base, cache::key(&copy, 512, 0).unwrap());
         let _ = std::fs::remove_file(&copy);
     }
 

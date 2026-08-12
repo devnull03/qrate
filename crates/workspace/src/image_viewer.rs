@@ -9,9 +9,10 @@
 
 use std::path::PathBuf;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, IconName, Sizable,
+    ActiveTheme, Disableable as _, IconName, Sizable,
     button::{Button, ButtonVariants},
 };
 
@@ -41,9 +42,14 @@ pub fn viewer_in(scope: Scope, cx: &App) -> Option<Entity<ImageViewer>> {
 
 /// Opens `path` in the shared viewer overlay, replacing any viewer already open.
 pub fn open_image_viewer(path: PathBuf, scope: Scope, cx: &mut App) {
+    // Counted once, here: a PDF has to be opened to be counted, and doing that per frame would
+    // re-parse the document on every repaint.
+    let pages = preview::page_count(&path);
     let viewer = cx.new(|cx| ImageViewer {
         path,
         scope,
+        page: 0,
+        pages,
         zoom: 1.0,
         offset: Point::default(),
         drag_from: None,
@@ -60,6 +66,10 @@ pub fn close_image_viewer(cx: &mut App) {
 pub struct ImageViewer {
     path: PathBuf,
     scope: Scope,
+    /// Which page is shown, zero-based. Always 0 for anything that isn't a document.
+    page: usize,
+    /// How many pages there are, so the controls know their bounds. 1 means "not paged".
+    pages: usize,
     /// 1.0 = fit-to-area (`Contain`); [`ImageViewer::set_zoom`] clamps it.
     zoom: f32,
     /// Pan translation from the centered position.
@@ -80,6 +90,23 @@ impl ImageViewer {
             self.offset = Point::default();
         }
     }
+
+    /// Move `delta` pages, stopping at either end rather than wrapping — a document has a first
+    /// and last page, and silently looping past them loses the reader's place.
+    ///
+    /// Zoom and pan reset with the turn: they were aimed at a detail of the page being left, and
+    /// keeping them would land the next page off-screen at 8×.
+    fn turn_page(&mut self, delta: isize) {
+        let Some(page) = self.page.checked_add_signed(delta) else {
+            return;
+        };
+        if page >= self.pages || page == self.page {
+            return;
+        }
+        self.page = page;
+        self.zoom = 1.0;
+        self.offset = Point::default();
+    }
 }
 
 impl Render for ImageViewer {
@@ -88,7 +115,7 @@ impl Render for ImageViewer {
             window.focus(&self.focus_handle, cx);
             self.focused = true;
         }
-        let (zoom, offset) = (self.zoom, self.offset);
+        let (zoom, offset, page, pages) = (self.zoom, self.offset, self.page, self.pages);
         let name: SharedString = self
             .path
             .file_name()
@@ -110,9 +137,20 @@ impl Render for ImageViewer {
             .occlude()
             // Dim what's behind so the photo reads as the focus.
             .bg(cx.theme().background.opacity(0.9))
-            .on_key_down(cx.listener(|_, ev: &KeyDownEvent, _, cx| {
-                if ev.keystroke.key == "escape" {
-                    close_image_viewer(cx);
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                match ev.keystroke.key.as_str() {
+                    "escape" => close_image_viewer(cx),
+                    // The keys anyone reading a document reaches for first. Harmless on a photo,
+                    // where there is only ever one page to move between.
+                    "left" | "pageup" => {
+                        this.turn_page(-1);
+                        cx.notify();
+                    }
+                    "right" | "pagedown" => {
+                        this.turn_page(1);
+                        cx.notify();
+                    }
+                    _ => {}
                 }
             }))
             // Any scroll zooms — trackpad pixel deltas, wheel line deltas, and ctrl+scroll alike;
@@ -158,7 +196,10 @@ impl Render for ImageViewer {
                     .p_8()
                     .child(
                         // `flex_shrink_0` keeps `relative(zoom)` past 1; `relative` + `left`/`top` pan it.
-                        img(self.path.clone())
+                        //
+                        // `FULL`, so zooming in reaches the file's real detail rather than
+                        // magnifying a thumbnail — this is the one place that asks for no cap.
+                        img(preview::source(&self.path, preview::FULL, page))
                             .flex_shrink_0()
                             .relative()
                             .w(relative(zoom))
@@ -179,6 +220,60 @@ impl Render for ImageViewer {
                     .bg(pill)
                     .child(name),
             )
+            // Page controls, for a document only — a photo has nothing to page through, and an
+            // always-present "1 / 1" would just be noise on every other file.
+            .when(pages > 1, |viewer| {
+                viewer.child(
+                    div()
+                        .absolute()
+                        .bottom_4()
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .p_1()
+                                .rounded(cx.theme().radius)
+                                .bg(pill)
+                                .child(
+                                    Button::new("previous-page")
+                                        .icon(IconName::ChevronLeft)
+                                        .ghost()
+                                        .small()
+                                        .disabled(page == 0)
+                                        .tooltip("Previous page")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.turn_page(-1);
+                                            cx.notify();
+                                        })),
+                                )
+                                // Numbered from one: the page count a reader sees has to match
+                                // the one printed on the document.
+                                .child(
+                                    div()
+                                        .px_1()
+                                        .text_sm()
+                                        .child(format!("{} / {pages}", page + 1)),
+                                )
+                                .child(
+                                    Button::new("next-page")
+                                        .icon(IconName::ChevronRight)
+                                        .ghost()
+                                        .small()
+                                        .disabled(page + 1 >= pages)
+                                        .tooltip("Next page")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.turn_page(1);
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
+                )
+            })
             .child(
                 div()
                     .absolute()
@@ -249,6 +344,64 @@ mod tests {
             close_image_viewer(cx);
             assert!(viewer_in(Scope::Workspace, cx).is_none());
             assert!(viewer_in(Scope::Centre, cx).is_none());
+        });
+    }
+
+    /// Paging has to stop at both ends. Wrapping past the last page loses the reader's place, and
+    /// an underflow on page zero would panic on a `usize` subtraction.
+    #[gpui::test]
+    fn paging_stops_at_both_ends_and_resets_the_view(cx: &mut TestAppContext) {
+        let path = std::path::PathBuf::from("/nonexistent/qrate-paging-test.pdf");
+        cx.update(|cx| {
+            open_image_viewer(path, Scope::Workspace, cx);
+            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+
+            viewer.update(cx, |viewer, _| {
+                // A missing file reports one page, so give it a document to page through.
+                viewer.pages = 3;
+
+                viewer.turn_page(-1);
+                assert_eq!(viewer.page, 0, "cannot go back from the first page");
+
+                viewer.turn_page(1);
+                assert_eq!(viewer.page, 1);
+
+                // Zoom and pan belong to the page being left, not to the next one.
+                viewer.set_zoom(4.0);
+                viewer.offset = gpui::Point {
+                    x: gpui::px(30.),
+                    y: gpui::px(30.),
+                };
+                viewer.turn_page(1);
+                assert_eq!(viewer.page, 2);
+                assert!((viewer.zoom - 1.0).abs() < f32::EPSILON, "zoom reset");
+                assert_eq!(viewer.offset, gpui::Point::default(), "pan reset");
+
+                viewer.turn_page(1);
+                assert_eq!(viewer.page, 2, "cannot go past the last page");
+            });
+
+            close_image_viewer(cx);
+        });
+    }
+
+    /// A photo is a one-page document, so the controls stay hidden and the arrow keys do nothing.
+    #[gpui::test]
+    fn a_single_page_file_never_moves(cx: &mut TestAppContext) {
+        let path = std::path::PathBuf::from("/nonexistent/qrate-single-page.jpg");
+        cx.update(|cx| {
+            open_image_viewer(path, Scope::Centre, cx);
+            let viewer = viewer_in(Scope::Centre, cx).expect("just opened");
+            viewer.update(cx, |viewer, _| {
+                assert_eq!(
+                    viewer.pages, 1,
+                    "anything that isn't a document has one page"
+                );
+                viewer.turn_page(1);
+                viewer.turn_page(-1);
+                assert_eq!(viewer.page, 0);
+            });
+            close_image_viewer(cx);
         });
     }
 }
