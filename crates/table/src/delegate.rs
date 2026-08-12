@@ -129,8 +129,14 @@ impl QrateTableDelegate {
 
     /// View→source conversion at the single library boundary. `None` for a view index that's
     /// stale for the current filtered set.
-    pub(crate) fn source(&self, view: usize) -> Option<usize> {
+    pub fn source(&self, view: usize) -> Option<usize> {
         self.visible_rows.get(view).copied()
+    }
+
+    /// Every visible row, in view order, as source indices. What a view that isn't the library's
+    /// `DataTable` iterates, so a column filter narrows every view the same way.
+    pub fn visible(&self) -> &[usize] {
+        &self.visible_rows
     }
 
     /// Source→view, the inverse of [`source`](Self::source). `None` when a filter currently hides

@@ -5,12 +5,14 @@ mod dock_button;
 mod image_viewer;
 mod panel_registry;
 mod panels;
+mod views;
 
-pub use image_viewer::open_image_viewer;
+pub use image_viewer::{Scope as ViewerScope, open_image_viewer};
 
 pub use dock_button::DockToggleButton;
 pub use panel_registry::{BarSide, PANELS, PanelMeta, PanelRegistry, bar_side};
 pub use panels::DETAILS_META;
+pub use views::{ShowView, VIEW_MODE_KEY, ViewMode, show_view};
 
 use std::sync::Arc;
 
@@ -19,20 +21,21 @@ use gpui_component::dock::{
     DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, PanelView, register_panel,
 };
 use settings::AppSettings;
-use table::TablePanel;
 
 use diagnostics::ProblemsPanel;
 
 use crate::panel_registry::PROBLEMS_META;
 use crate::panels::{AGENT_META, AgentPanel, DetailsPanel};
+use crate::views::ViewsPanel;
 
 /// Settings key under which the serialized [`DockAreaState`] is persisted —
 /// both in the open project's `.qrate` `__settings` (preferred) and in the
 /// global app settings (fallback when no project is open).
 const DOCK_LAYOUT_KEY: &str = "main_dock_layout";
-/// Layout schema version. Bumped to 2 for the center/left/right/bottom panel set so any
-/// layout saved under the previous (grid + metadata/vocabulary tabs) shape is discarded.
-const DOCK_LAYOUT_VERSION: usize = 2;
+/// Layout schema version. Bumped to 3 when the centre became `ViewsPanel` (the view host) instead
+/// of `TablePanel`, so a layout saved under the old name is discarded rather than restoring a
+/// centre with no view switcher.
+const DOCK_LAYOUT_VERSION: usize = 3;
 
 /// gpui_component keeps a fixed ~29px title strip for a *closed* bottom dock (dock.rs) so it
 /// stays clickable — for us it just "sticks out". We drive the bottom dock from our own bar,
@@ -68,8 +71,9 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Register panel constructors so a persisted layout can be reconstructed by name.
-        register_panel(cx, "TablePanel", |_weak, _state, _info, window, cx| {
-            Box::new(cx.new(|cx| TablePanel::new(window, cx)))
+        // The centre is the view host, not the grid — the grid is one view it mounts.
+        register_panel(cx, "ViewsPanel", |weak, _state, _info, window, cx| {
+            Box::new(cx.new(|cx| ViewsPanel::new(weak, window, cx)))
         });
         register_panel(cx, "DetailsPanel", |_weak, _state, _info, window, cx| {
             Box::new(cx.new(|cx| DetailsPanel::new(window, cx)))
@@ -87,7 +91,7 @@ impl Workspace {
         // Restore if saved, else build default; building first then loading would orphan a throwaway table.
         if !Self::restore_layout(&dock_area, window, cx) {
             let weak = dock_area.downgrade();
-            let table = cx.new(|cx| TablePanel::new(window, cx));
+            let centre = cx.new(|cx| ViewsPanel::new(weak.clone(), window, cx));
             // Which dock each panel starts in is the panel's own declaration, so they're built
             // as a flat list and grouped by it rather than one `set_*_dock` call apiece.
             let panels: [(&PanelMeta, Arc<dyn PanelView>); 3] = [
@@ -106,8 +110,11 @@ impl Workspace {
             ];
 
             dock_area.update(cx, |area, cx| {
-                // `DockItem::panel` embeds the table bare (no title bar); only until saved, then it restores wrapped.
-                area.set_center(DockItem::panel(Arc::new(table)), window, cx);
+                // `tab`, not `panel`: `DockItem::panel` embeds the centre bare, with no title bar
+                // at all — and the title bar is where the view switcher lives. Restoring a saved
+                // layout always produces tabs anyway, so this only fixes the first launch, which
+                // would otherwise come up with no way to leave the grid.
+                area.set_center(DockItem::tab(centre, &weak, window, cx), window, cx);
                 for placement in [
                     DockPlacement::Left,
                     DockPlacement::Right,
@@ -278,10 +285,10 @@ impl Render for Workspace {
             cx.set_global(crop);
         }
 
-        // A sibling overlay, not a dialog: it covers the dock but leaves the title bar's controls reachable.
-        let viewer = cx
-            .try_global::<image_viewer::ActiveImageViewer>()
-            .and_then(|a| a.0.clone());
+        // A sibling overlay, not a dialog: it covers the dock but leaves the title bar's controls
+        // reachable. Only the workspace-scoped viewer mounts here — a centre-scoped one is the
+        // gallery's, and `ViewsPanel` mounts that inside the centre panel instead.
+        let viewer = image_viewer::viewer_in(image_viewer::Scope::Workspace, cx);
 
         div()
             .size_full()

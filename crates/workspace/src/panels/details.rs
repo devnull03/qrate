@@ -13,6 +13,7 @@ use gpui_component::{
     scroll::ScrollableElement,
     table::TableState,
 };
+use table::photos::{is_previewable_image, placeholder_icon};
 use table::{QrateTableDelegate, Selection, TableChanged, TableStateHandle};
 
 use crate::BottomDockCrop;
@@ -43,6 +44,8 @@ pub struct DetailsPanel {
     _handle_sub: Subscription,
     /// Re-renders on any table change (selection, edits, column moves).
     _table_sub: Option<Subscription>,
+    /// Adds and removes the image pane as the centre's photo overlay opens and closes.
+    _viewer_sub: Subscription,
     /// Re-renders when the bottom dock opens/closes, so the strip-crop padding tracks it.
     _crop_sub: Subscription,
     /// The field editor, shared across whichever field is open — the same one-per-panel
@@ -78,6 +81,9 @@ impl DetailsPanel {
             _handle_sub,
             _table_sub: None,
             _crop_sub: cx.observe_global::<BottomDockCrop>(|_this: &mut Self, cx| cx.notify()),
+            _viewer_sub: cx.observe_global::<crate::image_viewer::ActiveImageViewer>(
+                |_this: &mut Self, cx| cx.notify(),
+            ),
             editor,
             editing: None,
             _editor_sub,
@@ -183,37 +189,6 @@ impl Panel for DetailsPanel {
 
     fn zoomable(&self, _cx: &App) -> Option<PanelControl> {
         None
-    }
-}
-
-/// Whether `gpui`'s `img()` can decode this path. Anything else gets an icon instead of a
-/// failed load + fallback, which also keeps the placeholder honest about *what* it stands for.
-/// Matches gpui's `image_cache` decoders (`ImageFormat` + svg); extension-only, like the rest of
-/// this app's file handling (`table::photos` resolves rows by filename too) — sniffing magic
-/// bytes would mean reading every selected file off disk to pick an icon.
-fn is_previewable_image(path: &Path) -> bool {
-    matches!(
-        extension(path).as_deref(),
-        Some("jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "ico" | "svg")
-    )
-}
-
-fn extension(path: &Path) -> Option<String> {
-    Some(path.extension()?.to_str()?.to_ascii_lowercase())
-}
-
-/// Placeholder icon for a file we can't render inline. `gpui_component`'s bundled icon set has
-/// no media glyphs (no camera/film/music), so these are the nearest stand-ins available —
-/// swap in custom SVGs via `Icon::path` if the set ever grows.
-///
-/// ponytail: four buckets, extension-keyed. Add a real mime crate only if the icon actually
-/// needs to be right for files with no/wrong extension.
-fn placeholder_icon(path: Option<&Path>) -> IconName {
-    match path.and_then(extension).as_deref() {
-        Some("pdf" | "epub" | "doc" | "docx" | "txt" | "md") => IconName::BookOpen,
-        Some("mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "aiff") => IconName::Play,
-        Some("mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v") => IconName::Frame,
-        _ => IconName::File,
     }
 }
 
@@ -325,7 +300,11 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
                                     .small()
                                     .tooltip("View fullscreen")
                                     .on_click(move |_, _, cx| {
-                                        crate::open_image_viewer(path.clone(), cx)
+                                        crate::open_image_viewer(
+                                            path.clone(),
+                                            crate::ViewerScope::Workspace,
+                                            cx,
+                                        )
                                     }),
                             )
                         })
@@ -362,6 +341,9 @@ impl Render for DetailsPanel {
         });
 
         let crop = cx.try_global::<BottomDockCrop>().map_or(px(0.), |c| c.0);
+        // The centre is showing this photo full-size, so this panel's own preview is redundant.
+        let centre_viewer =
+            crate::image_viewer::viewer_in(crate::ViewerScope::Centre, cx).is_some();
 
         let Some((fields, image_path)) = selection.filter(|(f, _)| !f.is_empty()) else {
             return div()
@@ -483,13 +465,18 @@ impl Render for DetailsPanel {
                             );
                         }
                     })
-                    .child(
-                        resizable_panel()
-                            .size(px(image_height))
-                            .size_range(px(80.)..px(600.))
-                            .p_3()
-                            .child(render_image_frame(image_path, cx)),
-                    )
+                    // Dropped entirely while the centre panel is showing the photo full-size (a
+                    // clicked gallery card): a thumbnail of what you are already looking at is
+                    // just less room for the fields. The pane comes back when the viewer closes.
+                    .when(!centre_viewer, |split| {
+                        split.child(
+                            resizable_panel()
+                                .size(px(image_height))
+                                .size_range(px(80.)..px(600.))
+                                .p_3()
+                                .child(render_image_frame(image_path, cx)),
+                        )
+                    })
                     .child(
                         // `pr_2` on the panel insets the scrollbar from the resize edge so dragging it doesn't catch.
                         resizable_panel().pr_2().child(

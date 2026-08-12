@@ -256,6 +256,11 @@ impl Render for App {
             .on_action(cx.listener(|this, _: &ToggleRightDock, window, cx| {
                 this.toggle_dock(DockPlacement::Right, window, cx)
             }))
+            // Same reason as the dock toggles: switching views re-arranges the docks, so it needs
+            // a `Window`, and it has to fire with focus in any panel — not just the centre.
+            .on_action(cx.listener(|_, action: &workspace::ShowView, window, cx| {
+                workspace::show_view(action.mode, window, cx)
+            }))
             // Here rather than globally: the Zotero mapping dialog opens in this window.
             .on_action(cx.listener(|_, action: &export::Export, window, cx| {
                 export::run(action.format, window, cx)

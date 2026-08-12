@@ -1,8 +1,11 @@
-//! The center table panel: a virtualized data grid with a pinned row-number column, native
+//! The table view: a virtualized data grid with a pinned row-number column, native
 //! cell/row/column selection, movable + resizable columns (layout persisted per project), and
-//! double-click-to-edit cells. This crate owns all table state; `workspace` only needs to know
-//! `TablePanel` is a `gpui_component::dock::Panel` it can register and place, and `app`'s
-//! status-bar items only need `TableStateHandle`/`QrateTableDelegate` to read the selection.
+//! double-click-to-edit cells.
+//!
+//! This crate owns all table *state* but no dock chrome and no notion of other views —
+//! `TablePanel` is a plain `Render` view that `workspace` mounts inside its own view host, which
+//! is where the view switcher and any non-grid view live. Cross-crate readers (`workspace`'s
+//! Details panel, `app`'s status-bar items) reach the shared state through `TableStateHandle`.
 
 mod cell;
 mod delegate;

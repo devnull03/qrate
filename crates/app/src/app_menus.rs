@@ -136,8 +136,18 @@ pub fn app_menus() -> Vec<Menu> {
                 // ASNT-44: cells are single-line until the row height can follow the text.
                 planned("Wrap Cell Text"),
                 MenuItem::Separator,
-                // ASNT-72 (#83): the view-mode plumbing, then a gallery over the row images.
-                planned("Gallery View"),
+                // Built from `ViewMode::ALL` so a new view appears here for free, in the same
+                // order as the centre's switcher tabs and the Ctrl+N keys. Not `checked` — the
+                // menus are built once at startup (`set_menus` in `main.rs`), so a tick would
+                // freeze on whichever view was active then.
+                MenuItem::submenu(Menu {
+                    name: "Switch View".into(),
+                    disabled: false,
+                    items: workspace::ViewMode::ALL
+                        .into_iter()
+                        .map(|mode| MenuItem::action(mode.label(), workspace::ShowView { mode }))
+                        .collect(),
+                }),
             ],
         },
         Menu {
