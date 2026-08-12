@@ -11,7 +11,7 @@
 //! GPL. PDFium itself is Apache-2.0 or BSD-3, which is clean.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use image::DynamicImage;
 use pdfium_render::prelude::{PdfRenderConfig, Pdfium};
@@ -51,27 +51,59 @@ fn library() -> Option<&'static PathBuf> {
         .as_ref()
 }
 
-/// The first page, rendered wide enough to fill `max_edge`.
+/// The one PDFium instance, behind the lock that makes it safe to reach.
 ///
-/// Page one only. Tropy splits a multi-page PDF into one item per page, which suits a tool whose
-/// rows *are* files; qrate's rows come from the spreadsheet, so pages belong to the viewer's
-/// navigation rather than to the data model.
-pub fn decode(path: &Path, max_edge: u32) -> Option<DynamicImage> {
-    let library = library()?;
-    let bindings = if library.as_os_str().is_empty() {
-        Pdfium::bind_to_system_library()
-    } else {
-        Pdfium::bind_to_library(library)
-    }
-    .map_err(|err| log::warn!("could not load PDFium: {err}"))
-    .ok()?;
+/// Both parts are load-bearing. PDFium initialises global state, so binding it more than once in
+/// a process aborts — not a Rust panic that a test could catch, an immediate process death. And
+/// the library is not re-entrant, so two threads rendering at once corrupts it. Previews are
+/// decoded on a background pool and a gallery draws many cards, so both happen readily.
+///
+/// The cost is that PDF rendering is serialised. That is what the library allows, and each result
+/// is cached, so it is paid once per page anybody actually looks at.
+fn pdfium() -> Option<&'static Mutex<Pdfium>> {
+    static INSTANCE: OnceLock<Option<Mutex<Pdfium>>> = OnceLock::new();
+    INSTANCE
+        .get_or_init(|| {
+            let library = library()?;
+            let bindings = if library.as_os_str().is_empty() {
+                Pdfium::bind_to_system_library()
+            } else {
+                Pdfium::bind_to_library(library)
+            }
+            .map_err(|err| log::warn!("could not load PDFium: {err}"))
+            .ok()?;
+            Some(Mutex::new(Pdfium::new(bindings)))
+        })
+        .as_ref()
+}
 
-    let pdfium = Pdfium::new(bindings);
+/// Take the lock, recovering from a previous render having panicked while holding it: a poisoned
+/// lock would otherwise disable PDF previews for the rest of the session.
+fn locked() -> Option<std::sync::MutexGuard<'static, Pdfium>> {
+    Some(pdfium()?.lock().unwrap_or_else(|err| err.into_inner()))
+}
+
+/// How many pages the document has, for the viewer's page controls. `None` when PDFium is absent
+/// or the file will not open, which the caller reads as "no paging".
+pub fn page_count(path: &Path) -> Option<usize> {
+    let pdfium = locked()?;
+    let document = pdfium.load_pdf_from_file(path, None).ok()?;
+    usize::try_from(document.pages().len()).ok()
+}
+
+/// One page, rendered to fit `max_edge`.
+///
+/// Page-per-item is deliberately *not* how this works. Tropy splits a multi-page PDF into one item
+/// per page, which suits a tool whose rows *are* files; qrate's rows come from the spreadsheet, so
+/// a page is something the viewer navigates rather than something the data model knows about.
+pub fn decode(path: &Path, max_edge: u32, page: usize) -> Option<DynamicImage> {
+    let pdfium = locked()?;
     let document = pdfium
         .load_pdf_from_file(path, None)
         .map_err(|err| log::warn!("could not open {}: {err}", path.display()))
         .ok()?;
-    let page = document.pages().first().ok()?;
+    let index = i32::try_from(page).ok()?;
+    let page = document.pages().get(index).ok()?;
 
     // Sized by the longer edge so a landscape page is not rendered as a sliver, and never
     // enlarged past what the caller asked for.
@@ -108,8 +140,8 @@ trailer<</Root 1 0 R>>";
         let path = std::env::temp_dir().join("qrate-pdf-probe.pdf");
         std::fs::write(&path, pdf).unwrap();
 
-        let rendered = pdf::decode(&path, 128);
-        match (super::library().is_some(), rendered) {
+        let rendered = pdf::decode(&path, 128, 0);
+        match (super::pdfium().is_some(), rendered) {
             (true, Some(page)) => {
                 assert!(
                     page.width() <= 128 && page.height() <= 128,
@@ -130,6 +162,40 @@ trailer<</Root 1 0 R>>";
                 eprintln!("skipping the render check: PDFium is not installed");
             }
         }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Paging has to actually select a different page, not just re-render the first one. The two
+    /// pages are deliberately opposite orientations, which is observable in the result without
+    /// needing any page content to draw.
+    #[test]
+    fn each_page_of_a_document_renders_separately() {
+        let pdf = b"%PDF-1.4\n\
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
+2 0 obj<</Type/Pages/Kids[3 0 R 4 0 R]/Count 2>>endobj\n\
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]>>endobj\n\
+4 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 200]>>endobj\n\
+trailer<</Root 1 0 R>>";
+        let path = std::env::temp_dir().join("qrate-pdf-pages.pdf");
+        std::fs::write(&path, pdf).unwrap();
+
+        if super::pdfium().is_none() {
+            assert_eq!(crate::page_count(&path), 1, "no library means no paging");
+            eprintln!("skipping the paging check: PDFium is not installed");
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+
+        assert_eq!(crate::page_count(&path), 2);
+        let first = pdf::decode(&path, 128, 0).expect("page one renders");
+        let second = pdf::decode(&path, 128, 1).expect("page two renders");
+        assert!(first.width() > first.height(), "page one is landscape");
+        assert!(second.height() > second.width(), "page two is portrait");
+
+        // Past the end must decline rather than clamping to the last page, which would make the
+        // viewer's bounds check look like it worked when it had not.
+        assert!(pdf::decode(&path, 128, 5).is_none());
 
         let _ = std::fs::remove_file(&path);
     }

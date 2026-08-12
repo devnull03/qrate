@@ -35,6 +35,16 @@ pub const CARD: u32 = 512;
 /// Longest edge for the Details panel's preview, whose pane the user can drag to 600px tall.
 pub const PANE: u32 = 1024;
 
+/// No size cap: decode at whatever the file's own resolution is. What the fullscreen viewer asks
+/// for, since it zooms to 8× and a downscaled copy would go soft exactly when someone is looking
+/// closely. Nothing this size is written to the disk cache — it would be a second copy of the
+/// original file — so it lives only in the memory budget, for as long as it is on screen.
+pub const FULL: u32 = 0;
+
+/// What a tier that must be told a size renders at when asked for [`FULL`]. A PDF page has no
+/// natural pixel size, so "no cap" still needs a number; this is generous enough to zoom into.
+const FULL_FALLBACK: u32 = 2048;
+
 /// How much decoded image data may stay resident. gpui's asset cache never evicts on its own, so
 /// without a ceiling a scroll through a large collection retains every thumbnail it passes.
 ///
@@ -121,26 +131,44 @@ pub fn placeholder_icon(path: Option<&Path>) -> IconName {
 pub struct Preview;
 
 impl Asset for Preview {
-    type Source = (PathBuf, u32);
+    /// File, size cap, and which page — the last only ever non-zero for a multi-page document.
+    type Source = (PathBuf, u32, usize);
     type Output = Option<Arc<RenderImage>>;
 
     fn load(
-        (path, max_edge): Self::Source,
+        (path, max_edge, page): Self::Source,
         cx: &mut App,
     ) -> impl Future<Output = Self::Output> + Send + 'static {
         let executor = cx.background_executor().clone();
-        async move { executor.spawn(async move { render(&path, max_edge) }).await }
+        async move {
+            executor
+                .spawn(async move { render(&path, max_edge, page) })
+                .await
+        }
+    }
+}
+
+/// How many pages this file has. One for everything that is not a document, so a caller can show
+/// page controls whenever this is greater than one without knowing which tier answered.
+pub fn page_count(path: &Path) -> usize {
+    match extension(path) {
+        Some(extension) if pdf::handles(&extension) => pdf::page_count(path).unwrap_or(1),
+        _ => 1,
     }
 }
 
 /// Decode `path`, shrink it to fit `max_edge`, and hand back something gpui can draw. Runs on a
 /// background thread; `None` for anything that won't decode, which the caller turns into the icon.
-fn render(path: &Path, max_edge: u32) -> Option<Arc<RenderImage>> {
-    let key = cache::key(path, max_edge);
+fn render(path: &Path, max_edge: u32, page: usize) -> Option<Arc<RenderImage>> {
+    // A full-size rendering is not cached: it would be a second copy of the original file on disk,
+    // and it is wanted once, while someone is looking at it.
+    let key = (max_edge != FULL)
+        .then(|| cache::key(path, max_edge, page))
+        .flatten();
     let scaled = match key.as_deref().and_then(cache::read) {
         Some(cached) => cached,
         None => {
-            let scaled = downscale(decode(path, max_edge)?, max_edge);
+            let scaled = downscale(decode(path, max_edge, page)?, max_edge);
             if let Some(key) = &key {
                 cache::write(key, &scaled);
             }
@@ -166,8 +194,15 @@ fn render(path: &Path, max_edge: u32) -> Option<Arc<RenderImage>> {
 ///
 /// Falling *through* matters as much as the order: a `.heic` with no embedded preview drops to
 /// ffmpeg, and a `.psd` nothing else claims still reaches the OS.
-fn decode(path: &Path, max_edge: u32) -> Option<image::DynamicImage> {
+fn decode(path: &Path, max_edge: u32, page: usize) -> Option<image::DynamicImage> {
     let extension = extension(path).unwrap_or_default();
+    // Tiers that rasterise rather than decode have to be given a number even when the caller
+    // asked for no cap; the ones that decode an existing image ignore this entirely.
+    let target = if max_edge == FULL {
+        FULL_FALLBACK
+    } else {
+        max_edge
+    };
 
     if is_raster(&extension)
         && let Some(image) = raster(path)
@@ -175,7 +210,7 @@ fn decode(path: &Path, max_edge: u32) -> Option<image::DynamicImage> {
         return Some(image);
     }
     if pdf::handles(&extension)
-        && let Some(image) = pdf::decode(path, max_edge)
+        && let Some(image) = pdf::decode(path, target, page)
     {
         return Some(image);
     }
@@ -185,7 +220,7 @@ fn decode(path: &Path, max_edge: u32) -> Option<image::DynamicImage> {
         return Some(image);
     }
     if media::handles(&extension)
-        && let Some(image) = media::decode(path, max_edge)
+        && let Some(image) = media::decode(path, target)
     {
         return Some(image);
     }
@@ -194,7 +229,7 @@ fn decode(path: &Path, max_edge: u32) -> Option<image::DynamicImage> {
     {
         return Some(image);
     }
-    native::thumbnail(path, max_edge)
+    native::thumbnail(path, target)
 }
 
 /// Formats `image` handles itself. Decoded by content rather than by extension — matching gpui,
@@ -217,7 +252,7 @@ fn raster(path: &Path) -> Option<image::DynamicImage> {
 /// first look at every file rather than being amortised.
 fn downscale(image: image::DynamicImage, max_edge: u32) -> image::RgbaImage {
     let (w, h) = (image.width(), image.height());
-    if w.max(h) <= max_edge {
+    if max_edge == FULL || w.max(h) <= max_edge {
         return image.to_rgba8();
     }
     image
@@ -232,7 +267,7 @@ fn downscale(image: image::DynamicImage, max_edge: u32) -> image::RgbaImage {
 /// `Arc` going away.
 #[derive(Default)]
 struct Live {
-    entries: VecDeque<((PathBuf, u32), Arc<RenderImage>)>,
+    entries: VecDeque<((PathBuf, u32, usize), Arc<RenderImage>)>,
     bytes: usize,
 }
 
@@ -245,7 +280,7 @@ impl Global for Live {}
 /// `budget` is a parameter rather than reading [`BUDGET`] directly so a test can drive eviction
 /// with a handful of small images instead of allocating its way past the real ceiling.
 fn retain(
-    source: &(PathBuf, u32),
+    source: &(PathBuf, u32, usize),
     image: &Arc<RenderImage>,
     budget: usize,
     window: &mut Window,
@@ -319,7 +354,9 @@ pub fn thumb(path: Option<&Path>, max_edge: u32, cx: &App) -> AnyElement {
             // its intrinsic ratio under `max_w/h_full` (where that aspect logic applies) so it
             // shrinks to fit — bars and all.
             Some(path) => frame.child(
-                img(source(path, max_edge))
+                // Page one: a card or a details pane shows what the file *is*, and paging through
+                // a document is the viewer's job.
+                img(source(path, max_edge, 0))
                     .max_w_full()
                     .max_h_full()
                     .object_fit(ObjectFit::Contain)
@@ -339,11 +376,11 @@ pub fn thumb(path: Option<&Path>, max_edge: u32, cx: &App) -> AnyElement {
 /// Everything else goes through [`Preview`] as a custom source. That has to be `Custom` rather
 /// than a plain path: `Custom` is the only variant whose loader runs with a `Window`, which is
 /// what both [`Window::use_asset`] and the eviction in [`retain`] need.
-fn source(path: &Path, max_edge: u32) -> ImageSource {
+pub fn source(path: &Path, max_edge: u32, page: usize) -> ImageSource {
     if extension(path).as_deref() == Some("svg") {
         return ImageSource::Resource(path.to_path_buf().into());
     }
-    let key = (path.to_path_buf(), max_edge);
+    let key = (path.to_path_buf(), max_edge, page);
     ImageSource::Custom(Arc::new(move |window: &mut Window, cx: &mut App| {
         // `None` while the decode is still running, which leaves the frame empty rather than
         // flashing the icon; gpui re-renders the view when the task lands.
@@ -462,7 +499,7 @@ mod tests {
             .save(&red)
             .unwrap();
 
-        let rendered = crate::render(&red, crate::CARD).expect("a 4x4 png decodes");
+        let rendered = crate::render(&red, crate::CARD, 0).expect("a 4x4 png decodes");
         let bytes = rendered.as_bytes(0).expect("one frame");
         assert_eq!(
             &bytes[..4],
@@ -481,7 +518,7 @@ mod tests {
         image::RgbaImage::from_pixel(900, 300, image::Rgba([1, 2, 3, 255]))
             .save(&big)
             .unwrap();
-        let rendered = crate::render(&big, 256).expect("decodes");
+        let rendered = crate::render(&big, 256, 0).expect("decodes");
         let size = rendered.size(0);
         assert_eq!(i32::from(size.width), 256, "longest edge is capped");
         assert_eq!(i32::from(size.height), 85, "aspect ratio preserved");
@@ -490,7 +527,7 @@ mod tests {
         image::RgbaImage::from_pixel(40, 20, image::Rgba([1, 2, 3, 255]))
             .save(&small)
             .unwrap();
-        let rendered = crate::render(&small, 512).expect("decodes");
+        let rendered = crate::render(&small, 512, 0).expect("decodes");
         assert_eq!(i32::from(rendered.size(0).width), 40, "never enlarged");
 
         let _ = std::fs::remove_file(&big);
@@ -505,11 +542,11 @@ mod tests {
         image::RgbaImage::from_pixel(600, 600, image::Rgba([9, 9, 9, 255]))
             .save(&path)
             .unwrap();
-        let key = crate::cache::key(&path, 128).expect("readable");
+        let key = crate::cache::key(&path, 128, 0).expect("readable");
         let entry = crate::cache::dir().expect("cache dir").join(&key);
         let _ = std::fs::remove_file(&entry);
 
-        crate::render(&path, 128).expect("decodes");
+        crate::render(&path, 128, 0).expect("decodes");
         assert!(entry.is_file(), "the first decode leaves an entry behind");
         assert!(crate::cache::read(&key).is_some(), "and it reads back");
 
@@ -519,7 +556,7 @@ mod tests {
             .save(&path)
             .unwrap();
         assert_ne!(
-            crate::cache::key(&path, 128).expect("readable"),
+            crate::cache::key(&path, 128, 0).expect("readable"),
             key,
             "a rewritten source is a different entry"
         );
@@ -546,7 +583,7 @@ mod tests {
 
         cx.update(|window, cx| {
             for n in 0..8 {
-                let key = (PathBuf::from(format!("/f/{n}.png")), crate::CARD);
+                let key = (PathBuf::from(format!("/f/{n}.png")), crate::CARD, 0);
                 crate::retain(&key, &image(), budget, window, cx);
             }
             let live = cx.global::<crate::Live>();
@@ -576,8 +613,8 @@ mod tests {
     fn undecodable_files_render_nothing_rather_than_panicking() {
         let junk = std::env::temp_dir().join("qrate-junk-probe.jpg");
         std::fs::write(&junk, b"this is not an image").unwrap();
-        assert!(crate::render(&junk, crate::CARD).is_none());
-        assert!(crate::render(Path::new("/nonexistent/x.png"), crate::CARD).is_none());
+        assert!(crate::render(&junk, crate::CARD, 0).is_none());
+        assert!(crate::render(Path::new("/nonexistent/x.png"), crate::CARD, 0).is_none());
         let _ = std::fs::remove_file(&junk);
     }
 }
