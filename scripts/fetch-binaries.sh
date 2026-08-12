@@ -15,6 +15,12 @@
 # ffmpeg is left to the system package manager on macOS and Linux, where every package manager
 # has it and shipping our own would mean carrying ~50 MB per platform for no gain. On Windows,
 # where there is no such default, it is fetched.
+#
+# Two environment variables, both for CI:
+#
+#   QRATE_PDFIUM_ARCH=univ   Fetch the macOS universal build, for a lipo'd bundle.
+#   QRATE_SKIP_FFMPEG=1      PDFium only. CI wants the small, quick download so the PDF tests
+#                            exercise real rendering; the runners already provide ffmpeg.
 set -euo pipefail
 
 DEST="${1:-target/debug}"
@@ -34,6 +40,7 @@ case "$(uname -m)" in
   arm64|aarch64) ARCH=arm64 ;;
   *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
+ARCH="${QRATE_PDFIUM_ARCH:-$ARCH}"
 
 echo "==> platform: $PLATFORM-$ARCH, destination: $DEST"
 
@@ -42,14 +49,26 @@ PDFIUM_URL="https://github.com/bblanchon/pdfium-binaries/releases/latest/downloa
 echo "==> pdfium: $PDFIUM_URL"
 curl -sSL --fail --max-time 300 -o "$WORK/pdfium.tgz" "$PDFIUM_URL"
 tar xzf "$WORK/pdfium.tgz" -C "$WORK"
-# The archive lays the shared library out per platform; take whichever one is in it.
-find "$WORK/bin" "$WORK/lib" -maxdepth 1 -type f \
-  \( -name 'pdfium.dll' -o -name 'libpdfium.so' -o -name 'libpdfium.dylib' \) \
-  -exec cp {} "$DEST/" \; 2>/dev/null
-echo "    installed $(cat "$WORK/VERSION" 2>/dev/null | tr '\n' ' ' || echo 'pdfium')"
+# The archive puts the shared library under bin/ or lib/ depending on the platform, so search the
+# whole extraction rather than guessing. Verified rather than assumed: a silent miss here would
+# produce a release that shows an icon for every PDF, with nothing in the build log to say why.
+found=0
+while IFS= read -r lib; do
+  cp "$lib" "$DEST/"
+  found=1
+done < <(find "$WORK" -type f \
+  \( -name 'pdfium.dll' -o -name 'libpdfium.so' -o -name 'libpdfium.dylib' \) 2>/dev/null)
+
+if [ "$found" -eq 0 ]; then
+  echo "::error::no PDFium library inside $PDFIUM_URL — archive layout changed?" >&2
+  exit 1
+fi
+echo "    installed $(tr '\n' ' ' < "$WORK/VERSION" 2>/dev/null || echo 'pdfium')"
 
 # --- ffmpeg (LGPL/GPL depending on build; shipped unmodified as a separate executable) ----------
-if [ "$PLATFORM" = "win" ]; then
+if [ -n "${QRATE_SKIP_FFMPEG:-}" ]; then
+  echo "==> ffmpeg: skipped (QRATE_SKIP_FFMPEG set)"
+elif [ "$PLATFORM" = "win" ]; then
   # gyan.dev's redirect always points at the current release; the GitHub assets carry the version
   # in their filename, so there is no stable "latest" URL there to use instead.
   FFMPEG_URL="https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
