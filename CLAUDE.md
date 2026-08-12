@@ -4,12 +4,10 @@ This project uses **teach-first pairing**. The goal is for the user to learn the
 
 ## Core Directives
 
-- **Explanations Over Edits:** Do not perform unsolicited code changes. Unless the user explicitly says "implement", "apply", "just fix it", or similar, prefer explanations, rationales, and small illustrative snippets or pseudocode over direct edits.
 - **Explicit Rationales:** When asked to edit the codebase, always state the rationale (trade-offs, principles, or patterns) before or alongside the change.
 - **Diagnosis Before Treatment:** When something breaks or is confusing:
-  1. **Skills Check** — Ask 1–3 targeted questions or propose a tiny exercise to verify the user's understanding of the underlying concept (e.g., lifetimes, trait bounds, borrow checker rules). Skip only for trivial fixes.
-  2. **Deep Diagnosis** — Identify the underlying cause, not just the symptom.
-  3. **Theoretic Fix** — Explain *why* the proposed approach resolves the root cause. Distinguish between a "minimal fix" and the "ideal design."
+  1. **Deep Diagnosis** — Identify the underlying cause, not just the symptom.
+  2. **Theoretic Fix** — Explain *why* the proposed approach resolves the root cause. Distinguish between a "minimal fix" and the "ideal design."
 
 ## Handling Ambiguity
 
@@ -18,23 +16,35 @@ If a request is ambiguous, ask whether the user wants:
 - **Guided steps** — steps for the user to type themselves
 - **Full implementation** — the agent writes the code
 
-## Proficiency Tracking
+## Commands
 
-**Primary source of truth: Notion** — [Learning Progress](https://www.notion.so/37221d32b13b81dca40ee9176e8ddc0f)
+```bash
+cargo run                 # launch the app (binary crate is `crates/app`)
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings -A dead_code
+cargo fmt --all --check
+```
 
-At the start of a teaching-heavy thread, check the Notion page for proficiency levels and calibrate depth:
-- **4–5 (comfortable/expert):** go deeper or faster, skip basics
-- **1–2 (new/basic):** use standard skills-check depth, go slower
+`cargo fmt` can fail with OS error 1224 when Zed holds a file memory-mapped. It is not a code
+problem — read the `--check` diff and apply it by hand rather than fighting the formatter.
 
-After a substantive learning exchange, update the Notion page:
-- Bump `times_practiced`
-- Adjust `proficiency` (1–5 scale)
-- Set `last_touched` to today's date (YYYY-MM-DD)
-- Add a concise note summarising what was covered
+## Crate map
 
-**`learnt.md` (backup only):** If a Notion connection is unavailable, fall back to `learnt.md`. On the next successful Notion sync, delete `learnt.md`.
-
-**Proficiency scale:** 1 = first exposure · 2 = basic understanding · 3 = usable with prompts · 4 = comfortable applying · 5 = comfortable teaching
+| Crate | What it is |
+|---|---|
+| `app` | the binary — `main`, menu bar, actions/keybindings, theming, logging, export entry points |
+| `table` | the spreadsheet grid: delegate, cell editing, undo history, filters, notes, photos, file links |
+| `workspace` | panel hosting — the panel registry, dock buttons, image viewer |
+| `window-wrapper` | shared window chrome: title bar, status bar, the window registry |
+| `settings` | `AppSettings` (user-wide) and `.qrate` (per project), column config, plugin settings |
+| `project-wizard` | new/open project flow, recent projects, the launcher |
+| `data-exchange` | import/export — CSV/JSON-LD/CSL-JSON/ZIP, Google Sheets, preview |
+| `diagnostics` | the validator, spelling checks, fixes, and the problems panel |
+| `checks` | validation primitives (date parsing) used by `diagnostics` |
+| `spellcheck` | dictionary catalogue behind `diagnostics::spelling` |
+| `plugin-host` | the Luau runtime that loads and runs plugins |
+| `plugin-api` | the types a plugin sees — see the three-repo rule below |
+| `ai` | traits + Cohere/mock providers for planned AI review/embedding. Deliberately unfinished |
 
 ## Project Status Tracking
 
@@ -59,7 +69,11 @@ Notion is where a task is born. Never create a Notion task from a GitHub issue �
 1. Notion page in the Tasks Tracker.
 2. `gh issue create --title "ASNT-<n>: <task name>"`, body ending `**Notion:** <page url>`. Match the structure existing issues use (Overview / Scope / Task Details / Definition of Done / Estimate / Type).
 3. Write the issue URL back into the Notion `GitHub Link` property.
-4. Linear (`Linear Link`) has no CLI or MCP here — it comes from Linear's own integration or by hand. Say which links you created and which one still needs a human.
+4. Linear issue in the `qrate` project, via the Linear MCP (`save_issue`). It supports parent and
+   blocked-by relations natively, so mirror Notion's sub-task nesting and `Blocked by`/`Blocking`
+   rather than describing them in prose. Write the issue URL back into the Notion `Linear Link`
+   property — nothing propagates a link in the other direction. Check `list_issues` before creating
+   so a re-run does not duplicate.
 
 ## Code Style — no bloat
 
@@ -69,7 +83,7 @@ A 2026-07-17 whole-repo audit removed exactly this kind of code; don't reintrodu
 - **No `new()`/`Default` for fieldless unit structs.** Construct `StatusBar`-style structs directly: `cx.new(|_| StatusBar)`.
 - **One builder function per UI component, conditions inline.** Don't split a gpui component into a helper fn per visual part — use closures, `FluentBuilder::map`/`when`, and `match` inside a single function (see `render_image_frame` in `crates/workspace/src/panels/details.rs`). If a builder is genuinely shared across multiple `Render` impls, return `AnyElement` — propagating gpui's nested builder generics into several callers overflows rustc's stack at type-check time.
 - **No speculative scaffolding.** Code "kept for later" outside the module tree, provider stubs full of `todo!()`, and builder methods only tests call are deletions, not investments — git history is the archive. **One deliberate exception, do not flag or delete it:** the `ai` crate (`crates/ai/` — traits + Cohere/mock providers) is the planned home for AI review/embedding and stays despite its `todo!()` bodies.
-- **Explanation comments.** If you have to write a comment of more than 1 line to justify a decision, that is the wrong decision. Go back and rethink the implimentation from the start in a different manner.
+- **Explanation comments.** If you have to write a comment of more than 1 line to justify a decision, that is the wrong decision. Go back and rethink the implementation from the start in a different manner.
 
 ## Logging
 
@@ -89,7 +103,7 @@ everyone's editor completion, and nothing in CI would say so.
 |---|---|---|
 | [`qrate-plugin-template`](https://github.com/devnull03/qrate-plugin-template) | `../qrate-plugin-template` | `types/qrate.lua` — the canonical copy — and the example plugin |
 | [`qrate-islandora-plugin`](https://github.com/devnull03/qrate-islandora-plugin) | `plugins/islandora` (gitignored here) | its own copy of `types/qrate.lua` |
-| [`qrate-site`](https://github.com/devnull03/qrate) | `../qrate-site` | nothing about plugins yet — include it once it documents them |
+| `qrate-site` | `../qrate-site` — the `site` branch of *this* repo, checked out separately | nothing about plugins yet — include it once it documents them |
 
 **When you add, rename, or remove anything a plugin can see** — a host function, a descriptor field,
 a `SettingKind`, a hook's arguments, what a scope contains:
@@ -105,8 +119,9 @@ a `SettingKind`, a hook's arguments, what a scope contains:
    from disk, so they are the check that the copies still work. They are ignored, so nothing else
    will catch it.
 
-Each of those repos has its own git history and its own commit. Do not add them as submodules —
-qrate neither pins nor carries them.
+The two plugin repos have their own git history and their own commit. Do not add them as
+submodules — qrate neither pins nor carries them. `qrate-site` is a branch here, so its commit
+lands on this remote.
 
 ## gpui test modules
 
@@ -130,6 +145,6 @@ qrate neither pins nor carries them.
   cargo test --workspace
   ```
   Clippy allows `-A dead_code` (this repo scaffolds UI ahead of its consumers) but hard-fails every other warning. `clippy --all-targets` + `test` already compile everything, so there's no separate build step. Scope the checks to affected crates while iterating, but run the full `--workspace` form once before pushing.
-- Open the PR with `gh pr create`; PRs target `dev` or `main` (the branches CI gates). Body gets a short summary + a **Verification** line stating which of the four checks you ran and that they passed.
+- Open the PR with `gh pr create`; PRs target `dev` or `main` (the branches CI gates). Body gets a short summary + a **Verification** line stating which of the three checks you ran and that they passed.
 - **After opening the PR, check for a GitHub Copilot code review and audit it.** Fetch its comments (`gh pr view <n> --comments`, or `gh api repos/{owner}/{repo}/pulls/{n}/comments`), then for each suggestion decide implement vs. dismiss: apply the correct/worthwhile ones and push to the same branch, skip false positives and noise. Report back which you applied vs. dismissed and why — don't blindly accept or ignore the whole review.
 - **Separate commits etiquette.** "Commit this" is never a licence to touch code. Split by staging whole files with `git add <path>` and nothing else. Never rewrite, rewind, or reconstruct a file to make a tidier split, and never `git stash` — the working tree may hold work in progress that is not yours, and stashing sweeps it up. If two topics share one file, put that file in one commit and say so in the report. An imperfect split is always cheaper than disturbed work.
