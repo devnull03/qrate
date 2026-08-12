@@ -19,6 +19,11 @@ Unicode true
 !ifndef SRCEXE
   !define SRCEXE "..\target\release\app.exe"
 !endif
+; Directory holding the preview sidecars (pdfium.dll, ffmpeg.exe). Normally the same folder as
+; SRCEXE, since scripts/fetch-binaries.sh puts them beside the executable. Both are optional.
+!ifndef SRCDIR
+  !define SRCDIR "..\target\release"
+!endif
 !ifndef ICONFILE
   !define ICONFILE "..\assets\icons\app-icon.ico"
 !endif
@@ -70,6 +75,13 @@ Section "Install"
   SetOutPath "$INSTDIR"
   File /oname=${EXENAME} "${SRCEXE}"
 
+  ; Preview sidecars, taken from beside the built executable — see scripts/fetch-binaries.sh.
+  ; PDFium is loaded dynamically and ffmpeg is run as a subprocess, and both tiers fall back to a
+  ; type icon when their binary is missing, so /nonfatal is correct: an installer built without
+  ; them still installs a working qrate that simply cannot preview PDFs or video.
+  File /nonfatal "${SRCDIR}\pdfium.dll"
+  File /nonfatal "${SRCDIR}\ffmpeg.exe"
+
   ; Start Menu + Desktop shortcuts
   CreateShortcut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\${EXENAME}"
   CreateShortcut "$DESKTOP\${APPNAME}.lnk"    "$INSTDIR\${EXENAME}"
@@ -88,6 +100,8 @@ SectionEnd
 
 Section "Uninstall"
   Delete "$INSTDIR\${EXENAME}"
+  Delete "$INSTDIR\pdfium.dll"
+  Delete "$INSTDIR\ffmpeg.exe"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir  "$INSTDIR"
   Delete "$SMPROGRAMS\${APPNAME}.lnk"

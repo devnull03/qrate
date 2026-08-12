@@ -30,6 +30,18 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$dist"
 cp "$BIN" "$app/Contents/MacOS/$executable"
 chmod +x "$app/Contents/MacOS/$executable"
 
+# ---- Preview sidecars ------------------------------------------------------
+# PDFium is dlopen'd and ffmpeg is spawned, both looked for beside the executable first (see
+# scripts/fetch-binaries.sh). Optional by design: without them PDFs and video fall back to a type
+# icon, so a bundle built without them is degraded, never broken.
+for sidecar in libpdfium.dylib ffmpeg; do
+  if [ -f "$(dirname "$BIN")/$sidecar" ]; then
+    cp "$(dirname "$BIN")/$sidecar" "$app/Contents/MacOS/$sidecar"
+    chmod +x "$app/Contents/MacOS/$sidecar"
+    echo "bundled $sidecar"
+  fi
+done
+
 # ---- Info.plist (substitute version) ---------------------------------------
 sed "s/__VERSION__/${VERSION}/g" "$root/assets/macos/Info.plist" \
   > "$app/Contents/Info.plist"
