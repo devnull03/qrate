@@ -5,7 +5,7 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable,
+    ActiveTheme, IconName, Sizable,
     button::{Button, ButtonVariants},
     dock::{DockPlacement, Panel, PanelControl, PanelEvent},
     input::{Escape, InputEvent, InputState},
@@ -13,7 +13,7 @@ use gpui_component::{
     scroll::ScrollableElement,
     table::TableState,
 };
-use table::photos::{is_previewable_image, placeholder_icon};
+use preview::{can_preview, thumb};
 use table::{QrateTableDelegate, Selection, TableChanged, TableStateHandle};
 
 use crate::BottomDockCrop;
@@ -197,33 +197,15 @@ impl Panel for DetailsPanel {
 /// way. Whenever a path resolved at all, two ghost icon buttons overlay the top-right: open in
 /// the OS default viewer, reveal in the file manager (plain shell-outs, no panel state touched).
 /// Those matter *most* for the icon case, where the OS is the only way to actually see the file.
-/// `gpui`'s image cache is keyed by resource path, so switching back to a previously-viewed
-/// row's image is served from cache rather than re-decoded from disk.
+/// `preview` caches by path and size, in memory and on disk, so stepping back to a row already
+/// looked at costs neither a re-decode nor a re-read.
 ///
 /// Returns `AnyElement` (erased), not `impl IntoElement` — this is called from several `Render`
 /// impls (the real panel plus test probes), and gpui's chained builder calls produce deeply
 /// nested generic types; propagating that concrete type into every caller overflowed rustc's
 /// stack during type-checking instead of just hitting a slow compile.
 fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
-    // Also `img()`'s decode-failure fallback; captures by value because the `'static` fallback
-    // closure can't borrow `cx` or `image_path`.
-    let placeholder = {
-        let color = cx.theme().muted_foreground;
-        let icon = placeholder_icon(image_path.as_deref());
-        move || {
-            div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(color)
-                // `IconName` isn't `Copy`, and `with_fallback` wants `Fn` (it may re-render) —
-                // so clone per call rather than move the captured icon out.
-                .child(Icon::new(icon.clone()).size_6())
-                .into_any_element()
-        }
-    };
-    let show_image = image_path.as_deref().is_some_and(is_previewable_image);
+    let show_image = image_path.as_deref().is_some_and(can_preview);
 
     let action = |id: &'static str, icon: IconName, tip: &'static str, path: PathBuf| {
         Button::new(id)
@@ -256,72 +238,47 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
         .overflow_hidden()
         .bg(cx.theme().muted)
         .map(|frame| match image_path {
-            Some(path) => frame
-                .map(|frame| {
-                    if show_image {
-                        // gpui's `img` stamps the element with the *image's* aspect ratio, so a
-                        // `size_full` img ignores the frame shape and `object_fit` has nothing to
-                        // letterbox. Size it by its intrinsic ratio under `max_w/h_full` (where that
-                        // aspect logic applies) and center it, so it shrinks to fit — bars and all.
-                        frame.child(
-                            div()
-                                .size_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    img(path.clone())
-                                        .max_w_full()
-                                        .max_h_full()
-                                        .object_fit(ObjectFit::Contain)
-                                        .with_fallback(placeholder),
-                                ),
+            Some(path) => frame.child(thumb(Some(&path), preview::PANE, cx)).child(
+                div()
+                    .absolute()
+                    .top_1()
+                    .right_1()
+                    .flex()
+                    .gap_1()
+                    .bg(cx.theme().background.opacity(0.7))
+                    // Fullscreen only makes sense for something we can actually render; an
+                    // icon-placeholder file has nothing to zoom into.
+                    .when(show_image, |group| {
+                        let path = path.clone();
+                        group.child(
+                            Button::new("fullscreen-image")
+                                .icon(IconName::Maximize)
+                                .ghost()
+                                .small()
+                                .tooltip("View fullscreen")
+                                .on_click(move |_, _, cx| {
+                                    crate::open_image_viewer(
+                                        path.clone(),
+                                        crate::ViewerScope::Workspace,
+                                        cx,
+                                    )
+                                }),
                         )
-                    } else {
-                        frame.child(placeholder())
-                    }
-                })
-                .child(
-                    div()
-                        .absolute()
-                        .top_1()
-                        .right_1()
-                        .flex()
-                        .gap_1()
-                        .bg(cx.theme().background.opacity(0.7))
-                        // Fullscreen only makes sense for something we can actually render; an
-                        // icon-placeholder file has nothing to zoom into.
-                        .when(show_image, |group| {
-                            let path = path.clone();
-                            group.child(
-                                Button::new("fullscreen-image")
-                                    .icon(IconName::Maximize)
-                                    .ghost()
-                                    .small()
-                                    .tooltip("View fullscreen")
-                                    .on_click(move |_, _, cx| {
-                                        crate::open_image_viewer(
-                                            path.clone(),
-                                            crate::ViewerScope::Workspace,
-                                            cx,
-                                        )
-                                    }),
-                            )
-                        })
-                        .child(action(
-                            "open-image",
-                            IconName::ExternalLink,
-                            "Open in default app",
-                            path.clone(),
-                        ))
-                        .child(action(
-                            "reveal-image",
-                            IconName::FolderOpen,
-                            "Reveal in folder",
-                            path,
-                        )),
-                ),
-            None => frame.child(placeholder()),
+                    })
+                    .child(action(
+                        "open-image",
+                        IconName::ExternalLink,
+                        "Open in default app",
+                        path.clone(),
+                    ))
+                    .child(action(
+                        "reveal-image",
+                        IconName::FolderOpen,
+                        "Reveal in folder",
+                        path,
+                    )),
+            ),
+            None => frame.child(thumb(None, preview::PANE, cx)),
         })
         .into_any_element()
 }
@@ -523,37 +480,10 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use gpui::{Context, IntoElement, Render, TestAppContext, Window};
-    use gpui_component::{IconName, IconNamed as _};
 
     use gpui::VisualTestContext;
 
-    use super::{DetailsPanel, is_previewable_image, placeholder_icon, render_image_frame};
-
-    #[test]
-    fn placeholder_icon_varies_by_file_type() {
-        // `IconName` is macro-generated and implements neither `PartialEq` nor `Debug`, so
-        // compare the embedded asset paths it resolves to instead.
-        let icon = |p: &str| placeholder_icon(Some(Path::new(p))).path();
-        assert_eq!(icon("/f/scan.PDF"), IconName::BookOpen.path());
-        assert_eq!(icon("/f/take.mp3"), IconName::Play.path());
-        assert_eq!(icon("/f/clip.mov"), IconName::Frame.path());
-        assert_eq!(icon("/f/archive.zip"), IconName::File.path());
-        assert_eq!(icon("/f/no-extension"), IconName::File.path());
-        assert_eq!(placeholder_icon(None).path(), IconName::File.path());
-        // The buckets must actually differ — a regression that collapsed them all to `File`
-        // would otherwise still pass every assertion above.
-        assert_ne!(icon("/f/scan.pdf"), icon("/f/take.mp3"));
-    }
-
-    #[test]
-    fn only_decodable_images_get_an_inline_preview() {
-        assert!(is_previewable_image(Path::new("/f/a.JPG")));
-        assert!(is_previewable_image(Path::new("/f/a.png")));
-        // Resolves via the files folder like any other row file, but `img()` can't decode it —
-        // it gets an icon instead of a failed load.
-        assert!(!is_previewable_image(Path::new("/f/a.pdf")));
-        assert!(!is_previewable_image(Path::new("/f/a")));
-    }
+    use super::{DetailsPanel, render_image_frame};
 
     /// Wraps `render_image_frame` in a root `Render` view so a test can actually draw it —
     /// `Img`'s real load/fallback logic runs during layout/paint, not at element construction,
