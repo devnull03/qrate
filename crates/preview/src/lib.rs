@@ -35,10 +35,12 @@ pub const CARD: u32 = 512;
 /// Longest edge for the Details panel's preview, whose pane the user can drag to 600px tall.
 pub const PANE: u32 = 1024;
 
-/// No size cap: decode at whatever the file's own resolution is. What the fullscreen viewer asks
-/// for, since it zooms to 8× and a downscaled copy would go soft exactly when someone is looking
-/// closely. Nothing this size is written to the disk cache — it would be a second copy of the
-/// original file — so it lives only in the memory budget, for as long as it is on screen.
+/// No size cap: whatever the file's own resolution is. What the fullscreen viewer asks for, since
+/// it zooms to 8× and a downscaled copy would go soft exactly when someone is looking closely.
+///
+/// For a format gpui decodes itself this hands over the original file untouched — see [`source`].
+/// For the rest it is an uncapped run down the ladder, never written to the disk cache (it would
+/// be a second copy of the original), so it lives only in the memory budget while it is on screen.
 pub const FULL: u32 = 0;
 
 /// What a tier that must be told a size renders at when asked for [`FULL`]. A PDF page has no
@@ -369,15 +371,29 @@ pub fn thumb(path: Option<&Path>, max_edge: u32, cx: &App) -> AnyElement {
 
 /// Where the pixels come from for one previewable file.
 ///
-/// SVG stays on gpui's own loader: it is the one format [`can_preview`] accepts that the `image`
-/// crate cannot decode — gpui rasterises it through the `resvg` it already vendors — and vector
-/// files are small enough that neither the downscale nor the disk cache would earn its keep.
+/// gpui's own loader gets the file whenever it can read it and nothing has to be shrunk, so what
+/// the fullscreen viewer draws is the original: animation intact, no round trip through our decode
+/// and BGRA swap, no second interpretation of a file gpui already understands.
 ///
-/// Everything else goes through [`Preview`] as a custom source. That has to be `Custom` rather
-/// than a plain path: `Custom` is the only variant whose loader runs with a `Window`, which is
-/// what both [`Window::use_asset`] and the eviction in [`retain`] need.
+/// - **SVG at every size.** It is the one format [`can_preview`] accepts that the `image` crate
+///   cannot decode — gpui rasterises it through the `resvg` it already vendors — and vector files
+///   are small enough that neither the downscale nor the disk cache would earn its keep.
+/// - **Raster at [`FULL`] only**, i.e. the viewer. A card or a details pane wants the capped,
+///   cached copy; there is nothing to cap here.
+///
+/// Everything else goes through [`Preview`] as a custom source — the formats gpui cannot read at
+/// all (PDF, RAW, video, audio artwork, whatever only the OS can thumbnail), and every capped
+/// size. That has to be `Custom` rather than a plain path: `Custom` is the only variant whose
+/// loader runs with a `Window`, which is what both [`Window::use_asset`] and the eviction in
+/// [`retain`] need.
+///
+/// ponytail: the handed-over file lands in gpui's asset cache, which [`retain`] cannot evict —
+/// so a session spent opening one large scan after another keeps every one of them. Acceptable
+/// while the viewer shows one at a time; give the viewer an explicit `drop_image` on close if it
+/// ever shows up in a memory profile.
 pub fn source(path: &Path, max_edge: u32, page: usize) -> ImageSource {
-    if extension(path).as_deref() == Some("svg") {
+    let extension = extension(path).unwrap_or_default();
+    if extension == "svg" || (max_edge == FULL && page == 0 && is_raster(&extension)) {
         return ImageSource::Resource(path.to_path_buf().into());
     }
     let key = (path.to_path_buf(), max_edge, page);
@@ -407,6 +423,43 @@ mod tests {
     use gpui_component::{IconName, IconNamed as _};
 
     use crate::{can_preview, placeholder_icon, thumb};
+
+    /// Which loader a file is routed to, and it has to be gpui's own for an image the viewer is
+    /// showing — that is what makes the fullscreen view the *original* file rather than our
+    /// re-decoded copy, animation and all. Nothing else observes the difference, so without this
+    /// the rule could be inverted and every other test would still pass.
+    #[test]
+    fn the_viewer_gets_the_original_file_and_everything_else_gets_the_ladder() {
+        use gpui::ImageSource;
+
+        use crate::{CARD, FULL, source};
+
+        let native = |p: &str, max_edge, page| {
+            matches!(
+                source(Path::new(p), max_edge, page),
+                ImageSource::Resource(_)
+            )
+        };
+
+        assert!(native("/f/scan.jpg", FULL, 0), "the viewer's own case");
+        assert!(
+            native("/f/anim.gif", FULL, 0),
+            "a single frame would kill it"
+        );
+        // SVG has no other loader: the `image` crate cannot decode it at any size.
+        assert!(native("/f/logo.svg", CARD, 0));
+        assert!(native("/f/logo.svg", FULL, 0));
+
+        // Capped sizes stay on the ladder — a card wants the shrunk, disk-cached copy.
+        assert!(!native("/f/scan.jpg", CARD, 0));
+        // Formats gpui cannot read at all, at any size.
+        assert!(!native("/f/scan.pdf", FULL, 0));
+        assert!(!native("/f/shot.cr2", FULL, 0));
+        assert!(!native("/f/photo.avif", FULL, 0), "gpui compiles AVIF out");
+        // A page past the first only exists for formats the ladder renders anyway; handing over
+        // the whole file would silently show page one.
+        assert!(!native("/f/scan.tif", FULL, 3));
+    }
 
     #[test]
     fn placeholder_icon_varies_by_file_type() {
