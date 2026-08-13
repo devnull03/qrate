@@ -32,6 +32,12 @@ pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> St
         .items_mut()
         .add_left_if(left_panels, |cx| PanelButtons::occupied(BarSide::Left, cx));
 
+    // Bottom-docked panels sit under the middle of the window, so their buttons do too.
+    let centre_panels = cx.new(|cx| PanelButtons::new(BarSide::Centre, buttons.clone(), cx));
+    registry.items_mut().add_centre_if(centre_panels, |cx| {
+        PanelButtons::occupied(BarSide::Centre, cx)
+    });
+
     let plugins = cx.new(|cx| PluginBar::new(Bar::Status, Side::Left, cx));
     registry.items_mut().add_left_if(plugins, |cx| {
         !BarContributions::at(Bar::Status, Side::Left, cx).is_empty()

@@ -1,6 +1,7 @@
 mod actions;
 mod app_menus;
 mod app_settings;
+mod assets;
 mod export;
 mod logging;
 mod status_items;
@@ -394,7 +395,7 @@ fn flush_all_state(cx: &mut gpui::App) {
 }
 
 fn main() {
-    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let app = gpui_platform::application().with_assets(assets::Assets);
 
     app.run(move |cx| {
         // First, so a failure during the startup below — the case where no window ever appears to

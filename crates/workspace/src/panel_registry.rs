@@ -21,14 +21,16 @@ use crate::panels::{AGENT_META, DETAILS_META};
 #[derive(Copy, Clone, PartialEq)]
 pub enum BarSide {
     Left,
+    Centre,
     Right,
 }
 
-/// The button follows its panel: dock the panel right and its icon moves to the right of the bar.
-/// Everything else — left, bottom, and a centre that no dockable panel uses — reads as left.
+/// The button follows its panel: dock the panel right and its icon moves to the right of the bar,
+/// dock it bottom and the icon sits in the middle, under the panel it opens.
 pub fn bar_side(placement: DockPlacement) -> BarSide {
     match placement {
         DockPlacement::Right => BarSide::Right,
+        DockPlacement::Bottom => BarSide::Centre,
         _ => BarSide::Left,
     }
 }

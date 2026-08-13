@@ -31,6 +31,8 @@ pub struct DockToggleButton {
     dock: WeakEntity<DockArea>,
     toggles: Toggles,
     icon: IconName,
+    /// Asset path drawn in place of `icon` while the dock is open — Lucide has no filled panel.
+    open_icon: Option<SharedString>,
     /// Whether to show the live error/warning count beside the icon.
     count: bool,
     _sub: Option<Subscription>,
@@ -41,13 +43,18 @@ impl DockToggleButton {
         id: impl Into<SharedString>,
         dock: WeakEntity<DockArea>,
         placement: DockPlacement,
-        icon: IconName,
     ) -> Self {
+        let (icon, open_icon) = match placement {
+            DockPlacement::Left => (IconName::PanelLeft, "icons/panel-left-filled.svg"),
+            DockPlacement::Right => (IconName::PanelRight, "icons/panel-right-filled.svg"),
+            _ => (IconName::PanelBottom, "icons/panel-bottom-filled.svg"),
+        };
         Self {
             id: id.into(),
             dock,
             toggles: Toggles::Dock(placement),
             icon,
+            open_icon: Some(open_icon.into()),
             count: false,
             _sub: None,
         }
@@ -64,6 +71,7 @@ impl DockToggleButton {
             dock,
             toggles: Toggles::Panel(meta),
             icon: meta.icon.clone(),
+            open_icon: None,
             count: meta.badge,
             // Kept current as problems come and go.
             _sub: meta
@@ -100,6 +108,11 @@ impl Render for DockToggleButton {
             Toggles::Dock(placement) => Some(placement),
             Toggles::Panel(meta) => PanelRegistry::placement(meta.name, cx),
         };
+        let open = placement.is_some_and(|placement| {
+            self.dock
+                .upgrade()
+                .is_some_and(|area| area.read(cx).is_dock_open(placement, cx))
+        });
 
         h_flex()
             .id(self.id.clone())
@@ -109,13 +122,20 @@ impl Render for DockToggleButton {
             .rounded_md()
             .cursor_pointer()
             .hover(move |this| this.bg(hover_bg))
+            .when(open, |this| {
+                this.bg(cx.theme().accent).text_color(cx.theme().primary)
+            })
             // The title bar wraps its children in a `WindowControlArea::Drag` hitbox, which
             // Windows hit-tests as HTCAPTION and never delivers a click from. Occluding
             // stops that hit test at this button.
             .occlude()
             .map(|this| {
                 if !self.count {
-                    return this.child(Icon::new(self.icon.clone()).small());
+                    let icon = match (&self.open_icon, open) {
+                        (Some(path), true) => Icon::empty().path(path.clone()),
+                        _ => Icon::new(self.icon.clone()),
+                    };
+                    return this.child(icon.small());
                 }
                 // Errors and warnings side by side rather than one total: the icon and colour say
                 // which is which, so `self.icon` has nothing left to add here.
