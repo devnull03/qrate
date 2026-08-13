@@ -15,9 +15,12 @@ gpui-component.workspace = true
 image = { version = "0.25", default-features = false, features = [
   "bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp",
 ] }
+rodio.workspace = true
 zip.workspace = true
 pdfium-render = { version = "0.9.3", default-features = false, features = ["pdfium_latest", "image_025", "thread_safe"] }
-symphonia = { version = "0.6.0", default-features = false, features = ["mp3", "aac", "alac", "isomp4", "ogg", "vorbis", "flac", "wav", "pcm"] }
+# Held at 0.5 to match what `rodio` depends on: cargo unifies them into one copy, where 0.6 would
+# ship two whole symphonia trees in the binary. Move both together or neither.
+symphonia = { version = "0.5.5", default-features = false, features = ["mp3", "aac", "alac", "isomp4", "ogg", "vorbis", "flac", "wav", "pcm"] }
 
 [dev-dependencies]
 # `#[gpui::test]`, TestAppContext, and run_test are all behind this feature.
