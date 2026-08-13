@@ -10,11 +10,13 @@
 
 use std::fs::File;
 use std::path::Path;
+use std::time::Duration;
 
 use image::DynamicImage;
-use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::{MetadataOptions, Visual};
+use symphonia::core::probe::{Hint, ProbeResult};
 
 pub fn handles(extension: &str) -> bool {
     matches!(
@@ -23,45 +25,81 @@ pub fn handles(extension: &str) -> bool {
     )
 }
 
-/// The largest picture tagged in the file. Largest rather than first because a file often carries
-/// both a small icon and a real cover, and the tag order does not say which is which.
-pub fn cover(path: &Path) -> Option<DynamicImage> {
+/// Open the file and read its container header, no further. The extension is only a hint, so a
+/// mislabelled recording still probes as whatever it really is.
+fn probe(path: &Path) -> Option<ProbeResult> {
     let file = File::open(path).ok()?;
     let stream = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
     if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
         hint.with_extension(extension);
     }
-
-    let mut format = symphonia::default::get_probe()
-        .probe(
+    symphonia::default::get_probe()
+        .format(
             &hint,
             stream,
-            Default::default(),
-            MetadataOptions::default(),
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
         )
-        .ok()?;
+        .ok()
+}
 
-    // Artwork can be attached to the media as a whole or to an individual track, and which one a
-    // writer used depends on the format — take both rather than guessing per extension.
-    let mut visuals: Vec<Visual> = Vec::new();
-    let mut collect = |revision: &symphonia::core::meta::MetadataRevision| {
-        visuals.extend(revision.media.visuals.iter().cloned());
-        visuals.extend(
-            revision
-                .per_track
-                .iter()
-                .flat_map(|track| track.metadata.visuals.iter().cloned()),
-        );
+/// How long the recording runs. Read from the container header rather than from the player, so the
+/// transport can show a total before anything is playing — and without a sound card at all.
+pub fn duration(path: &Path) -> Option<Duration> {
+    let probed = probe(path)?;
+    let params = &probed.format.default_track()?.codec_params;
+    let frames = params.n_frames?;
+
+    let seconds = match params.sample_rate {
+        Some(rate) if rate > 0 => frames as f64 / f64::from(rate),
+        // `calc_time` asserts on a zero timebase rather than returning an error, so it is only
+        // reachable once the timebase has been checked here.
+        _ => {
+            let base = params
+                .time_base
+                .filter(|base| base.numer > 0 && base.denom > 0)?;
+            let time = base.calc_time(frames);
+            time.seconds as f64 + time.frac
+        }
     };
-    let mut metadata = format.metadata();
-    if let Some(revision) = metadata.skip_to_latest() {
-        collect(revision);
-    } else if let Some(revision) = metadata.current() {
-        collect(revision);
-    }
+    Duration::try_from_secs_f64(seconds).ok()
+}
 
-    let biggest = visuals.into_iter().max_by_key(|visual| visual.data.len())?;
+/// Every picture tagged in the file.
+///
+/// Two places, and which one a writer used depends on the format: tags that sit outside the
+/// container (an MP3's ID3 block) are read during the probe, tags inside it belong to the reader.
+/// Take both rather than guessing per extension.
+fn visuals(path: &Path) -> Vec<Visual> {
+    let Some(mut probed) = probe(path) else {
+        return Vec::new();
+    };
+    let mut visuals = Vec::new();
+    if let Some(mut log) = probed.metadata.get()
+        && let Some(revision) = log.skip_to_latest()
+    {
+        visuals.extend(revision.visuals().iter().cloned());
+    }
+    let mut metadata = probed.format.metadata();
+    if let Some(revision) = metadata.skip_to_latest() {
+        visuals.extend(revision.visuals().iter().cloned());
+    }
+    visuals
+}
+
+/// Whether there is any artwork at all, without decoding it. The viewer asks before it decides
+/// where to put the playback controls: a recording with no cover has an empty page to fill.
+pub fn has_cover(path: &Path) -> bool {
+    !visuals(path).is_empty()
+}
+
+/// The largest picture tagged in the file. Largest rather than first because a file often carries
+/// both a small icon and a real cover, and the tag order does not say which is which.
+pub fn cover(path: &Path) -> Option<DynamicImage> {
+    let biggest = visuals(path)
+        .into_iter()
+        .max_by_key(|visual| visual.data.len())?;
     image::load_from_memory(&biggest.data).ok()
 }
 

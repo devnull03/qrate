@@ -18,6 +18,7 @@ use table::{QrateTableDelegate, Selection, TableChanged, TableStateHandle};
 
 use crate::BottomDockCrop;
 use crate::panel_registry::PanelMeta;
+use crate::viewer::transport::{self, Transport};
 
 /// Project-scoped height of the details panel's image pane, in pixels.
 const IMAGE_PANE_HEIGHT_KEY: &str = "details_image_height";
@@ -59,6 +60,10 @@ pub struct DetailsPanel {
     /// a shared cell is how the measurement reaches the next render without a global.
     anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
     viewport: Rc<Cell<Bounds<Pixels>>>,
+    /// Playback controls for the selected row, when what it links to is a recording. An oral
+    /// history is catalogued *while* it is listened to, so the transport belongs beside the fields
+    /// being typed — not only in the fullscreen viewer.
+    transport: Option<Transport>,
 }
 
 impl DetailsPanel {
@@ -84,9 +89,38 @@ impl DetailsPanel {
             _editor_sub,
             anchor: Rc::default(),
             viewport: Rc::new(Cell::new(Bounds::default())),
+            transport: None,
         };
         this.bind(cx);
         this
+    }
+
+    /// The file the selected row links to, which is both what the preview frame draws and what the
+    /// transport would play.
+    fn selected_file(&self, cx: &App) -> Option<PathBuf> {
+        let state = self.state.as_ref()?.upgrade()?;
+        let delegate = state.read(cx).delegate();
+        let row = match delegate.selection()? {
+            Selection::Cell { row, .. } | Selection::Row(row) => row,
+            Selection::Column(_) => return None,
+        };
+        delegate.row_image(row).map(Path::to_path_buf)
+    }
+
+    /// Point the transport at whatever is selected now. A no-op while the selection stays on the
+    /// same file — this runs on every table change, and rebuilding would re-probe the file and
+    /// throw away the position on every keystroke in the grid.
+    fn retarget(&mut self, cx: &mut Context<Self>) {
+        let path = self.selected_file(cx);
+        if self.transport.as_ref().map(|it| &it.path) == path.as_ref() {
+            return;
+        }
+        // Whatever was playing belonged to the row being left. Leaving it running would narrate
+        // one item while the panel details another.
+        if self.transport.is_some() {
+            preview::playback::stop(cx);
+        }
+        self.transport = path.and_then(|path| Transport::new(path, cx));
     }
 
     /// Open `header`'s field for editing, seeded with its current text. The column is resolved by
@@ -153,10 +187,19 @@ impl DetailsPanel {
 
     fn bind(&mut self, cx: &mut Context<Self>) {
         self.state = cx.try_global::<TableStateHandle>().map(|h| h.0.clone());
-        self._table_sub =
-            self.state.as_ref().and_then(|w| w.upgrade()).map(|entity| {
-                cx.subscribe(&entity, |_this, _st, _ev: &TableChanged, cx| cx.notify())
-            });
+        self._table_sub = self.state.as_ref().and_then(|w| w.upgrade()).map(|entity| {
+            cx.subscribe(&entity, |this, _st, _ev: &TableChanged, cx| {
+                this.retarget(cx);
+                cx.notify();
+            })
+        });
+        self.retarget(cx);
+    }
+}
+
+impl transport::Host for DetailsPanel {
+    fn transport(&mut self) -> Option<&mut Transport> {
+        self.transport.as_mut()
     }
 }
 
@@ -199,7 +242,11 @@ impl Panel for DetailsPanel {
 /// impls (the real panel plus test probes), and gpui's chained builder calls produce deeply
 /// nested generic types; propagating that concrete type into every caller overflowed rustc's
 /// stack during type-checking instead of just hitting a slow compile.
-fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
+fn render_image_frame(
+    image_path: Option<PathBuf>,
+    transport: Option<AnyElement>,
+    cx: &App,
+) -> AnyElement {
     let show_image = image_path.as_deref().is_some_and(can_preview);
 
     let action = |id: &'static str, icon: IconName, tip: &'static str, path: PathBuf| {
@@ -275,6 +322,21 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
             ),
             None => frame.child(thumb(None, preview::PANE, cx)),
         })
+        // Along the bottom of the frame, over the cover art rather than beside it: the pane is a
+        // fixed height the user drags, and a bar taking a row out of it would shrink the picture
+        // every time a recording is selected.
+        .children(transport.map(|bar| {
+            div()
+                .absolute()
+                .bottom_0()
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .p_1()
+                .bg(cx.theme().background.opacity(0.8))
+                .child(bar)
+        }))
         .into_any_element()
 }
 
@@ -291,6 +353,13 @@ impl Render for DetailsPanel {
             let image = delegate.row_image(row).map(Path::to_path_buf);
             Some((delegate.row_fields(row), image))
         });
+
+        // Compact: this dock is one the user drags narrow, and the full-width scrubber would push
+        // the total time out past the frame's edge.
+        let transport = self
+            .transport
+            .as_ref()
+            .map(|it| transport::bar(it, true, cx));
 
         let crop = cx.try_global::<BottomDockCrop>().map_or(px(0.), |c| c.0);
         // The gallery is already a wall of the same thumbnails, so this panel's own copy is
@@ -427,7 +496,7 @@ impl Render for DetailsPanel {
                                 .size(px(image_height))
                                 .size_range(px(80.)..px(600.))
                                 .p_3()
-                                .child(render_image_frame(image_path, cx)),
+                                .child(render_image_frame(image_path, transport, cx)),
                         )
                     })
                     .child(
@@ -488,7 +557,7 @@ mod tests {
 
     impl Render for ImageFrameProbe {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            render_image_frame(self.0.clone(), cx)
+            render_image_frame(self.0.clone(), None, cx)
         }
     }
 

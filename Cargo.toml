@@ -44,6 +44,12 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
 dirs = "6"
 log = "0.4"
+# cpal-plus-symphonia glue. `preview` already decodes audio with symphonia for cover art, and the
+# feature set below matches what it enables, so what this really adds is the output-device half —
+# the part a hand-rolled cpal ring buffer would have to get right.
+rodio = { version = "0.22", default-features = false, features = [
+  "playback", "flac", "mp3", "mp4", "vorbis", "wav", "symphonia-ogg",
+] }
 simplelog = "0.12"
 os_info = "3"
 sysinfo = "0.37"

@@ -12,6 +12,7 @@
 
 mod find;
 mod highlight;
+pub(crate) mod transport;
 
 use std::path::PathBuf;
 
@@ -25,6 +26,7 @@ use gpui_component::{
 };
 
 use crate::viewer::find::Find;
+use crate::viewer::transport::Transport;
 
 /// How wide the find panel opens, and how far it may be dragged either way. The floor keeps a row
 /// wide enough to show context around a match; the ceiling stops the panel swallowing the page.
@@ -62,6 +64,7 @@ pub fn open_viewer(path: PathBuf, scope: Scope, cx: &mut App) {
     let pages = preview::page_count(&path);
     let document = preview::has_text(&path);
     let viewer = cx.new(|cx| Viewer {
+        transport: Transport::new(path.clone(), cx),
         path,
         scope,
         page: 0,
@@ -80,6 +83,8 @@ pub fn open_viewer(path: PathBuf, scope: Scope, cx: &mut App) {
 }
 
 pub fn close_viewer(cx: &mut App) {
+    // Without this the recording plays on over an empty screen, with nothing left to stop it.
+    preview::playback::stop(cx);
     cx.set_global(ActiveViewer(None));
 }
 
@@ -93,6 +98,9 @@ pub struct Viewer {
     /// Whether this file is a document at all, which is a different question from whether it has
     /// more than one page — a one-page PDF is still a document, and still says "1 / 1".
     document: bool,
+    /// The playback transport, present exactly when the file is a recording. Gated on the format
+    /// for the same reason `document` is: a silent tape is still audio and still gets a transport.
+    transport: Option<Transport>,
     /// 1.0 = fit-to-area (`Contain`); [`Viewer::set_zoom`] clamps it.
     zoom: f32,
     /// Pan translation from the centered position.
@@ -249,6 +257,12 @@ impl Viewer {
     }
 }
 
+impl transport::Host for Viewer {
+    fn transport(&mut self) -> Option<&mut Transport> {
+        self.transport.as_mut()
+    }
+}
+
 impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.focused {
@@ -263,6 +277,10 @@ impl Render for Viewer {
             .unwrap_or("File")
             .to_string()
             .into();
+        // A recording with no artwork has nothing to draw — the ladder would fall through to a
+        // type icon, which is a picture of nothing. The transport takes the middle of the page
+        // instead of hugging the bottom edge of a blank rectangle.
+        let bare = self.transport.as_ref().is_some_and(|it| !it.art);
         let pill = cx.theme().background.opacity(0.8);
         let accent = cx.theme().primary.opacity(0.55);
         let marks: Vec<preview::Match> = self.find.on_page(page).cloned().collect();
@@ -375,7 +393,7 @@ impl Render for Viewer {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .child(
+                                        .children((!bare).then(|| {
                                             // `flex_shrink_0` keeps `relative(zoom)` past 1;
                                             // `relative` + `left`/`top` pan it.
                                             //
@@ -390,8 +408,8 @@ impl Render for Viewer {
                                                 .h(relative(zoom))
                                                 .left(offset.x)
                                                 .top(offset.y)
-                                                .object_fit(ObjectFit::Contain),
-                                        )
+                                                .object_fit(ObjectFit::Contain)
+                                        }))
                                         // Hit boxes over the page, for the hits that are on it.
                                         .when(!marks.is_empty(), |area| {
                                             area.child(highlight::overlay(
@@ -422,17 +440,25 @@ impl Render for Viewer {
                     .bg(pill)
                     .child(name),
             )
-            // Page controls, for a document — including a one-page one. "1 / 1" is what tells you
+            // The bottom-centre slot: page controls for a document, the transport for a recording.
+            // Never both — a PDF is not a tape — so they share the one pill.
+            //
+            // Page controls appear for a one-page document too. "Page 1 of 1" is what tells you
             // this is a PDF at all rather than a picture of a page, which is otherwise invisible.
-            .when(self.document, |viewer| {
+            .when(self.document || self.transport.is_some(), |viewer| {
                 viewer.child(
                     div()
                         .absolute()
-                        .bottom_4()
                         .left_0()
                         .right_0()
                         .flex()
                         .justify_center()
+                        // Middle of an empty page for an artless recording, along the bottom of
+                        // anything there is something to look at.
+                        .map(|slot| match bare {
+                            true => slot.top_0().bottom_0().items_center(),
+                            false => slot.bottom_4(),
+                        })
                         .child(
                             // Loud on purpose. These are the only controls a reader reaches for
                             // constantly, and over a dimmed page a translucent pill of small
@@ -448,36 +474,43 @@ impl Render for Viewer {
                                 .border_1()
                                 .border_color(cx.theme().border)
                                 .shadow_lg()
-                                .child(
-                                    Button::new("previous-page")
-                                        .icon(IconName::ChevronLeft)
-                                        .outline()
-                                        .disabled(page == 0)
-                                        .tooltip("Previous page")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.turn_page(-1);
-                                            cx.notify();
-                                        })),
-                                )
-                                // Numbered from one: the page count a reader sees has to match
-                                // the one printed on the document.
-                                .child(
-                                    div()
-                                        .px_1()
-                                        .font_semibold()
-                                        .child(format!("Page {} of {pages}", page + 1)),
-                                )
-                                .child(
-                                    Button::new("next-page")
-                                        .icon(IconName::ChevronRight)
-                                        .outline()
-                                        .disabled(page + 1 >= pages)
-                                        .tooltip("Next page")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.turn_page(1);
-                                            cx.notify();
-                                        })),
-                                ),
+                                .occlude()
+                                .map(|pill| match &self.transport {
+                                    Some(transport) => {
+                                        pill.child(transport::bar(transport, false, cx))
+                                    }
+                                    None => pill
+                                        .child(
+                                            Button::new("previous-page")
+                                                .icon(IconName::ChevronLeft)
+                                                .outline()
+                                                .disabled(page == 0)
+                                                .tooltip("Previous page")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.turn_page(-1);
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        // Numbered from one: the page count a reader sees has to
+                                        // match the one printed on the document.
+                                        .child(
+                                            div()
+                                                .px_1()
+                                                .font_semibold()
+                                                .child(format!("Page {} of {pages}", page + 1)),
+                                        )
+                                        .child(
+                                            Button::new("next-page")
+                                                .icon(IconName::ChevronRight)
+                                                .outline()
+                                                .disabled(page + 1 >= pages)
+                                                .tooltip("Next page")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.turn_page(1);
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                }),
                         ),
                 )
             })
@@ -632,6 +665,67 @@ mod tests {
             });
             close_viewer(cx);
         });
+    }
+
+    /// A recording gets a transport because it *is* audio, the same way page controls key off "is
+    /// a document" — a silent tape and a tape with no readable header both still need playing.
+    #[gpui::test]
+    fn only_a_recording_gets_a_transport(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            open_viewer("/nonexistent/take.wav".into(), Scope::Workspace, cx);
+            let recording = viewer_in(Scope::Workspace, cx).expect("just opened");
+            recording.update(cx, |viewer, _| {
+                assert!(viewer.transport.is_some(), "a WAV is a recording");
+                assert!(!viewer.document);
+            });
+
+            open_viewer("/nonexistent/scan.pdf".into(), Scope::Workspace, cx);
+            let document = viewer_in(Scope::Workspace, cx).expect("just opened");
+            document.update(cx, |viewer, _| assert!(viewer.transport.is_none()));
+
+            close_viewer(cx);
+        });
+    }
+
+    /// The bug this would ship with: close the viewer and the recording plays on over an empty
+    /// screen, with nothing left to stop it.
+    ///
+    /// Like the PDF and video tests, this asserts against what is installed — on a machine with no
+    /// output device `play` is a no-op and the assertion holds trivially; on one with a sound card
+    /// it is the real path.
+    #[gpui::test]
+    fn closing_the_viewer_leaves_nothing_playing(cx: &mut TestAppContext) {
+        // 44-byte canonical WAV header, then a second of 8 kHz 16-bit mono silence.
+        let data = 8000usize * 2;
+        let mut wav = Vec::new();
+        wav.extend(b"RIFF");
+        wav.extend((36 + data as u32).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes()); // PCM
+        wav.extend(1u16.to_le_bytes()); // mono
+        wav.extend(8000u32.to_le_bytes());
+        wav.extend(16000u32.to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(16u16.to_le_bytes());
+        wav.extend(b"data");
+        wav.extend((data as u32).to_le_bytes());
+        wav.extend(std::iter::repeat_n(0u8, data));
+
+        let path = std::env::temp_dir().join("qrate-viewer-close-stops.wav");
+        std::fs::write(&path, &wav).unwrap();
+
+        cx.update(|cx| {
+            open_viewer(path.clone(), Scope::Workspace, cx);
+            preview::playback::play(&path, cx);
+            close_viewer(cx);
+            assert!(
+                !preview::playback::position(cx).is_some_and(|(_, playing)| playing),
+                "the recording keeps going after the viewer is gone"
+            );
+        });
+
+        let _ = std::fs::remove_file(&path);
     }
 
     /// The page readout is what tells a reader a one-page PDF is a PDF at all — a picture of a

@@ -15,6 +15,7 @@ mod embedded;
 mod media;
 mod native;
 mod pdf;
+pub mod playback;
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -167,6 +168,19 @@ pub fn page_count(path: &Path) -> usize {
 /// OCR'd still passes and yields empty pages.
 pub fn has_text(path: &Path) -> bool {
     extension(path).is_some_and(|extension| pdf::handles(&extension))
+}
+
+/// Whether this file is a recording. Extension-only, and the same kind of claim [`has_text`] makes:
+/// it gates the viewer's transport, which has to appear because the file *is* audio — not because
+/// some length came back greater than zero.
+pub fn has_audio(path: &Path) -> bool {
+    extension(path).is_some_and(|extension| audio::handles(&extension))
+}
+
+/// Whether a recording carries artwork, and so whether there is anything to look at while it
+/// plays. Opens the file, unlike [`has_audio`] — ask it once, not per frame.
+pub fn has_cover(path: &Path) -> bool {
+    has_audio(path) && audio::has_cover(path)
 }
 
 /// Whether this document actually carries text, as opposed to merely being a format that could.
