@@ -495,7 +495,15 @@ impl Render for Viewer {
                     .py_1()
                     .rounded(cx.theme().radius)
                     .bg(pill)
-                    .child(name),
+                    .child(name)
+                    // What the file is, under what it is called: at full screen the picture fills
+                    // everything and the name alone does not say a scan from the PDF of it.
+                    .children(preview::describe(&self.path).map(|details| {
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(details)
+                    })),
             )
             // The bottom-centre slot: page controls for a document, the transport for a recording,
             // the scrubber for a video. Never two — no file is two of those things — so the one

@@ -242,22 +242,6 @@ impl Panel for DetailsPanel {
 /// impls (the real panel plus test probes), and gpui's chained builder calls produce deeply
 /// nested generic types; propagating that concrete type into every caller overflowed rustc's
 /// stack during type-checking instead of just hitting a slow compile.
-/// `2.4 MB`. Powers of 1024 with the unit names every file manager on the three platforms shows,
-/// and whole bytes below a kilobyte — "0.3 KB" reads as a rounding of something, not as a stub.
-fn file_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut size = bytes as f64;
-    let mut unit = 0;
-    while size >= 1024. && unit + 1 < UNITS.len() {
-        size /= 1024.;
-        unit += 1;
-    }
-    match unit {
-        0 => format!("{bytes} B"),
-        _ => format!("{size:.1} {}", UNITS[unit]),
-    }
-}
-
 fn render_image_frame(
     image_path: Option<PathBuf>,
     transport: Option<AnyElement>,
@@ -265,26 +249,7 @@ fn render_image_frame(
 ) -> AnyElement {
     let show_image = image_path.as_deref().is_some_and(can_preview);
 
-    // A file nothing can draw shows a type icon, which on its own is indistinguishable from "no
-    // file matched" — the format and the size are what say the file really is there.
-    //
-    // ponytail: one stat per frame, and only for a file with no preview. Move it into `retarget`
-    // if it ever shows up in a profile.
-    let caption = image_path
-        .as_deref()
-        .filter(|_| !show_image)
-        .map(|path| {
-            let kind = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .map(str::to_uppercase);
-            let size = std::fs::metadata(path)
-                .ok()
-                .map(|metadata| file_size(metadata.len()));
-            [kind, size].into_iter().flatten().collect::<Vec<_>>()
-        })
-        .filter(|parts| !parts.is_empty())
-        .map(|parts| parts.join(" · "));
+    let caption = image_path.as_deref().and_then(preview::describe);
 
     let action = |id: &'static str, icon: IconName, tip: &'static str, path: PathBuf| {
         Button::new(id)
@@ -359,15 +324,17 @@ fn render_image_frame(
             ),
             None => frame.child(thumb(None, preview::PANE, cx)),
         })
-        // Under the icon, not beside it: the icon is centred in a frame the user drags, so a row
-        // taken out of the frame would move it every time such a file is selected.
+        // Top-left, over the picture rather than taking a row out of the frame — the pane is a
+        // height the user drags, and the other two edges are spoken for: the action buttons sit
+        // top-right and a recording's transport along the bottom.
         .children(caption.map(|caption| {
             div()
                 .absolute()
-                .bottom_1()
-                .left_0()
-                .right_0()
-                .text_center()
+                .top_1()
+                .left_1()
+                .px_1()
+                .rounded(cx.theme().radius)
+                .bg(cx.theme().background.opacity(0.7))
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
                 .child(caption)
@@ -598,23 +565,7 @@ mod tests {
 
     use gpui::VisualTestContext;
 
-    use super::{DetailsPanel, file_size, render_image_frame};
-
-    /// The caption exists to tell "the file is here, we just can't draw it" apart from "no file
-    /// matched", so the number has to be readable at a glance — and a small file has to look
-    /// small rather than rounding to `0.0 KB`.
-    #[test]
-    fn a_files_size_reads_the_way_a_file_manager_shows_it() {
-        assert_eq!(file_size(0), "0 B");
-        assert_eq!(file_size(512), "512 B");
-        assert_eq!(file_size(1024), "1.0 KB");
-        assert_eq!(file_size(1536), "1.5 KB");
-        assert_eq!(file_size(2_500_000), "2.4 MB");
-        assert_eq!(file_size(5 * 1024 * 1024 * 1024), "5.0 GB");
-        // Never runs off the end of the unit table: past terabytes the number keeps growing
-        // rather than the index, which is an absurd readout for a file but not an out-of-bounds.
-        assert_eq!(file_size(u64::MAX), "16777216.0 TB");
-    }
+    use super::{DetailsPanel, render_image_frame};
 
     /// Wraps `render_image_frame` in a root `Render` view so a test can actually draw it —
     /// `Img`'s real load/fallback logic runs during layout/paint, not at element construction,
