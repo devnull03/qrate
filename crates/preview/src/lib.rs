@@ -28,6 +28,8 @@ use gpui::{
 use gpui_component::{ActiveTheme, Icon, IconName};
 use image::Frame;
 
+pub use pdf::Match;
+
 /// Longest edge, in pixels, of a gallery card's thumbnail. Cards are 168px wide, so this still has
 /// headroom on a 2× display while costing a sixteenth of a full scan's pixels.
 pub const CARD: u32 = 512;
@@ -157,6 +159,33 @@ pub fn page_count(path: &Path) -> usize {
         Some(extension) if pdf::handles(&extension) => pdf::page_count(path).unwrap_or(1),
         _ => 1,
     }
+}
+
+/// Whether this file can carry a text layer at all. Extension-only and cheap, like [`can_preview`]
+/// and for the same reason: it decides whether the viewer offers a text pane, so it must answer
+/// without opening anything. A `true` here is a claim about the *format* — a scan that was never
+/// OCR'd still passes and yields empty pages.
+pub fn has_text(path: &Path) -> bool {
+    extension(path).is_some_and(|extension| pdf::handles(&extension))
+}
+
+/// Whether this document actually carries text, as opposed to merely being a format that could.
+/// `None` where the question cannot be answered — not a document, or no PDFium — which the viewer
+/// reads as "don't claim either way".
+pub fn has_text_layer(path: &Path) -> Option<bool> {
+    if !has_text(path) {
+        return None;
+    }
+    pdf::has_text_layer(path)
+}
+
+/// Every hit for `needle` in this file, in document order. Empty for a blank query, for anything
+/// that is not a document, and where PDFium is not installed.
+pub fn search(path: &Path, needle: &str) -> Vec<Match> {
+    if needle.is_empty() || !has_text(path) {
+        return Vec::new();
+    }
+    pdf::search(path, needle).unwrap_or_default()
 }
 
 /// Decode `path`, shrink it to fit `max_edge`, and hand back something gpui can draw. Runs on a
@@ -459,6 +488,27 @@ mod tests {
         // A page past the first only exists for formats the ladder renders anyway; handing over
         // the whole file would silently show page one.
         assert!(!native("/f/scan.tif", FULL, 3));
+    }
+
+    /// Gates the viewer's text pane, so it has to claim exactly the formats that can answer. A
+    /// false positive opens a pane that stays empty forever; a false negative hides the text of a
+    /// document that has some.
+    #[test]
+    fn only_documents_claim_to_carry_text() {
+        use crate::{has_text, has_text_layer, search};
+
+        assert!(has_text(Path::new("/f/scan.pdf")));
+        assert!(has_text(Path::new("/f/SCAN.PDF")), "extension is folded");
+        assert!(has_text(Path::new("/f/poster.ai")), "PDFium opens those");
+        assert!(!has_text(Path::new("/f/scan.jpg")));
+        assert!(!has_text(Path::new("/f/clip.mp4")));
+        assert!(!has_text(Path::new("/f/no-extension")));
+
+        // Nothing that cannot carry text may reach PDFium, and a blank query never searches at all.
+        assert!(has_text_layer(Path::new("/f/scan.jpg")).is_none());
+        assert!(search(Path::new("/f/scan.jpg"), "anything").is_empty());
+        assert!(search(Path::new("/f/scan.pdf"), "").is_empty());
+        assert!(search(Path::new("/nonexistent/x.pdf"), "anything").is_empty());
     }
 
     #[test]
