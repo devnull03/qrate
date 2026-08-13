@@ -148,8 +148,7 @@ impl ViewsPanel {
                 cx.notify();
             }),
             _changed_sub: None,
-            _viewer_sub: cx
-                .observe_global::<crate::image_viewer::ActiveImageViewer>(|_, cx| cx.notify()),
+            _viewer_sub: cx.observe_global::<crate::viewer::ActiveViewer>(|_, cx| cx.notify()),
         };
         this.bind(cx);
         // Publish before the first render so the View menu works from the moment the window is up.
@@ -225,8 +224,8 @@ fn switch(panel: &Entity<ViewsPanel>, mode: ViewMode, window: &mut Window, cx: &
     //
     // A photo opened from a card belongs to the gallery; leaving it up would cover whatever the
     // next view draws.
-    if crate::image_viewer::viewer_in(ViewerScope::Centre, cx).is_some() {
-        crate::image_viewer::close_image_viewer(cx);
+    if crate::viewer::viewer_in(ViewerScope::Centre, cx).is_some() {
+        crate::viewer::close_viewer(cx);
     }
     let text = SharedString::from(mode.as_str());
     if cx.has_global::<settings::project::CurrentProject>() {
@@ -342,7 +341,7 @@ impl Render for ViewsPanel {
                 // The clicked card's photo, over the grid of thumbnails but under nothing
                 // else — the docked panels stay put, which is the whole point of scoping it
                 // here instead of over the workspace. Escape or the ✕ puts the cards back.
-                .children(crate::image_viewer::viewer_in(ViewerScope::Centre, cx)),
+                .children(crate::viewer::viewer_in(ViewerScope::Centre, cx)),
         )
     }
 }
