@@ -40,15 +40,22 @@ impl Render for StatusBar {
             h_flex().gap_3().items_center().children(children)
         };
 
-        let (left, right) = cx
+        let (left, centre, right) = cx
             .try_global::<StatusBarRegistry>()
-            .map(|r| (group(&r.items().left, cx), group(&r.items().right, cx)))
-            .unwrap_or_else(|| (h_flex(), h_flex()));
+            .map(|r| {
+                (
+                    group(&r.items().left, cx),
+                    group(&r.items().centre, cx),
+                    group(&r.items().right, cx),
+                )
+            })
+            .unwrap_or_else(|| (h_flex(), h_flex(), h_flex()));
 
         StatusBarElement::new()
             .px_3()
             .text_color(cx.theme().foreground)
             .left(left)
+            .child(centre)
             .right(right)
     }
 }

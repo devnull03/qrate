@@ -21,10 +21,12 @@ impl BarItem {
     }
 }
 
-/// Left/right component lists for one bar.
+/// Left/centre/right component lists for one bar.
 #[derive(Default)]
 pub struct BarItems {
     pub left: Vec<BarItem>,
+    /// Only the status bar draws this one; the title bar's centre is the project name.
+    pub centre: Vec<BarItem>,
     pub right: Vec<BarItem>,
 }
 
@@ -43,6 +45,16 @@ impl BarItems {
         occupied: impl Fn(&App) -> bool + 'static,
     ) {
         self.left.push(BarItem {
+            view: view.into(),
+            occupied: Box::new(occupied),
+        });
+    }
+    pub fn add_centre_if(
+        &mut self,
+        view: impl Into<AnyView>,
+        occupied: impl Fn(&App) -> bool + 'static,
+    ) {
+        self.centre.push(BarItem {
             view: view.into(),
             occupied: Box::new(occupied),
         });
