@@ -11,7 +11,7 @@ use std::sync::Arc;
 use gpui::*;
 use gpui_component::{
     IconName,
-    dock::{DockArea, DockItem, DockPlacement, PanelView},
+    dock::{DockArea, DockEvent, DockItem, DockPlacement, PanelView},
 };
 
 use crate::Workspace;
@@ -85,6 +85,32 @@ impl PanelRegistry {
             .map(|entry| entry.placement)
     }
 
+    /// Whether this panel is actually on screen — its dock is open *and* it is the tab in front.
+    /// "Dock is open" alone lights a button up for a panel hidden behind its neighbour, which
+    /// points the reader at something they cannot see.
+    ///
+    /// Read off the live `TabPanel`, not the `DockItem` membership snapshot this module warns
+    /// about: which tab is active is state the library keeps current.
+    pub fn visible(name: &str, dock_area: &Entity<DockArea>, cx: &App) -> bool {
+        let Some(placement) = Self::placement(name, cx) else {
+            return false;
+        };
+        let area = dock_area.read(cx);
+        if !area.is_dock_open(placement, cx) {
+            return false;
+        }
+        let dock = match placement {
+            DockPlacement::Left => area.left_dock(),
+            DockPlacement::Right => area.right_dock(),
+            _ => area.bottom_dock(),
+        };
+        let mut front = Vec::new();
+        if let Some(dock) = dock {
+            frontmost(dock.read(cx).panel(), cx, &mut front);
+        }
+        front.contains(&name)
+    }
+
     /// Rebuild from what the dock area actually holds. Called after every layout construction:
     /// `DockArea::load` builds fresh panel entities from the saved names, so any entry made
     /// before it would point at an orphan. Only correct immediately after a load or a default
@@ -126,14 +152,65 @@ impl PanelRegistry {
         cx.set_global(Self(entries));
     }
 
-    /// Open or close the dock the panel is currently in.
+    /// Show a panel, or put it away if it is already the one in front.
+    ///
+    /// "In front", not "its dock is open": where two panels share a dock, clicking the hidden
+    /// one's button used to shut the dock on the panel the reader was looking at, when what they
+    /// asked for was to see theirs.
     pub fn toggle(name: &str, dock_area: &Entity<DockArea>, window: &mut Window, cx: &mut App) {
         let Some(placement) = Self::placement(name, cx) else {
             return;
         };
-        dock_area.update(cx, |area, cx| area.toggle_dock(placement, window, cx));
-        // `Dock::set_open` only notifies, it never emits `LayoutChanged`.
-        Workspace::persist_layout(dock_area, cx);
+        if Self::visible(name, dock_area, cx) {
+            dock_area.update(cx, |area, cx| area.toggle_dock(placement, window, cx));
+        } else {
+            if !dock_area.read(cx).is_dock_open(placement, cx) {
+                dock_area.update(cx, |area, cx| area.toggle_dock(placement, window, cx));
+            }
+            Self::bring_to_front(name, placement, dock_area, window, cx);
+        }
+        // Neither `Dock::set_open` nor the reveal below emits anything, and every bar button reads
+        // this state — so say it once here, which also drives the layout's own persistence.
+        dock_area.update(cx, |_, cx| cx.emit(DockEvent::LayoutChanged));
+    }
+
+    /// Make `name` the tab in front of its dock.
+    ///
+    /// The library exposes no "activate this tab": `TabPanel::set_active_ix` is private and
+    /// `add_panel` returns early for a panel already in the strip. `DockItem::active_index` is
+    /// what is public, and it wants an index into the *live* tab order — which `dump` reports and
+    /// the `DockItem::Tabs` snapshot beside it does not, for the reason this module opens with.
+    fn bring_to_front(
+        name: &str,
+        placement: DockPlacement,
+        dock_area: &Entity<DockArea>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let area = dock_area.read(cx);
+        let dock = match placement {
+            DockPlacement::Left => area.left_dock(),
+            DockPlacement::Right => area.right_dock(),
+            _ => area.bottom_dock(),
+        };
+        let Some(dock) = dock.cloned() else {
+            return;
+        };
+        let item = dock.read(cx).panel().clone();
+        if !matches!(item, DockItem::Tabs { .. }) {
+            return;
+        }
+        let Some(index) = item
+            .view()
+            .dump(cx)
+            .children
+            .iter()
+            .position(|child| child.panel_name == name)
+        else {
+            return;
+        };
+        let item = item.active_index(index, cx);
+        dock.update(cx, |dock, cx| dock.set_panel(item, window, cx));
     }
 
     /// Move a panel to another dock, keeping the panel entity — and so its state — alive. The
@@ -180,6 +257,24 @@ impl PanelRegistry {
             }
         });
         Workspace::persist_layout(dock_area, cx);
+    }
+}
+
+/// The panels a dock is actually showing — one per tab group, since a split shows several at once.
+fn frontmost<'a>(item: &DockItem, cx: &'a App, out: &mut Vec<&'a str>) {
+    match item {
+        DockItem::Tabs { view, .. } => out.extend(
+            view.read(cx)
+                .active_panel(cx)
+                .map(|panel| panel.panel_name(cx)),
+        ),
+        DockItem::Panel { view, .. } => out.push(view.panel_name(cx)),
+        DockItem::Split { items, .. } => {
+            for item in items {
+                frontmost(item, cx, out);
+            }
+        }
+        DockItem::Tiles { .. } => {}
     }
 }
 
