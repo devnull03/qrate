@@ -242,12 +242,49 @@ impl Panel for DetailsPanel {
 /// impls (the real panel plus test probes), and gpui's chained builder calls produce deeply
 /// nested generic types; propagating that concrete type into every caller overflowed rustc's
 /// stack during type-checking instead of just hitting a slow compile.
+/// `2.4 MB`. Powers of 1024 with the unit names every file manager on the three platforms shows,
+/// and whole bytes below a kilobyte — "0.3 KB" reads as a rounding of something, not as a stub.
+fn file_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024. && unit + 1 < UNITS.len() {
+        size /= 1024.;
+        unit += 1;
+    }
+    match unit {
+        0 => format!("{bytes} B"),
+        _ => format!("{size:.1} {}", UNITS[unit]),
+    }
+}
+
 fn render_image_frame(
     image_path: Option<PathBuf>,
     transport: Option<AnyElement>,
     cx: &App,
 ) -> AnyElement {
     let show_image = image_path.as_deref().is_some_and(can_preview);
+
+    // A file nothing can draw shows a type icon, which on its own is indistinguishable from "no
+    // file matched" — the format and the size are what say the file really is there.
+    //
+    // ponytail: one stat per frame, and only for a file with no preview. Move it into `retarget`
+    // if it ever shows up in a profile.
+    let caption = image_path
+        .as_deref()
+        .filter(|_| !show_image)
+        .map(|path| {
+            let kind = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .map(str::to_uppercase);
+            let size = std::fs::metadata(path)
+                .ok()
+                .map(|metadata| file_size(metadata.len()));
+            [kind, size].into_iter().flatten().collect::<Vec<_>>()
+        })
+        .filter(|parts| !parts.is_empty())
+        .map(|parts| parts.join(" · "));
 
     let action = |id: &'static str, icon: IconName, tip: &'static str, path: PathBuf| {
         Button::new(id)
@@ -322,6 +359,19 @@ fn render_image_frame(
             ),
             None => frame.child(thumb(None, preview::PANE, cx)),
         })
+        // Under the icon, not beside it: the icon is centred in a frame the user drags, so a row
+        // taken out of the frame would move it every time such a file is selected.
+        .children(caption.map(|caption| {
+            div()
+                .absolute()
+                .bottom_1()
+                .left_0()
+                .right_0()
+                .text_center()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(caption)
+        }))
         // Along the bottom of the frame, over the cover art rather than beside it: the pane is a
         // fixed height the user drags, and a bar taking a row out of it would shrink the picture
         // every time a recording is selected.
@@ -548,7 +598,23 @@ mod tests {
 
     use gpui::VisualTestContext;
 
-    use super::{DetailsPanel, render_image_frame};
+    use super::{DetailsPanel, file_size, render_image_frame};
+
+    /// The caption exists to tell "the file is here, we just can't draw it" apart from "no file
+    /// matched", so the number has to be readable at a glance — and a small file has to look
+    /// small rather than rounding to `0.0 KB`.
+    #[test]
+    fn a_files_size_reads_the_way_a_file_manager_shows_it() {
+        assert_eq!(file_size(0), "0 B");
+        assert_eq!(file_size(512), "512 B");
+        assert_eq!(file_size(1024), "1.0 KB");
+        assert_eq!(file_size(1536), "1.5 KB");
+        assert_eq!(file_size(2_500_000), "2.4 MB");
+        assert_eq!(file_size(5 * 1024 * 1024 * 1024), "5.0 GB");
+        // Never runs off the end of the unit table: past terabytes the number keeps growing
+        // rather than the index, which is an absurd readout for a file but not an out-of-bounds.
+        assert_eq!(file_size(u64::MAX), "16777216.0 TB");
+    }
 
     /// Wraps `render_image_frame` in a root `Render` view so a test can actually draw it —
     /// `Img`'s real load/fallback logic runs during layout/paint, not at element construction,
@@ -580,6 +646,21 @@ mod tests {
     fn falls_back_when_the_resolved_path_is_missing_on_disk(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let path = PathBuf::from("/nonexistent/qrate-test-image.jpg");
+        cx.add_window_view(|_, _| ImageFrameProbe(Some(path)));
+    }
+
+    /// The captioned case: a file nothing in the ladder can draw. It has to reach paint with the
+    /// icon *and* the caption, since the caption is built from a `fs::metadata` call that a
+    /// missing or unreadable file makes fail.
+    #[gpui::test]
+    fn a_file_with_no_preview_draws_its_icon_and_its_details(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let path = std::env::temp_dir().join("qrate-details-caption.sqlite");
+        std::fs::write(&path, vec![0u8; 2048]).unwrap();
+        cx.add_window_view(|_, _| ImageFrameProbe(Some(path.clone())));
+
+        // And with the file gone, so only the extension is left to say anything.
+        std::fs::remove_file(&path).unwrap();
         cx.add_window_view(|_, _| ImageFrameProbe(Some(path)));
     }
 
