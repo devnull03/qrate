@@ -169,7 +169,7 @@ pub fn poll<V: Host>(this: &mut V, window: &mut Window, cx: &mut Context<V>) {
 
 /// `1:04`, or `1:02:03` once there is an hour to show. A leading `0:` on a ten-minute tape is
 /// noise, and a bare `62:03` on a long one is a number nobody reads as an hour.
-fn clock(at: Duration) -> String {
+pub(super) fn clock(at: Duration) -> String {
     let total = at.as_secs();
     let (hours, minutes, seconds) = (total / 3600, (total / 60) % 60, total % 60);
     if hours > 0 {
