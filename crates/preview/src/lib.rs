@@ -136,7 +136,8 @@ pub fn placeholder_icon(path: Option<&Path>) -> IconName {
 pub struct Preview;
 
 impl Asset for Preview {
-    /// File, size cap, and which page — the last only ever non-zero for a multi-page document.
+    /// File, size cap, and where in it: the page for a document, whole seconds in for a video.
+    /// Zero for everything else, which has only one thing to show.
     type Source = (PathBuf, u32, usize);
     type Output = Option<Arc<RenderImage>>;
 
@@ -175,6 +176,22 @@ pub fn has_text(path: &Path) -> bool {
 /// some length came back greater than zero.
 pub fn has_audio(path: &Path) -> bool {
     extension(path).is_some_and(|extension| audio::handles(&extension))
+}
+
+/// Whether this file is a moving picture, as opposed to one of the still formats ffmpeg also
+/// decodes for us. Extension-only, and the same kind of claim [`has_audio`] makes: it gates the
+/// viewer's scrubber, which belongs to the file because it *has* a timeline.
+pub fn has_video(path: &Path) -> bool {
+    extension(path)
+        .is_some_and(|extension| media::handles(&extension) && media::is_video(&extension))
+}
+
+/// How many whole seconds a video runs, or `None` where ffmpeg is absent or the file has no
+/// readable length — which the viewer reads as "nothing to scrub through".
+///
+/// Spawns ffmpeg, so it costs about a tenth of a second: ask it when a viewer opens, never per row.
+pub fn video_duration(path: &Path) -> Option<u32> {
+    has_video(path).then(|| media::duration(path)).flatten()
 }
 
 /// Whether a recording carries artwork, and so whether there is anything to look at while it
@@ -264,8 +281,13 @@ fn decode(path: &Path, max_edge: u32, page: usize) -> Option<image::DynamicImage
     {
         return Some(image);
     }
+    // Past the opening, `page` is a position on the video's timeline — the same field a document
+    // uses for its page, since neither file type ever needs the other's meaning.
     if media::handles(&extension)
-        && let Some(image) = media::decode(path, target)
+        && let Some(image) = match page {
+            0 => media::decode(path, target),
+            second => media::frame_at(path, target, second as u32),
+        }
     {
         return Some(image);
     }

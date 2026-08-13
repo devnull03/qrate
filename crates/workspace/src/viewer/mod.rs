@@ -15,6 +15,7 @@ mod highlight;
 pub(crate) mod transport;
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -23,6 +24,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     input::{InputEvent, InputState},
     resizable::{ResizableState, h_resizable, resizable_panel},
+    slider::{Slider, SliderEvent, SliderState, SliderValue},
 };
 
 use crate::viewer::find::Find;
@@ -60,24 +62,59 @@ pub fn viewer_in(scope: Scope, cx: &App) -> Option<Entity<Viewer>> {
 /// Opens `path` in the shared viewer overlay, replacing any viewer already open.
 pub fn open_viewer(path: PathBuf, scope: Scope, cx: &mut App) {
     // Counted once, here: a PDF has to be opened to be counted, and doing that per frame would
-    // re-parse the document on every repaint.
-    let pages = preview::page_count(&path);
+    // re-parse the document on every repaint. A video's length costs an ffmpeg spawn, which is the
+    // same bargain — paid when someone opens a file, never per row.
     let document = preview::has_text(&path);
-    let viewer = cx.new(|cx| Viewer {
-        transport: Transport::new(path.clone(), cx),
-        path,
-        scope,
-        page: 0,
-        pages,
-        document,
-        zoom: 1.0,
-        offset: Point::default(),
-        drag_from: None,
-        focus_handle: cx.focus_handle(),
-        focused: false,
-        find: Find::default(),
-        find_open: false,
-        split: cx.new(|_| ResizableState::default()),
+    let seconds = preview::video_duration(&path);
+    let pages = seconds.map_or_else(
+        || preview::page_count(&path),
+        |seconds| seconds.max(1) as usize,
+    );
+    let viewer = cx.new(|cx| {
+        let scrubber = seconds.map(|seconds| {
+            // The last position is the second before the end; a one-second clip still needs a
+            // range, or the slider divides by zero working out where the thumb goes.
+            let state = cx.new(|_| {
+                SliderState::new()
+                    .min(0.)
+                    .max((seconds.max(2) - 1) as f32)
+                    .step(1.)
+            });
+            // Detached because the slider is owned by the viewer and cannot outlive it.
+            cx.subscribe(&state, |this: &mut Viewer, _, event: &SliderEvent, cx| {
+                let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
+                let SliderValue::Single(seconds) = *value else {
+                    return;
+                };
+                this.scrub = seconds.max(0.) as usize;
+                // Only the thumb moves during the drag: one gesture crosses dozens of positions,
+                // and rendering each would spawn an ffmpeg for a frame nobody stops on.
+                if matches!(event, SliderEvent::Release(_)) {
+                    this.page = this.scrub;
+                }
+                cx.notify();
+            })
+            .detach();
+            state
+        });
+        Viewer {
+            transport: Transport::new(path.clone(), cx),
+            path,
+            scope,
+            page: 0,
+            pages,
+            document,
+            scrubber,
+            scrub: 0,
+            zoom: 1.0,
+            offset: Point::default(),
+            drag_from: None,
+            focus_handle: cx.focus_handle(),
+            focused: false,
+            find: Find::default(),
+            find_open: false,
+            split: cx.new(|_| ResizableState::default()),
+        }
     });
     cx.set_global(ActiveViewer(Some(viewer)));
 }
@@ -91,9 +128,10 @@ pub fn close_viewer(cx: &mut App) {
 pub struct Viewer {
     path: PathBuf,
     scope: Scope,
-    /// Which page is shown, zero-based. Always 0 for anything that isn't a document.
+    /// What is shown: the page of a document, or how many seconds into a video — the same field,
+    /// because no file is both. Always 0 for anything else.
     page: usize,
-    /// How many pages there are, so the controls know their bounds. 1 means "not paged".
+    /// How many positions there are, so the controls know their bounds. 1 means "not paged".
     pages: usize,
     /// Whether this file is a document at all, which is a different question from whether it has
     /// more than one page — a one-page PDF is still a document, and still says "1 / 1".
@@ -101,6 +139,15 @@ pub struct Viewer {
     /// The playback transport, present exactly when the file is a recording. Gated on the format
     /// for the same reason `document` is: a silent tape is still audio and still gets a transport.
     transport: Option<Transport>,
+    /// The scrubber, present exactly when the file is a video ffmpeg could measure.
+    ///
+    /// ponytail: scrub-only, no sound and no motion. Playing it inline means piping raw frames out
+    /// of ffmpeg alongside a second decoder for the audio and keeping the two in step — a media
+    /// player. The button beside the scrubber hands that job to one that already exists.
+    scrubber: Option<Entity<SliderState>>,
+    /// Where the thumb sits mid-drag, which is what the readout shows; `page` only follows it on
+    /// release.
+    scrub: usize,
     /// 1.0 = fit-to-area (`Contain`); [`Viewer::set_zoom`] clamps it.
     zoom: f32,
     /// Pan translation from the centered position.
@@ -281,6 +328,11 @@ impl Render for Viewer {
         // type icon, which is a picture of nothing. The transport takes the middle of the page
         // instead of hugging the bottom edge of a blank rectangle.
         let bare = self.transport.as_ref().is_some_and(|it| !it.art);
+        let cap = if self.scrubber.is_some() {
+            preview::PANE
+        } else {
+            preview::FULL
+        };
         let pill = cx.theme().background.opacity(0.8);
         let accent = cx.theme().primary.opacity(0.55);
         let marks: Vec<preview::Match> = self.find.on_page(page).cloned().collect();
@@ -321,12 +373,13 @@ impl Render for Viewer {
                     }
                     "escape" => close_viewer(cx),
                     // The keys anyone reading a document reaches for first. Harmless on a photo,
-                    // where there is only ever one page to move between.
-                    "left" | "pageup" if reading => {
+                    // where there is only ever one page to move between — but kept off a video,
+                    // whose position is the scrubber's, and whose thumb would be left behind.
+                    "left" | "pageup" if reading && this.scrubber.is_none() => {
                         this.turn_page(-1);
                         cx.notify();
                     }
-                    "right" | "pagedown" if reading => {
+                    "right" | "pagedown" if reading && this.scrubber.is_none() => {
                         this.turn_page(1);
                         cx.notify();
                     }
@@ -401,7 +454,11 @@ impl Render for Viewer {
                                             // rather than magnifying a thumbnail — this is the one
                                             // place that asks for no cap, and for an image it is
                                             // the original file gpui draws, not our copy.
-                                            img(preview::source(&self.path, preview::FULL, page))
+                                            //
+                                            // A video is capped instead: only a capped render is
+                                            // cached, and re-running ffmpeg for every position
+                                            // somebody scrubs back over is the whole cost here.
+                                            img(preview::source(&self.path, cap, page))
                                                 .flex_shrink_0()
                                                 .relative()
                                                 .w(relative(zoom))
@@ -440,12 +497,15 @@ impl Render for Viewer {
                     .bg(pill)
                     .child(name),
             )
-            // The bottom-centre slot: page controls for a document, the transport for a recording.
-            // Never both — a PDF is not a tape — so they share the one pill.
+            // The bottom-centre slot: page controls for a document, the transport for a recording,
+            // the scrubber for a video. Never two — no file is two of those things — so the one
+            // pill carries whichever applies.
             //
             // Page controls appear for a one-page document too. "Page 1 of 1" is what tells you
             // this is a PDF at all rather than a picture of a page, which is otherwise invisible.
-            .when(self.document || self.transport.is_some(), |viewer| {
+            .when(
+                self.document || self.transport.is_some() || self.scrubber.is_some(),
+                |viewer| {
                 viewer.child(
                     div()
                         .absolute()
@@ -475,11 +535,53 @@ impl Render for Viewer {
                                 .border_color(cx.theme().border)
                                 .shadow_lg()
                                 .occlude()
-                                .map(|pill| match &self.transport {
-                                    Some(transport) => {
+                                .map(|pill| match (&self.transport, &self.scrubber) {
+                                    (Some(transport), _) => {
                                         pill.child(transport::bar(transport, false, cx))
                                     }
-                                    None => pill
+                                    (_, Some(scrubber)) => pill
+                                        .child(
+                                            div().px_1().font_semibold().child(transport::clock(
+                                                Duration::from_secs(self.scrub as u64),
+                                            )),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(240.))
+                                                .child(Slider::new(scrubber).horizontal()),
+                                        )
+                                        .child(
+                                            div()
+                                                .px_1()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(transport::clock(Duration::from_secs(
+                                                    pages as u64,
+                                                ))),
+                                        )
+                                        // The honest answer to "I want to watch this with sound",
+                                        // which is a media player's job and not ours.
+                                        .child(
+                                            Button::new("play-in-default-app")
+                                                .icon(IconName::ExternalLink)
+                                                .outline()
+                                                .tooltip("Play in the default app")
+                                                .on_click({
+                                                    let path = self.path.clone();
+                                                    move |_, _, _| {
+                                                        if let Err(err) =
+                                                            settings::os_open::open_in_default_app(
+                                                                &path,
+                                                            )
+                                                        {
+                                                            log::error!(
+                                                                "could not open {} for playback: {err}",
+                                                                path.display()
+                                                            );
+                                                        }
+                                                    }
+                                                }),
+                                        ),
+                                    _ => pill
                                         .child(
                                             Button::new("previous-page")
                                                 .icon(IconName::ChevronLeft)
@@ -513,7 +615,8 @@ impl Render for Viewer {
                                 }),
                         ),
                 )
-            })
+                },
+            )
             .child(
                 div()
                     .absolute()
@@ -723,6 +826,59 @@ mod tests {
                 !preview::playback::position(cx).is_some_and(|(_, playing)| playing),
                 "the recording keeps going after the viewer is gone"
             );
+        });
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The scrubber's one rule: dragging moves the readout, and only letting go renders. Every
+    /// position crossed mid-drag would otherwise spawn an ffmpeg for a frame nobody stops on.
+    ///
+    /// Needs a real clip, since the timeline comes from ffmpeg reading the file — on a machine
+    /// without it there is nothing to scrub and the viewer correctly offers no scrubber.
+    #[gpui::test]
+    fn a_video_scrubs_on_release_and_not_during_the_drag(cx: &mut TestAppContext) {
+        use gpui_component::slider::{SliderEvent, SliderValue};
+
+        let path = std::env::temp_dir().join("qrate-viewer-scrub.mp4");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("testsrc=size=160x120:rate=10:duration=6")
+            .arg(&path)
+            .status();
+        if !made.is_ok_and(|status| status.success()) {
+            eprintln!("skipping: ffmpeg is not installed");
+            return;
+        }
+
+        // An emitted event is delivered when the update flushes, so each half is its own update.
+        let (viewer, scrubber) = cx.update(|cx| {
+            open_viewer(path.clone(), Scope::Workspace, cx);
+            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+            let scrubber = viewer
+                .read(cx)
+                .scrubber
+                .clone()
+                .expect("a clip ffmpeg can measure gets a scrubber");
+            assert_eq!(viewer.read(cx).pages, 6, "one position per second");
+            (viewer, scrubber)
+        });
+
+        cx.update(|cx| {
+            scrubber.update(cx, |_, cx| {
+                cx.emit(SliderEvent::Change(SliderValue::Single(4.)));
+            });
+        });
+        cx.update(|cx| {
+            assert_eq!(viewer.read(cx).scrub, 4, "the readout follows the thumb");
+            assert_eq!(viewer.read(cx).page, 0, "but nothing has been rendered yet");
+            scrubber.update(cx, |_, cx| {
+                cx.emit(SliderEvent::Release(SliderValue::Single(4.)));
+            });
+        });
+        cx.update(|cx| {
+            assert_eq!(viewer.read(cx).page, 4, "letting go lands on that second");
+            close_viewer(cx);
         });
 
         let _ = std::fs::remove_file(&path);

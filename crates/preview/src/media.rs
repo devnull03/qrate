@@ -26,8 +26,9 @@ pub fn handles(extension: &str) -> bool {
     )
 }
 
-/// Whether a video needs seeking past its opening. A still image has no timeline to seek.
-fn is_video(extension: &str) -> bool {
+/// Whether a video needs seeking past its opening. A still image has no timeline to seek — which
+/// is also what decides whether the viewer offers a scrubber.
+pub fn is_video(extension: &str) -> bool {
     !matches!(
         extension,
         "jp2" | "jpf" | "jpx" | "j2k" | "avif" | "heic" | "heif"
@@ -80,6 +81,41 @@ pub fn decode(path: &Path, max_edge: u32) -> Option<DynamicImage> {
         return Some(image);
     }
     run(&binary, path, max_edge, None)
+}
+
+/// The frame `seconds` into the clip, for scrubbing. Unlike [`decode`] there is no retry without
+/// the seek: a position past the end has no frame, and showing the opening instead would leave the
+/// scrubber pointing somewhere the picture is not.
+pub fn frame_at(path: &Path, max_edge: u32, seconds: u32) -> Option<DynamicImage> {
+    run(&binary()?, path, max_edge, Some(&seconds.to_string()))
+}
+
+/// How long the clip runs, in whole seconds.
+///
+/// ffmpeg prints this on stderr as part of the banner it emits when asked to open a file with no
+/// output to write — which is why this cannot go through [`run`], whose `-v error` suppresses it.
+/// ffprobe would answer directly, but shipping it means a second binary in the installer and both
+/// bundle scripts; the banner's format has been stable for over a decade.
+pub fn duration(path: &Path) -> Option<u32> {
+    let output = Command::new(binary()?)
+        .arg("-nostdin")
+        .arg("-i")
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .ok()?;
+
+    // `Duration: 00:04:03.20, start: ...`. Unparseable for a stream with no known length, which
+    // reads as "no timeline" rather than as an error.
+    let banner = String::from_utf8_lossy(&output.stderr);
+    let clock = banner.split_once("Duration: ")?.1.split(',').next()?;
+    let mut fields = clock.split(':');
+    let hours: u32 = fields.next()?.trim().parse().ok()?;
+    let minutes: u32 = fields.next()?.parse().ok()?;
+    let seconds: f32 = fields.next()?.parse().ok()?;
+    Some(hours * 3600 + minutes * 60 + seconds as u32)
 }
 
 fn run(binary: &Path, path: &Path, max_edge: u32, seek: Option<&str>) -> Option<DynamicImage> {
@@ -168,6 +204,39 @@ mod tests {
             frame.height()
         );
         assert_eq!(frame.width(), 128, "landscape source fills the long edge");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// What the viewer's scrubber is built on: how long the clip is, and a frame from somewhere
+    /// other than its opening. A `frame_at` that ignored its seek would look right until someone
+    /// noticed every position showing the same picture.
+    #[test]
+    fn a_clip_reports_its_length_and_yields_a_frame_from_the_middle() {
+        if super::binary().is_none() {
+            eprintln!("skipping: ffmpeg is not installed");
+            return;
+        }
+        // Its own name: three tests once shared one fixture and raced to delete it.
+        let path = std::env::temp_dir().join("qrate-media-timeline.mp4");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("testsrc=size=320x240:rate=10:duration=4")
+            .arg(&path)
+            .status();
+        if !made.is_ok_and(|status| status.success()) {
+            eprintln!("skipping: could not synthesise a test clip");
+            return;
+        }
+
+        assert_eq!(media::duration(&path), Some(4), "a four-second clip");
+        let opening = media::frame_at(&path, 128, 0).expect("a frame at the start");
+        let later = media::frame_at(&path, 128, 3).expect("a frame three seconds in");
+        assert_ne!(
+            opening.as_bytes(),
+            later.as_bytes(),
+            "the seek moved the picture"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
