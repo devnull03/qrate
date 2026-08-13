@@ -163,6 +163,39 @@ pub fn page_count(path: &Path) -> usize {
     }
 }
 
+/// What a file is, for a caption beside its picture: `PDF · 2.4 MB`. `None` where there is nothing
+/// true to say — no extension, and a file that will not stat.
+///
+/// The picture alone does not say which of several linked files is on screen, and for one the
+/// ladder cannot draw a bare type icon is indistinguishable from "no file matched".
+///
+/// ponytail: one stat per call, and callers ask per frame. Cache it against the path if it ever
+/// shows up in a profile.
+pub fn describe(path: &Path) -> Option<String> {
+    let kind = extension(path).map(|extension| extension.to_uppercase());
+    let size = std::fs::metadata(path)
+        .ok()
+        .map(|metadata| file_size(metadata.len()));
+    let parts: Vec<String> = [kind, size].into_iter().flatten().collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// `2.4 MB`. Powers of 1024 with the unit names every file manager on the three platforms shows,
+/// and whole bytes below a kilobyte — "0.3 KB" reads as a rounding of something, not as a stub.
+fn file_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024. && unit + 1 < UNITS.len() {
+        size /= 1024.;
+        unit += 1;
+    }
+    match unit {
+        0 => format!("{bytes} B"),
+        _ => format!("{size:.1} {}", UNITS[unit]),
+    }
+}
+
 /// Whether this file can carry a text layer at all. Extension-only and cheap, like [`can_preview`]
 /// and for the same reason: it decides whether the viewer offers a text pane, so it must answer
 /// without opening anything. A `true` here is a claim about the *format* — a scan that was never
@@ -545,6 +578,43 @@ mod tests {
         assert!(search(Path::new("/f/scan.jpg"), "anything").is_empty());
         assert!(search(Path::new("/f/scan.pdf"), "").is_empty());
         assert!(search(Path::new("/nonexistent/x.pdf"), "anything").is_empty());
+    }
+
+    /// The caption is what tells "the file is here, we just cannot draw it" apart from "no file
+    /// matched", so the number has to read at a glance — and a small file has to look small
+    /// rather than rounding to `0.0 KB`.
+    #[test]
+    fn a_files_size_reads_the_way_a_file_manager_shows_it() {
+        use crate::file_size;
+
+        assert_eq!(file_size(0), "0 B");
+        assert_eq!(file_size(512), "512 B");
+        assert_eq!(file_size(1024), "1.0 KB");
+        assert_eq!(file_size(1536), "1.5 KB");
+        assert_eq!(file_size(2_500_000), "2.4 MB");
+        assert_eq!(file_size(5 * 1024 * 1024 * 1024), "5.0 GB");
+        // Never runs off the end of the unit table: past terabytes the number keeps growing
+        // rather than the index, which is an absurd readout for a file but not a panic.
+        assert_eq!(file_size(u64::MAX), "16777216.0 TB");
+    }
+
+    /// Both halves are optional, and the separator must not survive alone — a file with no
+    /// extension that also will not stat has nothing to say and must say nothing.
+    #[test]
+    fn a_file_is_described_by_whichever_half_can_be_answered() {
+        use crate::describe;
+
+        let path = std::env::temp_dir().join("qrate-describe-probe.PDF");
+        std::fs::write(&path, vec![0u8; 2048]).unwrap();
+        assert_eq!(describe(&path).as_deref(), Some("PDF · 2.0 KB"));
+
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            describe(&path).as_deref(),
+            Some("PDF"),
+            "a missing file still has a claimed format"
+        );
+        assert!(describe(Path::new("/nonexistent/qrate-no-extension")).is_none());
     }
 
     #[test]
