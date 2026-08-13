@@ -241,7 +241,15 @@ impl Workspace {
             return false;
         };
 
-        let state: DockAreaState = match serde_json::from_str(&raw) {
+        let mut value: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(value) => value,
+            Err(err) => {
+                log::warn!("ignoring corrupt dock layout: {err}");
+                return false;
+            }
+        };
+        prune(&mut value);
+        let state: DockAreaState = match serde_json::from_value(value) {
             Ok(state) => state,
             Err(err) => {
                 log::warn!("ignoring corrupt dock layout: {err}");
@@ -261,6 +269,57 @@ impl Workspace {
                 false
             }
         })
+    }
+}
+
+/// A panel name a saved layout is allowed to hold: the three dockable ones plus the centre, which
+/// has no `PanelMeta` because it never moves. Matches what [`Workspace::new`] registers, so adding
+/// a panel to [`PANELS`] is still the only edit.
+fn known_panel(name: &str) -> bool {
+    name == "ViewsPanel" || PANELS.iter().any(|meta| meta.name == name)
+}
+
+/// Drop tab entries a layout should never have held, and re-point any tab index they invalidated.
+///
+/// A saved arrangement is user data that has been round-tripped through a dock library, and it can
+/// come back holding things we never put there — a stray empty `TabPanel` sitting as a *tab*, which
+/// the library draws as an "Unnamed" tab that renders an error. Left alone it is faithfully saved
+/// again on the way out, so it reappears on every launch forever. Pruned on the way in, the next
+/// write cleans the file up.
+///
+/// Depth-first: children are filtered before the level above decides whether the container that
+/// held them is still worth keeping.
+fn prune(node: &mut serde_json::Value) {
+    match node {
+        serde_json::Value::Array(items) => items.iter_mut().for_each(prune),
+        serde_json::Value::Object(map) => {
+            map.values_mut().for_each(prune);
+            let Some(serde_json::Value::Array(children)) = map.get_mut("children") else {
+                return;
+            };
+            children.retain(|child| {
+                let name = child
+                    .get("panel_name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_default();
+                // A container earns its place only while it still holds something.
+                known_panel(name)
+                    || child
+                        .get("children")
+                        .and_then(|kids| kids.as_array())
+                        .is_some_and(|kids| !kids.is_empty())
+            });
+            let len = children.len();
+            if let Some(active) = map
+                .get_mut("info")
+                .and_then(|info| info.get_mut("tabs"))
+                .and_then(|tabs| tabs.get_mut("active_index"))
+                && active.as_u64().is_some_and(|ix| ix as usize >= len)
+            {
+                *active = serde_json::json!(0);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -303,5 +362,65 @@ impl Render for Workspace {
                     .child(self.dock_area.clone()),
             )
             .children(viewer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Never `use super::*` here — this file's `use gpui::*` would shadow `#[test]`.
+    use crate::prune;
+
+    /// The real thing, lifted out of a project whose left dock came back with an "Unnamed" tab
+    /// beside Details on every launch: an empty `TabPanel` sitting in a tab slot, and an
+    /// `active_index` of 1 that points past the end once it is gone.
+    #[test]
+    fn a_saved_layout_loses_the_tabs_it_should_never_have_held() {
+        let raw = r#"{"version":3,
+          "center":{"panel_name":"TabPanel","children":[
+            {"panel_name":"ViewsPanel","children":[],"info":{"panel":null}}],
+            "info":{"tabs":{"active_index":0}}},
+          "left_dock":{"panel":{"panel_name":"TabPanel","children":[
+            {"panel_name":"TabPanel","children":[],"info":{"panel":null}},
+            {"panel_name":"DetailsPanel","children":[],"info":{"panel":null}}],
+            "info":{"tabs":{"active_index":1}}},
+            "placement":"left","size":313.0,"open":true}}"#;
+
+        let mut value: serde_json::Value = serde_json::from_str(raw).expect("valid json");
+        prune(&mut value);
+
+        let tabs = &value["left_dock"]["panel"];
+        let children = tabs["children"].as_array().expect("still a tab list");
+        assert_eq!(children.len(), 1, "the ghost tab is gone");
+        assert_eq!(
+            children[0]["panel_name"], "DetailsPanel",
+            "the real one stays"
+        );
+        assert_eq!(
+            tabs["info"]["tabs"]["active_index"], 0,
+            "an index left pointing past the end would show an empty dock"
+        );
+
+        // Everything legitimate is untouched — a prune that ate the centre would leave no view.
+        assert_eq!(value["center"]["children"][0]["panel_name"], "ViewsPanel");
+        assert_eq!(value["left_dock"]["open"], true);
+        assert_eq!(value["version"], 3);
+    }
+
+    /// A panel the app no longer builds must not survive either: the library turns an unregistered
+    /// name into a tab that renders "not registered in PanelRegistry" at the reader.
+    #[test]
+    fn a_panel_we_no_longer_build_is_dropped_rather_than_shown_as_an_error() {
+        let raw = r#"{"version":3,
+          "center":{"panel_name":"TabPanel","children":[
+            {"panel_name":"TablePanel","children":[],"info":{"panel":null}},
+            {"panel_name":"ViewsPanel","children":[],"info":{"panel":null}}],
+            "info":{"tabs":{"active_index":0}}}}"#;
+
+        let mut value: serde_json::Value = serde_json::from_str(raw).expect("valid json");
+        prune(&mut value);
+
+        let children = value["center"]["children"].as_array().expect("a tab list");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0]["panel_name"], "ViewsPanel");
     }
 }

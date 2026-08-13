@@ -1,3 +1,4 @@
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme as _, h_flex, separator::Separator, status_bar::StatusBar as StatusBarElement,
@@ -40,22 +41,41 @@ impl Render for StatusBar {
             h_flex().gap_3().items_center().children(children)
         };
 
-        let (left, centre, right) = cx
-            .try_global::<StatusBarRegistry>()
-            .map(|r| {
-                (
-                    group(&r.items().left, cx),
-                    group(&r.items().centre, cx),
-                    group(&r.items().right, cx),
-                )
-            })
-            .unwrap_or_else(|| (h_flex(), h_flex(), h_flex()));
+        let items = cx.try_global::<StatusBarRegistry>().map(|r| r.items());
+        let occupied = |side: fn(&crate::bar::BarItems) -> &Vec<crate::bar::BarItem>| {
+            items.is_some_and(|items| side(items).iter().any(|item| item.occupied(cx)))
+        };
+        let (left, centre, right) = match items {
+            Some(items) => (
+                group(&items.left, cx),
+                group(&items.centre, cx),
+                group(&items.right, cx),
+            ),
+            None => (h_flex(), h_flex(), h_flex()),
+        };
 
         StatusBarElement::new()
             .px_3()
             .text_color(cx.theme().foreground)
             .left(left)
-            .child(centre)
+            // The middle *region*, but not middle-aligned: the library centres its child between
+            // the two ends, which floats these items in the empty middle of a wide window. A
+            // `w_full` row fills that region instead, so its own contents stay left-aligned just
+            // past the divider and the bar reads as one run of items from the left edge.
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .items_center()
+                    // Spelled out rather than `Separator::vertical`, whose base element is
+                    // zero-width — it paints its rule as an absolutely-positioned child, which
+                    // lands under the neighbour instead of between the two groups here.
+                    .when(
+                        occupied(|items| &items.left) && occupied(|items| &items.centre),
+                        |row| row.child(div().w(px(1.)).h_3().bg(cx.theme().border)),
+                    )
+                    .child(centre),
+            )
             .right(right)
     }
 }

@@ -11,7 +11,7 @@ use diagnostics::{Diagnostics, Severity, severity_color};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable,
-    dock::{DockArea, DockPlacement},
+    dock::{DockArea, DockEvent, DockPlacement},
     h_flex,
     menu::{ContextMenuExt as _, PopupMenuItem},
 };
@@ -35,7 +35,7 @@ pub struct DockToggleButton {
     open_icon: Option<SharedString>,
     /// Whether to show the live error/warning count beside the icon.
     count: bool,
-    _sub: Option<Subscription>,
+    _subs: Vec<Subscription>,
 }
 
 impl DockToggleButton {
@@ -56,7 +56,7 @@ impl DockToggleButton {
             icon,
             open_icon: Some(open_icon.into()),
             count: false,
-            _sub: None,
+            _subs: Vec::new(),
         }
     }
 
@@ -66,6 +66,16 @@ impl DockToggleButton {
         meta: &'static PanelMeta,
         cx: &mut Context<Self>,
     ) -> Self {
+        let mut subs = Vec::new();
+        // Kept current as problems come and go.
+        if meta.badge {
+            subs.push(cx.observe_global::<Diagnostics>(|_this, cx| cx.notify()));
+        }
+        // Bringing a sibling tab to the front is a `LayoutChanged` and nothing else — no global
+        // moves, so without this the highlight below would still be on the panel just covered.
+        if let Some(area) = dock.upgrade() {
+            subs.push(cx.subscribe(&area, |_this, _, _: &DockEvent, cx| cx.notify()));
+        }
         Self {
             id: meta.name.into(),
             dock,
@@ -73,10 +83,7 @@ impl DockToggleButton {
             icon: meta.icon.clone(),
             open_icon: None,
             count: meta.badge,
-            // Kept current as problems come and go.
-            _sub: meta
-                .badge
-                .then(|| cx.observe_global::<Diagnostics>(|_this, cx| cx.notify())),
+            _subs: subs,
         }
     }
 }
@@ -108,10 +115,13 @@ impl Render for DockToggleButton {
             Toggles::Dock(placement) => Some(placement),
             Toggles::Panel(meta) => PanelRegistry::placement(meta.name, cx),
         };
-        let open = placement.is_some_and(|placement| {
-            self.dock
-                .upgrade()
-                .is_some_and(|area| area.read(cx).is_dock_open(placement, cx))
+        // Two different questions, because the two buttons point at different things. A title-bar
+        // button owns a whole dock, so "is it open" is all there is to say. A status-bar button
+        // points at one panel, which can sit in an open dock and still be hidden behind a sibling
+        // tab — lighting up for that aims the reader at something not on screen.
+        let lit = self.dock.upgrade().is_some_and(|area| match self.toggles {
+            Toggles::Dock(placement) => area.read(cx).is_dock_open(placement, cx),
+            Toggles::Panel(meta) => PanelRegistry::visible(meta.name, &area, cx),
         });
 
         h_flex()
@@ -122,8 +132,11 @@ impl Render for DockToggleButton {
             .rounded_md()
             .cursor_pointer()
             .hover(move |this| this.bg(hover_bg))
-            .when(open, |this| {
-                this.bg(cx.theme().accent).text_color(cx.theme().primary)
+            // Colour only, no filled background: over a status bar that is itself a tinted strip,
+            // a second filled box per open panel reads as a row of buttons stuck down. The title
+            // bar says the same thing by swapping its glyph, so tinting it too says it twice.
+            .when(lit && panel.is_some(), |this| {
+                this.text_color(cx.theme().primary)
             })
             // The title bar wraps its children in a `WindowControlArea::Drag` hitbox, which
             // Windows hit-tests as HTCAPTION and never delivers a click from. Occluding
@@ -131,7 +144,7 @@ impl Render for DockToggleButton {
             .occlude()
             .map(|this| {
                 if !self.count {
-                    let icon = match (&self.open_icon, open) {
+                    let icon = match (&self.open_icon, lit) {
                         (Some(path), true) => Icon::empty().path(path.clone()),
                         _ => Icon::new(self.icon.clone()),
                     };
