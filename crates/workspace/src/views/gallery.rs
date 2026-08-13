@@ -143,7 +143,7 @@ fn card(state: &Entity<TableState<QrateTableDelegate>>, view: usize, cx: &mut Ap
                     return;
                 }
                 if let Some(path) = viewable.clone() {
-                    crate::image_viewer::open_image_viewer(path, crate::ViewerScope::Centre, cx);
+                    crate::viewer::open_viewer(path, crate::ViewerScope::Centre, cx);
                 }
             },
         )

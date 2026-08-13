@@ -252,7 +252,7 @@ fn render_image_frame(image_path: Option<PathBuf>, cx: &App) -> AnyElement {
                                 .small()
                                 .tooltip("View fullscreen")
                                 .on_click(move |_, _, cx| {
-                                    crate::open_image_viewer(
+                                    crate::open_viewer(
                                         path.clone(),
                                         crate::ViewerScope::Workspace,
                                         cx,

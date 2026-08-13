@@ -2,12 +2,12 @@
 //! (center table, left details, right agent, bottom problems) with layout persistence.
 
 mod dock_button;
-mod image_viewer;
 mod panel_registry;
 mod panels;
+mod viewer;
 mod views;
 
-pub use image_viewer::{Scope as ViewerScope, open_image_viewer};
+pub use viewer::{Scope as ViewerScope, open_viewer};
 
 pub use dock_button::DockToggleButton;
 pub use panel_registry::{BarSide, PANELS, PanelMeta, PanelRegistry, bar_side};
@@ -158,8 +158,7 @@ impl Workspace {
             }
         });
 
-        let _viewer_sub =
-            cx.observe_global::<image_viewer::ActiveImageViewer>(|_this, cx| cx.notify());
+        let _viewer_sub = cx.observe_global::<viewer::ActiveViewer>(|_this, cx| cx.notify());
 
         Self {
             dock_area,
@@ -288,7 +287,7 @@ impl Render for Workspace {
         // A sibling overlay, not a dialog: it covers the dock but leaves the title bar's controls
         // reachable. Only the workspace-scoped viewer mounts here — a centre-scoped one is the
         // gallery's, and `ViewsPanel` mounts that inside the centre panel instead.
-        let viewer = image_viewer::viewer_in(image_viewer::Scope::Workspace, cx);
+        let viewer = viewer::viewer_in(viewer::Scope::Workspace, cx);
 
         div()
             .size_full()
