@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -14,7 +15,7 @@ use gpui_component::{
     table::TableState,
 };
 use preview::{can_preview, thumb};
-use table::{QrateTableDelegate, Selection, TableChanged, TableStateHandle};
+use table::{QrateTableDelegate, TableChanged, TableStateHandle};
 
 use crate::BottomDockCrop;
 use crate::panel_registry::PanelMeta;
@@ -58,9 +59,14 @@ pub struct DetailsPanel {
     /// The field editor, shared across whichever field is open — the same one-per-panel
     /// arrangement the grid uses for its cell editor.
     editor: Entity<InputState>,
-    /// `(source_row, data_col)` of the field being edited, in the grid's own coordinates so a
-    /// filter change between opening and committing can't redirect the write.
-    editing: Option<(usize, usize)>,
+    /// `(source_rows, data_col)` of the field being edited, in the grid's own coordinates so a
+    /// filter change between opening and committing can't redirect the write. Several rows when
+    /// the field belongs to a bundle: one edit box writing the same value down the selection.
+    editing: Option<(Vec<usize>, usize)>,
+    /// Which of the selected items the preview stack is showing, and whether the pointer is over
+    /// it — the step arrows only exist while it is, so they never cover the photo at rest.
+    stack: usize,
+    stack_hover: bool,
     /// Commits the open field on Enter or when the editor loses focus.
     _editor_sub: Subscription,
     /// Window-space rect of the field row being edited, and of the scrolling field list the
@@ -107,6 +113,8 @@ impl DetailsPanel {
             _crop_sub: cx.observe_global::<BottomDockCrop>(|_this: &mut Self, cx| cx.notify()),
             editor,
             editing: None,
+            stack: 0,
+            stack_hover: false,
             _editor_sub,
             anchor: Rc::default(),
             viewport: Rc::new(Cell::new(Bounds::default())),
@@ -118,16 +126,35 @@ impl DetailsPanel {
         this
     }
 
-    /// The file the selected row links to, which is both what the preview frame draws and what the
+    /// The selected items as source rows in view order — what the whole panel is about, and the
+    /// same list the grid, the gallery and the status bar count.
+    fn picked(&self, cx: &App) -> Vec<usize> {
+        self.state
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .map(|s| s.read(cx).delegate().selected_source_rows())
+            .unwrap_or_default()
+    }
+
+    /// The item the preview is showing: the stack's front card. Clamped rather than remembered, so
+    /// stepping to the fifth of five and then selecting two doesn't leave the preview blank.
+    fn front(&self, cx: &App) -> Option<usize> {
+        let picked = self.picked(cx);
+        picked
+            .get(self.stack.min(picked.len().checked_sub(1)?))
+            .copied()
+    }
+
+    /// The file the front item links to, which is both what the preview frame draws and what the
     /// transport would play.
     fn selected_file(&self, cx: &App) -> Option<PathBuf> {
         let state = self.state.as_ref()?.upgrade()?;
-        let delegate = state.read(cx).delegate();
-        let row = match delegate.selection()? {
-            Selection::Cell { row, .. } | Selection::Row(row) => row,
-            Selection::Column(_) => return None,
-        };
-        delegate.row_image(row).map(Path::to_path_buf)
+        let row = self.front(cx)?;
+        state
+            .read(cx)
+            .delegate()
+            .row_image(row)
+            .map(Path::to_path_buf)
     }
 
     /// Point the transport at whatever is selected now. A no-op while the selection stays on the
@@ -159,18 +186,20 @@ impl DetailsPanel {
     ) {
         // Whatever was open loses focus rather than being silently dropped.
         self.commit(cx);
-        let located = self.state.as_ref().and_then(|w| w.upgrade()).and_then(|s| {
-            let delegate = s.read(cx).delegate();
-            let row = match delegate.selection()? {
-                Selection::Cell { row, .. } | Selection::Row(row) => row,
-                Selection::Column(_) => return None,
-            };
-            Some((row, delegate.data_col(header)?))
-        });
-        let Some(at) = located else {
+        let rows = self.picked(cx);
+        let located = self
+            .state
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .and_then(|s| s.read(cx).delegate().data_col(header))
+            .filter(|_| !rows.is_empty());
+        let Some(col) = located else {
             log::warn!("details: no column named {header} to edit");
             return;
         };
+        // The rows are captured here, not read back at commit: the write must land on the items
+        // the archivist was looking at when they started typing, whatever the grid does meanwhile.
+        let at = (rows, col);
         self.editing = Some(at);
         // Re-measured for the new field; the box renders on the frame after the capture.
         self.anchor.set(None);
@@ -181,15 +210,32 @@ impl DetailsPanel {
         cx.notify();
     }
 
+    /// Move the preview stack one item along, wrapping at both ends so a bundle can be walked in
+    /// either direction without hunting for the end of it.
+    fn step_stack(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let count = self.picked(cx).len().max(1);
+        let at = self.stack.min(count - 1);
+        self.stack = match forward {
+            true => (at + 1) % count,
+            false => (at + count - 1) % count,
+        };
+        self.retarget(cx);
+        cx.notify();
+    }
+
     /// Write the open field back through the grid's own mutation path, so dirty-tracking,
     /// validation and undo stay single-sourced. Clearing `editing` first keeps the `TableChanged`
     /// this provokes from re-entering as a second commit.
     fn commit(&mut self, cx: &mut Context<Self>) {
-        let Some((row, col)) = self.editing.take() else {
+        let Some((rows, col)) = self.editing.take() else {
             return;
         };
         let value = self.editor.read(cx).value().clone();
-        table::write_cell(row, col, value, cx);
+        // One batch, so setting a field across a bundle is a single undo step — and `apply_edit`
+        // drops the rows whose text this didn't change, so committing an untouched shared field
+        // costs nothing.
+        let cells = rows.into_iter().map(|row| (row, col, value.clone()));
+        table::write_cells(cells.collect(), cx);
         cx.notify();
     }
 
@@ -197,7 +243,7 @@ impl DetailsPanel {
     /// clamped to the field list. `None` until the field has measured itself, one frame after the
     /// click.
     fn field_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.editing?;
+        self.editing.as_ref()?;
         let anchor = self.anchor.get()?;
         let within = self.editor_area(window);
         let (box_el, _) = table::editor_box(&self.editor, anchor, within, window, cx);
@@ -398,18 +444,83 @@ fn render_image_frame(
         .into_any_element()
 }
 
+/// One of the preview stack's step arrows, pinned to the edge its chevron points at and centred
+/// down the card. Full-height flex rather than a top offset: the pane is a height the user drags,
+/// so there is no fixed centre to hardcode.
+fn step(
+    id: &'static str,
+    left: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .map(|side| match left {
+            true => side.left(px(6.)),
+            false => side.right(px(6.)),
+        })
+        .flex()
+        .items_center()
+        .child(
+            Button::new(id)
+                .icon(match left {
+                    true => IconName::ChevronLeft,
+                    false => IconName::ChevronRight,
+                })
+                .ghost()
+                .small()
+                .tooltip(match left {
+                    true => "Previous selected item",
+                    false => "Next selected item",
+                })
+                .on_click(on_click),
+        )
+        .into_any_element()
+}
+
+/// What a bundle of items has to say about each column: the value when they agree, and how many
+/// distinct values there are when they don't. Display order, so it lines up with the grid.
+///
+/// A field that reads `Mixed` is still editable — typing into it sets that value on every selected
+/// item, which is the whole reason to select several rows before touching a field.
+fn shared_fields(
+    delegate: &QrateTableDelegate,
+    picked: &[usize],
+) -> Vec<(SharedString, SharedString, bool)> {
+    let Some((&first, rest)) = picked.split_first() else {
+        return Vec::new();
+    };
+    let base = delegate.row_fields(first);
+    let mut distinct: Vec<HashSet<SharedString>> = base
+        .iter()
+        .map(|(_, value)| HashSet::from([value.clone()]))
+        .collect();
+    for &row in rest {
+        for (ix, (_, value)) in delegate.row_fields(row).into_iter().enumerate() {
+            if let Some(values) = distinct.get_mut(ix) {
+                values.insert(value);
+            }
+        }
+    }
+    base.into_iter()
+        .zip(distinct)
+        .map(|((key, value), values)| match values.len() {
+            1 => (key, value, false),
+            n => (key, format!("Mixed ({n} values)").into(), true),
+        })
+        .collect()
+}
+
 impl Render for DetailsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let selection = self.state.as_ref().and_then(|w| w.upgrade()).and_then(|s| {
-            let state = s.read(cx);
-            let row = match state.delegate().selection()? {
-                Selection::Cell { row, .. } | Selection::Row(row) => row,
-                // A whole-column selection has no single row to detail.
-                Selection::Column(_) => return None,
-            };
-            let delegate = state.delegate();
-            let image = delegate.row_image(row).map(Path::to_path_buf);
-            Some((delegate.row_fields(row), image))
+        let picked = self.picked(cx);
+        let front = self.front(cx);
+        let count = picked.len();
+        let selection = self.state.as_ref().and_then(|w| w.upgrade()).map(|s| {
+            let delegate = s.read(cx).delegate();
+            let image = front.and_then(|row| delegate.row_image(row).map(Path::to_path_buf));
+            (shared_fields(delegate, &picked), image)
         });
 
         // Compact: this dock is one the user drags narrow, and the full-width scrubber would push
@@ -427,19 +538,45 @@ impl Render for DetailsPanel {
             == crate::ViewMode::Gallery;
 
         let Some((fields, image_path)) = selection.filter(|(f, _)| !f.is_empty()) else {
+            // Says what this panel is for and how to fill it, rather than only reporting that it
+            // is empty — the multi-select gesture is the one thing here nobody discovers by luck.
             return div()
                 .size_full()
-                .p_3()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .p_6()
+                .text_center()
+                .child(
+                    gpui_component::Icon::new(IconName::LayoutDashboard)
+                        .size_6()
+                        .text_color(cx.theme().muted_foreground.opacity(0.7)),
+                )
+                .child(div().text_sm().child("Nothing selected"))
+                .child(
+                    div()
+                        .max_w(px(190.))
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!(
+                            "Select a row or a thumbnail to see its fields here. Hold {} to pick several.",
+                            match cfg!(target_os = "macos") {
+                                true => "⌘",
+                                false => "Ctrl",
+                            }
+                        )),
+                )
                 .text_color(cx.theme().muted_foreground)
-                .child("No selection")
                 .into_any_element();
         };
 
         // Hand-built attribute list, not `DescriptionList`/`DataTable`: the fields are fixed pairs,
         // and it reads as a list rather than a second grid — alternating rows carry the structure,
         // no borders.
-        let editing_col = self.editing.map(|(_, col)| col);
-        let rows = fields.into_iter().enumerate().map(|(ix, (k, v))| {
+        let editing_col = self.editing.as_ref().map(|(_, col)| *col);
+        let rows = fields.into_iter().enumerate().map(|(ix, (k, v, mixed))| {
             // Guarded on `editing_col`: `data_col` is a linear scan of every column, and this runs
             // per row on every render — including the scroll ticks that dirty the whole panel.
             let open = editing_col.is_some()
@@ -484,9 +621,22 @@ impl Render for DetailsPanel {
                         // alone would cut the text off mid-word with nothing to say it had.
                         .line_clamp(VALUE_LINE_CLAMP)
                         .text_ellipsis()
+                        // A mixed field shows what the items disagree about but seeds the editor
+                        // empty: `Mixed (3 values)` is a summary, and committing it as text would
+                        // write that literal string onto every item.
+                        .when(mixed, |value| {
+                            value.italic().text_color(cx.theme().muted_foreground)
+                        })
                         .on_click(cx.listener({
-                            let (k, v) = (k.clone(), v.clone());
-                            move |this, _, window, cx| this.edit_field(&k, &v, window, cx)
+                            let (k, seed) = (
+                                k.clone(),
+                                if mixed {
+                                    SharedString::default()
+                                } else {
+                                    v.clone()
+                                },
+                            );
+                            move |this, _, window, cx| this.edit_field(&k, &seed, window, cx)
                         }))
                         .child(v)
                         // The editor floats over the field rather than replacing it in the row, so
@@ -561,12 +711,99 @@ impl Render for DetailsPanel {
                                 .size(px(image_height))
                                 .size_range(px(80.)..px(600.))
                                 .p_3()
-                                .child(render_image_frame(
-                                    image_path,
-                                    self.caption.clone(),
-                                    transport,
-                                    cx,
-                                )),
+                                // One item is a plain frame. Several are a stack of offset cards
+                                // with the front one live: the bundle keeps a slot per item —
+                                // including an item with no file, which shows its placeholder
+                                // rather than being skipped — so stepping through is a walk over
+                                // the selection, not over the subset that happens to have photos.
+                                .map(|pane| match count > 1 {
+                                    false => pane.child(render_image_frame(
+                                        image_path,
+                                        self.caption.clone(),
+                                        transport,
+                                        cx,
+                                    )),
+                                    true => pane.child(
+                                        div()
+                                            .id("details-stack")
+                                            .relative()
+                                            .size_full()
+                                            .on_hover(cx.listener(|this, over: &bool, _, cx| {
+                                                this.stack_hover = *over;
+                                                cx.notify();
+                                            }))
+                                            .child(
+                                                div()
+                                                    .absolute()
+                                                    .left(px(14.))
+                                                    .right_0()
+                                                    .top(px(10.))
+                                                    .bottom_0()
+                                                    .rounded(cx.theme().radius)
+                                                    .border_1()
+                                                    .border_color(cx.theme().border)
+                                                    .bg(cx.theme().muted),
+                                            )
+                                            .child(
+                                                div()
+                                                    .absolute()
+                                                    .left(px(7.))
+                                                    .right(px(7.))
+                                                    .top(px(5.))
+                                                    .bottom(px(5.))
+                                                    .rounded(cx.theme().radius)
+                                                    .border_1()
+                                                    .border_color(cx.theme().border)
+                                                    .bg(cx.theme().background),
+                                            )
+                                            .child(
+                                                div()
+                                                    .absolute()
+                                                    .left_0()
+                                                    .right(px(14.))
+                                                    .top_0()
+                                                    .bottom(px(10.))
+                                                    .child(render_image_frame(
+                                                        image_path,
+                                                        self.caption.clone(),
+                                                        transport,
+                                                        cx,
+                                                    ))
+                                                    .when(self.stack_hover, |front| {
+                                                        front
+                                                            .child(step(
+                                                                "details-stack-prev",
+                                                                true,
+                                                                cx.listener(|this, _, _, cx| {
+                                                                    this.step_stack(false, cx)
+                                                                }),
+                                                            ))
+                                                            .child(step(
+                                                                "details-stack-next",
+                                                                false,
+                                                                cx.listener(|this, _, _, cx| {
+                                                                    this.step_stack(true, cx)
+                                                                }),
+                                                            ))
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .absolute()
+                                                            .bottom_0()
+                                                            .right_0()
+                                                            .px_1()
+                                                            .rounded(cx.theme().radius)
+                                                            .bg(cx.theme().background.opacity(0.7))
+                                                            .text_xs()
+                                                            .text_color(cx.theme().muted_foreground)
+                                                            .child(format!(
+                                                                "{} of {count}",
+                                                                self.stack.min(count - 1) + 1
+                                                            )),
+                                                    ),
+                                            ),
+                                    ),
+                                }),
                         )
                     })
                     .child(
@@ -592,6 +829,22 @@ impl Render for DetailsPanel {
                                     .absolute()
                                     .size_full()
                                 })
+                                // Says how many items the fields below speak for, and warns that
+                                // typing into one writes down the whole bundle — before the edit,
+                                // not after it.
+                                .when(count > 1, |list| {
+                                    list.child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .pb_1p5()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(format!("{count} items · shared fields"))
+                                            .child("edits apply to all"),
+                                    )
+                                })
                                 .child(
                                     div()
                                         .size_full()
@@ -611,6 +864,30 @@ impl Render for DetailsPanel {
                                                 .children(rows),
                                         ),
                                 )
+                                .when(count > 1, |list| {
+                                    list.child(
+                                        div()
+                                            .flex()
+                                            .gap_1p5()
+                                            .pt_2()
+                                            .child(
+                                                Button::new("details-copy-rows")
+                                                    .label(format!("Copy {count} rows"))
+                                                    .small()
+                                                    .flex_1()
+                                                    .on_click(|_, _, cx| table::copy_selection(cx)),
+                                            )
+                                            .child(
+                                                Button::new("details-clear-selection")
+                                                    .label("Clear")
+                                                    .ghost()
+                                                    .small()
+                                                    .on_click(|_, _, cx| {
+                                                        table::clear_selection(cx)
+                                                    }),
+                                            ),
+                                    )
+                                })
                                 .children(self.field_editor(window, cx)),
                         ),
                     ),
@@ -718,12 +995,71 @@ mod tests {
                     rows: vec![
                         vec!["Film".into(), "one".into()],
                         vec!["Video".into(), "two".into()],
+                        // Shares a Medium with row 0 but not a Title, so a selection of the two
+                        // has one agreed field and one mixed.
+                        vec!["Film".into(), "three".into()],
                     ],
                     values: Default::default(),
                 },
             });
         });
         cx.add_window_view(table::TablePanel::new);
+    }
+
+    /// A bundle reports what its items agree on and counts what they don't, and typing into a
+    /// mixed field sets it on every one of them — as a single undo step, so a bulk edit is one
+    /// mistake to take back rather than five.
+    #[gpui::test]
+    fn a_mixed_field_edits_every_selected_item_as_one_step(cx: &mut TestAppContext) {
+        project_with_table(cx);
+        let state = cx.update(|cx| {
+            cx.try_global::<table::TableStateHandle>()
+                .and_then(|h| h.0.upgrade())
+                .expect("the table panel publishes its state handle")
+        });
+        let (panel, cx) = cx.add_window_view(DetailsPanel::new);
+        // Source rows 0 and 2: both Film, titled "one" and "three".
+        state.update(cx, |state, cx| {
+            state.delegate_mut().select_only_row(0);
+            state.delegate_mut().toggle_row(2);
+            cx.notify();
+        });
+
+        panel.update_in(cx, |panel, window, cx| {
+            let fields = state.read(cx).delegate();
+            let fields = super::shared_fields(fields, &panel.picked(cx));
+            assert_eq!(
+                fields,
+                vec![
+                    ("Medium".into(), "Film".into(), false),
+                    ("Title".into(), "Mixed (2 values)".into(), true),
+                ]
+            );
+
+            panel.edit_field(&"Title".into(), &"".into(), window, cx);
+            assert_eq!(
+                panel.editing,
+                Some((vec![0, 2], 1)),
+                "the write is aimed at both selected items"
+            );
+            panel
+                .editor
+                .update(cx, |editor, cx| editor.set_value("retitled", window, cx));
+            panel.commit(cx);
+        });
+
+        let titles = |cx: &mut VisualTestContext| {
+            state.read_with(cx, |s, _| {
+                (0..3)
+                    .map(|row| s.delegate().cell(row, 1).cloned().unwrap_or_default())
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(titles(cx), vec!["retitled", "two", "retitled"]);
+
+        // One undo, not two: the batch is what makes a bundle edit safe to try.
+        cx.update(|_, cx| table::history_step(false, cx));
+        assert_eq!(titles(cx), vec!["one", "two", "three"]);
     }
 
     /// The DoD: a field edited in the panel lands in the grid, and undo — the grid's own history,
@@ -743,14 +1079,14 @@ mod tests {
 
         panel.update_in(cx, |panel, window, cx| {
             panel.edit_field(&"Title".into(), &"two".into(), window, cx);
-            assert_eq!(panel.editing, Some((1, 1)), "Title is data column 1");
+            assert_eq!(panel.editing, Some((vec![1], 1)), "Title is data column 1");
             panel.editor.update(cx, |editor, cx| {
                 editor.set_value("two, revised", window, cx)
             });
             panel.commit(cx);
 
             panel.edit_field(&"Medium".into(), &"Video".into(), window, cx);
-            assert_eq!(panel.editing, Some((1, 0)), "Medium is data column 0");
+            assert_eq!(panel.editing, Some((vec![1], 0)), "Medium is data column 0");
             panel.editing = None;
         });
 
