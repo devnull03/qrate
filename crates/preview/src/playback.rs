@@ -25,7 +25,7 @@ struct Playback {
     player: Player,
     /// What was last handed to the player. There is one device and one recording, but more than
     /// one transport can be on screen — each has to know whether the position is even its own.
-    playing: PathBuf,
+    playing: Option<PathBuf>,
 }
 
 impl Global for Playback {}
@@ -57,12 +57,12 @@ pub fn play(path: &Path, cx: &mut App) {
         cx.set_global(Playback {
             _device: device,
             player,
-            playing: PathBuf::new(),
+            playing: None,
         });
     }
 
     let playback = cx.global_mut::<Playback>();
-    playback.playing = path.to_path_buf();
+    playback.playing = Some(path.to_path_buf());
     playback.player.clear();
     playback.player.append(source);
     playback.player.play();
@@ -71,7 +71,7 @@ pub fn play(path: &Path, cx: &mut App) {
 /// The recording currently loaded, so a transport for some other file knows the position below is
 /// not describing it.
 pub fn playing(cx: &App) -> Option<&Path> {
-    Some(cx.try_global::<Playback>()?.playing.as_path())
+    cx.try_global::<Playback>()?.playing.as_deref()
 }
 
 /// Pause if playing, resume if paused. Does nothing before anything is loaded.
@@ -103,9 +103,11 @@ pub fn position(cx: &App) -> Option<(Duration, bool)> {
 
 /// Silence. The viewer calls this as it closes — without it the recording plays on over an empty
 /// screen, with nothing left on the page to stop it.
-pub fn stop(cx: &App) {
-    if let Some(player) = player(cx) {
-        player.clear();
+pub fn stop(cx: &mut App) {
+    if cx.has_global::<Playback>() {
+        let playback = cx.global_mut::<Playback>();
+        playback.player.clear();
+        playback.playing = None;
     }
 }
 

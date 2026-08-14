@@ -65,11 +65,19 @@ pub fn begin_consent() -> Result<Consent, GoogleError> {
     let (verifier, state) = (nonce(), nonce());
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(Sha256::digest(verifier.as_bytes()));
-    let url = format!(
-        "https://accounts.google.com/o/oauth2/v2/auth?client_id={client_id}\
-         &redirect_uri={redirect}&response_type=code&scope={SCOPE}&state={state}\
-         &code_challenge={challenge}&code_challenge_method=S256&access_type=offline&prompt=consent"
-    );
+    let mut url = reqwest::Url::parse("https://accounts.google.com/o/oauth2/v2/auth")
+        .expect("the constant Google authorization URL is valid");
+    url.query_pairs_mut()
+        .append_pair("client_id", client_id)
+        .append_pair("redirect_uri", &redirect)
+        .append_pair("response_type", "code")
+        .append_pair("scope", SCOPE)
+        .append_pair("state", &state)
+        .append_pair("code_challenge", &challenge)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("access_type", "offline")
+        .append_pair("prompt", "consent");
+    let url = url.to_string();
     Ok(Consent {
         url,
         listener,

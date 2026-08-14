@@ -180,13 +180,13 @@ mod tests {
     /// a machine that legitimately has not got it — the same condition the tier degrades on.
     #[test]
     fn pulls_a_frame_out_of_a_real_video() {
-        if super::binary().is_none() {
+        let Some(binary) = super::binary() else {
             eprintln!("skipping: ffmpeg is not installed");
             return;
-        }
+        };
         let path = std::env::temp_dir().join("qrate-media-probe.mp4");
         // Two seconds of colour bars, so the one-second seek lands inside the clip.
-        let made = std::process::Command::new("ffmpeg")
+        let made = std::process::Command::new(binary)
             .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
             .arg("testsrc=size=320x240:rate=10:duration=2")
             .arg(&path)
@@ -213,13 +213,13 @@ mod tests {
     /// noticed every position showing the same picture.
     #[test]
     fn a_clip_reports_its_length_and_yields_a_frame_from_the_middle() {
-        if super::binary().is_none() {
+        let Some(binary) = super::binary() else {
             eprintln!("skipping: ffmpeg is not installed");
             return;
-        }
+        };
         // Its own name: three tests once shared one fixture and raced to delete it.
         let path = std::env::temp_dir().join("qrate-media-timeline.mp4");
-        let made = std::process::Command::new("ffmpeg")
+        let made = std::process::Command::new(binary)
             .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
             .arg("testsrc=size=320x240:rate=10:duration=4")
             .arg(&path)
