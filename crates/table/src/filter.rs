@@ -16,7 +16,7 @@ use gpui::{
 };
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{
-    ActiveTheme, IconName, IndexPath, Selectable as _, Sizable as _,
+    ActiveTheme, IconName, IndexPath, Selectable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     combobox::{Combobox, ComboboxEvent, ComboboxState},
     h_flex,
@@ -98,6 +98,7 @@ pub(crate) fn render_th(
         .justify_between()
         .items_center()
         .gap_1()
+        .font_semibold()
         .when(editing_col, |th| th.bg(cx.theme().secondary_hover))
         .child(div().flex_1().min_w_0().truncate().child(name))
         .when_some(worst, |th, severity| th.child(note::marker(severity, cx)))
