@@ -14,7 +14,7 @@ mod gallery;
 use gpui::*;
 use gpui_component::table::TableState;
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _,
+    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _,
     button::Button,
     dock::{DockArea, Panel, PanelControl, PanelEvent},
     h_flex,
@@ -131,6 +131,10 @@ pub struct ViewsPanel {
     thumb: Entity<SliderState>,
     /// Persists the size as it is dragged, and repaints the cards to match.
     _thumb_sub: Subscription,
+    /// Whether the gallery is narrowed to items carrying a note. Deliberately not persisted: it is
+    /// a lens you pick up to do one pass over a collection, and finding it still on next week
+    /// would read as half the archive having vanished.
+    notes_only: bool,
 }
 
 impl ViewsPanel {
@@ -177,6 +181,7 @@ impl ViewsPanel {
             _viewer_sub: cx.observe_global::<crate::viewer::ActiveViewer>(|_, cx| cx.notify()),
             thumb,
             _thumb_sub,
+            notes_only: false,
         };
         this.bind(cx);
         // Publish before the first render so the View menu works from the moment the window is up.
@@ -374,6 +379,18 @@ impl Render for ViewsPanel {
                                 .px_2()
                                 .pt_1()
                                 .child(
+                                    Button::new("gallery-notes-only")
+                                        .label("Notes only")
+                                        .xsmall()
+                                        .selected(self.notes_only)
+                                        .tooltip("Show only items with notes")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.notes_only = !this.notes_only;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(div().flex_1())
+                                .child(
                                     Icon::new(IconName::LayoutDashboard)
                                         .small()
                                         .text_color(cx.theme().muted_foreground),
@@ -390,6 +407,7 @@ impl Render for ViewsPanel {
                         .child(div().flex_1().min_h_0().child(gallery::render(
                             self.state.as_ref().and_then(WeakEntity::upgrade),
                             self.body_width,
+                            self.notes_only,
                             cx,
                         )))
                         .into_any_element(),

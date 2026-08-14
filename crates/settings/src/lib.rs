@@ -37,6 +37,11 @@ pub const SETTINGS_WINDOW_BOUNDS_KEY: &str = "settings_window_bounds";
 /// or `"off"`. Read by the table crate to decide when a committed cell edit reaches disk.
 pub const AUTOSAVE_KEY: &str = "autosave";
 
+/// Setting key (either scope) for who a filed note is attributed to — initials, a name, whatever
+/// the reading room signs its marginalia with. Empty (the default) files notes with a date and no
+/// author rather than guessing at an identity from the OS account.
+pub const NOTE_AUTHOR_KEY: &str = "note_author";
+
 /// Setting key (either scope) for the string that separates several values inside one cell, e.g.
 /// `;` in `Film; Video`. Empty means a cell is one indivisible value.
 ///

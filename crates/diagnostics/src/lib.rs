@@ -73,7 +73,7 @@ impl Severity {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Source {
     /// A note attached to the data, whether typed here or carried in from the imported
-    /// spreadsheet. Notes carry no provenance — one is worth no more than the other. Persists.
+    /// spreadsheet. Persists, and carries whatever provenance it arrived with — see [`Filed`].
     Note,
     /// A named rule, validator, plugin, or language server — the string is what the panel shows.
     /// Never persisted: computed output is recomputed on open, and stored copies go stale.
@@ -100,6 +100,30 @@ pub struct Diagnostic {
     pub severity: Severity,
     pub source: Source,
     pub message: SharedString,
+    /// Who filed this and when, for authored notes. Always `None` on a computed finding — a
+    /// validator's output is recomputed on open, so it has no history to carry.
+    pub filed: Option<Filed>,
+}
+
+/// A note's provenance. Free text rather than a parsed date: a catalogue inherits notes from
+/// whatever kept them before, and refusing to store "March 1998" because it is not ISO-8601 loses
+/// the note to keep the field tidy.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Filed {
+    pub date: Option<SharedString>,
+    pub author: Option<SharedString>,
+}
+
+impl Filed {
+    /// `1998-03-04 · MA`, or whichever half exists. `None` when neither does, so a caller can drop
+    /// the line rather than render an empty one.
+    pub fn label(&self) -> Option<SharedString> {
+        match (self.date.as_ref(), self.author.as_ref()) {
+            (Some(date), Some(author)) => Some(format!("{date} · {author}").into()),
+            (Some(only), None) | (None, Some(only)) => Some(only.clone()),
+            (None, None) => None,
+        }
+    }
 }
 
 /// The palette `panels/log_viewer.rs` used to key off `[ERROR]`/`[WARN]` line prefixes, now
@@ -212,7 +236,9 @@ impl Diagnostics {
         Self::at(dataset, row, column, cx).map(|d| d.severity).min()
     }
 
-    /// The note filed here, if any — what the `Notes ▸` menu offers to edit rather than add.
+    /// The note filed here, if any — what the `Notes ▸` menu offers to edit rather than add. The
+    /// *first* of them: editing is how a single note is corrected, while a second observation
+    /// about the same item is added rather than overwriting the first.
     pub fn note_at(
         dataset: &str,
         row: Option<usize>,
@@ -224,10 +250,75 @@ impl Diagnostics {
             .map(|d| d.message.clone())
     }
 
+    /// Every note filed here, oldest first — what the Notes panel lists. An item accumulates
+    /// observations over decades of cataloguing, and each is somebody's separate act.
+    pub fn notes_at<'a>(
+        dataset: &'a str,
+        row: Option<usize>,
+        column: Option<&'a str>,
+        cx: &'a App,
+    ) -> impl Iterator<Item = &'a Diagnostic> {
+        Self::at(dataset, row, column, cx).filter(|d| d.source == Source::Note)
+    }
+
+    /// How many notes are filed here — the count a gallery tile shows.
+    pub fn note_count(dataset: &str, row: Option<usize>, column: Option<&str>, cx: &App) -> usize {
+        Self::notes_at(dataset, row, column, cx).count()
+    }
+
+    /// File another note here without disturbing the ones already at this location. `set_note`'s
+    /// counterpart: that one corrects, this one adds.
+    pub fn add_note(location: Location, message: SharedString, cx: &mut App) {
+        if message.trim().is_empty() {
+            return;
+        }
+        let filed = Self::filed_now(cx);
+        let this = cx.default_global::<Self>();
+        this.items.push(Diagnostic {
+            location,
+            severity: Severity::Note,
+            source: Source::Note,
+            message,
+            filed,
+        });
+        this.reindex();
+        this.persist();
+    }
+
+    /// Stamp for a note being filed right now: today's date from the project file's own clock, and
+    /// whoever the archivist has told the app they are. Either half may be missing.
+    fn filed_now(cx: &App) -> Option<Filed> {
+        let date = cx
+            .try_global::<settings::project::CurrentProject>()
+            .and_then(|p| settings::project::today(&p.file))
+            .map(SharedString::from);
+        // Guarded: a note can be filed before the settings globals exist (early startup, tests),
+        // and an unsigned note is a far better outcome than a panic mid-keystroke.
+        let author = match cx.has_global::<settings::AppSettings>() {
+            false => None,
+            true => match settings::effective_text(settings::NOTE_AUTHOR_KEY, cx) {
+                author if author.trim().is_empty() => None,
+                author => Some(author),
+            },
+        };
+        (date.is_some() || author.is_some()).then_some(Filed { date, author })
+    }
+
     /// Attach a note here, replacing any note already at this location; an empty `message` deletes
     /// it. Writes straight through to `__notes` — this is a deliberate keystroke, not the hot path
     /// the debounced setting writer exists for.
     pub fn set_note(location: Location, message: SharedString, cx: &mut App) {
+        // Keeps the original filing stamp: correcting a transcription is not re-observing the
+        // item, and re-dating it to today would erase when the observation was actually made.
+        let filed = Self::notes_at(
+            &location.dataset,
+            location.row,
+            location.column.as_deref(),
+            cx,
+        )
+        .next()
+        .and_then(|d| d.filed.clone())
+        .or_else(|| Self::filed_now(cx));
         let this = cx.default_global::<Self>();
         this.items
             .retain(|d| d.source != Source::Note || d.location != location);
@@ -237,6 +328,7 @@ impl Diagnostics {
                 severity: Severity::Note,
                 source: Source::Note,
                 message,
+                filed,
             });
         }
         this.reindex();
@@ -310,6 +402,14 @@ impl Diagnostics {
                 column: d.location.column.as_ref().map(|c| c.to_string()),
                 severity: d.severity.key().into(),
                 message: d.message.to_string(),
+                created_at: d
+                    .filed
+                    .as_ref()
+                    .and_then(|f| f.date.as_ref().map(SharedString::to_string)),
+                author: d
+                    .filed
+                    .as_ref()
+                    .and_then(|f| f.author.as_ref().map(SharedString::to_string)),
             })
             .collect();
         if let Err(err) = settings::project::write_notes(file, SOURCE_NOTE, &notes) {
@@ -356,6 +456,13 @@ fn load_project_notes(cx: &mut App) {
             severity: Severity::from_key(&n.severity),
             source: Source::Note,
             message: n.message.clone().into(),
+            filed: match (&n.created_at, &n.author) {
+                (None, None) => None,
+                (date, author) => Some(Filed {
+                    date: date.clone().map(SharedString::from),
+                    author: author.clone().map(SharedString::from),
+                }),
+            },
         })
         .collect();
     Diagnostics::set(&Source::Note, DATASET_MAIN, items, cx);
@@ -382,8 +489,8 @@ mod tests {
     // Never `use super::*` here: this module's parent has `use gpui::*` in scope transitively,
     // and the chained glob makes gpui's `test` macro shadow the `#[test]` its own expansion
     // emits, recursing until rustc's stack overflows.
-    use crate::{DATASET_MAIN, Diagnostic, Diagnostics, Location, Severity, Source, init};
-    use gpui::{SharedString, TestAppContext};
+    use crate::{DATASET_MAIN, Diagnostic, Diagnostics, Filed, Location, Severity, Source, init};
+    use gpui::{App, SharedString, TestAppContext};
     use settings::project::{CurrentProject, ProjectData, StoredNote};
 
     /// The row index is a second copy of the truth in `items`, so every mutation has to rebuild
@@ -435,7 +542,71 @@ mod tests {
             severity,
             source,
             message: msg.into(),
+            filed: None,
         }
+    }
+
+    /// An item accumulates observations over decades. `add_note` files another beside the ones
+    /// already there; `set_note` corrects a single one and — the part worth pinning — keeps its
+    /// original filing stamp, because fixing a typo is not re-observing the object in 2026.
+    #[gpui::test]
+    fn notes_accumulate_and_a_correction_keeps_its_original_date(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let cell = Location {
+                dataset: DATASET_MAIN.into(),
+                row: Some(1),
+                column: None,
+            };
+            let filed = |cx: &App| {
+                Diagnostics::notes_at(DATASET_MAIN, Some(1), None, cx)
+                    .map(|d| (d.message.to_string(), d.filed.clone()))
+                    .collect::<Vec<_>>()
+            };
+
+            Diagnostics::add_note(cell.clone(), "verso inscription".into(), cx);
+            Diagnostics::add_note(cell.clone(), "same backdrop as row 12".into(), cx);
+            assert_eq!(
+                Diagnostics::note_count(DATASET_MAIN, Some(1), None, cx),
+                2,
+                "a second observation joins the first rather than replacing it"
+            );
+
+            // Backdate the first, as a note loaded from an older catalogue would be.
+            let original = Some(Filed {
+                date: Some("1998-03-04".into()),
+                author: Some("MA".into()),
+            });
+            cx.default_global::<Diagnostics>().items[0].filed = original.clone();
+
+            // set_note collapses to one and keeps that stamp.
+            Diagnostics::set_note(cell, "verso inscription, in pencil".into(), cx);
+            let notes = filed(cx);
+            assert_eq!(notes.len(), 1, "a correction replaces rather than adds");
+            assert_eq!(notes[0].0, "verso inscription, in pencil");
+            assert_eq!(
+                notes[0].1, original,
+                "the filing date is not moved to today"
+            );
+        });
+    }
+
+    /// Both halves are optional, and a note with neither must not render an empty byline.
+    #[test]
+    fn a_filing_stamp_reads_as_whichever_halves_exist() {
+        let filed = |date: Option<&str>, author: Option<&str>| Filed {
+            date: date.map(SharedString::from),
+            author: author.map(SharedString::from),
+        };
+        assert_eq!(
+            filed(Some("1998-03-04"), Some("MA")).label().as_deref(),
+            Some("1998-03-04 · MA")
+        );
+        assert_eq!(
+            filed(Some("1998-03-04"), None).label().as_deref(),
+            Some("1998-03-04")
+        );
+        assert_eq!(filed(None, Some("rk")).label().as_deref(), Some("rk"));
+        assert_eq!(filed(None, None).label(), None);
     }
 
     #[gpui::test]
@@ -457,6 +628,8 @@ mod tests {
                     column: Some("Title".into()),
                     severity: "warning".into(),
                     message: "check this".into(),
+                    created_at: None,
+                    author: None,
                 },
                 StoredNote {
                     dataset: DATASET_MAIN.into(),
@@ -464,6 +637,8 @@ mod tests {
                     column: None,
                     severity: "note".into(),
                     message: "whole row".into(),
+                    created_at: None,
+                    author: None,
                 },
             ],
         )
@@ -559,6 +734,7 @@ mod tests {
                     severity: Severity::Error,
                     source: v.clone(),
                     message: "typo".into(),
+                    filed: None,
                 }],
                 cx,
             );

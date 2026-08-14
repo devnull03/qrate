@@ -419,6 +419,7 @@ mod tests {
                     severity,
                     source: Source::Note,
                     message: "m".into(),
+                    filed: None,
                 })
                 .collect(),
                 cx,
@@ -461,6 +462,7 @@ mod tests {
                             severity: Severity::Error,
                             source: Source::Validator(source.into()),
                             message: "m".into(),
+                            filed: None,
                         })
                         .collect(),
                     cx,

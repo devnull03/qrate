@@ -234,6 +234,7 @@ pub fn address(
             severity: override_to.unwrap_or(severity),
             source: Source::Validator(validator.clone()),
             message,
+            filed: None,
         })
         .collect()
 }
