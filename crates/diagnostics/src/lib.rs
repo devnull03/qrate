@@ -261,9 +261,31 @@ impl Diagnostics {
         Self::at(dataset, row, column, cx).filter(|d| d.source == Source::Note)
     }
 
-    /// How many notes are filed here — the count a gallery tile shows.
+    /// How many notes are filed here.
     pub fn note_count(dataset: &str, row: Option<usize>, column: Option<&str>, cx: &App) -> usize {
         Self::notes_at(dataset, row, column, cx).count()
+    }
+
+    /// Every note anywhere on one row — the ones filed on its cells as well as on the row itself,
+    /// oldest first. [`Self::at`] deliberately does *not* let a row inherit its cells' diagnostics,
+    /// because the grid marks each where it was attached; but a view with no cells to mark — the
+    /// gallery's tile, the Details panel — is describing the *item*, and to it "dated 1962 is a
+    /// guess" filed on the Date column is a note about the photograph.
+    pub fn notes_in_row<'a>(
+        dataset: &'a str,
+        row: usize,
+        cx: &'a App,
+    ) -> impl Iterator<Item = &'a Diagnostic> {
+        cx.try_global::<Self>()
+            .into_iter()
+            .flat_map(move |this| {
+                this.by_row
+                    .get(&Some(row))
+                    .map_or([].as_slice(), Vec::as_slice)
+                    .iter()
+                    .map(move |&ix| &this.items[ix])
+            })
+            .filter(move |d| d.location.dataset == dataset && d.source == Source::Note)
     }
 
     /// File another note here without disturbing the ones already at this location. `set_note`'s
@@ -529,6 +551,38 @@ mod tests {
             // Republishing nothing is how a validator clears itself.
             Diagnostics::set(&Source::Validator("v".into()), DATASET_MAIN, Vec::new(), cx);
             assert_eq!(at_00(cx), 0);
+        });
+    }
+
+    /// The gallery has no cells to mark, so a note filed on one field still has to reach it —
+    /// the bug this fixes was a tile and a Details panel showing "no notes" for a row somebody had
+    /// just annotated in the grid.
+    #[gpui::test]
+    fn a_note_on_a_cell_counts_as_a_note_on_its_row(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let at = |column: Option<&str>| Location {
+                dataset: DATASET_MAIN.into(),
+                row: Some(3),
+                column: column.map(Into::into),
+            };
+            Diagnostics::add_note(at(Some("Date taken")), "1962 is a guess".into(), cx);
+            Diagnostics::add_note(at(None), "whole print is faded".into(), cx);
+
+            assert_eq!(
+                Diagnostics::note_count(DATASET_MAIN, Some(3), None, cx),
+                1,
+                "the grid still marks each note only where it was attached"
+            );
+            assert_eq!(
+                Diagnostics::notes_in_row(DATASET_MAIN, 3, cx).count(),
+                2,
+                "a view of the whole item sees both"
+            );
+            assert_eq!(
+                Diagnostics::notes_in_row("other", 3, cx).count(),
+                0,
+                "and only within its own dataset"
+            );
         });
     }
 
