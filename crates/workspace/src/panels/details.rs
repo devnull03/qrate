@@ -6,13 +6,15 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, IconName, Sizable,
+    ActiveTheme, Icon, IconName, Sizable, StyledExt as _,
     button::{Button, ButtonVariants},
     dock::{DockPlacement, Panel, PanelControl, PanelEvent},
+    h_flex,
     input::{Escape, InputEvent, InputState},
     resizable::{resizable_panel, v_resizable},
     scroll::ScrollableElement,
     table::TableState,
+    v_flex,
 };
 use preview::{can_preview, thumb};
 use table::{QrateTableDelegate, TableChanged, TableStateHandle};
@@ -67,6 +69,9 @@ pub struct DetailsPanel {
     /// it — the step arrows only exist while it is, so they never cover the photo at rest.
     stack: usize,
     stack_hover: bool,
+    /// Whether the Notes sub-panel is expanded. Open by default: in the gallery it is the only
+    /// place the text of a note is readable at all.
+    notes_open: bool,
     /// Commits the open field on Enter or when the editor loses focus.
     _editor_sub: Subscription,
     /// Window-space rect of the field row being edited, and of the scrolling field list the
@@ -115,6 +120,7 @@ impl DetailsPanel {
             editing: None,
             stack: 0,
             stack_hover: false,
+            notes_open: true,
             _editor_sub,
             anchor: Rc::default(),
             viewport: Rc::new(Cell::new(Bounds::default())),
@@ -208,6 +214,144 @@ impl DetailsPanel {
             editor.focus(window, cx);
         });
         cx.notify();
+    }
+
+    /// The Notes sub-panel: a collapsible list of what has been written about the selection, newest
+    /// group last, headed by the item it belongs to once more than one item is picked.
+    ///
+    /// Returns `AnyElement` because it is one child of a deeply chained builder — see the note on
+    /// `render_image_frame`.
+    fn notes_panel(&self, picked: &[usize], cx: &mut Context<Self>) -> AnyElement {
+        let Some(state) = self.state.as_ref().and_then(|w| w.upgrade()) else {
+            return div().into_any_element();
+        };
+        let delegate = state.read(cx);
+        let delegate = delegate.delegate();
+        /// One note as the panel draws it: what it says, and who filed it when.
+        type Note = (SharedString, Option<SharedString>);
+        /// The notes on one selected item, under that item's title.
+        type Group = (SharedString, Vec<Note>);
+
+        let groups: Vec<Group> = picked
+            .iter()
+            .filter_map(|&row| {
+                let notes: Vec<_> = diagnostics::Diagnostics::notes_at(
+                    diagnostics::DATASET_MAIN,
+                    Some(row),
+                    None,
+                    cx,
+                )
+                .map(|note| {
+                    (
+                        note.message.clone(),
+                        note.filed.as_ref().and_then(diagnostics::Filed::label),
+                    )
+                })
+                .collect();
+                if notes.is_empty() {
+                    return None;
+                }
+                let title = delegate
+                    .row_fields(row)
+                    .into_iter()
+                    .map(|(_, value)| value)
+                    .find(|value| !value.is_empty())
+                    .unwrap_or_default();
+                Some((title, notes))
+            })
+            .collect();
+        let total: usize = groups.iter().map(|(_, notes)| notes.len()).sum();
+        let several = picked.len() > 1;
+        let open = self.notes_open;
+
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .id("details-notes-header")
+                    .flex_none()
+                    .h(px(28.))
+                    .items_center()
+                    .gap_1p5()
+                    .px_3()
+                    .cursor_pointer()
+                    .hover(|header| header.bg(cx.theme().accent))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.notes_open = !this.notes_open;
+                        cx.notify();
+                    }))
+                    .child(
+                        Icon::new(match open {
+                            true => IconName::ChevronDown,
+                            false => IconName::ChevronRight,
+                        })
+                        .xsmall()
+                        .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(div().text_xs().font_semibold().child("Notes"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(match total {
+                                0 => "none".to_string(),
+                                n => n.to_string(),
+                            }),
+                    ),
+            )
+            .when(open, |panel| {
+                panel.child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scrollbar()
+                        .px_3()
+                        .pb_2()
+                        .child(
+                            v_flex()
+                                .gap_2()
+                                .children(groups.into_iter().map(|(title, notes)| {
+                                    v_flex()
+                                        .gap_1()
+                                        // Only worth saying whose note this is when the selection
+                                        // holds more than one item to confuse it with.
+                                        .when(several, |group| {
+                                            group.child(
+                                                div().text_xs().truncate().child(title.clone()),
+                                            )
+                                        })
+                                        .children(notes.into_iter().map(|(text, meta)| {
+                                            v_flex()
+                                                .gap_0p5()
+                                                .p_1p5()
+                                                .rounded(cx.theme().radius)
+                                                .border_1()
+                                                .border_color(cx.theme().border)
+                                                .bg(cx.theme().muted.opacity(0.4))
+                                                .child(div().text_xs().child(text))
+                                                .children(meta.map(|meta| {
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(meta)
+                                                }))
+                                        }))
+                                }))
+                                .when(total == 0, |list| {
+                                    list.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("No notes on this selection."),
+                                    )
+                                }),
+                        ),
+                )
+            })
+            .into_any_element()
     }
 
     /// Move the preview stack one item along, wrapping at both ends so a bundle can be walked in
@@ -572,6 +716,10 @@ impl Render for DetailsPanel {
                 .into_any_element();
         };
 
+        // Built before the field rows below, which borrow `cx` for as long as they stay a lazy
+        // iterator — this needs `&mut cx` and cannot wait for them.
+        let notes = (gallery && count > 0).then(|| self.notes_panel(&picked, cx));
+
         // Hand-built attribute list, not `DescriptionList`/`DataTable`: the fields are fixed pairs,
         // and it reads as a list rather than a second grid — alternating rows carry the structure,
         // no borders.
@@ -804,6 +952,16 @@ impl Render for DetailsPanel {
                                             ),
                                     ),
                                 }),
+                        )
+                    })
+                    // The gallery has no preview pane, so the notes go where it was — and that is
+                    // the view where a tile can say "2 notes" without showing a word of them.
+                    .when_some(notes, |split, notes| {
+                        split.child(
+                            resizable_panel()
+                                .size(px(180.))
+                                .size_range(px(28.)..px(320.))
+                                .child(notes),
                         )
                     })
                     .child(

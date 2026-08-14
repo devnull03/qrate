@@ -150,6 +150,10 @@ impl ProjectWizard {
                             column: Some(n.column.clone()),
                             severity: "note".into(),
                             message: n.text.clone(),
+                            // A spreadsheet comment carries neither, and stamping the import date
+                            // would claim the note was written the day the project was made.
+                            created_at: None,
+                            author: None,
                         })
                         .collect();
                     if let Err(e) = project::write_notes(

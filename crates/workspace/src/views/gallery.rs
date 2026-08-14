@@ -48,11 +48,31 @@ pub(super) fn card_width(cx: &App) -> f32 {
 pub(super) fn render(
     state: Option<Entity<TableState<QrateTableDelegate>>>,
     width: Pixels,
+    notes_only: bool,
     cx: &mut App,
 ) -> AnyElement {
-    let count = state
-        .as_ref()
-        .map_or(0, |state| state.read(cx).delegate().visible().len());
+    // Rows the gallery draws: everything visible, or only what has been annotated. Narrowed here
+    // rather than through the column filters — "has a note" is not a cell value, and pushing it
+    // into `visible_rows` would make the grid and the status bar disagree with the table.
+    let rows: Vec<usize> = state.as_ref().map_or_else(Vec::new, |state| {
+        let delegate = state.read(cx).delegate();
+        delegate
+            .visible()
+            .iter()
+            .enumerate()
+            .filter(|(_, source)| {
+                !notes_only
+                    || diagnostics::Diagnostics::note_count(
+                        diagnostics::DATASET_MAIN,
+                        Some(**source),
+                        None,
+                        cx,
+                    ) > 0
+            })
+            .map(|(view, _)| view)
+            .collect()
+    });
+    let count = rows.len();
     let (Some(state), 1..) = (state, count) else {
         return div()
             .size_full()
@@ -78,8 +98,8 @@ pub(super) fn render(
                         .gap(px(GAP))
                         .pb(px(GAP))
                         .children((0..cols).filter_map(|offset| {
-                            let view = band * cols + offset;
-                            (view < count).then(|| card(&state, view, card_w, cx))
+                            let slot = band * cols + offset;
+                            rows.get(slot).map(|&view| card(&state, view, card_w, cx))
                         }))
                 })
                 .collect()
@@ -113,6 +133,10 @@ fn card(
     // A scan of a twelve-page ledger and a scan of one photograph look identical at thumbnail
     // size. `page_count` is cheap for everything that isn't a document and cached beyond that.
     let pages = path.as_deref().map_or(1, preview::page_count);
+    // What the item has been annotated with. The count only — the text lives in Details' Notes
+    // sub-panel, so the tile stays a picture rather than becoming a card of prose.
+    let notes =
+        diagnostics::Diagnostics::note_count(diagnostics::DATASET_MAIN, Some(source), None, cx);
 
     // Only a decodable image is worth opening; a placeholder card has nothing to zoom into, so
     // clicking one selects the row and leaves the grid up.
@@ -159,6 +183,23 @@ fn card(
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(format!("{pages} pages")),
+                    )
+                })
+                .when(notes > 0, |frame| {
+                    frame.child(
+                        div()
+                            .absolute()
+                            .bottom_1()
+                            .right_1()
+                            .px_1()
+                            .rounded(cx.theme().radius)
+                            .bg(cx.theme().background.opacity(0.75))
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(match notes {
+                                1 => "1 note".to_string(),
+                                n => format!("{n} notes"),
+                            }),
                     )
                 }),
         )

@@ -380,9 +380,28 @@ const NOTES_DDL: &str = r#"
       column_name TEXT,
       severity    TEXT NOT NULL,
       source      TEXT NOT NULL,
-      message     TEXT NOT NULL
+      message     TEXT NOT NULL,
+      created_at  TEXT,
+      author      TEXT
     );
 "#;
+
+/// Bring a `__notes` table written before notes carried provenance up to the columns above.
+/// Nullable, so every existing row reads back with no date and no author and renders as the bare
+/// note it has always been — there is nothing to backfill, because that information was never
+/// captured. Idempotent: a duplicate-column error is the table already being current.
+fn add_note_provenance(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    for column in ["created_at", "author"] {
+        match tx.execute(&format!("ALTER TABLE __notes ADD COLUMN {column} TEXT"), []) {
+            Ok(_) => {}
+            // `duplicate column name` is the only error worth swallowing; anything else means the
+            // table is not what we think it is and the caller should hear about it.
+            Err(err) if err.to_string().contains("duplicate column") => {}
+            Err(err) => return Err(err).context("Add note provenance"),
+        }
+    }
+    Ok(())
+}
 
 /// One `__notes` row. Deliberately flat and stringly-typed rather than reusing
 /// `diagnostics::Diagnostic`: that crate depends on this one, so the schema stays owned by the
@@ -396,6 +415,20 @@ pub struct StoredNote {
     pub column: Option<String>,
     pub severity: String,
     pub message: String,
+    /// When the note was filed and by whom, as free text. `None` on every note written before the
+    /// columns existed, and on any note filed with no author configured — a catalogue's marginalia
+    /// is worth keeping even unsigned.
+    pub created_at: Option<String>,
+    pub author: Option<String>,
+}
+
+/// Today, from SQLite's own clock — the one dependency here that already knows what day it is.
+/// Local rather than UTC: an archivist reading "filed 2026-08-14" means their own Tuesday.
+pub fn today(path: &Path) -> Option<String> {
+    open_ro(path)
+        .ok()?
+        .query_row("SELECT date('now','localtime')", [], |r| r.get(0))
+        .ok()
 }
 
 /// Every stored note. A file written before `__notes` existed yields an empty vec, the same
@@ -411,8 +444,20 @@ pub fn read_notes(path: &Path) -> Result<Vec<StoredNote>> {
         return Ok(Vec::new());
     }
 
-    let mut stmt =
-        conn.prepare("SELECT dataset, row_ix, column_name, severity, message FROM __notes")?;
+    // A file written before notes carried provenance has neither column, and `write_notes` only
+    // adds them when it next saves. Named in the projection so the read works either way.
+    let provenance: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('__notes') WHERE name = 'created_at'",
+        [],
+        |r| r.get(0),
+    )?;
+    let columns = match provenance {
+        0 => "NULL AS created_at, NULL AS author",
+        _ => "created_at, author",
+    };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT dataset, row_ix, column_name, severity, message, {columns} FROM __notes"
+    ))?;
     let iter = stmt.query_map([], |r| {
         Ok(StoredNote {
             dataset: r.get(0)?,
@@ -420,6 +465,8 @@ pub fn read_notes(path: &Path) -> Result<Vec<StoredNote>> {
             column: r.get(2)?,
             severity: r.get(3)?,
             message: r.get(4)?,
+            created_at: r.get(5)?,
+            author: r.get(6)?,
         })
     })?;
     iter.collect::<rusqlite::Result<Vec<_>>>()
@@ -434,12 +481,13 @@ pub fn write_notes(path: &Path, source: &str, notes: &[StoredNote]) -> Result<()
     let mut conn = open_rw(path)?;
     let tx = conn.transaction()?;
     tx.execute_batch(NOTES_DDL).context("Create __notes")?;
+    add_note_provenance(&tx)?;
     tx.execute("DELETE FROM __notes WHERE source = ?1", params![source])
         .context("Clear notes")?;
     {
         let mut stmt = tx.prepare(
-            "INSERT INTO __notes(dataset, row_ix, column_name, severity, source, message)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO __notes(dataset, row_ix, column_name, severity, source, message, created_at, author)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
         for n in notes {
             stmt.execute(params![
@@ -448,7 +496,9 @@ pub fn write_notes(path: &Path, source: &str, notes: &[StoredNote]) -> Result<()
                 n.column,
                 n.severity,
                 source,
-                n.message
+                n.message,
+                n.created_at,
+                n.author
             ])
             .context("Insert note")?;
         }
@@ -649,11 +699,59 @@ mod tests {
             column: column.map(str::to_string),
             severity: "note".into(),
             message: msg.into(),
+            created_at: None,
+            author: None,
         }
     }
 
     fn blank_project(path: &Path) {
         create_project_file(path, "Notes", "CSV", None, None, &[], &[], &[]).unwrap();
+    }
+
+    /// A project written before notes carried a date and an author must still open, still read its
+    /// notes, and gain the columns on the next save — losing a catalogue's marginalia to a schema
+    /// change is the one outcome here that cannot be undone.
+    #[test]
+    fn a_project_predating_note_provenance_reads_and_upgrades() {
+        let path = tempfile("notes-legacy.qrate");
+        blank_project(&path);
+
+        // The pre-provenance table, verbatim.
+        {
+            let conn = open_rw(&path).unwrap();
+            conn.execute_batch(
+                r#"
+                DROP TABLE IF EXISTS __notes;
+                CREATE TABLE __notes (
+                  dataset     TEXT NOT NULL,
+                  row_ix      INTEGER,
+                  column_name TEXT,
+                  severity    TEXT NOT NULL,
+                  source      TEXT NOT NULL,
+                  message     TEXT NOT NULL
+                );
+                INSERT INTO __notes VALUES
+                  ('dataset_main', 2, 'Title', 'note', 'import', 'verso inscription');
+                "#,
+            )
+            .unwrap();
+        }
+
+        let old = read_notes(&path).unwrap();
+        assert_eq!(old.len(), 1, "the old note survives the schema it predates");
+        assert_eq!(old[0].message, "verso inscription");
+        assert_eq!(old[0].created_at, None, "nothing to backfill, so no date");
+
+        // Saving anything upgrades the table, and a note filed now carries its provenance.
+        let mut fresh = note(Some(2), Some("Title"), "identified by her daughter");
+        fresh.created_at = Some("2026-08-14".into());
+        fresh.author = Some("rk".into());
+        write_notes(&path, "import", &[fresh]).unwrap();
+
+        let after = read_notes(&path).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].created_at.as_deref(), Some("2026-08-14"));
+        assert_eq!(after[0].author.as_deref(), Some("rk"));
     }
 
     #[test]

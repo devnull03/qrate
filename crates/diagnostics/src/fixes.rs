@@ -122,6 +122,7 @@ mod tests {
                 severity: Severity::Error,
                 source: Source::Validator(source.into()),
                 message: "not a known term".into(),
+                filed: None,
             }],
             cx,
         );
@@ -176,12 +177,14 @@ mod tests {
                     severity: Severity::Error,
                     source: Source::Validator("LCSH".into()),
                     message: "not a known term".into(),
+                    filed: None,
                 },
                 Diagnostic {
                     location: location("Subject"),
                     severity: Severity::Warning,
                     source: Source::Validator("LCSH".into()),
                     message: "also deprecated".into(),
+                    filed: None,
                 },
             ];
             Diagnostics::set(

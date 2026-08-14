@@ -746,6 +746,7 @@ mod tests {
                 severity: Severity::Note,
                 source: Source::Note,
                 message: "look at this".into(),
+                filed: None,
             };
             // A cell note, a whole-row note, and a whole-column note — one per marker site.
             Diagnostics::set(
@@ -769,6 +770,7 @@ mod tests {
                     severity: Severity::Error,
                     source: v.clone(),
                     message: "bad".into(),
+                    filed: None,
                 }],
                 cx,
             );
