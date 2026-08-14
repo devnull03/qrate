@@ -14,10 +14,11 @@ mod gallery;
 use gpui::*;
 use gpui_component::table::TableState;
 use gpui_component::{
-    IconName, Sizable as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _,
     button::Button,
     dock::{DockArea, Panel, PanelControl, PanelEvent},
     h_flex,
+    slider::{Slider, SliderEvent, SliderState},
     tab::{Tab, TabBar},
     v_flex,
 };
@@ -125,6 +126,11 @@ pub struct ViewsPanel {
     _changed_sub: Option<Subscription>,
     /// Mounts and unmounts the centre-scoped photo overlay as cards are clicked and dismissed.
     _viewer_sub: Subscription,
+    /// Thumbnail size for the gallery. Owned here rather than in `gallery::render`, which is a
+    /// free function with no state of its own to keep between frames.
+    thumb: Entity<SliderState>,
+    /// Persists the size as it is dragged, and repaints the cards to match.
+    _thumb_sub: Subscription,
 }
 
 impl ViewsPanel {
@@ -134,6 +140,26 @@ impl ViewsPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let table = cx.new(|cx| TablePanel::new(window, cx));
+        let width = gallery::card_width(cx);
+        // `max` before `min`: each setter re-clamps the current value against the *other* bound as
+        // it stands, and the default max is 100 — so raising the floor to 110 first panics.
+        let thumb = cx.new(|_| {
+            SliderState::new()
+                .max(gallery::CARD_MAX)
+                .min(gallery::CARD_MIN)
+                .step(10.)
+                .default_value(width)
+        });
+        let _thumb_sub = cx.subscribe(&thumb, |_this, _slider, event: &SliderEvent, cx| {
+            let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
+            let text = SharedString::from(format!("{}", value.start().round()));
+            if cx.has_global::<settings::project::CurrentProject>() {
+                settings::project::CurrentProject::set_text(gallery::THUMB_SIZE_KEY, text, cx);
+            } else {
+                settings::AppSettings::set_text(gallery::THUMB_SIZE_KEY, text, cx);
+            }
+            cx.notify();
+        });
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             table,
@@ -149,6 +175,8 @@ impl ViewsPanel {
             }),
             _changed_sub: None,
             _viewer_sub: cx.observe_global::<crate::viewer::ActiveViewer>(|_, cx| cx.notify()),
+            thumb,
+            _thumb_sub,
         };
         this.bind(cx);
         // Publish before the first render so the View menu works from the moment the window is up.
@@ -332,11 +360,39 @@ impl Render for ViewsPanel {
                 // chained-builder types meeting in one `match` overflows rustc's stack.
                 .child(match self.view {
                     ViewMode::Table => self.table.clone().into_any_element(),
-                    ViewMode::Gallery => gallery::render(
-                        self.state.as_ref().and_then(WeakEntity::upgrade),
-                        self.body_width,
-                        cx,
-                    ),
+                    // The size control rides above the cards rather than in `toolbar_buttons`,
+                    // which the library restricts to buttons — and it belongs to the gallery, so
+                    // it goes away with it.
+                    ViewMode::Gallery => v_flex()
+                        .size_full()
+                        .child(
+                            h_flex()
+                                .flex_none()
+                                .justify_end()
+                                .items_center()
+                                .gap_2()
+                                .px_2()
+                                .pt_1()
+                                .child(
+                                    Icon::new(IconName::LayoutDashboard)
+                                        .small()
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .child(div().w(px(96.)).child(Slider::new(&self.thumb)))
+                                .child(
+                                    div()
+                                        .w(px(34.))
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("{}px", gallery::card_width(cx).round())),
+                                ),
+                        )
+                        .child(div().flex_1().min_h_0().child(gallery::render(
+                            self.state.as_ref().and_then(WeakEntity::upgrade),
+                            self.body_width,
+                            cx,
+                        )))
+                        .into_any_element(),
                 })
                 // The clicked card's photo, over the grid of thumbnails but under nothing
                 // else — the docked panels stay put, which is the whole point of scoping it
