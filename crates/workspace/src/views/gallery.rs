@@ -11,13 +11,28 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{ActiveTheme, table::TableState};
 use preview::{can_preview, thumb};
-use table::{QrateTableDelegate, Selection};
+use table::QrateTableDelegate;
 
-/// Card geometry. Wide enough to tell two scans of the same document apart, small enough that a
-/// batch of thirty is on screen at once.
-const CARD_W: f32 = 168.;
-const CARD_H: f32 = 184.;
+/// Card geometry. The width is the slider's business — wide enough to tell two scans of the same
+/// document apart at the top of its range, small enough at the bottom that a whole box of prints
+/// is on screen at once. Height trails the width by the caption line.
+pub(super) const CARD_MIN: f32 = 110.;
+pub(super) const CARD_MAX: f32 = 230.;
+pub(super) const CARD_DEFAULT: f32 = 168.;
+const CAPTION_H: f32 = 16.;
 const GAP: f32 = 8.;
+
+/// Project-scoped thumbnail size, in pixels.
+pub(super) const THUMB_SIZE_KEY: &str = "gallery_thumb_size";
+
+/// The card width in force, clamped to the slider's range so a hand-edited setting can't produce a
+/// wall of one-pixel cards or a single card per screen.
+pub(super) fn card_width(cx: &App) -> f32 {
+    settings::effective_text(THUMB_SIZE_KEY, cx)
+        .parse::<f32>()
+        .unwrap_or(CARD_DEFAULT)
+        .clamp(CARD_MIN, CARD_MAX)
+}
 
 /// The gallery body. `width` is the measured body width, for the column count.
 ///
@@ -50,7 +65,8 @@ pub(super) fn render(
             .into_any_element();
     };
 
-    let cols = (f32::from(width) / (CARD_W + GAP)).floor().max(1.) as usize;
+    let card_w = card_width(cx);
+    let cols = (f32::from(width) / (card_w + GAP)).floor().max(1.) as usize;
     uniform_list(
         "gallery",
         count.div_ceil(cols),
@@ -63,7 +79,7 @@ pub(super) fn render(
                         .pb(px(GAP))
                         .children((0..cols).filter_map(|offset| {
                             let view = band * cols + offset;
-                            (view < count).then(|| card(&state, view, cx))
+                            (view < count).then(|| card(&state, view, card_w, cx))
                         }))
                 })
                 .collect()
@@ -76,10 +92,15 @@ pub(super) fn render(
 
 /// One row's card: its resolved image (or a placeholder honest about what the file is) over its
 /// first non-empty field as a caption, ringed while it holds the selection.
-fn card(state: &Entity<TableState<QrateTableDelegate>>, view: usize, cx: &mut App) -> AnyElement {
+fn card(
+    state: &Entity<TableState<QrateTableDelegate>>,
+    view: usize,
+    card_w: f32,
+    cx: &mut App,
+) -> AnyElement {
     let delegate = state.read(cx).delegate();
     let Some(source) = delegate.source(view) else {
-        return div().w(px(CARD_W)).into_any_element();
+        return div().w(px(card_w)).into_any_element();
     };
     let path = delegate.row_image(source).map(std::path::Path::to_path_buf);
     let caption = delegate
@@ -88,10 +109,10 @@ fn card(state: &Entity<TableState<QrateTableDelegate>>, view: usize, cx: &mut Ap
         .map(|(_, value)| value)
         .find(|value| !value.is_empty())
         .unwrap_or_default();
-    let selected = matches!(
-        delegate.selection(),
-        Some(Selection::Cell { row, .. } | Selection::Row(row)) if row == source
-    );
+    let selected = delegate.is_row_selected(source);
+    // A scan of a twelve-page ledger and a scan of one photograph look identical at thumbnail
+    // size. `page_count` is cheap for everything that isn't a document and cached beyond that.
+    let pages = path.as_deref().map_or(1, preview::page_count);
 
     // Only a decodable image is worth opening; a placeholder card has nothing to zoom into, so
     // clicking one selects the row and leaves the grid up.
@@ -100,27 +121,47 @@ fn card(state: &Entity<TableState<QrateTableDelegate>>, view: usize, cx: &mut Ap
     let state = state.clone();
     div()
         .id(("gallery-card", view))
-        .w(px(CARD_W))
-        .h(px(CARD_H))
+        .w(px(card_w))
+        .h(px(card_w + CAPTION_H))
         .flex()
         .flex_col()
         .gap_1()
         .p_1()
         .cursor_pointer()
         .rounded(cx.theme().radius)
+        // The same pair the grid paints a selected row with, so one item picked in the gallery and
+        // the same item picked in the table are recognisably the same state.
         .border_1()
         .border_color(match selected {
-            true => cx.theme().primary,
+            true => cx.theme().table_active_border,
             false => cx.theme().border,
         })
+        .when(selected, |card| card.bg(cx.theme().table_active))
         .when(!selected, |card| {
             card.hover(|card| card.bg(cx.theme().accent))
         })
-        .child(div().flex_1().min_h_0().overflow_hidden().child(thumb(
-            path.as_deref(),
-            preview::CARD,
-            cx,
-        )))
+        .child(
+            div()
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .overflow_hidden()
+                .child(thumb(path.as_deref(), preview::CARD, cx))
+                .when(pages > 1, |frame| {
+                    frame.child(
+                        div()
+                            .absolute()
+                            .top_1()
+                            .right_1()
+                            .px_1()
+                            .rounded(cx.theme().radius)
+                            .bg(cx.theme().background.opacity(0.75))
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("{pages} pages")),
+                    )
+                }),
+        )
         .child(
             div()
                 .flex_none()
@@ -138,7 +179,26 @@ fn card(state: &Entity<TableState<QrateTableDelegate>>, view: usize, cx: &mut Ap
         .on_mouse_down(
             MouseButton::Left,
             move |ev: &MouseDownEvent, _window, cx| {
-                state.update(cx, |state, cx| state.set_selected_row(view, cx));
+                // The same three gestures the grid answers to, so a selection built in one view is
+                // built the same way in the other.
+                match (ev.modifiers.secondary(), ev.modifiers.shift) {
+                    (true, _) => state.update(cx, |state, cx| {
+                        state.delegate_mut().toggle_row(source);
+                        cx.emit(table::TableChanged);
+                        cx.notify();
+                    }),
+                    (false, true) => state.update(cx, |state, cx| {
+                        state.delegate_mut().extend_rows_to(source);
+                        cx.emit(table::TableChanged);
+                        cx.notify();
+                    }),
+                    (false, false) => {
+                        state.update(cx, |state, cx| {
+                            state.delegate_mut().clear_selection();
+                            state.set_selected_row(view, cx);
+                        });
+                    }
+                }
                 if ev.click_count < 2 {
                     return;
                 }

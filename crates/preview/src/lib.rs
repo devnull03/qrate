@@ -17,9 +17,10 @@ mod native;
 mod pdf;
 pub mod playback;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -156,12 +157,39 @@ impl Asset for Preview {
 
 /// How many pages this file has. One for everything that is not a document, so a caller can show
 /// page controls whenever this is greater than one without knowing which tier answered.
+///
+/// Memoized, because the gallery asks this of every visible card on every frame it draws and the
+/// answer costs a PDFium load or a walk through a TIFF's image list. Keyed by path and mtime, so a
+/// file replaced on disk is re-counted rather than answered from a stale entry.
+///
+/// ponytail: unbounded map — one `usize` per file ever previewed, which even a six-figure
+/// collection keeps in the low megabytes. Give it the byte budget `thumb` uses if that stops being
+/// true.
 pub fn page_count(path: &Path) -> usize {
-    match extension(path).as_deref() {
+    /// A file's identity for counting purposes: where it is and when it last changed.
+    type Stamp = (PathBuf, Option<SystemTime>);
+    static COUNTS: std::sync::OnceLock<std::sync::Mutex<HashMap<Stamp, usize>>> =
+        std::sync::OnceLock::new();
+
+    let key: Stamp = (
+        path.to_path_buf(),
+        std::fs::metadata(path).and_then(|m| m.modified()).ok(),
+    );
+    let counts = COUNTS.get_or_init(Default::default);
+    if let Ok(counts) = counts.lock()
+        && let Some(&pages) = counts.get(&key)
+    {
+        return pages;
+    }
+    let pages = match extension(path).as_deref() {
         Some(extension) if pdf::handles(extension) => pdf::page_count(path).unwrap_or(1),
         Some("tif" | "tiff") => tiff_pages(path),
         _ => 1,
+    };
+    if let Ok(mut counts) = counts.lock() {
+        counts.insert(key, pages);
     }
+    pages
 }
 
 /// How many images a TIFF holds. Multi-image TIFFs are ordinary in an archive — a fax, a book
@@ -595,6 +623,39 @@ mod tests {
     use gpui_component::{IconName, IconNamed as _};
 
     use crate::{can_preview, placeholder_icon, thumb};
+
+    /// The gallery asks this of every visible card on every frame, so the answer has to be cached —
+    /// but cached on the file as it is *now*, or a re-scanned document keeps reporting its old
+    /// length forever. Writing more pages into the same path must change the answer.
+    #[test]
+    fn a_page_count_is_reused_until_the_file_itself_changes() {
+        use crate::page_count;
+
+        let path = std::env::temp_dir().join("qrate-page-count-memo.tif");
+        let write = |pages: usize| {
+            let file = std::fs::File::create(&path).unwrap();
+            let mut encoder =
+                tiff::encoder::TiffEncoder::new(std::io::BufWriter::new(file)).unwrap();
+            for shade in 0..pages {
+                encoder
+                    .write_image::<tiff::encoder::colortype::Gray8>(4, 4, &[shade as u8; 16])
+                    .unwrap();
+            }
+            // mtime has one-second resolution on some filesystems, so a rewrite inside the same
+            // second would look unchanged and answer from the memo — which is the bug this is
+            // here to catch, not a flake to tolerate.
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+        };
+
+        write(1);
+        assert_eq!(page_count(&path), 1);
+        assert_eq!(page_count(&path), 1, "second ask comes from the memo");
+
+        // Re-scanned at three pages: the stale entry must not survive the rewrite.
+        write(3);
+        assert_eq!(page_count(&path), 3, "a changed file is counted again");
+        std::fs::remove_file(&path).ok();
+    }
 
     /// Which loader a file is routed to, and it has to be gpui's own for an image the viewer is
     /// showing — that is what makes the fullscreen view the *original* file rather than our
