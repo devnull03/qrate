@@ -1,49 +1,128 @@
 # qrate
 
-A desktop application built with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui).
+qrate is an open-source desktop application for collection catalogs. It uses a spreadsheet grid, project metadata, linked files, validation, and exports. Archives, libraries, museums, and researchers can keep control of their data.
 
-## Workspace
+qrate uses [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) and Rust.
 
-| Crate | Description |
-|-------|-------------|
-| `crates/app` | Main application binary — window setup, menus, workspace, status bar |
-| `crates/settings` | Persisted settings: generic key-value store backed by SQLite, settings window shell, path picker widgets |
-| `crates/window-wrapper` | GPUI title bar, status bar, and window-level utilities (`WindowLock`, `OpenBrowser`) |
+## Features
+
+- Create a blank project.
+- Import a CSV file into a project.
+- Store each project in one portable `.qrate` SQLite file.
+- Edit records in a spreadsheet grid.
+- Search, replace, copy, paste, undo, redo, and filter records.
+- Add, remove, rename, freeze, and reorder rows and columns.
+- Link records to files and photos.
+- View supported images, documents, audio, and video in the preview panels.
+- Add cell notes and view validation problems.
+- Check spelling and configured column values.
+- Set column types, descriptions, authority lists, and spell-check options for each project.
+- Export data as CSV, JSON-LD, CSL-JSON, or a ZIP archive.
+- Use local Luau plugins for validation and column configuration.
+
+> **Early release:** qrate is currently `0.1.0-alpha.1`. Keep backups of important collections. Report problems with steps that reproduce the problem.
+
+## Quick start
+
+### Run from source
+
+qrate uses the Rust stable toolchain. Complete these steps:
+
+1. Install Rust with `rustup`.
+2. Install the `rustfmt` and `clippy` components.
+3. Clone this repository.
+4. Run the application:
+
+   ```sh
+   cargo run
+   ```
+
+The first build downloads Rust dependencies. Later builds use Cargo's build cache.
+
+The launcher can create a blank project or import a CSV file. The [`sample/`](sample) directory has a sample collection and photos.
+
+### Optional preview tools
+
+Common image formats work without extra tools. PDF previews use PDFium. Video frame previews use ffmpeg.
+
+qrate looks beside its executable for these tools. It then looks on your system `PATH`. If qrate cannot find a tool, it shows a file-type icon.
+
+To get the supported development binaries, run:
+
+```sh
+./scripts/fetch-binaries.sh
+```
+
+The script puts the binaries beside the executable that `cargo run` uses. See [`docs/SETUP.md`](docs/SETUP.md) for platform requirements and release instructions.
+
+## Project data and privacy
+
+A `.qrate` file is a project. It contains the collection grid, settings, notes, and other project metadata. Linked media stays in its current location. Moving a project does not copy its linked files.
+
+qrate does not require an account or a hosted service. qrate does not enable Google Sheets export in this alpha release. Plugins run locally. Install plugins only from sources that you trust.
 
 ## Development
 
+The workspace uses Rust edition 2024. The main application crate is `crates/app`. Run these commands from the repository root:
+
 ```sh
-cargo build
 cargo run
+cargo test --workspace
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings -A dead_code
 ```
 
-## Stack
+The last three commands match the project quality checks. CI runs them on Windows, macOS, and Linux.
 
-- **Rust** — 2024 edition
-- **GPUI** — GPU-accelerated UI framework
-- **gpui-component** — component library (inputs, selects, settings pages, etc.)
-- **rusqlite** — settings persistence
+### Workspace
 
-## Licensing
+| Crate | Responsibility |
+| --- | --- |
+| `app` | Application setup, windows, menus, themes, logging, and exports |
+| `table` | Spreadsheet grid, editing, history, filters, notes, and file links |
+| `workspace` | Panels, docks, and media and details views |
+| `window-wrapper` | Title bar, status bar, and window registry |
+| `settings` | User settings and the `.qrate` project store |
+| `project-wizard` | Launcher, recent projects, and project creation and import |
+| `data-exchange` | CSV, JSON-LD, CSL-JSON, ZIP, and Google Sheets data exchange |
+| `diagnostics` | Validation, spelling checks, corrections, and problems panel |
+| `checks` | Validation helpers |
+| `spellcheck` | Dictionaries for diagnostics |
+| `plugin-host` | Luau runtime and local plugin loading |
+| `plugin-api` | Types that plugins use |
+| `preview` | Thumbnails, format checks, and native media preview tools |
+| `ai` | Planned interfaces for AI review and embeddings |
+
+### Plugins
+
+qrate plugins are local folders. qrate does not download plugin packages at run time. The [qrate plugin template](https://github.com/devnull03/qrate-plugin-template) contains the host API and type definitions. Plugin authors should use that template. Do not depend on internal Rust crates.
+
+## Documentation
+
+- [`docs/SETUP.md`](docs/SETUP.md) — local setup, CI, and release instructions
+- [`docs/REPLICATION-GUIDE.md`](docs/REPLICATION-GUIDE.md) — project environment setup
+- [`docs/plugin-systems-and-lsp.md`](docs/plugin-systems-and-lsp.md) — plugin system design notes
+- [`NOTICES`](NOTICES) — third-party material and notices
+
+## Contributing
+
+Contributions are welcome. Complete these steps before you submit code:
+
+1. Open an issue or pull request with a clear description.
+2. Run the formatting check.
+3. Run Clippy.
+4. Run the test suite.
+
+When you contribute, you license your work under the AGPL-3.0. Contributors keep copyright in their work. qrate does not use a Contributor License Agreement or copyright assignment.
+
+## License
 
 Copyright © 2026 Arnav Mehta.
 
-qrate is free software under the [GNU Affero General Public License v3.0](LICENSE.md).
-You may download, run, study, modify, and share it at no cost — including inside an archive,
-library, museum, or university. Using qrate to catalogue your collection triggers no obligation
-whatsoever.
+qrate is free software under the [GNU Affero General Public License v3.0](LICENSE.md). You can download, run, study, modify, and share qrate without payment. This includes use in an archive, library, museum, or university. Using qrate to catalog a collection creates no obligation.
 
-The AGPL asks one thing in return: if you distribute a modified qrate, or offer a modified qrate
-to others over a network, those users get your changes under the same license. It exists to keep
-qrate open, not to restrict the institutions it is built for.
+The AGPL applies when you distribute a modified qrate. It also applies when you offer a modified qrate over a network. In both cases, give users your changes under the same license. This license keeps qrate open. It does not restrict the institutions that use it.
 
-**Contributing.** Contributions are welcome, with no paperwork. Open a pull request and it is
-understood to be offered under the AGPL, the same license the project already carries —
-contributors keep the copyright in what they write. There is no Contributor License Agreement and
-no copyright assignment.
+**Commercial licensing.** Ask if the AGPL does not fit your use case. The copyright holder can offer a separate license for their work. Other copyright holders must agree to license their work separately.
 
-**Commercial licensing.** If the AGPL does not fit your situation, ask. Anything I hold the
-copyright in I can license separately; where a part of qrate was written by someone else, that
-needs their agreement too.
-
-**Bundled third-party material** and its separate licenses are recorded in [NOTICES](NOTICES).
+**Bundled third-party material** and its licenses are in [NOTICES](NOTICES).
