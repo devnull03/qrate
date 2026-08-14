@@ -3,7 +3,7 @@ use window_wrapper::OpenBrowser;
 
 use crate::actions::{NewProject, Save, ToggleBottomDock, ToggleLeftDock, ToggleRightDock};
 use crate::export::{EXPORT_FORMATS, Export, ExportFormat};
-use crate::theming::{SwitchTheme, THEME_CHOICES};
+use crate::theming::{SwitchTheme, theme_choices};
 
 // The Edit menu's items act on the grid, so they're the grid's actions — `table` declares and
 // handles them, and this menu only names them.
@@ -43,7 +43,18 @@ fn planned(name: &'static str) -> MenuItem {
     }
 }
 
-pub fn app_menus() -> Vec<Menu> {
+/// Installs the menu bar. Called at startup and again once the theme registry has loaded, since
+/// the Theme submenu lists what the registry holds — see `theming::on_themes_loaded`.
+///
+/// Both, not one: `set_menus` feeds the macOS system menu bar, `set_app_menus` feeds the
+/// in-window `AppMenuBar` we draw on Windows and Linux.
+pub fn install(cx: &mut gpui::App) {
+    cx.set_menus(app_menus(cx));
+    let owned = app_menus(cx).into_iter().map(|menu| menu.owned()).collect();
+    gpui_component::GlobalState::global_mut(cx).set_app_menus(owned);
+}
+
+fn app_menus(cx: &gpui::App) -> Vec<Menu> {
     vec![
         Menu {
             name: "File".into(),
@@ -113,15 +124,13 @@ pub fn app_menus() -> Vec<Menu> {
                 MenuItem::submenu(Menu {
                     name: "Theme".into(),
                     disabled: false,
-                    items: THEME_CHOICES
-                        .iter()
+                    items: theme_choices(cx)
+                        .into_iter()
                         .map(|name| {
-                            MenuItem::action(
-                                *name,
-                                SwitchTheme {
-                                    name: name.to_string(),
-                                },
-                            )
+                            let action = SwitchTheme {
+                                name: name.to_string(),
+                            };
+                            MenuItem::action(name, action)
                         })
                         .collect(),
                 }),

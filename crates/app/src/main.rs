@@ -34,7 +34,7 @@ use crate::{
     actions::{NewProject, ToggleBottomDock, ToggleLeftDock, ToggleRightDock},
     app_menus::{
         CopyDebugInfo, OpenLogsFolder, OpenPluginsFolder, OpenProjects, OpenSettings, Quit,
-        REPO_URL, ReloadPlugins, ReportIssue, app_menus,
+        REPO_URL, ReloadPlugins, ReportIssue,
     },
     status_items::build_status_bar_registry,
     title_items::build_title_bar_registry,
@@ -472,11 +472,7 @@ fn main() {
         cx.on_action(|_: &OpenProjects, cx| project_wizard::open_launcher_window(cx));
         // ----------------------------------------------
 
-        // Both, not one: `set_menus` feeds the macOS system menu bar, `set_app_menus` feeds the
-        // in-window `AppMenuBar` we draw on Windows and Linux.
-        cx.set_menus(app_menus());
-        gpui_component::GlobalState::global_mut(cx)
-            .set_app_menus(app_menus().into_iter().map(|menu| menu.owned()).collect());
+        app_menus::install(cx);
 
         // Keyboard shortcuts (Layer 1). See `actions.rs` to add more.
         cx.bind_keys(actions::key_bindings());
