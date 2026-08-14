@@ -12,7 +12,7 @@ pub use viewer::{Scope as ViewerScope, open_viewer};
 pub use dock_button::DockToggleButton;
 pub use panel_registry::{BarSide, PANELS, PanelMeta, PanelRegistry, bar_side};
 pub use panels::DETAILS_META;
-pub use views::{ShowView, VIEW_MODE_KEY, ViewMode, show_view};
+pub use views::{ShowView, VIEW_MODE_KEY, VIEWS_CONTEXT, ViewMode, show_view};
 
 use std::sync::Arc;
 
