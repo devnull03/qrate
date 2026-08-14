@@ -805,7 +805,7 @@ impl QrateTableDelegate {
 
     /// Add or remove one row from the multi-selection — ⌘-click. The cursor is folded into the set
     /// first, so the row already selected when the modifier goes down doesn't vanish.
-    pub(crate) fn toggle_row(&mut self, row: usize) {
+    pub fn toggle_row(&mut self, row: usize) {
         if let Some(Selection::Cell { row: r, .. } | Selection::Row(r)) = self.selection {
             self.selected_rows.insert(r);
         }
@@ -825,7 +825,7 @@ impl QrateTableDelegate {
     }
 
     /// Select every visible row between the cursor and `row` — shift-click down the `#` column.
-    pub(crate) fn extend_rows_to(&mut self, row: usize) {
+    pub fn extend_rows_to(&mut self, row: usize) {
         let anchor = match self.selection {
             Some(Selection::Cell { row: r, .. } | Selection::Row(r)) => r,
             Some(Selection::Column(_)) | None => row,
@@ -841,8 +841,15 @@ impl QrateTableDelegate {
         self.selection = Some(Selection::Row(row));
     }
 
-    /// Collapse back to a single row — a plain click, and what the Details panel's Clear does.
-    pub(crate) fn select_only_row(&mut self, row: usize) {
+    /// Deselect everything.
+    pub fn clear_selection(&mut self) {
+        self.selected_rows.clear();
+        self.range = None;
+        self.selection = None;
+    }
+
+    /// Collapse back to a single row — what a plain click leaves.
+    pub fn select_only_row(&mut self, row: usize) {
         self.selected_rows.clear();
         self.range = None;
         self.selection = Some(Selection::Row(row));

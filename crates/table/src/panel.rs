@@ -656,20 +656,7 @@ impl TablePanel {
     /// Put the selected range on the clipboard as TSV — what Sheets and Excel both read and write,
     /// so a range copied here pastes into either. `cut` blanks the range afterwards, as one undo.
     fn copy_range(&mut self, cut: bool, cx: &mut Context<Self>) {
-        let Some((rows, cols)) = self.state.read(cx).delegate().range_cells() else {
-            return;
-        };
-        let delegate = self.state.read(cx).delegate();
-        let mut lines = Vec::with_capacity(rows.len());
-        for &row in &rows {
-            let line: Vec<&str> = cols
-                .clone()
-                .map(|col| delegate.cell(row, col).map_or("", |v| v.as_ref()))
-                .collect();
-            lines.push(line.join("\t"));
-        }
-        cx.write_to_clipboard(ClipboardItem::new_string(lines.join("\n")));
-
+        crate::copy_selection(cx);
         if cut {
             self.clear_range(cx);
         }

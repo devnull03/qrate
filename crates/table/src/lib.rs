@@ -29,7 +29,9 @@ pub use panel::{
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
 pub const TABLE_STRIPES_KEY: &str = "table_stripes";
 
-use gpui::{App, Bounds, Entity, Global, Pixels, Point, SharedString, WeakEntity, px, size};
+use gpui::{
+    App, Bounds, ClipboardItem, Entity, Global, Pixels, Point, SharedString, WeakEntity, px, size,
+};
 use gpui_component::table::TableState;
 use plugin_api::CommandContext;
 
@@ -95,6 +97,47 @@ fn autosave(cx: &mut App) {
 /// committed edit does except going through the inline editor. What a fix menu applies through.
 pub fn write_cell(row: usize, col: usize, text: SharedString, cx: &mut App) {
     write_cells(vec![(row, col, text)], cx);
+}
+
+/// The selection as tab-separated text on the clipboard — what Ctrl+C copies, reachable from
+/// outside the grid so Details' "Copy N rows" puts the same thing there as the keystroke does.
+pub fn copy_selection(cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+    let delegate = state.read(cx).delegate();
+    let Some((rows, cols)) = delegate.range_cells() else {
+        return;
+    };
+    let lines: Vec<String> = rows
+        .iter()
+        .map(|&row| {
+            cols.clone()
+                .map(|col| delegate.cell(row, col).map_or("", |v| v.as_ref()))
+                .collect::<Vec<_>>()
+                .join("\t")
+        })
+        .collect();
+    cx.write_to_clipboard(ClipboardItem::new_string(lines.join("\n")));
+}
+
+/// Drop a multi-selection back to nothing — Details' "Clear". The cursor goes with it, so the
+/// panel falls to its empty state rather than silently keeping one row of the bundle.
+pub fn clear_selection(cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+    state.update(cx, |state, cx| {
+        state.delegate_mut().clear_selection();
+        cx.emit(delegate::TableChanged);
+        cx.notify();
+    });
 }
 
 /// [`write_cell`]'s bulk form: one undo step for the whole batch, one validation pass at the end,
