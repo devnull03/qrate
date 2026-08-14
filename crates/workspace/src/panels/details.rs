@@ -954,16 +954,6 @@ impl Render for DetailsPanel {
                                 }),
                         )
                     })
-                    // The gallery has no preview pane, so the notes go where it was — and that is
-                    // the view where a tile can say "2 notes" without showing a word of them.
-                    .when_some(notes, |split, notes| {
-                        split.child(
-                            resizable_panel()
-                                .size(px(180.))
-                                .size_range(px(28.)..px(320.))
-                                .child(notes),
-                        )
-                    })
                     .child(
                         // `pr_2` on the panel insets the scrollbar from the resize edge so dragging it doesn't catch.
                         resizable_panel().pr_2().child(
@@ -1048,7 +1038,18 @@ impl Render for DetailsPanel {
                                 })
                                 .children(self.field_editor(window, cx)),
                         ),
-                    ),
+                    )
+                    // Last, along the bottom: the fields are what the panel is for, and a note is
+                    // commentary on them. Reading order puts the thing before what is said about
+                    // it, and it keeps the fields anchored under the photo as the notes grow.
+                    .when_some(notes, |split, notes| {
+                        split.child(
+                            resizable_panel()
+                                .size(px(180.))
+                                .size_range(px(28.)..px(320.))
+                                .child(notes),
+                        )
+                    }),
             )
             .into_any_element()
     }
