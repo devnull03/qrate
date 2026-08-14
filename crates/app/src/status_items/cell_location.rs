@@ -43,6 +43,13 @@ impl CellLocation {
             return "No table".into();
         };
         let state = state.read(cx);
+        // A multi-selection is counted, not located: "Row 7" is the wrong answer once seven rows
+        // are picked, and the count is what the archivist is checking before a bulk edit.
+        let selected = state.delegate().selected_source_rows();
+        if selected.len() > 1 {
+            let total = state.delegate().visible().len();
+            return format!("{} of {total} items selected", selected.len()).into();
+        }
         match state.delegate().selection() {
             Some(Selection::Cell { row, col }) => {
                 let words = state
