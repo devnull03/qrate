@@ -23,6 +23,14 @@ use crate::viewer::transport::{self, Transport};
 /// Project-scoped height of the details panel's image pane, in pixels.
 const IMAGE_PANE_HEIGHT_KEY: &str = "details_image_height";
 
+/// How much of the window the open field editor may span when the panel itself is narrower.
+const EDITOR_MAX_WINDOW_SHARE: f32 = 0.4;
+
+/// Lines of a field's value shown in the list before it is cut off with an ellipsis. A description
+/// can run to paragraphs, and one field must not push every other field off the panel — the full
+/// text is a click away in the editor.
+const VALUE_LINE_CLAMP: usize = 4;
+
 /// Where Details starts out and what it puts in the status bar. `default_placement` is only the
 /// starting point — the user can dock it anywhere, and that choice is what gets persisted.
 pub static DETAILS_META: PanelMeta = PanelMeta {
@@ -64,6 +72,12 @@ pub struct DetailsPanel {
     /// history is catalogued *while* it is listened to, so the transport belongs beside the fields
     /// being typed — not only in the fullscreen viewer.
     transport: Option<Transport>,
+    /// `preview::describe` of the selected file, taken once per selection. It stats the file, and
+    /// `render` runs on every scroll tick — asking per frame put a syscall in the scroll path.
+    caption: Option<String>,
+    /// What `transport` and `caption` were built from. `retarget` runs on every table change, so
+    /// without it a keystroke in the grid would re-stat the file.
+    file: Option<PathBuf>,
 }
 
 impl DetailsPanel {
@@ -72,7 +86,14 @@ impl DetailsPanel {
             this.bind(cx);
             cx.notify();
         });
-        let editor = cx.new(|cx| InputState::new(window, cx));
+        // `multi_line`, like the grid's cell editor: `editor_box` sizes the box to the value's
+        // *wrapped* height, and a single-line input runs the text off the right edge instead.
+        // `submit_on_enter` keeps Enter committing the field (Shift+Enter inserts a newline).
+        let editor = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .submit_on_enter(true)
+        });
         let _editor_sub = cx.subscribe(&editor, |this, _input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
                 this.commit(cx);
@@ -90,6 +111,8 @@ impl DetailsPanel {
             anchor: Rc::default(),
             viewport: Rc::new(Cell::new(Bounds::default())),
             transport: None,
+            caption: None,
+            file: None,
         };
         this.bind(cx);
         this
@@ -112,9 +135,11 @@ impl DetailsPanel {
     /// throw away the position on every keystroke in the grid.
     fn retarget(&mut self, cx: &mut Context<Self>) {
         let path = self.selected_file(cx);
-        if self.transport.as_ref().map(|it| &it.path) == path.as_ref() {
+        if self.file == path {
             return;
         }
+        self.file = path.clone();
+        self.caption = path.as_deref().and_then(preview::describe);
         // Whatever was playing belonged to the row being left. Leaving it running would narrate
         // one item while the panel details another.
         if self.transport.is_some() {
@@ -174,15 +199,28 @@ impl DetailsPanel {
     fn field_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.editing?;
         let anchor = self.anchor.get()?;
-        let (box_el, _) = table::editor_box(&self.editor, anchor, self.viewport.get(), window, cx);
-        Some(
-            deferred(table::floating::float_at(
-                anchor.origin,
-                self.viewport.get(),
-                box_el,
-            ))
-            .into_any_element(),
-        )
+        let within = self.editor_area(window);
+        let (box_el, _) = table::editor_box(&self.editor, anchor, within, window, cx);
+        Some(deferred(table::floating::float_at(anchor.origin, within, box_el)).into_any_element())
+    }
+
+    /// The rect the editor grows within: the field list, widened rightward over whatever is beside
+    /// the panel. A dock is narrow and a paragraph-length description confined to it is a column of
+    /// two-word lines nobody can read. Capped at a share of the window rather than left unbounded,
+    /// so the box never becomes the thing covering the record it belongs to, and never past the
+    /// window edge — a right dock has nowhere to spill, and gets the panel width it already had.
+    fn editor_area(&self, window: &Window) -> Bounds<Pixels> {
+        let list = self.viewport.get();
+        let window_width = window.viewport_size().width;
+        let width = list
+            .size
+            .width
+            .max(window_width * EDITOR_MAX_WINDOW_SHARE)
+            .min(window_width - list.left());
+        Bounds {
+            origin: list.origin,
+            size: size(width, list.size.height),
+        }
     }
 
     fn bind(&mut self, cx: &mut Context<Self>) {
@@ -244,12 +282,11 @@ impl Panel for DetailsPanel {
 /// stack during type-checking instead of just hitting a slow compile.
 fn render_image_frame(
     image_path: Option<PathBuf>,
+    caption: Option<String>,
     transport: Option<AnyElement>,
     cx: &App,
 ) -> AnyElement {
     let show_image = image_path.as_deref().is_some_and(can_preview);
-
-    let caption = image_path.as_deref().and_then(preview::describe);
 
     let action = |id: &'static str, icon: IconName, tip: &'static str, path: PathBuf| {
         Button::new(id)
@@ -289,7 +326,8 @@ fn render_image_frame(
                     .right_1()
                     .flex()
                     .gap_1()
-                    .bg(cx.theme().background.opacity(0.7))
+                    .rounded(cx.theme().radius)
+                    .bg(cx.theme().background)
                     // Fullscreen only makes sense for something we can actually render; an
                     // icon-placeholder file has nothing to zoom into.
                     .when(show_image, |group| {
@@ -326,17 +364,20 @@ fn render_image_frame(
         })
         // Top-left, over the picture rather than taking a row out of the frame — the pane is a
         // height the user drags, and the other two edges are spoken for: the action buttons sit
-        // top-right and a recording's transport along the bottom.
+        // top-right and a recording's transport along the bottom. Opaque background and full
+        // `foreground` text, same as the buttons opposite it: a translucent chip in
+        // `muted_foreground` disappeared into a bright scan behind it.
         .children(caption.map(|caption| {
             div()
                 .absolute()
                 .top_1()
                 .left_1()
-                .px_1()
+                .px_1p5()
+                .py_0p5()
                 .rounded(cx.theme().radius)
-                .bg(cx.theme().background.opacity(0.7))
+                .bg(cx.theme().background)
                 .text_xs()
-                .text_color(cx.theme().muted_foreground)
+                .text_color(cx.theme().foreground)
                 .child(caption)
         }))
         // Along the bottom of the frame, over the cover art rather than beside it: the pane is a
@@ -399,12 +440,15 @@ impl Render for DetailsPanel {
         // no borders.
         let editing_col = self.editing.map(|(_, col)| col);
         let rows = fields.into_iter().enumerate().map(|(ix, (k, v))| {
-            let open = self
-                .state
-                .as_ref()
-                .and_then(|w| w.upgrade())
-                .and_then(|s| s.read(cx).delegate().data_col(&k))
-                .is_some_and(|col| editing_col == Some(col));
+            // Guarded on `editing_col`: `data_col` is a linear scan of every column, and this runs
+            // per row on every render — including the scroll ticks that dirty the whole panel.
+            let open = editing_col.is_some()
+                && self
+                    .state
+                    .as_ref()
+                    .and_then(|w| w.upgrade())
+                    .and_then(|s| s.read(cx).delegate().data_col(&k))
+                    == editing_col;
             div()
                 .flex()
                 .items_start()
@@ -436,6 +480,10 @@ impl Render for DetailsPanel {
                         .px_2()
                         .py_1p5()
                         .cursor_text()
+                        // `text_ellipsis` is what puts the … on the last kept line; `line_clamp`
+                        // alone would cut the text off mid-word with nothing to say it had.
+                        .line_clamp(VALUE_LINE_CLAMP)
+                        .text_ellipsis()
                         .on_click(cx.listener({
                             let (k, v) = (k.clone(), v.clone());
                             move |this, _, window, cx| this.edit_field(&k, &v, window, cx)
@@ -513,26 +561,28 @@ impl Render for DetailsPanel {
                                 .size(px(image_height))
                                 .size_range(px(80.)..px(600.))
                                 .p_3()
-                                .child(render_image_frame(image_path, transport, cx)),
+                                .child(render_image_frame(
+                                    image_path,
+                                    self.caption.clone(),
+                                    transport,
+                                    cx,
+                                )),
                         )
                     })
                     .child(
                         // `pr_2` on the panel insets the scrollbar from the resize edge so dragging it doesn't catch.
                         resizable_panel().pr_2().child(
+                            // This wrapper does not scroll, and that is the whole point: it is the
+                            // rect the floating editor grows within and is clamped to, so a long
+                            // value wraps inside the visible list rather than over the preview or
+                            // the grid. `overflow_y_scrollbar` makes the div it is called on the
+                            // scrolled *content* (auto height, sliding under the viewport), so
+                            // measuring there would hand the editor a rect taller than the panel.
+                            // Same arrangement the grid uses for its cell editor.
                             div()
                                 .size_full()
-                                // `min_h_0` overrides flex `min-height: auto` so this scrolls instead of growing past the panel.
                                 .min_h_0()
                                 .relative()
-                                .overflow_y_scrollbar()
-                                .px_3()
-                                // Clear of the resize handle above, so the first field doesn't sit
-                                // flush against it.
-                                .pt_2()
-                                // Pad by the bottom-strip crop (29px closed / 0 open) so it doesn't eat the last field row.
-                                .pb(px(12.) + crop)
-                                // The rect the floating editor grows within and is clamped to, so a
-                                // long value wraps inside this panel rather than over the grid.
                                 .child({
                                     let viewport = self.viewport.clone();
                                     canvas(
@@ -544,9 +594,22 @@ impl Render for DetailsPanel {
                                 })
                                 .child(
                                     div()
-                                        .rounded(cx.theme().radius)
-                                        .overflow_hidden()
-                                        .children(rows),
+                                        .size_full()
+                                        // `min_h_0` overrides flex `min-height: auto` so this scrolls instead of growing past the panel.
+                                        .min_h_0()
+                                        .overflow_y_scrollbar()
+                                        .px_3()
+                                        // Clear of the resize handle above, so the first field
+                                        // doesn't sit flush against it.
+                                        .pt_2()
+                                        // Pad by the bottom-strip crop (29px closed / 0 open) so it doesn't eat the last field row.
+                                        .pb(px(12.) + crop)
+                                        .child(
+                                            div()
+                                                .rounded(cx.theme().radius)
+                                                .overflow_hidden()
+                                                .children(rows),
+                                        ),
                                 )
                                 .children(self.field_editor(window, cx)),
                         ),
@@ -574,7 +637,8 @@ mod tests {
 
     impl Render for ImageFrameProbe {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            render_image_frame(self.0.clone(), None, cx)
+            let caption = self.0.as_deref().and_then(preview::describe);
+            render_image_frame(self.0.clone(), caption, None, cx)
         }
     }
 
@@ -700,6 +764,56 @@ mod tests {
             title(cx).unwrap_or_default(),
             "two",
             "the panel wrote through the grid's own history"
+        );
+    }
+
+    /// The rect the floating editor is clamped to must be the *visible* field list, not the
+    /// scrolled content. Measuring on the div `overflow_y_scrollbar` is called on gets the content
+    /// instead — auto-height, taller than the window — and the editor then clamps to nothing,
+    /// painting over the preview above it and growing off the bottom of the screen.
+    #[gpui::test]
+    fn the_editor_is_clamped_to_the_visible_list_not_the_scrolled_content(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(settings::project::CurrentProject {
+                file: std::env::temp_dir().join("qrate-details-viewport.qrate"),
+                data: settings::project::ProjectData {
+                    name: "T".into(),
+                    columns: Vec::new(),
+                    // Far more fields than fit, so the list genuinely scrolls.
+                    headers: (0..80).map(|i| format!("field_{i}")).collect(),
+                    rows: vec![(0..80).map(|i| format!("value {i}")).collect()],
+                    values: Default::default(),
+                },
+            });
+        });
+        cx.add_window_view(table::TablePanel::new);
+        let state = cx.update(|cx| {
+            cx.try_global::<table::TableStateHandle>()
+                .and_then(|h| h.0.upgrade())
+                .expect("the table panel publishes its state handle")
+        });
+        let (panel, cx) = cx.add_window_view(DetailsPanel::new);
+        state.update(cx, |state, cx| state.set_selected_cell(0, 1, cx));
+        cx.run_until_parked();
+        cx.draw(
+            gpui::point(gpui::px(0.), gpui::px(0.)),
+            gpui::size(gpui::px(400.), gpui::px(600.)),
+            |_, _| gpui::div(),
+        );
+
+        let window_height = cx.update(|window, _| window.viewport_size().height);
+        let measured = panel.read_with(cx, |panel, _| panel.viewport.get());
+        assert!(
+            measured.size.height > gpui::px(0.),
+            "the viewport canvas never measured"
+        );
+        assert!(
+            measured.size.height <= window_height,
+            "the editor's clamp rect is {:?} tall in a {window_height:?} window — it measured the \
+             scrolled content, not the visible list",
+            measured.size.height
         );
     }
 }

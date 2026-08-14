@@ -238,8 +238,7 @@ fn tiff_page(path: &Path, page: usize) -> Option<image::DynamicImage> {
 /// The picture alone does not say which of several linked files is on screen, and for one the
 /// ladder cannot draw a bare type icon is indistinguishable from "no file matched".
 ///
-/// ponytail: one stat per call, and callers ask per frame. Cache it against the path if it ever
-/// shows up in a profile.
+/// One stat per call, so call it when the selection changes rather than per frame.
 pub fn describe(path: &Path) -> Option<String> {
     let kind = extension(path).map(|extension| extension.to_uppercase());
     let size = std::fs::metadata(path)
