@@ -67,6 +67,17 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // Backspace deleting *text* while the cell editor or the find bar holds focus.
         KeyBinding::new("backspace", table::Clear, Some(table::GRID_CONTEXT)),
         KeyBinding::new("delete", table::Clear, Some(table::GRID_CONTEXT)),
+        // Escape drops the selection — what the Details panel used to spend a button on. Scoped to
+        // the three places a selection is visible rather than bound globally: the find bar, the
+        // cell editor, a popup menu and the fullscreen viewer all answer Escape with "close me",
+        // and each of those contexts sits deeper than these, so it keeps that meaning there.
+        KeyBinding::new("escape", table::Deselect, Some(table::GRID_CONTEXT)),
+        KeyBinding::new(
+            "escape",
+            table::Deselect,
+            Some(workspace::DETAILS_META.name),
+        ),
+        KeyBinding::new("escape", table::Deselect, Some(workspace::VIEWS_CONTEXT)),
     ]
     .into_iter()
     // Ctrl+1, Ctrl+2, … pick a view directly, in `ViewMode::ALL` order — so a new view gets its
@@ -98,6 +109,9 @@ pub fn register_global_handlers(cx: &mut App) {
     // de-globalize them per-window first.
     cx.on_action(|_: &NewWindow, _cx| log::warn!("NewWindow: TODO (bar registries are global)"));
     cx.on_action(|_: &Save, cx| table::save_now(cx));
+    // One handler for all three bindings above: which view was showing the selection doesn't
+    // change what dropping it means.
+    cx.on_action(|_: &table::Deselect, cx| table::clear_selection(cx));
     // Edit ▸ Undo/Redo dispatches wherever focus happens to sit, which is not always the grid —
     // globally is the only place that catches it from any panel.
     cx.on_action(|_: &table::Undo, cx| table::history_step(false, cx));

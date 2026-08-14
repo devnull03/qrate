@@ -24,7 +24,7 @@ pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 /// growing a second, quietly diverging copy.
 pub use note::{Target as MenuTarget, menu as context_menu};
 pub use panel::{
-    Clear, Copy, Cut, DeleteColumn, DeleteRow, DuplicateRow, EditCell, GRID_CONTEXT,
+    Clear, Copy, Cut, DeleteColumn, DeleteRow, Deselect, DuplicateRow, EditCell, GRID_CONTEXT,
     InsertColumnLeft, InsertColumnRight, InsertNote, InsertRowAbove, InsertRowBelow, Paste, Redo,
     RenameColumn, Replace, Search, TablePanel, Undo, UnfreezeColumns, editor_box,
 };
