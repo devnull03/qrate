@@ -511,8 +511,14 @@ impl Render for Viewer {
             //
             // Page controls appear for a one-page document too. "Page 1 of 1" is what tells you
             // this is a PDF at all rather than a picture of a page, which is otherwise invisible.
+            // `pages > 1` is not a substitute for `document` — it is the case `document` cannot
+            // cover: a multi-image TIFF is a stack of pictures, not a document, and it still has
+            // pages to turn.
             .when(
-                self.document || self.transport.is_some() || self.scrubber.is_some(),
+                self.document
+                    || self.pages > 1
+                    || self.transport.is_some()
+                    || self.scrubber.is_some(),
                 |viewer| {
                 viewer.child(
                     div()

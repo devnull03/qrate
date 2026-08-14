@@ -15,6 +15,9 @@ gpui-component.workspace = true
 image = { version = "0.25", default-features = false, features = [
   "bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp",
 ] }
+# `image`'s own TIFF backend, taken directly for the one thing it does not expose: the pages past
+# the first. Same version cargo already resolved for it, so this adds no second copy.
+tiff = "0.10"
 rodio.workspace = true
 zip.workspace = true
 pdfium-render = { version = "0.9.3", default-features = false, features = ["pdfium_latest", "image_025", "thread_safe"] }

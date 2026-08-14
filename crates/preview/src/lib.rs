@@ -157,9 +157,78 @@ impl Asset for Preview {
 /// How many pages this file has. One for everything that is not a document, so a caller can show
 /// page controls whenever this is greater than one without knowing which tier answered.
 pub fn page_count(path: &Path) -> usize {
-    match extension(path) {
-        Some(extension) if pdf::handles(&extension) => pdf::page_count(path).unwrap_or(1),
+    match extension(path).as_deref() {
+        Some(extension) if pdf::handles(extension) => pdf::page_count(path).unwrap_or(1),
+        Some("tif" | "tiff") => tiff_pages(path),
         _ => 1,
+    }
+}
+
+/// How many images a TIFF holds. Multi-image TIFFs are ordinary in an archive — a fax, a book
+/// scan, a flatbed's bundle of one sheet per page — and `image` reads only the first of them.
+fn tiff_pages(path: &Path) -> usize {
+    let Some(mut decoder) = tiff_decoder(path) else {
+        return 1;
+    };
+    let mut pages = 1;
+    while decoder.more_images() {
+        if decoder.next_image().is_err() {
+            break;
+        }
+        pages += 1;
+    }
+    pages
+}
+
+fn tiff_decoder(path: &Path) -> Option<tiff::decoder::Decoder<std::io::BufReader<std::fs::File>>> {
+    let file = std::fs::File::open(path).ok()?;
+    tiff::decoder::Decoder::new(std::io::BufReader::new(file)).ok()
+}
+
+/// One image out of a multi-image TIFF, which is the only thing `image` cannot reach for us. Page
+/// zero still goes through `image` itself, so everything it handles — predictors, odd
+/// compressions, JPEG-in-TIFF — is unaffected by any of this.
+fn tiff_page(path: &Path, page: usize) -> Option<image::DynamicImage> {
+    use image::{DynamicImage, ImageBuffer};
+    use tiff::ColorType;
+    use tiff::decoder::DecodingResult;
+
+    let mut decoder = tiff_decoder(path)?;
+    decoder.seek_to_image(page).ok()?;
+    let (width, height) = decoder.dimensions().ok()?;
+    let color = decoder.colortype().ok()?;
+
+    // The layouts an archival scan actually arrives in. Anything else declines rather than
+    // guessing at the channel order, and the caller falls back to the type icon.
+    match (color, decoder.read_image().ok()?) {
+        (ColorType::Gray(8), DecodingResult::U8(data)) => {
+            ImageBuffer::from_raw(width, height, data).map(DynamicImage::ImageLuma8)
+        }
+        (ColorType::GrayA(8), DecodingResult::U8(data)) => {
+            ImageBuffer::from_raw(width, height, data).map(DynamicImage::ImageLumaA8)
+        }
+        (ColorType::RGB(8), DecodingResult::U8(data)) => {
+            ImageBuffer::from_raw(width, height, data).map(DynamicImage::ImageRgb8)
+        }
+        (ColorType::RGBA(8), DecodingResult::U8(data)) => {
+            ImageBuffer::from_raw(width, height, data).map(DynamicImage::ImageRgba8)
+        }
+        (ColorType::Gray(16), DecodingResult::U16(data)) => {
+            ImageBuffer::from_raw(width, height, data).map(DynamicImage::ImageLuma16)
+        }
+        (ColorType::RGB(16), DecodingResult::U16(data)) => {
+            ImageBuffer::from_raw(width, height, data).map(DynamicImage::ImageRgb16)
+        }
+        (ColorType::RGBA(16), DecodingResult::U16(data)) => {
+            ImageBuffer::from_raw(width, height, data).map(DynamicImage::ImageRgba16)
+        }
+        (color, _) => {
+            log::warn!(
+                "page {page} of {} is a TIFF layout we cannot read: {color:?}",
+                path.display()
+            );
+            None
+        }
     }
 }
 
@@ -299,8 +368,14 @@ fn decode(path: &Path, max_edge: u32, page: usize) -> Option<image::DynamicImage
         max_edge
     };
 
+    // Only a TIFF ever asks for a raster page past the first; every other raster format holds one
+    // image, and `image` is the better decoder for that one.
     if is_raster(&extension)
-        && let Some(image) = raster(path)
+        && let Some(image) = match (page, extension.as_str()) {
+            (0, _) => raster(path),
+            (page, "tif" | "tiff") => tiff_page(path, page),
+            _ => raster(path),
+        }
     {
         return Some(image);
     }
@@ -615,6 +690,49 @@ mod tests {
             "a missing file still has a claimed format"
         );
         assert!(describe(Path::new("/nonexistent/qrate-no-extension")).is_none());
+    }
+
+    /// A multi-image TIFF is a stack of scans an archive really does hold — a fax, a book, a
+    /// flatbed's run of sheets. `image` reads only the first, so without this the rest of the file
+    /// is invisible with nothing to say it is there.
+    #[test]
+    fn every_image_in_a_multi_page_tiff_is_reachable() {
+        use crate::{page_count, tiff_page};
+
+        let path = std::env::temp_dir().join("qrate-multipage-probe.tiff");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut encoder = tiff::encoder::TiffEncoder::new(std::io::BufWriter::new(file)).unwrap();
+        for shade in [10u8, 200u8] {
+            encoder
+                .write_image::<tiff::encoder::colortype::Gray8>(4, 4, &[shade; 16])
+                .unwrap();
+        }
+        drop(encoder);
+
+        assert_eq!(page_count(&path), 2, "both images are counted");
+        let first = tiff_page(&path, 0).expect("page one decodes");
+        let second = tiff_page(&path, 1).expect("page two decodes");
+        assert_eq!(first.as_bytes()[0], 10);
+        assert_eq!(
+            second.as_bytes()[0],
+            200,
+            "page two is its own image, not the first one again"
+        );
+        // Past the end declines rather than wrapping to the first page.
+        assert!(tiff_page(&path, 2).is_none());
+
+        // A single-image TIFF still reports one page, or every scan grows page controls.
+        let single = std::env::temp_dir().join("qrate-singlepage-probe.tiff");
+        let file = std::fs::File::create(&single).unwrap();
+        let mut encoder = tiff::encoder::TiffEncoder::new(std::io::BufWriter::new(file)).unwrap();
+        encoder
+            .write_image::<tiff::encoder::colortype::Gray8>(4, 4, &[7u8; 16])
+            .unwrap();
+        drop(encoder);
+        assert_eq!(page_count(&single), 1);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&single);
     }
 
     #[test]
