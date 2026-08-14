@@ -9,7 +9,7 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{ActiveTheme, table::TableState};
+use gpui_component::{ActiveTheme, menu::ContextMenuExt as _, table::TableState};
 use preview::{can_preview, thumb};
 use table::QrateTableDelegate;
 
@@ -176,6 +176,20 @@ fn card(
         // follows, which is what keeps every view on one cursor. Double click is the deliberate
         // "look at this one" — the photo takes over the centre, leaving the docked panels
         // readable beside it, which is why it opens at `Centre` and not `Workspace`.
+        // Right-click selects the card unless it is already part of the selection — the same rule
+        // the grid's cells follow, so aiming at a bundle to act on it can't be what destroys it.
+        .on_mouse_down(MouseButton::Right, {
+            let state = state.clone();
+            move |_, _window, cx| {
+                state.update(cx, |state, cx| {
+                    if !state.delegate().is_row_selected(source) {
+                        state.delegate_mut().select_only_row(source);
+                        cx.emit(table::TableChanged);
+                        cx.notify();
+                    }
+                });
+            }
+        })
         .on_mouse_down(
             MouseButton::Left,
             move |ev: &MouseDownEvent, _window, cx| {
@@ -207,5 +221,10 @@ fn card(
                 }
             },
         )
+        // Last: `context_menu` wraps the element rather than extending it, so anything chained
+        // after this would land on the wrapper instead of the card.
+        .context_menu(move |menu, window, cx| {
+            table::context_menu(table::MenuTarget::Row(source), menu, window, cx)
+        })
         .into_any_element()
 }

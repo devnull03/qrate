@@ -20,6 +20,9 @@ pub mod photos;
 mod row_index;
 
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
+/// The grid's right-click menu, so a gallery card can raise the same one a row does rather than
+/// growing a second, quietly diverging copy.
+pub use note::{Target as MenuTarget, menu as context_menu};
 pub use panel::{
     Clear, Copy, Cut, DeleteColumn, DeleteRow, DuplicateRow, EditCell, GRID_CONTEXT,
     InsertColumnLeft, InsertColumnRight, InsertNote, InsertRowAbove, InsertRowBelow, Paste, Redo,

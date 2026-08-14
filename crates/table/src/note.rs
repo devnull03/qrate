@@ -4,6 +4,9 @@
 //! Right-click uses `ContextMenuExt` on our own cell div, not `TableDelegate::context_menu` —
 //! that hook only fires while `right_clicked_row` is `Some`, which `on_cell_right_click` clears.
 
+// Not `Path` — `gpui::Path` is the shape the squiggle is drawn with, and it is imported below.
+use std::path::PathBuf;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ClipboardItem, Context, Entity, InteractiveElement as _, IntoElement,
@@ -41,7 +44,7 @@ const EDITOR_H: f32 = 132.;
 /// What was right-clicked. Copy/edit/filter only make sense over a cell; a row or a column can
 /// only carry a note.
 #[derive(Clone, Copy)]
-pub(crate) enum Target {
+pub enum Target {
     /// Source row and data column — not view/table indices.
     Cell {
         row: usize,
@@ -147,6 +150,63 @@ fn rows_label(verb: &str, rows: &[usize]) -> SharedString {
     }
 }
 
+/// How the reveal entry counts itself: files, not items, because a selection can hold rows that
+/// never matched one. Split out from the menu so the arithmetic is testable without a window.
+fn reveal_label(items: usize, files: usize) -> SharedString {
+    match items == files {
+        true => format!("Reveal {files} files in folder").into(),
+        false => format!("Reveal {files} of {items} files in folder").into(),
+    }
+}
+
+/// What a menu raised on a multi-selection offers before anything about the clicked cell: every
+/// label counts the items, so a command can't act on more than it said it would.
+///
+/// Only appears above one item — over a single row these would duplicate what the rest of the menu
+/// and the Details panel already offer.
+///
+/// Two entries from the design are deliberately absent. "Set field for N items…" is what the
+/// Details panel now *is* — click a field, type, it writes down the selection — and a second
+/// route through a modal would be the worse one. "Re-check file matches" is re-resolving links,
+/// which is its own command over the whole sheet, not a property of what happens to be selected.
+fn selection_items(menu: PopupMenu, rows: &[usize], files: Vec<PathBuf>) -> PopupMenu {
+    let n = rows.len();
+    if n < 2 {
+        return menu;
+    }
+    let (open, reveal) = (files.clone(), files);
+    menu.label(format!("{n} items selected"))
+        .item(
+            PopupMenuItem::new(format!("Open {} items", open.len()))
+                .disabled(open.is_empty())
+                .on_click(move |_, _, _| {
+                    for path in &open {
+                        if let Err(err) = settings::os_open::open_in_default_app(path) {
+                            log::error!("could not open {}: {err}", path.display());
+                        }
+                    }
+                }),
+        )
+        .item(
+            // Counts the files, not the items: a selection can hold rows that never matched one,
+            // and offering to reveal five files when only three exist is a lie the label can avoid.
+            PopupMenuItem::new(reveal_label(n, reveal.len()))
+                .disabled(reveal.is_empty())
+                .on_click(move |_, _, _| {
+                    for path in &reveal {
+                        if let Err(err) = settings::os_open::reveal_in_folder(path) {
+                            log::error!("could not reveal {}: {err}", path.display());
+                        }
+                    }
+                }),
+        )
+        .item(
+            PopupMenuItem::new(format!("Copy {n} rows"))
+                .on_click(move |_, _, cx| crate::copy_selection(cx)),
+        )
+        .separator()
+}
+
 /// The row and column commands every target that has a row or a column offers. Built here rather
 /// than three times over, because the cell menu is the row menu and the column menu at once.
 fn structural_items(menu: PopupMenu, rows: Option<&[usize]>, col: Option<usize>) -> PopupMenu {
@@ -222,7 +282,7 @@ fn paste_onto(row: usize, col: usize, cx: &mut App) {
 
 /// Build the right-click menu for `target`. Live state is read off the table global here rather
 /// than captured at render time, the same way `filter::filter_dropdown` does it.
-pub(crate) fn menu(
+pub fn menu(
     target: Target,
     menu: PopupMenu,
     window: &mut Window,
@@ -257,6 +317,24 @@ pub(crate) fn menu(
         location.column.as_deref(),
         cx,
     );
+
+    // Above everything else, and above both the cell and row menus, because it says what the
+    // commands below are about to act on.
+    let menu = match row {
+        Some(row) => {
+            let (rows, files) = {
+                let delegate = table.read(cx).delegate();
+                let rows = target_rows(delegate, row);
+                let files = rows
+                    .iter()
+                    .filter_map(|&row| delegate.row_image(row).map(std::path::Path::to_path_buf))
+                    .collect();
+                (rows, files)
+            };
+            selection_items(menu, &rows, files)
+        }
+        None => menu,
+    };
 
     let spell_text = cell_text.clone();
     let menu = match target {
@@ -619,6 +697,18 @@ mod tests {
     use crate::{TablePanel, TableStateHandle};
     use diagnostics::{DATASET_MAIN, Diagnostic, Diagnostics, Location, Severity, Source};
     use gpui::TestAppContext;
+
+    /// A selection can hold rows that never matched a file, so the reveal entry counts the files
+    /// it will actually open — a label promising five when three exist is the kind of small lie
+    /// that costs trust in every other count in the menu.
+    #[test]
+    fn the_reveal_entry_counts_files_not_items() {
+        use crate::note::reveal_label;
+
+        assert_eq!(reveal_label(3, 3).as_ref(), "Reveal 3 files in folder");
+        assert_eq!(reveal_label(5, 3).as_ref(), "Reveal 3 of 5 files in folder");
+        assert_eq!(reveal_label(2, 0).as_ref(), "Reveal 0 of 2 files in folder");
+    }
 
     fn at(row: Option<usize>, column: Option<&str>) -> Location {
         Location {
