@@ -243,9 +243,27 @@ impl TablePanel {
                         // Native selection ignores `selectable(false)`, so the `#` column reports a
                         // cell hit. Turn it into a whole-row selection — the row header's job, and
                         // the mirror of clicking a column header.
-                        let row = *row;
-                        state.update(cx, |s, cx| s.set_selected_row(row, cx));
-                        return;
+                        let view = *row;
+                        let modifiers = window.modifiers();
+                        // Shift builds a run of items here, not the cell rectangle it draws inside
+                        // the grid: the `#` column is the row handle, so a range down it is a range
+                        // of whole rows.
+                        if !modifiers.secondary() && !modifiers.shift {
+                            state.update(cx, |s, cx| {
+                                s.delegate_mut().selected_rows.clear();
+                                s.set_selected_row(view, cx);
+                            });
+                            return;
+                        }
+                        state.update(cx, |s, _| {
+                            let Some(source) = s.delegate().source(view) else {
+                                return;
+                            };
+                            match modifiers.shift {
+                                true => s.delegate_mut().extend_rows_to(source),
+                                false => s.delegate_mut().toggle_row(source),
+                            }
+                        });
                     }
                     TableEvent::SelectCell(view, col) => {
                         // `view` is a VIEW index; store the SOURCE row so the selection survives a
@@ -255,9 +273,26 @@ impl TablePanel {
                         // ponytail: shift-click only. Extending with shift+arrow means forking the
                         // library's cell-navigation key handling; do that if anyone asks.
                         let (view, col) = (*view, *col - 1);
-                        let extend = window.modifiers().shift;
+                        let modifiers = window.modifiers();
+                        // ⌘-click picks whole items wherever it lands, so a multi-selection can be
+                        // built without aiming at the narrow `#` column.
+                        if modifiers.secondary() {
+                            state.update(cx, |s, cx| {
+                                if let Some(source) = s.delegate().source(view) {
+                                    s.delegate_mut().toggle_row(source);
+                                }
+                                cx.emit(TableChanged);
+                            });
+                            return;
+                        }
+                        let extend = modifiers.shift;
                         state.update(cx, |s, _| {
                             let delegate = s.delegate_mut();
+                            // A plain click is a fresh start; a shift-click is still growing the
+                            // cell rectangle and must not drop the items it was drawn from.
+                            if !extend {
+                                delegate.selected_rows.clear();
+                            }
                             delegate.range = match (extend, delegate.range) {
                                 // Grow the existing rectangle from its original anchor.
                                 (true, Some((anchor, _))) => Some((anchor, (view, col))),

@@ -53,6 +53,10 @@ pub struct QrateTableDelegate {
     /// per cell. `None` means the selection is just the one selected cell. Dropped wherever a
     /// filter or a column move invalidates a view index.
     pub(crate) range: Option<((usize, usize), (usize, usize))>,
+    /// Rows picked out by ⌘-click or a shift-click down the `#` column, as *source* indices — so a
+    /// multi-selection survives a filter change exactly as the single cursor does. Empty is the
+    /// common case: one selected row lives in `selection` alone and never reaches this set.
+    pub(crate) selected_rows: BTreeSet<usize>,
     pub(crate) editing: EditState,
     /// Shared single-line editor, reused across whichever cell is being edited.
     pub(crate) editor: Entity<InputState>,
@@ -93,6 +97,7 @@ impl QrateTableDelegate {
             rows: Vec::new(),
             selection: None,
             range: None,
+            selected_rows: BTreeSet::new(),
             editing: EditState::Idle,
             editor,
             note_edit: None,
@@ -349,6 +354,7 @@ impl QrateTableDelegate {
             .collect();
         self.selection = None;
         self.range = None;
+        self.selected_rows.clear();
         self.editing = EditState::Idle;
         // Recorded edits index into the outgoing dataset.
         self.history = History::default();
@@ -446,6 +452,13 @@ impl QrateTableDelegate {
         let Some(((ar, ac), (hr, hc))) = self.range else {
             if self.columns.is_empty() {
                 return None;
+            }
+            // A ⌘-clicked set of rows is every column of each, the same way one selected row is —
+            // so Copy, Cut, Paste and Clear widen to a multi-selection without any of them
+            // learning that multi-selection exists.
+            if !self.selected_rows.is_empty() {
+                let rows = self.selected_source_rows();
+                return (!rows.is_empty()).then(|| (rows, 0..=self.columns.len() - 1));
             }
             return match self.selection? {
                 Selection::Cell { row, col } => Some((vec![row], col..=col)),
@@ -665,6 +678,9 @@ impl QrateTableDelegate {
     /// that no longer exists.
     fn clamp_selection(&mut self) {
         let (rows, cols) = (self.rows.len(), self.columns.len());
+        // Dropped rather than clamped: two selected rows both clamping to the last one would
+        // silently merge into one selection, and a delete is exactly when that would mislead.
+        self.selected_rows.retain(|&row| row < rows);
         self.selection = match self.selection {
             _ if rows == 0 || cols == 0 => None,
             Some(Selection::Cell { row, col }) => Some(Selection::Cell {
@@ -757,6 +773,79 @@ impl QrateTableDelegate {
     /// The current selection — a cell, a whole row, or a whole column.
     pub fn selection(&self) -> Option<Selection> {
         self.selection
+    }
+
+    /// Every selected item as source rows, in view order: the ⌘-clicked set unioned with whatever
+    /// row the cursor is on. This is what Details, the gallery, the selection menu and the status
+    /// bar all count — one answer to "what is selected", so none of them can disagree.
+    ///
+    /// Filtered-away rows stay in the set but drop out here, so an action reaches what the
+    /// archivist can actually see and clearing the filter brings the rest back.
+    pub fn selected_source_rows(&self) -> Vec<usize> {
+        let cursor = match self.selection {
+            Some(Selection::Cell { row, .. } | Selection::Row(row)) => Some(row),
+            Some(Selection::Column(_)) | None => None,
+        };
+        self.visible_rows
+            .iter()
+            .copied()
+            .filter(|row| self.selected_rows.contains(row) || cursor == Some(*row))
+            .collect()
+    }
+
+    /// Whether this source row is part of a multi-selection — the cheap per-row test the grid and
+    /// the gallery run while rendering, without building the vector above.
+    pub fn is_row_selected(&self, row: usize) -> bool {
+        self.selected_rows.contains(&row)
+            || matches!(
+                self.selection,
+                Some(Selection::Cell { row: r, .. } | Selection::Row(r)) if r == row
+            )
+    }
+
+    /// Add or remove one row from the multi-selection — ⌘-click. The cursor is folded into the set
+    /// first, so the row already selected when the modifier goes down doesn't vanish.
+    pub(crate) fn toggle_row(&mut self, row: usize) {
+        if let Some(Selection::Cell { row: r, .. } | Selection::Row(r)) = self.selection {
+            self.selected_rows.insert(r);
+        }
+        self.range = None;
+        if self.selected_rows.remove(&row) {
+            // Leaving the cursor on the row just removed would count it as selected again — the
+            // cursor is part of the selection, so it has to retreat to whatever is still picked.
+            self.selection = self
+                .selected_rows
+                .iter()
+                .next_back()
+                .map(|&r| Selection::Row(r));
+            return;
+        }
+        self.selected_rows.insert(row);
+        self.selection = Some(Selection::Row(row));
+    }
+
+    /// Select every visible row between the cursor and `row` — shift-click down the `#` column.
+    pub(crate) fn extend_rows_to(&mut self, row: usize) {
+        let anchor = match self.selection {
+            Some(Selection::Cell { row: r, .. } | Selection::Row(r)) => r,
+            Some(Selection::Column(_)) | None => row,
+        };
+        let (Some(from), Some(to)) = (self.view_row(anchor), self.view_row(row)) else {
+            return;
+        };
+        let run: Vec<_> = normalize(from, to)
+            .filter_map(|view| self.source(view))
+            .collect();
+        self.selected_rows.extend(run);
+        self.range = None;
+        self.selection = Some(Selection::Row(row));
+    }
+
+    /// Collapse back to a single row — a plain click, and what the Details panel's Clear does.
+    pub(crate) fn select_only_row(&mut self, row: usize) {
+        self.selected_rows.clear();
+        self.range = None;
+        self.selection = Some(Selection::Row(row));
     }
 
     /// The `(source_row, data_col)` whose row-number and column header should be highlighted
@@ -1070,10 +1159,13 @@ impl TableDelegate for QrateTableDelegate {
         if col_ix == row_index::COL_IX {
             // The source row number — the row's stable identity, not its view position. Highlight
             // it while its row holds the active (edited/selected) cell.
-            let highlighted = self.active_cell().is_some_and(|(r, _)| r == source);
+            let highlighted = self.active_cell().is_some_and(|(r, _)| r == source)
+                || self.selected_rows.contains(&source);
             row_index::render_td(self, source, highlighted, cx)
         } else {
-            let ranged = self.in_range(row_ix, col_ix - 1);
+            // A ⌘-clicked row paints across every column, which is what makes a discontiguous
+            // selection read as a set of *items* rather than a column of tinted cells.
+            let ranged = self.in_range(row_ix, col_ix - 1) || self.selected_rows.contains(&source);
             cell::render_cell(self, source, col_ix - 1, ranged, window, cx)
         }
     }
@@ -1449,6 +1541,82 @@ mod app_tests {
                 delegate.selection = Some(super::Selection::Column(1));
                 let (rows, _) = delegate.range_cells().expect("a column is selected");
                 assert_eq!(rows, vec![0, 3]);
+            });
+        });
+    }
+
+    /// The point of putting the row set behind `range_cells`: Copy/Cut/Paste/Clear widen to a
+    /// ⌘-clicked selection without any of them being told it exists. Rows come back in view order,
+    /// not click order, so a copy pastes in the order it was read on screen.
+    #[gpui::test]
+    fn a_multi_selection_covers_every_column_of_each_row(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+
+                delegate.select_only_row(3);
+                delegate.toggle_row(1);
+                let (rows, cols) = delegate.range_cells().expect("rows are selected");
+                assert_eq!(
+                    (rows, cols),
+                    (vec![1, 3], 0..=1),
+                    "view order, not click order"
+                );
+
+                // ⌘-clicking a selected row takes it back out, and the last one standing behaves
+                // exactly as a plain single selection does.
+                delegate.toggle_row(3);
+                let (rows, _) = delegate.range_cells().expect("one row is left");
+                assert_eq!(rows, vec![1]);
+            });
+        });
+    }
+
+    /// Source indices, so a filter narrows what an action reaches without forgetting the rest —
+    /// clearing the filter brings the hidden rows back to the selection they never left.
+    #[gpui::test]
+    fn a_filter_hides_selected_rows_without_dropping_them(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.select_only_row(0);
+                delegate.toggle_row(1);
+                delegate.toggle_row(2);
+                assert_eq!(delegate.selected_source_rows(), vec![0, 1, 2]);
+
+                // Rows 1 and 2 are Video; keeping Film leaves only source rows 0 and 3 visible.
+                delegate.set_column_kept(0, &["Film".into()]);
+                assert_eq!(
+                    delegate.selected_source_rows(),
+                    vec![0],
+                    "a hidden row is not something an action should reach"
+                );
+
+                delegate.set_column_kept(0, &["Film".into(), "Video".into()]);
+                assert_eq!(delegate.selected_source_rows(), vec![0, 1, 2], "all back");
+            });
+        });
+    }
+
+    /// Shift down the `#` column takes the run between the cursor and the click, in view order —
+    /// so under a filter it takes what is on screen between them, not the source rows in between.
+    #[gpui::test]
+    fn extending_a_row_selection_follows_the_view(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.set_column_kept(0, &["Film".into()]);
+                // View is source rows 0 and 3; the two Video rows between them are hidden.
+                delegate.select_only_row(0);
+                delegate.extend_rows_to(3);
+                assert_eq!(
+                    delegate.selected_source_rows(),
+                    vec![0, 3],
+                    "the hidden rows between the ends are not swept up"
+                );
             });
         });
     }
