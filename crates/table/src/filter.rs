@@ -12,15 +12,15 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    Window, canvas, div, px,
+    Task, Window, canvas, div, px,
 };
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{
-    ActiveTheme, IconName, IndexPath, Selectable as _, Sizable as _, StyledExt as _,
+    ActiveTheme, Icon, IconName, IndexPath, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     combobox::{Combobox, ComboboxEvent, ComboboxState},
     h_flex,
-    searchable_list::{SearchableListItem, SearchableVec},
+    searchable_list::{SearchableListDelegate, SearchableListItem},
     table::TableState,
 };
 
@@ -30,6 +30,85 @@ use crate::{EditSpawn, TableStateHandle, delegate::QrateTableDelegate, editing::
 /// One distinct value in a column's checklist.
 #[derive(Clone, PartialEq)]
 pub(crate) struct FilterValue(SharedString);
+
+/// Searchable values with a filter-specific row layout.
+struct FilterValues {
+    items: Vec<FilterValue>,
+    matched_items: Vec<FilterValue>,
+}
+
+impl FilterValues {
+    fn new(items: Vec<FilterValue>) -> Self {
+        Self {
+            matched_items: items.clone(),
+            items,
+        }
+    }
+}
+
+impl SearchableListDelegate for FilterValues {
+    type Item = FilterValue;
+
+    fn items_count(&self, _: usize) -> usize {
+        self.matched_items.len()
+    }
+
+    fn item(&self, ix: IndexPath) -> Option<&Self::Item> {
+        self.matched_items.get(ix.row)
+    }
+
+    fn position<V>(&self, value: &V) -> Option<IndexPath>
+    where
+        Self::Item: SearchableListItem<Value = V>,
+        V: PartialEq,
+    {
+        self.matched_items
+            .iter()
+            .position(|item| item.value() == value)
+            .map(IndexPath::new)
+    }
+
+    fn perform_search(&mut self, query: &str, _: &mut Window, _: &mut App) -> Task<()> {
+        self.matched_items = self
+            .items
+            .iter()
+            .filter(|item| item.matches(query))
+            .cloned()
+            .collect();
+        Task::ready(())
+    }
+
+    fn render_item(
+        &self,
+        _: IndexPath,
+        item: &Self::Item,
+        checked: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        Some(
+            h_flex()
+                .w_full()
+                .items_start()
+                .gap_1()
+                .child(
+                    Icon::new(IconName::Check)
+                        .xsmall()
+                        .mt(px(2.))
+                        .when(!checked, |icon| icon.invisible()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_6()
+                        .overflow_hidden()
+                        .child(item.render(window, cx)),
+                )
+                .into_any_element(),
+        )
+    }
+}
 
 impl SearchableListItem for FilterValue {
     type Value = SharedString;
@@ -53,7 +132,8 @@ impl SearchableListItem for FilterValue {
         // containing "Empty".
         div()
             .w_full()
-            .truncate()
+            .line_clamp(2)
+            .text_ellipsis()
             .when(self.0.is_empty(), |t| {
                 t.text_color(cx.theme().muted_foreground)
             })
@@ -75,7 +155,6 @@ pub(crate) fn render_th(
     cx: &mut Context<TableState<QrateTableDelegate>>,
 ) -> AnyElement {
     let name = delegate.column_name(data_col);
-    let active = delegate.column_has_filter(data_col);
     // A rename floats the shared cell editor over this header, so the header measures its own rect
     // the way `cell.rs` does — once, on the frame the rename opens.
     let renaming = EditState::Renaming { col: data_col };
@@ -140,7 +219,7 @@ pub(crate) fn render_th(
             th.child(
                 div()
                     .flex_none()
-                    .child(filter_dropdown(delegate, data_col, active, window, cx)),
+                    .child(filter_dropdown(delegate, data_col, window, cx)),
             )
         })
         .into_any_element()
@@ -150,13 +229,12 @@ pub(crate) fn render_th(
 fn filter_dropdown(
     delegate: &QrateTableDelegate,
     data_col: usize,
-    active: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let state: Entity<ComboboxState<SearchableVec<FilterValue>>> =
+    let state: Entity<ComboboxState<FilterValues>> =
         window.use_keyed_state(("col-filter", data_col), cx, |window, cx| {
-            ComboboxState::new(SearchableVec::new(Vec::new()), vec![], window, cx)
+            ComboboxState::new(FilterValues::new(Vec::new()), vec![], window, cx)
                 .multiple(true)
                 .searchable(true)
         });
@@ -193,7 +271,7 @@ fn filter_dropdown(
         .collect();
     if generation.read(cx) != &delegate.values_generation() {
         state.update(cx, |state, cx| {
-            state.set_items(SearchableVec::new(values.clone()), window, cx);
+            state.set_items(FilterValues::new(values.clone()), window, cx);
         });
         generation.update(cx, |g, _| *g = delegate.values_generation());
     }
@@ -223,6 +301,9 @@ fn filter_dropdown(
         .menu_max_h(px(240.))
         .search_placeholder("Search values")
         .appearance(false)
+        // The custom trigger is already a 20px icon button, so omit combobox input padding.
+        .xsmall()
+        .px_0()
         .render_trigger(move |_ctx, _, _| {
             Button::new(("col-filter-btn", data_col))
                 // The bundled icon set has no funnel; `settings-2` is its slider glyph, the usual
@@ -230,8 +311,7 @@ fn filter_dropdown(
                 .icon(IconName::Settings2)
                 .ghost()
                 .xsmall()
-                // Highlight the affordance while the column is narrowing the view.
-                .selected(active)
+                .tooltip("Filter column")
         })
         .footer(move |_, _| {
             let bulk =
