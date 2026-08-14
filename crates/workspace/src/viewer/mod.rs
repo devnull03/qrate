@@ -355,8 +355,9 @@ impl Render for Viewer {
             // Register an opaque hitbox over the whole overlay so clicks and scrolls land here
             // instead of falling through to the table painted behind it.
             .occlude()
-            // Dim what's behind so the file reads as the focus.
-            .bg(cx.theme().background.opacity(0.9))
+            // Dim what's behind so the file reads as the focus. Not a theme colour: a light
+            // theme's background is white, which hides nothing and lights the room around a photo.
+            .bg(black().opacity(0.85))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 // Paging keys are only ours while the viewer itself holds focus: with the query
                 // box focused, left/right belong to its caret.
