@@ -6,7 +6,7 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable, StyledExt as _,
+    ActiveTheme, IconName, Sizable, StyledExt as _,
     button::{Button, ButtonVariants},
     dock::{DockPlacement, Panel, PanelControl, PanelEvent},
     h_flex,
@@ -25,6 +25,9 @@ use crate::viewer::transport::{self, Transport};
 
 /// Project-scoped height of the details panel's image pane, in pixels.
 const IMAGE_PANE_HEIGHT_KEY: &str = "details_image_height";
+
+/// Height of the Notes sub-panel's header bar, which is the whole of it while collapsed.
+const NOTES_HEADER_H: f32 = 28.;
 
 /// How much of the window the open field editor may span when the panel itself is narrower.
 const EDITOR_MAX_WINDOW_SHARE: f32 = 0.4;
@@ -69,8 +72,8 @@ pub struct DetailsPanel {
     /// it — the step arrows only exist while it is, so they never cover the photo at rest.
     stack: usize,
     stack_hover: bool,
-    /// Whether the Notes sub-panel is expanded. Open by default: in the gallery it is the only
-    /// place the text of a note is readable at all.
+    /// Whether the Notes sub-panel is expanded. Collapsed, it leaves the split and becomes a
+    /// header strip along the bottom of the panel — the chevron there is what opens it again.
     notes_open: bool,
     /// Commits the open field on Enter or when the editor loses focus.
     _editor_sub: Subscription,
@@ -235,19 +238,21 @@ impl DetailsPanel {
         let groups: Vec<Group> = picked
             .iter()
             .filter_map(|&row| {
-                let notes: Vec<_> = diagnostics::Diagnostics::notes_at(
-                    diagnostics::DATASET_MAIN,
-                    Some(row),
-                    None,
-                    cx,
-                )
-                .map(|note| {
-                    (
-                        note.message.clone(),
-                        note.filed.as_ref().and_then(diagnostics::Filed::label),
-                    )
-                })
-                .collect();
+                let notes: Vec<_> =
+                    diagnostics::Diagnostics::notes_in_row(diagnostics::DATASET_MAIN, row, cx)
+                        .map(|note| {
+                            // Which field it hangs off, when it hangs off one: without it a note
+                            // about the date and a note about the photographer read as two
+                            // remarks on the same thing.
+                            let filed = note.filed.as_ref().and_then(diagnostics::Filed::label);
+                            let meta = match (note.location.column.as_ref(), filed) {
+                                (Some(column), Some(filed)) => Some(format!("{column} · {filed}")),
+                                (Some(column), None) => Some(column.to_string()),
+                                (None, filed) => filed.map(Into::into),
+                            };
+                            (note.message.clone(), meta.map(SharedString::from))
+                        })
+                        .collect();
                 if notes.is_empty() {
                     return None;
                 }
@@ -262,8 +267,8 @@ impl DetailsPanel {
             .collect();
         let total: usize = groups.iter().map(|(_, notes)| notes.len()).sum();
         let several = picked.len() > 1;
-        let open = self.notes_open;
 
+        let open = self.notes_open;
         v_flex()
             .size_full()
             .min_h_0()
@@ -271,25 +276,31 @@ impl DetailsPanel {
             .border_color(cx.theme().border)
             .child(
                 h_flex()
-                    .id("details-notes-header")
                     .flex_none()
-                    .h(px(28.))
+                    .h(px(NOTES_HEADER_H))
                     .items_center()
                     .gap_1p5()
-                    .px_3()
-                    .cursor_pointer()
-                    .hover(|header| header.bg(cx.theme().accent))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.notes_open = !this.notes_open;
-                        cx.notify();
-                    }))
+                    .px_2()
+                    .py_1()
+                    // Opaque: the notes scroll under this, and a transparent strip let them read
+                    // through the heading.
+                    .bg(cx.theme().background)
                     .child(
-                        Icon::new(match open {
-                            true => IconName::ChevronDown,
-                            false => IconName::ChevronRight,
-                        })
-                        .xsmall()
-                        .text_color(cx.theme().muted_foreground),
+                        Button::new("details-notes-toggle")
+                            .icon(match open {
+                                true => IconName::ChevronDown,
+                                false => IconName::ChevronRight,
+                            })
+                            .ghost()
+                            .xsmall()
+                            .tooltip(match open {
+                                true => "Collapse notes",
+                                false => "Expand notes",
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.notes_open = !this.notes_open;
+                                cx.notify();
+                            })),
                     )
                     .child(div().text_xs().font_semibold().child("Notes"))
                     .child(
@@ -302,14 +313,17 @@ impl DetailsPanel {
                             }),
                     ),
             )
-            .when(open, |panel| {
-                panel.child(
+            .when(open, |section| {
+                let crop = cx.try_global::<BottomDockCrop>().map_or(px(0.), |c| c.0);
+                section.child(
                     div()
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scrollbar()
                         .px_3()
-                        .pb_2()
+                        // Same crop compensation the field list makes: the closed bottom dock's
+                        // strip covers this panel's last 29px, which is where the newest note sits.
+                        .pb(px(8.) + crop)
                         .child(
                             v_flex()
                                 .gap_2()
@@ -595,6 +609,7 @@ fn step(
     id: &'static str,
     left: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
 ) -> AnyElement {
     div()
         .absolute()
@@ -607,18 +622,27 @@ fn step(
         .flex()
         .items_center()
         .child(
-            Button::new(id)
-                .icon(match left {
-                    true => IconName::ChevronLeft,
-                    false => IconName::ChevronRight,
-                })
-                .ghost()
-                .small()
-                .tooltip(match left {
-                    true => "Previous selected item",
-                    false => "Next selected item",
-                })
-                .on_click(on_click),
+            // Opaque chip under the chevron, like the caption and the action buttons: a ghost
+            // button alone is a thin glyph over whatever the photo happens to be, and it vanished
+            // against both a dark scan and a blown-out one.
+            div()
+                .rounded(cx.theme().radius)
+                .bg(cx.theme().background)
+                .shadow_sm()
+                .child(
+                    Button::new(id)
+                        .icon(match left {
+                            true => IconName::ChevronLeft,
+                            false => IconName::ChevronRight,
+                        })
+                        .ghost()
+                        .small()
+                        .tooltip(match left {
+                            true => "Previous selected item",
+                            false => "Next selected item",
+                        })
+                        .on_click(on_click),
+                ),
         )
         .into_any_element()
 }
@@ -719,6 +743,20 @@ impl Render for DetailsPanel {
         // Built before the field rows below, which borrow `cx` for as long as they stay a lazy
         // iterator — this needs `&mut cx` and cannot wait for them.
         let notes = (gallery && count > 0).then(|| self.notes_panel(&picked, cx));
+        // Collapsing pins the panel's size range to its header instead of taking it out of the
+        // split. Removing it re-syncs the group — every panel's size is rescaled to the container
+        // when the count changes — so the fields jumped on the way out and the notes came back at
+        // whatever height that rescale had left, not the one they were dragged to. Pinned, the
+        // stored size is never touched, and reopening restores it exactly.
+        //
+        // The floor includes the crop because the header sits at the top of the panel: a closed
+        // bottom dock covers the side docks' last 29px, and without the allowance the whole
+        // collapsed bar lands inside that band.
+        let collapsed_h = NOTES_HEADER_H + f32::from(crop);
+        let notes_range = match self.notes_open {
+            true => px(80.)..px(320.),
+            false => px(collapsed_h)..px(collapsed_h),
+        };
 
         // Hand-built attribute list, not `DescriptionList`/`DataTable`: the fields are fixed pairs,
         // and it reads as a list rather than a second grid — alternating rows carry the structure,
@@ -831,7 +869,10 @@ impl Render for DetailsPanel {
             .size_full()
             .key_context(DETAILS_META.name)
             .track_focus(&self.focus_handle)
-            // The editor propagates Escape rather than consuming it, so discard the edit here.
+            // The editor propagates Escape rather than consuming it, so discard the edit here. With
+            // no editor open the key isn't this action at all — the panel's own `escape` binding
+            // makes it `table::Deselect`, which is what replaces the Clear button the bundle used
+            // to carry.
             .on_action(cx.listener(|this, _: &Escape, window, cx| {
                 if this.editing.take().is_some() {
                     this.focus_handle.focus(window, cx);
@@ -839,217 +880,217 @@ impl Render for DetailsPanel {
                 }
             }))
             .child(
-                v_resizable("details-split")
-                    .on_resize(|state, _, cx| {
-                        if cx.has_global::<settings::project::CurrentProject>()
-                            && let Some(height) = state.read(cx).sizes().first().copied()
-                        {
-                            settings::project::CurrentProject::set_text(
-                                IMAGE_PANE_HEIGHT_KEY,
-                                format!("{}", f32::from(height)).into(),
-                                cx,
-                            );
-                        }
-                    })
-                    // Dropped entirely in the gallery: the cards are already showing this photo,
-                    // so the pane is just less room for the fields. It comes back with the grid.
-                    .when(!gallery, |split| {
-                        split.child(
-                            resizable_panel()
-                                .size(px(image_height))
-                                .size_range(px(80.)..px(600.))
-                                .p_3()
-                                // One item is a plain frame. Several are a stack of offset cards
-                                // with the front one live: the bundle keeps a slot per item —
-                                // including an item with no file, which shows its placeholder
-                                // rather than being skipped — so stepping through is a walk over
-                                // the selection, not over the subset that happens to have photos.
-                                .map(|pane| match count > 1 {
-                                    false => pane.child(render_image_frame(
-                                        image_path,
-                                        self.caption.clone(),
-                                        transport,
-                                        cx,
-                                    )),
-                                    true => pane.child(
-                                        div()
-                                            .id("details-stack")
-                                            .relative()
-                                            .size_full()
-                                            .on_hover(cx.listener(|this, over: &bool, _, cx| {
-                                                this.stack_hover = *over;
-                                                cx.notify();
-                                            }))
-                                            .child(
-                                                div()
-                                                    .absolute()
-                                                    .left(px(14.))
-                                                    .right_0()
-                                                    .top(px(10.))
-                                                    .bottom_0()
-                                                    .rounded(cx.theme().radius)
-                                                    .border_1()
-                                                    .border_color(cx.theme().border)
-                                                    .bg(cx.theme().muted),
-                                            )
-                                            .child(
-                                                div()
-                                                    .absolute()
-                                                    .left(px(7.))
-                                                    .right(px(7.))
-                                                    .top(px(5.))
-                                                    .bottom(px(5.))
-                                                    .rounded(cx.theme().radius)
-                                                    .border_1()
-                                                    .border_color(cx.theme().border)
-                                                    .bg(cx.theme().background),
-                                            )
-                                            .child(
-                                                div()
-                                                    .absolute()
-                                                    .left_0()
-                                                    .right(px(14.))
-                                                    .top_0()
-                                                    .bottom(px(10.))
-                                                    .child(render_image_frame(
-                                                        image_path,
-                                                        self.caption.clone(),
-                                                        transport,
-                                                        cx,
-                                                    ))
-                                                    .when(self.stack_hover, |front| {
-                                                        front
-                                                            .child(step(
-                                                                "details-stack-prev",
-                                                                true,
-                                                                cx.listener(|this, _, _, cx| {
-                                                                    this.step_stack(false, cx)
-                                                                }),
-                                                            ))
-                                                            .child(step(
-                                                                "details-stack-next",
-                                                                false,
-                                                                cx.listener(|this, _, _, cx| {
-                                                                    this.step_stack(true, cx)
-                                                                }),
-                                                            ))
-                                                    })
-                                                    .child(
-                                                        div()
-                                                            .absolute()
-                                                            .bottom_0()
-                                                            .right_0()
-                                                            .px_1()
-                                                            .rounded(cx.theme().radius)
-                                                            .bg(cx.theme().background.opacity(0.7))
-                                                            .text_xs()
-                                                            .text_color(cx.theme().muted_foreground)
-                                                            .child(format!(
-                                                                "{} of {count}",
-                                                                self.stack.min(count - 1) + 1
-                                                            )),
-                                                    ),
-                                            ),
-                                    ),
-                                }),
-                        )
-                    })
-                    .child(
-                        // `pr_2` on the panel insets the scrollbar from the resize edge so dragging it doesn't catch.
-                        resizable_panel().pr_2().child(
-                            // This wrapper does not scroll, and that is the whole point: it is the
-                            // rect the floating editor grows within and is clamped to, so a long
-                            // value wraps inside the visible list rather than over the preview or
-                            // the grid. `overflow_y_scrollbar` makes the div it is called on the
-                            // scrolled *content* (auto height, sliding under the viewport), so
-                            // measuring there would hand the editor a rect taller than the panel.
-                            // Same arrangement the grid uses for its cell editor.
-                            div()
-                                .size_full()
-                                .min_h_0()
-                                .relative()
-                                .child({
-                                    let viewport = self.viewport.clone();
-                                    canvas(
-                                        move |bounds, _, _| viewport.set(bounds),
-                                        |_, _, _, _| {},
-                                    )
-                                    .absolute()
-                                    .size_full()
-                                })
-                                // Says how many items the fields below speak for, and warns that
-                                // typing into one writes down the whole bundle — before the edit,
-                                // not after it.
-                                .when(count > 1, |list| {
-                                    list.child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .justify_between()
-                                            .pb_1p5()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(format!("{count} items · shared fields"))
-                                            .child("edits apply to all"),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .size_full()
-                                        // `min_h_0` overrides flex `min-height: auto` so this scrolls instead of growing past the panel.
-                                        .min_h_0()
-                                        .overflow_y_scrollbar()
-                                        .px_3()
-                                        // Clear of the resize handle above, so the first field
-                                        // doesn't sit flush against it.
-                                        .pt_2()
-                                        // Pad by the bottom-strip crop (29px closed / 0 open) so it doesn't eat the last field row.
-                                        .pb(px(12.) + crop)
-                                        .child(
+                div().size_full().min_h_0().child(
+                    v_resizable("details-split")
+                        .on_resize(|state, _, cx| {
+                            if cx.has_global::<settings::project::CurrentProject>()
+                                && let Some(height) = state.read(cx).sizes().first().copied()
+                            {
+                                settings::project::CurrentProject::set_text(
+                                    IMAGE_PANE_HEIGHT_KEY,
+                                    format!("{}", f32::from(height)).into(),
+                                    cx,
+                                );
+                            }
+                        })
+                        // Dropped entirely in the gallery: the cards are already showing this photo,
+                        // so the pane is just less room for the fields. It comes back with the grid.
+                        .when(!gallery, |split| {
+                            split.child(
+                                resizable_panel()
+                                    .size(px(image_height))
+                                    .size_range(px(80.)..px(600.))
+                                    .p_3()
+                                    // One item is a plain frame. Several are a stack of offset cards
+                                    // with the front one live: the bundle keeps a slot per item —
+                                    // including an item with no file, which shows its placeholder
+                                    // rather than being skipped — so stepping through is a walk over
+                                    // the selection, not over the subset that happens to have photos.
+                                    .map(|pane| match count > 1 {
+                                        false => pane.child(render_image_frame(
+                                            image_path,
+                                            self.caption.clone(),
+                                            transport,
+                                            cx,
+                                        )),
+                                        true => pane.child(
                                             div()
-                                                .rounded(cx.theme().radius)
-                                                .overflow_hidden()
-                                                .children(rows),
+                                                .id("details-stack")
+                                                .relative()
+                                                .size_full()
+                                                .on_hover(cx.listener(
+                                                    |this, over: &bool, _, cx| {
+                                                        this.stack_hover = *over;
+                                                        cx.notify();
+                                                    },
+                                                ))
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .left(px(14.))
+                                                        .right_0()
+                                                        .top(px(10.))
+                                                        .bottom_0()
+                                                        .rounded(cx.theme().radius)
+                                                        .border_1()
+                                                        .border_color(cx.theme().border)
+                                                        .bg(cx.theme().muted),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .left(px(7.))
+                                                        .right(px(7.))
+                                                        .top(px(5.))
+                                                        .bottom(px(5.))
+                                                        .rounded(cx.theme().radius)
+                                                        .border_1()
+                                                        .border_color(cx.theme().border)
+                                                        .bg(cx.theme().background),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .left_0()
+                                                        .right(px(14.))
+                                                        .top_0()
+                                                        .bottom(px(10.))
+                                                        .child(render_image_frame(
+                                                            image_path,
+                                                            self.caption.clone(),
+                                                            transport,
+                                                            cx,
+                                                        ))
+                                                        .when(self.stack_hover, |front| {
+                                                            front
+                                                                .child(step(
+                                                                    "details-stack-prev",
+                                                                    true,
+                                                                    cx.listener(
+                                                                        |this, _, _, cx| {
+                                                                            this.step_stack(
+                                                                                false, cx,
+                                                                            )
+                                                                        },
+                                                                    ),
+                                                                    cx,
+                                                                ))
+                                                                .child(step(
+                                                                    "details-stack-next",
+                                                                    false,
+                                                                    cx.listener(
+                                                                        |this, _, _, cx| {
+                                                                            this.step_stack(
+                                                                                true, cx,
+                                                                            )
+                                                                        },
+                                                                    ),
+                                                                    cx,
+                                                                ))
+                                                        })
+                                                        .child(
+                                                            div()
+                                                                .absolute()
+                                                                .bottom_1()
+                                                                .right_1()
+                                                                .px_1p5()
+                                                                .py_0p5()
+                                                                .rounded(cx.theme().radius)
+                                                                .bg(cx.theme().background)
+                                                                .text_xs()
+                                                                .text_color(cx.theme().foreground)
+                                                                .child(format!(
+                                                                    "{} of {count}",
+                                                                    self.stack.min(count - 1) + 1
+                                                                )),
+                                                        ),
+                                                ),
                                         ),
-                                )
-                                .when(count > 1, |list| {
-                                    list.child(
+                                    }),
+                            )
+                        })
+                        .child(
+                            // `pr_2` on the panel insets the scrollbar from the resize edge so dragging it doesn't catch.
+                            resizable_panel().pr_2().child(
+                                // This wrapper does not scroll, and that is the whole point: it is the
+                                // rect the floating editor grows within and is clamped to, so a long
+                                // value wraps inside the visible list rather than over the preview or
+                                // the grid. `overflow_y_scrollbar` makes the div it is called on the
+                                // scrolled *content* (auto height, sliding under the viewport), so
+                                // measuring there would hand the editor a rect taller than the panel.
+                                // Same arrangement the grid uses for its cell editor.
+                                // A flex column, not a plain block: the bundle heading below is a
+                                // sibling of the scrolling list, and with `size_full` on both the list
+                                // ran the heading's height past the bottom of the panel and cut its
+                                // last field row in half.
+                                v_flex()
+                                    .size_full()
+                                    .min_h_0()
+                                    .relative()
+                                    .child({
+                                        let viewport = self.viewport.clone();
+                                        canvas(
+                                            move |bounds, _, _| viewport.set(bounds),
+                                            |_, _, _, _| {},
+                                        )
+                                        .absolute()
+                                        .size_full()
+                                    })
+                                    // Says how many items the fields below speak for, and warns that
+                                    // typing into one writes down the whole bundle — before the edit,
+                                    // not after it.
+                                    .when(count > 1, |list| {
+                                        list.child(
+                                            div()
+                                                .flex_none()
+                                                .flex()
+                                                .items_center()
+                                                .justify_between()
+                                                .px_3()
+                                                .pt_2()
+                                                .pb_1p5()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(format!("{count} items · shared fields"))
+                                                .child("edits apply to all"),
+                                        )
+                                    })
+                                    .child(
                                         div()
-                                            .flex()
-                                            .gap_1p5()
+                                            .flex_1()
+                                            .w_full()
+                                            // `min_h_0` overrides flex `min-height: auto` so this scrolls instead of growing past the panel.
+                                            .min_h_0()
+                                            .overflow_y_scrollbar()
+                                            .px_3()
+                                            // Clear of the resize handle above, so the first field
+                                            // doesn't sit flush against it.
                                             .pt_2()
+                                            // Pad by the bottom-strip crop (29px closed / 0 open) so it doesn't eat the last field row.
+                                            .pb(px(12.) + crop)
                                             .child(
-                                                Button::new("details-copy-rows")
-                                                    .label(format!("Copy {count} rows"))
-                                                    .small()
-                                                    .flex_1()
-                                                    .on_click(|_, _, cx| table::copy_selection(cx)),
-                                            )
-                                            .child(
-                                                Button::new("details-clear-selection")
-                                                    .label("Clear")
-                                                    .ghost()
-                                                    .small()
-                                                    .on_click(|_, _, cx| {
-                                                        table::clear_selection(cx)
-                                                    }),
+                                                div()
+                                                    .rounded(cx.theme().radius)
+                                                    .overflow_hidden()
+                                                    .children(rows),
                                             ),
                                     )
-                                })
-                                .children(self.field_editor(window, cx)),
-                        ),
-                    )
-                    // Last, along the bottom: the fields are what the panel is for, and a note is
-                    // commentary on them. Reading order puts the thing before what is said about
-                    // it, and it keeps the fields anchored under the photo as the notes grow.
-                    .when_some(notes, |split, notes| {
-                        split.child(
-                            resizable_panel()
-                                .size(px(180.))
-                                .size_range(px(28.)..px(320.))
-                                .child(notes),
+                                    .children(self.field_editor(window, cx)),
+                            ),
                         )
-                    }),
+                        // Last, along the bottom: the fields are what the panel is for, and a note is
+                        // commentary on them. Reading order puts the thing before what is said about
+                        // it, and it keeps the fields anchored under the photo as the notes grow.
+                        //
+                        .when_some(notes, |split, notes| {
+                            split.child(
+                                resizable_panel()
+                                    .size(px(180.))
+                                    .size_range(notes_range)
+                                    .child(notes),
+                            )
+                        }),
+                ),
             )
             .into_any_element()
     }

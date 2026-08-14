@@ -54,6 +54,7 @@ actions!(
         Copy,
         Paste,
         Clear,
+        Deselect,
         EditCell,
         InsertNote,
         UnfreezeColumns,
