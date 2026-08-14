@@ -9,29 +9,35 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{ActiveTheme, menu::ContextMenuExt as _, table::TableState};
+use gpui_component::{
+    ActiveTheme, Icon, IconName, Sizable as _, menu::ContextMenuExt as _, table::TableState,
+};
 use preview::{can_preview, thumb};
 use table::QrateTableDelegate;
 
-/// Card geometry. The width is the slider's business — wide enough to tell two scans of the same
-/// document apart at the top of its range, small enough at the bottom that a whole box of prints
-/// is on screen at once. Height trails the width by the caption line.
-pub(super) const CARD_MIN: f32 = 110.;
-pub(super) const CARD_MAX: f32 = 230.;
-pub(super) const CARD_DEFAULT: f32 = 168.;
-const CAPTION_H: f32 = 16.;
+/// Card geometry. The slider sets how many cards go in a row, not how wide one is: the row always
+/// spans the view, so cards divide whatever width the panel has between them and there is no
+/// leftover gutter to make the grid look off-centre. Height follows the width — a square frame
+/// plus the caption line under it.
+///
+/// Two per row is as coarse as it is worth going; past twelve a card is smaller than the caption
+/// under it.
+pub(super) const COLS_MIN: f32 = 2.;
+pub(super) const COLS_MAX: f32 = 12.;
+pub(super) const COLS_DEFAULT: f32 = 5.;
 const GAP: f32 = 8.;
+const PAD: f32 = 8.;
 
-/// Project-scoped thumbnail size, in pixels.
-pub(super) const THUMB_SIZE_KEY: &str = "gallery_thumb_size";
+/// Project-scoped cards per row.
+pub(super) const COLUMNS_KEY: &str = "gallery_columns";
 
-/// The card width in force, clamped to the slider's range so a hand-edited setting can't produce a
-/// wall of one-pixel cards or a single card per screen.
-pub(super) fn card_width(cx: &App) -> f32 {
-    settings::effective_text(THUMB_SIZE_KEY, cx)
+/// Cards per row, clamped to the slider's range so a hand-edited setting can't produce a wall of
+/// one-pixel cards or a division by zero.
+pub(super) fn columns(cx: &App) -> usize {
+    settings::effective_text(COLUMNS_KEY, cx)
         .parse::<f32>()
-        .unwrap_or(CARD_DEFAULT)
-        .clamp(CARD_MIN, CARD_MAX)
+        .unwrap_or(COLS_DEFAULT)
+        .clamp(COLS_MIN, COLS_MAX) as usize
 }
 
 /// The gallery body. `width` is the measured body width, for the column count.
@@ -48,31 +54,12 @@ pub(super) fn card_width(cx: &App) -> f32 {
 pub(super) fn render(
     state: Option<Entity<TableState<QrateTableDelegate>>>,
     width: Pixels,
-    notes_only: bool,
+    focus: &FocusHandle,
     cx: &mut App,
 ) -> AnyElement {
-    // Rows the gallery draws: everything visible, or only what has been annotated. Narrowed here
-    // rather than through the column filters — "has a note" is not a cell value, and pushing it
-    // into `visible_rows` would make the grid and the status bar disagree with the table.
-    let rows: Vec<usize> = state.as_ref().map_or_else(Vec::new, |state| {
-        let delegate = state.read(cx).delegate();
-        delegate
-            .visible()
-            .iter()
-            .enumerate()
-            .filter(|(_, source)| {
-                !notes_only
-                    || diagnostics::Diagnostics::note_count(
-                        diagnostics::DATASET_MAIN,
-                        Some(**source),
-                        None,
-                        cx,
-                    ) > 0
-            })
-            .map(|(view, _)| view)
-            .collect()
-    });
-    let count = rows.len();
+    let count = state
+        .as_ref()
+        .map_or(0, |state| state.read(cx).delegate().visible().len());
     let (Some(state), 1..) = (state, count) else {
         return div()
             .size_full()
@@ -85,8 +72,11 @@ pub(super) fn render(
             .into_any_element();
     };
 
-    let card_w = card_width(cx);
-    let cols = (f32::from(width) / (card_w + GAP)).floor().max(1.) as usize;
+    // The row is the panel minus its padding, split evenly with a gap between each pair. Cards get
+    // the width rather than choosing it, so the grid meets both edges at any panel size.
+    let cols = columns(cx);
+    let card_w = ((f32::from(width) - 2. * PAD - GAP * (cols - 1) as f32) / cols as f32).max(1.);
+    let focus = focus.clone();
     uniform_list(
         "gallery",
         count.div_ceil(cols),
@@ -98,8 +88,8 @@ pub(super) fn render(
                         .gap(px(GAP))
                         .pb(px(GAP))
                         .children((0..cols).filter_map(|offset| {
-                            let slot = band * cols + offset;
-                            rows.get(slot).map(|&view| card(&state, view, card_w, cx))
+                            let view = band * cols + offset;
+                            (view < count).then(|| card(&state, view, card_w, &focus, cx))
                         }))
                 })
                 .collect()
@@ -116,6 +106,7 @@ fn card(
     state: &Entity<TableState<QrateTableDelegate>>,
     view: usize,
     card_w: f32,
+    focus: &FocusHandle,
     cx: &mut App,
 ) -> AnyElement {
     let delegate = state.read(cx).delegate();
@@ -133,74 +124,74 @@ fn card(
     // A scan of a twelve-page ledger and a scan of one photograph look identical at thumbnail
     // size. `page_count` is cheap for everything that isn't a document and cached beyond that.
     let pages = path.as_deref().map_or(1, preview::page_count);
-    // What the item has been annotated with. The count only — the text lives in Details' Notes
-    // sub-panel, so the tile stays a picture rather than becoming a card of prose.
+    // What the item has been annotated with, wherever on the row it was filed. The count only —
+    // the text lives in Details' Notes sub-panel, so the tile stays a picture rather than becoming
+    // a card of prose.
     let notes =
-        diagnostics::Diagnostics::note_count(diagnostics::DATASET_MAIN, Some(source), None, cx);
+        diagnostics::Diagnostics::notes_in_row(diagnostics::DATASET_MAIN, source, cx).count();
 
     // Only a decodable image is worth opening; a placeholder card has nothing to zoom into, so
     // clicking one selects the row and leaves the grid up.
     let viewable = path.clone().filter(|path| can_preview(path));
 
+    // A count over the picture, dark enough to read against a blown-out scan and a black one
+    // alike — so the corner markers are legible whatever the thumbnail underneath happens to be.
+    // Icon plus bare number: at 110px the word "pages" is most of the tile's width.
+    let radius = cx.theme().radius;
+    let badge = move |icon: IconName, count: usize| {
+        div()
+            .absolute()
+            .right_1()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_1()
+            .rounded(radius)
+            .bg(black().opacity(0.6))
+            .text_xs()
+            .text_color(white())
+            .child(Icon::new(icon).xsmall().text_color(white()))
+            .child(count.to_string())
+    };
+
     let state = state.clone();
     div()
         .id(("gallery-card", view))
         .w(px(card_w))
-        .h(px(card_w + CAPTION_H))
         .flex()
         .flex_col()
         .gap_1()
         .p_1()
         .cursor_pointer()
         .rounded(cx.theme().radius)
-        // The same pair the grid paints a selected row with, so one item picked in the gallery and
-        // the same item picked in the table are recognisably the same state.
-        .border_1()
-        .border_color(match selected {
-            true => cx.theme().table_active_border,
-            false => cx.theme().border,
-        })
+        // The halo behind a ringed frame: the same fill the grid paints a selected row with, so one
+        // item picked in the gallery and the same item picked in the table read as one state.
         .when(selected, |card| card.bg(cx.theme().table_active))
-        .when(!selected, |card| {
-            card.hover(|card| card.bg(cx.theme().accent))
-        })
         .child(
+            // Square, so a wall of cards is a grid rather than a ragged edge — the thumbnail is
+            // letterboxed inside it and keeps its own proportions.
             div()
                 .relative()
-                .flex_1()
-                .min_h_0()
+                .h(px(card_w - 8.))
                 .overflow_hidden()
+                .rounded(cx.theme().radius)
+                .bg(cx.theme().muted)
+                .border_1()
+                .border_color(cx.theme().border)
+                .when(selected, |frame| {
+                    frame
+                        .border_2()
+                        .border_color(cx.theme().table_active_border)
+                })
+                .when(!selected, |frame| {
+                    frame.hover(|frame| frame.border_color(cx.theme().ring))
+                })
                 .child(thumb(path.as_deref(), preview::CARD, cx))
                 .when(pages > 1, |frame| {
-                    frame.child(
-                        div()
-                            .absolute()
-                            .top_1()
-                            .right_1()
-                            .px_1()
-                            .rounded(cx.theme().radius)
-                            .bg(cx.theme().background.opacity(0.75))
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("{pages} pages")),
-                    )
+                    frame.child(badge(IconName::Copy, pages).top_1())
                 })
                 .when(notes > 0, |frame| {
-                    frame.child(
-                        div()
-                            .absolute()
-                            .bottom_1()
-                            .right_1()
-                            .px_1()
-                            .rounded(cx.theme().radius)
-                            .bg(cx.theme().background.opacity(0.75))
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(match notes {
-                                1 => "1 note".to_string(),
-                                n => format!("{n} notes"),
-                            }),
-                    )
+                    frame.child(badge(IconName::Menu, notes).bottom_1())
                 }),
         )
         .child(
@@ -209,7 +200,10 @@ fn card(
                 .w_full()
                 .text_xs()
                 .truncate()
-                .text_color(cx.theme().muted_foreground)
+                .text_color(match selected {
+                    true => cx.theme().foreground,
+                    false => cx.theme().muted_foreground,
+                })
                 .child(caption),
         )
         // Single click selects and nothing more, so the grid stays browsable: `TablePanel`'s
@@ -231,9 +225,12 @@ fn card(
                 });
             }
         })
-        .on_mouse_down(
-            MouseButton::Left,
-            move |ev: &MouseDownEvent, _window, cx| {
+        .on_mouse_down(MouseButton::Left, {
+            let focus = focus.clone();
+            move |ev: &MouseDownEvent, window, cx| {
+                // Picking a card puts focus on the centre panel, which is what makes Escape mean
+                // "drop this selection" — the cards themselves take no focus of their own.
+                window.focus(&focus, cx);
                 // The same three gestures the grid answers to, so a selection built in one view is
                 // built the same way in the other.
                 match (ev.modifiers.secondary(), ev.modifiers.shift) {
@@ -260,8 +257,8 @@ fn card(
                 if let Some(path) = viewable.clone() {
                     crate::viewer::open_viewer(path, crate::ViewerScope::Centre, cx);
                 }
-            },
-        )
+            }
+        })
         // Last: `context_menu` wraps the element rather than extending it, so anything chained
         // after this would land on the wrapper instead of the card.
         .context_menu(move |menu, window, cx| {

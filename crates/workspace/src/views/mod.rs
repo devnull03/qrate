@@ -11,10 +11,11 @@
 
 mod gallery;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::table::TableState;
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _,
     button::Button,
     dock::{DockArea, Panel, PanelControl, PanelEvent},
     h_flex,
@@ -28,6 +29,10 @@ use crate::ViewerScope;
 
 /// Settings key for the active view, in either scope.
 pub const VIEW_MODE_KEY: &str = "view_mode";
+
+/// Key context of the centre panel, for the keys that act on whatever view is up — Escape to drop
+/// the selection. The grid has its own deeper context, so a key bound to both means the grid's.
+pub const VIEWS_CONTEXT: &str = "ViewsPanel";
 
 #[derive(Copy, Clone, Default, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub enum ViewMode {
@@ -126,15 +131,11 @@ pub struct ViewsPanel {
     _changed_sub: Option<Subscription>,
     /// Mounts and unmounts the centre-scoped photo overlay as cards are clicked and dismissed.
     _viewer_sub: Subscription,
-    /// Thumbnail size for the gallery. Owned here rather than in `gallery::render`, which is a
-    /// free function with no state of its own to keep between frames.
+    /// Cards per row in the gallery. Owned here rather than in `gallery::render`, which is a free
+    /// function with no state of its own to keep between frames.
     thumb: Entity<SliderState>,
-    /// Persists the size as it is dragged, and repaints the cards to match.
+    /// Persists the count as it is dragged, and repaints the cards to match.
     _thumb_sub: Subscription,
-    /// Whether the gallery is narrowed to items carrying a note. Deliberately not persisted: it is
-    /// a lens you pick up to do one pass over a collection, and finding it still on next week
-    /// would read as half the archive having vanished.
-    notes_only: bool,
 }
 
 impl ViewsPanel {
@@ -144,24 +145,29 @@ impl ViewsPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let table = cx.new(|cx| TablePanel::new(window, cx));
-        let width = gallery::card_width(cx);
+        let cols = gallery::columns(cx) as f32;
         // `max` before `min`: each setter re-clamps the current value against the *other* bound as
-        // it stands, and the default max is 100 — so raising the floor to 110 first panics.
+        // it stands, and the default min is 0 — so lowering the ceiling first would trap the value.
         let thumb = cx.new(|_| {
             SliderState::new()
-                .max(gallery::CARD_MAX)
-                .min(gallery::CARD_MIN)
-                .step(10.)
-                .default_value(width)
+                .max(gallery::COLS_MAX)
+                .min(gallery::COLS_MIN)
+                .step(1.)
+                .default_value(cols)
         });
         let _thumb_sub = cx.subscribe(&thumb, |_this, _slider, event: &SliderEvent, cx| {
             let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
             let text = SharedString::from(format!("{}", value.start().round()));
             if cx.has_global::<settings::project::CurrentProject>() {
-                settings::project::CurrentProject::set_text(gallery::THUMB_SIZE_KEY, text, cx);
+                settings::project::CurrentProject::set_text(gallery::COLUMNS_KEY, text, cx);
             } else {
-                settings::AppSettings::set_text(gallery::THUMB_SIZE_KEY, text, cx);
+                settings::AppSettings::set_text(gallery::COLUMNS_KEY, text, cx);
             }
+            // The slider is drawn in the panel *title*, which the parent `TabPanel` owns and which
+            // does not observe this panel — `cx.notify()` alone would repaint the cards while the
+            // thumb stayed put under the pointer. Dragging it is one deliberate gesture, so a full
+            // redraw is the cheap honest fix, the same trade `switch` makes.
+            cx.refresh_windows();
             cx.notify();
         });
         let mut this = Self {
@@ -181,7 +187,6 @@ impl ViewsPanel {
             _viewer_sub: cx.observe_global::<crate::viewer::ActiveViewer>(|_, cx| cx.notify()),
             thumb,
             _thumb_sub,
-            notes_only: false,
         };
         this.bind(cx);
         // Publish before the first render so the View menu works from the moment the window is up.
@@ -296,8 +301,31 @@ impl Panel for ViewsPanel {
     /// Wrapped in an `h_flex`, which is what keeps the switcher the width of its own tabs. The
     /// title cell is a plain `div` and gpui's default display is *block*, so a bare `TabBar` fills
     /// it — painting the segmented background all the way across to the Find icon.
+    ///
+    /// The gallery's density control rides here rather than in a strip of its own above the cards:
+    /// it belongs to the same row as everything else that says what the centre is showing, and it
+    /// costs the cards no height. `toolbar_buttons` can't hold it — the library restricts that side
+    /// to `Button`s — so it is pushed right by a spacer instead, landing beside the ⋯ menu.
     fn title(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex().child(self.switcher(cx))
+        h_flex().w_full().gap_2().child(self.switcher(cx)).when(
+            self.view == ViewMode::Gallery,
+            |title| {
+                title
+                    .child(div().flex_1())
+                    .child(
+                        Icon::new(IconName::LayoutDashboard)
+                            .small()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(div().w(px(96.)).child(Slider::new(&self.thumb)))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("{} per row", gallery::columns(cx))),
+                    )
+            },
+        )
     }
 
     /// Centre panel: not closable, so the main view always keeps its body.
@@ -337,86 +365,50 @@ impl Panel for ViewsPanel {
 impl Render for ViewsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity().downgrade();
-        v_flex().size_full().track_focus(&self.focus_handle).child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .relative()
-                // The gallery needs to know how wide it is to pick a column count; nothing
-                // else measures this panel. Guarded so writing the width can't re-trigger
-                // itself into a repaint loop.
-                .child(
-                    canvas(
-                        move |bounds, _, cx| {
-                            let Some(this) = this.upgrade() else { return };
-                            this.update(cx, |this, cx| {
-                                if this.body_width != bounds.size.width {
-                                    this.body_width = bounds.size.width;
-                                    cx.notify();
-                                }
-                            });
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .size_full(),
-                )
-                // Every view draws the same table state. Erased to `AnyElement` because two
-                // chained-builder types meeting in one `match` overflows rustc's stack.
-                .child(match self.view {
-                    ViewMode::Table => self.table.clone().into_any_element(),
-                    // The size control rides above the cards rather than in `toolbar_buttons`,
-                    // which the library restricts to buttons — and it belongs to the gallery, so
-                    // it goes away with it.
-                    ViewMode::Gallery => v_flex()
-                        .size_full()
-                        .child(
-                            h_flex()
-                                .flex_none()
-                                .justify_end()
-                                .items_center()
-                                .gap_2()
-                                .px_2()
-                                .pt_1()
-                                .child(
-                                    Button::new("gallery-notes-only")
-                                        .label("Notes only")
-                                        .xsmall()
-                                        .selected(self.notes_only)
-                                        .tooltip("Show only items with notes")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.notes_only = !this.notes_only;
-                                            cx.notify();
-                                        })),
-                                )
-                                .child(div().flex_1())
-                                .child(
-                                    Icon::new(IconName::LayoutDashboard)
-                                        .small()
-                                        .text_color(cx.theme().muted_foreground),
-                                )
-                                .child(div().w(px(96.)).child(Slider::new(&self.thumb)))
-                                .child(
-                                    div()
-                                        .w(px(34.))
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(format!("{}px", gallery::card_width(cx).round())),
-                                ),
+        v_flex()
+            .size_full()
+            .key_context(VIEWS_CONTEXT)
+            .track_focus(&self.focus_handle)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    // The gallery needs to know how wide it is to pick a column count; nothing
+                    // else measures this panel. Guarded so writing the width can't re-trigger
+                    // itself into a repaint loop.
+                    .child(
+                        canvas(
+                            move |bounds, _, cx| {
+                                let Some(this) = this.upgrade() else { return };
+                                this.update(cx, |this, cx| {
+                                    if this.body_width != bounds.size.width {
+                                        this.body_width = bounds.size.width;
+                                        cx.notify();
+                                    }
+                                });
+                            },
+                            |_, _, _, _| {},
                         )
-                        .child(div().flex_1().min_h_0().child(gallery::render(
+                        .absolute()
+                        .size_full(),
+                    )
+                    // Every view draws the same table state. Erased to `AnyElement` because two
+                    // chained-builder types meeting in one `match` overflows rustc's stack.
+                    .child(match self.view {
+                        ViewMode::Table => self.table.clone().into_any_element(),
+                        ViewMode::Gallery => gallery::render(
                             self.state.as_ref().and_then(WeakEntity::upgrade),
                             self.body_width,
-                            self.notes_only,
+                            &self.focus_handle,
                             cx,
-                        )))
-                        .into_any_element(),
-                })
-                // The clicked card's photo, over the grid of thumbnails but under nothing
-                // else — the docked panels stay put, which is the whole point of scoping it
-                // here instead of over the workspace. Escape or the ✕ puts the cards back.
-                .children(crate::viewer::viewer_in(ViewerScope::Centre, cx)),
-        )
+                        ),
+                    })
+                    // The clicked card's photo, over the grid of thumbnails but under nothing
+                    // else — the docked panels stay put, which is the whole point of scoping it
+                    // here instead of over the workspace. Escape or the ✕ puts the cards back.
+                    .children(crate::viewer::viewer_in(ViewerScope::Centre, cx)),
+            )
     }
 }
 
