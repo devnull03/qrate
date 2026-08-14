@@ -27,15 +27,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # gpui_linux (wayland + x11), font-kit's fontconfig, and reqwest's
-      # default native-tls are the only things that need system libraries.
+      # gpui_linux (wayland + x11), font-kit's fontconfig, reqwest's default
+      # native-tls, and rodio's ALSA backend (`preview::playback`) are the only
+      # things that need system libraries.
       - name: Install Linux system libraries
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libssl-dev libfontconfig-dev libwayland-dev \
-            libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev
+            libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libasound2-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

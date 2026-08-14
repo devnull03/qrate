@@ -210,7 +210,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libssl-dev libfontconfig-dev libwayland-dev \
-            libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev
+            libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libasound2-dev
 
       - name: Build
         run: cargo build --release -p app
