@@ -35,6 +35,10 @@ pub struct DockToggleButton {
     open_icon: Option<SharedString>,
     /// Whether to show the live error/warning count beside the icon.
     count: bool,
+    /// What to say on hover. The action comes along so the tooltip can print its shortcut in the
+    /// running platform's own notation — the binding is declared in `app`, which this crate
+    /// cannot name.
+    hint: Option<(SharedString, Box<dyn Action>)>,
     _subs: Vec<Subscription>,
 }
 
@@ -56,8 +60,14 @@ impl DockToggleButton {
             icon,
             open_icon: Some(open_icon.into()),
             count: false,
+            hint: None,
             _subs: Vec::new(),
         }
+    }
+
+    pub fn hint(mut self, label: impl Into<SharedString>, action: Box<dyn Action>) -> Self {
+        self.hint = Some((label.into(), action));
+        self
     }
 
     /// The status bar's per-panel button, built from what the panel declared about itself.
@@ -83,6 +93,7 @@ impl DockToggleButton {
             icon: meta.icon.clone(),
             open_icon: None,
             count: meta.badge,
+            hint: None,
             _subs: subs,
         }
     }
@@ -158,11 +169,24 @@ impl Render for DockToggleButton {
                     severity_badge(Severity::Warning, IconName::TriangleAlert, warnings, cx),
                 ])
             })
-            .when_some(panel, |this, meta| {
-                this.tooltip(move |window, cx| {
-                    gpui_component::tooltip::Tooltip::new(meta.label).build(window, cx)
-                })
-            })
+            // A dock button carries its shortcut; a panel button has none to carry, so it is left
+            // with the panel's own name.
+            .when_some(
+                self.hint
+                    .as_ref()
+                    .map(|(label, action)| (label.clone(), Some(action.boxed_clone())))
+                    .or_else(|| panel.map(|meta| (meta.label.into(), None))),
+                |this, (label, action)| {
+                    this.tooltip(move |window, cx| {
+                        let tip = gpui_component::tooltip::Tooltip::new(label.clone());
+                        match &action {
+                            Some(action) => tip.action(action.as_ref(), None),
+                            None => tip,
+                        }
+                        .build(window, cx)
+                    })
+                },
+            )
             .on_click({
                 let dock = dock.clone();
                 move |_, window, cx| {

@@ -9,8 +9,9 @@ use std::path::PathBuf;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Path, SharedString, Styled as _, Window, canvas, deferred, div, point, px,
+    AnyElement, App, ClipboardItem, Context, Entity, Focusable as _, InteractiveElement as _,
+    IntoElement, ParentElement as _, Path, SharedString, Styled as _, Window, canvas, deferred,
+    div, point, px,
 };
 use gpui_component::input::Input;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
@@ -295,6 +296,11 @@ pub fn menu(
         return menu;
     };
 
+    // Resolve the items' key hints against the grid rather than the popup: the clipboard and
+    // editing keys are scoped to `GRID_CONTEXT`, and the open menu's own context doesn't contain
+    // it, so without this every hint comes back empty.
+    let menu = menu.action_context(table.focus_handle(cx));
+
     let (row, col) = match target {
         Target::Cell { row, col } => (Some(row), Some(col)),
         Target::Row(row) => (Some(row), None),
@@ -341,34 +347,51 @@ pub fn menu(
         Target::Cell { row, col } => {
             let (edit_table, filter_table) = (table.clone(), table.clone());
             let (copied, cut, value) = (cell_text.clone(), cell_text.clone(), cell_text);
+            // `.action(..)` is the key hint only — `confirm` prefers the click handler and never
+            // dispatches it — so these keep acting on the *clicked* cell while printing the
+            // shortcut that acts on the selection.
             let menu = menu
-                .item(PopupMenuItem::new("Copy").on_click(move |_, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(copied.to_string()))
-                }))
-                .item(PopupMenuItem::new("Cut").on_click(move |_, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(cut.to_string()));
-                    crate::write_cell(row, col, SharedString::default(), cx);
-                }))
                 .item(
-                    PopupMenuItem::new("Paste").on_click(move |_, _, cx| paste_onto(row, col, cx)),
+                    PopupMenuItem::new("Copy")
+                        .action(Box::new(crate::Copy))
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copied.to_string()))
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Cut")
+                        .action(Box::new(crate::Cut))
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(cut.to_string()));
+                            crate::write_cell(row, col, SharedString::default(), cx);
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Paste")
+                        .action(Box::new(crate::Paste))
+                        .on_click(move |_, _, cx| paste_onto(row, col, cx)),
                 )
                 .separator();
             let rows = target_rows(table.read(cx).delegate(), row);
             structural_items(menu, Some(&rows), Some(col))
                 .separator()
                 .item(
-                    PopupMenuItem::new("Clear contents").on_click(move |_, _, cx| {
-                        crate::write_cell(row, col, SharedString::default(), cx)
-                    }),
+                    PopupMenuItem::new("Clear contents")
+                        .action(Box::new(crate::Clear))
+                        .on_click(move |_, _, cx| {
+                            crate::write_cell(row, col, SharedString::default(), cx)
+                        }),
                 )
                 .separator()
                 .item(
-                    PopupMenuItem::new("Edit cell").on_click(move |_, window, cx| {
-                        edit_table.update(cx, |state, cx| {
-                            crate::editing::start(state.delegate_mut(), row, col, window, cx);
-                            cx.notify();
-                        });
-                    }),
+                    PopupMenuItem::new("Edit cell")
+                        .action(Box::new(crate::EditCell))
+                        .on_click(move |_, window, cx| {
+                            edit_table.update(cx, |state, cx| {
+                                crate::editing::start(state.delegate_mut(), row, col, window, cx);
+                                cx.notify();
+                            });
+                        }),
                 )
                 .item(
                     PopupMenuItem::new("Filter by this value").on_click(move |_, _, cx| {

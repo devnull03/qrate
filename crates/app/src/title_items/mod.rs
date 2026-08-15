@@ -5,6 +5,7 @@ use gpui_component::{
 };
 use plugin_api::{Bar, Side};
 
+use crate::actions::{ToggleBottomDock, ToggleLeftDock, ToggleRightDock};
 use crate::status_items::PluginBar;
 use window_wrapper::{BarRegistry, title_bar::TitleBarRegistry};
 use workspace::DockToggleButton;
@@ -25,12 +26,30 @@ pub fn build_title_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> Tit
     let plugins = cx.new(|cx| PluginBar::new(Bar::Title, Side::Right, cx));
     registry.items_mut().add_right(plugins);
 
-    for (id, placement) in [
-        ("title-panel-left", DockPlacement::Left),
-        ("title-panel-bottom", DockPlacement::Bottom),
-        ("title-panel-right", DockPlacement::Right),
+    // The label and action each button hovers with: the action is what makes the tooltip print
+    // Ctrl or ⌘ to match whoever is reading it, rather than a string that is wrong on one platform.
+    for (id, placement, label, action) in [
+        (
+            "title-panel-left",
+            DockPlacement::Left,
+            "Toggle Left Dock",
+            Box::new(ToggleLeftDock) as Box<dyn Action>,
+        ),
+        (
+            "title-panel-bottom",
+            DockPlacement::Bottom,
+            "Toggle Bottom Dock",
+            Box::new(ToggleBottomDock),
+        ),
+        (
+            "title-panel-right",
+            DockPlacement::Right,
+            "Toggle Right Dock",
+            Box::new(ToggleRightDock),
+        ),
     ] {
-        let btn = cx.new(|_| DockToggleButton::new(id, dock.clone(), placement));
+        let btn =
+            cx.new(|_| DockToggleButton::new(id, dock.clone(), placement).hint(label, action));
         registry.items_mut().add_right(btn);
     }
 
