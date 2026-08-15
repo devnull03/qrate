@@ -1,0 +1,82 @@
+---
+import Logo from './Logo.astro';
+import { REPO } from '../lib/releases.js';
+
+const { version = '' } = Astro.props;
+const b = import.meta.env.BASE_URL.replace(/\/$/, '');
+const gh = `https://github.com/${REPO}`;
+
+const columns = [
+  {
+    head: 'Product',
+    items: [
+      { label: 'Features', href: `${b}/#features` },
+      { label: 'Plugins', href: `${b}/#plugins` },
+      { label: 'Themes', href: `${gh}/tree/main/assets/themes` },
+    ],
+  },
+  {
+    head: 'Install',
+    items: [
+      { label: 'macOS', href: `${b}/get-started` },
+      { label: 'Windows', href: `${b}/get-started` },
+      { label: 'Linux', href: `${b}/get-started` },
+      { label: 'From source', href: `${b}/get-started#source` },
+    ],
+  },
+  {
+    head: 'Project',
+    items: [
+      { label: 'GitHub', href: gh },
+      { label: 'Issues', href: `${gh}/issues` },
+      { label: 'Changelog', href: `${b}/changelog` },
+      { label: 'Contact', href: 'mailto:qrate@dvnl.work' },
+    ],
+  },
+  {
+    head: 'Legal',
+    items: [
+      { label: 'AGPL-3.0', href: `${b}/license` },
+      { label: 'Notices', href: `${b}/license#notices` },
+      { label: 'Commercial', href: `${b}/license#commercial` },
+    ],
+  },
+];
+---
+
+<footer class="bg-ink text-paper">
+  <div
+    class="gut grid grid-cols-1 items-start gap-5 pb-[26px] pt-[26px] md:grid-cols-[1fr_auto] md:items-end md:gap-11 md:pt-10"
+  >
+    <div
+      class="flex items-center gap-3 text-[62px] font-bold leading-[0.8] tracking-[-0.05em] md:gap-5 md:text-[118px] md:leading-[0.78] md:tracking-[-0.055em]"
+    >
+      <Logo size={84} id="foot" class="size-[46px] md:size-[84px]" />
+      <span>qrate</span>
+    </div>
+    <div
+      class="grid grid-cols-2 gap-4 text-[12.5px] leading-[1.95] text-[rgba(247,244,238,.62)] md:grid-cols-[repeat(4,minmax(102px,auto))] md:gap-[30px]"
+    >
+      {
+        columns.map((c) => (
+          <div>
+            <div class="mb-2 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-paper">
+              {c.head}
+            </div>
+            {c.items.map((i) => (
+              <a href={i.href} class="block">
+                {i.label}
+              </a>
+            ))}
+          </div>
+        ))
+      }
+    </div>
+  </div>
+  <div
+    class="gut flex flex-col justify-between gap-0.5 border-t border-[rgba(247,244,238,.18)] pb-5 pt-[14px] font-mono text-[11px] leading-[1.7] text-[rgba(247,244,238,.42)] md:flex-row md:gap-4"
+  >
+    <span>© 2026 Arnav Mehta · AGPL-3.0</span>
+    <span>{version && `${version}, `}keep backups of important collections.</span>
+  </div>
+</footer>

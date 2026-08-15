@@ -1,0 +1,170 @@
+---
+import Base from '../layouts/Base.astro';
+import { getReleases, latest, platformOf, humanSize, REPO } from '../lib/releases.js';
+
+const releases = await getReleases();
+const rel = latest(releases);
+const assets = rel?.assets ?? [];
+
+const sums = assets.find((a) => /SHA256SUMS\.txt$/i.test(a.name));
+const downloads = assets
+  .map((a) => ({ ...a, os: platformOf(a.name) }))
+  .filter((a) => a.os);
+
+const toc = [
+  ['Install', 'install'],
+  ['Run from source', 'source'],
+  ['Optional preview tools', 'preview-tools'],
+  ['Starting flow', 'flow'],
+  ['Where project data lives', 'data'],
+];
+
+const flowDraft = [
+  { n: '01', slot: 'screenshot: launcher / new project' },
+  { n: '02', slot: 'screenshot: columns and types' },
+  { n: '03', slot: 'screenshot: linked files or problems panel' },
+];
+
+// min-w-0 stops a long asset filename from widening its grid column
+// (and with it the whole page) on narrow screens.
+const row =
+  'grid grid-cols-2 items-center border-b border-rule-soft font-mono text-[12.5px] md:grid-cols-[110px_1fr_92px_100px] [&>*]:min-w-0 [&>*]:break-words [&>*]:px-3.5 [&>*]:py-[9px]';
+const h2 = 'm-0 mb-2 scroll-mt-5 text-[19px] font-semibold tracking-[-0.02em]';
+const p = 'm-0 mb-3 max-w-[720px] text-[14px] leading-[1.7] text-body';
+const code = 'mb-[30px] overflow-x-auto bg-ink px-4 py-[13px] font-mono text-xs leading-[1.8] text-[rgba(247,244,238,.85)]';
+---
+
+<Base
+  title="qrate — Get started"
+  description="Install qrate on macOS, Windows or Linux, or run it from source."
+  current="get-started"
+  version={rel?.tag_name}
+>
+  <div class="grid grid-cols-1 border-b border-rule md:grid-cols-[214px_1fr]">
+    <aside class="border-b border-rule py-5 md:border-b-0 md:border-r md:py-[30px]">
+      <div
+        class="px-5 pb-2.5 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-faint"
+      >
+        Get started
+      </div>
+      {
+        toc.map(([label, id]) => (
+          <a href={`#${id}`} class="block px-5 py-2 text-[13px] leading-[1.1] text-nav">
+            {label}
+          </a>
+        ))
+      }
+    </aside>
+
+    <article class="gut min-w-0 py-[26px] md:px-10 md:pb-11 md:pt-[34px]">
+      <div class="mb-4 font-mono text-[11.5px] text-faint">Docs / Get started</div>
+      <h1 class="m-0 mb-2.5 text-[28px] font-semibold leading-[1.1] md:text-[34px]" id="install">
+        Install qrate
+      </h1>
+      <p class="m-0 mb-[26px] max-w-[720px] text-[14.5px] leading-[1.7] text-body">
+        {rel ? `Version ${rel.tag_name}.` : 'No published build yet.'} Download a build, or run from
+        source with the Rust stable toolchain.
+      </p>
+
+      {
+        downloads.length > 0 ? (
+          <div class="mb-[30px] border border-rule">
+            <div
+              class={`${row} border-b border-rule bg-[rgba(23,20,15,.05)] text-[10.5px] font-medium uppercase tracking-[0.06em] text-dim`}
+            >
+              <div>Platform</div>
+              <div>File</div>
+              <div>Size</div>
+              <div>Checksum</div>
+            </div>
+            {downloads.map((d) => (
+              <div class={row}>
+                <div class="text-ink">{d.os}</div>
+                <div class="text-accent">
+                  <a href={d.browser_download_url}>{d.name}</a>
+                </div>
+                <div class="text-dim">{humanSize(d.size)}</div>
+                <div class="text-dim">
+                  {sums ? <a href={sums.browser_download_url}>sha256</a> : 'sha256'}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div class="mb-[30px] border border-rule p-3.5 font-mono text-[12.5px] text-dim">
+            No published builds yet — see the{' '}
+            <a href={`https://github.com/${REPO}/releases`} class="text-accent">
+              Releases page
+            </a>
+            .
+          </div>
+        )
+      }
+
+      <h2 class={h2} id="source">Run from source</h2>
+      <p class={p}>
+        Install Rust with rustup, add the rustfmt and clippy components, then clone and run. The
+        first build downloads dependencies; later builds use the Cargo cache.
+      </p>
+      <div class={code}>
+        git clone https://github.com/{REPO}<br />cd qrate<br />cargo run
+      </div>
+
+      <h2 class={h2} id="preview-tools">Optional preview tools</h2>
+      <p class={p}>
+        Common image formats work without extra tools. PDF previews use PDFium, video frame previews
+        use ffmpeg. qrate links neither: PDFium is loaded dynamically and ffmpeg runs as a
+        subprocess, so a checkout without them still builds and launches — PDFs and videos just show
+        a type icon. qrate looks beside its executable first, then on your PATH.
+      </p>
+      <p class={p}>
+        The script fetches PDFium for your platform, and ffmpeg on Windows. On macOS and Linux
+        ffmpeg is left to your package manager.
+      </p>
+      <div class={code}>./scripts/fetch-binaries.sh</div>
+
+      <div class="mb-[30px] border border-dashed border-[rgba(23,20,15,.32)] px-6 pb-[26px] pt-[22px]" id="flow">
+        <div class="mb-1.5 flex flex-wrap items-baseline justify-between gap-3">
+          <h2 class={h2}>Starting flow</h2>
+          <span class="font-mono text-[10.5px] font-medium uppercase tracking-[0.06em] text-rust">
+            draft template, fill in later
+          </span>
+        </div>
+        <p class="m-0 mb-5 max-w-[560px] text-[13.5px] leading-[1.7] text-body">
+          One screenshot per step, with a short caption underneath. Replace the placeholders and the
+          copy; delete any step you do not need.
+        </p>
+        {
+          flowDraft.map((fd) => (
+            <div class="mb-[22px] grid grid-cols-[26px_1fr] gap-3.5">
+              <div class="pt-[3px] font-mono text-xs font-semibold text-accent">{fd.n}</div>
+              <div class="min-w-0">
+                <div class="mb-1 text-[15px] font-semibold">Step title</div>
+                <div class="mb-2.5 text-[13px] leading-[1.65] text-faint">
+                  One or two sentences on what the reader does here.
+                </div>
+                <div class="flex h-[150px] items-center justify-center border border-dashed border-[rgba(23,20,15,.32)] bg-[repeating-linear-gradient(135deg,rgba(23,20,15,.045)_0_8px,transparent_8px_16px)] px-3 text-center font-mono text-[11px] text-[rgba(23,20,15,.45)] md:h-[210px]">
+                  {fd.slot}
+                </div>
+                <div class="mt-2 font-mono text-[11px] text-[rgba(23,20,15,.42)]">
+                  caption: what the reader should notice here
+                </div>
+              </div>
+            </div>
+          ))
+        }
+      </div>
+
+      <h2 class={h2} id="data">Where project data lives</h2>
+      <p class={p}>
+        A project is one <span class="font-mono text-[13px] text-ink">.qrate</span> SQLite file
+        holding the grid, settings, notes and metadata. Linked media stays where it is; moving a
+        project does not copy its files.
+      </p>
+      <div class="border-l-2 border-accent py-2.5 pl-3.5 text-[13.5px] leading-[1.7] text-body">
+        Alpha build. Keep backups of important collections, and report problems with steps that
+        reproduce them.
+      </div>
+    </article>
+  </div>
+</Base>

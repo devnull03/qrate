@@ -1,4 +1,5 @@
 import { defineConfig } from 'astro/config';
+import tailwindcss from '@tailwindcss/vite';
 
 // Project pages are served from a subpath, so `base` must match the repo name.
 // Every internal link/asset must go through this base (use import.meta.env.BASE_URL
@@ -7,4 +8,7 @@ export default defineConfig({
   site: 'https://devnull03.github.io',
   base: '/qrate',
   trailingSlash: 'ignore',
+  vite: {
+    plugins: [tailwindcss()],
+  },
 });

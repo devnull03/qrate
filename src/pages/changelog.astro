@@ -1,0 +1,72 @@
+---
+import Base from '../layouts/Base.astro';
+import Release from '../components/Release.astro';
+import { getReleases, latest, platformOf, REPO } from '../lib/releases.js';
+
+const releases = await getReleases();
+const rel = latest(releases);
+
+const platforms = new Set(
+  (rel?.assets ?? []).map((a) => platformOf(a.name)).filter(Boolean),
+).size;
+
+const stats = [
+  [rel?.tag_name ?? '—', 'latest'],
+  [platforms || '—', 'platforms'],
+  ['AGPL', '3.0'],
+];
+---
+
+<Base
+  title="qrate — Changelog"
+  description="Every published qrate build, with its notes and its files."
+  current="changelog"
+  version={rel?.tag_name}
+>
+  <section
+    class="gut grid grid-cols-1 gap-5 border-b border-rule py-[30px] md:grid-cols-2 md:gap-[34px] md:pb-10 md:pt-12"
+  >
+    <div>
+      <h1
+        class="m-0 mb-3 text-[33px] font-semibold leading-[1.04] tracking-[-0.035em] md:text-[44px]"
+      >
+        Changelog
+      </h1>
+      <p class="m-0 max-w-[400px] text-[15px] leading-[1.6] text-body">
+        Every published build, with its notes and its files. Pulled from GitHub releases at build
+        time.
+      </p>
+    </div>
+    <div
+      class="flex w-fit items-end gap-px self-end border border-rule bg-rule md:ml-auto"
+    >
+      {
+        stats.map(([big, small]) => (
+          <div class="bg-paper px-[18px] py-3">
+            <div class="font-mono text-[17px] font-semibold">{big}</div>
+            <div class="font-mono text-[11px] text-dim">{small}</div>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+
+  {
+    releases.length === 0 ? (
+      <p class="gut py-10">
+        No releases yet — check the{' '}
+        <a href={`https://github.com/${REPO}/releases`} class="text-accent">
+          Releases page
+        </a>
+        .
+      </p>
+    ) : (
+      releases.map((release, i) => <Release release={release} latest={i === 0} />)
+    )
+  }
+
+  <div class="gut border-b border-rule py-[26px] font-mono text-[12.5px] text-dim">
+    Earlier builds were internal and are not published. Report problems with steps that reproduce
+    them.
+  </div>
+</Base>

@@ -1,0 +1,129 @@
+---
+import Base from '../layouts/Base.astro';
+import { getReleases, latest, REPO } from '../lib/releases.js';
+
+const rel = latest(await getReleases());
+
+const CONTACT = 'qrate@dvnl.work';
+
+// From the repo's NOTICES file and workspace manifests. Anything qrate does not
+// link or ship is marked, because that is what changes the obligation.
+const notices = [
+  ['gpui, gpui-component', 'UI runtime', 'Apache-2.0 / MIT', 'linked'],
+  ['rusqlite (bundled SQLite)', 'Project storage', 'MIT / public domain', 'linked'],
+  ['mlua (Luau)', 'Plugin runtime', 'MIT', 'linked'],
+  ['SCOWL / Hunspell dictionaries', 'Spell check, en + en-CA', 'SCOWL permissive', 'bundled'],
+  ['image, calamine, zip, csv', 'Media and file formats', 'MIT / Apache-2.0', 'linked'],
+  ['reqwest, tokio, serde, regex', 'Networking and data', 'MIT / Apache-2.0', 'linked'],
+  ['PDFium', 'Document previews', 'BSD-3-Clause / Apache-2.0', 'loaded at runtime'],
+  ['ffmpeg', 'Video frame previews', 'LGPL-2.1+ / GPL', 'separate process'],
+];
+
+const row =
+  'grid grid-cols-[1.4fr_1fr] border-b border-rule-soft font-mono text-[12.5px] md:grid-cols-[1.5fr_1.1fr_1.1fr_1fr] [&>*]:min-w-0 [&>*]:break-words [&>*]:px-3.5 [&>*]:py-[9px]';
+---
+
+<Base
+  title="qrate — License"
+  description="qrate is AGPL-3.0: run it, study it, change it, share it."
+  current="license"
+  version={rel?.tag_name}
+>
+  <section class="grid grid-cols-1 border-b border-rule md:grid-cols-2">
+    <div class="gut border-rule py-[30px] md:border-r md:pb-[46px] md:pt-[54px]">
+      <div class="eyebrow">AGPL-3.0</div>
+      <h1
+        class="m-0 mb-3.5 mt-[18px] text-[32px] font-semibold leading-[1.04] tracking-[-0.035em] md:text-[46px]"
+      >
+        Free software, in the strict sense.
+      </h1>
+      <p class="m-0 max-w-[420px] text-[15px] leading-[1.6] text-body">
+        Run it, study it, change it, share it. Cataloguing a collection with qrate creates no
+        obligation to anyone.
+      </p>
+    </div>
+    <div class="gut grid content-center grid-cols-1 gap-3 bg-wash py-5 md:grid-cols-2 md:gap-px md:p-[34px]">
+      <div class="border border-rule bg-white p-[18px] text-[13px] leading-[1.75] text-body">
+        <div class="eyebrow mb-2.5 block text-[10.5px]">Always yours</div>
+        Download and run it, at any scale.<br />Read and modify the source.<br />Share copies with
+        colleagues.<br />Keep your own data, always.
+      </div>
+      <div class="border border-rule bg-white p-[18px] text-[13px] leading-[1.75] text-body">
+        <div class="eyebrow mb-2.5 block text-[10.5px] text-faint">If you distribute changes</div>
+        Ship your source under AGPL-3.0.<br />Same if you offer it over a network.<br />Contributors
+        keep their copyright.<br />No CLA, no assignment.
+      </div>
+    </div>
+  </section>
+
+  <section class="grid grid-cols-1 border-b border-rule md:grid-cols-2">
+    <div class="gut border-b border-rule py-[26px] md:border-b-0 md:border-r md:p-[34px]">
+      <h2 class="m-0 mb-2.5 text-xl font-semibold tracking-[-0.02em]">
+        Institutional use is unrestricted
+      </h2>
+      <div class="mb-3 text-[14px] leading-[1.7] text-body">
+        An archive, library, museum or university can run qrate on any number of machines, for any
+        collection, without payment or permission. The licence governs distribution of the software,
+        not use of it.
+      </div>
+    </div>
+    <div class="gut py-[26px] md:p-[34px]" id="commercial">
+      <h2 class="m-0 mb-2.5 scroll-mt-5 text-xl font-semibold tracking-[-0.02em]">
+        Commercial licensing
+      </h2>
+      <div class="mb-3 text-[14px] leading-[1.7] text-body">
+        If the AGPL does not fit your case, ask. The copyright holder can license their own work
+        separately; other contributors would need to agree for theirs.
+      </div>
+      <a
+        href={`mailto:${CONTACT}`}
+        class="inline-block border border-ink px-4 py-2.5 text-[13px] font-medium">{CONTACT}</a
+      >
+    </div>
+  </section>
+
+  <section class="gut py-[34px]" id="notices">
+    <div class="mb-3.5 flex flex-wrap items-baseline justify-between gap-3">
+      <h2 class="m-0 scroll-mt-5 text-xl font-semibold tracking-[-0.02em]">
+        Third-party material
+      </h2>
+      <a
+        href={`https://github.com/${REPO}/blob/main/NOTICES`}
+        class="font-mono text-[11px] text-accent">full NOTICES file</a
+      >
+    </div>
+    <div class="border border-rule">
+      <div
+        class={`${row} border-b border-rule bg-[rgba(23,20,15,.05)] text-[11px] font-medium uppercase tracking-[0.06em] text-dim`}
+      >
+        <div>Component</div><div>Role</div><div class="hidden md:block">Licence</div>
+        <div class="hidden md:block">How it ships</div>
+      </div>
+      {
+        notices.map(([name, role, lic, how]) => (
+          <div class={row}>
+            <div>{name}</div>
+            <div class="text-dim">{role}</div>
+            <div class="hidden text-dim md:block">{lic}</div>
+            <div class="hidden text-faint md:block">{how}</div>
+          </div>
+        ))
+      }
+    </div>
+
+    <div class="mt-5 grid grid-cols-1 gap-5 md:grid-cols-2">
+      <div class="text-[13.5px] leading-[1.7] text-body">
+        <div class="eyebrow mb-2 text-[10.5px] text-faint">Dictionaries</div>
+        The bundled English dictionaries derive from SCOWL, © 2000–2018 Kevin Atkinson, with
+        portions from WordNet 1.6, © 1997 Princeton University. Both permit use, copying,
+        modification and distribution without fee, provided the notices travel with the copies.
+      </div>
+      <div class="text-[13.5px] leading-[1.7] text-body">
+        <div class="eyebrow mb-2 text-[10.5px] text-faint">Downloaded at your request</div>
+        qrate can fetch any dictionary published by wooorm/dictionaries. Those are not distributed
+        with qrate and each carries its own licence — <span class="text-ink">several are GPL</span>.
+        The licence is shown in the language list before a download starts.
+      </div>
+    </div>
+  </section>
+</Base>

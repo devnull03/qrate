@@ -1,0 +1,76 @@
+---
+import Logo from './Logo.astro';
+import { REPO } from '../lib/releases.js';
+
+const { current = '' } = Astro.props;
+const b = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+const links = [
+  { key: 'get-started', label: 'Get started', href: `${b}/get-started` },
+  { key: 'changelog', label: 'Changelog', href: `${b}/changelog` },
+  { key: 'license', label: 'License', href: `${b}/license` },
+];
+---
+
+<nav
+  class="gut flex h-[52px] items-center justify-between border-b border-rule-nav md:h-[60px]"
+>
+  <div class="flex items-center gap-[30px]">
+    <a
+      href={`${b}/`}
+      class="flex items-center gap-[9px] text-[17px] font-semibold tracking-[-0.02em] hover:no-underline"
+    >
+      <Logo size={19} id="nav" />
+      <span>qrate</span>
+    </a>
+    <div class="hidden gap-[22px] text-[13.5px] text-nav md:flex">
+      {
+        links.map((l) => (
+          <a href={l.href} class={l.key === current ? 'text-ink shadow-[inset_0_-2px_0_var(--accent)]' : ''}>
+            {l.label}
+          </a>
+        ))
+      }
+    </div>
+  </div>
+
+  <div class="flex items-center gap-3">
+    <button
+      id="theme-btn"
+      type="button"
+      class="flex cursor-pointer items-center gap-[7px] border border-[rgba(23,20,15,.2)] px-[9px] py-[5px] font-mono text-[11.5px] font-medium text-nav"
+    >
+      <span class="h-[9px] w-[9px] bg-accent"></span><span id="theme-name">Qrate Light</span>
+    </button>
+    <a href={`https://github.com/${REPO}`} class="hidden text-[13.5px] text-nav md:block"
+      >GitHub</a
+    >
+    {
+      current !== 'get-started' && (
+        <a
+          href={`${b}/get-started`}
+          class="hidden bg-accent px-[15px] py-2 text-[13px] font-medium text-on-accent md:block"
+        >
+          Download
+        </a>
+      )
+    }
+
+    <details class="relative md:hidden">
+      <summary class="flex cursor-pointer list-none flex-col gap-1 [&::-webkit-details-marker]:hidden">
+        <span class="h-[1.5px] w-[19px] bg-ink"></span>
+        <span class="h-[1.5px] w-[19px] bg-ink"></span>
+      </summary>
+      <div class="absolute right-0 top-[22px] z-10 flex min-w-40 flex-col border border-rule bg-paper">
+        {
+          links.map((l) => (
+            <a href={l.href} class="border-b border-rule-soft px-[14px] py-[10px] text-[13.5px]">
+              {l.label}
+            </a>
+          ))
+        }
+        <a href={`https://github.com/${REPO}`} class="px-[14px] py-[10px] text-[13.5px]">GitHub</a>
+      </div>
+    </details>
+  </div>
+</nav>

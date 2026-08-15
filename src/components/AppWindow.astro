@@ -1,0 +1,73 @@
+---
+// Fake qrate window. Every colour is an app-* token, so it re-tints with the
+// picked theme exactly like the real app does.
+const rows = [
+  { n: '8', model: 'Paged Content', desc: 'Correspondence, two leaves, ink on paper', date: '1939' },
+  { n: '9', model: 'Paged Content', desc: 'Correspondence, envelope retained', date: '1946' },
+  { n: '10', model: 'Image', desc: 'Watercolour painting of a fictionalized character', date: '2016?' },
+  { n: '11', model: 'Image', desc: 'News clipping: a ballot placed in a ballot box', date: '1947-06-01' },
+  { n: '12', model: 'Image', desc: 'Front page of a Canadian passport', date: '1928-09-01' },
+  { n: '13', model: 'Image', desc: "Agent's stub for a third-class ocean liner ticket", date: '1928-11-29' },
+  { n: '14', model: 'Image', desc: 'Three people on the shore in front of a ship', date: '1932', sel: true },
+  { n: '15', model: 'Image', desc: 'Two men walking across a rail line', date: '1910' },
+];
+
+const row =
+  'grid grid-cols-[34px_96px_1fr_92px] font-mono text-[11px] [&>*]:min-w-0 [&>*]:px-2 [&>*]:py-1.5';
+const clip = 'overflow-hidden text-ellipsis whitespace-nowrap';
+---
+
+<div
+  class="min-w-[560px] border border-app-border bg-app-bg shadow-[0_12px_34px_rgba(23,20,15,.16)]"
+>
+  <div
+    class="flex h-7 items-center justify-between border-b border-app-border bg-app-title px-2.5"
+  >
+    <div class="flex gap-3 text-[10.5px] text-app-fg">
+      <span>File</span><span>Edit</span><span>View</span><span>Data</span><span>Extensions</span>
+    </div>
+    <div class="flex gap-[5px]">
+      <span class="h-[9px] w-[11px] border border-app-muted"></span>
+      <span class="h-[9px] w-[11px] border border-app-muted"></span>
+      <span class="h-[9px] w-[11px] border border-app-muted"></span>
+    </div>
+  </div>
+
+  <div class={`${row} border-b border-app-border bg-app-head text-app-head-fg`}>
+    <div></div><div class={clip}>field_model</div><div>field_description</div><div>edtf_date</div>
+  </div>
+
+  {
+    rows.map((r, i) => (
+      <div
+        class:list={[
+          row,
+          'border-b border-app-row-border text-app-fg',
+          i % 2 === 1 && !r.sel ? 'bg-app-even' : 'bg-app-bg',
+        ]}
+      >
+        <div class="text-right text-app-muted">{r.n}</div>
+        <div class={clip}>{r.model}</div>
+        <div
+          class:list={[
+            clip,
+            r.sel && 'bg-app-active-bg shadow-[inset_0_0_0_1px_var(--app-active-border)]',
+          ]}
+        >
+          {r.desc}
+        </div>
+        <div class="text-app-muted">{r.date}</div>
+      </div>
+    ))
+  }
+
+  <div
+    class="flex items-center justify-between border-t border-app-border bg-app-title px-2.5 py-[5px] font-mono text-[10px] text-app-muted"
+  >
+    <span
+      ><span class="text-app-danger">⊗ 1490</span> &nbsp;<span class="text-app-warn">⚠ 5330</span
+      ></span
+    >
+    <span>Row 14, Col 7, 17 words</span>
+  </div>
+</div>

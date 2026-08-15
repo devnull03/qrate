@@ -1,46 +1,292 @@
 ---
 import Base from '../layouts/Base.astro';
-import Release from '../components/Release.astro';
+import AppWindow from '../components/AppWindow.astro';
+import { getReleases, latest, platformOf } from '../lib/releases.js';
 
-const REPO = 'devnull03/qrate';
+const b = import.meta.env.BASE_URL.replace(/\/$/, '');
+const releases = await getReleases();
+const rel = latest(releases);
 
-// This fetch runs at BUILD time (in CI), not in the browser.
-// In Actions, GH_TOKEN is the job's GITHUB_TOKEN -> 1000 req/hr, no public limit,
-// and nothing secret ends up in the shipped HTML. Locally the header is omitted,
-// so the anonymous 60 req/hr applies (fine for occasional dev builds).
-const token = import.meta.env.GH_TOKEN;
-const res = await fetch(
-  `https://api.github.com/repos/${REPO}/releases?per_page=20`,
-  {
-    headers: {
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  },
-);
-
-if (!res.ok && import.meta.env.PROD) {
-  // Fail the CI build loudly rather than shipping a silently-empty page.
-  throw new Error(`GitHub API ${res.status} ${res.statusText} fetching releases`);
+// One installer per platform, for the hero button the client picks by OS.
+// The order is also the server-rendered fallback order, for no-JS and for
+// visitors on a platform with no build.
+const ORDER = ['macOS', 'Windows', 'Linux'];
+const byOs = {};
+for (const a of rel?.assets ?? []) {
+  const os = platformOf(a.name);
+  if (os && !byOs[os]) byOs[os] = a.browser_download_url;
 }
+const available = ORDER.filter((os) => byOs[os]);
+const fallback = available[0] ?? null;
+const others = available.filter((os) => os !== fallback);
 
-const releases = res.ok ? await res.json() : [];
-// "Latest" badge goes on the newest non-prerelease (API returns newest first).
-const firstStableIdx = releases.findIndex((r) => !r.prerelease);
+const manual = [
+  {
+    num: '/01',
+    title: 'Edit like a spreadsheet',
+    body: 'Search, replace, undo, redo, filter. Freeze and reorder columns from the keyboard.',
+    meta: 'thousands of rows',
+  },
+  {
+    num: '/02',
+    title: 'Files stay put',
+    body: 'Link scans, documents, audio and video. Previews render in the panel; originals never move.',
+    meta: 'PDFium · ffmpeg',
+  },
+  {
+    num: '/03',
+    title: 'Checks that name the problem',
+    body: 'Spelling and column values land in the problems panel with the row and field named.',
+    meta: '1490 errors · 5330 warnings',
+  },
+  {
+    num: '/04',
+    title: 'Fields you define',
+    body: 'Column types, descriptions, authority lists and spell-check, set per project.',
+    meta: 'per project',
+  },
+];
+
+const mess = [
+  ['metadata.xlsx', '3 conflicting copies'],
+  ['scans/', '14,203 files, no links'],
+  ['naming-rules.docx', 'last opened 2023'],
+  ['email thread', '61 replies'],
+];
+
+// The numbered "field manual" row: number | title | body.
+const ruleRow = 'grid grid-cols-1 border-b border-rule md:grid-cols-[110px_1fr_1fr]';
+const ruleCell = 'px-[var(--pad)] [--pad:18px] md:[--pad:26px] md:border-r md:border-rule';
+const ruleNum = `${ruleCell} pt-[22px] font-mono text-[13px] font-semibold text-accent md:py-[30px] md:px-5`;
+const ruleTitle = `${ruleCell} py-2 md:py-[30px]`;
+const ruleBody = `px-[18px] pb-[22px] text-[14.5px] leading-[1.6] text-body md:px-[26px] md:py-[30px]`;
+const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.035em] md:text-[30px] md:leading-[1.02]';
 ---
 
-<Base>
-  {
-    releases.length === 0 ? (
-      <p>
-        No releases yet — check the
-        <a href={`https://github.com/${REPO}/releases`}>Releases page</a>.
+<Base current="" version={rel?.tag_name}>
+  <section class="grid grid-cols-1 border-b border-rule-nav md:grid-cols-2">
+    <div class="gut border-rule-nav py-[34px] md:border-r md:pb-[60px] md:pt-16">
+      <div class="eyebrow mb-[22px] flex items-center gap-[9px]">
+        <span class="h-px w-5 bg-accent"></span>Open source · desktop · AGPL-3.0
+      </div>
+      <h1
+        class="m-0 mb-[14px] text-[33px] font-semibold leading-[1.05] tracking-[-0.035em] md:mb-5 md:text-[52px] md:leading-[1.03]"
+      >
+        One file holds the whole catalogue.
+      </h1>
+      <p class="m-0 mb-7 max-w-[440px] text-[14.5px] leading-[1.6] text-body md:text-[16px]">
+        Records, fields, notes and every linked scan, in one <span
+          class="font-mono text-[13px] text-ink md:text-[14.5px]">.qrate</span
+        > file on your own disk. No account, no server.
       </p>
-    ) : (
-      releases.map((release, i) => (
-        <Release release={release} latest={i === firstStableIdx} />
-      ))
-    )
+      <div class="mb-[34px] flex flex-col items-stretch gap-2 md:flex-row md:items-center md:gap-2.5">
+        <a
+          id="dl-primary"
+          href={fallback ? byOs[fallback] : `${b}/get-started`}
+          class="bg-ink px-5 py-3 text-center text-[14px] font-medium text-paper"
+          >{fallback ? `Download for ${fallback}` : 'Get started'}</a
+        >
+        <a
+          id="dl-others"
+          href={`${b}/get-started`}
+          class="border border-[rgba(23,20,15,.22)] px-[18px] py-3 text-center text-[14px] font-medium"
+          >{others.length ? others.join(' · ') : 'All platforms'}</a
+        >
+      </div>
+      <div class="flex border-t border-rule-nav">
+        <div class="flex-1 py-3.5">
+          <div class="font-mono text-xl font-semibold tracking-[-0.02em]">1 file</div>
+          <div class="text-xs text-dim">per project</div>
+        </div>
+        <div class="flex-1 border-l border-rule-nav py-3.5 pl-[18px]">
+          <div class="font-mono text-xl font-semibold tracking-[-0.02em]">4</div>
+          <div class="text-xs text-dim">export formats</div>
+        </div>
+        <div class="flex-1 border-l border-rule-nav py-3.5 pl-[18px]">
+          <div class="font-mono text-xl font-semibold tracking-[-0.02em]">0</div>
+          <div class="text-xs text-dim">accounts required</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gut flex flex-col justify-center gap-2.5 bg-wash py-5 md:p-[34px]">
+      <!-- The fake window has fixed column widths; let it scroll rather than
+           widen the page on a phone. -->
+      <div class="max-w-full overflow-x-auto">
+        <AppWindow />
+      </div>
+      <div class="font-mono text-[10.5px] text-dim">
+        ↑ rendered live in <span class="text-ink" id="theme-echo">Qrate Light</span> · every theme
+        that ships with the app
+      </div>
+    </div>
+  </section>
+
+  <section
+    class="gut flex flex-col items-start gap-3 border-b border-rule py-[22px] md:flex-row md:items-center md:gap-[26px]"
+  >
+    <div class="eyebrow whitespace-nowrap text-faint">In use at</div>
+    <div class="grid w-full flex-1 grid-cols-2 gap-3 md:grid-cols-4">
+      {
+        ['[ institution name ]', '[ university library ]', '[ community archive ]', '[ museum ]'].map(
+          (s) => (
+            <div class="border border-dashed border-[rgba(23,20,15,.26)] px-3 py-[11px] font-mono text-[11px] text-[rgba(23,20,15,.4)]">
+              {s}
+            </div>
+          ),
+        )
+      }
+    </div>
+  </section>
+
+  <section class="gut flex flex-col items-center gap-4 py-[34px] md:pb-14 md:pt-16" id="features">
+    <div class="flex flex-col items-baseline gap-2 self-stretch md:flex-row md:gap-3.5">
+      <div class="eyebrow whitespace-nowrap md:pt-2">The window</div>
+      <h2 class="m-0 max-w-[560px] text-2xl font-semibold leading-[1.1] md:text-[32px]">
+        Grid, preview and problems, docked together.
+      </h2>
+    </div>
+    <div class="shot w-[900px] max-w-full">
+      <img
+        src={`${b}/shots/light-table.png`}
+        alt="qrate window · record details, grid and problems panel"
+      />
+    </div>
+    <div class="flex w-[900px] max-w-full justify-between font-mono text-[11px] text-dim">
+      <span>Details · grid · problems, docked in one window</span><span>Qrate Light</span>
+    </div>
+  </section>
+
+  {
+    manual.map((m) => (
+      <div class={ruleRow}>
+        <div class={ruleNum}>{m.num}</div>
+        <div class={ruleTitle}>
+          <h2 class={ruleH}>{m.title}</h2>
+        </div>
+        <div class={ruleBody}>
+          {m.body}
+          <div class="mt-3 font-mono text-xs font-medium text-ink">{m.meta}</div>
+        </div>
+      </div>
+    ))
   }
+
+  <section
+    class="gut grid grid-cols-1 items-center gap-5 border-b border-rule py-5 md:grid-cols-2 md:gap-10 md:pb-[60px] md:pt-14"
+  >
+    <div class="shot">
+      <img
+        src={`${b}/shots/light-gallery.png`}
+        alt="qrate gallery view with an item preview open"
+      />
+    </div>
+    <div>
+      <div class="eyebrow mb-3.5">Gallery view</div>
+      <h2 class="m-0 mb-3 text-2xl font-semibold leading-[1.1] md:text-[30px]">
+        Look at the thing you are describing.
+      </h2>
+      <p class="m-0 mb-4 max-w-[400px] text-[14.5px] leading-[1.65] text-body">
+        Switch the grid for a gallery, open an item full size, and keep editing its fields beside
+        it. Images, documents, audio and video preview in place.
+      </p>
+      <div class="font-mono text-xs leading-[1.9] text-ink">
+        JPG · TIFF · PDF · WAV · MP4
+        <div class="text-dim">PDF via PDFium · video frames via ffmpeg</div>
+      </div>
+    </div>
+  </section>
+
+  <div class={ruleRow} id="plugins">
+    <div class={ruleNum}>/05</div>
+    <div class={ruleTitle}><h2 class={ruleH}>Extendable with plugins</h2></div>
+    <div class={ruleBody}>
+      Plugins add validation and column rules, and run from a folder you control. An Islandora
+      plugin ships at launch, so subject, geo_location and person terms check against its
+      vocabularies on day one.
+      <div class="mt-3 font-mono text-xs font-medium text-ink">Luau · plugin template on GitHub</div>
+    </div>
+  </div>
+
+  <section class="grid grid-cols-1 border-b border-rule md:grid-cols-2">
+    <div class="gut border-b border-rule py-[26px] md:border-b-0 md:border-r md:px-[26px] md:py-[34px]">
+      <div class="eyebrow mb-4 text-faint">The way it is now</div>
+      <div class="flex flex-col gap-px border border-rule bg-rule">
+        {
+          mess.map(([file, note]) => (
+            <div class="bg-paper px-3.5 py-[11px] font-mono text-[13px] text-body">
+              {file} <span class="text-rust"> · {note}</span>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+    <div class="gut py-[26px] md:px-[26px] md:py-[34px]">
+      <div class="eyebrow mb-4">The way it should be</div>
+      <div class="border border-ink px-[18px] py-5 text-[13.5px] leading-[1.75] text-body">
+        <div class="mb-3 font-mono text-[22px] font-semibold tracking-[-0.02em] text-ink">
+          collection.qrate
+        </div>
+        Records, field definitions, authority lists, notes, validation state and the path to every
+        linked file. Copy it, back it up, hand it to a colleague. It opens the same on every
+        platform.
+      </div>
+    </div>
+  </section>
 </Base>
+
+<script is:inline define:vars={{ byOs, available }}>
+  // Point the primary button at the visitor's own platform. Server-rendered
+  // with the first available build, so this only ever swaps the label/href.
+  (() => {
+    if (!available.length) return;
+    const ua = navigator.userAgent;
+    const plat = navigator.userAgentData?.platform || navigator.platform || '';
+    const hay = `${plat} ${ua}`;
+    // Phones are checked first: an iPad reports "Mac", and no phone wants a .dmg.
+    const guess = /iPhone|iPad|iPod|Android/i.test(hay)
+      ? null
+      : /Mac/i.test(hay)
+        ? 'macOS'
+        : /Win/i.test(hay)
+          ? 'Windows'
+          : /Linux|X11|CrOS/i.test(hay)
+            ? 'Linux'
+            : null;
+
+    const primary = document.getElementById('dl-primary');
+    const rest = document.getElementById('dl-others');
+
+    // No build for this platform: point at the source instructions rather than
+    // offering someone else's binary. Linux lands here until it ships assets.
+    if (!byOs[guess]) {
+      primary.href = `${document.baseURI.replace(/\/$/, '')}/get-started#source`;
+      primary.textContent = 'Build from source';
+      rest.textContent = available.join(' · ');
+      return;
+    }
+
+    primary.href = byOs[guess];
+    primary.textContent = `Download for ${guess}`;
+    const others = available.filter((o) => o !== guess);
+    rest.textContent = others.length ? others.join(' · ') : 'All platforms';
+  })();
+</script>
+
+<script is:inline>
+  // The hero caption names the theme the fake window is drawn in.
+  (() => {
+    const el = document.getElementById('theme-echo');
+    const sync = () => {
+      const hit = window.QRATE_THEMES.find(
+        (t) => t[0] === document.documentElement.dataset.theme,
+      );
+      el.textContent = (hit || window.QRATE_THEMES[0])[1];
+    };
+    new MutationObserver(sync).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
+    sync();
+  })();
+</script>
