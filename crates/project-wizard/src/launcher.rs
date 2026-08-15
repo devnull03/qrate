@@ -243,12 +243,16 @@ impl Render for Launcher {
                                 "Import a spreadsheet and its files.",
                                 cx,
                             ))
-                            .child(create_card(
-                                "new-sheet",
-                                "Google Sheet",
-                                "Use a shared spreadsheet link.",
-                                cx,
-                            )),
+                            // Absent until Google sync is switched on in Settings — a fresh
+                            // install shows no Google surface at all.
+                            .when(settings::google_enabled(cx), |column| {
+                                column.child(create_card(
+                                    "new-sheet",
+                                    "Google Sheet",
+                                    "Use a shared spreadsheet link.",
+                                    cx,
+                                ))
+                            }),
                     ),
             )
             .children(dialog_layer)

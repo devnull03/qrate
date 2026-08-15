@@ -42,6 +42,25 @@ pub const AUTOSAVE_KEY: &str = "autosave";
 /// author rather than guessing at an identity from the OS account.
 pub const NOTE_AUTHOR_KEY: &str = "note_author";
 
+/// `AppSettings` key for whether Google sync is switched on. User-wide only — consent is given by
+/// a person, not by a collection — and off until the user passes the consent dialog, so a fresh
+/// install shows no Google surface at all.
+pub const GOOGLE_SYNC_KEY: &str = "google_sync_enabled";
+
+/// Whether Google sync is switched on. Deliberately not [`effective_bool`]: a project must not be
+/// able to turn on a connection the person using it never agreed to.
+pub fn google_enabled(cx: &App) -> bool {
+    AppSettings::get(cx)
+        .values
+        .get(GOOGLE_SYNC_KEY)
+        .map(|v| v.bool())
+        .unwrap_or(false)
+}
+
+/// `AppSettings` key for the credential endpoint. Empty means the built-in default; pointing it
+/// elsewhere is how someone runs this flow against their own Google Cloud project.
+pub const GOOGLE_CONFIG_ENDPOINT_KEY: &str = "google_config_endpoint";
+
 /// Setting key (either scope) for the string that separates several values inside one cell, e.g.
 /// `;` in `Film; Video`. Empty means a cell is one indivisible value.
 ///

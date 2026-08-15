@@ -2,7 +2,7 @@ use gpui::*;
 use window_wrapper::OpenBrowser;
 
 use crate::actions::{NewProject, Save, ToggleBottomDock, ToggleLeftDock, ToggleRightDock};
-use crate::export::{EXPORT_FORMATS, Export, ExportFormat};
+use crate::export::{EXPORT_FORMATS, Export};
 use crate::theming::{SwitchTheme, theme_choices};
 
 // The Edit menu's items act on the grid, so they're the grid's actions — `table` declares and
@@ -69,14 +69,18 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
                     disabled: false,
                     items: EXPORT_FORMATS
                         .iter()
+                        // Absent, not greyed out: a control nobody can explain invites a support
+                        // question, and an institution that forbids Google should see no trace of
+                        // it. Settings re-runs `install` when the opt-in flips.
+                        .filter(|(format, _, _)| {
+                            !crate::export::is_google(*format) || settings::google_enabled(cx)
+                        })
                         .map(|(format, label, _)| MenuItem::Action {
                             name: (*label).into(),
                             action: Box::new(Export { format: *format }),
                             os_action: None,
                             checked: false,
-                            // ponytail: written but switched off until qrate has a Google OAuth
-                            // client — see the "Google Sheets export" tracker task.
-                            disabled: *format == ExportFormat::GoogleSheet,
+                            disabled: false,
                         })
                         .collect(),
                 }),

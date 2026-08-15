@@ -5,17 +5,19 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Axis, Entity, Global, IntoElement, ParentElement as _,
-    SharedString, Styled as _, Subscription, Window, div, px,
+    AnyElement, App, AppContext as _, Axis, ClickEvent, Entity, Global, IntoElement,
+    ParentElement as _, SharedString, Styled as _, Subscription, Window, div, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _,
+    ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, WindowExt as _,
     button::Button,
     combobox::{Combobox, ComboboxEvent, ComboboxState},
+    dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputEvent, InputState},
     searchable_list::{SearchableListItem, SearchableVec},
     setting::{SettingField, SettingGroup, SettingItem, SettingPage},
+    switch::Switch,
     tab::{Tab, TabBar},
     v_flex,
 };
@@ -42,6 +44,7 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
         columns_page(cx),
         authorities_page(cx),
         SettingPage::new("Spelling").group(spelling_group(cx)),
+        google_page(cx),
         plugins_page(cx),
     ];
     pages.extend(plugin_pages(cx));
@@ -315,6 +318,97 @@ fn previews_group() -> SettingGroup {
              only makes the next look at each file slower.",
         ),
     )
+}
+
+/// Google sync, off until the user says otherwise. Everything here is user-wide whatever the scope
+/// switcher says: consent is given by a person, not by a collection, so these rows read and write
+/// `AppSettings` directly rather than through `settings::scoped_*`.
+fn google_page(cx: &App) -> SettingPage {
+    let mut group = SettingGroup::new().title("Google Sheets").item(
+        SettingItem::new(
+            "Connect to Google",
+            // A plain switch would flip on the way down; switching *on* has to survive the consent
+            // dialog first, which needs the `Window` only a render closure is handed.
+            SettingField::render(|_opts: &_, _window: &mut _, cx: &mut App| {
+                let on = settings::google_enabled(cx);
+                Switch::new("google-sync")
+                    .checked(on)
+                    .on_click(|on: &bool, window, cx| {
+                        if *on {
+                            return ask_google_consent(window, cx);
+                        }
+                        settings::AppSettings::set_bool(settings::GOOGLE_SYNC_KEY, false, cx);
+                        // Off has to end the grant, not just hide the buttons.
+                        crate::google::clear_refresh_token();
+                        crate::app_menus::install(cx);
+                    })
+            }),
+        )
+        .description(
+            "Export a project to Google Sheets and keep that sheet current. Off until you connect, \
+             and disconnecting forgets the sign-in kept on this machine.",
+        ),
+    );
+
+    if settings::google_enabled(cx) {
+        group = group.item(
+            SettingItem::new(
+                "Credential endpoint",
+                SettingField::input(
+                    |cx: &App| {
+                        settings::AppSettings::get(cx)
+                            .values
+                            .get(settings::GOOGLE_CONFIG_ENDPOINT_KEY)
+                            .map(|v| v.text())
+                            .unwrap_or_default()
+                    },
+                    |val: SharedString, cx: &mut App| {
+                        settings::AppSettings::set_text(
+                            settings::GOOGLE_CONFIG_ENDPOINT_KEY,
+                            val,
+                            cx,
+                        );
+                    },
+                ),
+            )
+            .description(
+                "Where qrate asks which Google project to sign in against. Leave it empty for \
+                 ours. An institution that runs its own Google project points this at its own \
+                 endpoint — see docs/site-oauth-handoff.md for what to serve.",
+            )
+            .layout(Axis::Vertical),
+        );
+    }
+
+    SettingPage::new("Google").group(group)
+}
+
+/// What the user agrees to, in their own terms, before any browser opens. Accepting records the
+/// setting; declining leaves everything off and hidden.
+fn ask_google_consent(window: &mut Window, cx: &mut App) {
+    window.open_dialog(cx, move |dialog, _, _| {
+        dialog
+            .title("Connect qrate to Google")
+            .w(px(460.0))
+            .content(move |content, _, _| {
+                content.p_4().gap_2().children([
+                    "qrate will ask Google for permission to work with spreadsheets it creates, \
+                     and with any spreadsheet you choose through Google's own file chooser. It \
+                     cannot see the rest of your Drive.",
+                    "Your sign-in is kept in this computer's credential store — Credential \
+                     Manager on Windows, Keychain on macOS — and never leaves it. Nothing is sent \
+                     anywhere except to Google.",
+                    "You can withdraw permission at any time from your Google account, or by \
+                     switching this off again, which also forgets the sign-in stored here.",
+                ])
+            })
+            .button_props(DialogButtonProps::default().ok_text("Connect"))
+            .on_ok(move |_: &ClickEvent, _, cx| {
+                settings::AppSettings::set_bool(settings::GOOGLE_SYNC_KEY, true, cx);
+                crate::app_menus::install(cx);
+                true
+            })
+    });
 }
 
 fn saving_group(cx: &App) -> SettingGroup {
