@@ -32,6 +32,7 @@ pub enum ExportFormat {
     Csl,
     Zip,
     GoogleSheet,
+    GoogleSheetSync,
 }
 
 #[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
@@ -43,13 +44,22 @@ pub struct Export {
 
 /// Menu order. Each entry is the label and the filename the save dialog offers; the Sheets target
 /// never touches disk, so it has no name to suggest.
-pub const EXPORT_FORMATS: [(ExportFormat, &str, Option<&str>); 5] = [
+pub const EXPORT_FORMATS: [(ExportFormat, &str, Option<&str>); 6] = [
     (ExportFormat::Csv, "CSV…", Some("export.csv")),
     (ExportFormat::JsonLd, "JSON-LD…", Some("export.jsonld")),
     (ExportFormat::Csl, "Zotero (CSL-JSON)…", Some("export.json")),
     (ExportFormat::Zip, "ZIP Archive…", Some("export.zip")),
     (ExportFormat::GoogleSheet, "New Google Sheet…", None),
+    (ExportFormat::GoogleSheetSync, "Sync to Google Sheet…", None),
 ];
+
+/// Whether a menu entry belongs to Google sync, which is hidden entirely until the user opts in.
+pub fn is_google(format: ExportFormat) -> bool {
+    matches!(
+        format,
+        ExportFormat::GoogleSheet | ExportFormat::GoogleSheetSync
+    )
+}
 
 /// The open project's grid as the writers want it, with in-session edits — the same snapshot
 /// `table::save_now` persists. `None` with no project or no live table.
@@ -68,8 +78,21 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
     };
     let (file, title) = (project.file.clone(), project.display_name());
 
-    if format == ExportFormat::GoogleSheet {
-        return to_google_sheet(title, headers, rows, window, cx);
+    if is_google(format) {
+        // A project that already knows its spreadsheet refills that one; otherwise "Sync" asks
+        // Google's chooser, which is also what grants qrate access to the file.
+        let linked = project
+            .data
+            .values
+            .get(settings::project::GOOGLE_SHEET_ID_KEY)
+            .map(|v| v.text().to_string())
+            .filter(|id| !id.is_empty());
+        let target = match (format, linked) {
+            (ExportFormat::GoogleSheet, _) => SheetTarget::New,
+            (_, Some(id)) => SheetTarget::Existing(id),
+            (_, None) => SheetTarget::Choose,
+        };
+        return to_google_sheet(title, headers, rows, target, window, cx);
     }
     if format == ExportFormat::Csl {
         return ask_csl_mapping(file, headers, rows, window, cx);
@@ -125,8 +148,8 @@ fn save_as(
                 export::write_json(&path, &export::csl_items(&headers, &rows, &mapping))
             }
             ExportFormat::Zip => export::write_zip(&path, &headers, &rows, &images),
-            // Handled in `run` — it has no path to write to.
-            ExportFormat::GoogleSheet => return,
+            // Handled in `run` — they have no path to write to.
+            ExportFormat::GoogleSheet | ExportFormat::GoogleSheetSync => return,
         };
         if let Err(err) = result {
             log::error!("could not export to {}: {err}", path.display());
@@ -247,69 +270,170 @@ fn ask_csl_mapping(
     });
 }
 
-/// Where the Google refresh token lives once the user has consented — user-wide, so signing in
-/// once covers every project.
-const GOOGLE_REFRESH_KEY: &str = "google_refresh_token";
+/// Which spreadsheet a sync writes to.
+enum SheetTarget {
+    New,
+    /// The one this project is already linked to.
+    Existing(String),
+    /// Ask Google's chooser. Picking a file there is what grants `drive.file` access to it — an
+    /// id the user typed would name a file the token cannot reach.
+    Choose,
+}
 
-/// Sign in if we have to, create the sheet, open it. Every step blocks, so the whole thing runs on
-/// the background executor; only opening the consent URL and the finished sheet come back to the
-/// main thread.
+/// Sign in if we have to, settle on a spreadsheet, fill it. Every step blocks, so the whole thing
+/// runs on the background executor; only opening a URL and writing settings back come to the main
+/// thread.
 fn to_google_sheet(
     title: String,
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
+    target: SheetTarget,
     _window: &mut Window,
     cx: &mut App,
 ) {
-    let stored = settings::AppSettings::get(cx)
-        .values
-        .get(GOOGLE_REFRESH_KEY)
-        .map(|v| v.text().to_string());
-
-    // Bound before the browser opens, so Google's redirect can't arrive before we're listening.
-    let consent = match stored.is_none().then(data_exchange::google::begin_consent) {
-        Some(Ok(consent)) => {
-            cx.open_url(&consent.url);
-            Some(consent)
-        }
-        Some(Err(err)) => return log::error!("Google export could not start sign-in: {err}"),
-        None => None,
-    };
+    let stored = crate::google::stored(cx);
+    let refresh_token = crate::google::refresh_token();
 
     cx.spawn(async move |cx| {
-        let token = cx
+        let (creds, persist) = cx.background_spawn(async move { stored.refreshed() }).await;
+        let Some(creds) = creds else {
+            return log::error!(
+                "Google sync has no client credentials — this build has none compiled in and the \
+                 credential endpoint could not be reached"
+            );
+        };
+        if let Some((creds, etag)) = persist {
+            cx.update(|cx| crate::google::remember(&creds, etag, cx));
+        }
+
+        let Some(token) = sign_in(&creds, refresh_token, cx).await else {
+            return;
+        };
+
+        let chosen = match target {
+            SheetTarget::New => None,
+            SheetTarget::Existing(id) => Some(id),
+            SheetTarget::Choose => match choose_sheet(&token.access, cx).await {
+                Some(id) => Some(id),
+                None => return,
+            },
+        };
+
+        let sheet = cx
             .background_spawn(async move {
-                match consent {
-                    Some(consent) => consent.wait_for_token(),
-                    None => data_exchange::google::refresh(&stored.unwrap_or_default()),
+                match chosen {
+                    Some(id) => {
+                        data_exchange::google::write_values(&token.access, &id, &headers, &rows)
+                            .map(|()| (id, None))
+                    }
+                    None => data_exchange::google::create_sheet(
+                        &token.access,
+                        &format!("{title} — qrate"),
+                    )
+                    .and_then(|(id, url)| {
+                        data_exchange::google::write_values(&token.access, &id, &headers, &rows)
+                            .map(|()| (id, Some(url)))
+                    }),
                 }
             })
             .await;
-        let token = match token {
-            Ok(token) => token,
-            Err(err) => return log::error!("Google export could not sign in: {err}"),
-        };
-        // Only the first consent issues one; a refresh reuses what is already stored.
-        if let Some(refresh) = token.refresh.clone() {
-            cx.update(|cx| settings::AppSettings::set_text(GOOGLE_REFRESH_KEY, refresh.into(), cx));
-        }
-
-        let created = cx
-            .background_spawn(async move {
-                data_exchange::google::create_sheet(
-                    &token.access,
-                    &format!("{title} — qrate"),
-                    &headers,
-                    &rows,
-                )
-            })
-            .await;
-        match created {
-            Ok(url) => {
-                cx.update(|cx| cx.open_url(&url));
+        match sheet {
+            // A new sheet is worth opening; one the user already had is not — they went looking
+            // for their data to be current, not for another browser tab.
+            Ok((id, url)) => {
+                cx.update(|cx| {
+                    settings::project::CurrentProject::set_text(
+                        settings::project::GOOGLE_SHEET_ID_KEY,
+                        id.into(),
+                        cx,
+                    );
+                    if let Some(url) = url {
+                        cx.open_url(&url);
+                    }
+                });
             }
-            Err(err) => log::error!("Google export could not create the sheet: {err}"),
+            Err(err) => log::error!("Google sync could not write the spreadsheet: {err}"),
         }
     })
     .detach();
+}
+
+/// Hand the user Google's own file chooser and wait for what they pick. Same two-step shape as
+/// consent, and for the same reason: the loopback port is bound before the page opens so the
+/// answer cannot arrive before we are listening.
+async fn choose_sheet(access_token: &str, cx: &mut gpui::AsyncApp) -> Option<String> {
+    let picker = data_exchange::google::begin_picker(
+        data_exchange::google::DEFAULT_PICKER_PAGE,
+        access_token,
+    );
+    let picker = match picker {
+        Ok(picker) => picker,
+        Err(err) => {
+            log::error!("Google sync could not open the spreadsheet chooser: {err}");
+            return None;
+        }
+    };
+    cx.update(|cx| cx.open_url(&picker.url));
+    match cx
+        .background_spawn(async move { picker.wait_for_file_id() })
+        .await
+    {
+        Ok(id) => Some(id),
+        Err(err) => {
+            log::info!("no spreadsheet was chosen: {err}");
+            None
+        }
+    }
+}
+
+/// A stored grant, else a fresh consent. Opening the browser has to happen on the main thread and
+/// the listener has to be bound before it does, so those two steps are interleaved here rather
+/// than run as one background job.
+async fn sign_in(
+    creds: &data_exchange::google::ClientCreds,
+    refresh_token: Option<String>,
+    cx: &mut gpui::AsyncApp,
+) -> Option<data_exchange::google::Token> {
+    if let Some(stored) = refresh_token {
+        let creds = creds.clone();
+        let token = cx
+            .background_spawn(async move { data_exchange::google::refresh(&creds, &stored) })
+            .await;
+        match token {
+            Ok(token) => return Some(token),
+            // An expired or revoked grant is not an error the user should see — it means consent
+            // again, which is what falls through below.
+            Err(err) => {
+                log::info!("the stored Google sign-in no longer works, asking again: {err}")
+            }
+        }
+    }
+
+    // Bound before the browser opens, so Google's redirect can't arrive before we're listening.
+    let consent = cx.update(|cx| match data_exchange::google::begin_consent(creds) {
+        Ok(consent) => {
+            cx.open_url(&consent.url);
+            Some(consent)
+        }
+        Err(err) => {
+            log::error!("Google sync could not start sign-in: {err}");
+            None
+        }
+    })?;
+
+    match cx
+        .background_spawn(async move { consent.wait_for_token() })
+        .await
+    {
+        Ok(token) => {
+            if let Some(refresh) = &token.refresh {
+                crate::google::set_refresh_token(refresh);
+            }
+            Some(token)
+        }
+        Err(err) => {
+            log::error!("Google sync could not sign in: {err}");
+            None
+        }
+    }
 }

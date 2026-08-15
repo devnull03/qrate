@@ -4,6 +4,7 @@ mod app_menus;
 mod app_settings;
 mod assets;
 mod export;
+mod google;
 mod logging;
 mod status_items;
 mod theming;
