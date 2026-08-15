@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /picker
+
+# ponytail: no sitemap — six pages, all one hop from the nav or footer.

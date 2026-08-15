@@ -1,7 +1,7 @@
 ---
 import Base from '../layouts/Base.astro';
 import AppWindow from '../components/AppWindow.astro';
-import { getReleases, latest, platformOf } from '../lib/releases.js';
+import { getReleases, latest, platformOf, REPO } from '../lib/releases.js';
 
 const releases = await getReleases();
 const rel = latest(releases);
@@ -22,26 +22,26 @@ const others = available.filter((os) => os !== fallback);
 const manual = [
   {
     num: '/01',
-    title: 'Edit like a spreadsheet',
-    body: 'Search, replace, undo, redo, filter. Freeze and reorder columns from the keyboard.',
+    title: 'Bulk edit like a spreadsheet',
+    body: 'Import a CSV, then search, replace, undo, redo, filter. Freeze and reorder columns from the keyboard.',
     meta: 'thousands of rows',
   },
   {
     num: '/02',
-    title: 'Files stay put',
+    title: 'Link scans without moving files',
     body: 'Link scans, documents, audio and video. Previews render in the panel; originals never move.',
     meta: 'PDFium · ffmpeg',
   },
   {
     num: '/03',
-    title: 'Checks that name the problem',
-    body: 'Spelling and column values land in the problems panel with the row and field named.',
+    title: 'Validation that names the problem',
+    body: 'Spelling and controlled-vocabulary checks land in the problems panel with the row and field named.',
     meta: '1490 errors · 5330 warnings',
   },
   {
     num: '/04',
-    title: 'Fields you define',
-    body: 'Column types, descriptions, authority lists and spell-check, set per project.',
+    title: 'A metadata schema you define',
+    body: 'Column types, descriptions, controlled vocabularies, authority lists and spell-check, set per collection.',
     meta: 'per project',
   },
 ];
@@ -62,11 +62,16 @@ const ruleBody = `px-[18px] pb-[22px] text-[14.5px] leading-[1.6] text-body md:p
 const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.035em] md:text-[30px] md:leading-[1.02]';
 ---
 
-<Base current="" version={rel?.tag_name}>
+<Base
+  title="qrate — collection metadata editor for archives"
+  description="A free, open-source desktop app for cataloguing collections. Edit metadata in a spreadsheet grid, link scans, check fields. macOS, Windows and Linux."
+  current=""
+  version={rel?.tag_name}
+>
   <section class="grid grid-cols-1 border-b border-rule-nav md:grid-cols-2">
     <div class="gut border-rule-nav py-[34px] md:border-r md:pb-[60px] md:pt-16">
       <div class="eyebrow mb-[22px] flex items-center gap-[9px]">
-        <span class="h-px w-5 bg-accent"></span>Open source · desktop · AGPL-3.0
+        <span class="h-px w-5 bg-accent"></span>Open source collections software · desktop · AGPL-3.0
       </div>
       <h1
         class="m-0 mb-[14px] text-[33px] font-semibold leading-[1.05] tracking-[-0.035em] md:mb-5 md:text-[52px] md:leading-[1.03]"
@@ -74,9 +79,9 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
         One file holds the whole catalogue.
       </h1>
       <p class="m-0 mb-7 max-w-[440px] text-[14.5px] leading-[1.6] text-body md:text-[16px]">
-        Records, fields, notes and every linked scan, in one <span
+        Collection metadata, notes and every linked scan, in one <span
           class="font-mono text-[13px] text-ink md:text-[14.5px]">.qrate</span
-        > file on your own disk. No account, no server.
+        > file on your own disk. No account, no server, works offline.
       </p>
       <div class="mb-[34px] flex flex-col items-stretch gap-2 md:flex-row md:items-center md:gap-2.5">
         <a
@@ -148,7 +153,9 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
     <div class="shot w-[900px] max-w-full">
       <img
         src="/shots/light-table.png"
-        alt="qrate window · record details, grid and problems panel"
+        width="1200"
+        height="790"
+        alt="qrate collection metadata editor: record details, spreadsheet grid and validation problems panel"
       />
     </div>
     <div class="flex w-[900px] max-w-full justify-between font-mono text-[11px] text-dim">
@@ -177,7 +184,11 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
     <div class="shot">
       <img
         src="/shots/light-gallery.png"
-        alt="qrate gallery view with an item preview open"
+        width="1200"
+        height="790"
+        loading="lazy"
+        decoding="async"
+        alt="qrate gallery view of a digitised collection with an item preview open"
       />
     </div>
     <div>
@@ -198,7 +209,7 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
 
   <div class={ruleRow} id="plugins">
     <div class={ruleNum}>/05</div>
-    <div class={ruleTitle}><h2 class={ruleH}>Extendable with plugins</h2></div>
+    <div class={ruleTitle}><h2 class={ruleH}>Islandora, and other plugins</h2></div>
     <div class={ruleBody}>
       Plugins add validation and column rules, and run from a folder you control. An Islandora
       plugin ships at launch, so subject, geo_location and person terms check against its
@@ -227,11 +238,35 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
           collection.qrate
         </div>
         Records, field definitions, authority lists, notes, validation state and the path to every
-        linked file. Copy it, back it up, hand it to a colleague. It opens the same on every
-        platform.
+        linked file. Export to CSV, JSON-LD, CSL-JSON or a ZIP. Copy it, back it up, hand it to a
+        colleague. It opens the same on every platform.
       </div>
     </div>
   </section>
+
+  <!-- Not for a rich result — a Software App card needs ratings, which qrate has
+       none of. This is for entity resolution: what qrate is, that it is free,
+       and where the source lives, for search and for AI answers. -->
+  <script
+    type="application/ld+json"
+    is:inline
+    set:html={JSON.stringify({
+      '@context': 'https://schema.org',
+      '@type': 'SoftwareApplication',
+      name: 'qrate',
+      description:
+        'One file holds the whole catalogue. A desktop editor for collection metadata, on macOS, Windows and Linux.',
+      applicationCategory: 'BusinessApplication',
+      operatingSystem: 'macOS, Windows, Linux',
+      softwareVersion: rel?.tag_name,
+      url: 'https://qrate.dvnl.work',
+      downloadUrl: 'https://qrate.dvnl.work/get-started',
+      codeRepository: `https://github.com/${REPO}`,
+      license: 'https://www.gnu.org/licenses/agpl-3.0.html',
+      isAccessibleForFree: true,
+      offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+    })}
+  />
 </Base>
 
 <script is:inline define:vars={{ byOs, available }}>

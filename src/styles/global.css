@@ -253,9 +253,12 @@
   padding: 9px;
   box-shadow: 0 10px 30px rgba(23, 20, 15, 0.1);
 
+  /* `height: auto` so the intrinsic width/height attributes reserve the right
+     box before the image loads, instead of fixing it at the full 790px. */
   & img {
     display: block;
     width: 100%;
+    height: auto;
     filter: var(--shot-filter);
   }
 }
