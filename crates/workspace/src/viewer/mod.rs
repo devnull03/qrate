@@ -343,6 +343,8 @@ impl Render for Viewer {
         div()
             .track_focus(&self.focus_handle)
             .id("viewer")
+            .role(Role::Group)
+            .aria_label("File viewer")
             // Fills whichever overlay slot mounted it; `absolute` so it stacks over that slot's
             // content. `top_0`/`left_0` are load-bearing: with no insets an absolute box takes a
             // *static* position, i.e. after its in-flow siblings — so in the centre slot, whose

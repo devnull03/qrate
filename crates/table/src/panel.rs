@@ -942,6 +942,9 @@ impl Render for TablePanel {
             // `TablePanel` context + tracked focus so Ctrl+F reaches the toggle even when no cell holds focus.
             .key_context("TablePanel")
             .track_focus(&self.focus_handle)
+            .id("table-panel")
+            .role(Role::Group)
+            .aria_label("Table")
             .on_action(cx.listener(|this, _: &Search, window, cx| this.toggle_search(window, cx)))
             // Ctrl+H opens the bar with the replacement row already out, rather than toggling it.
             .on_action(cx.listener(|this, _: &Replace, window, cx| {

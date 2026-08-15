@@ -869,6 +869,9 @@ impl Render for DetailsPanel {
             .size_full()
             .key_context(DETAILS_META.name)
             .track_focus(&self.focus_handle)
+            .id("details-panel")
+            .role(Role::Group)
+            .aria_label("Details")
             // The editor propagates Escape rather than consuming it, so discard the edit here. With
             // no editor open the key isn't this action at all — the panel's own `escape` binding
             // makes it `table::Deselect`, which is what replaces the Clear button the bundle used

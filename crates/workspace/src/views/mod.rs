@@ -369,6 +369,9 @@ impl Render for ViewsPanel {
             .size_full()
             .key_context(VIEWS_CONTEXT)
             .track_focus(&self.focus_handle)
+            .id("views-panel")
+            .role(Role::Group)
+            .aria_label("Views")
             .child(
                 div()
                     .flex_1()
