@@ -39,9 +39,15 @@ URL=$(sed -n 's/.*"url":"\([^"]*\)".*/\1/p' "$ENDPOINT")
 TOKEN=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' "$ENDPOINT")
 
 ask() {
-  curl -s -X POST "$URL" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$1"
+  curl -s -X POST "$URL" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -H 'X-Agent: claude-code' -d "$1"
 }
 ```
+
+Send `X-Agent` on every call. It is what the archivist sees in qrate's Agent panel beside each of
+your calls, and without it you appear as `unnamed agent`. Name the runtime, not the task —
+`claude-code`, `pi`, `claude-code/review-2` if two of you are running at once. It is a label, not a
+credential: qrate cannot check it, so never treat it as authorisation for anything.
 
 `sed` rather than a JSON parser on purpose — the endpoint file is two flat fields, and a machine
 running qrate is not guaranteed to have `python` or `jq`.

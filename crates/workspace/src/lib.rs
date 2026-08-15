@@ -11,7 +11,8 @@ pub use viewer::{Scope as ViewerScope, open_viewer};
 
 pub use dock_button::DockToggleButton;
 pub use panel_registry::{BarSide, PANELS, PanelMeta, PanelRegistry, bar_side};
-pub use panels::DETAILS_META;
+/// `record` is how the agent bridge in `app` files an entry for the Agent panel to show.
+pub use panels::{AgentCall, AgentEntry, DETAILS_META, record as record_agent_call};
 pub use views::{ShowView, VIEW_MODE_KEY, VIEWS_CONTEXT, ViewMode, show_view};
 
 use std::sync::Arc;

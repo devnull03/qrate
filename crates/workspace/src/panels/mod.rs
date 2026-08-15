@@ -5,5 +5,5 @@
 pub mod agent;
 pub mod details;
 
-pub use agent::{AGENT_META, AgentPanel};
+pub use agent::{AGENT_META, AgentCall, AgentPanel, Entry as AgentEntry, record};
 pub use details::{DETAILS_META, DetailsPanel};

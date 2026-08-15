@@ -61,6 +61,59 @@ A `.qrate` file is a project. It contains the collection grid, settings, notes, 
 
 qrate does not require an account or a hosted service. qrate does not enable Google Sheets export in this alpha release. Plugins run locally. Install plugins only from sources that you trust.
 
+## Agent panel
+
+An external AI agent can read the project that is open in qrate. To permit this, start qrate with `QRATE_AGENT_BRIDGE=1`. Without that variable, qrate does not listen and the panel stays empty. See [`AGENTS.md`](AGENTS.md) for the protocol.
+
+The **Agent** panel in the right dock lists everything that happened on that connection. The agent cannot change a cell. It can only read data and stage findings that you accept or ignore.
+
+### How to read an entry
+
+An entry has up to six parts:
+
+| Part | What it tells you |
+| --- | --- |
+| `+2:07` | Time since the first entry of this session, in minutes and seconds. It is not a clock time. |
+| `claude-code` | The name the agent gave for itself. See *Names are not proof* below. |
+| `rows` | The method the agent called, or `connected` / `disconnected`. |
+| `3 row(s)` | What the agent asked for. This line is absent for a method that takes no parameters. |
+| `3 rows` | What qrate answered, or why it refused. |
+| `4ms` | How long qrate took to answer. |
+
+### The three kinds of entry
+
+**An answered call** shows its result in grey. The result is a size, never your data: `1893 rows × 32 columns`, `3 rows`, `12 diagnostics`. qrate does not put cell contents in this list.
+
+**A refused call** shows the reason in red. Read these first. Common reasons:
+
+| Reason | What happened |
+| --- | --- |
+| `forbidden` | The caller sent a wrong token or no token. qrate makes a new token at each launch. |
+| `malformed_request` | The caller sent a method or a parameter that the protocol does not have. |
+| `project_unavailable` | No project is open. |
+| `too_many_rows`, `invalid_search_limit`, `too_many_findings` | The caller asked for more than one call permits. |
+
+**A connect or disconnect** shows in blue. The protocol has no session: each call is one request, one answer, and a closed socket. qrate therefore infers both events. `connected` is the first call from a name that passes the token check. `disconnected` is one minute of silence from that name.
+
+### Staged findings
+
+`stage_findings` is the only method that changes what you see. Its result reads `2 staged, 1 stale`.
+
+- **Staged** findings go to the Problems panel, beside your own validators' findings. A finding that proposes a new value also adds it to that cell's right-click **Fixes** menu.
+- **Stale** findings are dropped. A finding is stale when the cell no longer holds the text the agent read. This prevents a correction to text that nobody reviewed.
+
+Staged findings are never written to the `.qrate` file. They are gone when you close the project. A proposal changes a cell only after you click it in the Fixes menu.
+
+### Names are not proof
+
+The name in an entry is a label that the caller chose, in an `X-Agent` header. qrate cannot verify it. Anything that holds the token can claim any name. Use the name to tell two of your own agents apart, not to decide whether to trust a caller.
+
+### Copy an entry
+
+Right-click an entry. **Copy** copies that one line. **Copy all** copies the full list. Both give tab-separated text, which pastes into a spreadsheet as columns and into a bug report as a readable line.
+
+The list reads top to bottom, oldest first, and follows new entries as they arrive. It holds the most recent 200 entries. It is in memory only. It is never written to your project, and it is gone when you quit.
+
 ## Development
 
 The workspace uses Rust edition 2024. The main application crate is `crates/app`. Run these commands from the repository root:
