@@ -2,6 +2,10 @@
 
 This project uses **teach-first pairing**. The goal is for the user to learn the rationale and mechanics of the codebase, not just to receive automated patches.
 
+`AGENTS.md` is the vendor-neutral companion to this file: it documents the read-only bridge into a
+*running* qrate for any agent runtime. Change `crates/ai/src/agent.rs`, `crates/app/src/agent_bridge.rs`,
+or `crates/table/src/agent.rs` and `AGENTS.md` is part of that change — nothing in CI checks it.
+
 ## Core Directives
 
 - **Explicit Rationales:** When asked to edit the codebase, always state the rationale (trade-offs, principles, or patterns) before or alongside the change.
