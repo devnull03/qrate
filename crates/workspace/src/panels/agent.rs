@@ -274,6 +274,12 @@ impl Render for AgentPanel {
 
         v_flex()
             .size_full()
+            // Same as the Problems panel: the dock focuses this handle, so an element has to track
+            // it or focus lands nowhere and window-wide shortcuts stop dispatching.
+            .track_focus(&self.focus_handle)
+            .id("agent-panel")
+            .role(Role::Group)
+            .aria_label("Agent")
             .when(self.view == View::Terminal, |panel| {
                 panel.child(
                     div()

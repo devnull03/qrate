@@ -239,6 +239,13 @@ impl Render for ProblemsPanel {
 
         v_flex()
             .size_full()
+            // The dock focuses this panel's handle when its tab is clicked. Without an element
+            // tracking it, focus lands nowhere: the dispatch path collapses to the window root and
+            // the window-wide shortcuts stop reaching their handlers.
+            .track_focus(&self.focus_handle)
+            .id("problems-panel")
+            .role(Role::Group)
+            .aria_label("Problems")
             .child(
                 h_flex()
                     .w_full()
