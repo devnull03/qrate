@@ -32,6 +32,9 @@ plugin-api = { path = "../plugin-api" }
 plugin-host = { path = "../plugin-host" }
 workspace = { path = "../workspace" }
 
+[build-dependencies]
+winresource = "0.1"
+
 [dev-dependencies]
 # `#[gpui::test]` and TestAppContext are behind this feature.
 gpui = { workspace = true, features = ["test-support"] }

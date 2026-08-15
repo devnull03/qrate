@@ -34,6 +34,15 @@ fn generate_theme_list() {
 fn main() {
     generate_theme_list();
 
+    println!("cargo:rerun-if-changed=../../assets/icons/app-icon.ico");
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let mut resource = winresource::WindowsResource::new();
+        resource.set_icon("../../assets/icons/app-icon.ico");
+        resource
+            .compile()
+            .expect("failed to embed the Windows app icon");
+    }
+
     // Authoritative on a runner, and does not need `git` on PATH.
     let sha = std::env::var("GITHUB_SHA")
         .map(|sha| sha[..sha.len().min(7)].to_string())
