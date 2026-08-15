@@ -144,6 +144,10 @@ pub(crate) fn open_main_window(cx: &mut gpui::App) {
 pub struct App {
     workspace: Entity<Workspace>,
     status_bar: Entity<StatusBar>,
+    /// Focused at startup so the `qrate` root is always on the dispatch path. Without it nothing
+    /// in the window holds focus until a panel is clicked, and gpui dispatches to the *window*
+    /// root instead — so Ctrl+B and friends match their binding but reach no handler.
+    focus_handle: FocusHandle,
     _main_window_bounds_sub: Subscription,
     /// Repaints the title bar's unsaved-changes dot when the dirty set changes. `dirty::mark`/
     /// `clear` mutate the global, so this fires on every edit and every save.
@@ -221,9 +225,15 @@ impl App {
 
         let _dirty_sub = cx.observe_global::<settings::dirty::Dirty>(|_, cx| cx.notify());
 
+        let focus_handle = cx.focus_handle();
+        if window.focused(cx).is_none() {
+            focus_handle.focus(window, cx);
+        }
+
         Self {
             workspace,
             status_bar,
+            focus_handle,
             _main_window_bounds_sub,
             _dirty_sub,
         }
@@ -249,6 +259,9 @@ impl Render for App {
             // Dock toggles are handled here on the root so the shortcuts work window-wide,
             // regardless of which panel currently holds focus.
             .key_context("qrate")
+            .track_focus(&self.focus_handle)
+            .id("qrate-root")
+            .role(Role::Group)
             .on_action(cx.listener(|this, _: &ToggleLeftDock, window, cx| {
                 this.toggle_dock(DockPlacement::Left, window, cx)
             }))
