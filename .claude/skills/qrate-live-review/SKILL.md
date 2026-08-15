@@ -1,6 +1,6 @@
 ---
 name: qrate-live-review
-description: Read the metadata in a running qrate app — the open project's columns, rows, diagnostics, and current selection — over the local agent bridge, and review it. Use when asked to look at, review, audit, or answer questions about the project that is open in qrate right now ("what's in my table", "review the rows I have selected", "what problems does qrate see"), rather than about files on disk. Read-only: the bridge cannot change a single cell.
+description: Read the metadata in a running qrate app — the open project's columns, rows, diagnostics, and current selection — over the local agent bridge, review it, and stage what you found back into qrate's Problems panel and Fixes menu as drafts. Use when asked to look at, review, audit, or answer questions about the project that is open in qrate right now ("what's in my table", "review the rows I have selected", "what problems does qrate see"), rather than about files on disk. The bridge cannot change a single cell: every proposal waits for the archivist to click it.
 ---
 
 # Review the project open in qrate

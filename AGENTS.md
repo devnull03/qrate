@@ -14,10 +14,11 @@ qrate can hand you the metadata it currently holds in memory, including cell edi
 has not saved yet. This is the only route to that state — the `.qrate` file on disk is the last
 save, not what is on screen.
 
-### The bridge is read-only, and that is the point
+### The bridge cannot change a cell, and that is the point
 
-There is no write operation in the protocol. You cannot fix a row, only say what you would change
-and let the archivist decide. Never tell the user you have corrected something.
+Nothing in the protocol writes data. You cannot fix a row — you can only stage what you would
+change and let the archivist decide, one click at a time, in their own app. Never tell the user you
+have corrected something.
 
 The archive is somebody's real collection. When you report a problem, quote the row index and the
 column name so they can find it, and say what the data says rather than what you assume it means —
@@ -64,12 +65,51 @@ that take none.
 | `{"method":"search_rows","params":{"query":"1974","limit":20}}` | rows whose column name or value contains the query, case-insensitive |
 | `{"method":"diagnostics"}` | what qrate's own validators already flagged, with severity and source |
 | `{"method":"selected_rows"}` | source-row indices the archivist has selected right now |
+| `{"method":"stage_findings","params":{…}}` | publishes your findings as drafts — see below |
 
 Every response carries a `revision`. If it changes between calls, the archivist edited something
 mid-review — re-read anything you are about to quote.
 
 Row indices are **source** rows and ignore any active filter, so an index from `selected_rows` or
 `diagnostics` can be passed straight to `rows`.
+
+### Handing findings back
+
+`stage_findings` is how a review reaches the archivist. Each finding lands in qrate's Problems panel
+beside its own validators' output, and a finding that carries a `replacement` also puts that value
+in the cell's right-click **Fixes** menu — which the archivist has to open and click. Staging writes
+nothing.
+
+```json
+{"method":"stage_findings","params":{
+  "revision": 12,
+  "findings": [{
+    "row": 41,
+    "column": "Date",
+    "severity": "warning",
+    "message": "the title says 1962 but this column reads 1926 — likely transposed digits",
+    "expected": "1926",
+    "replacement": "1962"
+  }]
+}}
+```
+
+- `revision` is the one from the reads this batch is based on. Echo it; do not invent it.
+- `expected` is the cell text you judged, copied exactly from what `rows` gave you. qrate drops any
+  finding whose cell no longer says that, and withholds the fix later if the cell changes before the
+  archivist opens the menu. This is the guard that stops you proposing an edit to text nobody read —
+  getting `expected` wrong silently loses the finding.
+- `replacement` is the cell's **whole** new text, not a fragment. Omit it for an observation with no
+  fix to offer; most findings should omit it.
+- `severity`: `error`, `warning`, or `note`. Use `note` freely and `error` only for something
+  demonstrably wrong.
+
+The reply is `{"accepted": n, "stale": [indices]}`, where `stale` indexes into the batch you sent.
+Re-read those rows and re-stage them if they still matter.
+
+Each batch **replaces** the last one you staged. Send everything you stand by in one call, and send
+an empty `findings` list to retract. Max 200 findings per batch, 512 characters per message —
+the panel shows one line per finding, so write one sentence.
 
 ### Working order
 
@@ -81,6 +121,8 @@ Row indices are **source** rows and ignore any active filter, so an index from `
 3. Then read rows. `selected_rows` when the ask is about "these", `search_rows` when it is about a
    term, explicit indices when the diagnostics pointed at them.
 4. Report by row index and column name. Separate "this is wrong" from "this looks inconsistent".
+5. `stage_findings` last, once, with everything you stand by — so the archivist sees the review in
+   the app rather than only in your transcript. Tell them it is staged and still theirs to accept.
 
 Errors come back as `{"error": ...}`: `project_unavailable` means no project is open,
 `table_unavailable` means no table is loaded yet, and the rest are bad requests — check the row

@@ -23,8 +23,9 @@ use gpui::App;
 use serde_json::json;
 
 const POLL: Duration = Duration::from_millis(250);
-/// Enough for the largest `Request` the contract allows, and nothing like enough to be a spool.
-const MAX_BODY: usize = 16 * 1024;
+/// Enough for the largest `Request` the contract allows — a full batch of staged findings, each
+/// carrying the cell text it was judged against — and nothing like enough to be a spool.
+const MAX_BODY: usize = 256 * 1024;
 
 fn endpoint_path() -> Option<PathBuf> {
     settings::data_dir().map(|dir| dir.join("agent-bridge.json"))
@@ -98,7 +99,7 @@ pub fn shutdown() {
     }
 }
 
-fn serve(mut stream: TcpStream, token: &str, cx: &App) {
+fn serve(mut stream: TcpStream, token: &str, cx: &mut App) {
     let framed = stream
         .set_read_timeout(Some(POLL))
         .and_then(|()| stream.set_write_timeout(Some(POLL)))
