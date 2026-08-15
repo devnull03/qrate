@@ -7,6 +7,7 @@
 //! is where the view switcher and any non-grid view live. Cross-crate readers (`workspace`'s
 //! Details panel, `app`'s status-bar items) reach the shared state through `TableStateHandle`.
 
+mod agent;
 mod cell;
 mod delegate;
 mod editing;
@@ -19,6 +20,7 @@ mod panel;
 pub mod photos;
 mod row_index;
 
+pub use agent::respond_to_agent;
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 /// The grid's right-click menu, so a gallery card can raise the same one a row does rather than
 /// growing a second, quietly diverging copy.

@@ -1,4 +1,5 @@
 mod actions;
+mod agent_bridge;
 mod app_menus;
 mod app_settings;
 mod assets;
@@ -392,6 +393,7 @@ fn flush_all_state(cx: &mut gpui::App) {
     }
     // Everything above reached disk synchronously, so nothing is outstanding.
     settings::dirty::clear_all(cx);
+    agent_bridge::shutdown();
 }
 
 fn main() {
@@ -441,6 +443,7 @@ fn main() {
             cx,
         );
         checks::init(cx);
+        agent_bridge::init(cx);
 
         cx.on_action(|_: &ReloadPlugins, cx| {
             plugin_host::reload(cx);

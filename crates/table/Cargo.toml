@@ -10,6 +10,7 @@ gpui-component.workspace = true
 regex = "1"
 serde.workspace = true
 serde_json.workspace = true
+ai = { path = "../ai" }
 diagnostics = { path = "../diagnostics" }
 plugin-api = { path = "../plugin-api" }
 settings = { path = "../settings" }

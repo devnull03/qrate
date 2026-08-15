@@ -17,6 +17,9 @@ sysinfo.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
+# The agent bridge's request/response types; the transport lives here because only the
+# composition root links both the contract and the live table.
+ai = { path = "../ai" }
 window-wrapper = { path = "../window-wrapper" }
 project-wizard = { path = "../project-wizard" }
 checks = { path = "../checks" }

@@ -132,6 +132,11 @@ impl QrateTableDelegate {
         self.values_generation
     }
 
+    /// Source rows, including ones a filter currently hides.
+    pub(crate) fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
     /// View→source conversion at the single library boundary. `None` for a view index that's
     /// stale for the current filtered set.
     pub fn source(&self, view: usize) -> Option<usize> {
