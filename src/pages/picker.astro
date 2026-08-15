@@ -11,10 +11,16 @@
 // without it grants nothing, and qrate gets a 404 on the write instead.
 const APP_ID = '805791669854';
 
-// A browser API key, safe to ship in the page, restricted by HTTP referrer to
-// this site. Create it in the same Cloud project; until it is set the page
-// says so rather than failing silently.
-const PICKER_API_KEY = '';
+// Injected at build time from .env locally, or the Cloudflare build variable in
+// CI — kept out of the source so it can be rotated without a commit.
+//
+// It still ends up inlined in this page, and that is fine: a Picker key is a
+// browser key and cannot be hidden from anyone who opens devtools. What stops
+// it being used elsewhere is the HTTP referrer restriction on the key itself,
+// not where it is stored. Restrict it to this site in the Cloud console.
+//
+// Unset builds render a message rather than failing silently.
+const PICKER_API_KEY = import.meta.env.PICKER_API_KEY ?? '';
 ---
 
 <html lang="en">
