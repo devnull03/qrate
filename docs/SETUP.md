@@ -11,7 +11,7 @@ release, since a release depends on several pieces being configured ahead of tim
 | Branch | Contents | Purpose |
 |---|---|---|
 | `main` | The Rust **GPUI** desktop app (`crates/*`) + release pipeline | Default branch and source of truth. Routine work lands here directly via short-lived **feature branches** (no PR required); tag-driven releases are cut from here. |
-| `site` | An **Astro** static site (no Rust) | The public releases page deployed to GitHub Pages. Independent of the app. |
+| `site` | An **Astro** site (no Rust) | `qrate.dvnl.work`, served by a Cloudflare Worker. Mostly prerendered; `/oauth/config` is a live endpoint the app depends on (`docs/site-oauth-handoff.md`). |
 
 > Branch features off `main` and land them back on `main` directly.
 
@@ -30,8 +30,9 @@ Workspace crates (versions are inherited from `[workspace.package].version`):
   so build/test there.
 
 **Site (on `site`):**
-- Node 20+ and npm. `npm install`, then `npm run dev`
-  (`http://localhost:4321/qrate/`).
+- Bun. `bun install`, then `bun run dev` (`http://localhost:4321/` — the `/qrate`
+  base went away with the custom domain). The dev server serves `/oauth/config`
+  too, so the endpoint can be exercised without deploying.
 
 **Google sign-in (optional locally):** the client id and secret are read at *compile* time by
 `option_env!`, so they have to be in the environment before `cargo run` and a change to them needs
@@ -55,14 +56,14 @@ never in source.
 These are the "things to set up beforehand" — without them the pipelines fail or
 produce nothing visible.
 
-1. **GitHub Pages → GitHub Actions source.**
-   Settings → Pages → Build and deployment → Source = **GitHub Actions**
-   (API `build_type: "workflow"`). Required for `deploy-site.yml` to publish.
-   Verify: `gh api repos/devnull03/qrate/pages --jq .build_type` → `workflow`.
+1. **Cloudflare deploy hook.** Cloudflare → the qrate Worker → Settings → Builds →
+   Deploy hooks. Store the URL as the repo secret `CLOUDFLARE_DEPLOY_HOOK`; it is
+   what `redeploy-site-on-release.yml` posts to (§4). Verify by hand once:
+   `curl -fsS -X POST "<hook>"` → `{"result":{...},"success":true}`.
 
 2. **Actions permissions.** Settings → Actions → General → Workflow permissions:
-   allow workflows to write (the release job needs `contents: write`; the site
-   dispatcher needs `actions: write`). These are also declared per-workflow.
+   allow workflows to write (the release job needs `contents: write`). These are
+   also declared per-workflow.
 
 3. **Branch protection (optional).** This repo pushes directly to `main`, so there
    is no PR gate by default. If you want one later, protect `main` and require the
@@ -76,14 +77,16 @@ produce nothing visible.
    a Windows code-signing cert) and signing steps in `release.yml`. None exist yet,
    so no secrets are required to build today.
 
-5. **Custom domain (optional).** Settings → Pages writes a `CNAME`; then set
-   `site:` in `astro.config.mjs` to the domain and drop/empty `base`.
+5. **Google credentials.** Actions secrets, mapped into the `QRATE_*` build vars by
+   `release.yml` — nothing else needs editing. Only one of the three is required:
 
-6. **Google credentials (only if release builds should sign in).** Add `GOOGLE_CLIENT_ID`,
-   `GOOGLE_CLIENT_SECRET` and `GOOGLE_CONFIG_TOKEN` as Actions secrets. `release.yml` already maps
-   all three into the `QRATE_*` build vars, so nothing else needs editing. They are the fallback
-   the binary carries; the live pair comes from the credential endpoint at runtime, so rotating the
-   Cloud project does **not** need a new release.
+   | Secret | Needed? |
+   |---|---|
+   | `GOOGLE_CONFIG_TOKEN` | **Yes.** Without it the binary sends an empty bearer, the credential endpoint answers 401, and a fresh install can never sign in at all. |
+   | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Optional. The live pair comes from the endpoint at runtime; these are only the last rung, for a first-ever sign-in while **our** endpoint is down but Google is up. |
+
+   Rotating the Cloud project does not need a release — that is the whole point of
+   the endpoint (`docs/site-oauth-handoff.md`).
 
 ---
 
@@ -115,25 +118,23 @@ Four workflows, two on `main`, one on `site`, and CI on `dev`/PRs.
 - **Publishes:** a **DRAFT** release with the artifacts + `SHA256SUMS.txt`. It does
   **not** set the pre-release flag — you choose that when you publish (§5).
 
-> **Broken since the Cloudflare cutover (2026-08-15).** `qrate.dvnl.work` is served by a
-> Cloudflare Worker, not GitHub Pages, so the two site workflows below still run and still deploy —
-> to a Pages site nobody visits. **Publishing a release leaves the live site stale and says
-> nothing.** The fix is a Cloudflare deploy hook and swapping the dispatch in
-> `redeploy-site-on-release.yml` for a `curl` at it. Until then, redeploy the site by hand after
-> publishing a release.
+### Building the site — Cloudflare Workers Builds (on `site`)
+`qrate.dvnl.work` is served by a Cloudflare Worker, which Cloudflare rebuilds on
+each commit to `site`. Nothing in this repo drives that; it is configured on the
+Cloudflare side. The build fetches the **release list at build time**, so the
+releases page only ever shows what existed when it last ran.
 
-### `deploy-site.yml` — build & deploy the site (on `site`)
-- **Triggers:** push to `site`; `workflow_dispatch`.
-- **Does:** `withastro/action` builds the Astro site, which **fetches the release
-  list at build time** using the job's `GITHUB_TOKEN` (1000 req/hr, no token in the
-  shipped HTML), then `actions/deploy-pages` publishes it.
+`deploy-site.yml` on `site` still publishes the static half to GitHub Pages. That
+is now a second, unvisited copy — decide whether to keep it, but don't mistake a
+green run there for the live site updating.
 
 ### `redeploy-site-on-release.yml` — refresh the site on release (on `main`)
 - **Trigger:** `release: published` (and `workflow_dispatch`).
 - **Why it lives on `main`:** `release` events only fire for workflows on the
-  **default branch**. The site's build is on `site`, so this small workflow bridges
-  the gap: it runs `gh workflow run deploy-site.yml --ref site`.
-- **Net effect:** publishing a release ⇒ the site rebuilds and shows it.
+  **default branch**.
+- **Does:** `POST`s the Cloudflare deploy hook (`CLOUDFLARE_DEPLOY_HOOK`). A
+  release publish makes no commit anywhere, so without this Cloudflare has no
+  reason to rebuild and the site silently keeps showing the previous release.
 
 ```
 tag vX.Y.Z ─▶ release.yml (build dmg/zip/exe) ─▶ DRAFT release
@@ -142,9 +143,9 @@ tag vX.Y.Z ─▶ release.yml (build dmg/zip/exe) ─▶ DRAFT release
                                           release: published
                                                      │
                               redeploy-site-on-release.yml (on main)
-                                                     │ gh workflow run --ref site
+                                                     │ POST the deploy hook
                                                      ▼
-                                    deploy-site.yml (on site) ─▶ Pages updates
+                                  Cloudflare Workers Builds ─▶ qrate.dvnl.work updates
 ```
 
 ---

@@ -1,24 +1,24 @@
 name: Redeploy site on release publish
 
-# The releases page (on the `site` branch) is rendered at build time, so it only
-# reflects releases that existed when it was last built. `release` events fire
-# only for workflows on the default branch, so this lives on `main` and simply
-# triggers the site's own deploy workflow over on the `site` branch.
+# The releases page is rendered at build time, so it only reflects releases that
+# existed when it was last built. `release` events fire only for workflows on the
+# default branch, so this lives on `main`.
+#
+# The site is built by Cloudflare Workers Builds, which triggers on a commit to
+# `site` — and publishing a release makes no commit anywhere. Without this the
+# site simply goes stale, with nothing failing to say so.
 on:
   release:
     types: [published]
   workflow_dispatch:
 
-permissions:
-  actions: write # needed to dispatch another workflow
-
 jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger site deploy
-        # --repo is required: this job has no checkout, so gh can't infer the
-        # repository from a local git remote.
-        run: gh workflow run deploy-site.yml --ref site --repo "${{ github.repository }}"
+      - name: Trigger the Cloudflare build
+        # -f, or curl exits 0 on a 404 and this job stays green having done
+        # nothing — which is the failure this workflow exists to prevent.
+        run: curl -fsS -X POST "$HOOK"
         env:
-          GH_TOKEN: ${{ github.token }}
+          HOOK: ${{ secrets.CLOUDFLARE_DEPLOY_HOOK }}
