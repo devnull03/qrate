@@ -36,6 +36,12 @@ const CONTACT = 'qrate@dvnl.work';
     and we run no advertising or analytics scripts. Application downloads are served by GitHub,
     whose own privacy policy applies once you follow a download link.
   </p>
+  <p>
+    One address on this site answers qrate rather than a browser: it hands the application its own
+    Google API credentials, so they can be rotated without shipping a new release. It carries no
+    personal data in either direction, and your Google sign-in never passes through it — that
+    happens between your browser, Google, and your own computer.
+  </p>
 
   <h2>Google user data</h2>
   <p>
@@ -46,8 +52,15 @@ const CONTACT = 'qrate@dvnl.work';
   <ul>
     <li>
       <strong>Scope requested:</strong> <code>drive.file</code> only. This scope reaches only the
-      files qrate itself creates. It gives qrate no access to the rest of your Drive — not your
-      existing documents, not your folders, not your file list.
+      files qrate itself creates and the ones you hand it by name through Google's own file chooser.
+      It gives qrate no access to the rest of your Drive — not your other documents, not your
+      folders, not your file list.
+    </li>
+    <li>
+      <strong>Choosing an existing sheet:</strong> qrate opens Google's file chooser in your browser.
+      Google shows you your own files and tells qrate about the one you pick, and nothing else. The
+      chooser page on this site never sees the list; your selection is passed back to qrate on your
+      own machine.
     </li>
     <li>
       <strong>What is sent:</strong> the rows and columns of the project you chose to export, sent
