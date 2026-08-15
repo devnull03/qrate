@@ -55,9 +55,9 @@ running qrate is not guaranteed to have `python` or `jq`.
 
 The token is regenerated every launch. Re-read the file if a call starts returning `forbidden`.
 
-If your runtime cannot run a shell, any HTTP client will do: POST the request JSON to `url` with an
-`Authorization: Bearer <token>` header. The bridge ignores the method and path, so it is only HTTP
-to the extent that an ordinary client can talk to it.
+If your runtime cannot run a shell, any HTTP client will do: POST the request JSON to `url` with the
+`Authorization: Bearer <token>` and `X-Agent` headers. The bridge ignores the method and path, so it
+is only HTTP to the extent that an ordinary client can talk to it.
 
 ### The requests
 
@@ -136,5 +136,6 @@ Errors come back as `{"error": ...}`: `project_unavailable` means no project is 
 count and query limits above before retrying.
 
 The contract's types are `crates/ai/src/agent.rs`, the transport is `crates/app/src/agent_bridge.rs`,
-and the live-table adapter is `crates/table/src/agent.rs`. Change any of them and this file is part
-of the change.
+the live-table adapter is `crates/table/src/agent.rs`, and the panel that shows the archivist what
+you did is `crates/workspace/src/panels/agent.rs`. Change any of them and this file is part of the
+change.

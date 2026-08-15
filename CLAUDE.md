@@ -2,9 +2,13 @@
 
 This project uses **teach-first pairing**. The goal is for the user to learn the rationale and mechanics of the codebase, not just to receive automated patches.
 
-`AGENTS.md` is the vendor-neutral companion to this file: it documents the read-only bridge into a
-*running* qrate for any agent runtime. Change `crates/ai/src/agent.rs`, `crates/app/src/agent_bridge.rs`,
-or `crates/table/src/agent.rs` and `AGENTS.md` is part of that change — nothing in CI checks it.
+`AGENTS.md` is the vendor-neutral companion to this file: it documents the bridge into a *running*
+qrate for any agent runtime. Nothing in that bridge writes a cell — an agent reads live state and
+stages findings the archivist accepts by hand. Change `crates/ai/src/agent.rs`,
+`crates/app/src/agent_bridge.rs`, `crates/table/src/agent.rs`, or
+`crates/workspace/src/panels/agent.rs` (the panel the bridge reports itself into) and `AGENTS.md` is
+part of that change — nothing in CI checks it. The `X-Agent` header an agent names itself with only
+exists to fill a column in that panel, so the two drift together.
 
 ## Core Directives
 
@@ -49,7 +53,7 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | `plugin-host` | the Luau runtime that loads and runs plugins |
 | `plugin-api` | the types a plugin sees — see the three-repo rule below |
 | `preview` | turns a linked file into pixels — the format ladder and the thumbnail cache. Native decoders (PDF, video, RAW) belong here so they never reach `table` |
-| `ai` | traits + Cohere/mock providers for planned AI review/embedding. Deliberately unfinished |
+| `ai` | two halves: `agent.rs` is the *shipped* external-agent contract (see `AGENTS.md`); the rest is traits + Cohere/mock providers for planned AI review/embedding, deliberately unfinished |
 
 ## Project Status Tracking
 
@@ -87,7 +91,7 @@ A 2026-07-17 whole-repo audit removed exactly this kind of code; don't reintrodu
 - **No single-line forwarding wrappers.** A function whose body is one call to another function with no added logic gets deleted — make the target `pub` and call it directly (e.g. the removed `persist_layout_on_quit`). Exception: thin accessors that are the only route to a private field (`QrateTableDelegate::cell`/`row_image`) are encapsulation, keep those.
 - **No `new()`/`Default` for fieldless unit structs.** Construct `StatusBar`-style structs directly: `cx.new(|_| StatusBar)`.
 - **One builder function per UI component, conditions inline.** Don't split a gpui component into a helper fn per visual part — use closures, `FluentBuilder::map`/`when`, and `match` inside a single function (see `render_image_frame` in `crates/workspace/src/panels/details.rs`). If a builder is genuinely shared across multiple `Render` impls, return `AnyElement` — propagating gpui's nested builder generics into several callers overflows rustc's stack at type-check time.
-- **No speculative scaffolding.** Code "kept for later" outside the module tree, provider stubs full of `todo!()`, and builder methods only tests call are deletions, not investments — git history is the archive. **One deliberate exception, do not flag or delete it:** the `ai` crate (`crates/ai/` — traits + Cohere/mock providers) is the planned home for AI review/embedding and stays despite its `todo!()` bodies.
+- **No speculative scaffolding.** Code "kept for later" outside the module tree, provider stubs full of `todo!()`, and builder methods only tests call are deletions, not investments — git history is the archive. **One deliberate exception, do not flag or delete it:** the `ai` crate's providers (`crates/ai/src/traits.rs` + `providers/` — Cohere/mock) are the planned home for AI review/embedding and stay despite their `todo!()` bodies. `crates/ai/src/agent.rs` is not in that category at all — it is the live external-agent contract with a transport and a panel behind it, so audit it like any shipped code.
 - **Explanation comments.** If you have to write a comment of more than 1 line to justify a decision, that is the wrong decision. Go back and rethink the implementation from the start in a different manner.
 
 ## Preview binaries
