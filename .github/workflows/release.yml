@@ -22,7 +22,7 @@ env:
   # Sent to the credential endpoint. It ships inside the binary, so it turns away casual scraping
   # and nothing more — see docs/site-oauth-handoff.md. Absent: the endpoint answers 401 and the
   # app carries on with the pair above.
-  QRATE_GOOGLE_CONFIG_TOKEN: ${{ secrets.GOOGLE_CONFIG_TOKEN }}
+  QRATE_GOOGLE_CONFIG_TOKEN: ${{ secrets.QRATE_GOOGLE_CONFIG_TOKEN }}
 
 jobs:
   # ---------------------------------------------------------------------------
