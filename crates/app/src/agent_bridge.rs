@@ -5,10 +5,10 @@
 //! links both the contract and the live table. Every call is filed with the Agent panel on its way
 //! out, refusals included — this is the only place that sees all of them.
 //!
-//! Off unless `QRATE_AGENT_BRIDGE=1`: a port that hands out the open project's contents is not
-//! something to run by default. When on, it binds 127.0.0.1 on an ephemeral port and writes the
-//! port plus a per-run bearer token to `agent-bridge.json` beside the log, so anything that can
-//! read the answers already has the user's own file permissions.
+//! On by default, and switchable in Settings while the app runs. It binds 127.0.0.1 on an
+//! ephemeral port and writes the port plus a per-run bearer token to `agent-bridge.json` beside
+//! the log, so anything that can read the answers already has the user's own file permissions —
+//! which a local process reading the `.qrate` file directly would have anyway.
 //!
 //! The accept loop is a foreground poll rather than a thread because answering means reading live
 //! GPUI state, which only the main thread may do.
@@ -43,58 +43,68 @@ fn endpoint_path() -> Option<PathBuf> {
     settings::data_dir().map(|dir| dir.join("agent-bridge.json"))
 }
 
-/// Bind the bridge and start answering, if this run opted in.
+/// The setting that decides whether the bridge listens. Absent means on: an agent that cannot
+/// reach qrate fails in a way nobody can diagnose from inside qrate, so the useful default is the
+/// one where the Agent panel has something to show.
+pub const AGENT_BRIDGE_KEY: &str = "agent_bridge";
+
+/// Follow the setting for the life of the app: bind when it is on, let go of the port when it is
+/// off, and answer whatever arrives in between.
 pub fn init(cx: &mut App) {
-    if std::env::var("QRATE_AGENT_BRIDGE").as_deref() != Ok("1") {
-        return;
+    // Absent on a first run. Writing it once makes the Settings switch agree with the port that is
+    // actually open, rather than reading "off" over a listening bridge.
+    if !settings::AppSettings::get(cx)
+        .values
+        .contains_key(AGENT_BRIDGE_KEY)
+    {
+        settings::AppSettings::set_bool(AGENT_BRIDGE_KEY, true, cx);
     }
-
-    let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, 0)) {
-        Ok(listener) => listener,
-        Err(err) => {
-            log::error!("agent bridge could not bind a loopback port, staying off: {err}");
-            return;
-        }
-    };
-    if let Err(err) = listener.set_nonblocking(true) {
-        log::error!("agent bridge could not poll its listener, staying off: {err}");
-        return;
-    }
-
-    // ponytail: `RandomState` keys are OS randomness gathered at process start, which is the
-    // strongest source std exposes. Swap in `getrandom` if this ever guards more than loopback.
-    let token = format!(
-        "{:016x}{:016x}",
-        RandomState::new().hash_one(0u8),
-        RandomState::new().hash_one(1u8)
-    );
-    let Some(path) = endpoint_path() else {
-        log::error!("agent bridge has nowhere to publish its port, staying off");
-        return;
-    };
-    let port = listener.local_addr().map_or(0, |addr| addr.port());
-    let endpoint = json!({ "url": format!("http://127.0.0.1:{port}"), "token": token });
-    if let Err(err) = fs::write(&path, endpoint.to_string()) {
-        log::error!(
-            "agent bridge could not write {}, staying off: {err}",
-            path.display()
-        );
-        return;
-    }
-    log::info!(
-        "agent bridge listening on 127.0.0.1:{port}, endpoint in {}",
-        path.display()
-    );
 
     cx.spawn(async move |cx| {
+        // The open port and the token that guards it, or `None` while the setting is off.
+        let mut serving: Option<(TcpListener, String)> = None;
         // Last authenticated call per claimed name, owned by the accept loop rather than a global
         // — nothing outside this loop has any use for it.
         let mut seen: HashMap<SharedString, Instant> = HashMap::new();
+
         loop {
             cx.background_executor().timer(POLL).await;
+
+            let wanted = cx.update(settings_says_on);
+            match (wanted, serving.is_some()) {
+                (true, false) => {
+                    serving = start();
+                    if let Some((listener, _)) = &serving {
+                        let port = listener.local_addr().map_or(0, |addr| addr.port());
+                        let outcome = format!("listening on 127.0.0.1:{port}");
+                        cx.update(|cx| {
+                            workspace::record_agent_call(lifecycle("qrate", "bridge", outcome), cx)
+                        });
+                    }
+                }
+                (false, true) => {
+                    // Dropping the listener closes the port; the endpoint file has to go with it
+                    // so nothing keeps pointing at an address qrate no longer answers on.
+                    serving = None;
+                    shutdown();
+                    seen.clear();
+                    log::info!("agent bridge switched off, port closed");
+                    cx.update(|cx| {
+                        workspace::record_agent_call(
+                            lifecycle("qrate", "bridge", "switched off in Settings"),
+                            cx,
+                        )
+                    });
+                }
+                _ => {}
+            }
+
+            let Some((listener, token)) = &serving else {
+                continue;
+            };
             loop {
                 match listener.accept() {
-                    Ok((stream, _)) => cx.update(|cx| serve(stream, &token, &mut seen, cx)),
+                    Ok((stream, _)) => cx.update(|cx| serve(stream, token, &mut seen, cx)),
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(err) => {
                         log::warn!("agent bridge dropped a connection: {err}");
@@ -121,10 +131,59 @@ pub fn init(cx: &mut App) {
     .detach();
 }
 
-/// A connect or disconnect, which the transport infers because the protocol carries no session.
-fn lifecycle(agent: SharedString, label: &'static str, why: &'static str) -> AgentCall {
+/// Whether the bridge should be listening right now. Absent reads as on — see [`AGENT_BRIDGE_KEY`].
+fn settings_says_on(cx: &mut App) -> bool {
+    match settings::AppSettings::get(cx).values.get(AGENT_BRIDGE_KEY) {
+        Some(value) => value.bool(),
+        None => true,
+    }
+}
+
+/// Bind a loopback port, mint this run's token, and publish both. `None` on any failure, each of
+/// which is logged where somebody reading a bug report will find it.
+fn start() -> Option<(TcpListener, String)> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .inspect_err(|err| log::error!("agent bridge could not bind a loopback port: {err}"))
+        .ok()?;
+    listener
+        .set_nonblocking(true)
+        .inspect_err(|err| log::error!("agent bridge could not poll its listener: {err}"))
+        .ok()?;
+
+    // ponytail: `RandomState` keys are OS randomness gathered at process start, which is the
+    // strongest source std exposes. Swap in `getrandom` if this ever guards more than loopback.
+    let token = format!(
+        "{:016x}{:016x}",
+        RandomState::new().hash_one(0u8),
+        RandomState::new().hash_one(1u8)
+    );
+    let path = endpoint_path().or_else(|| {
+        log::error!("agent bridge has nowhere to publish its port");
+        None
+    })?;
+    let port = listener.local_addr().map_or(0, |addr| addr.port());
+    let endpoint = json!({ "url": format!("http://127.0.0.1:{port}"), "token": token });
+    fs::write(&path, endpoint.to_string())
+        .inspect_err(|err| {
+            log::error!("agent bridge could not write {}: {err}", path.display());
+        })
+        .ok()?;
+    log::info!(
+        "agent bridge listening on 127.0.0.1:{port}, endpoint in {}",
+        path.display()
+    );
+    Some((listener, token))
+}
+
+/// A connect, disconnect, or the bridge itself starting and stopping — everything the panel shows
+/// that is not a call. The transport infers all of it, because the protocol carries no session.
+fn lifecycle(
+    agent: impl Into<SharedString>,
+    label: &'static str,
+    why: impl Into<SharedString>,
+) -> AgentCall {
     AgentCall {
-        agent,
+        agent: agent.into(),
         label: label.into(),
         detail: SharedString::default(),
         outcome: why.into(),

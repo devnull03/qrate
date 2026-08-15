@@ -41,6 +41,22 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
             .group(previews_group()),
         columns_page(cx),
         authorities_page(cx),
+        SettingPage::new("Agent")
+            .description(
+                "An AI agent you run yourself can read the project open in qrate over a local \
+                 connection. It cannot change a cell — it can only stage findings you accept.",
+            )
+            .group(
+                SettingGroup::new().title("Local bridge").item(
+                    Setting::Switch {
+                        key: crate::agent_bridge::AGENT_BRIDGE_KEY,
+                        label: "Allow agents to read this app",
+                        description: "Listens on your own machine only, behind a token that \
+                                      changes every launch. Switch off to close the port now.",
+                    }
+                    .into(),
+                ),
+            ),
         SettingPage::new("Spelling").group(spelling_group(cx)),
         plugins_page(cx),
     ];

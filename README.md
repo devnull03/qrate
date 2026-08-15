@@ -63,7 +63,9 @@ qrate does not require an account or a hosted service. qrate does not enable Goo
 
 ## Agent panel
 
-An external AI agent can read the project that is open in qrate. To permit this, start qrate with `QRATE_AGENT_BRIDGE=1`. Without that variable, qrate does not listen and the panel stays empty. See [`AGENTS.md`](AGENTS.md) for the protocol.
+An external AI agent that you run yourself can read the project open in qrate. qrate permits this by default. To stop it, open **Settings ▸ Agent** and switch off **Allow agents to read this app**; the port closes immediately, and no relaunch is necessary. See [`AGENTS.md`](AGENTS.md) for the protocol.
+
+qrate listens on your own machine only, behind a token that changes at every launch. A program that could reach this connection could already read your `.qrate` file directly, so the bridge does not widen what a local program can see. It does show unsaved edits, which the file does not.
 
 The **Agent** panel in the right dock lists everything that happened on that connection. The agent cannot change a cell. It can only read data and stage findings that you accept or ignore.
 

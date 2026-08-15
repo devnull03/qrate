@@ -6,7 +6,8 @@ use gpui::*;
 use gpui_component::dock::{DockPlacement, Panel, PanelControl, PanelEvent};
 use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement as _;
-use gpui_component::{ActiveTheme as _, IconName, h_flex, v_flex};
+use gpui_component::tab::{Tab, TabBar};
+use gpui_component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
 
 use crate::BottomDockCrop;
 use crate::panel_registry::PanelMeta;
@@ -19,6 +20,36 @@ pub static AGENT_META: PanelMeta = PanelMeta {
     default_placement: DockPlacement::Right,
     badge: false,
 };
+
+/// The two halves of the Agent panel: what an agent already did, and where one is run.
+///
+/// They are tabs rather than two panels because they are one subject — the terminal is where the
+/// agent is started and the log is what it then did, and a reader flips between them constantly.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum View {
+    Log,
+    Terminal,
+}
+
+impl View {
+    /// Tab order, left to right.
+    const ALL: [View; 2] = [View::Log, View::Terminal];
+
+    /// `Menu` for the log on the same reasoning the Table view uses it — rows of things.
+    fn icon(self) -> IconName {
+        match self {
+            View::Log => IconName::Menu,
+            View::Terminal => IconName::SquareTerminal,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            View::Log => "Log",
+            View::Terminal => "Terminal",
+        }
+    }
+}
 
 /// What kind of entry this is, which is also how loudly it reads.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -133,6 +164,7 @@ fn took(call: &AgentCall) -> SharedString {
 /// Right dock: what the external agent has asked qrate for, and what it got back.
 pub struct AgentPanel {
     focus_handle: FocusHandle,
+    view: View,
     scroll: ScrollHandle,
     /// Refreshes on any entry. One `observe_global` and no re-binding — the history is plain data
     /// that is never rebuilt.
@@ -146,6 +178,7 @@ impl AgentPanel {
         let scroll = ScrollHandle::new();
         Self {
             focus_handle: cx.focus_handle(),
+            view: View::Log,
             scroll: scroll.clone(),
             // ponytail: follows the tail unconditionally. Only worth remembering whether the
             // reader had scrolled away if watching a live agent while reading back proves annoying.
@@ -173,6 +206,39 @@ impl Panel for AgentPanel {
 
     fn title(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from("Agent")
+    }
+
+    /// The view switcher, as the same segmented control the centre dock switches Table/Gallery
+    /// with — one switcher idiom in the app, not two.
+    ///
+    /// In the suffix rather than the title so it sits to the *right* of the panel name:
+    /// `TabPanel` lays the row out as `[title (flex_1)] [title_suffix] [⋯]`. `small` because that
+    /// row is 30px and a default segmented tab is 32px, which the title cell would clip.
+    fn title_suffix(
+        &mut self,
+        _w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        Some(
+            TabBar::new("agent-view")
+                .segmented()
+                .small()
+                .selected_index(
+                    View::ALL
+                        .iter()
+                        .position(|view| *view == self.view)
+                        .unwrap_or(0),
+                )
+                .on_click(cx.listener(|this, ix: &usize, _w, cx| {
+                    this.view = View::ALL[*ix];
+                    cx.notify();
+                }))
+                .children(
+                    View::ALL
+                        .into_iter()
+                        .map(|view| Tab::new().icon(view.icon()).label(view.label())),
+                ),
+        )
     }
 
     // The library always renders the ⋯ menu button; these just empty it of Close + Zoom.
@@ -208,18 +274,27 @@ impl Render for AgentPanel {
 
         v_flex()
             .size_full()
-            .when(empty, |panel| {
+            .when(self.view == View::Terminal, |panel| {
                 panel.child(
                     div()
                         .p_3()
                         .text_sm()
                         .text_color(muted)
-                        // Both halves matter: an agent that never connected and one that connected
-                        // and asked nothing look identical here otherwise.
-                        .child("No agent activity yet. The bridge only listens when qrate was started with QRATE_AGENT_BRIDGE=1."),
+                        .child("Nothing runs here yet. This is where qrate will start an agent and hand you its terminal."),
                 )
             })
-            .children(history.filter(|_| !empty).map(|history| {
+            .when(self.view == View::Log && empty, |panel| {
+                panel.child(
+                    div()
+                        .p_3()
+                        .text_sm()
+                        .text_color(muted)
+                        // Names where the switch is: an agent that never connected and a bridge
+                        // that was switched off look identical from here otherwise.
+                        .child("No agent activity yet. Agents may read this app unless you switch that off under Settings ▸ Agent."),
+                )
+            })
+            .children(history.filter(|_| !empty && self.view == View::Log).map(|history| {
                 v_flex()
                     .id("agent-log")
                     .size_full()
@@ -340,7 +415,9 @@ mod tests {
 
     use gpui::TestAppContext;
 
-    use crate::panels::agent::{AgentCall, AgentHistory, AgentPanel, Entry, HISTORY_LIMIT, record};
+    use crate::panels::agent::{
+        AgentCall, AgentHistory, AgentPanel, Entry, HISTORY_LIMIT, View, record,
+    };
 
     fn call(label: &str, entry: Entry) -> AgentCall {
         AgentCall {
@@ -372,6 +449,23 @@ mod tests {
             record(call("disconnected", Entry::Lifecycle), cx);
         });
         cx.add_window_view(AgentPanel::new);
+    }
+
+    /// Both views render, and the log opens first — an archivist who never starts an agent should
+    /// land on the record of what one already did, not on an empty terminal.
+    #[gpui::test]
+    fn each_view_renders_and_the_log_is_the_default(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(|cx| record(call("rows", Entry::Answered), cx));
+
+        let (panel, cx) = cx.add_window_view(AgentPanel::new);
+        panel.update(cx, |this, cx| {
+            assert_eq!(this.view, View::Log);
+            for view in View::ALL {
+                this.view = view;
+                cx.notify();
+            }
+        });
     }
 
     /// Chronological, and an agent in a loop cannot grow the list without bound. The cap has to

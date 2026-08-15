@@ -26,8 +26,9 @@ a date that looks wrong may be exactly what the source object is stamped with.
 
 ### Connecting
 
-qrate only listens when the app was started with `QRATE_AGENT_BRIDGE=1`. If the endpoint file is
-missing, say so and ask the user to relaunch qrate with that variable set — do not guess at data.
+qrate listens by default, but the user can switch it off under Settings ▸ Agent. If the endpoint
+file is missing, qrate is either not running or the bridge is off — say which you think it is and
+ask the user to check, rather than guessing at data.
 
 ```bash
 # Windows
