@@ -115,6 +115,13 @@ Four workflows, two on `main`, one on `site`, and CI on `dev`/PRs.
 - **Publishes:** a **DRAFT** release with the artifacts + `SHA256SUMS.txt`. It does
   **not** set the pre-release flag — you choose that when you publish (§5).
 
+> **Broken since the Cloudflare cutover (2026-08-15).** `qrate.dvnl.work` is served by a
+> Cloudflare Worker, not GitHub Pages, so the two site workflows below still run and still deploy —
+> to a Pages site nobody visits. **Publishing a release leaves the live site stale and says
+> nothing.** The fix is a Cloudflare deploy hook and swapping the dispatch in
+> `redeploy-site-on-release.yml` for a `curl` at it. Until then, redeploy the site by hand after
+> publishing a release.
+
 ### `deploy-site.yml` — build & deploy the site (on `site`)
 - **Triggers:** push to `site`; `workflow_dispatch`.
 - **Does:** `withastro/action` builds the Astro site, which **fetches the release

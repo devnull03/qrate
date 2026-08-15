@@ -6,11 +6,19 @@ Those four are one body of work and are meant to be done together. The per-task 
 in Notion; this file holds only what is shared between them and would otherwise have to be
 rediscovered by reading the OAuth code.
 
-> **Status, 2026-08-15.** The Rust side of all four is written. What is left is outside this repo:
-> the Cloudflare Worker and the Picker page (`docs/site-oauth-handoff.md`), and the Google Cloud
-> console work — enabling the APIs, a Picker API key, and moving the consent screen to Production.
-> **ASNT-93's open decision is closed: Route A.** `drive.file` stays, and the Picker is how a user
-> points qrate at a spreadsheet they already own.
+> **Status, 2026-08-15.** The Rust side of all four is written, and `qrate.dvnl.work` serves both
+> `/oauth/config` and `/picker` (see `docs/site-oauth-handoff.md`). **ASNT-93's open decision is
+> closed: Route A** — `drive.file` stays, and the Picker is how a user points qrate at a
+> spreadsheet they already own.
+>
+> Nothing Google-facing works end to end yet, and all three remaining pieces are outside this repo:
+> the Cloud console work (enable Sheets/Drive/Picker, a referrer-restricted Picker API key, consent
+> screen out of Testing), the three GitHub Actions secrets, and a deploy hook to replace the
+> release→site dispatch the Cloudflare cutover broke (`docs/SETUP.md` §4).
+>
+> Both the config token and the client secret were pasted into agent transcripts while setting this
+> up. Neither is confidential by design, but rotating them costs one Cloudflare secret each *until
+> the first binary ships with them baked in* — after that it costs a release. Cheap now.
 
 There are no existing installs, so nothing here needs a migration path. Where the current code
 does the wrong thing, replace it rather than adding a fallback for users who do not exist.
