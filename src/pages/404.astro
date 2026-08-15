@@ -1,0 +1,33 @@
+---
+import Base from '../layouts/Base.astro';
+import { getReleases, latest } from '../lib/releases.js';
+
+const rel = latest(await getReleases());
+---
+
+<Base title="qrate — Not found" description="That page does not exist." version={rel?.tag_name}>
+  <section class="gut py-[60px] md:py-[110px]">
+    <div class="eyebrow">404</div>
+    <h1
+      class="m-0 mb-3.5 mt-[18px] text-[32px] font-semibold leading-[1.04] tracking-[-0.035em] md:text-[46px]"
+    >
+      No record for that path.
+    </h1>
+    <p class="m-0 mb-7 max-w-[440px] text-[15px] leading-[1.6] text-body">
+      The page you asked for is not here. It may have moved, or never existed.
+    </p>
+    <div class="flex flex-col items-stretch gap-2 md:flex-row md:items-center md:gap-2.5">
+      <a href="/" class="bg-ink px-5 py-3 text-center text-[14px] font-medium text-paper">Home</a>
+      <a
+        href="/get-started"
+        class="border border-[rgba(23,20,15,.22)] px-[18px] py-3 text-center text-[14px] font-medium"
+        >Get started</a
+      >
+      <a
+        href="/changelog"
+        class="border border-[rgba(23,20,15,.22)] px-[18px] py-3 text-center text-[14px] font-medium"
+        >Changelog</a
+      >
+    </div>
+  </section>
+</Base>

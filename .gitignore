@@ -20,3 +20,6 @@ pnpm-debug.log*
 .cursor/
 .claude/
 CLAUDE.md
+
+# wrangler local state
+.wrangler/

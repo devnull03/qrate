@@ -1,0 +1,100 @@
+---
+// Shared shell for the privacy policy and terms pages: hero band, then a
+// single prose column. Both pages are the same shape, so it lives here.
+import Base from './Base.astro';
+import { getReleases, latest } from '../lib/releases.js';
+
+const { title, eyebrow, lede, updated, description } = Astro.props;
+const rel = latest(await getReleases());
+---
+
+<Base title={`qrate — ${title}`} description={description} version={rel?.tag_name}>
+  <section class="gut border-b border-rule py-[30px] md:pb-[46px] md:pt-[54px]">
+    <div class="eyebrow">{eyebrow}</div>
+    <h1
+      class="m-0 mb-3.5 mt-[18px] max-w-[720px] text-[32px] font-semibold leading-[1.04] tracking-[-0.035em] md:text-[46px]"
+    >
+      {title}
+    </h1>
+    <p class="m-0 max-w-[560px] text-[15px] leading-[1.6] text-body">{lede}</p>
+    <div class="mt-5 font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+      Last updated {updated}
+    </div>
+  </section>
+
+  <section class="gut py-[30px] md:py-[44px]">
+    <div class="legal max-w-[720px]">
+      <slot />
+    </div>
+  </section>
+</Base>
+
+<style is:global>
+  .legal h2 {
+    font-family: var(--font-sans);
+    font-size: 19px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin: 30px 0 8px;
+    scroll-margin-top: 20px;
+  }
+
+  .legal h2:first-child {
+    margin-top: 0;
+  }
+
+  .legal p {
+    margin: 0 0 12px;
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--body);
+  }
+
+  .legal ul {
+    margin: 0 0 12px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .legal li {
+    position: relative;
+    padding-left: 22px;
+    margin-bottom: 6px;
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--body);
+  }
+
+  .legal li::before {
+    content: '·';
+    position: absolute;
+    left: 6px;
+    color: var(--accent);
+    font-family: var(--font-mono);
+  }
+
+  .legal a {
+    color: var(--accent);
+  }
+
+  .legal strong {
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  .legal code {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--ink);
+  }
+
+  /* The Google Limited Use disclosure, called out so a reviewer finds it. */
+  .legal .callout {
+    border-left: 2px solid var(--accent);
+    padding: 10px 0 10px 14px;
+    margin: 0 0 12px;
+    font-size: 13.5px;
+    line-height: 1.7;
+    color: var(--body);
+  }
+</style>

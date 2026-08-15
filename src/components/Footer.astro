@@ -3,25 +3,24 @@ import Logo from './Logo.astro';
 import { REPO } from '../lib/releases.js';
 
 const { version = '' } = Astro.props;
-const b = import.meta.env.BASE_URL.replace(/\/$/, '');
 const gh = `https://github.com/${REPO}`;
 
 const columns = [
   {
     head: 'Product',
     items: [
-      { label: 'Features', href: `${b}/#features` },
-      { label: 'Plugins', href: `${b}/#plugins` },
+      { label: 'Features', href: '/#features' },
+      { label: 'Plugins', href: '/#plugins' },
       { label: 'Themes', href: `${gh}/tree/main/assets/themes` },
     ],
   },
   {
     head: 'Install',
     items: [
-      { label: 'macOS', href: `${b}/get-started` },
-      { label: 'Windows', href: `${b}/get-started` },
-      { label: 'Linux', href: `${b}/get-started` },
-      { label: 'From source', href: `${b}/get-started#source` },
+      { label: 'macOS', href: '/get-started' },
+      { label: 'Windows', href: '/get-started' },
+      { label: 'Linux', href: '/get-started' },
+      { label: 'From source', href: '/get-started#source' },
     ],
   },
   {
@@ -29,16 +28,18 @@ const columns = [
     items: [
       { label: 'GitHub', href: gh },
       { label: 'Issues', href: `${gh}/issues` },
-      { label: 'Changelog', href: `${b}/changelog` },
+      { label: 'Changelog', href: '/changelog' },
       { label: 'Contact', href: 'mailto:qrate@dvnl.work' },
     ],
   },
   {
     head: 'Legal',
     items: [
-      { label: 'AGPL-3.0', href: `${b}/license` },
-      { label: 'Notices', href: `${b}/license#notices` },
-      { label: 'Commercial', href: `${b}/license#commercial` },
+      { label: 'AGPL-3.0', href: '/license' },
+      { label: 'Notices', href: '/license#notices' },
+      { label: 'Commercial', href: '/license#commercial' },
+      { label: 'Privacy', href: '/privacy' },
+      { label: 'Terms', href: '/terms' },
     ],
   },
 ];

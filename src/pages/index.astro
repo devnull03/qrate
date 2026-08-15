@@ -3,7 +3,6 @@ import Base from '../layouts/Base.astro';
 import AppWindow from '../components/AppWindow.astro';
 import { getReleases, latest, platformOf } from '../lib/releases.js';
 
-const b = import.meta.env.BASE_URL.replace(/\/$/, '');
 const releases = await getReleases();
 const rel = latest(releases);
 
@@ -82,13 +81,13 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
       <div class="mb-[34px] flex flex-col items-stretch gap-2 md:flex-row md:items-center md:gap-2.5">
         <a
           id="dl-primary"
-          href={fallback ? byOs[fallback] : `${b}/get-started`}
+          href={fallback ? byOs[fallback] : `/get-started`}
           class="bg-ink px-5 py-3 text-center text-[14px] font-medium text-paper"
           >{fallback ? `Download for ${fallback}` : 'Get started'}</a
         >
         <a
           id="dl-others"
-          href={`${b}/get-started`}
+          href="/get-started"
           class="border border-[rgba(23,20,15,.22)] px-[18px] py-3 text-center text-[14px] font-medium"
           >{others.length ? others.join(' · ') : 'All platforms'}</a
         >
@@ -148,7 +147,7 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
     </div>
     <div class="shot w-[900px] max-w-full">
       <img
-        src={`${b}/shots/light-table.png`}
+        src="/shots/light-table.png"
         alt="qrate window · record details, grid and problems panel"
       />
     </div>
@@ -177,7 +176,7 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
   >
     <div class="shot">
       <img
-        src={`${b}/shots/light-gallery.png`}
+        src="/shots/light-gallery.png"
         alt="qrate gallery view with an item preview open"
       />
     </div>
@@ -260,7 +259,7 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
     // No build for this platform: point at the source instructions rather than
     // offering someone else's binary. Linux lands here until it ships assets.
     if (!byOs[guess]) {
-      primary.href = `${document.baseURI.replace(/\/$/, '')}/get-started#source`;
+      primary.href = '/get-started#source';
       primary.textContent = 'Build from source';
       rest.textContent = available.join(' · ');
       return;

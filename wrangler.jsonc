@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "qrate-site",
+  "compatibility_date": "2026-08-15",
+
+  // Assets-only for now: no `main`, so Cloudflare serves dist/ straight from
+  // its edge and no Worker invocation is billed.
+  //
+  // To add server-side routes later (an OAuth broker, an API), add:
+  //   "main": "src/worker.ts",
+  //   "assets": { ..., "binding": "ASSETS" }
+  // and fall back to `env.ASSETS.fetch(request)` for anything the Worker does
+  // not handle itself. Static assets are matched before the Worker runs unless
+  // "run_worker_first" says otherwise, so the site keeps working untouched.
+  "assets": {
+    "directory": "./dist",
+    // Astro emits get-started.html (build.format: 'file'), so /get-started is
+    // served directly with no redirect.
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}

@@ -1,11 +1,17 @@
 name: Deploy site to Pages
 
+# Serves qrate.dvnl.work, which is a GitHub Pages custom domain pointed at the
+# root — so the Astro build carries no `base`.
+#
+# `release` events only fire for workflows on the default branch, so publishing
+# a release on `main` runs redeploy-site-on-release.yml, which dispatches this
+# one. THE FILENAME IS LOAD-BEARING: that workflow runs
+# `gh workflow run deploy-site.yml --ref site`.
 on:
   push:
     branches: [site]
-  workflow_dispatch: # lets the main-branch release dispatcher (and you) trigger it
+  workflow_dispatch:
 
-# Permissions the jobs need to clone the repo and publish to Pages.
 permissions:
   contents: read
   pages: write
@@ -22,13 +28,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-      - name: Install, build, and upload the site
-        uses: withastro/action@v6
-        # Astro's official action installs deps (auto-detecting the package
-        # manager from the lockfile), runs `astro build`, and uploads the Pages
-        # artifact — so no separate configure-pages/upload-pages-artifact steps.
+
+      - name: Set up bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun run build
         env:
           GH_TOKEN: ${{ github.token }} # consumed by the build-time release fetch
+
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
 
   deploy:
     needs: build

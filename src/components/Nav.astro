@@ -3,12 +3,11 @@ import Logo from './Logo.astro';
 import { REPO } from '../lib/releases.js';
 
 const { current = '' } = Astro.props;
-const b = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 const links = [
-  { key: 'get-started', label: 'Get started', href: `${b}/get-started` },
-  { key: 'changelog', label: 'Changelog', href: `${b}/changelog` },
-  { key: 'license', label: 'License', href: `${b}/license` },
+  { key: 'get-started', label: 'Get started', href: '/get-started' },
+  { key: 'changelog', label: 'Changelog', href: '/changelog' },
+  { key: 'license', label: 'License', href: '/license' },
 ];
 ---
 
@@ -17,7 +16,7 @@ const links = [
 >
   <div class="flex items-center gap-[30px]">
     <a
-      href={`${b}/`}
+      href="/"
       class="flex items-center gap-[9px] text-[17px] font-semibold tracking-[-0.02em] hover:no-underline"
     >
       <Logo size={19} id="nav" />
@@ -48,7 +47,7 @@ const links = [
     {
       current !== 'get-started' && (
         <a
-          href={`${b}/get-started`}
+          href="/get-started"
           class="hidden bg-accent px-[15px] py-2 text-[13px] font-medium text-on-accent md:block"
         >
           Download

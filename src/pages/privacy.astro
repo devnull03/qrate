@@ -1,0 +1,129 @@
+---
+import Legal from '../layouts/Legal.astro';
+import { REPO } from '../lib/releases.js';
+
+const CONTACT = 'qrate@dvnl.work';
+---
+
+<Legal
+  title="Privacy policy"
+  eyebrow="Privacy"
+  updated="15 August 2026"
+  description="qrate runs on your computer and keeps your catalogue there. What it touches, and what it never sends anywhere."
+  lede="qrate is a desktop application. Your catalogue stays on your own disk, and the project operates no servers that hold your data."
+>
+  <h2>The short version</h2>
+  <p>
+    qrate has no accounts, no telemetry and no analytics. It does not phone home. Every record,
+    field, note and linked file stays in the <code>.qrate</code> file on your own disk. The only time
+    qrate talks to anyone else is when you ask it to: exporting to Google Sheets, downloading a
+    dictionary, or checking for a release.
+  </p>
+
+  <h2>What qrate collects</h2>
+  <p>
+    Nothing. The application does not send your catalogue, your file paths, your settings or any
+    usage data to us or to anyone else. There is no crash reporting service and no usage counter. A
+    session log is written on your own machine to help you diagnose problems; it stays there unless
+    you choose to attach it to a bug report.
+  </p>
+
+  <h2>This website</h2>
+  <p>
+    This site is static — pages and images, no accounts and no tracking cookies. It is served by
+    Cloudflare, which records standard request information such as IP address, user agent and the
+    page requested, for delivery and abuse prevention. We do not use that data to build profiles,
+    and we run no advertising or analytics scripts. Application downloads are served by GitHub,
+    whose own privacy policy applies once you follow a download link.
+  </p>
+
+  <h2>Google user data</h2>
+  <p>
+    qrate can export a project to a Google Sheet. That is the only feature that touches a Google
+    account, it is entirely optional, and nothing happens until you start it and consent in your
+    browser.
+  </p>
+  <ul>
+    <li>
+      <strong>Scope requested:</strong> <code>drive.file</code> only. This scope reaches only the
+      files qrate itself creates. It gives qrate no access to the rest of your Drive — not your
+      existing documents, not your folders, not your file list.
+    </li>
+    <li>
+      <strong>What is sent:</strong> the rows and columns of the project you chose to export, sent
+      directly from your computer to Google's API in order to create the sheet you asked for.
+    </li>
+    <li>
+      <strong>Where it goes:</strong> straight to Google. The data does not pass through any server
+      operated by this project, because there is no such server.
+    </li>
+    <li>
+      <strong>Sign-in:</strong> a loopback redirect with PKCE. qrate opens your browser, you consent
+      to Google directly, and Google returns the result to a port on your own machine. Your Google
+      password is never seen by qrate.
+    </li>
+    <li>
+      <strong>Tokens:</strong> the access and refresh tokens Google issues are kept on your computer
+      so you are not asked to consent on every export. They are never transmitted to us.
+    </li>
+    <li>
+      <strong>Retention and deletion:</strong> we hold no copy of your Google data, so there is
+      nothing for us to delete. Removing qrate's access from your Google account, or deleting the
+      local qrate data directory, ends it completely.
+    </li>
+  </ul>
+  <p>
+    You can withdraw consent at any time from your Google account's <a
+      href="https://myaccount.google.com/permissions"
+      rel="noopener">third-party access page</a
+    >. Sheets qrate has already created stay in your Drive and remain yours.
+  </p>
+
+  <h2>Limited Use</h2>
+  <div class="callout">
+    qrate's use and transfer of information received from Google APIs to any other app will adhere to
+    the <a
+      href="https://developers.google.com/terms/api-services-user-data-policy"
+      rel="noopener">Google API Services User Data Policy</a
+    >, including the Limited Use requirements.
+  </div>
+  <p>
+    In practice that means Google user data is used only to provide the export you requested. It is
+    not sold, not transferred to anyone, not used for advertising, and not read by any human.
+  </p>
+
+  <h2>Other things qrate can reach</h2>
+  <ul>
+    <li>
+      <strong>Dictionaries.</strong> If you add a spell-check language, qrate downloads that word
+      list from its public repository. The request carries no identifying information beyond what any
+      download requires.
+    </li>
+    <li>
+      <strong>Plugins.</strong> Plugins run from a folder you control. A plugin you install may
+      contact a server you point it at — for example an Islandora site, to check vocabulary terms.
+      That connection is yours and is governed by that service's own policy.
+    </li>
+    <li>
+      <strong>Preview tools.</strong> PDFium and ffmpeg run locally. They send nothing anywhere.
+    </li>
+  </ul>
+
+  <h2>Children</h2>
+  <p>qrate is a professional cataloguing tool and is not directed at children under 13.</p>
+
+  <h2>Changes</h2>
+  <p>
+    If this policy changes, the date at the top of this page changes with it, and the previous text
+    stays in the site's <a href={`https://github.com/${REPO}`} rel="noopener">git history</a>.
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    Questions about this policy, or about data qrate touches: <a href={`mailto:${CONTACT}`}
+      >{CONTACT}</a
+    >. See also the <a href="/terms">terms of service</a> and the <a href="/license"
+      >licence</a
+    >.
+  </p>
+</Legal>
