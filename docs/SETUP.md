@@ -26,8 +26,9 @@ Workspace crates (versions are inherited from `[workspace.package].version`):
 **App (on `main`):**
 - Rust **stable** toolchain with `rustfmt` + `clippy`. Run `rustup update stable`
   periodically to match CI.
-- The app only targets **Windows + macOS** (gpui needs heavy system libs on Linux),
-  so build/test there.
+- The app targets **Windows, macOS and Linux**; CI and the release pipeline cover all
+  three. Linux needs gpui's system libraries first — the `apt-get` line in
+  `.github/workflows/ci.yml` is the current list.
 
 **Site (on `site`):**
 - Bun. `bun install`, then `bun run dev` (`http://localhost:4321/` — the `/qrate`
