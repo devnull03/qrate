@@ -15,6 +15,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Full debuginfo is a large share of a debug build — generating it, and on Windows writing the
+  # PDB. Line tables keep backtraces readable and drop the rest.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   check:
@@ -30,18 +33,24 @@ jobs:
       # gpui_linux (wayland + x11), font-kit's fontconfig, reqwest's default
       # native-tls, and rodio's ALSA backend (`preview::playback`) are the only
       # things that need system libraries.
+      # mold replaces the single-threaded default linker; macOS already ships a parallel one and
+      # Windows-MSVC cannot select rust-lld on stable.
       - name: Install Linux system libraries
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libssl-dev libfontconfig-dev libwayland-dev \
-            libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libasound2-dev
+            libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libasound2-dev mold
+          echo 'RUSTFLAGS=-C link-arg=-fuse-ld=mold' >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
@@ -70,5 +79,7 @@ jobs:
         # still hard-fails.
         run: cargo clippy --workspace --all-targets -- -D warnings -A dead_code
 
+      # nextest does not run doctests; the only ``` blocks in the workspace are `text`, so nothing
+      # is lost. Test binaries still land in target/debug/deps, beside the PDFium fetched above.
       - name: Test
-        run: cargo test --workspace
+        run: cargo nextest run --workspace

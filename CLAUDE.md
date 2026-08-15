@@ -171,7 +171,7 @@ lands on this remote.
   ```bash
   cargo fmt --all --check
   cargo clippy --workspace --all-targets -- -D warnings -A dead_code
-  cargo test --workspace
+  cargo test --workspace          # CI runs `cargo nextest run --workspace`; either is fine locally
   ```
   Clippy allows `-A dead_code` (this repo scaffolds UI ahead of its consumers) but hard-fails every other warning. `clippy --all-targets` + `test` already compile everything, so there's no separate build step. Scope the checks to affected crates while iterating, but run the full `--workspace` form once before pushing.
 - Open the PR with `gh pr create`; PRs target `dev` or `main` (the branches CI gates). Body gets a short summary + a **Verification** line stating which of the three checks you ran and that they passed.
