@@ -6,6 +6,12 @@ Those four are one body of work and are meant to be done together. The per-task 
 in Notion; this file holds only what is shared between them and would otherwise have to be
 rediscovered by reading the OAuth code.
 
+> **Status, 2026-08-15.** The Rust side of all four is written. What is left is outside this repo:
+> the Cloudflare Worker and the Picker page (`docs/site-oauth-handoff.md`), and the Google Cloud
+> console work — enabling the APIs, a Picker API key, and moving the consent screen to Production.
+> **ASNT-93's open decision is closed: Route A.** `drive.file` stays, and the Picker is how a user
+> points qrate at a spreadsheet they already own.
+
 There are no existing installs, so nothing here needs a migration path. Where the current code
 does the wrong thing, replace it rather than adding a fallback for users who do not exist.
 
@@ -19,9 +25,11 @@ Far more than the disabled menu item suggests. All of this is written and tested
 | Sheets write: create a spreadsheet, fill tab 1 | `google.rs::create_sheet` |
 | Export action, background threading, token storage | `crates/app/src/export.rs::to_google_sheet` |
 | Sheet **import** (public link, xlsx, incl. cell notes) | `crates/data-exchange/src/sheet.rs` |
+| Credential ladder, keychain, the opt-in read | `crates/app/src/google.rs` |
+| Picker round trip, `write_values`, the config fetch | `google.rs::begin_picker`, `write_values`, `fetch_config` |
 
-The only reason the menu item is off (`crates/app/src/app_menus.rs:79`) is that no Cloud client ID
-exists yet. That is ASNT-80, and it gates everything here.
+The Google entries are no longer disabled — they are **absent** until the user switches Google sync
+on in Settings ▸ Google, which is also where they read what they are agreeing to.
 
 ## How login works today
 
@@ -97,6 +105,9 @@ contract documented in `docs/`, and the Worker plus its deploy steps in `qrate-s
 policy pages. An institution that won't route its staff through our endpoint has a supported
 answer rather than a fork.
 
+The setting exists (Settings ▸ Google ▸ Credential endpoint) and the contract is written down in
+`docs/site-oauth-handoff.md`. The Worker itself is the site agent's half.
+
 ## The one structural blocker
 
 qrate has no stable row identity. `save_dataset` (`crates/settings/src/project.rs:640`) drops and
@@ -115,8 +126,10 @@ ASNT-85 (pull) is blocked on it.
 | `spreadsheets` — every spreadsheet in the account | sensitive | brand verification review |
 | `drive`, `drive.readonly` | restricted | verification + annual CASA assessment (billed in thousands) |
 
-We are on `drive.file`. Note that a spreadsheet **ID is not authorization** under `drive.file` — a
-file the token was never granted returns 404, not 403. This is the whole substance of ASNT-93.
+We are on `drive.file`, and staying there. Note that a spreadsheet **ID is not authorization** under
+`drive.file` — a file the token was never granted returns 404, not 403. That is why ASNT-93 ships
+the Picker rather than a URL box, and why `write_values` maps a 404 to `GoogleError::NoAccess`
+instead of letting a bare status reach the user.
 
 Also: the consent screen must move from Testing to Production before release, or refresh tokens
 expire after 7 days and the app caps at 100 users. Production needs hosted privacy policy and
@@ -139,8 +152,7 @@ ASNT-84  stable row identity                                 (independent; also 
 cheaper than three: the opt-in toggle, the config endpoint field, and the keychain swap land
 together.
 
-ASNT-93 carries an open product decision (Picker vs. widening the scope) that must be answered
-before code — see the task.
+ASNT-93's open decision (Picker vs. widening the scope) was answered: Route A, the Picker.
 
 ## Open questions the design left for the user
 
@@ -152,9 +164,10 @@ Full option analysis: <https://claude.ai/code/artifact/a17244b7-ccdd-48dd-bd39-7
 
 ## Working reminders
 
-- `QRATE_GOOGLE_CLIENT_ID` / `_SECRET` are build-time `option_env!`, and stay as the last-resort
-  fallback even after ASNT-94. **Never commit the credential JSON or the values** — the download
-  is not in `.gitignore` by name. The same goes for the endpoint's bearer token.
+- `QRATE_GOOGLE_CLIENT_ID` / `_SECRET` / `_CONFIG_TOKEN` are build-time `option_env!`, and stay as
+  the last-resort fallback even after ASNT-94. **Never commit the credential JSON or the values.**
+  `.gitignore` now covers `client_secret_*.json`; the values themselves belong in the environment
+  (`docs/SETUP.md` §2) or in Actions secrets, never in source.
 - CI is `cargo fmt --all --check`, then `clippy --workspace --all-targets -- -D warnings -A dead_code`,
   then `cargo test --workspace`. All three green before any PR.
 - No `Co-Authored-By: Claude` trailer on commits, ever.

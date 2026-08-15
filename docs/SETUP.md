@@ -33,6 +33,21 @@ Workspace crates (versions are inherited from `[workspace.package].version`):
 - Node 20+ and npm. `npm install`, then `npm run dev`
   (`http://localhost:4321/qrate/`).
 
+**Google sign-in (optional locally):** the client id and secret are read at *compile* time by
+`option_env!`, so they have to be in the environment before `cargo run` and a change to them needs
+a rebuild of `data-exchange`. From the OAuth client JSON Google hands you (type **Desktop app**):
+
+```powershell
+$env:QRATE_GOOGLE_CLIENT_ID    = "…apps.googleusercontent.com"
+$env:QRATE_GOOGLE_CLIENT_SECRET = "…"
+cargo run
+```
+
+A build without them still compiles and runs — Google sign-in reports that this build has no
+client id. Never commit the JSON; `.gitignore` covers `client_secret_*.json`, and the values
+themselves belong in the environment or in the credential endpoint (`docs/site-oauth-handoff.md`),
+never in source.
+
 ---
 
 ## 3. One-time GitHub setup (do this before the first release)
@@ -63,6 +78,12 @@ produce nothing visible.
 
 5. **Custom domain (optional).** Settings → Pages writes a `CNAME`; then set
    `site:` in `astro.config.mjs` to the domain and drop/empty `base`.
+
+6. **Google credentials (only if release builds should sign in).** Add `GOOGLE_CLIENT_ID`,
+   `GOOGLE_CLIENT_SECRET` and `GOOGLE_CONFIG_TOKEN` as Actions secrets. `release.yml` already maps
+   all three into the `QRATE_*` build vars, so nothing else needs editing. They are the fallback
+   the binary carries; the live pair comes from the credential endpoint at runtime, so rotating the
+   Cloud project does **not** need a new release.
 
 ---
 
