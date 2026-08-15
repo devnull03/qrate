@@ -41,6 +41,12 @@ const QRATE_SCHEMA_VERSION: i32 = 2;
 /// this folder every time the project opens (see `table::photos`).
 pub const FILES_FOLDER_KEY: &str = "files_folder";
 
+/// `__settings` key for the spreadsheet this project pushes to. The id alone, not the URL — the
+/// link is derivable (`data_exchange::google::sheet_url`) and the id is what the Sheets API takes.
+/// Written when the user picks a sheet through Google's chooser, which is also what grants qrate
+/// access to it; storing an id the user typed would name a file the token cannot reach.
+pub const GOOGLE_SHEET_ID_KEY: &str = "google_sheet_id";
+
 pub struct ProjectColumn {
     pub name: String,
     pub data_type: String,
