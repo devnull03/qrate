@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "ai"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -204,7 +204,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "app"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "ai",
  "anyhow",
@@ -942,7 +942,7 @@ dependencies = [
 
 [[package]]
 name = "checks"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "diagnostics",
  "edtf",
@@ -1500,7 +1500,7 @@ checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 
 [[package]]
 name = "data-exchange"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "base64",
  "calamine",
@@ -1610,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "diagnostics"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -5301,7 +5301,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "plugin-api"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "gpui",
  "serde_json",
@@ -5310,7 +5310,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-host"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "diagnostics",
  "gpui",
@@ -5463,7 +5463,7 @@ dependencies = [
 
 [[package]]
 name = "preview"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -5547,7 +5547,7 @@ dependencies = [
 
 [[package]]
 name = "project-wizard"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "anyhow",
  "csv",
@@ -6716,7 +6716,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -6921,7 +6921,7 @@ dependencies = [
 
 [[package]]
 name = "spellcheck"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "diagnostics",
  "gpui",
@@ -7458,7 +7458,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "ai",
  "diagnostics",
@@ -8748,7 +8748,7 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "window-wrapper"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -9482,7 +9482,7 @@ dependencies = [
 
 [[package]]
 name = "workspace"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "diagnostics",
  "gpui",
