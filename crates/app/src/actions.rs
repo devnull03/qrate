@@ -26,42 +26,53 @@ actions!(
 /// All keybindings, registered once at startup via `cx.bind_keys`.
 /// `None` context = global; scope later with `Some("SomeContext")` if a key needs to mean
 /// different things in different focus regions.
+///
+/// `secondary-` is gpui's platform modifier — Cmd on macOS, Ctrl on Windows and Linux — so one
+/// line covers all three, and the menus print the right glyph for whoever is reading them.
 pub fn key_bindings() -> Vec<KeyBinding> {
     vec![
-        KeyBinding::new("ctrl-shift-n", NewWindow, None),
-        KeyBinding::new("ctrl-n", NewProject, None),
+        KeyBinding::new("secondary-shift-n", NewWindow, None),
+        KeyBinding::new("secondary-n", NewProject, None),
         // Save the open project's data to its `.qrate` file. Global: saving shouldn't depend on
         // where focus sits (a focused cell editor's `Input` context doesn't bind Ctrl+S).
-        KeyBinding::new("ctrl-s", Save, None),
-        KeyBinding::new("ctrl-b", ToggleLeftDock, None),
-        KeyBinding::new("ctrl-`", ToggleBottomDock, None),
-        KeyBinding::new("ctrl-alt-b", ToggleRightDock, None),
+        KeyBinding::new("secondary-s", Save, None),
+        KeyBinding::new("secondary-b", ToggleLeftDock, None),
+        KeyBinding::new("secondary-`", ToggleBottomDock, None),
+        KeyBinding::new("secondary-alt-b", ToggleRightDock, None),
         // Settings. Declared in `app_menus` (it's a menu action first); the handler is already
         // registered globally in `main.rs`, so this only adds the key.
-        KeyBinding::new("ctrl-,", OpenSettings, None),
+        KeyBinding::new("secondary-,", OpenSettings, None),
         // The grid's own actions are declared in `crate::table` (app→table is one-way). Ctrl+F is
         // scoped to the panel so it works wherever focus sits inside it; everything below acts on a
         // grid selection and is scoped to the grid, which keeps the cell editor's own Ctrl+Z/Ctrl+C
         // and its Enter-to-commit intact while it has focus.
-        KeyBinding::new("ctrl-f", table::Search, Some("TablePanel")),
-        KeyBinding::new("ctrl-h", table::Replace, Some("TablePanel")),
+        KeyBinding::new("secondary-f", table::Search, Some("TablePanel")),
+        KeyBinding::new("secondary-h", table::Replace, Some("TablePanel")),
         KeyBinding::new("enter", table::EditCell, Some(table::GRID_CONTEXT)),
-        KeyBinding::new("ctrl-z", table::Undo, Some(table::GRID_CONTEXT)),
-        KeyBinding::new("ctrl-y", table::Redo, Some(table::GRID_CONTEXT)),
-        KeyBinding::new("ctrl-shift-z", table::Redo, Some(table::GRID_CONTEXT)),
+        KeyBinding::new("secondary-z", table::Undo, Some(table::GRID_CONTEXT)),
+        KeyBinding::new("secondary-y", table::Redo, Some(table::GRID_CONTEXT)),
+        KeyBinding::new("secondary-shift-z", table::Redo, Some(table::GRID_CONTEXT)),
         // The Details panel edits the same grid, so it undoes the same history. Scoped to the
         // panel, not global: inside its field editor the deeper `Input` context wins, which keeps
         // Ctrl+Z as text-undo mid-edit.
-        KeyBinding::new("ctrl-z", table::Undo, Some(workspace::DETAILS_META.name)),
-        KeyBinding::new("ctrl-y", table::Redo, Some(workspace::DETAILS_META.name)),
         KeyBinding::new(
-            "ctrl-shift-z",
+            "secondary-z",
+            table::Undo,
+            Some(workspace::DETAILS_META.name),
+        ),
+        KeyBinding::new(
+            "secondary-y",
             table::Redo,
             Some(workspace::DETAILS_META.name),
         ),
-        KeyBinding::new("ctrl-x", table::Cut, Some(table::GRID_CONTEXT)),
-        KeyBinding::new("ctrl-c", table::Copy, Some(table::GRID_CONTEXT)),
-        KeyBinding::new("ctrl-v", table::Paste, Some(table::GRID_CONTEXT)),
+        KeyBinding::new(
+            "secondary-shift-z",
+            table::Redo,
+            Some(workspace::DETAILS_META.name),
+        ),
+        KeyBinding::new("secondary-x", table::Cut, Some(table::GRID_CONTEXT)),
+        KeyBinding::new("secondary-c", table::Copy, Some(table::GRID_CONTEXT)),
+        KeyBinding::new("secondary-v", table::Paste, Some(table::GRID_CONTEXT)),
         // Blank the selection, the spreadsheet convention — and both keys, since Sheets and Excel
         // accept either. Scoped to the grid like the clipboard keys above, which is what keeps
         // Backspace deleting *text* while the cell editor or the find bar holds focus.
@@ -90,7 +101,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
             .enumerate()
             .map(|(ix, mode)| {
                 KeyBinding::new(
-                    &format!("ctrl-{}", ix + 1),
+                    &format!("secondary-{}", ix + 1),
                     workspace::ShowView { mode },
                     None,
                 )
