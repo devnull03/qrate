@@ -386,6 +386,22 @@ impl Render for Viewer {
                         this.turn_page(1);
                         cx.notify();
                     }
+                    // Zoom with or without the modifier: the overlay is the whole surface, so the
+                    // bare keys are free here in a way they are not in the grid. `reading` keeps
+                    // them out of the query box, where they are text.
+                    "=" | "+" if reading => {
+                        this.set_zoom(this.zoom * 1.25);
+                        cx.notify();
+                    }
+                    "-" | "_" if reading => {
+                        this.set_zoom(this.zoom / 1.25);
+                        cx.notify();
+                    }
+                    // Back to fit, the one zoom the pointer cannot land on exactly.
+                    "0" if reading => {
+                        this.set_zoom(1.0);
+                        cx.notify();
+                    }
                     _ => {}
                 }
             }))
@@ -653,7 +669,11 @@ impl Render for Viewer {
                                 .ghost()
                                 .small()
                                 .selected(self.find_open)
-                                .tooltip("Find in document (Ctrl+F)")
+                                .tooltip(if cfg!(target_os = "macos") {
+                                    "Find in document (⌘F)"
+                                } else {
+                                    "Find in document (Ctrl+F)"
+                                })
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     if this.find_open {
                                         this.find_open = false;
@@ -670,7 +690,7 @@ impl Render for Viewer {
                             .icon(IconName::Minus)
                             .ghost()
                             .small()
-                            .tooltip("Zoom out")
+                            .tooltip("Zoom out (-)")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.set_zoom(this.zoom / 1.25);
                                 cx.notify();
@@ -681,7 +701,7 @@ impl Render for Viewer {
                             .icon(IconName::Plus)
                             .ghost()
                             .small()
-                            .tooltip("Zoom in")
+                            .tooltip("Zoom in (+)")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.set_zoom(this.zoom * 1.25);
                                 cx.notify();
@@ -692,7 +712,7 @@ impl Render for Viewer {
                             .icon(IconName::Close)
                             .ghost()
                             .small()
-                            .tooltip("Close")
+                            .tooltip("Close (Esc)")
                             .on_click(cx.listener(|_, _, _, cx| close_viewer(cx))),
                     ),
             )
