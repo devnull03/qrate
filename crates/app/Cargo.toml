@@ -20,10 +20,14 @@ schemars.workspace = true
 # The agent bridge's request/response types; the transport lives here because only the
 # composition root links both the contract and the live table.
 ai = { path = "../ai" }
-# The Google refresh token goes in the platform credential store rather than the settings DB:
-# it never expires on its own, so anything holding it can reach the user's Drive indefinitely.
+# Where the Google refresh token lives; it never expires, so it doesn't go in the settings DB.
+# The Linux features are the pure-Rust ones — the `sync`/`openssl` alternatives link libdbus.
 keyring = { version = "3", features = [
-  "apple-native", "windows-native", "sync-secret-service",
+  "apple-native",
+  "windows-native",
+  "linux-native-async-persistent",
+  "async-io",
+  "crypto-rust",
 ] }
 window-wrapper = { path = "../window-wrapper" }
 project-wizard = { path = "../project-wizard" }
