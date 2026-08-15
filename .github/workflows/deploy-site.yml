@@ -41,9 +41,12 @@ jobs:
           GH_TOKEN: ${{ github.token }} # consumed by the build-time release fetch
 
       - name: Upload the Pages artifact
+        # The Cloudflare adapter splits the build: dist/client is the static
+        # tree, dist/server is the Worker. Pages only wants the former, and
+        # /oauth/config simply doesn't exist there until the domain moves.
         uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: dist/client
 
   deploy:
     needs: build
