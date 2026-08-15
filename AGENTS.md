@@ -39,16 +39,25 @@ ENDPOINT="$LOCALAPPDATA/qrate/agent-bridge.json"
 URL=$(sed -n 's/.*"url":"\([^"]*\)".*/\1/p' "$ENDPOINT")
 TOKEN=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' "$ENDPOINT")
 
+AGENT=your-runtime-name   # see below — substitute yours, do not send this literally
+
 ask() {
   curl -s -X POST "$URL" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-    -H 'X-Agent: claude-code' -d "$1"
+    -H "X-Agent: $AGENT" -d "$1"
 }
 ```
 
 Send `X-Agent` on every call. It is what the archivist sees in qrate's Agent panel beside each of
-your calls, and without it you appear as `unnamed agent`. Name the runtime, not the task —
-`claude-code`, `pi`, `claude-code/review-2` if two of you are running at once. It is a label, not a
-credential: qrate cannot check it, so never treat it as authorisation for anything.
+your calls, and without it you appear as `unnamed agent`.
+
+Name the runtime, not the task: `claude-code`, `pi`, `codex`. Add a suffix only to tell concurrent
+sessions of the same runtime apart — `claude-code/review-2` — because the panel groups by this
+string, so two sessions sharing a name read as one agent reconnecting. If your runtime came with a
+qrate skill or plugin, that is where its name is written down; this file is vendor-neutral and
+cannot name it for you.
+
+It is a label, not a credential: qrate cannot check it, so never treat it as authorisation for
+anything, and never send a name that is not yours.
 
 `sed` rather than a JSON parser on purpose — the endpoint file is two flat fields, and a machine
 running qrate is not guaranteed to have `python` or `jq`.
