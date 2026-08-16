@@ -27,7 +27,7 @@ const SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 const CONFIG_TOKEN: Option<&str> = option_env!("QRATE_GOOGLE_CONFIG_TOKEN");
 
 /// Where [`fetch_config`] looks unless the user points it somewhere else. Anyone can run the same
-/// contract on their own infrastructure — see `docs/site-oauth-handoff.md`.
+/// contract on their own infrastructure — see `docs/dev/site-oauth-handoff.md`.
 pub const DEFAULT_CONFIG_ENDPOINT: &str = "https://qrate.dvnl.work/oauth/config";
 
 /// Where the Google Picker page lives. `drive.file` reaches only files the app created or the user
@@ -286,7 +286,7 @@ impl Picker {
     }
 }
 
-/// What the credential endpoint serves. See `docs/site-oauth-handoff.md` for the contract.
+/// What the credential endpoint serves. See `docs/dev/site-oauth-handoff.md` for the contract.
 #[derive(Deserialize)]
 pub struct Config {
     #[serde(flatten)]

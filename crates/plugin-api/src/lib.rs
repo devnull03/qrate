@@ -152,8 +152,9 @@ impl SettingScope {
 pub enum SettingKind {
     Switch,
     Text,
-    /// Typed behind dots, and never handed to the plugin that declared it — see the host's
-    /// `settings_table`. User scope only, enforced at load: a secret in a `.qrate` is a secret in
+    /// Typed behind dots. Still serialized into the plugin's own settings table, same as any
+    /// other field — masking is display-only, not a way to keep a plugin from reading its own
+    /// setting. User scope only, enforced at load: a secret in a `.qrate` is a secret in
     /// whatever repository that project gets committed to.
     Password,
 }

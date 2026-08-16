@@ -20,7 +20,7 @@ env:
   QRATE_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
   QRATE_GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
   # Sent to the credential endpoint. It ships inside the binary, so it turns away casual scraping
-  # and nothing more — see docs/site-oauth-handoff.md. Absent: the endpoint answers 401 and the
+  # and nothing more — see docs/dev/site-oauth-handoff.md. Absent: the endpoint answers 401 and the
   # app carries on with the pair above.
   QRATE_GOOGLE_CONFIG_TOKEN: ${{ secrets.QRATE_GOOGLE_CONFIG_TOKEN }}
 

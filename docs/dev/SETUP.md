@@ -11,7 +11,7 @@ release, since a release depends on several pieces being configured ahead of tim
 | Branch | Contents | Purpose |
 |---|---|---|
 | `main` | The Rust **GPUI** desktop app (`crates/*`) + release pipeline | Default branch and source of truth. Routine work lands here directly via short-lived **feature branches** (no PR required); tag-driven releases are cut from here. |
-| `site` | An **Astro** site (no Rust) | `qrate.dvnl.work`, served by a Cloudflare Worker. Mostly prerendered; `/oauth/config` is a live endpoint the app depends on (`docs/site-oauth-handoff.md`). |
+| `site` | An **Astro** site (no Rust) | `qrate.dvnl.work`, served by a Cloudflare Worker. Mostly prerendered; `/oauth/config` is a live endpoint the app depends on (`site-oauth-handoff.md`). |
 
 > Branch features off `main` and land them back on `main` directly.
 
@@ -47,7 +47,7 @@ cargo run
 
 A build without them still compiles and runs — Google sign-in reports that this build has no
 client id. Never commit the JSON; `.gitignore` covers `client_secret_*.json`, and the values
-themselves belong in the environment or in the credential endpoint (`docs/site-oauth-handoff.md`),
+themselves belong in the environment or in the credential endpoint (`site-oauth-handoff.md`),
 never in source.
 
 ---
@@ -87,7 +87,7 @@ produce nothing visible.
    | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Optional. The live pair comes from the endpoint at runtime; these are only the last rung, for a first-ever sign-in while **our** endpoint is down but Google is up. |
 
    Rotating the Cloud project does not need a release — that is the whole point of
-   the endpoint (`docs/site-oauth-handoff.md`).
+   the endpoint (`site-oauth-handoff.md`).
 
 ---
 

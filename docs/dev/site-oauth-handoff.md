@@ -19,7 +19,7 @@ Two things the cutover left behind, neither in this repo:
 - **Publishing a release no longer updates the site.** `redeploy-site-on-release.yml` (on `main`)
   dispatches `deploy-site.yml`, which builds to GitHub Pages — but the domain serves the Worker
   now, so a published release leaves the site stale and says nothing. It needs a Cloudflare deploy
-  hook and a five-line swap in that job. See `docs/SETUP.md` §4.
+  hook and a five-line swap in that job. See `SETUP.md` §4.
 - `/privacy` and `/terms` must stay at exactly those paths. Google's consent screen has them on
   file, and changing either URL means going back through the consent-screen form.
 
@@ -72,7 +72,7 @@ Secrets via `wrangler secret put GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` /
 
 `QRATE_GOOGLE_CONFIG_TOKEN` is invented, not issued (`openssl rand -base64 32`). The *same* string
 goes in two places: this Worker secret, and the `QRATE_GOOGLE_CONFIG_TOKEN` build variable qrate
-compiles in (`GOOGLE_CONFIG_TOKEN` as a GitHub Actions secret; see `docs/SETUP.md` §3.6).
+compiles in (`GOOGLE_CONFIG_TOKEN` as a GitHub Actions secret; see `SETUP.md` §3.6).
 Omitting `GOOGLE_CLIENT_SECRET` is fine for a client that has none — the route leaves the field out
 rather than sending `""`, and the app reads that as absent.
 
@@ -156,7 +156,7 @@ Not the site agent's job, but the routes above are inert without it:
 - Fill the OAuth consent screen, including the `/privacy` and `/terms` URLs, and move it from
   Testing to Production. Until then refresh tokens expire after 7 days and the app caps at 100 users.
 - Scope stays `drive.file` — non-sensitive, no brand-verification review. Widening it to
-  `spreadsheets` is a decision that was considered and rejected; see `docs/google-sync-handoff.md`.
+  `spreadsheets` is a decision that was considered and rejected; see `google-sync-handoff.md`.
 
 ## 4. Self-hosting is a requirement
 

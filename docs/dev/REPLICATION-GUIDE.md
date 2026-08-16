@@ -5,7 +5,7 @@ releases-site + release-automation setup, written so you can **reproduce it on
 another repository**. It includes every GitHub Actions workflow, the website, the
 decisions made (and the questions behind them), and the bugs hit along the way.
 
-> Companion docs: `docs/SETUP.md` is the ongoing runbook; this file is the
+> Companion docs: `SETUP.md` is the ongoing runbook; this file is the
 > "how it was built / how to rebuild it elsewhere" guide.
 
 ---
@@ -50,7 +50,7 @@ These are the actual decisions that shaped the build. Re-answer them for your re
 | 3 | Branch layout for the site | (A) clean branch, project at root / (B) subfolder | **A** | Keeps `package.json` away from app files; cleanest. Removed leftover app files from `site`. |
 | 4 | First pre-release tag | `v0.1.0-alpha.1` (bump Cargo) / `v0.1.0` / `v0.1.0-rc.1` | **`v0.1.0-alpha.1`** | Conventional pre-release semver; version guard requires the manifest to match. |
 | 5 | Push the tag now vs hold | Push now / create locally | **Push now** | Run the real build immediately; draft stays private until published. |
-| 6 | Where to put the runbook | `main: docs/SETUP.md` / root / `site` | **`main: docs/SETUP.md`** | Project-level docs next to the code they describe. |
+| 6 | Where to put the runbook | `main: SETUP.md` / root / `site` | **`main: SETUP.md`** | Project-level docs next to the code they describe. |
 | 7 | How to land the NSIS bug fix | reuse tag `alpha.1` / bump `alpha.2` / fix only | **Reuse `alpha.1`** | The failed tag produced no release, so moving it is harmless. |
 
 Process decisions (stated, not from a menu):

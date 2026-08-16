@@ -78,7 +78,7 @@ fn plugins_page(cx: &App) -> SettingPage {
         return SettingPage::new("Plugins").group(
             SettingGroup::new()
                 .title("Installed")
-                .description("No plugins found. Help ▸ Open Plugins Folder is where they go."),
+                .description("No plugins found. Extensions ▸ Plugins Folder is where they go."),
         );
     }
 
@@ -390,7 +390,7 @@ fn google_page(cx: &App) -> SettingPage {
             .description(
                 "Where qrate asks which Google project to sign in against. Leave it empty for \
                  ours. An institution that runs its own Google project points this at its own \
-                 endpoint — see docs/site-oauth-handoff.md for what to serve.",
+                 endpoint — see docs/dev/site-oauth-handoff.md for what to serve.",
             )
             .layout(Axis::Vertical),
         );

@@ -7,14 +7,14 @@ in Notion; this file holds only what is shared between them and would otherwise 
 rediscovered by reading the OAuth code.
 
 > **Status, 2026-08-15.** The Rust side of all four is written, and `qrate.dvnl.work` serves both
-> `/oauth/config` and `/picker` (see `docs/site-oauth-handoff.md`). **ASNT-93's open decision is
+> `/oauth/config` and `/picker` (see `site-oauth-handoff.md`). **ASNT-93's open decision is
 > closed: Route A** — `drive.file` stays, and the Picker is how a user points qrate at a
 > spreadsheet they already own.
 >
 > Nothing Google-facing works end to end yet, and all three remaining pieces are outside this repo:
 > the Cloud console work (enable Sheets/Drive/Picker, a referrer-restricted Picker API key, consent
 > screen out of Testing), the three GitHub Actions secrets, and a deploy hook to replace the
-> release→site dispatch the Cloudflare cutover broke (`docs/SETUP.md` §4).
+> release→site dispatch the Cloudflare cutover broke (`SETUP.md` §4).
 >
 > Both the config token and the client secret were pasted into agent transcripts while setting this
 > up. Neither is confidential by design, but rotating them costs one Cloudflare secret each *until
@@ -114,7 +114,7 @@ policy pages. An institution that won't route its staff through our endpoint has
 answer rather than a fork.
 
 The setting exists (Settings ▸ Google ▸ Credential endpoint) and the contract is written down in
-`docs/site-oauth-handoff.md`. The Worker itself is the site agent's half.
+`site-oauth-handoff.md`. The Worker itself is the site agent's half.
 
 ## The one structural blocker
 
@@ -175,7 +175,7 @@ Full option analysis: <https://claude.ai/code/artifact/a17244b7-ccdd-48dd-bd39-7
 - `QRATE_GOOGLE_CLIENT_ID` / `_SECRET` / `_CONFIG_TOKEN` are build-time `option_env!`, and stay as
   the last-resort fallback even after ASNT-94. **Never commit the credential JSON or the values.**
   `.gitignore` now covers `client_secret_*.json`; the values themselves belong in the environment
-  (`docs/SETUP.md` §2) or in Actions secrets, never in source.
+  (`SETUP.md` §2) or in Actions secrets, never in source.
 - CI is `cargo fmt --all --check`, then `clippy --workspace --all-targets -- -D warnings -A dead_code`,
   then `cargo test --workspace`. All three green before any PR.
 - No `Co-Authored-By: Claude` trailer on commits, ever.
