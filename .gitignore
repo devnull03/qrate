@@ -26,3 +26,4 @@ CLAUDE.md
 
 # local worker secrets
 .dev.vars
+client_secret_*.json
