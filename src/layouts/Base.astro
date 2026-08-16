@@ -10,6 +10,7 @@ const {
   description = 'Free, open-source desktop software for collection metadata. Catalogue archives, libraries and museums offline: one file per project, no server.',
   current = '',
   version = '',
+  noindex = false,
 } = Astro.props;
 
 // Absolute URLs: scrapers do not resolve relative ones. `build.format: 'file'`
@@ -20,6 +21,11 @@ const canonical = new URL(
   Astro.site
 );
 const ogImage = new URL('/og.png', Astro.site);
+
+// Cloudflare Web Analytics: cookieless, no cross-site identifier, and it only
+// exists when CF_BEACON_TOKEN is set at build time. The docs pages get the same
+// tag from astro.config.mjs, because Starlight does not render this layout.
+const beacon = import.meta.env.CF_BEACON_TOKEN;
 ---
 
 <!doctype html>
@@ -32,6 +38,7 @@ const ogImage = new URL('/og.png', Astro.site);
     <title>{title}</title>
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
+    {noindex && <meta name="robots" content="noindex" />}
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="qrate" />
@@ -68,6 +75,16 @@ const ogImage = new URL('/og.png', Astro.site);
       document.documentElement.dataset.theme =
         localStorage.getItem('qrate-theme') || 'qrate-light';
     </script>
+
+    {
+      beacon && (
+        <script
+          defer
+          src="https://static.cloudflareinsights.com/beacon.min.js"
+          data-cf-beacon={JSON.stringify({ token: beacon })}
+        />
+      )
+    }
   </head>
   <body>
     <Nav current={current} />

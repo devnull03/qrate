@@ -1,6 +1,6 @@
 ---
 import { marked } from 'marked';
-import { humanSize, formatDate } from '../lib/releases.js';
+import { humanSize, formatDate, platformOf } from '../lib/releases.js';
 
 const { release, latest = false } = Astro.props;
 
@@ -9,6 +9,13 @@ const { release, latest = false } = Astro.props;
 const notesHtml = release.body ? marked.parse(release.body) : '';
 const assets = release.assets ?? [];
 const tag = release.prerelease ? 'pre-release' : latest ? 'latest' : 'release';
+
+// /thanks is built from the newest release alone, so only its rows may go there.
+// An older tag's filename would miss the lookup and fall back to the current
+// build, handing over a different file than the row names. Those stay direct,
+// and so does SHA256SUMS.txt, which has no install steps to show.
+const thanksLink = (name) =>
+  latest && platformOf(name) ? `/thanks?a=${encodeURIComponent(name)}` : null;
 ---
 
 <article class="grid grid-cols-1 border-b border-rule md:grid-cols-[220px_1fr]">
@@ -44,7 +51,7 @@ const tag = release.prerelease ? 'pre-release' : latest ? 'latest' : 'release';
               <span class="break-all">{a.name}</span>
               <span class="flex shrink-0 items-center gap-4 text-dim">
                 <span>{humanSize(a.size)}</span>
-                <a href={a.browser_download_url} class="text-accent">
+                <a href={thanksLink(a.name) ?? a.browser_download_url} class="text-accent">
                   download
                 </a>
               </span>

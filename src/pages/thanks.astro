@@ -1,0 +1,235 @@
+---
+// Where every download button lands. The button does not link at the asset: it
+// links here with ?a=<filename>, and this page starts the download itself. That
+// buys the one thing the alpha needs most, which is somewhere to say the builds
+// are unsigned before Gatekeeper or SmartScreen says it first.
+import Base from '../layouts/Base.astro';
+import { getReleases, latest, assetIndex, getChecksums, humanSize, REPO } from '../lib/releases.js';
+
+const rel = latest(await getReleases());
+const sums = (rel?.assets ?? []).find((a) => /SHA256SUMS\.txt$/i.test(a.name));
+const hashes = await getChecksums(rel);
+
+// Sizes are formatted here so the inline script does not need a copy of humanSize.
+const files = Object.fromEntries(
+  Object.entries(assetIndex(rel)).map(([name, a]) => [
+    name,
+    { url: a.url, os: a.os, size: humanSize(a.size), sha: hashes[name] ?? '' },
+  ]),
+);
+
+const names = Object.keys(files);
+// Server-rendered default, for no-JS and for a bare /thanks. Same order the hero
+// button falls back through.
+const ORDER = ['macOS', 'Windows', 'Linux'];
+const fallback = ORDER.map((os) => names.find((n) => files[n].os === os)).find(Boolean) ?? null;
+
+// The tarball extracts to a directory named after itself, so the cd is only
+// correct if it comes from the real filename.
+const linuxFile = names.find((n) => files[n].os === 'Linux');
+const linuxDir = linuxFile?.replace(/\.tar\.gz$/, '') ?? 'qrate-x86_64-linux';
+
+const card = 'border border-rule bg-white p-[18px]';
+const code =
+  'mt-2.5 block overflow-x-auto whitespace-pre bg-wash px-3 py-2.5 font-mono text-[12.5px] leading-[1.7]';
+---
+
+<Base
+  title="qrate · Your download has started"
+  description="Install qrate on macOS, Windows or Linux."
+  version={rel?.tag_name}
+  noindex
+>
+  <section class="grid grid-cols-1 border-b border-rule md:grid-cols-2">
+    <div class="gut border-rule py-[30px] md:border-r md:pb-[46px] md:pt-[54px]">
+      <div class="eyebrow">{rel?.tag_name ?? 'qrate'}</div>
+      <h1
+        class="m-0 mb-3.5 mt-[18px] text-[32px] font-semibold leading-[1.04] tracking-[-0.035em] md:text-[46px]"
+      >
+        Your download has started.
+      </h1>
+      <p class="m-0 max-w-[420px] text-[15px] leading-[1.6] text-body">
+        Check your downloads folder. The steps to the right get it open the first time.
+      </p>
+    </div>
+    <div class="gut grid content-center gap-3 bg-wash py-5 md:p-[34px]">
+      <div class={card}>
+        <div class="eyebrow mb-2.5 block text-[10.5px]">Downloading</div>
+        <div id="dl-name" class="break-all font-mono text-[13px] leading-[1.6]">
+          {fallback ?? 'No published builds yet'}
+        </div>
+        <div id="dl-size" class="mt-1 font-mono text-[12px] text-faint">
+          {fallback ? files[fallback].size : ''}
+        </div>
+        {
+          fallback && files[fallback].sha && (
+            <div id="dl-verify" class="mt-3.5 border-t border-rule-soft pt-3">
+              <div class="eyebrow mb-1.5 block text-[10.5px] text-faint">SHA-256</div>
+              <div id="dl-sha" class="break-all font-mono text-[11.5px] leading-[1.55] text-body">
+                {files[fallback].sha}
+              </div>
+              <code
+                id="dl-cmd"
+                class="mt-2 block overflow-x-auto whitespace-pre bg-wash px-2.5 py-2 font-mono text-[11.5px]"
+              >
+                {`shasum -a 256 ~/Downloads/${fallback}`}
+              </code>
+            </div>
+          )
+        }
+        {
+          fallback ? (
+            <div class="mt-3.5 text-[13px] leading-[1.7] text-body">
+              Nothing happened?{' '}
+              <a id="dl-retry" href={files[fallback].url} class="underline">
+                Start the download again
+              </a>
+              .
+            </div>
+          ) : (
+            <div class="mt-3.5 text-[13px] leading-[1.7] text-body">
+              See the <a href={`https://github.com/${REPO}/releases`} class="underline">Releases page</a>.
+            </div>
+          )
+        }
+      </div>
+    </div>
+  </section>
+
+  <!-- The script sets data-os to narrow this to one block. Without JS all three
+       stay visible, which is the right answer for a crawler and for a reader who
+       arrived here from someone else's link. -->
+  <section
+    id="install"
+    class="grid grid-cols-1 border-b border-rule md:grid-cols-3"
+  >
+    <div data-os="macOS" class="gut border-b border-rule py-[26px] md:border-b-0 md:border-r md:p-[34px]">
+      <div class="eyebrow">macOS</div>
+      <h2 class="m-0 mb-2.5 mt-3 text-xl font-semibold tracking-[-0.02em]">Open the disk image</h2>
+      <div class="text-[14px] leading-[1.7] text-body">
+        Drag qrate to Applications. The build is unsigned, so the first launch has to be a
+        right-click on the app, then Open. If macOS still refuses, clear the quarantine flag.
+      </div>
+      <code class={code}>xattr -dr com.apple.quarantine "/Applications/qrate.app"</code>
+      <div class="mt-3 text-[13px] leading-[1.7] text-faint">
+        PDF previews work out of the box. For video frames, <span class="font-mono">brew install ffmpeg</span>.
+      </div>
+    </div>
+
+    <div data-os="Windows" class="gut border-b border-rule py-[26px] md:border-b-0 md:border-r md:p-[34px]">
+      <div class="eyebrow">Windows</div>
+      <h2 class="m-0 mb-2.5 mt-3 text-xl font-semibold tracking-[-0.02em]">Run the installer</h2>
+      <div class="text-[14px] leading-[1.7] text-body">
+        The build is unsigned, so SmartScreen warns about an unknown publisher. Click More info,
+        then Run anyway. If the file will not start at all, right-click it, choose Properties, and
+        tick Unblock.
+      </div>
+      <div class="mt-3 text-[13px] leading-[1.7] text-faint">
+        PDF and video previews both work out of the box. ffmpeg is bundled.
+      </div>
+    </div>
+
+    <div data-os="Linux" class="gut py-[26px] md:p-[34px]">
+      <div class="eyebrow">Linux</div>
+      <h2 class="m-0 mb-2.5 mt-3 text-xl font-semibold tracking-[-0.02em]">Extract and run</h2>
+      <div class="text-[14px] leading-[1.7] text-body">
+        The tarball holds the binary, an icon and a desktop entry. Nothing installs system-wide,
+        so put the directory wherever you keep local software.
+      </div>
+      {/* One expression, not text plus {linuxDir}: mixing them makes the compiler
+          treat the line breaks as JSX whitespace and drop them. */}
+      <code class={code}>{`tar -xzf ${linuxDir}.tar.gz\ncd ${linuxDir}\n./qrate`}</code>
+      <div class="mt-3 text-[13px] leading-[1.7] text-faint">
+        PDFium ships in the tarball. For video frames, <span class="font-mono">sudo apt install ffmpeg</span>.
+      </div>
+    </div>
+  </section>
+
+  <section class="grid grid-cols-1 border-b border-rule md:grid-cols-2">
+    <div class="gut border-b border-rule py-[26px] md:border-b-0 md:border-r md:p-[34px]">
+      <h2 class="m-0 mb-2.5 text-xl font-semibold tracking-[-0.02em]">This is an alpha build</h2>
+      <div class="text-[14px] leading-[1.7] text-body">
+        Keep backups of important collections, and report problems with the steps that reproduce
+        them. Nothing you catalogue leaves your machine either way: a project is one file on your
+        own disk.
+      </div>
+    </div>
+    <div class="gut grid content-center gap-3 bg-wash py-5 md:grid-cols-3 md:gap-px md:p-[34px]">
+      <a href="/docs" class={`${card} text-[13px] leading-[1.7] text-body`}>
+        <div class="eyebrow mb-2.5 block text-[10.5px]">Read</div>
+        Documentation, from the first project to writing a plugin.
+      </a>
+      <a href="/changelog" class={`${card} text-[13px] leading-[1.7] text-body`}>
+        <div class="eyebrow mb-2.5 block text-[10.5px]">New</div>
+        What changed in {rel?.tag_name ?? 'this release'}, and everything before it.
+      </a>
+      <a href={`https://github.com/${REPO}/issues`} class={`${card} text-[13px] leading-[1.7] text-body`}>
+        <div class="eyebrow mb-2.5 block text-[10.5px]">Report</div>
+        Something broken or missing. Issues on GitHub.
+      </a>
+    </div>
+  </section>
+
+  {
+    sums && (
+      <div class="gut border-b border-rule py-[18px] font-mono text-[12px] text-faint">
+        Every build is unsigned. Verify what you downloaded against{' '}
+        <a href={sums.browser_download_url} class="underline">
+          SHA256SUMS.txt
+        </a>
+        .
+      </div>
+    )
+  }
+</Base>
+
+<style>
+  /* Only the block for the platform the script settled on. The single-column
+     phone layout also loses the borders the hidden siblings were carrying, so
+     the surviving block puts its own back. */
+  #install[data-os] > [data-os] {
+    display: none;
+  }
+  #install[data-os='macOS'] > [data-os='macOS'],
+  #install[data-os='Windows'] > [data-os='Windows'],
+  #install[data-os='Linux'] > [data-os='Linux'] {
+    display: block;
+    border-right: 0;
+    border-bottom: 0;
+  }
+</style>
+
+<script is:inline define:vars={{ files, fallback }}>
+  // ?a= is a filename, never a URL. It is looked up in the build-time map, so the
+  // only thing this page can ever navigate to is an asset of the current release.
+  (() => {
+    const asked = new URLSearchParams(location.search).get('a');
+    const name = files[asked] ? asked : fallback;
+    if (!name) return;
+    const file = files[name];
+
+    document.getElementById('dl-name').textContent = name;
+    document.getElementById('dl-size').textContent = file.size;
+    document.getElementById('dl-retry').href = file.url;
+    document.getElementById('install').dataset.os = file.os;
+
+    // The digest is what stands in for a signature on these builds, so the page
+    // shows the expected value next to the command that produces the real one.
+    const verify = document.getElementById('dl-verify');
+    if (verify && file.sha) {
+      document.getElementById('dl-sha').textContent = file.sha;
+      document.getElementById('dl-cmd').textContent =
+        file.os === 'Windows'
+          ? `certutil -hashfile %USERPROFILE%\\Downloads\\${name} SHA256`
+          : file.os === 'Linux'
+            ? `sha256sum ~/Downloads/${name}`
+            : `shasum -a 256 ~/Downloads/${name}`;
+    } else if (verify) {
+      verify.hidden = true;
+    }
+
+    // GitHub serves release assets as attachments, so this downloads without
+    // navigating away from the page.
+    location.href = file.url;
+  })();
+</script>

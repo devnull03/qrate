@@ -8,16 +8,17 @@ const CONTACT = 'qrate@dvnl.work';
 <Legal
   title="Privacy policy"
   eyebrow="Privacy"
-  updated="15 August 2026"
-  description="qrate is a desktop app with no accounts, no telemetry and no analytics. Your collection stays on your own disk. What it touches, and what it never sends."
+  updated="16 August 2026"
+  description="qrate is a desktop app with no accounts and no telemetry. Your collection stays on your own disk. What it touches, and what it never sends."
   lede="qrate is a desktop application. Your catalogue stays on your own disk, and the project operates no servers that hold your data."
 >
   <h2>The short version</h2>
   <p>
-    qrate has no accounts, no telemetry and no analytics. It does not phone home. Every record,
-    field, note and linked file stays in the <code>.qrate</code> file on your own disk. The only time
-    qrate talks to anyone else is when you ask it to: exporting to Google Sheets, downloading a
-    dictionary, or checking for a release.
+    The application has no accounts, no telemetry and no analytics. It does not phone home. Every
+    record, field, note and linked file stays in the <code>.qrate</code> file on your own disk. The
+    only time qrate talks to anyone else is when you ask it to: exporting to Google Sheets,
+    downloading a dictionary, or checking for a release. This website counts page views, without
+    cookies and without identifying you, which is the one difference between the two.
   </p>
 
   <h2>What qrate collects</h2>
@@ -33,8 +34,20 @@ const CONTACT = 'qrate@dvnl.work';
     This site is static: pages and images, no accounts and no tracking cookies. Cloudflare serves
     it, and records standard request information for delivery and abuse prevention. That
     information includes your IP address, your user agent and the page you asked for. We do not use
-    it to build profiles, and we run no advertising or analytics scripts. GitHub serves the
-    application downloads. Their own privacy policy applies once you follow a download link.
+    it to build profiles, and we run no advertising scripts. GitHub serves the application
+    downloads. Their own privacy policy applies once you follow a download link.
+  </p>
+  <p>
+    The site does run <a href="https://www.cloudflare.com/web-analytics/" rel="noopener"
+      >Cloudflare Web Analytics</a
+    >, which counts page views so we can tell whether the download instructions are reaching
+    anyone. It sets no cookie, stores no identifier in your browser, and assigns you no visitor ID
+    that would follow you between sessions or to any other site. It reports the page you viewed,
+    the referrer, and coarse details such as country, browser and device type. It has no access to
+    your catalogue, and it runs only on this website. Cloudflare discards the IP address at the
+    edge rather than storing it with the measurement. The application itself still reports nothing,
+    as described above. To opt out, block <code>static.cloudflareinsights.com</code>; any content
+    blocker will do it, and the site works exactly the same without the script.
   </p>
   <p>
     One address on this site answers qrate rather than a browser. It hands the application its own

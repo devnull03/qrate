@@ -27,7 +27,7 @@ const downloads = assets.map((a) => ({ ...a, os: platformOf(a.name) })).filter((
         <div class="qr-row">
           <div class="qr-os">{d.os}</div>
           <div class="qr-file">
-            <a href={d.browser_download_url}>{d.name}</a>
+            <a href={`/thanks?a=${encodeURIComponent(d.name)}`}>{d.name}</a>
           </div>
           <div class="qr-dim">{humanSize(d.size)}</div>
           <div class="qr-dim">

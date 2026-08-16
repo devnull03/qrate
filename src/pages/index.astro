@@ -1,19 +1,20 @@
 ---
 import Base from '../layouts/Base.astro';
 import AppWindow from '../components/AppWindow.astro';
-import { getReleases, latest, platformOf, REPO } from '../lib/releases.js';
+import { getReleases, latest, assetIndex, REPO } from '../lib/releases.js';
 
 const releases = await getReleases();
 const rel = latest(releases);
 
 // One installer per platform, for the hero button the client picks by OS.
 // The order is also the server-rendered fallback order, for no-JS and for
-// visitors on a platform with no build.
+// visitors on a platform with no build. The value is the asset filename, which
+// is what /thanks takes: the button links there, and that page starts the
+// download and shows the install steps for the platform it was asked for.
 const ORDER = ['macOS', 'Windows', 'Linux'];
 const byOs = {};
-for (const a of rel?.assets ?? []) {
-  const os = platformOf(a.name);
-  if (os && !byOs[os]) byOs[os] = a.browser_download_url;
+for (const [name, a] of Object.entries(assetIndex(rel))) {
+  if (!byOs[a.os]) byOs[a.os] = name;
 }
 const available = ORDER.filter((os) => byOs[os]);
 const fallback = available[0] ?? null;
@@ -142,7 +143,7 @@ const mess = [
       <div class="mb-[34px] flex flex-col items-stretch gap-2 md:flex-row md:items-center md:gap-2.5">
         <a
           id="dl-primary"
-          href={fallback ? byOs[fallback] : `/docs/install`}
+          href={fallback ? `/thanks?a=${encodeURIComponent(byOs[fallback])}` : `/docs/install`}
           class="bg-ink px-5 py-3 text-center text-[14px] font-medium text-paper"
           >{fallback ? `Download for ${fallback}` : 'Get started'}</a
         >
@@ -469,7 +470,7 @@ const mess = [
       return;
     }
 
-    primary.href = byOs[guess];
+    primary.href = `/thanks?a=${encodeURIComponent(byOs[guess])}`;
     primary.textContent = `Download for ${guess}`;
     const others = available.filter((o) => o !== guess);
     rest.textContent = others.length ? others.join(' · ') : 'All platforms';

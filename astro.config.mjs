@@ -8,6 +8,13 @@ import starlightMcp from 'starlight-mcp';
 import syncedSidebar from './src/sidebar.generated.js';
 import stripHtmlLinks from './src/integrations/strip-html-links.mjs';
 
+// Cloudflare Web Analytics, cookieless and page-level. The token is public (it
+// ships in the HTML) but stays out of the repo so a fork does not report into
+// this account. Unset means no beacon at all, which is what local builds want.
+// src/layouts/Base.astro carries the same tag for the pages Starlight does not
+// render; both have to exist for the funnel to span / -> /docs/install -> /thanks.
+const beacon = process.env.CF_BEACON_TOKEN;
+
 // Served from the root of its own domain, so no `base` and no BASE_URL juggling:
 // every internal link is a plain absolute path.
 //
@@ -58,6 +65,18 @@ export default defineConfig({
             href: 'https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap',
           },
         },
+        ...(beacon
+          ? [
+              {
+                tag: 'script',
+                attrs: {
+                  defer: true,
+                  src: 'https://static.cloudflareinsights.com/beacon.min.js',
+                  'data-cf-beacon': JSON.stringify({ token: beacon }),
+                },
+              },
+            ]
+          : []),
       ],
       social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/devnull03/qrate' }],
       components: {

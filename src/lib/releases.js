@@ -59,6 +59,54 @@ export function platformOf(name) {
   return null;
 }
 
+// The downloadable assets of one release, keyed by filename. /thanks resolves its
+// ?a= param against this, so only a name the release actually published can ever
+// become a download URL.
+export function assetIndex(rel) {
+  const out = {};
+  for (const a of rel?.assets ?? []) {
+    const os = platformOf(a.name);
+    if (os) out[a.name] = { url: a.browser_download_url, os, size: a.size };
+  }
+  return out;
+}
+
+// filename -> sha256, read from the release's own SHA256SUMS.txt at build time.
+// The builds are unsigned, so the digest is the only thing a reader has to check
+// what they downloaded against. Same failure rule as getReleases: in CI, ship the
+// hashes or fail, because a verification step that quietly disappears is worse
+// than a broken build.
+// Keyed by the sums URL, not a bare flag: every release has its own SHA256SUMS.txt,
+// and a shared cache would hand the second caller the first release's digests.
+const sumsCache = new Map();
+
+export async function getChecksums(rel) {
+  const asset = (rel?.assets ?? []).find((a) => /SHA256SUMS\.txt$/i.test(a.name));
+  if (!asset) return {};
+
+  const url = asset.browser_download_url;
+  if (sumsCache.has(url)) return sumsCache.get(url);
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    if (import.meta.env.PROD) {
+      throw new Error(`GitHub ${res.status} ${res.statusText} fetching ${asset.name}`);
+    }
+    sumsCache.set(url, {});
+    return {};
+  }
+
+  // Standard sha256sum output: the digest, two spaces (or a space and a `*` for
+  // binary mode), then the filename, which may carry a directory prefix.
+  const out = {};
+  for (const line of (await res.text()).split('\n')) {
+    const m = line.trim().match(/^([a-f0-9]{64})\s+\*?(.+)$/i);
+    if (m) out[m[2].split(/[/\\]/).pop()] = m[1].toLowerCase();
+  }
+  sumsCache.set(url, out);
+  return out;
+}
+
 export function humanSize(bytes) {
   if (bytes == null) return '';
   const units = ['B', 'KB', 'MB', 'GB'];
