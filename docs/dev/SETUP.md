@@ -125,9 +125,9 @@ each commit to `site`. Nothing in this repo drives that; it is configured on the
 Cloudflare side. The build fetches the **release list at build time**, so the
 releases page only ever shows what existed when it last ran.
 
-`deploy-site.yml` on `site` still publishes the static half to GitHub Pages. That
-is now a second, unvisited copy — decide whether to keep it, but don't mistake a
-green run there for the live site updating.
+GitHub Pages is off for this repo, and `deploy-site.yml` — the workflow that used
+to publish a second, unvisited copy there — has been removed from `site`. The
+Cloudflare Worker above is the only thing that serves `qrate.dvnl.work`.
 
 ### `redeploy-site-on-release.yml` — refresh the site on release (on `main`)
 - **Trigger:** `release: published` (and `workflow_dispatch`).
