@@ -14,6 +14,9 @@ log.workspace = true
 simplelog.workspace = true
 os_info.workspace = true
 sysinfo.workspace = true
+# Update check only — the release-download GET, blocking, on a background thread. `ai` already
+# pins the version.
+reqwest = { version = "0.12", features = ["blocking", "json"] }
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true

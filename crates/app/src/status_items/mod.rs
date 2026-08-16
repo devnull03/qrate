@@ -2,6 +2,7 @@ mod cell_location;
 pub mod markup;
 mod panel_buttons;
 mod plugin_bar;
+mod update_notice;
 
 use cell_location::CellLocation;
 use gpui::*;
@@ -9,6 +10,7 @@ use gpui_component::dock::DockArea;
 use panel_buttons::PanelButtons;
 use plugin_api::{Bar, BarContributions, Side};
 pub use plugin_bar::PluginBar;
+use update_notice::UpdateNotice;
 use window_wrapper::{BarRegistry, status_bar::StatusBarRegistry};
 use workspace::{BarSide, DockToggleButton, PANELS};
 
@@ -49,6 +51,12 @@ pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> St
     registry.items_mut().add_right_if(plugins, |cx| {
         !BarContributions::at(Bar::Status, Side::Right, cx).is_empty()
     });
+
+    // Dismissible "an update is available" text, shown only once `update_check::check` finds one.
+    let update_notice = cx.new(UpdateNotice::new);
+    registry
+        .items_mut()
+        .add_right_if(update_notice, UpdateNotice::occupied);
 
     // Text readout of the table's selected cell.
     let cell_location = cx.new(CellLocation::new);

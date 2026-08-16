@@ -223,6 +223,7 @@ dependencies = [
  "plugin-host",
  "preview",
  "project-wizard",
+ "reqwest",
  "schemars",
  "serde",
  "serde_json",
