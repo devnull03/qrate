@@ -157,10 +157,14 @@ jobs:
       # the .NET SDK, so the WiX CLI installs as a dotnet global tool; no matrix leg for this, since
       # both installers package the one binary already built above and a second leg would just
       # recompile it for nothing.
+      #
+      # Pinned to 5.0.2: v6 introduced FireGiant's Open Source Maintenance Fee and v7 enforces it by
+      # blocking every command behind an unaccepted EULA, which just hangs here. v5 is the newest
+      # version still free of that.
       - name: Install WiX
         run: |
-          dotnet tool install --global wix
-          wix extension add -g WixToolset.UI.wixext
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.UI.wixext/5.0.2
 
       # PDFium and ffmpeg are loaded at runtime from beside the executable. Windows has no package
       # manager we can rely on, so both ship with the app — without them a released build shows a
