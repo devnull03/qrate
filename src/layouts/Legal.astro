@@ -8,7 +8,7 @@ const { title, eyebrow, lede, updated, description } = Astro.props;
 const rel = latest(await getReleases());
 ---
 
-<Base title={`qrate — ${title}`} description={description} version={rel?.tag_name}>
+<Base title={`qrate · ${title}`} description={description} version={rel?.tag_name}>
   <section class="gut border-b border-rule py-[30px] md:pb-[46px] md:pt-[54px]">
     <div class="eyebrow">{eyebrow}</div>
     <h1

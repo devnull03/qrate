@@ -28,7 +28,7 @@ const PICKER_API_KEY = import.meta.env.PICKER_API_KEY ?? '';
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex" />
-    <title>Choose a spreadsheet — qrate</title>
+    <title>Choose a spreadsheet · qrate</title>
     <style>
       body {
         margin: 0;
@@ -60,7 +60,7 @@ const PICKER_API_KEY = import.meta.env.PICKER_API_KEY ?? '';
       if (!PICKER_API_KEY) {
         fail('This site has no Google Picker API key configured yet.');
       } else if (!p.get('token') || !p.get('state') || !p.get('port')) {
-        fail('Open this page from qrate — it needs details qrate passes in the link.');
+        fail('Open this page from qrate. It needs details that qrate passes in the link.');
       } else {
         const s = document.createElement('script');
         s.src = 'https://apis.google.com/js/api.js';

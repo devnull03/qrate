@@ -29,13 +29,13 @@ const manual = [
   {
     num: '/02',
     title: 'Link scans without moving files',
-    body: 'Link scans, documents, audio and video. Previews render in the panel; originals never move.',
+    body: 'Link scans, documents, audio and video. Previews render in the panel. The originals never move.',
     meta: 'PDFium · ffmpeg',
   },
   {
     num: '/03',
     title: 'Validation that names the problem',
-    body: 'Spelling and controlled-vocabulary checks land in the problems panel with the row and field named.',
+    body: 'The problems panel names the row and the field for every spelling and controlled-vocabulary error.',
     meta: '1490 errors · 5330 warnings',
   },
   {
@@ -63,7 +63,7 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
 ---
 
 <Base
-  title="qrate — collection metadata editor for archives"
+  title="qrate · collection metadata editor for archives"
   description="A free, open-source desktop app for cataloguing collections. Edit metadata in a spreadsheet grid, link scans, check fields. macOS, Windows and Linux."
   current=""
   version={rel?.tag_name}
@@ -126,6 +126,10 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
     </div>
   </section>
 
+  {/* The "In use at" logo band. Commented out, not deleted: empty placeholder
+      boxes read as a broken page rather than as social proof. Uncomment and
+      swap the strings for real institution names once there are some.
+
   <section
     class="gut flex flex-col items-start gap-3 border-b border-rule py-[22px] md:flex-row md:items-center md:gap-[26px]"
   >
@@ -142,6 +146,7 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
       }
     </div>
   </section>
+  */}
 
   <section class="gut flex flex-col items-center gap-4 py-[34px] md:pb-14 md:pt-16" id="features">
     <div class="flex flex-col items-baseline gap-2 self-stretch md:flex-row md:gap-3.5">
@@ -211,9 +216,9 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
     <div class={ruleNum}>/05</div>
     <div class={ruleTitle}><h2 class={ruleH}>Islandora, and other plugins</h2></div>
     <div class={ruleBody}>
-      Plugins add validation and column rules, and run from a folder you control. An Islandora
-      plugin ships at launch, so subject, geo_location and person terms check against its
-      vocabularies on day one.
+      Plugins add validation and column rules. They run from a folder you control. An Islandora
+      plugin ships with the app, so it checks subject, geo_location and person terms against your
+      site's vocabularies.
       <div class="mt-3 font-mono text-xs font-medium text-ink">Luau · plugin template on GitHub</div>
     </div>
   </div>
@@ -244,7 +249,7 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
     </div>
   </section>
 
-  <!-- Not for a rich result — a Software App card needs ratings, which qrate has
+  <!-- Not for a rich result. A Software App card needs ratings, which qrate has
        none of. This is for entity resolution: what qrate is, that it is free,
        and where the source lives, for search and for AI answers. -->
   <script

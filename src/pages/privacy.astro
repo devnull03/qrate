@@ -23,43 +23,43 @@ const CONTACT = 'qrate@dvnl.work';
   <h2>What qrate collects</h2>
   <p>
     Nothing. The application does not send your catalogue, your file paths, your settings or any
-    usage data to us or to anyone else. There is no crash reporting service and no usage counter. A
-    session log is written on your own machine to help you diagnose problems; it stays there unless
-    you choose to attach it to a bug report.
+    usage data to us or to anyone else. There is no crash reporting service and no usage counter.
+    qrate writes a session log on your own machine to help you diagnose problems. That log stays
+    there unless you attach it to a bug report yourself.
   </p>
 
   <h2>This website</h2>
   <p>
-    This site is static — pages and images, no accounts and no tracking cookies. It is served by
-    Cloudflare, which records standard request information such as IP address, user agent and the
-    page requested, for delivery and abuse prevention. We do not use that data to build profiles,
-    and we run no advertising or analytics scripts. Application downloads are served by GitHub,
-    whose own privacy policy applies once you follow a download link.
+    This site is static: pages and images, no accounts and no tracking cookies. Cloudflare serves
+    it, and records standard request information for delivery and abuse prevention. That
+    information includes your IP address, your user agent and the page you asked for. We do not use
+    it to build profiles, and we run no advertising or analytics scripts. GitHub serves the
+    application downloads. Their own privacy policy applies once you follow a download link.
   </p>
   <p>
-    One address on this site answers qrate rather than a browser: it hands the application its own
-    Google API credentials, so they can be rotated without shipping a new release. It carries no
-    personal data in either direction, and your Google sign-in never passes through it — that
-    happens between your browser, Google, and your own computer.
+    One address on this site answers qrate rather than a browser. It hands the application its own
+    Google API credentials, so we can rotate them without shipping a new release. It carries no
+    personal data in either direction. Your Google sign-in never passes through it. That happens
+    between your browser, Google, and your own computer.
   </p>
 
   <h2>Google user data</h2>
   <p>
     qrate can export a project to a Google Sheet. That is the only feature that touches a Google
-    account, it is entirely optional, and nothing happens until you start it and consent in your
+    account, and it is optional. Nothing happens until you start the export and consent in your
     browser.
   </p>
   <ul>
     <li>
       <strong>Scope requested:</strong> <code>drive.file</code> only. This scope reaches only the
       files qrate itself creates and the ones you hand it by name through Google's own file chooser.
-      It gives qrate no access to the rest of your Drive — not your other documents, not your
+      It gives qrate no access to the rest of your Drive: not your other documents, not your
       folders, not your file list.
     </li>
     <li>
       <strong>Choosing an existing sheet:</strong> qrate opens Google's file chooser in your browser.
       Google shows you your own files and tells qrate about the one you pick, and nothing else. The
-      chooser page on this site never sees the list; your selection is passed back to qrate on your
+      chooser page on this site never sees the list. It passes your selection back to qrate on your
       own machine.
     </li>
     <li>
@@ -72,12 +72,12 @@ const CONTACT = 'qrate@dvnl.work';
     </li>
     <li>
       <strong>Sign-in:</strong> a loopback redirect with PKCE. qrate opens your browser, you consent
-      to Google directly, and Google returns the result to a port on your own machine. Your Google
-      password is never seen by qrate.
+      to Google directly, and Google returns the result to a port on your own machine. qrate never
+      sees your Google password.
     </li>
     <li>
-      <strong>Tokens:</strong> the access and refresh tokens Google issues are kept on your computer
-      so you are not asked to consent on every export. They are never transmitted to us.
+      <strong>Tokens:</strong> qrate keeps the access and refresh tokens Google issues on your own
+      computer, so it does not ask for consent on every export. It never sends them to us.
     </li>
     <li>
       <strong>Retention and deletion:</strong> we hold no copy of your Google data, so there is
@@ -114,8 +114,8 @@ const CONTACT = 'qrate@dvnl.work';
     </li>
     <li>
       <strong>Plugins.</strong> Plugins run from a folder you control. A plugin you install may
-      contact a server you point it at — for example an Islandora site, to check vocabulary terms.
-      That connection is yours and is governed by that service's own policy.
+      contact a server you point it at, for example an Islandora site that checks vocabulary terms.
+      That connection is yours, and that service's own policy governs it.
     </li>
     <li>
       <strong>Preview tools.</strong> PDFium and ffmpeg run locally. They send nothing anywhere.
@@ -136,7 +136,7 @@ const CONTACT = 'qrate@dvnl.work';
     Questions about this policy, or about data qrate touches: <a href={`mailto:${CONTACT}`}
       >{CONTACT}</a
     >. See also the <a href="/terms">terms of service</a> and the <a href="/license"
-      >licence</a
+      >license</a
     >.
   </p>
 </Legal>

@@ -5,7 +5,7 @@ import { getReleases, latest } from '../lib/releases.js';
 const rel = latest(await getReleases());
 ---
 
-<Base title="qrate — Not found" description="That page does not exist." version={rel?.tag_name}>
+<Base title="qrate · Not found" description="That page does not exist." version={rel?.tag_name}>
   <section class="gut py-[60px] md:py-[110px]">
     <div class="eyebrow">404</div>
     <h1

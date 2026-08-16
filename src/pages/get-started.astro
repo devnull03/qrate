@@ -11,18 +11,20 @@ const downloads = assets
   .map((a) => ({ ...a, os: platformOf(a.name) }))
   .filter((a) => a.os);
 
+// Screenshot slots for the "Start a project" steps. Commented out until there
+// are real screenshots: the placeholder frames shipped to the live site.
+// const flowDraft = [
+//   { n: '01', slot: 'screenshot: launcher / new project' },
+//   { n: '02', slot: 'screenshot: columns and types' },
+//   { n: '03', slot: 'screenshot: linked files or problems panel' },
+// ];
+
 const toc = [
   ['Install', 'install'],
   ['Run from source', 'source'],
   ['Optional preview tools', 'preview-tools'],
-  ['Starting flow', 'flow'],
+  ['Start a project', 'flow'],
   ['Where project data lives', 'data'],
-];
-
-const flowDraft = [
-  { n: '01', slot: 'screenshot: launcher / new project' },
-  { n: '02', slot: 'screenshot: columns and types' },
-  { n: '03', slot: 'screenshot: linked files or problems panel' },
 ];
 
 // min-w-0 stops a long asset filename from widening its grid column
@@ -35,7 +37,7 @@ const code = 'mb-[30px] overflow-x-auto bg-ink px-4 py-[13px] font-mono text-xs 
 ---
 
 <Base
-  title="qrate — download for macOS, Windows and Linux"
+  title="qrate · download for macOS, Windows and Linux"
   description="Download qrate for macOS, Windows or Linux, or build it from source with Rust. Free, open-source collection metadata software. AGPL-3.0, no account."
   current="get-started"
   version={rel?.tag_name}
@@ -92,7 +94,7 @@ const code = 'mb-[30px] overflow-x-auto bg-ink px-4 py-[13px] font-mono text-xs 
           </div>
         ) : (
           <div class="mb-[30px] border border-rule p-3.5 font-mono text-[12.5px] text-dim">
-            No published builds yet — see the{' '}
+            No published builds yet. See the{' '}
             <a href={`https://github.com/${REPO}/releases`} class="text-accent">
               Releases page
             </a>
@@ -103,8 +105,8 @@ const code = 'mb-[30px] overflow-x-auto bg-ink px-4 py-[13px] font-mono text-xs 
 
       <h2 class={h2} id="source">Run from source</h2>
       <p class={p}>
-        Install Rust with rustup, add the rustfmt and clippy components, then clone and run. The
-        first build downloads dependencies; later builds use the Cargo cache.
+        Install Rust with rustup. Add the rustfmt and clippy components. Then clone the repository
+        and run it. The first build downloads the dependencies. Later builds use the Cargo cache.
       </p>
       <div class={code}>
         git clone https://github.com/{REPO}<br />cd qrate<br />cargo run
@@ -112,28 +114,33 @@ const code = 'mb-[30px] overflow-x-auto bg-ink px-4 py-[13px] font-mono text-xs 
 
       <h2 class={h2} id="preview-tools">Optional preview tools</h2>
       <p class={p}>
-        Common image formats work without extra tools. PDF previews use PDFium, video frame previews
-        use ffmpeg. qrate links neither: PDFium is loaded dynamically and ffmpeg runs as a
-        subprocess, so a checkout without them still builds and launches — PDFs and videos just show
-        a type icon. qrate looks beside its executable first, then on your PATH.
+        Common image formats work without extra tools. PDF previews use PDFium. Video frame
+        previews use ffmpeg. qrate links neither one. It loads PDFium dynamically and runs ffmpeg as
+        a subprocess. A checkout without them still builds and launches, but PDFs and videos show
+        only a type icon. qrate looks beside its own executable first, then on your PATH.
       </p>
       <p class={p}>
-        The script fetches PDFium for your platform, and ffmpeg on Windows. On macOS and Linux
-        ffmpeg is left to your package manager.
+        This script downloads PDFium for your platform, and ffmpeg on Windows. On macOS and Linux,
+        install ffmpeg with your package manager.
       </p>
       <div class={code}>./scripts/fetch-binaries.sh</div>
 
-      <div class="mb-[30px] border border-dashed border-[rgba(23,20,15,.32)] px-6 pb-[26px] pt-[22px]" id="flow">
+      <h2 class={h2} id="flow">Start a project</h2>
+      <ol class="m-0 mb-[30px] max-w-[720px] list-none p-0 text-[14px] leading-[1.7] text-body">
+        <li class="mb-1.5"><span class="mr-2.5 font-mono text-xs text-accent">01</span>Open qrate and make a new project. It saves as one <span class="font-mono text-[13px] text-ink">.qrate</span> file.</li>
+        <li class="mb-1.5"><span class="mr-2.5 font-mono text-xs text-accent">02</span>Import a CSV, or add columns by hand and set their types.</li>
+        <li class="mb-1.5"><span class="mr-2.5 font-mono text-xs text-accent">03</span>Link the scans. Point a row at a file on disk. qrate stores the path, not a copy.</li>
+        <li><span class="mr-2.5 font-mono text-xs text-accent">04</span>Read the problems panel. It names the row and the field for every error.</li>
+      </ol>
+
+      {/* The screenshot-per-step version of the section above. Kept for when
+          the screenshots exist. Uncomment this and the flowDraft array, and
+          drop the plain <ol> above.
+
+      <div class="mb-[30px] border border-dashed border-[rgba(23,20,15,.32)] px-6 pb-[26px] pt-[22px]">
         <div class="mb-1.5 flex flex-wrap items-baseline justify-between gap-3">
-          <h2 class={h2}>Starting flow</h2>
-          <span class="font-mono text-[10.5px] font-medium uppercase tracking-[0.06em] text-rust">
-            draft template, fill in later
-          </span>
+          <h2 class={h2}>Start a project</h2>
         </div>
-        <p class="m-0 mb-5 max-w-[560px] text-[13.5px] leading-[1.7] text-body">
-          One screenshot per step, with a short caption underneath. Replace the placeholders and the
-          copy; delete any step you do not need.
-        </p>
         {
           flowDraft.map((fd) => (
             <div class="mb-[22px] grid grid-cols-[26px_1fr] gap-3.5">
@@ -154,11 +161,12 @@ const code = 'mb-[30px] overflow-x-auto bg-ink px-4 py-[13px] font-mono text-xs 
           ))
         }
       </div>
+      */}
 
       <h2 class={h2} id="data">Where project data lives</h2>
       <p class={p}>
         A project is one <span class="font-mono text-[13px] text-ink">.qrate</span> SQLite file
-        holding the grid, settings, notes and metadata. Linked media stays where it is; moving a
+        holding the grid, settings, notes and metadata. Linked media stays where it is. Moving a
         project does not copy its files.
       </p>
       <div class="border-l-2 border-accent py-2.5 pl-3.5 text-[13.5px] leading-[1.7] text-body">

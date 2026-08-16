@@ -11,15 +11,15 @@ const platforms = new Set(
 ).size;
 
 const stats = [
-  [rel?.tag_name ?? '—', 'latest'],
-  [platforms || '—', 'platforms'],
+  [rel?.tag_name ?? 'none', 'latest'],
+  [platforms || '0', 'platforms'],
   ['AGPL', '3.0'],
 ];
 ---
 
 <Base
-  title="qrate — changelog and release notes"
-  description="Every published qrate build with its release notes and its installers for macOS, Windows and Linux. Pulled from the GitHub releases at build time."
+  title="qrate · changelog and release notes"
+  description="Every published qrate build with its release notes and its installers for macOS, Windows and Linux. The site reads them from GitHub at build time."
   current="changelog"
   version={rel?.tag_name}
 >
@@ -33,8 +33,8 @@ const stats = [
         Changelog
       </h1>
       <p class="m-0 max-w-[400px] text-[15px] leading-[1.6] text-body">
-        Every published build, with its notes and its files. Pulled from GitHub releases at build
-        time.
+        Every published build, with its notes and its files. The site reads them from GitHub
+        releases at build time.
       </p>
     </div>
     <div
@@ -54,7 +54,7 @@ const stats = [
   {
     releases.length === 0 ? (
       <p class="gut py-10">
-        No releases yet — check the{' '}
+        No releases yet. Check the{' '}
         <a href={`https://github.com/${REPO}/releases`} class="text-accent">
           Releases page
         </a>
