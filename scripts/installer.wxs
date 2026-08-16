@@ -7,17 +7,11 @@
   installs per-machine (Scope="perMachine") — GPO assignment only works against a per-machine MSI,
   so unlike installer.nsi's per-user mode, there is no per-user option here.
 
-  Pin the toolset to 5.0.2 — v6 introduced FireGiant's Open Source Maintenance Fee and v7 enforces
-  it by blocking every command behind an unaccepted EULA, which just hangs a non-interactive build.
-  v5 is the newest version still free of that:
-
-    dotnet tool install --global wix --version 5.0.2
-    wix extension add -g WixToolset.UI.wixext/5.0.2
-
-    wix build scripts\installer.wxs -ext WixToolset.UI.wixext ^
-      -d Version=1.2.3.0 -d SrcExe=C:\path\qrate.exe -d SrcDir=C:\path\dist ^
-      -d IconFile=C:\path\app-icon.ico -d HasPdfium=1 -d HasFfmpeg=1 ^
-      -o qrate-1.2.3-x86_64.msi
+  Build with the WiX v4 CLI, toolset pinned to 5.0.2 — see the "Install WiX" step in
+  .github/workflows/release.yml for the exact install/build invocation, kept there rather than
+  duplicated here so the two can't drift. That pin matters: v6 introduced FireGiant's Open Source
+  Maintenance Fee and v7 enforces it by blocking every command behind an unaccepted EULA, which
+  just hangs a non-interactive build. v5 is the newest version still free of that.
 
   UpgradeCode below is fixed on purpose — Windows Installer uses it to recognise "this is the same
   product, a different version" across releases. Never change it; a new one would make every future
