@@ -1,0 +1,41 @@
+---
+// Overrides Starlight's PageTitle to put the markdown/assistant control on the
+// title line. PageTitle is the only override that sits inside the content
+// column above the prose, which is where this control belongs.
+import MarkdownActions from './MarkdownActions.astro';
+
+const { title } = Astro.locals.starlightRoute.entry.data;
+---
+
+<div class="qr-title-row">
+  <h1 id="_top">{title}</h1>
+  <MarkdownActions />
+</div>
+
+<style>
+  .qr-title-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1.5rem;
+    margin-top: 1rem;
+  }
+
+  h1 {
+    font-size: var(--sl-text-h1);
+    line-height: var(--sl-line-height-headings);
+    font-weight: 600;
+    letter-spacing: -0.035em;
+    color: var(--sl-color-white);
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  /* The control drops under the title before it would squeeze it. */
+  @media (max-width: 30rem) {
+    .qr-title-row {
+      flex-direction: column;
+      gap: 0.9rem;
+    }
+  }
+</style>

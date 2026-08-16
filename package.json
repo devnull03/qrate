@@ -8,13 +8,18 @@
     "build": "astro build",
     "preview": "astro build && wrangler dev",
     "astro": "astro",
-    "deploy": "astro build && wrangler deploy"
+    "deploy": "astro build && wrangler deploy",
+    "sync-docs": "node scripts/sync-docs.mjs"
   },
   "dependencies": {
     "@astrojs/cloudflare": "^14.2.1",
+    "@astrojs/starlight": "^0.41.7",
     "@tailwindcss/vite": "^4.3.3",
     "astro": "^7.2.2",
     "marked": "^15.0.0",
+    "starlight-llms-txt": "^0.11.0",
+    "starlight-mcp": "^0.2.0",
+    "starlight-md-txt": "^0.1.0",
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {

@@ -1,0 +1,95 @@
+---
+// Overrides Starlight's Pagination to match design frame 1b: two cells sharing
+// one hairline, a mono uppercase kicker with a text arrow, and the page name in
+// the accent. The default is a pair of rounded, shadowed cards with an icon and
+// a 2xl title, which is a different vocabulary from everything around it.
+//
+// This is a component override rather than CSS because the kicker and its arrow
+// have to be one element — Starlight emits the label as a bare text node, so
+// `::after` on its parent lands after the page title instead.
+const { pagination } = Astro.locals.starlightRoute;
+const { prev, next } = pagination;
+
+const t = Astro.locals.t;
+---
+
+{
+  (prev || next) && (
+    <div class="pagination-links print:hidden">
+      {prev && (
+        <a href={prev.href} rel="prev">
+          <span class="qr-kicker">&#8592; {t('page.previousLink')}</span>
+          <span class="link-title">{prev.label}</span>
+        </a>
+      )}
+      {/* Keeps a lone "next" in the right-hand cell rather than sliding left. */}
+      {!prev && <div class="qr-blank" />}
+      {next && (
+        <a href={next.href} rel="next">
+          <span class="qr-kicker">{t('page.nextLink')} &#8594;</span>
+          <span class="link-title">{next.label}</span>
+        </a>
+      )}
+    </div>
+  )
+}
+
+<style>
+  .pagination-links {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--sl-color-hairline);
+    border: 1px solid var(--sl-color-hairline);
+  }
+
+  a,
+  .qr-blank {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 14px 16px;
+    background: var(--sl-color-bg);
+    text-decoration: none;
+    overflow-wrap: anywhere;
+  }
+
+  [rel='next'] {
+    align-items: flex-end;
+    text-align: end;
+  }
+
+  .qr-kicker {
+    font-family: var(--sl-font-mono);
+    font-size: 0.6rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--sl-color-gray-3);
+  }
+
+  .link-title {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--sl-color-accent);
+  }
+
+  a:hover {
+    background: var(--sl-color-accent-low);
+  }
+
+  a:hover .link-title {
+    color: var(--sl-color-accent-high);
+  }
+
+  /* One cell per row before the two would be too narrow to read. */
+  @media (max-width: 30rem) {
+    .pagination-links {
+      grid-template-columns: 1fr;
+    }
+
+    .qr-blank {
+      display: none;
+    }
+  }
+</style>

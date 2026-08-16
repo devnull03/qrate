@@ -1,0 +1,262 @@
+---
+// "Copy page" split button with a dropdown of the other ways to get this page
+// into a tool: raw markdown, an assistant, or the docs MCP server.
+//
+// Every docs URL already serves its own source at `.md` (starlight-md-txt) and
+// the MCP server is already live at /mcp, so none of this is new capability —
+// it is one control that surfaces what the site already exposes.
+//
+// A native <details> is the whole dropdown: no framework, no popover library,
+// and the links still work with JavaScript off. Only the two clipboard actions
+// need JS, and they stay hidden until the script attaches.
+
+// `build.format: 'file'` means the pathname is `/docs/columns.html` while
+// prerendering, so the extension comes off before `.md` goes on.
+const md = `${Astro.url.pathname.replace(/\.html$/, '').replace(/\/$/, '') || '/docs'}.md`;
+const abs = new URL(md, Astro.site).href;
+const mcp = new URL('/mcp', Astro.site).href;
+
+const prompt = `Read ${abs} and help me with questions about it.`;
+---
+
+<div class="qr-actions">
+  <button type="button" class="qr-primary" data-copy={md} hidden>
+    <svg viewBox="0 0 24 24" aria-hidden="true"
+      ><rect x="9" y="9" width="12" height="12" rx="1.5"></rect><path
+        d="M6 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V6"
+      ></path></svg
+    >
+    <span>Copy page</span>
+  </button>
+
+  <details class="qr-drop">
+    <summary aria-label="More ways to use this page">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+    </summary>
+
+    <div class="qr-menu">
+      <button type="button" data-copy={md} hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"
+          ><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"></path><path
+            d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"
+          ></path></svg
+        >
+        <span>Copy Markdown page</span>
+      </button>
+
+      <a href={md}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"
+          ><rect x="2.5" y="6" width="19" height="12" rx="1.5"></rect><path
+            d="M6 15V9l2.5 3L11 9v6M15 9v6M15 15h3"
+          ></path></svg
+        >
+        <span>View as Markdown</span>
+        <i aria-hidden="true">↗</i>
+      </a>
+
+      <a href={`https://chatgpt.com/?q=${encodeURIComponent(prompt)}`} target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" aria-hidden="true"
+          ><circle cx="12" cy="12" r="8.5"></circle><ellipse cx="12" cy="12" rx="3.5" ry="8.5"
+          ></ellipse><path d="M3.5 12h17"></path></svg
+        >
+        <span>Open in ChatGPT</span>
+        <i aria-hidden="true">↗</i>
+      </a>
+
+      <a href={`https://claude.ai/new?q=${encodeURIComponent(prompt)}`} target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 19 6.5-15h3L20 19M8 13.5h8"></path></svg>
+        <span>Open in Claude</span>
+        <i aria-hidden="true">↗</i>
+      </a>
+
+      <hr />
+
+      <button type="button" data-copy-text={mcp} hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"
+          ><circle cx="12" cy="12" r="8.5"></circle><path
+            d="M3.5 12h17M12 3.5a13 13 0 0 1 0 17 13 13 0 0 1 0-17Z"
+          ></path></svg
+        >
+        <span>Copy MCP Server URL</span>
+      </button>
+
+      <a href="/docs/ai-tools">
+        <svg viewBox="0 0 24 24" aria-hidden="true"
+          ><path d="M12 2.5 20.5 7v10L12 21.5 3.5 17V7Z"></path><path d="M3.5 7 12 11.5 20.5 7M12 11.5v10"
+          ></path></svg
+        >
+        <span>Add MCP Server</span>
+        <i aria-hidden="true">↗</i>
+      </a>
+    </div>
+  </details>
+</div>
+
+<script>
+  // Clipboard actions are revealed only where the clipboard exists, so they are
+  // never offered on an insecure origin where they would silently fail.
+  if (navigator.clipboard) {
+    const flash = (btn: HTMLButtonElement, msg: string) => {
+      const label = btn.querySelector('span')!;
+      const was = label.textContent;
+      label.textContent = msg;
+      setTimeout(() => {
+        label.textContent = was;
+        btn.closest('details')?.removeAttribute('open');
+      }, 1200);
+    };
+
+    // Fetches the page's own markdown and copies it.
+    for (const btn of document.querySelectorAll<HTMLButtonElement>('.qr-actions [data-copy]')) {
+      btn.hidden = false;
+      btn.addEventListener('click', async () => {
+        try {
+          const res = await fetch(btn.dataset.copy!);
+          if (!res.ok) throw new Error(String(res.status));
+          await navigator.clipboard.writeText(await res.text());
+          flash(btn, 'Copied');
+        } catch {
+          flash(btn, 'Copy failed');
+        }
+      });
+    }
+
+    // Copies a literal string — the MCP endpoint.
+    for (const btn of document.querySelectorAll<HTMLButtonElement>('.qr-actions [data-copy-text]')) {
+      btn.hidden = false;
+      btn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(btn.dataset.copyText!);
+          flash(btn, 'Copied');
+        } catch {
+          flash(btn, 'Copy failed');
+        }
+      });
+    }
+  }
+
+  // Click-away and Escape, which <details> does not give you for free.
+  document.addEventListener('click', (e) => {
+    for (const d of document.querySelectorAll<HTMLDetailsElement>('.qr-drop[open]')) {
+      if (!d.contains(e.target as Node)) d.removeAttribute('open');
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      for (const d of document.querySelectorAll<HTMLDetailsElement>('.qr-drop[open]')) {
+        d.removeAttribute('open');
+      }
+    }
+  });
+</script>
+
+<style>
+  .qr-actions {
+    display: flex;
+    flex: none;
+    position: relative;
+  }
+
+  /* The split button reads as one control: shared border, one hairline between
+     the halves rather than two touching borders. */
+  .qr-primary,
+  .qr-drop summary {
+    display: flex;
+    align-items: center;
+    gap: 0.45em;
+    cursor: pointer;
+    border: 1px solid var(--sl-color-hairline);
+    background: var(--sl-color-bg);
+    padding: 6px 11px;
+    font-family: var(--sl-font);
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--sl-color-gray-2);
+    list-style: none;
+  }
+
+  /* The flex item is the <details>, not the <summary> inside it, so the summary
+     has to be stretched explicitly or the chevron half comes out shorter than
+     the button beside it — their contents are different heights. */
+  .qr-drop {
+    display: flex;
+  }
+
+  .qr-drop summary {
+    border-inline-start: 0;
+    padding-inline: 7px;
+    justify-content: center;
+  }
+
+  .qr-drop summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .qr-primary:hover,
+  .qr-drop summary:hover,
+  .qr-drop[open] summary {
+    color: var(--sl-color-white);
+    background: var(--sl-color-accent-low);
+  }
+
+  .qr-menu {
+    position: absolute;
+    z-index: 10;
+    top: calc(100% + 4px);
+    inset-inline-end: 0;
+    min-width: 15.5rem;
+    display: flex;
+    flex-direction: column;
+    padding: 5px 0;
+    border: 1px solid var(--sl-color-hairline);
+    background: var(--sl-color-bg);
+  }
+
+  .qr-menu a,
+  .qr-menu button {
+    all: unset;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+    cursor: pointer;
+    padding: 7px 12px;
+    font-size: 0.82rem;
+    color: var(--sl-color-text);
+  }
+
+  .qr-menu a:hover,
+  .qr-menu button:hover {
+    background: var(--sl-color-accent-low);
+    color: var(--sl-color-white);
+  }
+
+  /* The external-link mark sits at the end of the label, not the row. */
+  .qr-menu i {
+    font-style: normal;
+    font-size: 0.7em;
+    color: var(--sl-color-gray-3);
+  }
+
+  .qr-menu hr {
+    border: 0;
+    border-top: 1px solid var(--sl-color-hairline-light);
+    margin: 5px 0;
+  }
+
+  svg {
+    width: 15px;
+    height: 15px;
+    flex: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .qr-drop summary svg {
+    width: 13px;
+    height: 13px;
+  }
+</style>

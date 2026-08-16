@@ -1,0 +1,42 @@
+---
+title: Install
+description: Download qrate for macOS, Windows or Linux, or build it from source with Rust.
+sidebar:
+  order: -1
+---
+
+import DownloadTable from '../../../components/DownloadTable.astro';
+
+Download a build, or run from source with the Rust stable toolchain.
+
+<DownloadTable />
+
+## Run from source
+
+Install Rust with rustup. Add the rustfmt and clippy components. Then clone the repository
+and run it. The first build downloads the dependencies. Later builds use the Cargo cache.
+
+```sh
+git clone https://github.com/devnull03/qrate
+cd qrate
+cargo run
+```
+
+## Optional preview tools
+
+Common image formats work without extra tools. PDF previews use PDFium. Video frame previews
+use ffmpeg. qrate links neither one. It loads PDFium dynamically and runs ffmpeg as a
+subprocess. A checkout without them still builds and launches, but PDFs and videos show only a
+type icon. qrate looks beside its own executable first, then on your PATH.
+
+This script downloads PDFium for your platform, and ffmpeg on Windows. On macOS and Linux,
+install ffmpeg with your package manager.
+
+```sh
+./scripts/fetch-binaries.sh
+```
+
+:::caution
+Alpha build. Keep backups of important collections, and report problems with steps that
+reproduce them.
+:::

@@ -1,0 +1,172 @@
+/* Starlight retinted to the qrate house style, from design frame 1e.
+   Same vocabulary as the marketing pages: paper #f7f4ee, ink #17140f, rust
+   accent, Archivo + IBM Plex Mono, square corners, hairline rules, no shadows.
+
+   The accent is rust here, not the site's per-theme --accent: docs use
+   Starlight's own light/dark toggle, not the six-theme cycler, so there is only
+   one accent per mode. #e0a13f on ink clears 4.5:1 where #a8410f would not.
+
+   Do not import global.css here. Docs pages never render Base.astro, and its
+   Tailwind preflight would fight Starlight's own reset. */
+
+:root {
+  --sl-font: Archivo, system-ui, sans-serif;
+  --sl-font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --sl-content-width: 46rem;
+  --sl-sidebar-width: 13.75rem;
+  --sl-nav-height: 3.75rem;
+  --sl-radius-small: 0;
+  --sl-radius-medium: 0;
+  --sl-radius-large: 0;
+  --sl-shadow-sm: none;
+  --sl-shadow-md: none;
+  --sl-shadow-lg: none;
+
+  /* Logo.astro paints its tile from these. They live in global.css for the
+     marketing pages, which docs pages never load, so the qrate-light pair is
+     repeated here — the mark stays qrate blue in both docs themes. */
+  --logo-a: #0022ff;
+  --logo-b: #0018b7;
+
+  /* Aside hues. Starlight keys these off the note/tip/caution/danger names. */
+  --qr-tip: #4f6b52;
+  --qr-caution: #8a7a25;
+  --qr-danger: #a3301f;
+}
+
+:root[data-theme='light'] {
+  --sl-color-bg: #f7f4ee;
+  --sl-color-bg-nav: #f7f4ee;
+  --sl-color-bg-sidebar: #f7f4ee;
+  --sl-color-bg-inline-code: rgb(23 20 15 / 0.06);
+  --sl-color-text: #5a5046;
+  --sl-color-white: #17140f; /* headings */
+  --sl-color-gray-1: #17140f;
+  --sl-color-gray-2: #4a4137;
+  --sl-color-gray-3: #8a8076;
+  --sl-color-hairline: rgb(23 20 15 / 0.16);
+  --sl-color-hairline-light: rgb(23 20 15 / 0.1);
+  --sl-color-hairline-shade: rgb(23 20 15 / 0.16);
+  --sl-color-accent: #a8410f;
+  --sl-color-accent-high: #7d2f0a;
+  --sl-color-accent-low: rgb(168 65 15 / 0.07);
+}
+
+:root[data-theme='dark'] {
+  --sl-color-bg: #17140f;
+  --sl-color-bg-nav: #17140f;
+  --sl-color-bg-sidebar: #17140f;
+  --sl-color-bg-inline-code: rgb(247 244 238 / 0.08);
+  --sl-color-text: rgb(242 237 228 / 0.68);
+  --sl-color-white: #f7f4ee;
+  --sl-color-gray-1: #f2ede4;
+  --sl-color-gray-2: rgb(242 237 228 / 0.68);
+  --sl-color-gray-3: rgb(247 244 238 / 0.5);
+  --sl-color-hairline: rgb(247 244 238 / 0.14);
+  --sl-color-hairline-light: rgb(247 244 238 / 0.1);
+  --sl-color-hairline-shade: rgb(247 244 238 / 0.14);
+  --sl-color-accent: #e0a13f;
+  --sl-color-accent-high: #f0be6e;
+  --sl-color-accent-low: rgb(224 161 63 / 0.1);
+
+  --qr-tip: #93a37e;
+  --qr-caution: #dbbc7f;
+  --qr-danger: #d97a6a;
+}
+
+/* --- squared, hairline house style ------------------------------------- */
+
+.content-panel + .content-panel {
+  border-top: 1px solid var(--sl-color-hairline);
+}
+
+.sl-markdown-content h2 {
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+.sl-markdown-content a:not(:where(.not-content *)) {
+  text-decoration: none;
+  box-shadow: inset 0 -1px 0 var(--sl-color-accent-high);
+}
+
+.starlight-aside {
+  border-inline-start-width: 2px;
+  border-radius: 0;
+}
+
+.starlight-aside__title {
+  font: 600 0.66rem/1 var(--sl-font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.starlight-aside--tip {
+  --sl-color-asides-text-accent: var(--qr-tip);
+  --sl-color-asides-border: var(--qr-tip);
+}
+
+.starlight-aside--caution {
+  --sl-color-asides-text-accent: var(--qr-caution);
+  --sl-color-asides-border: var(--qr-caution);
+}
+
+.starlight-aside--danger {
+  --sl-color-asides-text-accent: var(--qr-danger);
+  --sl-color-asides-border: var(--qr-danger);
+}
+
+.expressive-code .frame,
+.card,
+.sl-link-card {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+a.sl-link-card:hover {
+  background: rgb(23 20 15 / 0.04);
+}
+
+:root[data-theme='dark'] a.sl-link-card:hover {
+  background: rgb(247 244 238 / 0.05);
+}
+
+kbd,
+.sl-badge {
+  border-radius: 0;
+  font-family: var(--sl-font-mono);
+}
+
+/* Mono uppercase labels: sidebar groups and "On this page". */
+.sidebar-content .group-label,
+.sidebar-content summary,
+starlight-toc h2,
+mobile-starlight-toc h2 {
+  font-family: var(--sl-font-mono);
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-3);
+}
+
+/* Pagination is a component override — see DocsPagination.astro. */
+
+/* The current page: accent bar and wash, not a rounded pill (frame 1b). */
+.sidebar-content a[aria-current='page'],
+starlight-toc a[aria-current='true'] {
+  border-radius: 0;
+  color: var(--sl-color-white);
+  font-weight: 500;
+  background: var(--sl-color-accent-low);
+  box-shadow: inset 2px 0 0 var(--sl-color-accent);
+}
+
+/* The wordmark, its `docs` badge and the qrate mark are in DocsSiteTitle.astro. */
+
+/* Squared search box and inputs; the focus ring is the ink border. */
+site-search button,
+.sl-flex input,
+dialog {
+  border-radius: 0 !important;
+}

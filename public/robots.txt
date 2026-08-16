@@ -2,4 +2,10 @@ User-agent: *
 Allow: /
 Disallow: /picker
 
-# ponytail: no sitemap — six pages, all one hop from the nav or footer.
+# Starlight brings @astrojs/sitemap with it, so there is one now — and with the
+# docs there are enough pages to want it.
+Sitemap: https://qrate.dvnl.work/sitemap-index.xml
+
+# For agents: any /docs URL also serves plain markdown with .md appended, the
+# whole set is at /llms.txt, and there is an MCP server at /mcp. See
+# https://qrate.dvnl.work/docs/ai-tools

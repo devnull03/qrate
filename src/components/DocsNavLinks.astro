@@ -1,0 +1,44 @@
+---
+// Overrides Starlight's SocialIcons slot. The design header (frame 1b) carries
+// Site / Changelog / GitHub next to the theme toggle, and Starlight has no
+// config option for plain top-level links — only social icons.
+// GitHub stays the icon Starlight renders from `social`, so it is not repeated
+// as text here — two GitHub controls side by side was the earlier mistake.
+import Default from '@astrojs/starlight/components/SocialIcons.astro';
+
+const links = [
+  { label: 'Site', href: '/' },
+  { label: 'Changelog', href: '/changelog' },
+];
+---
+
+<div class="qr-nav">
+  {links.map((l) => <a href={l.href}>{l.label}</a>)}
+</div>
+<Default><slot /></Default>
+
+<style>
+  .qr-nav {
+    display: none;
+    gap: 1.15rem;
+    align-items: center;
+    font-size: 0.83rem;
+    color: var(--sl-color-gray-2);
+  }
+
+  .qr-nav a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .qr-nav a:hover {
+    color: var(--sl-color-white);
+  }
+
+  /* Below this the header is already tight with the menu button and search. */
+  @media (min-width: 50rem) {
+    .qr-nav {
+      display: flex;
+    }
+  }
+</style>

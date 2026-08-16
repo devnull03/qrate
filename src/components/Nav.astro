@@ -5,7 +5,8 @@ import { REPO } from '../lib/releases.js';
 const { current = '' } = Astro.props;
 
 const links = [
-  { key: 'get-started', label: 'Get started', href: '/get-started' },
+  { key: 'docs', label: 'Docs', href: '/docs' },
+  { key: 'get-started', label: 'Get started', href: '/docs/install' },
   { key: 'changelog', label: 'Changelog', href: '/changelog' },
   { key: 'license', label: 'License', href: '/license' },
 ];
@@ -44,16 +45,12 @@ const links = [
     <a href={`https://github.com/${REPO}`} class="hidden text-[13.5px] text-nav md:block"
       >GitHub</a
     >
-    {
-      current !== 'get-started' && (
-        <a
-          href="/get-started"
-          class="hidden bg-accent px-[15px] py-2 text-[13px] font-medium text-on-accent md:block"
-        >
-          Download
-        </a>
-      )
-    }
+    <a
+      href="/docs/install"
+      class="hidden bg-accent px-[15px] py-2 text-[13px] font-medium text-on-accent md:block"
+    >
+      Download
+    </a>
 
     <details class="relative md:hidden">
       <summary class="flex cursor-pointer list-none flex-col gap-1 [&::-webkit-details-marker]:hidden">

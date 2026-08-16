@@ -1,0 +1,114 @@
+---
+// The release table, lifted out of the old get-started page so the docs Install
+// page and anything else share one build-time fetch of the GitHub releases.
+//
+// No Tailwind classes: docs pages render Starlight's layout, not Base.astro, so
+// global.css is never loaded there. Plain scoped CSS against the --sl-* tokens.
+import { getReleases, latest, platformOf, humanSize, REPO } from '../lib/releases.js';
+
+const releases = await getReleases();
+const rel = latest(releases);
+const assets = rel?.assets ?? [];
+
+const sums = assets.find((a) => /SHA256SUMS\.txt$/i.test(a.name));
+const downloads = assets.map((a) => ({ ...a, os: platformOf(a.name) })).filter((a) => a.os);
+---
+
+{
+  downloads.length > 0 ? (
+    <div class="qr-downloads not-content">
+      <div class="qr-row qr-head">
+        <div>Platform</div>
+        <div>File</div>
+        <div>Size</div>
+        <div>Checksum</div>
+      </div>
+      {downloads.map((d) => (
+        <div class="qr-row">
+          <div class="qr-os">{d.os}</div>
+          <div class="qr-file">
+            <a href={d.browser_download_url}>{d.name}</a>
+          </div>
+          <div class="qr-dim">{humanSize(d.size)}</div>
+          <div class="qr-dim">
+            {sums ? <a href={sums.browser_download_url}>sha256</a> : 'sha256'}
+          </div>
+        </div>
+      ))}
+    </div>
+  ) : (
+    <div class="qr-downloads not-content">
+      <div class="qr-empty">
+        No published builds yet. See the{' '}
+        <a href={`https://github.com/${REPO}/releases`}>Releases page</a>.
+      </div>
+    </div>
+  )
+}
+
+<style>
+  .qr-downloads {
+    border: 1px solid var(--sl-color-hairline);
+    margin-block: 1.5rem;
+    font-family: var(--sl-font-mono);
+    font-size: 0.78rem;
+  }
+
+  .qr-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-items: center;
+    border-bottom: 1px solid var(--sl-color-hairline-light);
+  }
+
+  /* min-width: 0 stops a long asset filename from widening its column, and with
+     it the whole page, on narrow screens. */
+  .qr-row > * {
+    min-width: 0;
+    overflow-wrap: break-word;
+    padding: 9px 14px;
+  }
+
+  .qr-row:last-child {
+    border-bottom: 0;
+  }
+
+  @media (min-width: 40rem) {
+    .qr-row {
+      grid-template-columns: 110px 1fr 92px 100px;
+    }
+  }
+
+  .qr-head {
+    background: var(--sl-color-bg-inline-code);
+    border-bottom: 1px solid var(--sl-color-hairline);
+    font-size: 0.66rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--sl-color-gray-2);
+  }
+
+  .qr-os {
+    color: var(--sl-color-white);
+  }
+
+  .qr-file a {
+    color: var(--sl-color-accent);
+    text-decoration: none;
+    box-shadow: inset 0 -1px 0 var(--sl-color-accent-high);
+  }
+
+  .qr-dim {
+    color: var(--sl-color-gray-3);
+  }
+
+  .qr-dim a {
+    color: inherit;
+  }
+
+  .qr-empty {
+    padding: 0.85rem;
+    color: var(--sl-color-gray-3);
+  }
+</style>
