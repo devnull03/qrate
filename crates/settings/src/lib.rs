@@ -501,6 +501,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
         build_pages: fn(&App) -> Vec<SettingPage>,
     ) -> Self {
+        window.set_window_title("Settings — qrate");
         let _bounds_sub = cx.observe_window_bounds(window, |_this, window, cx| {
             let bounds = MainWindowBounds::capture_from_window(window, cx);
             if let Ok(json) = serde_json::to_string(&bounds) {

@@ -25,7 +25,8 @@ pub struct AboutWindow {
 }
 
 impl AboutWindow {
-    fn new(cx: &mut Context<Self>) -> Self {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        window.set_window_title("About qrate");
         let task = update_check::check_now(cx);
         cx.spawn(async move |this, cx| {
             let status = task.await;
@@ -121,7 +122,7 @@ pub(crate) fn open_about_window(cx: &mut gpui::App) {
         ..Default::default()
     };
     if let Ok(window_handle) = cx.open_window(window_options, |window, cx| {
-        let view = cx.new(AboutWindow::new);
+        let view = cx.new(|cx| AboutWindow::new(window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     }) {
         WindowRegistry::register(ABOUT_WINDOW_KIND, window_handle.into(), cx);

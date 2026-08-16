@@ -35,7 +35,8 @@ pub struct Launcher {
 }
 
 impl Launcher {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        window.set_window_title("Open Project — qrate");
         Self {
             recents: recent::list(cx),
             error: None,

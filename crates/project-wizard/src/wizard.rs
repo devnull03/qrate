@@ -100,6 +100,7 @@ pub struct ProjectWizard {
 
 impl ProjectWizard {
     pub fn new(entry_kind: EntryKind, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        window.set_window_title("New Project — qrate");
         let name_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("e.g. Aderman Family Collection"));
         // Live-validate the name on every keystroke so the inline error and the
