@@ -10,6 +10,11 @@
 ; The installer and the installed app use assets/icons/app-icon.ico — replace
 ; that icon (regenerate via scripts/gen-icons.ps1) to rebrand. UNSIGNED: users
 ; will see a Windows SmartScreen "unknown publisher" prompt (More info > Run anyway).
+;
+; One installer, two install modes: MultiUser.nsh (bundled with NSIS) asks up front whether to
+; install for just the current account — $LocalAppData, no UAC prompt, no admin rights needed —
+; or for every account on the machine — $ProgramFiles, elevates via UAC. Launching the installer
+; already elevated (or without admin rights at all) skips straight to the mode that's available.
 
 Unicode true
 
@@ -41,11 +46,17 @@ Unicode true
 !define COMPANY   "devnull03"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
 
+; --- Multi-user install mode -------------------------------------------------
+; Must be defined, and MultiUser.nsh included, before MUI2.nsh.
+!define MULTIUSER_EXECUTIONLEVEL Highest
+!define MULTIUSER_MUI
+!define MULTIUSER_INSTALLMODE_INSTDIR "${APPNAME}"
+!define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_KEY "Software\${APPNAME}"
+!define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_VALUENAME "InstallDir"
+!include "MultiUser.nsh"
+
 Name "${APPNAME}"
 OutFile "${OUTFILE}"
-InstallDir "$PROGRAMFILES64\${APPNAME}"
-InstallDirRegKey HKLM "Software\${APPNAME}" "InstallDir"
-RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 
 !include "MUI2.nsh"
@@ -55,6 +66,7 @@ SetCompressor /SOLID lzma
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${EXENAME}"
 
 !insertmacro MUI_PAGE_WELCOME
+!insertmacro MULTIUSER_PAGE_INSTALLMODE
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -71,6 +83,14 @@ VIAddVersionKey "FileDescription" "${APPNAME} Installer"
 VIAddVersionKey "FileVersion"     "${VERSION}"
 VIAddVersionKey "ProductVersion"  "${VERSION}"
 
+Function .onInit
+  !insertmacro MULTIUSER_INIT
+FunctionEnd
+
+Function un.onInit
+  !insertmacro MULTIUSER_UNINIT
+FunctionEnd
+
 Section "Install"
   SetOutPath "$INSTDIR"
   File /oname=${EXENAME} "${SRCEXE}"
@@ -82,20 +102,22 @@ Section "Install"
   File /nonfatal "${SRCDIR}\pdfium.dll"
   File /nonfatal "${SRCDIR}\ffmpeg.exe"
 
-  ; Start Menu + Desktop shortcuts
+  ; Start Menu + Desktop shortcuts. $SMPROGRAMS/$DESKTOP already resolve to the per-user or
+  ; all-users locations MULTIUSER_INIT picked (it calls SetShellVarContext for us).
   CreateShortcut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\${EXENAME}"
   CreateShortcut "$DESKTOP\${APPNAME}.lnk"    "$INSTDIR\${EXENAME}"
 
-  ; Uninstaller + Add/Remove Programs entry
+  ; Uninstaller + Add/Remove Programs entry. SHCTX is HKLM for an all-users install, HKCU for a
+  ; per-user one — set by MULTIUSER_INIT to match the mode picked above.
   WriteUninstaller "$INSTDIR\Uninstall.exe"
-  WriteRegStr   HKLM "Software\${APPNAME}" "InstallDir" "$INSTDIR"
-  WriteRegStr   HKLM "${UNINSTKEY}" "DisplayName"     "${APPNAME}"
-  WriteRegStr   HKLM "${UNINSTKEY}" "DisplayVersion"  "${VERSION}"
-  WriteRegStr   HKLM "${UNINSTKEY}" "Publisher"       "${COMPANY}"
-  WriteRegStr   HKLM "${UNINSTKEY}" "DisplayIcon"     "$INSTDIR\${EXENAME}"
-  WriteRegStr   HKLM "${UNINSTKEY}" "UninstallString" "$INSTDIR\Uninstall.exe"
-  WriteRegDWORD HKLM "${UNINSTKEY}" "NoModify" 1
-  WriteRegDWORD HKLM "${UNINSTKEY}" "NoRepair" 1
+  WriteRegStr   SHCTX "Software\${APPNAME}" "InstallDir" "$INSTDIR"
+  WriteRegStr   SHCTX "${UNINSTKEY}" "DisplayName"     "${APPNAME}"
+  WriteRegStr   SHCTX "${UNINSTKEY}" "DisplayVersion"  "${VERSION}"
+  WriteRegStr   SHCTX "${UNINSTKEY}" "Publisher"       "${COMPANY}"
+  WriteRegStr   SHCTX "${UNINSTKEY}" "DisplayIcon"     "$INSTDIR\${EXENAME}"
+  WriteRegStr   SHCTX "${UNINSTKEY}" "UninstallString" "$INSTDIR\Uninstall.exe"
+  WriteRegDWORD SHCTX "${UNINSTKEY}" "NoModify" 1
+  WriteRegDWORD SHCTX "${UNINSTKEY}" "NoRepair" 1
 SectionEnd
 
 Section "Uninstall"
@@ -106,6 +128,6 @@ Section "Uninstall"
   RMDir  "$INSTDIR"
   Delete "$SMPROGRAMS\${APPNAME}.lnk"
   Delete "$DESKTOP\${APPNAME}.lnk"
-  DeleteRegKey HKLM "${UNINSTKEY}"
-  DeleteRegKey HKLM "Software\${APPNAME}"
+  DeleteRegKey SHCTX "${UNINSTKEY}"
+  DeleteRegKey SHCTX "Software\${APPNAME}"
 SectionEnd
