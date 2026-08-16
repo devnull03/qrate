@@ -27,6 +27,16 @@ const toc = [
   ['Where project data lives', 'data'],
 ];
 
+// The design marks the section you are on in the sidebar. :target does that for
+// free once a ToC link is clicked; the first item stands in until then.
+// ponytail: no scrollspy, so plain scrolling does not move the marker. Add an
+// IntersectionObserver if that reads as broken.
+const tocCss =
+  [
+    `body:not(:has(:target)) [href="#${toc[0][1]}"]`,
+    ...toc.map(([, id]) => `body:has(#${id}:target) [href="#${id}"]`),
+  ].join(',') + '{color:var(--ink);font-weight:500;box-shadow:inset 2px 0 0 var(--accent)}';
+
 // min-w-0 stops a long asset filename from widening its grid column
 // (and with it the whole page) on narrow screens.
 const row =
@@ -42,6 +52,7 @@ const code = 'mb-[30px] overflow-x-auto bg-ink px-4 py-[13px] font-mono text-xs 
   current="get-started"
   version={rel?.tag_name}
 >
+  <style is:inline set:html={tocCss}></style>
   <div class="grid grid-cols-1 border-b border-rule md:grid-cols-[214px_1fr]">
     <aside class="border-b border-rule py-5 md:border-b-0 md:border-r md:py-[30px]">
       <div
