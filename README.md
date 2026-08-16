@@ -6,21 +6,24 @@ qrate uses [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) a
 
 ## Features
 
-- Create a blank project.
-- Import a CSV file into a project.
+- Create a blank project, import a CSV file and its folder, or start from a Google Sheet link.
 - Store each project in one portable `.qrate` SQLite file.
 - Edit records in a spreadsheet grid.
 - Search, replace, copy, paste, undo, redo, and filter records.
 - Add, remove, rename, freeze, and reorder rows and columns.
-- Link records to files and photos.
-- View supported images, documents, audio, and video in the preview panels.
-- Add cell notes and view validation problems.
-- Check spelling and configured column values.
+- Link records to files and photos, by exact filename or by your own pattern.
+- Switch between the grid and a gallery of thumbnails.
+- View images, documents, audio, and video in the details panel, and open one fullscreen to zoom, pan, page, and search inside it.
+- Add cell notes and read validation problems in the Problems panel.
+- Check spelling in over 60 languages, date formats, file links, and headings against LCSH, GeoNames, and Wikidata.
+- Apply a suggested correction from the cell's Fixes menu.
 - Set column types, descriptions, authority lists, and spell-check options for each project.
 - Export data as CSV, JSON-LD, CSL-JSON, or a ZIP archive.
-- Use local Luau plugins for validation and column configuration.
+- Export to a new Google Sheet, or sync an existing one, after you switch it on.
+- Let an AI agent that you run read the open project, and review what it read in the Agent panel.
+- Use local Luau plugins for validation, column configuration, and bar items.
 
-> **Early release:** qrate is currently `0.1.0-alpha.1`. Keep backups of important collections. Report problems with steps that reproduce the problem.
+> **Early release:** qrate is currently `0.2.0-alpha.1`. Keep backups of important collections. Report problems with steps that reproduce the problem.
 
 ## Quick start
 
@@ -39,7 +42,7 @@ qrate uses the Rust stable toolchain. Complete these steps:
 
 The first build downloads Rust dependencies. Later builds use Cargo's build cache.
 
-The launcher can create a blank project or import a CSV file. The [`sample/`](sample) directory has a sample collection and photos.
+The launcher can create a blank project, import a CSV file and its folder, or read a Google Sheet. The [`sample/`](sample) directory has a sample collection and photos.
 
 ### Optional preview tools
 
@@ -59,7 +62,7 @@ The script puts the binaries beside the executable that `cargo run` uses. See [`
 
 A `.qrate` file is a project. It contains the collection grid, settings, notes, and other project metadata. Linked media stays in its current location. Moving a project does not copy its linked files.
 
-qrate does not require an account or a hosted service. qrate does not enable Google Sheets export in this alpha release. Plugins run locally. Install plugins only from sources that you trust.
+qrate does not require an account or a hosted service. Google Sheets export is off until you switch it on in **Settings ▸ Google**; until then the menu does not show it. Sign-in happens on your own machine, and qrate reaches only the sheets it made or you picked. Plugins run locally. Install plugins only from sources that you trust.
 
 ## Agent panel
 
@@ -135,13 +138,13 @@ The last three commands match the project quality checks. CI runs them on Window
 | --- | --- |
 | `app` | Application setup, windows, menus, themes, logging, and exports |
 | `table` | Spreadsheet grid, editing, history, filters, notes, and file links |
-| `workspace` | Panels, docks, and media and details views |
+| `workspace` | Panels, docks, the gallery view, and the fullscreen viewer |
 | `window-wrapper` | Title bar, status bar, and window registry |
 | `settings` | User settings and the `.qrate` project store |
 | `project-wizard` | Launcher, recent projects, and project creation and import |
 | `data-exchange` | CSV, JSON-LD, CSL-JSON, ZIP, and Google Sheets data exchange |
 | `diagnostics` | Validation, spelling checks, corrections, and problems panel |
-| `checks` | Validation helpers |
+| `checks` | Date formats and authority lookups |
 | `spellcheck` | Dictionaries for diagnostics |
 | `plugin-host` | Luau runtime and local plugin loading |
 | `plugin-api` | Types that plugins use |
