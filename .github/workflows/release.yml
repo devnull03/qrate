@@ -152,6 +152,16 @@ jobs:
       - name: Install NSIS
         run: choco install nsis -y --no-progress
 
+      # The MSI is the enterprise-deployable counterpart to the NSIS installer — see
+      # scripts/installer.wxs for why GPO/SCCM/Intune push installs need one. windows-latest ships
+      # the .NET SDK, so the WiX CLI installs as a dotnet global tool; no matrix leg for this, since
+      # both installers package the one binary already built above and a second leg would just
+      # recompile it for nothing.
+      - name: Install WiX
+        run: |
+          dotnet tool install --global wix
+          wix extension add -g WixToolset.UI.wixext
+
       # PDFium and ffmpeg are loaded at runtime from beside the executable. Windows has no package
       # manager we can rely on, so both ship with the app — without them a released build shows a
       # type icon for every PDF and video. This is what makes the installer large (ffmpeg is most
@@ -163,25 +173,40 @@ jobs:
           chmod +x scripts/fetch-binaries.sh
           ./scripts/fetch-binaries.sh dist/portable
 
-      - name: Package zip + installer
+      - name: Package zip + NSIS + MSI installers
         shell: pwsh
         run: |
           $ver = "${{ needs.version.outputs.version }}"
+          $vi = "${{ needs.version.outputs.vi_version }}"
           Copy-Item target/release/app.exe dist/portable/qrate.exe
           # Zip the staging folder's *contents*, so the sidecars sit beside qrate.exe on extract —
           # which is exactly where the preview tiers look for them.
           Compress-Archive -Path dist/portable/* `
             -DestinationPath "dist/qrate-$ver-x86_64.zip" -Force
+
           $nsis = "C:\Program Files (x86)\NSIS\makensis.exe"
           & $nsis `
             "/DVERSION=$ver" `
-            "/DVIVERSION=${{ needs.version.outputs.vi_version }}" `
+            "/DVIVERSION=$vi" `
             "/DSRCEXE=$PWD\dist\portable\qrate.exe" `
             "/DSRCDIR=$PWD\dist\portable" `
             "/DICONFILE=$PWD\assets\icons\app-icon.ico" `
             "/DOUTFILE=$PWD\dist\qrate-$ver-setup.exe" `
             scripts\installer.nsi
           if ($LASTEXITCODE -ne 0) { throw "makensis failed ($LASTEXITCODE)" }
+
+          $hasPdfium = if (Test-Path dist/portable/pdfium.dll) { 1 } else { 0 }
+          $hasFfmpeg = if (Test-Path dist/portable/ffmpeg.exe) { 1 } else { 0 }
+          wix build scripts\installer.wxs -ext WixToolset.UI.wixext `
+            -d "Version=$vi" `
+            -d "SrcExe=$PWD\dist\portable\qrate.exe" `
+            -d "SrcDir=$PWD\dist\portable" `
+            -d "IconFile=$PWD\assets\icons\app-icon.ico" `
+            -d "HasPdfium=$hasPdfium" `
+            -d "HasFfmpeg=$hasFfmpeg" `
+            -o "dist\qrate-$ver-x86_64.msi"
+          if ($LASTEXITCODE -ne 0) { throw "wix build failed ($LASTEXITCODE)" }
+
           Remove-Item -Recurse -Force dist/portable
 
       - name: Report what shipped
@@ -194,6 +219,7 @@ jobs:
           path: |
             dist/*.zip
             dist/*-setup.exe
+            dist/*.msi
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -267,7 +293,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum *.dmg *.zip *-setup.exe *.tar.gz > SHA256SUMS.txt
+          sha256sum *.dmg *.zip *-setup.exe *.msi *.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Publish draft release
@@ -281,17 +307,27 @@ jobs:
             dist/*.dmg
             dist/*.zip
             dist/*-setup.exe
+            dist/*.msi
             dist/*.tar.gz
             dist/SHA256SUMS.txt
           body: |
             ## qrate ${{ needs.version.outputs.tag }}
 
             ### Downloads
-            - **Windows:** `*-setup.exe` (installer) or `*-x86_64.zip` (portable)
+            - **Windows:** `*-setup.exe` (installer, asks for per-user or all-users) or
+              `*-x86_64.zip` (portable). Deploying to managed machines? See **Enterprise** below.
             - **macOS:** `*-universal.dmg` (Intel + Apple Silicon)
             - **Linux:** `*-x86_64-linux.tar.gz` (Wayland + X11; needs a Vulkan driver)
 
             Verify your download against `SHA256SUMS.txt`.
+
+            ### Enterprise (Windows)
+            `*-x86_64.msi` installs per-machine and is built for Group Policy Software
+            Installation, SCCM, and Intune — or a plain silent push:
+            ```
+            msiexec /i qrate-${{ needs.version.outputs.version }}-x86_64.msi /quiet /norestart
+            ```
+            Upgrades in place on top of any earlier MSI install; downgrading is blocked.
 
             ### File previews
             PDF previews work out of the box everywhere — PDFium ships in every download.

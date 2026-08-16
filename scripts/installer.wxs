@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX v4 MSI package for qrate — the enterprise counterpart to installer.nsi.
+
+  Institutions deploy software with MSI, not an arbitrary .exe: Group Policy Software
+  Installation, SCCM/Intune push installs, and `msiexec /i ... /quiet` all expect one. This always
+  installs per-machine (Scope="perMachine") — GPO assignment only works against a per-machine MSI,
+  so unlike installer.nsi's per-user mode, there is no per-user option here.
+
+  Build with the WiX v4 CLI:
+    dotnet tool install --global wix
+    wix extension add -g WixToolset.UI.wixext
+
+    wix build scripts\installer.wxs -ext WixToolset.UI.wixext ^
+      -d Version=1.2.3.0 -d SrcExe=C:\path\qrate.exe -d SrcDir=C:\path\dist ^
+      -d IconFile=C:\path\app-icon.ico -d HasPdfium=1 -d HasFfmpeg=1 ^
+      -o qrate-1.2.3-x86_64.msi
+
+  UpgradeCode below is fixed on purpose — Windows Installer uses it to recognise "this is the same
+  product, a different version" across releases. Never change it; a new one would make every future
+  release install side-by-side instead of upgrading.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <?ifndef Version ?><?define Version = "0.0.0.0" ?><?endif?>
+  <?ifndef SrcExe ?><?define SrcExe = "..\target\release\app.exe" ?><?endif?>
+  <?ifndef SrcDir ?><?define SrcDir = "..\target\release" ?><?endif?>
+  <?ifndef IconFile ?><?define IconFile = "..\assets\icons\app-icon.ico" ?><?endif?>
+  <?ifndef HasPdfium ?><?define HasPdfium = 0 ?><?endif?>
+  <?ifndef HasFfmpeg ?><?define HasFfmpeg = 0 ?><?endif?>
+
+  <Package name="qrate"
+           Manufacturer="devnull03"
+           Version="$(var.Version)"
+           UpgradeCode="6f2f6f1a-9b3e-4b8a-9e2a-7a8f2f6c8f31"
+           Scope="perMachine">
+
+    <SummaryInformation Description="qrate Installer" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of qrate is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="AppIcon" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/devnull03/qrate" />
+    <!-- Unsigned build — this note only reaches an admin who opens Programs & Features by hand;
+         a GPO/SCCM push already trusts the source out of band. -->
+    <Property Id="ARPCOMMENTS" Value="Unsigned build." />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="qrate" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppProgramMenuFolder" Name="qrate" />
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
+
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Component Id="MainExe" Guid="*">
+        <File Id="QrateExe" Source="$(var.SrcExe)" Name="qrate.exe" KeyPath="yes">
+          <Shortcut Id="StartMenuShortcut" Directory="AppProgramMenuFolder" Name="qrate"
+                     WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" Advertise="yes" />
+          <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="qrate"
+                     WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" Advertise="yes" />
+        </File>
+      </Component>
+
+      <!-- Preview sidecars — see scripts/fetch-binaries.sh. Both are optional at runtime (the
+           preview tiers fall back to a type icon without them); HasPdfium/HasFfmpeg only guard
+           against packaging a component with no source file when a local build skipped fetching
+           them, the MSI equivalent of installer.nsi's `File /nonfatal`. -->
+      <?if $(var.HasPdfium) = 1 ?>
+      <Component Id="Pdfium" Guid="*">
+        <File Id="PdfiumDll" Source="$(var.SrcDir)\pdfium.dll" KeyPath="yes" />
+      </Component>
+      <?endif?>
+      <?if $(var.HasFfmpeg) = 1 ?>
+      <Component Id="Ffmpeg" Guid="*">
+        <File Id="FfmpegExe" Source="$(var.SrcDir)\ffmpeg.exe" KeyPath="yes" />
+      </Component>
+      <?endif?>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="qrate" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+    </Feature>
+
+    <!-- No license page: institutions run this silently (`msiexec /i ... /quiet`) via GPO/SCCM,
+         and an interactive double-click gets the same unsigned-build SmartScreen prompt the NSIS
+         installer does either way. -->
+    <ui:WixUI Id="WixUI_Minimal" />
+  </Package>
+</Wix>
