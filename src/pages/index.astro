@@ -19,30 +19,94 @@ const available = ORDER.filter((os) => byOs[os]);
 const fallback = available[0] ?? null;
 const others = available.filter((os) => os !== fallback);
 
-const manual = [
+// One card per screen of the app. `shot` is a dark-theme capture of that screen;
+// the four that have none render as text cards rather than as a dashed
+// placeholder box. Drop a file in public/shots and name it here to fill one in:
+// /01 wants table-full, /02 problems, /04 gallery-full, /05 details-panel.
+const screens = [
   {
     num: '/01',
-    title: 'Bulk edit like a spreadsheet',
-    body: 'Import a CSV, then search, replace, undo, redo, filter. Freeze and reorder columns from the keyboard.',
-    meta: 'thousands of rows',
+    title: 'Table view',
+    body: 'The core screen. A virtualized grid with a pinned row-number column, movable and resizable columns, undo, redo, cut, copy, paste, and find and replace on Ctrl+F.',
+    meta: 'column layout persists per project',
+    wide: true,
   },
   {
     num: '/02',
-    title: 'Link scans without moving files',
-    body: 'Link scans, documents, audio and video. Previews render in the panel. The originals never move.',
-    meta: 'PDFium · ffmpeg',
+    title: 'Problems panel',
+    body: 'Errors, warnings and notes counted on the status bar, filterable by source, click to jump to the cell. A Fixes menu offers the concrete replacement.',
+    meta: 'dates · spelling · LCSH · GeoNames · Wikidata · broken links',
+    wide: true,
   },
   {
     num: '/03',
-    title: 'Validation that names the problem',
-    body: 'The problems panel names the row and the field for every spelling and controlled-vocabulary error.',
-    meta: '1490 errors · 5330 warnings',
+    title: 'New project wizard',
+    body: 'Name, files, link, columns, create. Point at a CSV or Sheet and a folder, match rows to files by filename or a pattern, then derive the columns or load a config.',
+    meta: 'five steps · matched N of M files',
   },
   {
     num: '/04',
-    title: 'A metadata schema you define',
-    body: 'Column types, descriptions, controlled vocabularies, authority lists and spell-check, set per collection.',
-    meta: 'per project',
+    title: 'Gallery view',
+    body: "The same records as thumbnails, sharing the grid's filter and selection. Ctrl+2, or the view switcher tabs.",
+    meta: 'built for photo-heavy collections',
+  },
+  {
+    num: '/05',
+    title: 'Details panel',
+    body: "The selected row's photo and every field as an editable list. Select several rows and one edit writes the same value down the selection.",
+    meta: 'left dock',
+  },
+  {
+    num: '/06',
+    title: 'Fullscreen viewer',
+    body: 'Click a preview for a zoom and pan overlay, with page navigation and in-document find. Images, PDF, video frames, audio, Office, eBook and text.',
+    meta: 'PDFium · ffmpeg · type icon fallback',
+  },
+  {
+    num: '/07',
+    title: 'Agent panel',
+    body: 'A read-only bridge. One tab logs what an external agent read or was refused, the other is where it runs. Nothing writes a cell until the archivist clicks it.',
+    meta: 'right dock · off unless you enable it',
+  },
+  {
+    num: '/08',
+    title: 'Export',
+    body: 'CSV, JSON-LD and CSL-JSON whenever you want them. Google Sheets export and sync stay hidden until you opt in, and authenticate on-device.',
+    meta: 'File ▸ Export · loopback + PKCE OAuth',
+  },
+];
+
+const plugins = [
+  {
+    mark: 'Is',
+    dark: true,
+    tag: 'available',
+    tagClass: 'text-rust',
+    name: 'Islandora',
+    body: 'Holds columns to the vocabularies your Islandora site publishes, and offers those terms while you type. Terms are checked where they live, so a hundred thousand of them cost the same as ten.',
+    repo: 'devnull03/qrate-islandora-plugin',
+    action: 'install →',
+    href: 'https://github.com/devnull03/qrate-islandora-plugin',
+  },
+  {
+    mark: '{ }',
+    tag: 'template',
+    tagClass: 'text-dim',
+    name: 'Plugin template',
+    body: 'Where a new plugin starts: a worked example plus type definitions for every capability the host offers, so your editor tells you what a plugin can and cannot do.',
+    repo: 'devnull03/qrate-plugin-template',
+    action: 'start here →',
+    href: 'https://github.com/devnull03/qrate-plugin-template',
+  },
+  {
+    mark: '↯',
+    tag: 'yours',
+    tagClass: 'text-dim',
+    name: 'Write your own',
+    body: 'Validation, suggestions, column configuration, menu items and status or title bar entries with inline markup. No io, no os, no package: a plugin only reaches what qrate hands it.',
+    repo: 'Extensions ▸ Open Plugins Folder',
+    action: 'read the docs →',
+    href: 'https://github.com/devnull03/qrate-plugin-template#readme',
   },
 ];
 
@@ -52,14 +116,6 @@ const mess = [
   ['naming-rules.docx', 'last opened 2023'],
   ['email thread', '61 replies'],
 ];
-
-// The numbered "field manual" row: number | title | body.
-const ruleRow = 'grid grid-cols-1 border-b border-rule md:grid-cols-[110px_1fr_1fr]';
-const ruleCell = 'px-[var(--pad)] [--pad:18px] md:[--pad:26px] md:border-r md:border-rule';
-const ruleNum = `${ruleCell} pt-[22px] font-mono text-[13px] font-semibold text-accent md:py-[30px] md:px-5`;
-const ruleTitle = `${ruleCell} py-2 md:py-[30px]`;
-const ruleBody = `px-[18px] pb-[22px] text-[14.5px] leading-[1.6] text-body md:px-[26px] md:py-[30px]`;
-const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.035em] md:text-[30px] md:leading-[1.02]';
 ---
 
 <Base
@@ -148,7 +204,7 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
   </section>
   */}
 
-  <section class="gut flex flex-col items-center gap-4 py-[34px] md:pb-14 md:pt-16" id="features">
+  <section class="gut flex flex-col items-center gap-4 py-[34px] md:pb-14 md:pt-16">
     <div class="flex flex-col items-baseline gap-2 self-stretch md:flex-row md:gap-3.5">
       <div class="eyebrow whitespace-nowrap md:pt-2">The window</div>
       <h2 class="m-0 max-w-[560px] text-2xl font-semibold leading-[1.1] md:text-[32px]">
@@ -168,20 +224,81 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
     </div>
   </section>
 
-  {
-    manual.map((m) => (
-      <div class={ruleRow}>
-        <div class={ruleNum}>{m.num}</div>
-        <div class={ruleTitle}>
-          <h2 class={ruleH}>{m.title}</h2>
-        </div>
-        <div class={ruleBody}>
-          {m.body}
-          <div class="mt-3 font-mono text-xs font-medium text-ink">{m.meta}</div>
-        </div>
+  <section class="gut border-t border-rule py-[26px] md:pb-[60px] md:pt-14" id="features">
+    <div class="mb-4 flex items-baseline justify-between gap-3 md:mb-[26px]">
+      <div class="flex flex-col items-baseline gap-2 md:flex-row md:gap-3.5">
+        <div class="eyebrow whitespace-nowrap">Features</div>
+        <h2 class="m-0 text-[22px] font-semibold leading-[1.1] md:text-[32px]">
+          Every screen, and what it is for.
+        </h2>
       </div>
-    ))
-  }
+      <span class="whitespace-nowrap font-mono text-[10.5px] text-faint md:hidden">swipe →</span>
+    </div>
+
+    {/* One row of snap-scrolled cards on a phone, a 6-column mosaic above it. */}
+    <div
+      id="screen-rail"
+      class="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1 md:grid md:grid-cols-6 md:gap-px md:overflow-visible md:border md:border-rule md:bg-rule md:pb-0"
+    >
+      {
+        screens.map((s) => (
+          <article
+            class:list={[
+              'flex shrink-0 basis-[300px] snap-center flex-col border border-rule bg-paper md:basis-auto md:border-0',
+              s.wide ? 'md:col-span-3' : 'md:col-span-2',
+            ]}
+          >
+            {s.shot && (
+              <div class="border-b border-rule bg-ink p-3 md:px-[26px] md:pb-5 md:pt-[26px]">
+                <div
+                  class:list={[
+                    'flex h-[170px] items-center justify-center',
+                    s.wide ? 'md:h-[340px]' : 'md:h-[265px]',
+                  ]}
+                >
+                  <img
+                    src={s.shot}
+                    alt={s.alt}
+                    loading="lazy"
+                    decoding="async"
+                    class="block h-auto max-h-full w-auto max-w-full border border-[rgba(247,244,238,.14)] [filter:var(--shot-filter)]"
+                  />
+                </div>
+                <div class="mt-2 font-mono text-[10.5px] text-[rgba(247,244,238,.45)]">
+                  {s.caption}
+                </div>
+              </div>
+            )}
+            <div class="flex flex-1 flex-col p-[18px] pb-[22px] md:px-[30px] md:pb-9 md:pt-[30px]">
+              <div class="mb-2 font-mono text-[11px] font-semibold text-accent md:mb-2.5">
+                {s.num}
+              </div>
+              <h3 class="m-0 mb-2 text-[21px] font-bold uppercase leading-[1.05] tracking-[-0.035em] md:mb-2.5 md:text-2xl">
+                {s.title}
+              </h3>
+              <p class="m-0 mb-3 text-[13px] leading-[1.6] text-body md:text-[14px]">{s.body}</p>
+              <div class="mt-auto font-mono text-[11.5px] font-medium text-ink md:text-xs">
+                {s.meta}
+              </div>
+            </div>
+          </article>
+        ))
+      }
+    </div>
+
+    {/* Which card the phone carousel is on. Server-rendered on the first dot,
+        which is where an unscrolled rail already sits, so no-JS reads right. */}
+    <div class="mt-4 flex justify-center gap-1.5 md:hidden" id="screen-dots">
+      {
+        screens.map((_, i) => (
+          <span
+            class="h-0.5 w-2.5 bg-[rgba(23,20,15,.25)]"
+            style={i === 0 ? 'width:18px;background:var(--accent)' : undefined}
+          />
+        ))
+      }
+    </div>
+  </section>
 
   <section
     class="gut grid grid-cols-1 items-center gap-5 border-b border-rule py-5 md:grid-cols-2 md:gap-10 md:pb-[60px] md:pt-14"
@@ -212,16 +329,63 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
     </div>
   </section>
 
-  <div class={ruleRow} id="plugins">
-    <div class={ruleNum}>/05</div>
-    <div class={ruleTitle}><h2 class={ruleH}>Islandora, and other plugins</h2></div>
-    <div class={ruleBody}>
-      Plugins add validation and column rules. They run from a folder you control. An Islandora
-      plugin ships with the app, so it checks subject, geo_location and person terms against your
-      site's vocabularies.
-      <div class="mt-3 font-mono text-xs font-medium text-ink">Luau · plugin template on GitHub</div>
+  <section class="gut border-b border-rule py-[26px] md:pb-[60px] md:pt-14" id="plugins">
+    <div class="mb-2 flex flex-col items-baseline justify-between gap-2 md:flex-row md:gap-5">
+      <div class="flex flex-col items-baseline gap-2 md:flex-row md:gap-3.5">
+        <div class="eyebrow whitespace-nowrap">/05 Plugins</div>
+        <h2 class="m-0 text-2xl font-semibold leading-[1.1] md:text-[32px]">
+          Extend it from a folder you control.
+        </h2>
+      </div>
+      <span class="whitespace-nowrap font-mono text-xs text-dim">Help ▸ Open Plugins Folder</span>
     </div>
-  </div>
+    <p class="m-0 mb-4 max-w-[620px] text-[13.5px] leading-[1.65] text-body md:mb-6 md:text-[14.5px]">
+      Plugins are Luau, sandboxed, and add validation, column rules, menus and suggestions. Network
+      access stays off until you switch it on.
+    </p>
+
+    <div class="grid grid-cols-1 gap-px border border-rule bg-rule md:grid-cols-3">
+      {
+        plugins.map((p) => (
+          <div class="flex flex-col gap-3.5 bg-paper p-4 md:p-[22px] md:pb-6">
+            <div class="flex items-center justify-between gap-3">
+              <div
+                class:list={[
+                  'flex size-[30px] shrink-0 items-center justify-center text-sm font-bold tracking-[-0.02em] md:size-[38px] md:text-[17px]',
+                  p.dark ? 'bg-ink text-paper' : 'text-ink',
+                ]}
+              >
+                {p.mark}
+              </div>
+              <span
+                class:list={[
+                  'border border-[rgba(23,20,15,.24)] px-2 py-[3px] font-mono text-[9.5px] font-semibold uppercase tracking-[0.08em]',
+                  p.tagClass,
+                ]}
+              >
+                {p.tag}
+              </span>
+            </div>
+            <div>
+              <h3 class="m-0 mb-2 text-base font-semibold leading-[1.2] tracking-[-0.02em] md:text-[18px]">
+                {p.name}
+              </h3>
+              <p class="m-0 text-[13px] leading-[1.6] text-body md:text-[13.5px]">{p.body}</p>
+            </div>
+            <div class="mt-auto border-t border-rule-nav pt-3 font-mono text-[11.5px] leading-[1.7] text-dim">
+              {p.repo}
+              <a href={p.href} class="block text-accent">
+                {p.action}
+              </a>
+            </div>
+          </div>
+        ))
+      }
+    </div>
+    <div class="mt-3.5 font-mono text-xs text-dim">
+      One plugin published so far. The template carries type definitions for the whole plugin API.
+    </div>
+  </section>
 
   <section class="grid grid-cols-1 border-b border-rule md:grid-cols-2">
     <div class="gut border-b border-rule py-[26px] md:border-b-0 md:border-r md:px-[26px] md:py-[34px]">
@@ -309,6 +473,26 @@ const ruleH = 'm-0 text-[23px] font-bold uppercase leading-[1.05] tracking-[-0.0
     primary.textContent = `Download for ${guess}`;
     const others = available.filter((o) => o !== guess);
     rest.textContent = others.length ? others.join(' · ') : 'All platforms';
+  })();
+</script>
+
+<script is:inline>
+  // Light up the dot for whichever screen card the carousel has landed on.
+  // Only the phone layout scrolls; on desktop the rail is a grid, scrollLeft
+  // stays 0, and the dots are display:none anyway.
+  (() => {
+    const rail = document.getElementById('screen-rail');
+    const dots = [...document.getElementById('screen-dots').children];
+    const sync = () => {
+      // Card pitch: the 300px basis plus the 12px gap.
+      const i = Math.min(Math.round(rail.scrollLeft / 312), dots.length - 1);
+      dots.forEach((d, n) => {
+        d.style.width = n === i ? '18px' : '';
+        d.style.background = n === i ? 'var(--accent)' : '';
+      });
+    };
+    rail.addEventListener('scroll', sync, { passive: true });
+    sync();
   })();
 </script>
 
