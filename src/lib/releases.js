@@ -52,7 +52,10 @@ export function labelFor(name) {
 export function platformOf(name) {
   if (/\.dmg$/i.test(name)) return 'macOS';
   if (/(-setup\.exe|\.msi|(x64|x86_64)[^/]*\.zip)$/i.test(name)) return 'Windows';
-  if (/(\.AppImage|\.deb)$/i.test(name)) return 'Linux';
+  // release.yml ships Linux as a tarball, not a .deb or .AppImage. Matching only
+  // the latter two dropped the Linux build from the download table and the hero
+  // button entirely, and made the changelog count two platforms out of three.
+  if (/(\.AppImage|\.deb|linux[^/]*\.tar\.(gz|xz))$/i.test(name)) return 'Linux';
   return null;
 }
 

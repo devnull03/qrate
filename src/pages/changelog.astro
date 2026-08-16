@@ -1,18 +1,15 @@
 ---
 import Base from '../layouts/Base.astro';
 import Release from '../components/Release.astro';
-import { getReleases, latest, platformOf, REPO } from '../lib/releases.js';
+import { getReleases, latest, REPO } from '../lib/releases.js';
 
 const releases = await getReleases();
 const rel = latest(releases);
 
-const platforms = new Set(
-  (rel?.assets ?? []).map((a) => platformOf(a.name)).filter(Boolean),
-).size;
-
+// The platform count that used to sit here said what the download table on
+// /docs/install already says, in less detail.
 const stats = [
   [rel?.tag_name ?? 'none', 'latest'],
-  [platforms || '0', 'platforms'],
   ['AGPL', '3.0'],
 ];
 ---
