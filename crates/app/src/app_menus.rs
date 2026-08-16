@@ -23,6 +23,7 @@ actions!(
         CopyDebugInfo,
         ReportIssue,
         OpenLogsFolder,
+        OpenAbout,
         /// What every greyed-out menu item below dispatches. Deliberately unhandled: the label is
         /// the promise, and the task named beside it is what makes the promise good.
         Planned
@@ -229,6 +230,8 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
                 MenuItem::action("Copy Debug Info", CopyDebugInfo),
                 MenuItem::action("Report an Issue", ReportIssue),
                 MenuItem::action("Open Logs Folder", OpenLogsFolder),
+                MenuItem::Separator,
+                MenuItem::action(format!("Version {}", env!("CARGO_PKG_VERSION")), OpenAbout),
             ],
         },
     ]

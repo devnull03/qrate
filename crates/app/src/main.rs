@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod about;
 mod actions;
 mod agent_bridge;
 mod app_menus;
@@ -38,8 +39,8 @@ use crate::app_settings::build_pages;
 use crate::{
     actions::{NewProject, ToggleBottomDock, ToggleLeftDock, ToggleRightDock},
     app_menus::{
-        CopyDebugInfo, OpenLogsFolder, OpenPluginsFolder, OpenProjects, OpenSettings, Quit,
-        REPO_URL, ReloadPlugins, ReportIssue,
+        CopyDebugInfo, OpenAbout, OpenLogsFolder, OpenPluginsFolder, OpenProjects, OpenSettings,
+        Quit, REPO_URL, ReloadPlugins, ReportIssue,
     },
     status_items::build_status_bar_registry,
     title_items::build_title_bar_registry,
@@ -487,6 +488,7 @@ fn main() {
             None => log::error!("no local data dir, so there is no log folder to open"),
         });
         cx.on_action(|_: &OpenSettings, cx| open_settings_window(cx));
+        cx.on_action(|_: &OpenAbout, cx| about::open_about_window(cx));
         cx.on_action(|_: &NewProject, cx| {
             project_wizard::open_project_wizard(EntryKind::Blank, cx)
         });

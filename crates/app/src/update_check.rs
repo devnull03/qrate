@@ -3,7 +3,7 @@
 //! download link for `status_items::UpdateNotice` to show. Never downloads or installs anything
 //! itself — `.github/workflows/release.yml` already builds the installer this links to.
 
-use gpui::{App, AppContext as _, Global};
+use gpui::{App, AppContext as _, Global, Task};
 use serde::Deserialize;
 use settings::AppSettings;
 
@@ -54,36 +54,59 @@ fn fetch() -> Option<Release> {
         .ok()
 }
 
+/// What the latest tagged release means for this build.
+pub enum UpdateStatus {
+    UpToDate,
+    Available {
+        version: String,
+        download_url: String,
+    },
+}
+
+/// The one HTTP-call site: fetches the latest release off the UI thread and classifies it against
+/// `CARGO_PKG_VERSION`. `check` (startup, gated by the dismissed-version setting) and the About
+/// window (on-demand, ungated) both go through this rather than each hitting the API themselves.
+pub fn check_now(cx: &App) -> Task<Option<UpdateStatus>> {
+    cx.background_spawn(async {
+        let release = fetch()?;
+        let latest = release.tag_name.trim_start_matches('v').to_string();
+        if latest == env!("CARGO_PKG_VERSION") {
+            return Some(UpdateStatus::UpToDate);
+        }
+        let asset = release
+            .assets
+            .iter()
+            .find(|a| a.name.ends_with(ASSET_SUFFIX))?;
+        Some(UpdateStatus::Available {
+            version: latest,
+            download_url: asset.browser_download_url.clone(),
+        })
+    })
+}
+
 /// Runs once at startup, off the UI thread. Sets [`AvailableUpdate`] when the latest release is
 /// newer and not already dismissed; leaves it unset on any network failure, missing platform
 /// asset, or when already current — offline is the normal case for this audience.
 pub fn check(cx: &mut App) {
+    let task = check_now(cx);
     cx.spawn(async move |cx| {
-        let Some(release) = cx.background_spawn(async { fetch() }).await else {
-            return;
-        };
-        let latest = release.tag_name.trim_start_matches('v').to_string();
-        if latest == env!("CARGO_PKG_VERSION") {
-            return;
-        }
-        let Some(asset) = release
-            .assets
-            .iter()
-            .find(|a| a.name.ends_with(ASSET_SUFFIX))
+        let Some(UpdateStatus::Available {
+            version,
+            download_url,
+        }) = task.await
         else {
             return;
         };
-        let download_url = asset.browser_download_url.clone();
         cx.update(|cx| {
             let dismissed = AppSettings::get(cx)
                 .values
                 .get(DISMISSED_KEY)
                 .map(|v| v.text().to_string());
-            if dismissed.as_deref() == Some(latest.as_str()) {
+            if dismissed.as_deref() == Some(version.as_str()) {
                 return;
             }
             cx.set_global(AvailableUpdate {
-                version: latest,
+                version,
                 download_url,
             });
         });
