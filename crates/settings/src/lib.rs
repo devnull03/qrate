@@ -44,7 +44,7 @@ pub const NOTE_AUTHOR_KEY: &str = "note_author";
 
 /// `AppSettings` key for whether Google sync is switched on. User-wide only — consent is given by
 /// a person, not by a collection — and off until the user passes the consent dialog, so a fresh
-/// install shows no Google surface at all.
+/// install shows no connected Google controls. Public-sheet import does not use this setting.
 pub const GOOGLE_SYNC_KEY: &str = "google_sync_enabled";
 
 /// Whether Google sync is switched on. Deliberately not [`effective_bool`]: a project must not be
