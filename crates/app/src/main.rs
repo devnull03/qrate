@@ -39,8 +39,8 @@ use crate::app_settings::build_pages;
 use crate::{
     actions::{NewProject, ToggleBottomDock, ToggleLeftDock, ToggleRightDock},
     app_menus::{
-        CopyDebugInfo, OpenAbout, OpenLogsFolder, OpenPluginsFolder, OpenProjects, OpenSettings,
-        Quit, REPO_URL, ReloadPlugins, ReportIssue,
+        CopyDebugInfo, OpenAbout, OpenColumnSettings, OpenLogsFolder, OpenPluginsFolder,
+        OpenProjects, OpenSettings, Quit, REPO_URL, ReloadPlugins, ReportIssue,
     },
     status_items::build_status_bar_registry,
     title_items::build_title_bar_registry,
@@ -50,7 +50,7 @@ use workspace::Workspace;
 
 /// Opens the Settings window, focusing the existing one if it's already open.
 // `gpui::App` spelled out: a bare `App` binds to this file's own `struct App`, not the context type.
-pub(crate) fn open_settings_window(cx: &mut gpui::App) {
+pub(crate) fn open_settings_window(initial_page: Option<usize>, cx: &mut gpui::App) {
     if WindowRegistry::focus_or_clear(SETTINGS_WINDOW_KIND, cx).is_some() {
         return;
     }
@@ -85,7 +85,7 @@ pub(crate) fn open_settings_window(cx: &mut gpui::App) {
     // Open synchronously: gpui quits when the window list is empty (non-macOS), so a window
     // spawned from an async task would leave a zero-window gap that kills the app mid-transition.
     if let Ok(window_handle) = cx.open_window(window_options, |window, cx| {
-        let view = cx.new(|cx| SettingsWindow::new(window, cx, build_pages));
+        let view = cx.new(|cx| SettingsWindow::new(window, cx, build_pages, initial_page));
         cx.new(|cx| Root::new(view, window, cx))
     }) {
         WindowRegistry::register(SETTINGS_WINDOW_KIND, window_handle.into(), cx);
@@ -487,7 +487,10 @@ fn main() {
             }
             None => log::error!("no local data dir, so there is no log folder to open"),
         });
-        cx.on_action(|_: &OpenSettings, cx| open_settings_window(cx));
+        cx.on_action(|_: &OpenSettings, cx| open_settings_window(None, cx));
+        cx.on_action(|_: &OpenColumnSettings, cx| {
+            open_settings_window(Some(app_settings::COLUMNS_PAGE), cx)
+        });
         cx.on_action(|_: &OpenAbout, cx| about::open_about_window(cx));
         cx.on_action(|_: &NewProject, cx| {
             project_wizard::open_project_wizard(EntryKind::Blank, cx)

@@ -23,7 +23,7 @@ use gpui_component::{
     ActiveTheme as _, StyledExt, TitleBar, h_flex,
     input::InputState,
     label::Label,
-    setting::{SettingField, SettingItem, SettingPage, Settings},
+    setting::{SelectIndex, SettingField, SettingItem, SettingPage, Settings},
     v_flex,
 };
 use serde::{Deserialize, Serialize};
@@ -95,7 +95,25 @@ impl SettingsScope {
     }
 }
 
-/// Reads a bool from whichever scope the Settings window currently targets.
+/// Whether the open project holds a value of its own for `key`, as opposed to inheriting the
+/// user-wide one. This is what the Project scope's reset button keys off: only an override can be
+/// cleared, because only an override exists.
+pub fn has_project_override(key: &str, cx: &App) -> bool {
+    cx.try_global::<project::CurrentProject>()
+        .is_some_and(|p| p.data.values.contains_key(key))
+}
+
+/// Drops the open project's own value for `key`, so it inherits the user-wide one again.
+pub fn clear_project_override(key: &str, cx: &mut App) {
+    if cx.has_global::<project::CurrentProject>() {
+        project::CurrentProject::clear(key, cx);
+    }
+}
+
+/// Reads a bool from whichever scope the Settings window currently targets. The Project scope
+/// resolves the same way the rest of the app does ([`effective_bool`]) rather than reading the
+/// project store raw: an unset key there means "inherits the user default", and showing it as
+/// `false` would state the opposite.
 fn scoped_bool(key: &str, cx: &App) -> bool {
     match SettingsScope::current(cx) {
         SettingsScope::User => AppSettings::get(cx)
@@ -103,10 +121,7 @@ fn scoped_bool(key: &str, cx: &App) -> bool {
             .get(key)
             .map(|v| v.bool())
             .unwrap_or(false),
-        SettingsScope::Project => cx
-            .try_global::<project::CurrentProject>()
-            .map(|p| p.get_bool(key))
-            .unwrap_or(false),
+        SettingsScope::Project => effective_bool(key, cx),
     }
 }
 
@@ -125,6 +140,7 @@ pub fn set_scoped_bool(key: &'static str, val: bool, cx: &mut App) {
     }
 }
 
+/// Text sibling of [`scoped_bool`], inheriting in the Project scope for the same reason.
 pub fn scoped_text(key: &str, cx: &App) -> SharedString {
     match SettingsScope::current(cx) {
         SettingsScope::User => AppSettings::get(cx)
@@ -132,10 +148,7 @@ pub fn scoped_text(key: &str, cx: &App) -> SharedString {
             .get(key)
             .map(|v| v.text())
             .unwrap_or_default(),
-        SettingsScope::Project => cx
-            .try_global::<project::CurrentProject>()
-            .and_then(|p| p.data.values.get(key).map(|v| v.text()))
-            .unwrap_or_default(),
+        SettingsScope::Project => effective_text(key, cx),
     }
 }
 
@@ -216,21 +229,26 @@ pub enum Setting {
     },
 }
 
-impl From<Setting> for SettingItem {
-    fn from(setting: Setting) -> Self {
-        match setting {
+impl Setting {
+    /// Builds the row this setting draws. Takes `&App` because a dual-scope row says whether the
+    /// open project overrides it, which only the live stores know.
+    pub fn into_item(self, cx: &App) -> SettingItem {
+        match self {
             Setting::Text {
                 key,
                 label,
                 description,
             } => SettingItem::new(
                 label,
-                SettingField::input(
-                    move |cx: &App| scoped_text(key, cx),
-                    move |val: SharedString, cx: &mut App| set_scoped_text(key, val, cx),
+                resettable(
+                    key,
+                    SettingField::input(
+                        move |cx: &App| scoped_text(key, cx),
+                        move |val: SharedString, cx: &mut App| set_scoped_text(key, val, cx),
+                    ),
                 ),
             )
-            .description(description)
+            .description(described(description, key, cx))
             // gpui-component pins horizontal-layout inputs to a fixed `w_64`, which clips inside a
             // narrow settings pane; the stacked layout gives them `w_full` instead.
             .layout(Axis::Vertical),
@@ -241,12 +259,15 @@ impl From<Setting> for SettingItem {
                 description,
             } => SettingItem::new(
                 label,
-                SettingField::switch(
-                    move |cx: &App| scoped_bool(key, cx),
-                    move |val: bool, cx: &mut App| set_scoped_bool(key, val, cx),
+                resettable(
+                    key,
+                    SettingField::switch(
+                        move |cx: &App| scoped_bool(key, cx),
+                        move |val: bool, cx: &mut App| set_scoped_bool(key, val, cx),
+                    ),
                 ),
             )
-            .description(description),
+            .description(described(description, key, cx)),
 
             Setting::Dropdown {
                 key,
@@ -260,13 +281,16 @@ impl From<Setting> for SettingItem {
                     .collect();
                 SettingItem::new(
                     label,
-                    SettingField::dropdown(
-                        opts,
-                        move |cx: &App| scoped_text(key, cx),
-                        move |val: SharedString, cx: &mut App| set_scoped_text(key, val, cx),
+                    resettable(
+                        key,
+                        SettingField::dropdown(
+                            opts,
+                            move |cx: &App| scoped_text(key, cx),
+                            move |val: SharedString, cx: &mut App| set_scoped_text(key, val, cx),
+                        ),
                     ),
                 )
-                .description(description)
+                .description(described(description, key, cx))
             }
 
             Setting::FilePicker {
@@ -274,40 +298,87 @@ impl From<Setting> for SettingItem {
                 label,
                 description,
                 prompt,
-            } => build_path_picker(key, label, description, prompt, true, false),
+            } => path_picker_item(
+                key,
+                label,
+                description,
+                prompt,
+                true,
+                false,
+                move |cx: &App| user_text(key, cx),
+                move |val: SharedString, cx: &mut App| AppSettings::set_text(key, val, cx),
+            ),
 
             Setting::DirPicker {
                 key,
                 label,
                 description,
                 prompt,
-            } => build_path_picker(key, label, description, prompt, false, true),
+            } => path_picker_item(
+                key,
+                label,
+                description,
+                prompt,
+                false,
+                true,
+                move |cx: &App| user_text(key, cx),
+                move |val: SharedString, cx: &mut App| AppSettings::set_text(key, val, cx),
+            ),
         }
     }
 }
 
-fn build_path_picker(
+fn user_text(key: &'static str, cx: &App) -> SharedString {
+    AppSettings::get(cx)
+        .values
+        .get(key)
+        .map(|v| v.text())
+        .unwrap_or_default()
+}
+
+/// Tells a dual-scope row apart from an inherited one while the Project scope is showing. Without
+/// it the two look identical — the field shows the same resolved value either way.
+fn described(description: &'static str, key: &'static str, cx: &App) -> SharedString {
+    match SettingsScope::current(cx) == SettingsScope::Project && has_project_override(key, cx) {
+        true => format!("{description}\n\nSet for this project.").into(),
+        false => description.into(),
+    }
+}
+
+/// Wires a dual-scope field to the page's Reset button, which clears the project's own value so the
+/// row inherits the user-wide one again. Nothing to reset in the User scope: that store *is* the
+/// default this returns to.
+fn resettable<T: 'static>(key: &'static str, field: SettingField<T>) -> SettingField<T> {
+    field.on_reset(
+        move |cx: &App| {
+            SettingsScope::current(cx) == SettingsScope::Project && has_project_override(key, cx)
+        },
+        move |_window: &mut Window, cx: &mut App| clear_project_override(key, cx),
+    )
+}
+
+/// A read-only path row with a Browse button. `read`/`write` are the only difference between the
+/// user-wide pickers and a project-scoped one, so both go through here rather than through two
+/// copies of the `InputState` handling.
+#[allow(clippy::too_many_arguments)]
+pub fn path_picker_item(
     key: &'static str,
     label: &'static str,
     description: &'static str,
     prompt: &'static str,
     files: bool,
     directories: bool,
+    read: impl Fn(&App) -> SharedString + 'static,
+    write: impl Fn(SharedString, &mut App) + Send + Sync + 'static,
 ) -> SettingItem {
     let prompt: SharedString = prompt.into();
+    let write = Arc::new(write);
     SettingItem::new(
         label,
         SettingField::render(move |options, window, cx| {
-            let want = AppSettings::get(cx)
-                .values
-                .get(key)
-                .map(|v| v.text())
-                .unwrap_or_default();
+            let want = read(cx);
             let input = window.use_keyed_state(
-                SharedString::from(format!(
-                    "path-picker-{}-{}-{}",
-                    options.page_ix, options.group_ix, options.item_ix
-                )),
+                SharedString::from(format!("path-picker-{key}")),
                 cx,
                 |window, cx| {
                     InputState::new(window, cx)
@@ -320,17 +391,16 @@ fn build_path_picker(
                     state.set_value(want.to_string(), window, cx);
                 }
             });
+            let write = Arc::clone(&write);
             PathPickerApp {
                 field_size: options.size,
                 button_size: Some(options.size),
-                button_id: SharedString::from(format!("browse-{}", key)),
+                button_id: SharedString::from(format!("browse-{key}")),
                 files,
                 directories,
                 prompt: prompt.clone(),
                 input,
-                on_pick: Arc::new(move |val, cx| {
-                    AppSettings::set_text(key, val, cx);
-                }),
+                on_pick: Arc::new(move |val, cx| write(val, cx)),
             }
         }),
     )
@@ -487,6 +557,10 @@ pub struct SettingsWindow {
     /// Takes `&App` so a page can build itself from live state — the Columns page lists the open
     /// project's columns, which a context-free builder can't see. Re-invoked every render.
     pub build_pages: fn(&App) -> Vec<SettingPage>,
+    /// Page to open on, as an index into [`Self::build_pages`]. Only the first render reads it —
+    /// the widget owns which page is selected after that, so a menu item that names a page can't
+    /// yank it away mid-session.
+    initial_page: Option<usize>,
     /// Persists the window's size (debounced) so it reopens where it was left.
     _bounds_sub: Subscription,
     /// Re-render when any setting changes so scope-dependent pages (autosave's method row, the
@@ -500,6 +574,7 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
         build_pages: fn(&App) -> Vec<SettingPage>,
+        initial_page: Option<usize>,
     ) -> Self {
         window.set_window_title("Settings — qrate");
         let _bounds_sub = cx.observe_window_bounds(window, |_this, window, cx| {
@@ -512,6 +587,7 @@ impl SettingsWindow {
         let _project_sub = cx.observe_global::<project::CurrentProject>(|_this, cx| cx.notify());
         Self {
             build_pages,
+            initial_page,
             _bounds_sub,
             _settings_sub,
             _project_sub,
@@ -594,11 +670,18 @@ impl Render for SettingsWindow {
                         cx,
                     )),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(Settings::new("app-settings").pages((self.build_pages)(cx))),
-            )
+            .child(div().flex_1().min_h_0().child({
+                let pages = (self.build_pages)(cx);
+                let page_ix = self
+                    .initial_page
+                    .filter(|ix| *ix < pages.len())
+                    .unwrap_or_default();
+                Settings::new("app-settings")
+                    .default_selected_index(SelectIndex {
+                        page_ix,
+                        group_ix: None,
+                    })
+                    .pages(pages)
+            }))
     }
 }

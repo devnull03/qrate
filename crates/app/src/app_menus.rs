@@ -17,6 +17,9 @@ actions!(
     [
         OpenProjects,
         OpenSettings,
+        /// The same window as `OpenSettings`, opened on the Columns page — the Data menu promises
+        /// a column surface, and landing on whatever page was last used does not keep that promise.
+        OpenColumnSettings,
         OpenPluginsFolder,
         ReloadPlugins,
         Quit,
@@ -162,7 +165,7 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
             name: "Data".into(),
             disabled: false,
             items: vec![
-                MenuItem::action("Column Settings…", OpenSettings),
+                MenuItem::action("Column Settings…", OpenColumnSettings),
                 MenuItem::action("Rename Column…", RenameColumn),
                 MenuItem::Separator,
                 MenuItem::action("Delete Row", DeleteRow),

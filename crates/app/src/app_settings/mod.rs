@@ -25,6 +25,10 @@ use plugin_host::{SettingKind, SettingSpec};
 use serde_json::Value as Json;
 use settings::{Setting, columns, project::CurrentProject};
 
+/// Where the Columns page sits in [`build_pages`], for the Data menu's "Column Settings…". An index
+/// rather than a title because `SettingPage` does not hand its title back.
+pub const COLUMNS_PAGE: usize = 1;
+
 pub fn build_pages(cx: &App) -> Vec<SettingPage> {
     let mut pages = vec![
         SettingPage::new("Table")
@@ -35,13 +39,14 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                         label: "Row Stripes",
                         description: "Alternate row background color in the data table.",
                     }
-                    .into(),
+                    .into_item(cx),
                 ),
             )
             .group(saving_group(cx))
+            .group(notes_group(cx))
             .group(previews_group()),
         columns_page(cx),
-        authorities_page(cx),
+        project_page(cx),
         SettingPage::new("Agent")
             .description(
                 "An AI agent you run yourself can read the project open in qrate over a local \
@@ -55,7 +60,7 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                         description: "Listens on your own machine only, behind a token that \
                                       changes every launch. Switch off to close the port now.",
                     }
-                    .into(),
+                    .into_item(cx),
                 ),
             ),
         SettingPage::new("Spelling").group(spelling_group(cx)),
@@ -64,6 +69,20 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
     ];
     pages.extend(plugin_pages(cx));
     pages
+}
+
+/// Who a filed note is attributed to. Lives beside the table's own preferences because a note is
+/// filed from the grid, and the name signing it is the archivist's, not the project's.
+fn notes_group(cx: &App) -> SettingGroup {
+    SettingGroup::new().title("Notes").item(
+        Setting::Text {
+            key: settings::NOTE_AUTHOR_KEY,
+            label: "Attribute notes to",
+            description: "Initials or a name, recorded on each note you file. Leave it empty to \
+                          file notes with a date and no author.",
+        }
+        .into_item(cx),
+    )
 }
 
 /// Every plugin on disk, running or not: whether it runs at all, what it is allowed to reach, and
@@ -81,78 +100,80 @@ fn plugins_page(cx: &App) -> SettingPage {
         );
     }
 
-    listing.into_iter().fold(
-        SettingPage::new("Plugins").description(
-            "Scripts found in the plugins folder. A plugin is code from somebody else, so it \
-             reaches the network only if you say so.",
-        ),
-        |page, plugin| {
-            let id = plugin.id.clone();
-            let mut group = SettingGroup::new().title(plugin.id.clone()).item({
-                let switched = id.clone();
-                let item = SettingItem::new(
-                    "Enabled",
+    let mut page = SettingPage::new("Plugins").description(
+        "Scripts found in the plugins folder. A plugin is code from somebody else, so it \
+         reaches the network only if you say so.",
+    );
+
+    for plugin in listing {
+        let id = plugin.id.clone();
+        let mut group = SettingGroup::new().title(plugin.id.clone()).item({
+            let switched = id.clone();
+            let item = SettingItem::new(
+                "Enabled",
+                SettingField::switch(
+                    {
+                        let id = id.clone();
+                        move |cx: &App| settings::plugins::state(&id, cx).enabled
+                    },
+                    move |on: bool, cx: &mut App| {
+                        settings::plugins::set_enabled(&switched, on, cx);
+                        // Loading and unloading is what the switch *means*, and `reload` is
+                        // already the one path that does either.
+                        plugin_host::reload(cx);
+                    },
+                ),
+            );
+            // The load error goes on the switch rather than in a row of its own: it is the
+            // reason someone is looking at this plugin, and a description is the only place on
+            // a settings row that text of that length fits.
+            match (&plugin.load_error, &plugin.description) {
+                (Some(err), _) => item.description(SharedString::from(format!("✗ {err}"))),
+                (None, Some(description)) => item.description(description.clone()),
+                (None, None) => item,
+            }
+        });
+
+        for permission in plugin.permissions {
+            let (id, key) = (id.clone(), permission.clone());
+            group = group.item(
+                SettingItem::new(
+                    "Network access",
                     SettingField::switch(
                         {
-                            let id = id.clone();
-                            move |cx: &App| settings::plugins::state(&id, cx).enabled
+                            let (id, key) = (id.clone(), key.clone());
+                            move |cx: &App| {
+                                settings::plugins::state(&id, cx)
+                                    .granted
+                                    .iter()
+                                    .any(|held| held.as_str() == key.as_ref())
+                            }
                         },
                         move |on: bool, cx: &mut App| {
-                            settings::plugins::set_enabled(&switched, on, cx);
-                            // Loading and unloading is what the switch *means*, and `reload` is
-                            // already the one path that does either.
+                            settings::plugins::set_granted(&id, &key, on, cx);
+                            // The grant is read when a VM is built, so it takes effect on the
+                            // next load and not before.
                             plugin_host::reload(cx);
                         },
                     ),
-                );
-                // The load error goes on the switch rather than in a row of its own: it is the
-                // reason someone is looking at this plugin, and a description is the only place on
-                // a settings row that text of that length fits.
-                match (&plugin.load_error, &plugin.description) {
-                    (Some(err), _) => item.description(SharedString::from(format!("✗ {err}"))),
-                    (None, Some(description)) => item.description(description.clone()),
-                    (None, None) => item,
-                }
-            });
-
-            for permission in plugin.permissions {
-                let (id, key) = (id.clone(), permission.clone());
-                group = group.item(
-                    SettingItem::new(
-                        "Network access",
-                        SettingField::switch(
-                            {
-                                let (id, key) = (id.clone(), key.clone());
-                                move |cx: &App| {
-                                    settings::plugins::state(&id, cx)
-                                        .granted
-                                        .iter()
-                                        .any(|held| held.as_str() == key.as_ref())
-                                }
-                            },
-                            move |on: bool, cx: &mut App| {
-                                settings::plugins::set_granted(&id, &key, on, cx);
-                                // The grant is read when a VM is built, so it takes effect on the
-                                // next load and not before.
-                                plugin_host::reload(cx);
-                            },
-                        ),
-                    )
-                    .description(SharedString::from(format!(
-                        "Let {permission_owner} reach the internet. It asked for this; nothing \
+                )
+                .description(SharedString::from(format!(
+                    "Let {permission_owner} reach the internet. It asked for this; nothing \
                          stops it contacting any address once you agree.",
-                        permission_owner = plugin.id
-                    ))),
-                );
-            }
-            page.group(group)
-        },
-    )
+                    permission_owner = plugin.id
+                ))),
+            );
+        }
+
+        page = page.group(group);
+    }
+    page
 }
 
 /// One page per plugin that declares settings or a column mapping, titled with the plugin's name —
-/// the same identity the Problems panel shows. Nothing here knows what any knob means: a spec says
-/// where the value lives and how to edit it, and the host does the storing.
+/// the same identity the Problems panel shows. Separate from [`plugins_page`] on purpose: that page
+/// is about whether somebody else's code runs and what it may reach, which is a different question
+/// from how it is configured once you have said yes.
 fn plugin_pages(cx: &App) -> Vec<SettingPage> {
     let maps = ColumnMapContributions::all(cx);
     let mut pages: Vec<(SharedString, Option<SharedString>, Vec<SettingSpec>)> =
@@ -372,6 +393,7 @@ fn google_page(cx: &App) -> SettingPage {
                 SettingField::element(move |_opts: &_, _window: &mut _, _cx: &mut _| {
                     h_flex()
                         .gap_2()
+                        .flex_wrap()
                         .child(div().text_sm().child(if authenticated {
                             "Signed in"
                         } else {
@@ -387,22 +409,31 @@ fn google_page(cx: &App) -> SettingPage {
                                 })
                                 .on_click(|_, _, cx| crate::export::authenticate(cx)),
                         )
-                        .child(
-                            Button::new("google-sign-out")
-                                .small()
-                                .label("Forget sign-in")
-                                .on_click(|_, _, cx| {
-                                    log::info!("Google sign-in removal requested from Settings");
-                                    crate::google::clear_refresh_token(cx);
-                                }),
-                        )
+                        // Nothing is stored until there is a sign-in, so before one this button
+                        // offers to undo something that never happened.
+                        .when(authenticated, |row| {
+                            row.child(
+                                Button::new("google-sign-out")
+                                    .small()
+                                    .label("Forget sign-in")
+                                    .on_click(|_, _, cx| {
+                                        log::info!(
+                                            "Google sign-in removal requested from Settings"
+                                        );
+                                        crate::google::clear_refresh_token(cx);
+                                    }),
+                            )
+                        })
                         .into_any_element()
                 }),
             )
             .description(
                 "Authenticate this computer with Google. qrate only requests access to sheets it \
                  creates or that you explicitly choose.",
-            ),
+            )
+            // Three controls do not fit the fixed-width field cell a horizontal row gets; stacked,
+            // they have the pane's full width. Same reason as `Setting::Text`.
+            .layout(Axis::Vertical),
         );
 
         let destination = cx
@@ -428,6 +459,7 @@ fn google_page(cx: &App) -> SettingPage {
                     let current = destination.clone();
                     h_flex()
                         .gap_2()
+                        .flex_wrap()
                         .child(
                             Button::new("google-sync-destination")
                                 .small()
@@ -459,7 +491,8 @@ fn google_page(cx: &App) -> SettingPage {
                         .into_any_element()
                 }),
             )
-            .description(destination_description),
+            .description(destination_description)
+            .layout(Axis::Vertical),
         );
 
         group = group.item(
@@ -1020,11 +1053,13 @@ fn language_picker(window: &mut Window, cx: &mut App) -> AnyElement {
 /// depend on whichever project is open.
 fn columns_page(cx: &App) -> SettingPage {
     let Some(project) = cx.try_global::<CurrentProject>() else {
-        return SettingPage::new("Columns").group(
-            SettingGroup::new()
-                .title("Filters")
-                .description("Open a project to configure its columns."),
-        );
+        return SettingPage::new("Columns")
+            .group(
+                SettingGroup::new()
+                    .title("Filters")
+                    .description("Open a project to configure its columns."),
+            )
+            .group(authority_accounts_group(cx));
     };
 
     let headers = column_items(project);
@@ -1049,7 +1084,7 @@ fn columns_page(cx: &App) -> SettingPage {
                               so the dropdown lists each value on its own. Leave empty to filter \
                               whole cells.",
             }
-            .into(),
+            .into_item(cx),
         );
         let picked = headers.clone();
         group = group.item(
@@ -1073,7 +1108,7 @@ fn columns_page(cx: &App) -> SettingPage {
     }
 
     let picked = headers.clone();
-    group = group.item(
+    let spelling = SettingGroup::new().title("Spelling").item(
         SettingItem::new(
             "Spell-checked columns",
             SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
@@ -1094,7 +1129,10 @@ fn columns_page(cx: &App) -> SettingPage {
 
     SettingPage::new("Columns")
         .group(group)
+        .group(spelling)
         .group(data_types_group(headers))
+        .group(authority_accounts_group(cx))
+        .group(authority_columns_group(project, cx))
         .group(config_file_group())
 }
 
@@ -1142,6 +1180,50 @@ fn declared_type(name: &str, cx: &App) -> columns::ColumnType {
         })
 }
 
+/// What the open project itself holds, as opposed to how the grid draws it. The files folder was
+/// only ever settable in the wizard, so a project pointed at the wrong folder had no in-app fix.
+fn project_page(cx: &App) -> SettingPage {
+    let Some(project) = cx.try_global::<CurrentProject>() else {
+        return SettingPage::new("Project").group(
+            SettingGroup::new()
+                .title("Files")
+                .description("Open a project to see where it looks for files."),
+        );
+    };
+
+    SettingPage::new("Project")
+        .description(SharedString::from(format!(
+            "{} — {}",
+            project.display_name(),
+            project.file.display()
+        )))
+        .group(
+            SettingGroup::new()
+                .title("Files")
+                .item(settings::path_picker_item(
+                    settings::project::FILES_FOLDER_KEY,
+                    "Files folder",
+                    "Where row images and linked files are looked up. qrate never copies them, so \
+                 moving the folder means pointing this at its new home.",
+                    "Choose files folder",
+                    false,
+                    true,
+                    |cx: &App| {
+                        cx.try_global::<CurrentProject>()
+                            .and_then(|p| p.data.values.get(settings::project::FILES_FOLDER_KEY))
+                            .map(|v| v.text())
+                            .unwrap_or_default()
+                    },
+                    |val: SharedString, cx: &mut App| {
+                        CurrentProject::set_text(settings::project::FILES_FOLDER_KEY, val, cx);
+                        // Row images are resolved against this folder on every repaint, so the grid
+                        // shows the new one as soon as it is told to look again.
+                        table::revalidate_now(cx);
+                    },
+                )),
+        )
+}
+
 /// Writing everything on this page back out as the `column_config.csv` the wizard reads, so the
 /// next collection starts configured instead of starting again.
 fn config_file_group() -> SettingGroup {
@@ -1164,41 +1246,33 @@ fn config_file_group() -> SettingGroup {
     )
 }
 
-/// Which authority each column is checked against, and the one account any of them needs.
-///
-/// A page rather than a section of Columns: these leave the machine, which is worth its own
-/// heading, and GeoNames' account name has nowhere sensible to live among per-column toggles.
-fn authorities_page(cx: &App) -> SettingPage {
+/// The one account any authority check needs. A group on Columns rather than a page of its own:
+/// what a column is checked against is a per-column knob like its type or its filter, and splitting
+/// the two only made "where do I configure this column" a two-page question.
+fn authority_accounts_group(cx: &App) -> SettingGroup {
     let described = checks::authorities()
         .iter()
         .map(|(name, describes)| format!("**{name}** — {describes}"))
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let page = SettingPage::new("Authorities").group(
-        SettingGroup::new()
-            .title("Accounts")
-            .description(SharedString::from(described))
-            .item(
-                Setting::Text {
-                    key: checks::GEONAMES_USERNAME_KEY,
-                    label: "GeoNames account",
-                    description: "GeoNames refuses anonymous requests, so its check stays off \
-                                  until this is filled in. A free account at geonames.org is \
-                                  enough — this is a username, not a password.",
-                }
-                .into(),
-            ),
-    );
+    SettingGroup::new()
+        .title("Authority accounts")
+        .description(SharedString::from(described))
+        .item(
+            Setting::Text {
+                key: checks::GEONAMES_USERNAME_KEY,
+                label: "GeoNames account",
+                description: "GeoNames refuses anonymous requests, so its check stays off \
+                              until this is filled in. A free account at geonames.org is \
+                              enough — this is a username, not a password.",
+            }
+            .into_item(cx),
+        )
+}
 
-    let Some(project) = cx.try_global::<CurrentProject>() else {
-        return page.group(
-            SettingGroup::new()
-                .title("Columns")
-                .description("Open a project to choose what its columns are checked against."),
-        );
-    };
-
+/// Which authority each column is checked against.
+fn authority_columns_group(project: &CurrentProject, cx: &App) -> SettingGroup {
     let options: Vec<OptionItem> = std::iter::once(OptionItem {
         value: SharedString::default(),
         label: "Not checked".into(),
@@ -1215,7 +1289,7 @@ fn authorities_page(cx: &App) -> SettingPage {
 
     // Read once for the whole page — see the note in `mapping_group`.
     let stored = columns::load(cx);
-    let mut group = SettingGroup::new().title("Columns").description(
+    let mut group = SettingGroup::new().title("Checked against").description(
         "A column is checked against one list. Values are checked over the network, so a wrong \
          one is flagged once the answer arrives rather than as you type.",
     );
@@ -1241,7 +1315,7 @@ fn authorities_page(cx: &App) -> SettingPage {
             }),
         ));
     }
-    page.group(group)
+    group
 }
 
 /// Whether `producer`'s findings on this column are set to warn. Absent reads as error, which is

@@ -111,6 +111,20 @@ impl CurrentProject {
         queue_write(&file, key, if val { "true" } else { "false" }, cx);
     }
 
+    /// Drops this project's own value for `key`, so reads fall back to the user-wide default.
+    /// Synchronous rather than queued: it has to win against any write [`queue_write`] still holds
+    /// for the same key, and clearing an override is one deliberate click.
+    pub fn clear(key: &str, cx: &mut gpui::App) {
+        let file = {
+            let p = cx.global_mut::<Self>();
+            p.data.values.remove(key);
+            p.file.clone()
+        };
+        if let Err(err) = delete_setting(&file, key) {
+            log::error!("failed to clear project setting {key}: {err}");
+        }
+    }
+
     /// Sets a project-scoped text value. See [`set_bool`](Self::set_bool).
     pub fn set_text(key: &'static str, val: gpui::SharedString, cx: &mut gpui::App) {
         let (file, value) = {
@@ -367,6 +381,15 @@ pub fn write_setting(path: &Path, key: &str, value: &str) -> Result<()> {
         params![key, value],
     )
     .context("Upsert setting")?;
+    Ok(())
+}
+
+/// Removes one `__settings` row. A key with no row is already what this asks for, so it is not an
+/// error.
+pub fn delete_setting(path: &Path, key: &str) -> Result<()> {
+    let conn = open_rw(path)?;
+    conn.execute("DELETE FROM __settings WHERE key = ?1", params![key])
+        .context("Delete setting")?;
     Ok(())
 }
 
@@ -1112,6 +1135,31 @@ mod tests {
         // Creation-time settings are cached too.
         assert_eq!(data.values.get("source").unwrap().text(), "Blank");
         assert!(!data.values.contains_key("table_stripes_missing"));
+    }
+
+    /// Clearing an override has to remove the row, not blank it: a present-but-empty value still
+    /// reads as "this project says so" and would keep shadowing the user-wide default forever.
+    #[test]
+    fn clearing_an_override_removes_the_row() {
+        let path = tempfile("clear.qrate");
+        create_project_file(&path, "C", "Blank", None, None, &[], &[], &[]).unwrap();
+        write_setting(&path, "table_stripes", "true").unwrap();
+        assert!(
+            load_project_file(&path)
+                .unwrap()
+                .values
+                .contains_key("table_stripes")
+        );
+
+        delete_setting(&path, "table_stripes").unwrap();
+        assert!(
+            !load_project_file(&path)
+                .unwrap()
+                .values
+                .contains_key("table_stripes")
+        );
+        // Clearing what was never set is what the caller asked for, not a failure.
+        delete_setting(&path, "table_stripes").unwrap();
     }
 
     #[test]
