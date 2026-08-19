@@ -197,8 +197,10 @@ impl Render for DockToggleButton {
                         Some(meta) => PanelRegistry::toggle(meta.name, &area, window, cx),
                         None => {
                             if let Some(placement) = placement {
-                                area.update(cx, |area, cx| area.toggle_dock(placement, window, cx));
-                                crate::Workspace::persist_layout(&area, cx);
+                                area.update(cx, |area, cx| {
+                                    area.toggle_dock(placement, window, cx);
+                                    cx.emit(DockEvent::LayoutChanged);
+                                });
                             }
                         }
                     }
