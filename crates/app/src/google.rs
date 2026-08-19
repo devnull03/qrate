@@ -22,6 +22,7 @@ const CLIENT_ID_KEY: &str = "google_client_id";
 const CLIENT_SECRET_KEY: &str = "google_client_secret";
 const ETAG_KEY: &str = "google_config_etag";
 const CHECKED_AT_KEY: &str = "google_config_checked_at";
+const AUTHENTICATED_KEY: &str = "google_authenticated";
 
 /// How long a fetched pair is trusted before the next Google action re-checks it. Long enough that
 /// the endpoint is off the critical path; short enough that a rotation reaches users within a week.
@@ -108,6 +109,19 @@ pub fn remember(creds: &ClientCreds, etag: Option<String>, cx: &mut App) {
     AppSettings::set_text(CHECKED_AT_KEY, now().to_string().into(), cx);
 }
 
+/// A UI hint that the last authentication completed. The credential store remains authoritative:
+/// a revoked token will still be refreshed (and, if necessary, replaced) before any Google call.
+pub fn authenticated(cx: &App) -> bool {
+    AppSettings::get(cx)
+        .values
+        .get(AUTHENTICATED_KEY)
+        .is_some_and(|value| value.bool())
+}
+
+pub fn set_authenticated(authenticated: bool, cx: &mut App) {
+    AppSettings::set_bool(AUTHENTICATED_KEY, authenticated, cx);
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -132,25 +146,45 @@ fn entry() -> Option<keyring::Entry> {
 /// it. `None` means consent runs again — which is the whole fallback, since qrate never writes the
 /// token anywhere else.
 pub fn refresh_token() -> Option<String> {
-    entry()?.get_password().ok()
+    match entry()?.get_password() {
+        Ok(token) => {
+            log::info!("found a stored Google sign-in in the credential store");
+            Some(token)
+        }
+        Err(keyring::Error::NoEntry) => {
+            log::info!("no Google sign-in is stored on this machine");
+            None
+        }
+        Err(err) => {
+            log::warn!("could not read the stored Google sign-in: {err}");
+            None
+        }
+    }
 }
 
 pub fn set_refresh_token(token: &str) {
-    if let Some(entry) = entry()
-        && let Err(err) = entry.set_password(token)
-    {
-        log::warn!("could not store the Google sign-in in the credential store: {err}");
+    if let Some(entry) = entry() {
+        match entry.set_password(token) {
+            Ok(()) => log::info!("stored the Google sign-in in the credential store"),
+            Err(err) => {
+                log::warn!("could not store the Google sign-in in the credential store: {err}")
+            }
+        }
     }
 }
 
 /// Switching Google sync off has to end the grant, not just hide the buttons — otherwise "off"
 /// leaves a live token on the machine.
-pub fn clear_refresh_token() {
-    if let Some(entry) = entry()
-        && let Err(err) = entry.delete_credential()
-        && !matches!(err, keyring::Error::NoEntry)
-    {
-        log::warn!("could not remove the stored Google sign-in: {err}");
+pub fn clear_refresh_token(cx: &mut App) {
+    set_authenticated(false, cx);
+    if let Some(entry) = entry() {
+        match entry.delete_credential() {
+            Ok(()) => log::info!("removed the stored Google sign-in"),
+            Err(keyring::Error::NoEntry) => {
+                log::info!("there was no stored Google sign-in to remove")
+            }
+            Err(err) => log::warn!("could not remove the stored Google sign-in: {err}"),
+        }
     }
 }
 

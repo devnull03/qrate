@@ -72,6 +72,27 @@ fn grid(cx: &App) -> Option<(Vec<String>, Vec<Vec<String>>)> {
 }
 
 pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
+    if is_google(format) && !settings::google_enabled(cx) {
+        log::info!("Google Sheets export requested while the integration is disabled");
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title("Enable Google Sheets")
+                .content(|content, _, _| {
+                    content.child(
+                        "Google Sheets is disabled. Enable it now to sign in and continue this export.",
+                    )
+                })
+                .button_props(DialogButtonProps::default().ok_text("Enable and continue"))
+                .on_ok(move |_: &ClickEvent, window, cx| {
+                    log::info!("Google Sheets enabled from the Export menu");
+                    settings::AppSettings::set_bool(settings::GOOGLE_SYNC_KEY, true, cx);
+                    crate::app_menus::install(cx);
+                    run(format, window, cx);
+                    true
+                })
+        });
+        return;
+    }
     let (Some(project), Some((headers, rows))) = (cx.try_global::<CurrentProject>(), grid(cx))
     else {
         log::warn!("export was asked for with no project open");
@@ -296,18 +317,7 @@ fn to_google_sheet(
     let refresh_token = crate::google::refresh_token();
 
     cx.spawn(async move |cx| {
-        let (creds, persist) = cx.background_spawn(async move { stored.refreshed() }).await;
-        let Some(creds) = creds else {
-            return log::error!(
-                "Google sync has no client credentials — this build has none compiled in and the \
-                 credential endpoint could not be reached"
-            );
-        };
-        if let Some((creds, etag)) = persist {
-            cx.update(|cx| crate::google::remember(&creds, etag, cx));
-        }
-
-        let Some(token) = sign_in(&creds, refresh_token, cx).await else {
+        let Some(token) = resolve_token(stored, refresh_token, cx).await else {
             return;
         };
 
@@ -359,10 +369,98 @@ fn to_google_sheet(
     .detach();
 }
 
+/// Start Google authentication from Settings without requiring an export as the trigger.
+pub fn authenticate(cx: &mut App) {
+    log::info!("Google sign-in requested from Settings");
+    let stored = crate::google::stored(cx);
+    let refresh_token = crate::google::refresh_token();
+    cx.spawn(async move |cx| {
+        if resolve_token(stored, refresh_token, cx).await.is_some() {
+            log::info!("Google sign-in completed successfully");
+        }
+    })
+    .detach();
+}
+
+/// Authenticate, open Google's chooser, and remember the chosen destination in this project.
+pub fn choose_sync_destination(cx: &mut App) {
+    let Some(project_file) = cx
+        .try_global::<CurrentProject>()
+        .map(|project| project.file.clone())
+    else {
+        return log::warn!("Google sync destination requested with no project open");
+    };
+    log::info!("Google sync destination chooser requested");
+    let stored = crate::google::stored(cx);
+    let refresh_token = crate::google::refresh_token();
+    cx.spawn(async move |cx| {
+        let Some(token) = resolve_token(stored, refresh_token, cx).await else {
+            return;
+        };
+        let Some(id) = choose_sheet(&token.access, cx).await else {
+            return;
+        };
+        cx.update(|cx| {
+            let still_open = cx
+                .try_global::<CurrentProject>()
+                .is_some_and(|project| project.file == project_file);
+            if !still_open {
+                return log::warn!(
+                    "the project changed while choosing a Google sync destination; ignoring the selection"
+                );
+            }
+            CurrentProject::set_text(
+                settings::project::GOOGLE_SHEET_ID_KEY,
+                id.clone().into(),
+                cx,
+            );
+            log::info!("Google sync destination updated to spreadsheet {id}");
+        });
+    })
+    .detach();
+}
+
+pub fn clear_sync_destination(cx: &mut App) {
+    if cx.has_global::<CurrentProject>() {
+        CurrentProject::set_text(
+            settings::project::GOOGLE_SHEET_ID_KEY,
+            SharedString::default(),
+            cx,
+        );
+        log::info!("Google sync destination cleared");
+    }
+}
+
+async fn resolve_token(
+    stored: crate::google::Stored,
+    refresh_token: Option<String>,
+    cx: &mut gpui::AsyncApp,
+) -> Option<data_exchange::google::Token> {
+    log::info!("resolving Google OAuth client credentials");
+    let (creds, persist) = cx.background_spawn(async move { stored.refreshed() }).await;
+    let Some(creds) = creds else {
+        log::error!(
+            "Google sync has no client credentials — this build has none compiled in and the \
+             credential endpoint could not be reached"
+        );
+        return None;
+    };
+    if let Some((creds, etag)) = persist {
+        cx.update(|cx| crate::google::remember(&creds, etag, cx));
+        log::info!("updated cached Google OAuth client credentials");
+    }
+    let token = sign_in(&creds, refresh_token, cx).await;
+    if token.is_some() {
+        cx.update(|cx| crate::google::set_authenticated(true, cx));
+    }
+    token
+}
+
 /// Hand the user Google's own file chooser and wait for what they pick. Same two-step shape as
 /// consent, and for the same reason: the loopback port is bound before the page opens so the
 /// answer cannot arrive before we are listening.
 async fn choose_sheet(access_token: &str, cx: &mut gpui::AsyncApp) -> Option<String> {
+    log::info!("opening the Google spreadsheet chooser");
     let picker = data_exchange::google::begin_picker(
         data_exchange::google::DEFAULT_PICKER_PAGE,
         access_token,
@@ -379,7 +477,10 @@ async fn choose_sheet(access_token: &str, cx: &mut gpui::AsyncApp) -> Option<Str
         .background_spawn(async move { picker.wait_for_file_id() })
         .await
     {
-        Ok(id) => Some(id),
+        Ok(id) => {
+            log::info!("Google spreadsheet chooser returned a selection");
+            Some(id)
+        }
         Err(err) => {
             log::info!("no spreadsheet was chosen: {err}");
             None
@@ -396,12 +497,16 @@ async fn sign_in(
     cx: &mut gpui::AsyncApp,
 ) -> Option<data_exchange::google::Token> {
     if let Some(stored) = refresh_token {
+        log::info!("refreshing the stored Google sign-in");
         let creds = creds.clone();
         let token = cx
             .background_spawn(async move { data_exchange::google::refresh(&creds, &stored) })
             .await;
         match token {
-            Ok(token) => return Some(token),
+            Ok(token) => {
+                log::info!("stored Google sign-in refreshed successfully");
+                return Some(token);
+            }
             // An expired or revoked grant is not an error the user should see — it means consent
             // again, which is what falls through below.
             Err(err) => {
@@ -411,6 +516,7 @@ async fn sign_in(
     }
 
     // Bound before the browser opens, so Google's redirect can't arrive before we're listening.
+    log::info!("starting Google browser consent");
     let consent = cx.update(|cx| match data_exchange::google::begin_consent(creds) {
         Ok(consent) => {
             cx.open_url(&consent.url);
@@ -430,6 +536,7 @@ async fn sign_in(
             if let Some(refresh) = &token.refresh {
                 crate::google::set_refresh_token(refresh);
             }
+            log::info!("Google browser consent completed successfully");
             Some(token)
         }
         Err(err) => {

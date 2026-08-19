@@ -70,12 +70,6 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
                     disabled: false,
                     items: EXPORT_FORMATS
                         .iter()
-                        // Absent, not greyed out: a control nobody can explain invites a support
-                        // question, and an institution that forbids Google should see no trace of
-                        // it. Settings re-runs `install` when the opt-in flips.
-                        .filter(|(format, _, _)| {
-                            !crate::export::is_google(*format) || settings::google_enabled(cx)
-                        })
                         .map(|(format, label, _)| MenuItem::Action {
                             name: (*label).into(),
                             action: Box::new(Export { format: *format }),
