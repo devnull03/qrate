@@ -532,23 +532,25 @@ impl QrateTableDelegate {
         self.history.push(Step::Cells(edit));
     }
 
-    /// Reverse the last recorded step. `false` when there was nothing to undo, which is what tells
-    /// the caller to skip the dirty-mark and the revalidate.
-    pub(crate) fn undo(&mut self) -> bool {
+    /// Reverse the last recorded step. The answer says whether it moved rows; `None` means there
+    /// was nothing to undo.
+    pub(crate) fn undo(&mut self) -> Option<bool> {
         let Some(step) = self.history.undo() else {
-            return false;
+            return None;
         };
+        let rows_changed = matches!(step, Step::RowsAdded { .. } | Step::RowsRemoved(_));
         self.replay(&step, false);
-        true
+        Some(rows_changed)
     }
 
     /// [`undo`](Self::undo)'s mirror.
-    pub(crate) fn redo(&mut self) -> bool {
+    pub(crate) fn redo(&mut self) -> Option<bool> {
         let Some(step) = self.history.redo() else {
-            return false;
+            return None;
         };
+        let rows_changed = matches!(step, Step::RowsAdded { .. } | Step::RowsRemoved(_));
         self.replay(&step, true);
-        true
+        Some(rows_changed)
     }
 
     /// Apply one side of a recorded step without re-recording it — going through `apply_edit` here
@@ -1727,7 +1729,7 @@ mod app_tests {
                 assert_eq!(delegate.row_image(1), None, "the new row has no photo");
                 assert_eq!(delegate.row_image(2), Some("1.jpg".as_ref()));
 
-                delegate.undo();
+                assert_eq!(delegate.undo(), Some(true));
                 assert_eq!(delegate.row_ids(), &[1, 2, 3, 4]);
                 assert_eq!(delegate.cell(1, 1).map(|c| c.as_ref()), Some("two"));
                 assert_eq!(delegate.row_image(1), Some("1.jpg".as_ref()));
@@ -1752,10 +1754,10 @@ mod app_tests {
                 };
                 assert_eq!(names(delegate), vec!["two", "four"]);
 
-                assert!(delegate.undo());
+                assert_eq!(delegate.undo(), Some(true));
                 assert_eq!(delegate.row_ids(), &[1, 2, 3, 4]);
                 assert_eq!(names(delegate), vec!["one", "two", "three", "four"]);
-                assert!(!delegate.undo(), "one step, not two");
+                assert_eq!(delegate.undo(), None, "one step, not two");
             });
         });
     }
@@ -1786,9 +1788,9 @@ mod app_tests {
                     vec!["Film", "Videotape", "Videotape", "Film"]
                 );
 
-                assert!(delegate.undo());
+                assert_eq!(delegate.undo(), Some(false));
                 assert_eq!(media(delegate), vec!["Film", "Video", "Video", "Film"]);
-                assert!(!delegate.undo(), "one step, not two");
+                assert_eq!(delegate.undo(), None, "one step, not two");
             });
         });
     }
@@ -1806,8 +1808,8 @@ mod app_tests {
                 // "four" is row 2 now, and its edit was recorded against row 3.
                 assert_eq!(delegate.cell(2, 1).map(|c| c.as_ref()), Some("edited"));
 
-                delegate.undo();
-                delegate.undo();
+                assert_eq!(delegate.undo(), Some(true));
+                assert_eq!(delegate.undo(), Some(false));
                 assert_eq!(delegate.cell(3, 1).map(|c| c.as_ref()), Some("four"));
             });
         });
@@ -1828,7 +1830,7 @@ mod app_tests {
                 assert_eq!(delegate.column_name(0), "Title");
                 assert_eq!(delegate.cell(0, 0).map(|c| c.as_ref()), Some("one"));
 
-                assert!(delegate.undo());
+                assert_eq!(delegate.undo(), Some(false));
                 assert_eq!(delegate.column_name(0), "Medium");
                 assert_eq!(delegate.cell(3, 0).map(|c| c.as_ref()), Some("Film"));
                 assert!(delegate.column_filter_enabled(0));
@@ -1853,7 +1855,7 @@ mod app_tests {
                 assert!(delegate.rename_column(1, "Date".into()));
                 assert_eq!(delegate.column_key(1), "Date");
 
-                delegate.undo();
+                assert_eq!(delegate.undo(), Some(false));
                 assert_eq!(delegate.column_name(1), "Column 3");
             });
         });

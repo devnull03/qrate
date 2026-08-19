@@ -180,22 +180,25 @@ pub fn history_step(redo: bool, cx: &mut App) {
         return;
     };
     let row_ids = state.update(cx, |state, cx| {
-        let stepped = match redo {
+        let rows_changed = match redo {
             true => state.delegate_mut().redo(),
             false => state.delegate_mut().undo(),
         };
-        if stepped {
+        if rows_changed.is_some() {
             cx.emit(delegate::TableChanged);
             cx.notify();
         }
-        stepped.then(|| state.delegate().row_ids().to_vec())
+        rows_changed.map(|changed| changed.then(|| state.delegate().row_ids().to_vec()))
     });
+    let Some(row_ids) = row_ids else {
+        return;
+    };
     if let Some(row_ids) = row_ids {
         diagnostics::Diagnostics::align_note_rows(diagnostics::DATASET_MAIN, &row_ids, cx);
-        settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
-        revalidate_now(cx);
-        autosave(cx);
     }
+    settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+    revalidate_now(cx);
+    autosave(cx);
 }
 
 /// A change to the grid's shape rather than its contents. One enum rather than five entry points
