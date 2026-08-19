@@ -156,17 +156,17 @@ impl ViewsPanel {
                 .default_value(cols)
         });
         let _thumb_sub = cx.subscribe(&thumb, |_this, _slider, event: &SliderEvent, cx| {
-            let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
+            let SliderEvent::Release(value) = event else {
+                cx.notify();
+                return;
+            };
             let text = SharedString::from(format!("{}", value.start().round()));
             if cx.has_global::<settings::project::CurrentProject>() {
                 settings::project::CurrentProject::set_text(gallery::COLUMNS_KEY, text, cx);
             } else {
                 settings::AppSettings::set_text(gallery::COLUMNS_KEY, text, cx);
             }
-            // The slider is drawn in the panel *title*, which the parent `TabPanel` owns and which
-            // does not observe this panel — `cx.notify()` alone would repaint the cards while the
-            // thumb stayed put under the pointer. Dragging it is one deliberate gesture, so a full
-            // redraw is the cheap honest fix, the same trade `switch` makes.
+            // The label is drawn by the parent TabPanel, which does not observe this panel.
             cx.refresh_windows();
             cx.notify();
         });
@@ -307,6 +307,7 @@ impl Panel for ViewsPanel {
     /// costs the cards no height. `toolbar_buttons` can't hold it — the library restricts that side
     /// to `Button`s — so it is pushed right by a spacer instead, landing beside the ⋯ menu.
     fn title(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let columns = self.thumb.read(cx).value().start().round() as usize;
         h_flex().w_full().gap_2().child(self.switcher(cx)).when(
             self.view == ViewMode::Gallery,
             |title| {
@@ -322,7 +323,7 @@ impl Panel for ViewsPanel {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!("{} per row", gallery::columns(cx))),
+                            .child(format!("{columns} per row")),
                     )
             },
         )
@@ -403,6 +404,7 @@ impl Render for ViewsPanel {
                         ViewMode::Gallery => gallery::render(
                             self.state.as_ref().and_then(WeakEntity::upgrade),
                             self.body_width,
+                            self.thumb.read(cx).value().start().round() as usize,
                             &self.focus_handle,
                             cx,
                         ),

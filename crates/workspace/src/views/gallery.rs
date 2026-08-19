@@ -54,6 +54,7 @@ pub(super) fn columns(cx: &App) -> usize {
 pub(super) fn render(
     state: Option<Entity<TableState<QrateTableDelegate>>>,
     width: Pixels,
+    cols: usize,
     focus: &FocusHandle,
     cx: &mut App,
 ) -> AnyElement {
@@ -74,7 +75,6 @@ pub(super) fn render(
 
     // The row is the panel minus its padding, split evenly with a gap between each pair. Cards get
     // the width rather than choosing it, so the grid meets both edges at any panel size.
-    let cols = columns(cx);
     let card_w = ((f32::from(width) - 2. * PAD - GAP * (cols - 1) as f32) / cols as f32).max(1.);
     let focus = focus.clone();
     uniform_list(
