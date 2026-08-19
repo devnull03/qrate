@@ -229,6 +229,7 @@ pub fn address(
             location: Location {
                 dataset: DATASET_MAIN.into(),
                 row: Some(row),
+                row_id: None,
                 column: Some(column.name.clone()),
             },
             severity: override_to.unwrap_or(severity),

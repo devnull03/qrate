@@ -145,7 +145,7 @@ fn headers(conn: &Connection) -> Result<Vec<String>> {
     Ok(stmt
         .column_names()
         .into_iter()
-        .skip(1)
+        .filter(|name| !matches!(*name, "_row_id" | "_row_order"))
         .map(str::to_string)
         .collect())
 }

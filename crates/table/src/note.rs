@@ -737,6 +737,7 @@ mod tests {
         Location {
             dataset: DATASET_MAIN.into(),
             row,
+            row_id: row.map(|row| row as i64 + 1),
             column: column.map(|c| c.to_string().into()),
         }
     }
@@ -760,6 +761,7 @@ mod tests {
                         vec!["a".into(), "1900".into()],
                         vec!["b".into(), "1901".into()],
                     ],
+                    row_ids: vec![1, 2],
                     values: Default::default(),
                 },
             });

@@ -179,7 +179,7 @@ pub fn history_step(redo: bool, cx: &mut App) {
     else {
         return;
     };
-    let stepped = state.update(cx, |state, cx| {
+    let row_ids = state.update(cx, |state, cx| {
         let stepped = match redo {
             true => state.delegate_mut().redo(),
             false => state.delegate_mut().undo(),
@@ -188,9 +188,10 @@ pub fn history_step(redo: bool, cx: &mut App) {
             cx.emit(delegate::TableChanged);
             cx.notify();
         }
-        stepped
+        stepped.then(|| state.delegate().row_ids().to_vec())
     });
-    if stepped {
+    if let Some(row_ids) = row_ids {
+        diagnostics::Diagnostics::align_note_rows(diagnostics::DATASET_MAIN, &row_ids, cx);
         settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
         revalidate_now(cx);
         autosave(cx);
@@ -281,17 +282,12 @@ pub fn structural(op: Structural, cx: &mut App) {
         return;
     }
 
-    match &op {
-        Structural::InsertRow { at } => {
-            diagnostics::Diagnostics::rows_inserted(diagnostics::DATASET_MAIN, *at, 1, cx)
-        }
-        Structural::DuplicateRow { row } => {
-            diagnostics::Diagnostics::rows_inserted(diagnostics::DATASET_MAIN, row + 1, 1, cx)
-        }
-        Structural::DeleteRows(rows) => {
-            diagnostics::Diagnostics::rows_removed(diagnostics::DATASET_MAIN, rows, cx)
-        }
-        _ => {}
+    if matches!(
+        op,
+        Structural::InsertRow { .. } | Structural::DuplicateRow { .. } | Structural::DeleteRows(_)
+    ) {
+        let row_ids = state.read(cx).delegate().row_ids().to_vec();
+        diagnostics::Diagnostics::align_note_rows(diagnostics::DATASET_MAIN, &row_ids, cx);
     }
     if let Some((before, after)) = renamed {
         diagnostics::Diagnostics::column_renamed(diagnostics::DATASET_MAIN, &before, &after, cx);
@@ -438,8 +434,8 @@ pub fn save_now(cx: &mut App) {
     else {
         return;
     };
-    let (headers, rows) = state.read(cx).delegate().dataset_snapshot();
-    match settings::project::save_dataset(&file, &headers, &rows) {
+    let (headers, row_ids, rows) = state.read(cx).delegate().dataset_snapshot();
+    match settings::project::save_dataset(&file, &headers, &row_ids, &rows) {
         Ok(()) => settings::dirty::clear(settings::dirty::PROJECT_DATA, cx),
         Err(err) => log::error!("failed to save project data: {err}"),
     }

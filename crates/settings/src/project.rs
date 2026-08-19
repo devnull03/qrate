@@ -1,4 +1,4 @@
-//! On-disk `.qrate` project file (v2). One SQLite database per project,
+//! On-disk `.qrate` project file (v3). One SQLite database per project,
 //! written once by the "New Project" wizard. Runs in `journal_mode=DELETE`,
 //! not WAL: with a single short-lived connection per operation WAL buys no
 //! concurrency, and its `-wal`/`-shm` siblings only vanish when the *last*
@@ -34,7 +34,12 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 
 /// `PRAGMA application_id` value so `file`-style tools can recognize `.qrate`.
 const QRATE_APPLICATION_ID: i32 = 1097887558;
-const QRATE_SCHEMA_VERSION: i32 = 2;
+const QRATE_SCHEMA_VERSION: i32 = 3;
+
+/// Private identity of one `dataset_main` row. Unlike the source index shown in the `#` column,
+/// this value survives inserts, deletes, and save/reload cycles.
+pub type RowId = i64;
+type LoadedDataset = (Vec<String>, Vec<RowId>, Vec<Vec<String>>);
 
 /// `__settings` key for the files folder chosen in the wizard's Files step. Only the path is
 /// kept — qrate never copies source files, so the table crate re-resolves row images against
@@ -60,6 +65,8 @@ pub struct ProjectData {
     /// `dataset_main` column names, in table order (no `_row_id`).
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
+    /// Stable identities parallel to `rows`; never exposed as a table column.
+    pub row_ids: Vec<RowId>,
     /// Every `__settings` row, cached so project-scope setting reads (e.g. a live table
     /// repaint) don't hit the DB. Writers keep it current via `CurrentProject::set_bool`.
     pub values: HashMap<String, crate::Val>,
@@ -165,7 +172,7 @@ fn open_ro(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// Creates `path` (a `.qrate` file) with the v2 schema and the imported data.
+/// Creates `path` (a `.qrate` file) with the v3 schema and the imported data.
 /// `headers`/`rows` are the raw spreadsheet; `columns` the configured column
 /// list (may differ from `headers` when a column config was loaded). Blank
 /// projects pass empty `headers` and get no `dataset_main` table. `files_folder`
@@ -280,40 +287,53 @@ pub fn load_project_file(path: &Path) -> Result<ProjectData> {
     }
     drop(stmt);
 
-    let (headers, rows) = load_dataset(&conn)?;
+    let (headers, row_ids, rows) = load_dataset(&conn)?;
     Ok(ProjectData {
         name,
         columns,
         headers,
         rows,
+        row_ids,
         values,
     })
 }
 
 /// Reads `dataset_main` (headers from the table's own columns, then all rows).
 /// A project without one (blank) yields empty vecs.
-fn load_dataset(conn: &Connection) -> Result<(Vec<String>, Vec<Vec<String>>)> {
+fn load_dataset(conn: &Connection) -> Result<LoadedDataset> {
     let exists: i64 = conn.query_row(
         "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'dataset_main'",
         [],
         |r| r.get(0),
     )?;
     if exists == 0 {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
 
-    let mut stmt = conn.prepare("SELECT * FROM dataset_main ORDER BY _row_id")?;
-    // Column 0 is `_row_id`; the rest are the data columns, in creation order.
-    let headers: Vec<String> = stmt
-        .column_names()
-        .into_iter()
-        .skip(1)
-        .map(|s| s.to_string())
-        .collect();
+    let mut info =
+        conn.prepare("SELECT name FROM pragma_table_info('dataset_main') ORDER BY cid")?;
+    let headers: Vec<String> = info
+        .query_map([], |row| row.get::<_, String>(0))?
+        .filter_map(|name| match name {
+            Ok(name) if name != "_row_id" && name != "_row_order" => Some(Ok(name)),
+            Ok(_) => None,
+            Err(err) => Some(Err(err)),
+        })
+        .collect::<rusqlite::Result<_>>()?;
+    drop(info);
+    let projection = std::iter::once(quote_identifier("_row_id"))
+        .chain(headers.iter().map(|header| quote_identifier(header)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {projection} FROM dataset_main ORDER BY _row_order"
+    ))?;
     let n = headers.len();
+    let mut row_ids = Vec::new();
     let mut rows = Vec::new();
     let mut query = stmt.query([])?;
     while let Some(row) = query.next()? {
+        row_ids.push(row.get(0)?);
         let mut cells = Vec::with_capacity(n);
         for i in 0..n {
             // Cells are written as TEXT, but be tolerant of NULLs.
@@ -321,7 +341,7 @@ fn load_dataset(conn: &Connection) -> Result<(Vec<String>, Vec<Vec<String>>)> {
         }
         rows.push(cells);
     }
-    Ok((headers, rows))
+    Ok((headers, row_ids, rows))
 }
 
 /// Reads one `__settings` value from a `.qrate` file (e.g. the dock layout).
@@ -417,7 +437,10 @@ fn add_note_provenance(tx: &rusqlite::Transaction<'_>) -> Result<()> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredNote {
     pub dataset: String,
+    /// Current zero-based source position, used only by the live table and UI.
     pub row: Option<usize>,
+    /// Stable on-disk identity. `None` for a whole-column or whole-dataset note.
+    pub row_id: Option<RowId>,
     pub column: Option<String>,
     pub severity: String,
     pub message: String,
@@ -461,13 +484,35 @@ pub fn read_notes(path: &Path) -> Result<Vec<StoredNote>> {
         0 => "NULL AS created_at, NULL AS author",
         _ => "created_at, author",
     };
+    let row_positions: HashMap<RowId, usize> = if conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'dataset_main'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? == 0
+    {
+        HashMap::new()
+    } else {
+        let mut ids = conn.prepare("SELECT _row_id FROM dataset_main ORDER BY _row_order")?;
+        ids.query_map([], |row| row.get::<_, RowId>(0))?
+            .enumerate()
+            .map(|(source, id)| id.map(|id| (id, source)))
+            .collect::<rusqlite::Result<_>>()?
+    };
     let mut stmt = conn.prepare(&format!(
         "SELECT dataset, row_ix, column_name, severity, message, {columns} FROM __notes"
     ))?;
     let iter = stmt.query_map([], |r| {
+        let dataset: String = r.get(0)?;
+        let row_id: Option<RowId> = r.get(1)?;
         Ok(StoredNote {
-            dataset: r.get(0)?,
-            row: r.get::<_, Option<i64>>(1)?.map(|v| v as usize),
+            row: match dataset.as_str() {
+                "dataset_main" if !row_positions.is_empty() => {
+                    row_id.and_then(|id| row_positions.get(&id).copied())
+                }
+                _ => row_id.map(|id| id as usize),
+            },
+            dataset,
+            row_id,
             column: r.get(2)?,
             severity: r.get(3)?,
             message: r.get(4)?,
@@ -498,7 +543,7 @@ pub fn write_notes(path: &Path, source: &str, notes: &[StoredNote]) -> Result<()
         for n in notes {
             stmt.execute(params![
                 n.dataset,
-                n.row.map(|v| v as i64),
+                n.row_id,
                 n.column,
                 n.severity,
                 source,
@@ -602,30 +647,62 @@ pub fn queue_write(file: &Path, key: &str, value: &str, cx: &gpui::App) {
 fn create_and_fill_dataset(
     conn: &Connection,
     headers: &[String],
+    row_ids: Option<&[RowId]>,
     rows: &[Vec<String>],
 ) -> Result<()> {
+    if row_ids.is_some_and(|ids| ids.len() != rows.len()) {
+        anyhow::bail!("row id count does not match dataset row count");
+    }
     let idents = dataset_column_idents(headers);
     let cols_sql: Vec<String> = idents.iter().map(|i| format!("{i} TEXT")).collect();
     conn.execute_batch(&format!(
-        "CREATE TABLE dataset_main (_row_id INTEGER PRIMARY KEY, {});",
+        "CREATE TABLE dataset_main (
+            _row_id INTEGER PRIMARY KEY,
+            _row_order INTEGER NOT NULL,
+            {}
+        );",
         cols_sql.join(", ")
     ))
     .context("Create dataset_main")?;
 
-    let placeholders: Vec<String> = (1..=idents.len()).map(|i| format!("?{i}")).collect();
+    let first_value = usize::from(row_ids.is_some()) + 2;
+    let placeholders: Vec<String> = (first_value..first_value + idents.len())
+        .map(|i| format!("?{i}"))
+        .collect();
+    let insert_columns = match row_ids {
+        Some(_) => format!("_row_id, _row_order, {}", idents.join(", ")),
+        None => format!("_row_order, {}", idents.join(", ")),
+    };
     let insert_sql = format!(
         "INSERT INTO dataset_main ({}) VALUES ({})",
-        idents.join(", "),
-        placeholders.join(", ")
+        insert_columns,
+        match row_ids {
+            Some(_) => format!("?1, ?2, {}", placeholders.join(", ")),
+            None => format!("?1, {}", placeholders.join(", ")),
+        }
     );
     let mut stmt = conn.prepare(&insert_sql).context("Prepare row insert")?;
     let empty = String::new();
-    for row in rows {
+    for (ix, row) in rows.iter().enumerate() {
+        let order = ix as i64;
         let padded: Vec<&String> = (0..idents.len())
             .map(|i| row.get(i).unwrap_or(&empty))
             .collect();
-        stmt.execute(rusqlite::params_from_iter(padded))
-            .context("Insert row")?;
+        match row_ids {
+            Some(ids) => stmt
+                .execute(rusqlite::params_from_iter(
+                    std::iter::once(&ids[ix] as &dyn rusqlite::ToSql)
+                        .chain(std::iter::once(&order as &dyn rusqlite::ToSql))
+                        .chain(padded.into_iter().map(|cell| cell as &dyn rusqlite::ToSql)),
+                ))
+                .context("Insert row")?,
+            None => stmt
+                .execute(rusqlite::params_from_iter(
+                    std::iter::once(&order as &dyn rusqlite::ToSql)
+                        .chain(padded.into_iter().map(|cell| cell as &dyn rusqlite::ToSql)),
+                ))
+                .context("Insert row")?,
+        };
     }
     Ok(())
 }
@@ -633,7 +710,7 @@ fn create_and_fill_dataset(
 /// Creates and fills `dataset_main` in one transaction (the create-time path).
 fn write_dataset(conn: &Connection, headers: &[String], rows: &[Vec<String>]) -> Result<()> {
     conn.execute_batch("BEGIN")?;
-    create_and_fill_dataset(conn, headers, rows)?;
+    create_and_fill_dataset(conn, headers, None, rows)?;
     conn.execute_batch("COMMIT")?;
     Ok(())
 }
@@ -643,14 +720,19 @@ fn write_dataset(conn: &Connection, headers: &[String], rows: &[Vec<String>]) ->
 /// the connection drops). `headers`/`rows` must be in the project's *original* column order: the
 /// `.qrate` schema keeps a fixed physical column order, and the separately-saved column layout
 /// maps that to display order. A blank project (no headers, no `dataset_main`) is a no-op.
-pub fn save_dataset(path: &Path, headers: &[String], rows: &[Vec<String>]) -> Result<()> {
+pub fn save_dataset(
+    path: &Path,
+    headers: &[String],
+    row_ids: &[RowId],
+    rows: &[Vec<String>],
+) -> Result<()> {
     if headers.is_empty() {
         return Ok(());
     }
     let conn = open_rw(path)?;
     conn.execute_batch("BEGIN; DROP TABLE IF EXISTS dataset_main;")
         .context("Begin dataset rewrite")?;
-    create_and_fill_dataset(&conn, headers, rows)?;
+    create_and_fill_dataset(&conn, headers, Some(row_ids), rows)?;
     conn.execute_batch("COMMIT")
         .context("Commit dataset rewrite")?;
     Ok(())
@@ -660,7 +742,7 @@ pub fn save_dataset(path: &Path, headers: &[String], rows: &[Vec<String>]) -> Re
 /// (`Title`, `title` → `"Title"`, `"title_2"`) and naming blanks `column_N` —
 /// spreadsheet headers are user data and can collide or be empty.
 fn dataset_column_idents(headers: &[String]) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = std::collections::HashSet::from(["_row_id".into(), "_row_order".into()]);
     headers
         .iter()
         .enumerate()
@@ -677,9 +759,13 @@ fn dataset_column_idents(headers: &[String]) -> Vec<String> {
                 name = format!("{base}_{n}");
                 n += 1;
             }
-            format!("\"{}\"", name.replace('"', "\"\""))
+            quote_identifier(&name)
         })
         .collect()
+}
+
+fn quote_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 #[cfg(test)]
@@ -702,6 +788,7 @@ mod tests {
         StoredNote {
             dataset: "dataset_main".into(),
             row,
+            row_id: row.map(|row| row as RowId),
             column: column.map(str::to_string),
             severity: "note".into(),
             message: msg.into(),
@@ -946,14 +1033,71 @@ mod tests {
             vec!["1".to_string(), "Edited".to_string()],
             vec!["2".to_string(), "Second".to_string()],
         ];
-        save_dataset(&path, &headers, &edited).unwrap();
+        save_dataset(&path, &headers, &[1, 2], &edited).unwrap();
 
         let data = load_project_file(&path).unwrap();
         assert_eq!(data.headers, headers);
         assert_eq!(data.rows, edited);
+        assert_eq!(data.row_ids, vec![1, 2]);
         // DELETE mode's invariant survives the rewrite: only the `.qrate` file at rest.
         assert!(!path.with_extension("qrate-journal").exists());
         assert!(!path.with_extension("qrate-wal").exists());
+    }
+
+    #[test]
+    fn notes_follow_stable_rows_through_a_top_insert_and_reload() {
+        let path = tempfile("stable-row-notes.qrate");
+        let headers = vec!["Title".to_string()];
+        let rows: Vec<_> = (0..6).map(|i| vec![format!("item {i}")]).collect();
+        create_project_file(&path, "S", "CSV", None, None, &[], &headers, &rows).unwrap();
+        write_notes(
+            &path,
+            "note",
+            &[
+                StoredNote {
+                    dataset: "dataset_main".into(),
+                    row: Some(2),
+                    row_id: Some(3),
+                    column: Some("Title".into()),
+                    severity: "note".into(),
+                    message: "on item 2".into(),
+                    created_at: None,
+                    author: None,
+                },
+                StoredNote {
+                    dataset: "dataset_main".into(),
+                    row: Some(5),
+                    row_id: Some(6),
+                    column: Some("Title".into()),
+                    severity: "note".into(),
+                    message: "on item 5".into(),
+                    created_at: None,
+                    author: None,
+                },
+            ],
+        )
+        .unwrap();
+
+        let mut inserted = vec![vec!["new item".into()]];
+        inserted.extend(rows);
+        save_dataset(&path, &headers, &[7, 1, 2, 3, 4, 5, 6], &inserted).unwrap();
+
+        let reopened = load_project_file(&path).unwrap();
+        assert_eq!(reopened.row_ids, vec![7, 1, 2, 3, 4, 5, 6]);
+        let notes = read_notes(&path).unwrap();
+        let attached: Vec<_> = notes
+            .iter()
+            .map(|note| {
+                (
+                    note.message.as_str(),
+                    reopened.rows[note.row.unwrap()][0].as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            attached,
+            vec![("on item 2", "item 2"), ("on item 5", "item 5")]
+        );
     }
 
     #[test]

@@ -407,6 +407,7 @@ mod tests {
             let at = |row, column: Option<&str>| Location {
                 dataset: DATASET_MAIN.into(),
                 row,
+                row_id: None,
                 column: column.map(|c| c.to_string().into()),
             };
             // One of each: cell, row-wide, column-wide, dataset-wide — the four `match` arms
@@ -457,6 +458,7 @@ mod tests {
             let at = |row| Location {
                 dataset: DATASET_MAIN.into(),
                 row: Some(row),
+                row_id: None,
                 column: Some("Title".into()),
             };
             for (source, rows) in [("spell", vec![0, 1]), ("files", vec![2])] {

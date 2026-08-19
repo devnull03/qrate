@@ -25,6 +25,7 @@ const CAP: usize = 200;
 /// re-walk of the files folder to get its photo back.
 #[derive(Clone)]
 pub(crate) struct Row {
+    pub id: settings::project::RowId,
     pub cells: Vec<SharedString>,
     pub image: Option<PathBuf>,
 }
@@ -215,6 +216,7 @@ mod tests {
             Step::RowsRemoved(vec![(
                 2,
                 Row {
+                    id: 3,
                     cells: vec!["gone".into()],
                     image: None,
                 },

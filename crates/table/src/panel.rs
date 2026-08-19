@@ -154,7 +154,11 @@ impl TablePanel {
         // project (dev launch straight into the main window) the table starts empty.
         let mut loaded_project = None;
         if let Some(project) = cx.try_global::<settings::project::CurrentProject>() {
-            delegate.set_data(&project.data.headers, &project.data.rows);
+            delegate.set_data(
+                &project.data.headers,
+                &project.data.row_ids,
+                &project.data.rows,
+            );
             Self::apply_saved_layout(&mut delegate, &project.file);
             delegate.set_image_paths(Self::resolve_images(&project.data));
             loaded_project = Some(project.file.clone());
@@ -368,11 +372,15 @@ impl TablePanel {
                     return;
                 }
 
-                let (headers, rows) = (project.data.headers.clone(), project.data.rows.clone());
+                let (headers, row_ids, rows) = (
+                    project.data.headers.clone(),
+                    project.data.row_ids.clone(),
+                    project.data.rows.clone(),
+                );
                 let image_paths = Self::resolve_images(&project.data);
                 this.loaded_project = Some(file.clone());
                 this.state.update(cx, |state, cx| {
-                    state.delegate_mut().set_data(&headers, &rows);
+                    state.delegate_mut().set_data(&headers, &row_ids, &rows);
                     Self::apply_saved_layout(state.delegate_mut(), &file);
                     state.delegate_mut().set_image_paths(image_paths);
                     apply_settings(state.delegate_mut(), cx);
@@ -1373,6 +1381,7 @@ mod tests {
                         vec!["Film".into(), "one".into()],
                         vec!["Video".into(), "two".into()],
                     ],
+                    row_ids: vec![1, 2],
                     values: Default::default(),
                 },
             });

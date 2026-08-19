@@ -34,8 +34,10 @@ pub const DATASET_MAIN: &str = "dataset_main";
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Location {
     pub dataset: SharedString,
-    // ponytail: positional source index; becomes `dataset_main._row_id` once rows can be reordered.
+    /// Live zero-based source position, used for rendering and navigation.
     pub row: Option<usize>,
+    /// Stable `dataset_main._row_id`, used only when an authored note reaches disk.
+    pub row_id: Option<settings::project::RowId>,
     pub column: Option<SharedString>,
 }
 
@@ -357,20 +359,36 @@ impl Diagnostics {
         this.persist();
     }
 
-    /// Follow a row insert: every note at or below `at` is now one row further down. Computed
-    /// findings are left alone — the revalidate that follows a structural edit republishes them.
-    pub fn rows_inserted(dataset: &str, at: usize, count: usize, cx: &mut App) {
-        Self::remap_rows(dataset, cx, |row| {
-            Some(if row >= at { row + count } else { row })
+    /// Rebind authored notes to the current source positions after a structural edit or its undo.
+    /// Their stable ids decide ownership; positions are only the live UI address.
+    pub fn align_note_rows(dataset: &str, row_ids: &[settings::project::RowId], cx: &mut App) {
+        let positions: HashMap<_, _> = row_ids
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(source, id)| (id, source))
+            .collect();
+        let this = cx.default_global::<Self>();
+        let mut changed = false;
+        this.items.retain_mut(|item| {
+            if item.location.dataset != dataset || item.source != Source::Note {
+                return true;
+            }
+            let Some(row_id) = item.location.row_id else {
+                return true;
+            };
+            let Some(source) = positions.get(&row_id).copied() else {
+                changed = true;
+                return false;
+            };
+            changed |= item.location.row != Some(source);
+            item.location.row = Some(source);
+            true
         });
-    }
-
-    /// Follow a row delete: notes on a deleted row go with it, and everything below it moves up by
-    /// however many of the deleted rows were above it.
-    pub fn rows_removed(dataset: &str, removed: &[usize], cx: &mut App) {
-        Self::remap_rows(dataset, cx, |row| {
-            (!removed.contains(&row)).then(|| row - removed.iter().filter(|&&r| r < row).count())
-        });
+        if changed {
+            this.reindex();
+            this.persist();
+        }
     }
 
     /// Follow a column rename, which re-keys every note addressed to the old name.
@@ -381,29 +399,6 @@ impl Diagnostics {
                 item.location.column = Some(after.clone());
             }
         }
-        this.persist();
-    }
-
-    /// Move every note in `dataset` to the row `f` gives back, dropping the ones it answers `None`
-    /// for. The shared half of [`rows_inserted`](Self::rows_inserted) and its delete counterpart.
-    fn remap_rows(dataset: &str, cx: &mut App, f: impl Fn(usize) -> Option<usize>) {
-        let this = cx.default_global::<Self>();
-        this.items.retain_mut(|item| {
-            if item.location.dataset != dataset {
-                return true;
-            }
-            let Some(row) = item.location.row else {
-                return true;
-            };
-            match f(row) {
-                Some(moved) => {
-                    item.location.row = Some(moved);
-                    true
-                }
-                None => false,
-            }
-        });
-        this.reindex();
         this.persist();
     }
 
@@ -421,6 +416,7 @@ impl Diagnostics {
             .map(|d| settings::project::StoredNote {
                 dataset: d.location.dataset.to_string(),
                 row: d.location.row,
+                row_id: d.location.row_id,
                 column: d.location.column.as_ref().map(|c| c.to_string()),
                 severity: d.severity.key().into(),
                 message: d.message.to_string(),
@@ -473,6 +469,7 @@ fn load_project_notes(cx: &mut App) {
             location: Location {
                 dataset: n.dataset.clone().into(),
                 row: n.row,
+                row_id: n.row_id,
                 column: n.column.clone().map(SharedString::from),
             },
             severity: Severity::from_key(&n.severity),
@@ -539,6 +536,7 @@ mod tests {
             let location = Location {
                 dataset: DATASET_MAIN.into(),
                 row: Some(0),
+                row_id: None,
                 column: Some("Title".into()),
             };
             Diagnostics::set_note(location.clone(), "hand written".into(), cx);
@@ -563,6 +561,7 @@ mod tests {
             let at = |column: Option<&str>| Location {
                 dataset: DATASET_MAIN.into(),
                 row: Some(3),
+                row_id: None,
                 column: column.map(Into::into),
             };
             Diagnostics::add_note(at(Some("Date taken")), "1962 is a guess".into(), cx);
@@ -591,6 +590,7 @@ mod tests {
             location: Location {
                 dataset: SharedString::from(dataset.to_string()),
                 row: Some(0),
+                row_id: None,
                 column: Some("Title".into()),
             },
             severity,
@@ -609,6 +609,7 @@ mod tests {
             let cell = Location {
                 dataset: DATASET_MAIN.into(),
                 row: Some(1),
+                row_id: None,
                 column: None,
             };
             let filed = |cx: &App| {
@@ -679,6 +680,7 @@ mod tests {
                 StoredNote {
                     dataset: DATASET_MAIN.into(),
                     row: Some(2),
+                    row_id: Some(2),
                     column: Some("Title".into()),
                     severity: "warning".into(),
                     message: "check this".into(),
@@ -688,6 +690,7 @@ mod tests {
                 StoredNote {
                     dataset: DATASET_MAIN.into(),
                     row: Some(4),
+                    row_id: Some(4),
                     column: None,
                     severity: "note".into(),
                     message: "whole row".into(),
@@ -706,6 +709,7 @@ mod tests {
                     columns: Vec::new(),
                     headers: Vec::new(),
                     rows: Vec::new(),
+                    row_ids: Vec::new(),
                     values: Default::default(),
                 },
             });
@@ -745,11 +749,13 @@ mod tests {
         let cell = Location {
             dataset: DATASET_MAIN.into(),
             row: Some(3),
+            row_id: Some(3),
             column: Some("Title".into()),
         };
         let whole_row = Location {
             dataset: DATASET_MAIN.into(),
             row: Some(7),
+            row_id: Some(7),
             column: None,
         };
 
@@ -761,6 +767,7 @@ mod tests {
                     columns: Vec::new(),
                     headers: Vec::new(),
                     rows: Vec::new(),
+                    row_ids: Vec::new(),
                     values: Default::default(),
                 },
             });
@@ -816,44 +823,40 @@ mod tests {
         assert_eq!((stored[0].row, &stored[0].column), (Some(7), &None));
     }
 
-    /// A note is addressed by row position, so a row inserted above it has to carry it down — and
-    /// a deleted row takes its own notes with it rather than leaving them on its successor.
     #[gpui::test]
-    fn notes_follow_the_rows_they_are_attached_to(cx: &mut TestAppContext) {
+    fn stable_ids_rebind_notes_after_insert_and_delete(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            let note = |row: usize| Location {
+            let note = |row, row_id| Location {
                 dataset: DATASET_MAIN.into(),
                 row: Some(row),
+                row_id: Some(row_id),
                 column: Some("Title".into()),
             };
-            Diagnostics::set_note(note(1), "one".into(), cx);
-            Diagnostics::set_note(note(5), "five".into(), cx);
+            Diagnostics::set_note(note(1, 10), "ten".into(), cx);
+            Diagnostics::set_note(note(3, 20), "twenty".into(), cx);
 
-            Diagnostics::rows_inserted(DATASET_MAIN, 3, 1, cx);
+            Diagnostics::align_note_rows(DATASET_MAIN, &[99, 10, 11, 12, 20], cx);
             assert_eq!(
                 Diagnostics::note_at(DATASET_MAIN, Some(1), Some("Title"), cx),
-                Some("one".into()),
-                "above the insert, unmoved"
+                Some("ten".into())
             );
-            assert_eq!(
-                Diagnostics::note_at(DATASET_MAIN, Some(6), Some("Title"), cx),
-                Some("five".into())
-            );
-
-            // Two rows go, one of them the one holding "one".
-            Diagnostics::rows_removed(DATASET_MAIN, &[1, 2], cx);
-            assert_eq!(Diagnostics::all(cx).len(), 1, "\"one\" went with its row");
             assert_eq!(
                 Diagnostics::note_at(DATASET_MAIN, Some(4), Some("Title"), cx),
-                Some("five".into()),
-                "shifted up by both deletions"
+                Some("twenty".into())
             );
 
-            // A rename re-keys the column half of the address.
+            Diagnostics::align_note_rows(DATASET_MAIN, &[99, 11, 12, 20], cx);
+            assert_eq!(
+                Diagnostics::all(cx).len(),
+                1,
+                "deleted id 10 takes its note"
+            );
+            assert_eq!(Diagnostics::all(cx)[0].location.row, Some(3));
+
             Diagnostics::column_renamed(DATASET_MAIN, "Title", &"Caption".into(), cx);
             assert_eq!(
-                Diagnostics::note_at(DATASET_MAIN, Some(4), Some("Caption"), cx),
-                Some("five".into())
+                Diagnostics::note_at(DATASET_MAIN, Some(3), Some("Caption"), cx),
+                Some("twenty".into())
             );
         });
     }

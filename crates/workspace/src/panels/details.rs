@@ -1202,6 +1202,7 @@ mod tests {
                         // has one agreed field and one mixed.
                         vec!["Film".into(), "three".into()],
                     ],
+                    row_ids: vec![1, 2, 3],
                     values: Default::default(),
                 },
             });
@@ -1323,6 +1324,7 @@ mod tests {
                     // Far more fields than fit, so the list genuinely scrolls.
                     headers: (0..80).map(|i| format!("field_{i}")).collect(),
                     rows: vec![(0..80).map(|i| format!("value {i}")).collect()],
+                    row_ids: vec![1],
                     values: Default::default(),
                 },
             });

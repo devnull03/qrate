@@ -109,6 +109,7 @@ mod tests {
         Location {
             dataset: DATASET_MAIN.into(),
             row: Some(0),
+            row_id: None,
             column: Some(column.into()),
         }
     }

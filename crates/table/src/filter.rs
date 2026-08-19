@@ -363,6 +363,7 @@ mod tests {
                     vec!["".into()],
                     vec!["Film".into()],
                 ],
+                row_ids: vec![1, 2, 3, 4],
                 values: Default::default(),
             },
         }

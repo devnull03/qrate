@@ -147,6 +147,8 @@ impl ProjectWizard {
                         .map(|n| project::StoredNote {
                             dataset: diagnostics::DATASET_MAIN.into(),
                             row: Some(n.row),
+                            // Creation inserts rows in source order, starting at SQLite id 1.
+                            row_id: Some(n.row as project::RowId + 1),
                             column: Some(n.column.clone()),
                             severity: "note".into(),
                             message: n.text.clone(),

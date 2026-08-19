@@ -40,11 +40,16 @@ pub struct ColumnLayout {
     pub widths: Vec<f32>,
 }
 
+pub type DatasetSnapshot = (Vec<String>, Vec<settings::project::RowId>, Vec<Vec<String>>);
+
 /// Data + column model for the center table. In `gpui_component` the delegate *is* the model:
 /// the virtualized `DataTable` calls back into it for counts and per-cell rendering.
 pub struct QrateTableDelegate {
     columns: Vec<Column>,
     rows: Vec<Vec<SharedString>>,
+    /// Stable SQLite identities parallel to `rows`. Source indices remain the UI coordinate.
+    row_ids: Vec<settings::project::RowId>,
+    next_row_id: settings::project::RowId,
     /// Last selection reported by the table's native `TableEvent`s, written only by
     /// `TablePanel`'s event bridge (the library's `selected_cell()` goes stale in row mode).
     pub(crate) selection: Option<Selection>,
@@ -95,6 +100,8 @@ impl QrateTableDelegate {
         Self {
             columns: Vec::new(),
             rows: Vec::new(),
+            row_ids: Vec::new(),
+            next_row_id: 1,
             selection: None,
             range: None,
             selected_rows: BTreeSet::new(),
@@ -167,6 +174,7 @@ impl QrateTableDelegate {
         Location {
             dataset: DATASET_MAIN.into(),
             row,
+            row_id: row.and_then(|source| self.row_ids.get(source).copied()),
             column: data_col.map(|c| self.column_name(c)),
         }
     }
@@ -343,7 +351,12 @@ impl QrateTableDelegate {
 
     /// Replaces the whole column/row model with real project data. Clears any selection/edit
     /// state, which may index into the old shape.
-    pub fn set_data(&mut self, headers: &[String], rows: &[Vec<String>]) {
+    pub fn set_data(
+        &mut self,
+        headers: &[String],
+        row_ids: &[settings::project::RowId],
+        rows: &[Vec<String>],
+    ) {
         self.columns = headers
             .iter()
             .map(|h| {
@@ -357,6 +370,14 @@ impl QrateTableDelegate {
             .iter()
             .map(|r| r.iter().map(|c| SharedString::from(c.clone())).collect())
             .collect();
+        self.row_ids = row_ids.to_vec();
+        self.next_row_id = self
+            .row_ids
+            .iter()
+            .copied()
+            .max()
+            .and_then(|id| id.checked_add(1))
+            .unwrap_or(1);
         self.selection = None;
         self.range = None;
         self.selected_rows.clear();
@@ -584,6 +605,7 @@ impl QrateTableDelegate {
         let at = at.min(self.rows.len());
         for (offset, row) in rows.iter().enumerate() {
             self.rows.insert(at + offset, row.cells.clone());
+            self.row_ids.insert(at + offset, row.id);
             self.image_paths.insert(at + offset, row.image.clone());
         }
         self.rows_changed();
@@ -606,6 +628,7 @@ impl QrateTableDelegate {
                 (
                     at,
                     Row {
+                        id: self.row_ids.remove(at),
                         cells: self.rows.remove(at),
                         image: self.image_paths.remove(at),
                     },
@@ -705,7 +728,8 @@ impl QrateTableDelegate {
             None => vec![SharedString::default(); self.columns.len()],
         };
         let image = source.and_then(|r| self.image_paths.get(r).cloned().flatten());
-        let rows = vec![Row { cells, image }];
+        let id = self.fresh_row_id();
+        let rows = vec![Row { id, cells, image }];
         self.splice_rows(at, &rows);
         self.history.push(Step::RowsAdded { at, rows });
     }
@@ -714,6 +738,23 @@ impl QrateTableDelegate {
     pub(crate) fn remove_rows(&mut self, ats: &[usize]) {
         let removed = self.cut_rows(ats);
         self.history.push(Step::RowsRemoved(removed));
+    }
+
+    pub(crate) fn row_id(&self, source: usize) -> Option<settings::project::RowId> {
+        self.row_ids.get(source).copied()
+    }
+
+    pub(crate) fn row_ids(&self) -> &[settings::project::RowId] {
+        &self.row_ids
+    }
+
+    fn fresh_row_id(&mut self) -> settings::project::RowId {
+        while self.row_ids.contains(&self.next_row_id) {
+            self.next_row_id = self.next_row_id.checked_add(1).unwrap_or(1);
+        }
+        let id = self.next_row_id;
+        self.next_row_id = id.checked_add(1).unwrap_or(1);
+        id
     }
 
     /// Add a blank column at `at`, named for the user to rename. Returns its name.
@@ -891,7 +932,7 @@ impl QrateTableDelegate {
     /// Headers + rows in display order, stringified for the `.qrate` writer and every export.
     /// `save_dataset` drops and recreates `dataset_main`, so the stored physical order is free to
     /// follow the display order rather than having to be recovered from the column keys.
-    pub fn dataset_snapshot(&self) -> (Vec<String>, Vec<Vec<String>>) {
+    pub fn dataset_snapshot(&self) -> DatasetSnapshot {
         let headers = self.columns.iter().map(|c| c.name.to_string()).collect();
         let rows = self
             .rows
@@ -902,7 +943,7 @@ impl QrateTableDelegate {
                     .collect()
             })
             .collect();
-        (headers, rows)
+        (headers, self.row_ids.clone(), rows)
     }
 
     /// Current column layout (keys + widths in display order) for persistence.
@@ -1469,6 +1510,7 @@ mod app_tests {
                     vec!["Video".into(), "three".into()],
                     vec!["Film".into(), "four".into()],
                 ],
+                row_ids: vec![1, 2, 3, 4],
                 values: Default::default(),
             },
         }
@@ -1502,7 +1544,7 @@ mod app_tests {
                 super::move_col(&mut delegate.rows, 0, 1);
                 assert_eq!(delegate.column_key(0), "Title");
 
-                let (headers, rows) = delegate.dataset_snapshot();
+                let (headers, _, rows) = delegate.dataset_snapshot();
                 assert_eq!(headers, vec!["Title", "Medium"]);
                 assert_eq!(rows[0], vec!["one", "Film"]);
             });
@@ -1679,12 +1721,14 @@ mod app_tests {
 
                 delegate.insert_rows(1, None);
                 assert_eq!(delegate.rows.len(), 5);
+                assert_eq!(delegate.row_ids(), &[1, 5, 2, 3, 4]);
                 assert_eq!(delegate.cell(1, 0).map(|c| c.as_ref()), Some(""));
                 assert_eq!(delegate.cell(2, 1).map(|c| c.as_ref()), Some("two"));
                 assert_eq!(delegate.row_image(1), None, "the new row has no photo");
                 assert_eq!(delegate.row_image(2), Some("1.jpg".as_ref()));
 
                 delegate.undo();
+                assert_eq!(delegate.row_ids(), &[1, 2, 3, 4]);
                 assert_eq!(delegate.cell(1, 1).map(|c| c.as_ref()), Some("two"));
                 assert_eq!(delegate.row_image(1), Some("1.jpg".as_ref()));
             });
@@ -1700,6 +1744,7 @@ mod app_tests {
             state.update(cx, |state, _| {
                 let delegate = state.delegate_mut();
                 delegate.remove_rows(&[2, 0]);
+                assert_eq!(delegate.row_ids(), &[2, 4]);
                 let names = |d: &super::QrateTableDelegate| {
                     (0..d.rows.len())
                         .map(|r| d.cell(r, 1).cloned().unwrap_or_default())
@@ -1708,6 +1753,7 @@ mod app_tests {
                 assert_eq!(names(delegate), vec!["two", "four"]);
 
                 assert!(delegate.undo());
+                assert_eq!(delegate.row_ids(), &[1, 2, 3, 4]);
                 assert_eq!(names(delegate), vec!["one", "two", "three", "four"]);
                 assert!(!delegate.undo(), "one step, not two");
             });

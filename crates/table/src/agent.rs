@@ -180,6 +180,7 @@ fn stage_findings(
             location: Location {
                 dataset: DATASET_MAIN.into(),
                 row: Some(finding.row),
+                row_id: delegate.row_id(finding.row),
                 column: Some(column.clone()),
             },
             severity: match finding.severity {
@@ -286,6 +287,7 @@ mod tests {
                     vec!["Wharf".into(), "Video".into()],
                     vec!["Cannery".into(), "Film".into()],
                 ],
+                row_ids: vec![1, 2, 3],
                 values: Default::default(),
             },
         }
@@ -451,6 +453,7 @@ mod tests {
             let location = Location {
                 dataset: DATASET_MAIN.into(),
                 row: Some(0),
+                row_id: Some(1),
                 column: Some("Title".into()),
             };
             let offered = diagnostics::fixes::at(&location, "Harvest", cx);

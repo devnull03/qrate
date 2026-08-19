@@ -67,7 +67,8 @@ fn grid(cx: &App) -> Option<(Vec<String>, Vec<Vec<String>>)> {
     let state = cx
         .try_global::<table::TableStateHandle>()
         .and_then(|h| h.0.upgrade())?;
-    Some(state.read(cx).delegate().dataset_snapshot())
+    let (headers, _, rows) = state.read(cx).delegate().dataset_snapshot();
+    Some((headers, rows))
 }
 
 pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
