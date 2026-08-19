@@ -70,6 +70,7 @@ pub fn open_viewer(path: PathBuf, scope: Scope, cx: &mut App) {
         || preview::page_count(&path),
         |seconds| seconds.max(1) as usize,
     );
+    let details = preview::describe(&path);
     let viewer = cx.new(|cx| {
         let scrubber = seconds.map(|seconds| {
             // The last position is the second before the end; a one-second clip still needs a
@@ -100,6 +101,7 @@ pub fn open_viewer(path: PathBuf, scope: Scope, cx: &mut App) {
         Viewer {
             transport: Transport::new(path.clone(), cx),
             path,
+            details,
             scope,
             page: 0,
             pages,
@@ -127,6 +129,8 @@ pub fn close_viewer(cx: &mut App) {
 
 pub struct Viewer {
     path: PathBuf,
+    /// File type and size, read once when the viewer opens rather than statting on every repaint.
+    details: Option<String>,
     scope: Scope,
     /// What is shown: the page of a document, or how many seconds into a video — the same field,
     /// because no file is both. Always 0 for anything else.
@@ -517,7 +521,7 @@ impl Render for Viewer {
                     .child(name)
                     // What the file is, under what it is called: at full screen the picture fills
                     // everything and the name alone does not say a scan from the PDF of it.
-                    .children(preview::describe(&self.path).map(|details| {
+                    .children(self.details.clone().map(|details| {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
@@ -745,6 +749,19 @@ mod tests {
             close_viewer(cx);
             assert!(viewer_in(Scope::Workspace, cx).is_none());
             assert!(viewer_in(Scope::Centre, cx).is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn file_details_are_kept_without_restatting_during_render(cx: &mut TestAppContext) {
+        let path = std::env::temp_dir().join("qrate-viewer-details.jpg");
+        std::fs::write(&path, b"abc").unwrap();
+        cx.update(|cx| {
+            open_viewer(path.clone(), Scope::Workspace, cx);
+            std::fs::remove_file(&path).unwrap();
+            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+            assert!(viewer.read(cx).details.is_some());
+            close_viewer(cx);
         });
     }
 
