@@ -535,9 +535,7 @@ impl QrateTableDelegate {
     /// Reverse the last recorded step. The answer says whether it moved rows; `None` means there
     /// was nothing to undo.
     pub(crate) fn undo(&mut self) -> Option<bool> {
-        let Some(step) = self.history.undo() else {
-            return None;
-        };
+        let step = self.history.undo()?;
         let rows_changed = matches!(step, Step::RowsAdded { .. } | Step::RowsRemoved(_));
         self.replay(&step, false);
         Some(rows_changed)
@@ -545,9 +543,7 @@ impl QrateTableDelegate {
 
     /// [`undo`](Self::undo)'s mirror.
     pub(crate) fn redo(&mut self) -> Option<bool> {
-        let Some(step) = self.history.redo() else {
-            return None;
-        };
+        let step = self.history.redo()?;
         let rows_changed = matches!(step, Step::RowsAdded { .. } | Step::RowsRemoved(_));
         self.replay(&step, true);
         Some(rows_changed)
