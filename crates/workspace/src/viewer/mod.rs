@@ -61,63 +61,48 @@ pub fn viewer_in(scope: Scope, cx: &App) -> Option<Entity<Viewer>> {
 
 /// Opens `path` in the shared viewer overlay, replacing any viewer already open.
 pub fn open_viewer(path: PathBuf, scope: Scope, cx: &mut App) {
-    // Counted once, here: a PDF has to be opened to be counted, and doing that per frame would
-    // re-parse the document on every repaint. A video's length costs an ffmpeg spawn, which is the
-    // same bargain — paid when someone opens a file, never per row.
     let document = preview::has_text(&path);
-    let seconds = preview::video_duration(&path);
-    let pages = seconds.map_or_else(
-        || preview::page_count(&path),
-        |seconds| seconds.max(1) as usize,
-    );
+    let video = preview::has_video(&path);
     let details = preview::describe(&path);
-    let viewer = cx.new(|cx| {
-        let scrubber = seconds.map(|seconds| {
-            // The last position is the second before the end; a one-second clip still needs a
-            // range, or the slider divides by zero working out where the thumb goes.
-            let state = cx.new(|_| {
-                SliderState::new()
-                    .min(0.)
-                    .max((seconds.max(2) - 1) as f32)
-                    .step(1.)
-            });
-            // Detached because the slider is owned by the viewer and cannot outlive it.
-            cx.subscribe(&state, |this: &mut Viewer, _, event: &SliderEvent, cx| {
-                let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
-                let SliderValue::Single(seconds) = *value else {
-                    return;
-                };
-                this.scrub = seconds.max(0.) as usize;
-                // Only the thumb moves during the drag: one gesture crosses dozens of positions,
-                // and rendering each would spawn an ffmpeg for a frame nobody stops on.
-                if matches!(event, SliderEvent::Release(_)) {
-                    this.page = this.scrub;
-                }
-                cx.notify();
-            })
-            .detach();
-            state
-        });
-        Viewer {
-            transport: Transport::new(path.clone(), cx),
-            path,
-            details,
-            scope,
-            page: 0,
-            pages,
-            document,
-            scrubber,
-            scrub: 0,
-            zoom: 1.0,
-            offset: Point::default(),
-            drag_from: None,
-            focus_handle: cx.focus_handle(),
-            focused: false,
-            find: Find::default(),
-            find_open: false,
-            split: cx.new(|_| ResizableState::default()),
-        }
+    let probe_path = path.clone();
+    let viewer = cx.new(|cx| Viewer {
+        transport: Transport::new(path.clone(), cx),
+        path,
+        details,
+        scope,
+        page: 0,
+        pages: 1,
+        document,
+        video,
+        scrubber: None,
+        scrub: 0,
+        zoom: 1.0,
+        offset: Point::default(),
+        drag_from: None,
+        focus_handle: cx.focus_handle(),
+        focused: false,
+        find: Find::default(),
+        find_open: false,
+        split: cx.new(|_| ResizableState::default()),
     });
+    let probe = cx.background_executor().spawn(async move {
+        let seconds = preview::video_duration(&probe_path);
+        let pages = seconds.map_or_else(
+            || preview::page_count(&probe_path),
+            |seconds| seconds.max(1) as usize,
+        );
+        (seconds, pages)
+    });
+    let weak = viewer.downgrade();
+    cx.spawn(async move |cx| {
+        let (seconds, pages) = probe.await;
+        cx.update(|cx| {
+            if let Some(viewer) = weak.upgrade() {
+                viewer.update(cx, |viewer, cx| viewer.install_timeline(seconds, pages, cx));
+            }
+        });
+    })
+    .detach();
     cx.set_global(ActiveViewer(Some(viewer)));
 }
 
@@ -140,6 +125,8 @@ pub struct Viewer {
     /// Whether this file is a document at all, which is a different question from whether it has
     /// more than one page — a one-page PDF is still a document, and still says "1 / 1".
     document: bool,
+    /// Known from the extension immediately, before the duration probe finishes.
+    video: bool,
     /// The playback transport, present exactly when the file is a recording. Gated on the format
     /// for the same reason `document` is: a silent tape is still audio and still gets a transport.
     transport: Option<Transport>,
@@ -171,6 +158,37 @@ pub struct Viewer {
 }
 
 impl Viewer {
+    fn install_timeline(&mut self, seconds: Option<u32>, pages: usize, cx: &mut Context<Self>) {
+        self.pages = pages;
+        self.scrubber = seconds.map(|seconds| {
+            // The last position is the second before the end; a one-second clip still needs a
+            // range, or the slider divides by zero working out where the thumb goes.
+            let state = cx.new(|_| {
+                SliderState::new()
+                    .min(0.)
+                    .max((seconds.max(2) - 1) as f32)
+                    .step(1.)
+            });
+            // Detached because the slider is owned by the viewer and cannot outlive it.
+            cx.subscribe(&state, |this: &mut Viewer, _, event: &SliderEvent, cx| {
+                let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
+                let SliderValue::Single(seconds) = *value else {
+                    return;
+                };
+                this.scrub = seconds.max(0.) as usize;
+                // Only the thumb moves during the drag: one gesture crosses dozens of positions,
+                // and rendering each would spawn an ffmpeg for a frame nobody stops on.
+                if matches!(event, SliderEvent::Release(_)) {
+                    this.page = this.scrub;
+                }
+                cx.notify();
+            })
+            .detach();
+            state
+        });
+        cx.notify();
+    }
+
     /// Clamp zoom to [0.1, 8] — below 1 zooms out past the initial fit — and recenter once the
     /// image is no bigger than its frame, where there's nothing to pan to.
     fn set_zoom(&mut self, zoom: f32) {
@@ -332,7 +350,7 @@ impl Render for Viewer {
         // type icon, which is a picture of nothing. The transport takes the middle of the page
         // instead of hugging the bottom edge of a blank rectangle.
         let bare = self.transport.as_ref().is_some_and(|it| !it.art);
-        let cap = if self.scrubber.is_some() {
+        let cap = if self.video {
             preview::PANE
         } else {
             preview::FULL
@@ -906,16 +924,19 @@ mod tests {
         }
 
         // An emitted event is delivered when the update flushes, so each half is its own update.
-        let (viewer, scrubber) = cx.update(|cx| {
+        let viewer = cx.update(|cx| {
             open_viewer(path.clone(), Scope::Workspace, cx);
-            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+            viewer_in(Scope::Workspace, cx).expect("just opened")
+        });
+        cx.run_until_parked();
+        let scrubber = cx.update(|cx| {
             let scrubber = viewer
                 .read(cx)
                 .scrubber
                 .clone()
                 .expect("a clip ffmpeg can measure gets a scrubber");
             assert_eq!(viewer.read(cx).pages, 6, "one position per second");
-            (viewer, scrubber)
+            scrubber
         });
 
         cx.update(|cx| {
