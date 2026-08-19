@@ -162,10 +162,14 @@ impl PanelRegistry {
             return;
         };
         if Self::visible(name, dock_area, cx) {
-            dock_area.update(cx, |area, cx| area.toggle_dock(placement, window, cx));
+            dock_area.update(cx, |area, cx| {
+                crate::toggle_dock_immediately(area, placement, window, cx)
+            });
         } else {
             if !dock_area.read(cx).is_dock_open(placement, cx) {
-                dock_area.update(cx, |area, cx| area.toggle_dock(placement, window, cx));
+                dock_area.update(cx, |area, cx| {
+                    crate::toggle_dock_immediately(area, placement, window, cx)
+                });
             }
             Self::bring_to_front(name, placement, dock_area, window, cx);
         }
@@ -250,10 +254,10 @@ impl PanelRegistry {
             // An emptied dock keeps rendering as a bare tab strip, and a closed target dock would
             // swallow the panel we just moved into it.
             if source_empty && area.is_dock_open(from, cx) {
-                area.toggle_dock(from, window, cx);
+                crate::toggle_dock_immediately(area, from, window, cx);
             }
             if !area.is_dock_open(to, cx) {
-                area.toggle_dock(to, window, cx);
+                crate::toggle_dock_immediately(area, to, window, cx);
             }
         });
         Workspace::persist_layout(dock_area, cx);

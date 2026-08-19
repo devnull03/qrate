@@ -61,6 +61,32 @@ pub struct BottomDockCrop(pub Pixels);
 
 impl Global for BottomDockCrop {}
 
+/// Toggle a dock and collapse its panel tree in the same UI turn. `gpui-component` normally
+/// defers the collapse until the next turn; that leaves the centre (and therefore the grid) at its
+/// old size for one frame after the dock button is clicked.
+pub(crate) fn toggle_dock_immediately(
+    area: &DockArea,
+    placement: DockPlacement,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let dock = match placement {
+        DockPlacement::Left => area.left_dock(),
+        DockPlacement::Bottom => area.bottom_dock(),
+        DockPlacement::Right => area.right_dock(),
+        DockPlacement::Center => None,
+    }
+    .cloned();
+    let Some(dock) = dock else {
+        return;
+    };
+    dock.update(cx, |dock, cx| {
+        let open = !dock.is_open();
+        dock.panel().clone().set_collapsed(!open, window, cx);
+        dock.set_open(open, window, cx);
+    });
+}
+
 pub struct Workspace {
     dock_area: Entity<DockArea>,
     /// Persists the layout to settings whenever the dock emits `LayoutChanged`.
@@ -181,7 +207,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.dock_area.update(cx, |area, cx| {
-            area.toggle_dock(placement, window, cx);
+            toggle_dock_immediately(area, placement, window, cx);
         });
         // `Dock::set_open` only notifies, never emits `LayoutChanged`, so persist the toggle here.
         Self::persist_layout(&self.dock_area, cx);

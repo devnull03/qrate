@@ -555,7 +555,9 @@ mod layout {
             PanelRegistry::move_panel(meta.name, to, dock_area, window, cx);
             let open = dock_area.read(cx).is_dock_open(to, cx);
             if open != slot.open {
-                dock_area.update(cx, |area, cx| area.toggle_dock(to, window, cx));
+                dock_area.update(cx, |area, cx| {
+                    crate::toggle_dock_immediately(area, to, window, cx)
+                });
             }
         }
         crate::Workspace::persist_layout(dock_area, cx);
