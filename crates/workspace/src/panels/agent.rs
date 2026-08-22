@@ -1,4 +1,6 @@
+use std::cell::Cell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
@@ -7,7 +9,9 @@ use gpui_component::dock::{DockPlacement, Panel, PanelControl, PanelEvent};
 use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tab::{Tab, TabBar};
-use gpui_component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
+use gpui_component::{
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, button::Button, h_flex, v_flex,
+};
 
 use crate::BottomDockCrop;
 use crate::panel_registry::PanelMeta;
@@ -166,6 +170,9 @@ pub struct AgentPanel {
     focus_handle: FocusHandle,
     view: View,
     scroll: ScrollHandle,
+    terminal: agent_runtime::AgentTerminal,
+    terminal_size: Rc<Cell<(usize, usize)>>,
+    _terminal_task: Task<()>,
     /// Refreshes on any entry. One `observe_global` and no re-binding — the history is plain data
     /// that is never rebuilt.
     _sub: Subscription,
@@ -176,10 +183,32 @@ pub struct AgentPanel {
 impl AgentPanel {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let scroll = ScrollHandle::new();
+        let terminal_size = Rc::new(Cell::new((100, 32)));
+        let terminal_task = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(33))
+                    .await;
+                let keep_going = this
+                    .update(cx, |panel, cx| {
+                        if panel.terminal.poll() {
+                            cx.notify();
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep_going {
+                    break;
+                }
+            }
+        });
         Self {
             focus_handle: cx.focus_handle(),
-            view: View::Log,
+            view: View::Terminal,
             scroll: scroll.clone(),
+            terminal: Default::default(),
+            terminal_size,
+            _terminal_task: terminal_task,
             // ponytail: follows the tail unconditionally. Only worth remembering whether the
             // reader had scrolled away if watching a live agent while reading back proves annoying.
             _sub: cx.observe_global::<AgentHistory>(move |_, cx| {
@@ -231,6 +260,9 @@ impl Panel for AgentPanel {
                 )
                 .on_click(cx.listener(|this, ix: &usize, _w, cx| {
                     this.view = View::ALL[*ix];
+                    if this.view == View::Terminal && !this.terminal.is_running() {
+                        this.terminal.start(true, cx);
+                    }
                     cx.notify();
                 }))
                 .children(
@@ -253,6 +285,16 @@ impl Panel for AgentPanel {
 
 impl Render for AgentPanel {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.view == View::Terminal
+            && !self.terminal.is_running()
+            && matches!(
+                self.terminal.status(),
+                "Pi has not started." | "Open a qrate project before starting Pi."
+            )
+            && cx.has_global::<settings::project::CurrentProject>()
+        {
+            self.terminal.start(true, cx);
+        }
         let theme = cx.theme();
         let (muted, danger, info, border, hover_bg) = (
             theme.muted_foreground,
@@ -271,6 +313,11 @@ impl Render for AgentPanel {
                 .collect::<Vec<_>>()
                 .join("\n")
         });
+        let (terminal_cols, terminal_lines) = self.terminal_size.get();
+        self.terminal.resize(terminal_cols, terminal_lines);
+        let terminal_screen = self.terminal.screen();
+        let terminal_status = self.terminal.status().to_owned();
+        let terminal_running = self.terminal.is_running();
 
         v_flex()
             .size_full()
@@ -280,13 +327,114 @@ impl Render for AgentPanel {
             .id("agent-panel")
             .role(Role::Group)
             .aria_label("Agent")
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                if this.view == View::Terminal && this.terminal.input(event, cx) {
+                    cx.stop_propagation();
+                }
+            }))
             .when(self.view == View::Terminal, |panel| {
                 panel.child(
-                    div()
-                        .p_3()
-                        .text_sm()
-                        .text_color(muted)
-                        .child("Nothing runs here yet. This is where qrate will start an agent and hand you its terminal."),
+                    v_flex()
+                        .size_full()
+                        .min_h_0()
+                        .child(
+                            h_flex()
+                                .flex_shrink_0()
+                                .gap_1()
+                                .items_center()
+                                .px_2()
+                                .py_1()
+                                .border_b_1()
+                                .border_color(border)
+                                .child(
+                                    Button::new("agent-new-session")
+                                        .label("New")
+                                        .xsmall()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.terminal.start(false, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("agent-stop")
+                                        .label("Stop")
+                                        .xsmall()
+                                        .disabled(!terminal_running)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.terminal.stop();
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("agent-restart")
+                                        .label("Restart")
+                                        .xsmall()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.terminal.start(true, cx);
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .ml_1()
+                                        .min_w_0()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(terminal_status),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .relative()
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_hidden()
+                                .bg(theme.background)
+                                .px_2()
+                                .py_1()
+                                .text_sm()
+                                .font_family("monospace")
+                                .on_scroll_wheel(cx.listener(
+                                    |this, event: &ScrollWheelEvent, _window, cx| {
+                                        let lines = match event.delta {
+                                            ScrollDelta::Lines(delta) => delta.y.round() as i32,
+                                            ScrollDelta::Pixels(delta) => {
+                                                (f32::from(delta.y) / 16.).round() as i32
+                                            }
+                                        };
+                                        this.terminal.scroll(lines);
+                                        cx.notify();
+                                    },
+                                ))
+                                .child(if terminal_screen.is_empty() {
+                                    "Use /login openrouter once, then Pi will use OpenRouter's free router by default.".to_owned()
+                                } else {
+                                    terminal_screen
+                                })
+                                .child({
+                                    let measured = self.terminal_size.clone();
+                                    canvas(
+                                        move |bounds, window, cx| {
+                                            let next = (
+                                                (f32::from(bounds.size.width) / 8.)
+                                                    .floor()
+                                                    .max(2.) as usize,
+                                                (f32::from(bounds.size.height) / 16.)
+                                                    .floor()
+                                                    .max(2.) as usize,
+                                            );
+                                            if measured.replace(next) != next {
+                                                window.defer(cx, |window, _| window.refresh());
+                                            }
+                                        },
+                                        |_, _, _, _| {},
+                                    )
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .size_full()
+                                }),
+                        ),
                 )
             })
             .when(self.view == View::Log && empty, |panel| {
@@ -457,16 +605,15 @@ mod tests {
         cx.add_window_view(AgentPanel::new);
     }
 
-    /// Both views render, and the log opens first — an archivist who never starts an agent should
-    /// land on the record of what one already did, not on an empty terminal.
+    /// Both views render, and the terminal opens first so Pi is immediately available.
     #[gpui::test]
-    fn each_view_renders_and_the_log_is_the_default(cx: &mut TestAppContext) {
+    fn each_view_renders_and_the_terminal_is_the_default(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         cx.update(|cx| record(call("rows", Entry::Answered), cx));
 
         let (panel, cx) = cx.add_window_view(AgentPanel::new);
         panel.update(cx, |this, cx| {
-            assert_eq!(this.view, View::Log);
+            assert_eq!(this.view, View::Terminal);
             for view in View::ALL {
                 this.view = view;
                 cx.notify();

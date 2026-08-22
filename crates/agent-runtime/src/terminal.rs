@@ -1,0 +1,334 @@
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::{Arc, mpsc};
+
+use alacritty_terminal::event::{Event, EventListener, Notify as _, OnResize as _, WindowSize};
+use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
+use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::sync::FairMutex;
+use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::tty::{self, Options, Shell};
+use gpui::{App, KeyDownEvent};
+
+use crate::AgentRuntime;
+
+const COLS: usize = 100;
+const LINES: usize = 32;
+
+struct TerminalSize;
+
+impl Dimensions for TerminalSize {
+    fn total_lines(&self) -> usize {
+        LINES
+    }
+
+    fn screen_lines(&self) -> usize {
+        LINES
+    }
+
+    fn columns(&self) -> usize {
+        COLS
+    }
+}
+
+struct SizedTerminal {
+    lines: usize,
+    cols: usize,
+}
+
+impl Dimensions for SizedTerminal {
+    fn total_lines(&self) -> usize {
+        self.lines
+    }
+
+    fn screen_lines(&self) -> usize {
+        self.lines
+    }
+
+    fn columns(&self) -> usize {
+        self.cols
+    }
+}
+
+#[derive(Clone)]
+struct UiEvents(mpsc::Sender<Event>);
+
+impl EventListener for UiEvents {
+    fn send_event(&self, event: Event) {
+        let _ = self.0.send(event);
+    }
+}
+
+struct Session {
+    terminal: Arc<FairMutex<Term<UiEvents>>>,
+    notifier: Notifier,
+    events: mpsc::Receiver<Event>,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        let _ = self.notifier.0.send(Msg::Shutdown);
+    }
+}
+
+pub struct AgentTerminal {
+    session: Option<Session>,
+    status: String,
+}
+
+impl Default for AgentTerminal {
+    fn default() -> Self {
+        Self {
+            session: None,
+            status: "Pi has not started.".to_owned(),
+        }
+    }
+}
+
+impl AgentTerminal {
+    pub fn is_running(&self) -> bool {
+        self.session.is_some()
+    }
+
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    pub fn start(&mut self, continue_previous: bool, cx: &App) {
+        self.stop();
+        let Some(runtime) = cx.try_global::<AgentRuntime>().cloned() else {
+            self.status = "Pi is not installed in this qrate build.".to_owned();
+            return;
+        };
+        let Some(project) = cx.try_global::<settings::project::CurrentProject>() else {
+            self.status = "Open a qrate project before starting Pi.".to_owned();
+            return;
+        };
+        let cwd = project
+            .file
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf();
+        let session_dir = runtime.profile.join("sessions").join("qrate");
+        if let Err(err) = std::fs::create_dir_all(&session_dir) {
+            self.status = format!("Pi's session directory could not be created: {err}");
+            return;
+        }
+
+        let mut args = runtime.leading_args.clone();
+        args.extend([
+            "--provider".to_owned(),
+            "openrouter".to_owned(),
+            "--model".to_owned(),
+            "openrouter/free".to_owned(),
+            "--models".to_owned(),
+            "openrouter/free".to_owned(),
+            "--no-extensions".to_owned(),
+            "--extension".to_owned(),
+            runtime.extension.to_string_lossy().into_owned(),
+            "--no-skills".to_owned(),
+            "--skill".to_owned(),
+            runtime.skill.to_string_lossy().into_owned(),
+            "--no-context-files".to_owned(),
+            "--no-approve".to_owned(),
+            "--session-dir".to_owned(),
+            session_dir.to_string_lossy().into_owned(),
+        ]);
+        if continue_previous {
+            args.push("--continue".to_owned());
+        }
+
+        let mut env: HashMap<String, String> = std::env::vars().collect();
+        // Keep Pi's provider login under its isolated profile, but preserve the ordinary process
+        // environment for TLS, proxies, locale, and platform support.
+        env.extend([
+            (
+                "PI_CODING_AGENT_DIR".to_owned(),
+                runtime.profile.to_string_lossy().into_owned(),
+            ),
+            ("PI_SKIP_VERSION_CHECK".to_owned(), "1".to_owned()),
+            (
+                "QRATE_AGENT_ENDPOINT".to_owned(),
+                runtime.endpoint.to_string_lossy().into_owned(),
+            ),
+            (
+                "QRATE_PROJECT_DIR".to_owned(),
+                cwd.to_string_lossy().into_owned(),
+            ),
+            ("TERM".to_owned(), "xterm-256color".to_owned()),
+            ("COLORTERM".to_owned(), "truecolor".to_owned()),
+        ]);
+        let options = Options {
+            shell: Some(Shell::new(
+                runtime.program.to_string_lossy().into_owned(),
+                args,
+            )),
+            working_directory: Some(cwd),
+            drain_on_exit: true,
+            env,
+            #[cfg(windows)]
+            escape_args: true,
+        };
+        let size = WindowSize {
+            num_lines: LINES as u16,
+            num_cols: COLS as u16,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let (tx, events) = mpsc::channel();
+        let listener = UiEvents(tx);
+        let terminal = Arc::new(FairMutex::new(Term::new(
+            Config::default(),
+            &TerminalSize,
+            listener.clone(),
+        )));
+        let pty = match tty::new(&options, size, 0) {
+            Ok(pty) => pty,
+            Err(err) => {
+                self.status = format!("Pi could not start: {err}");
+                return;
+            }
+        };
+        let event_loop = match EventLoop::new(terminal.clone(), listener, pty, true, false) {
+            Ok(event_loop) => event_loop,
+            Err(err) => {
+                self.status = format!("Pi's terminal could not start: {err}");
+                return;
+            }
+        };
+        let notifier = Notifier(event_loop.channel());
+        let _thread = event_loop.spawn();
+        self.session = Some(Session {
+            terminal,
+            notifier,
+            events,
+        });
+        self.status = if continue_previous {
+            "Resuming this project's Pi session…".to_owned()
+        } else {
+            "Started a new Pi session.".to_owned()
+        };
+    }
+
+    /// Drain terminal notifications. Returns whether the panel should repaint.
+    pub fn poll(&mut self) -> bool {
+        let Some(session) = &self.session else {
+            return false;
+        };
+        let mut changed = false;
+        let mut exited = None;
+        while let Ok(event) = session.events.try_recv() {
+            changed = true;
+            if let Event::ChildExit(status) = event {
+                exited = Some(format!("Pi exited with {status}."));
+            }
+        }
+        if let Some(status) = exited {
+            self.status = status;
+            self.session = None;
+        }
+        changed
+    }
+
+    pub fn stop(&mut self) {
+        self.session = None;
+        self.status = "Pi is stopped.".to_owned();
+    }
+
+    pub fn input(&self, event: &KeyDownEvent, cx: &App) -> bool {
+        let Some(session) = &self.session else {
+            return false;
+        };
+        let stroke = &event.keystroke;
+        let bytes = if stroke.modifiers.secondary() && stroke.key == "v" {
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .map(|text| text.into_bytes())
+        } else if stroke.modifiers.control && stroke.key.len() == 1 {
+            stroke
+                .key
+                .bytes()
+                .next()
+                .map(|byte| vec![byte.to_ascii_uppercase() & 0x1f])
+        } else {
+            match stroke.key.as_str() {
+                "enter" => Some(vec![b'\r']),
+                "backspace" => Some(vec![0x7f]),
+                "tab" => Some(vec![b'\t']),
+                "escape" => Some(vec![0x1b]),
+                "up" => Some(b"\x1b[A".to_vec()),
+                "down" => Some(b"\x1b[B".to_vec()),
+                "right" => Some(b"\x1b[C".to_vec()),
+                "left" => Some(b"\x1b[D".to_vec()),
+                _ if !stroke.modifiers.control && !stroke.modifiers.platform => stroke
+                    .key_char
+                    .as_ref()
+                    .map(|text| text.as_bytes().to_vec()),
+                _ => None,
+            }
+        };
+        let Some(bytes) = bytes else {
+            return false;
+        };
+        session.notifier.notify(Cow::Owned(bytes));
+        true
+    }
+
+    pub fn resize(&mut self, cols: usize, lines: usize) {
+        let Some(session) = &mut self.session else {
+            return;
+        };
+        let cols = cols.max(2);
+        let lines = lines.max(2);
+        session
+            .terminal
+            .lock()
+            .resize(SizedTerminal { lines, cols });
+        session.notifier.on_resize(WindowSize {
+            num_lines: lines.min(u16::MAX as usize) as u16,
+            num_cols: cols.min(u16::MAX as usize) as u16,
+            cell_width: 8,
+            cell_height: 16,
+        });
+    }
+
+    pub fn scroll(&mut self, lines: i32) {
+        if let Some(session) = &self.session {
+            session.terminal.lock().scroll_display(Scroll::Delta(lines));
+        }
+    }
+
+    pub fn screen(&self) -> String {
+        let Some(session) = &self.session else {
+            return String::new();
+        };
+        let terminal = session.terminal.lock();
+        let content = terminal.renderable_content();
+        let cursor = content.cursor.point;
+        let mut lines = vec![String::with_capacity(COLS); terminal.screen_lines()];
+        let top = -(content.display_offset as i32);
+        for indexed in content.display_iter {
+            let line = indexed.point.line.0 - top;
+            if let Some(output) = usize::try_from(line)
+                .ok()
+                .and_then(|line| lines.get_mut(line))
+            {
+                output.push(if indexed.point == cursor {
+                    '█'
+                } else {
+                    indexed.cell.c
+                });
+                if let Some(extra) = indexed.cell.zerowidth() {
+                    output.extend(extra);
+                }
+            }
+        }
+        lines
+            .into_iter()
+            .map(|line| line.trim_end().to_owned())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim_end()
+            .to_owned()
+    }
+}

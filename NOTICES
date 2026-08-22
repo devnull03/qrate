@@ -1,6 +1,34 @@
 Third-party material distributed with qrate.
 
 ================================================================================
+Pi coding agent — bundled executable, version 0.84.2
+================================================================================
+
+Copyright (c) 2025 Mario Zechner and contributors.
+
+Licensed under the MIT License. Source and license:
+https://github.com/earendil-works/pi
+
+================================================================================
+Alacritty terminal — alacritty_terminal crate, version 0.26.0
+================================================================================
+
+Copyright (c) 2016 Joe Wilm, The Alacritty Project Contributors.
+
+Licensed under the Apache License 2.0. Source and license:
+https://github.com/alacritty/alacritty
+
+================================================================================
+qrate Pi extension — bundled package, version 0.1.0
+================================================================================
+
+Copyright © 2026 Arnav Mehta.
+
+Licensed under the GNU Affero General Public License v3.0. Source:
+https://github.com/devnull03/qrate-pi-extension
+The license text is qrate's LICENSE.md.
+
+================================================================================
 Bundled Hunspell dictionaries — crates/spellcheck/dictionaries/{en-CA,en}.{aff,dic}
 ================================================================================
 

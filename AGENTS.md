@@ -62,7 +62,9 @@ anything, and never send a name that is not yours.
 `sed` rather than a JSON parser on purpose — the endpoint file is two flat fields, and a machine
 running qrate is not guaranteed to have `python` or `jq`.
 
-The token is regenerated every launch. Re-read the file if a call starts returning `forbidden`.
+The endpoint also carries `"bridge_protocol": 1`. Callers should reject a different protocol
+version rather than guessing at request semantics. The token is regenerated every launch. Re-read
+the file if a call starts returning `forbidden`.
 
 If your runtime cannot run a shell, any HTTP client will do: POST the request JSON to `url` with the
 `Authorization: Bearer <token>` and `X-Agent` headers. The bridge ignores the method and path, so it

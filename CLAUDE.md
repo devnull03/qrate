@@ -5,7 +5,7 @@ This project uses **teach-first pairing**. The goal is for the user to learn the
 `AGENTS.md` is the vendor-neutral companion to this file: it documents the bridge into a *running*
 qrate for any agent runtime. Nothing in that bridge writes a cell — an agent reads live state and
 stages findings the archivist accepts by hand. Change `crates/ai/src/agent.rs`,
-`crates/app/src/agent_bridge.rs`, `crates/table/src/agent.rs`, or
+`crates/app/src/agent_bridge.rs`, `crates/table/src/agent.rs`, `crates/agent-runtime`, or
 `crates/workspace/src/panels/agent.rs` (the panel the bridge reports itself into) and `AGENTS.md` is
 part of that change — nothing in CI checks it. The `X-Agent` header an agent names itself with only
 exists to fill a column in that panel, so the two drift together.
@@ -41,6 +41,7 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | Crate | What it is |
 |---|---|
 | `app` | the binary — `main`, menu bar, actions/keybindings, theming, logging, export entry points |
+| `agent-runtime` | the bundled Pi executable contract, isolated profile, and restricted PTY/session |
 | `table` | the spreadsheet grid: delegate, cell editing, undo history, filters, notes, photos, file links |
 | `workspace` | panel hosting — the panel registry, dock buttons, image viewer |
 | `window-wrapper` | shared window chrome: title bar, status bar, the window registry |

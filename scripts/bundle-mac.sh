@@ -42,6 +42,15 @@ for sidecar in libpdfium.dylib ffmpeg; do
   fi
 done
 
+# ---- Embedded agent --------------------------------------------------------
+# Kept in Resources rather than MacOS because only Pi itself is executable; the extension, prompt,
+# and skill are versioned data that qrate passes to it explicitly.
+if [ -d "$(dirname "$BIN")/agent" ]; then
+  cp -R "$(dirname "$BIN")/agent" "$app/Contents/Resources/agent"
+  chmod +x "$app/Contents/Resources/agent/pi"
+  echo "bundled Pi agent runtime"
+fi
+
 # ---- Info.plist (substitute version) ---------------------------------------
 sed "s/__VERSION__/${VERSION}/g" "$root/assets/macos/Info.plist" \
   > "$app/Contents/Info.plist"

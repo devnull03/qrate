@@ -162,7 +162,11 @@ fn start() -> Option<(TcpListener, String)> {
         None
     })?;
     let port = listener.local_addr().map_or(0, |addr| addr.port());
-    let endpoint = json!({ "url": format!("http://127.0.0.1:{port}"), "token": token });
+    let endpoint = json!({
+        "bridge_protocol": 1,
+        "url": format!("http://127.0.0.1:{port}"),
+        "token": token
+    });
     fs::write(&path, endpoint.to_string())
         .inspect_err(|err| {
             log::error!("agent bridge could not write {}: {err}", path.display());

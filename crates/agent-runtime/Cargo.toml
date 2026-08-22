@@ -1,0 +1,11 @@
+[package]
+name = "agent-runtime"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+alacritty_terminal.workspace = true
+gpui.workspace = true
+log.workspace = true
+settings = { path = "../settings" }
+

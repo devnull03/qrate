@@ -102,6 +102,18 @@ Section "Install"
   File /nonfatal "${SRCDIR}\pdfium.dll"
   File /nonfatal "${SRCDIR}\ffmpeg.exe"
 
+  ; Pi is the only program exposed by Agent's terminal. Its qrate extension is loaded by an
+  ; absolute path, so it ships as one private subtree rather than as a user-installed Pi package.
+  SetOutPath "$INSTDIR\agent"
+  File "${SRCDIR}\agent\pi.exe"
+  SetOutPath "$INSTDIR\agent\qrate-pi-extension"
+  File "${SRCDIR}\agent\qrate-pi-extension\SYSTEM.md"
+  SetOutPath "$INSTDIR\agent\qrate-pi-extension\extensions"
+  File "${SRCDIR}\agent\qrate-pi-extension\extensions\qrate.ts"
+  SetOutPath "$INSTDIR\agent\qrate-pi-extension\skills\qrate-live-review"
+  File "${SRCDIR}\agent\qrate-pi-extension\skills\qrate-live-review\SKILL.md"
+  SetOutPath "$INSTDIR"
+
   ; Start Menu + Desktop shortcuts. $SMPROGRAMS/$DESKTOP already resolve to the per-user or
   ; all-users locations MULTIUSER_INIT picked (it calls SetShellVarContext for us).
   CreateShortcut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\${EXENAME}"
@@ -124,6 +136,7 @@ Section "Uninstall"
   Delete "$INSTDIR\${EXENAME}"
   Delete "$INSTDIR\pdfium.dll"
   Delete "$INSTDIR\ffmpeg.exe"
+  RMDir /r "$INSTDIR\agent"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir  "$INSTDIR"
   Delete "$SMPROGRAMS\${APPNAME}.lnk"

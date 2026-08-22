@@ -66,8 +66,9 @@ qrate does not require an account or a hosted service. Google Sheets export is o
 
 ## Agent panel
 
-An external AI agent that you run yourself can read the project open in qrate, and stage
-findings you review in the Problems panel. It can never change a cell. See
+qrate can run its bundled Pi agent in a restricted terminal, using OpenRouter's free router by
+default after you sign in. Pi can read the open project and stage findings you review in the
+Problems panel; the qrate bridge can never change a cell. See
 [`docs/agent-panel.md`](docs/agent-panel.md) for how to read the panel, and
 [`AGENTS.md`](AGENTS.md) for the protocol.
 
@@ -89,6 +90,7 @@ The last three commands match the project quality checks. CI runs them on Window
 | Crate | Responsibility |
 | --- | --- |
 | `app` | Application setup, windows, menus, themes, logging, and exports |
+| `agent-runtime` | Bundled Pi discovery, isolated profile, and restricted terminal session |
 | `table` | Spreadsheet grid, editing, history, filters, notes, and file links |
 | `workspace` | Panels, docks, the gallery view, and the fullscreen viewer |
 | `window-wrapper` | Title bar, status bar, and window registry |

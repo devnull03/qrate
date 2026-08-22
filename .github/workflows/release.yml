@@ -124,6 +124,11 @@ jobs:
           ./scripts/fetch-binaries.sh .
           lipo -info libpdfium.dylib || true
 
+      - name: Fetch embedded Pi agent
+        run: |
+          chmod +x scripts/fetch-agent-runtime.sh
+          ./scripts/fetch-agent-runtime.sh . darwin-universal
+
       - name: Bundle .app and .dmg
         run: |
           chmod +x scripts/bundle-mac.sh
@@ -176,6 +181,10 @@ jobs:
           mkdir -p dist/portable
           chmod +x scripts/fetch-binaries.sh
           ./scripts/fetch-binaries.sh dist/portable
+
+      - name: Fetch embedded Pi agent
+        shell: pwsh
+        run: ./scripts/fetch-agent-runtime.ps1 -Destination dist/portable
 
       - name: Package zip + NSIS + MSI installers
         shell: pwsh
@@ -261,6 +270,8 @@ jobs:
           # ffmpeg does not: it is one `apt install` away and every distro packages it, so we
           # would be shipping ~50 MB to duplicate something already on most machines.
           QRATE_SKIP_FFMPEG=1 ./scripts/fetch-binaries.sh "$stage"
+          chmod +x scripts/fetch-agent-runtime.sh
+          ./scripts/fetch-agent-runtime.sh "$stage" linux-x64
           printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=qrate' \
             'Exec=qrate' 'Icon=qrate' 'Categories=Office;Database;' \
             > "$stage/qrate.desktop"

@@ -463,6 +463,7 @@ fn main() {
         );
         checks::init(cx);
         agent_bridge::init(cx);
+        agent_runtime::init(cx);
 
         cx.on_action(|_: &ReloadPlugins, cx| {
             plugin_host::reload(cx);

@@ -44,7 +44,16 @@
     <Property Id="ARPCOMMENTS" Value="Unsigned build." />
 
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="qrate" />
+      <Directory Id="INSTALLFOLDER" Name="qrate">
+        <Directory Id="AgentFolder" Name="agent">
+          <Directory Id="AgentExtensionFolder" Name="qrate-pi-extension">
+            <Directory Id="AgentExtensionsFolder" Name="extensions" />
+            <Directory Id="AgentSkillsFolder" Name="skills">
+              <Directory Id="AgentLiveReviewSkillFolder" Name="qrate-live-review" />
+            </Directory>
+          </Directory>
+        </Directory>
+      </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
       <Directory Id="AppProgramMenuFolder" Name="qrate" />
@@ -59,6 +68,18 @@
           <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="qrate"
                      WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" Advertise="yes" />
         </File>
+      </Component>
+      <Component Id="PiExecutable" Guid="*" Directory="AgentFolder">
+        <File Id="PiExe" Source="$(var.SrcDir)\agent\pi.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="PiSystemPrompt" Guid="*" Directory="AgentExtensionFolder">
+        <File Id="PiSystemMd" Source="$(var.SrcDir)\agent\qrate-pi-extension\SYSTEM.md" KeyPath="yes" />
+      </Component>
+      <Component Id="PiQrateExtension" Guid="*" Directory="AgentExtensionsFolder">
+        <File Id="PiQrateTs" Source="$(var.SrcDir)\agent\qrate-pi-extension\extensions\qrate.ts" KeyPath="yes" />
+      </Component>
+      <Component Id="PiQrateSkill" Guid="*" Directory="AgentLiveReviewSkillFolder">
+        <File Id="PiQrateSkillMd" Source="$(var.SrcDir)\agent\qrate-pi-extension\skills\qrate-live-review\SKILL.md" KeyPath="yes" />
       </Component>
 
       <!-- Preview sidecars — see scripts/fetch-binaries.sh. Both are optional at runtime (the

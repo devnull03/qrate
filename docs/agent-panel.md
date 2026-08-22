@@ -10,9 +10,22 @@ program that could reach this connection could already read your `.qrate` file d
 so the bridge does not widen what a local program can see. It does show unsaved edits,
 which the file does not.
 
-The **Agent** panel, in the right dock, lists everything that happened on that connection.
-An agent cannot change a cell. It can only read data and stage findings that you accept or
-ignore.
+The **Agent** panel, in the right dock, has two tabs. **Terminal** runs qrate's bundled Pi agent.
+**Log** lists everything that happened on the bridge. An agent cannot change a cell through the
+bridge. It can only read data and stage findings that you accept or ignore.
+
+## Start Pi
+
+Open a project, then open **Agent ▸ Terminal**. qrate resumes the Pi session for that project. Use
+**New** for a clean session, **Stop** to end the process, or **Restart** to resume it.
+
+The first time, type `/login openrouter` and follow Pi's sign-in flow. Your credential is stored by
+Pi in qrate's private Pi profile; qrate does not read or store it. Pi starts with OpenRouter and the
+`openrouter/free` router. The terminal runs only Pi, not a general shell.
+
+Pi can use its ordinary coding tools when you explicitly ask for coding work. It asks before every
+shell command, write, or edit, and before reading outside the open project's directory. qrate's
+metadata tools remain read-only and can only stage proposed findings.
 
 ## How to read an entry
 

@@ -14,6 +14,7 @@ diagnostics = { path = "../diagnostics" }
 preview = { path = "../preview" }
 settings = { path = "../settings" }
 table = { path = "../table" }
+agent-runtime = { path = "../agent-runtime" }
 
 [dev-dependencies]
 # `#[gpui::test]`, TestAppContext, and run_test are all behind this feature.
