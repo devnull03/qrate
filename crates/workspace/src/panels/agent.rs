@@ -391,18 +391,21 @@ impl Render for AgentPanel {
                                 .overflow_hidden()
                                 .bg(theme.background)
                                 .px_2()
-                                .py_1()
+                                .pt_1()
+                                .pb(px(4.) + crop)
                                 .text_sm()
+                                .line_height(px(16.))
                                 .font_family("monospace")
                                 .on_scroll_wheel(cx.listener(
                                     |this, event: &ScrollWheelEvent, _window, cx| {
                                         let lines = match event.delta {
-                                            ScrollDelta::Lines(delta) => delta.y.round() as i32,
+                                            ScrollDelta::Lines(delta) => delta.y,
                                             ScrollDelta::Pixels(delta) => {
-                                                (f32::from(delta.y) / 16.).round() as i32
+                                                f32::from(delta.y) / 16.
                                             }
                                         };
                                         this.terminal.scroll(lines);
+                                        cx.stop_propagation();
                                         cx.notify();
                                     },
                                 ))
@@ -416,10 +419,13 @@ impl Render for AgentPanel {
                                     canvas(
                                         move |bounds, window, cx| {
                                             let next = (
-                                                (f32::from(bounds.size.width) / 8.)
+                                                ((f32::from(bounds.size.width) - 16.) / 8.)
                                                     .floor()
                                                     .max(2.) as usize,
-                                                (f32::from(bounds.size.height) / 16.)
+                                                ((f32::from(bounds.size.height)
+                                                    - 8.
+                                                    - f32::from(crop))
+                                                    / 16.)
                                                     .floor()
                                                     .max(2.) as usize,
                                             );

@@ -1,12 +1,16 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::process::Command;
 use std::sync::{Arc, mpsc};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt as _;
 
 use alacritty_terminal::event::{Event, EventListener, Notify as _, OnResize as _, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::sync::FairMutex;
-use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::tty::{self, Options, Shell};
 use gpui::{App, KeyDownEvent};
 
@@ -14,6 +18,34 @@ use crate::AgentRuntime;
 
 const COLS: usize = 100;
 const LINES: usize = 32;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Ask the user's ordinary Pi installation to resolve its OpenRouter credential. The credential
+/// stays in memory and is passed to the qrate-owned Pi process through its environment; it is never
+/// copied into qrate's profile or included in logs or command-line arguments.
+fn global_openrouter_credential(program: &std::path::Path) -> Option<String> {
+    for auth_command in ["print-api-key", "print-bearer-token"] {
+        let mut command = Command::new(program);
+        command.args(["auth", auth_command, "--provider", "openrouter"]);
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+
+        let Ok(output) = command.output() else {
+            log::debug!("could not query the global Pi OpenRouter credential");
+            return None;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let credential = String::from_utf8(output.stdout).ok()?;
+        let credential = credential.trim();
+        if !credential.is_empty() {
+            return Some(credential.to_owned());
+        }
+    }
+    None
+}
 
 struct TerminalSize;
 
@@ -75,6 +107,7 @@ impl Drop for Session {
 pub struct AgentTerminal {
     session: Option<Session>,
     status: String,
+    scroll_remainder: f32,
 }
 
 impl Default for AgentTerminal {
@@ -82,6 +115,7 @@ impl Default for AgentTerminal {
         Self {
             session: None,
             status: "Pi has not started.".to_owned(),
+            scroll_remainder: 0.,
         }
     }
 }
@@ -97,6 +131,7 @@ impl AgentTerminal {
 
     pub fn start(&mut self, continue_previous: bool, cx: &App) {
         self.stop();
+        self.scroll_remainder = 0.;
         let Some(runtime) = cx.try_global::<AgentRuntime>().cloned() else {
             self.status = "Pi is not installed in this qrate build.".to_owned();
             return;
@@ -143,8 +178,6 @@ impl AgentTerminal {
             "openrouter".to_owned(),
             "--model".to_owned(),
             "openrouter/free".to_owned(),
-            "--models".to_owned(),
-            "openrouter/free".to_owned(),
             "--no-extensions".to_owned(),
             "--extension".to_owned(),
             runtime.extension.to_string_lossy().into_owned(),
@@ -161,6 +194,16 @@ impl AgentTerminal {
         }
 
         let mut env: HashMap<String, String> = std::env::vars().collect();
+        if let Some(credential) = global_openrouter_credential(&runtime.program) {
+            // A qrate-local auth.json still takes priority inside Pi. This is only a fallback to the
+            // user's global Pi login, and avoids duplicating a refresh token on disk.
+            env.insert("OPENROUTER_API_KEY".to_owned(), credential);
+            log::info!("embedded Pi can use the global Pi OpenRouter login as an auth fallback");
+        } else {
+            log::info!(
+                "no global Pi OpenRouter login is available; embedded Pi will use its isolated login or OpenRouter's anonymous free router"
+            );
+        }
         // Keep Pi's provider login under its isolated profile, but preserve the ordinary process
         // environment for TLS, proxies, locale, and platform support.
         env.extend([
@@ -291,6 +334,11 @@ impl AgentTerminal {
                 "backspace" => Some(vec![0x7f]),
                 "tab" => Some(vec![b'\t']),
                 "escape" => Some(vec![0x1b]),
+                "home" => Some(b"\x1b[H".to_vec()),
+                "end" => Some(b"\x1b[F".to_vec()),
+                "pageup" => Some(b"\x1b[5~".to_vec()),
+                "pagedown" => Some(b"\x1b[6~".to_vec()),
+                "delete" => Some(b"\x1b[3~".to_vec()),
                 "up" => Some(b"\x1b[A".to_vec()),
                 "down" => Some(b"\x1b[B".to_vec()),
                 "right" => Some(b"\x1b[C".to_vec()),
@@ -329,8 +377,33 @@ impl AgentTerminal {
         }
     }
 
-    pub fn scroll(&mut self, lines: i32) {
-        if let Some(session) = &self.session {
+    pub fn scroll(&mut self, lines: f32) {
+        self.scroll_remainder += lines;
+        let lines = self.scroll_remainder.trunc() as i32;
+        self.scroll_remainder -= lines as f32;
+        if lines == 0 {
+            return;
+        }
+
+        let Some(session) = &self.session else {
+            return;
+        };
+        let mode = *session.terminal.lock().mode();
+        if session.running && mode.intersects(TermMode::MOUSE_MODE) {
+            // Pi's fullscreen TUI owns its transcript viewport and enables terminal mouse
+            // reporting. Send wheel reports into the transcript rather than trying to scroll the
+            // alternate screen's empty native history. Row/column 1 is always above Pi's fixed
+            // editor and footer.
+            let button = if lines > 0 { 64 } else { 65 };
+            let report = if mode.contains(TermMode::SGR_MOUSE) {
+                format!("\x1b[<{button};1;1M").into_bytes()
+            } else {
+                vec![0x1b, b'[', b'M', button + 32, 33, 33]
+            };
+            for _ in 0..lines.unsigned_abs().min(12) {
+                session.notifier.notify(Cow::Owned(report.clone()));
+            }
+        } else {
             session.terminal.lock().scroll_display(Scroll::Delta(lines));
         }
     }
