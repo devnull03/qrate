@@ -63,6 +63,7 @@ struct Session {
     terminal: Arc<FairMutex<Term<UiEvents>>>,
     notifier: Notifier,
     events: mpsc::Receiver<Event>,
+    running: bool,
 }
 
 impl Drop for Session {
@@ -87,7 +88,7 @@ impl Default for AgentTerminal {
 
 impl AgentTerminal {
     pub fn is_running(&self) -> bool {
-        self.session.is_some()
+        self.session.as_ref().is_some_and(|session| session.running)
     }
 
     pub fn status(&self) -> &str {
@@ -111,9 +112,30 @@ impl AgentTerminal {
             .to_path_buf();
         let session_dir = runtime.profile.join("sessions").join("qrate");
         if let Err(err) = std::fs::create_dir_all(&session_dir) {
+            log::error!(
+                "could not create embedded Pi session directory {}: {err}",
+                session_dir.display()
+            );
             self.status = format!("Pi's session directory could not be created: {err}");
             return;
         }
+
+        log::info!(
+            "starting embedded Pi: program={}, cwd={}, profile={}, session_dir={}, continue_previous={continue_previous}",
+            runtime.program.display(),
+            cwd.display(),
+            runtime.profile.display(),
+            session_dir.display()
+        );
+        log::debug!(
+            "embedded Pi resources: extension={} (exists={}), skill={} (exists={}), endpoint={} (exists={})",
+            runtime.extension.display(),
+            runtime.extension.is_file(),
+            runtime.skill.display(),
+            runtime.skill.is_file(),
+            runtime.endpoint.display(),
+            runtime.endpoint.is_file()
+        );
 
         let mut args = runtime.leading_args.clone();
         args.extend([
@@ -185,6 +207,7 @@ impl AgentTerminal {
         let pty = match tty::new(&options, size, 0) {
             Ok(pty) => pty,
             Err(err) => {
+                log::error!("could not create embedded Pi PTY: {err}");
                 self.status = format!("Pi could not start: {err}");
                 return;
             }
@@ -192,6 +215,7 @@ impl AgentTerminal {
         let event_loop = match EventLoop::new(terminal.clone(), listener, pty, true, false) {
             Ok(event_loop) => event_loop,
             Err(err) => {
+                log::error!("could not create embedded Pi terminal event loop: {err}");
                 self.status = format!("Pi's terminal could not start: {err}");
                 return;
             }
@@ -202,7 +226,9 @@ impl AgentTerminal {
             terminal,
             notifier,
             events,
+            running: true,
         });
+        log::info!("embedded Pi process started");
         self.status = if continue_previous {
             "Resuming this project's Pi session…".to_owned()
         } else {
@@ -212,7 +238,7 @@ impl AgentTerminal {
 
     /// Drain terminal notifications. Returns whether the panel should repaint.
     pub fn poll(&mut self) -> bool {
-        let Some(session) = &self.session else {
+        let Some(session) = &mut self.session else {
             return false;
         };
         let mut changed = false;
@@ -220,17 +246,23 @@ impl AgentTerminal {
         while let Ok(event) = session.events.try_recv() {
             changed = true;
             if let Event::ChildExit(status) = event {
-                exited = Some(format!("Pi exited with {status}."));
+                exited = Some(status);
             }
         }
         if let Some(status) = exited {
-            self.status = status;
-            self.session = None;
+            log::warn!("embedded Pi exited with {status}");
+            session.running = false;
+            self.status = format!(
+                "Pi exited with {status}. Its final output is preserved below; launch details are in qrate.log."
+            );
         }
         changed
     }
 
     pub fn stop(&mut self) {
+        if self.is_running() {
+            log::info!("stopping embedded Pi");
+        }
         self.session = None;
         self.status = "Pi is stopped.".to_owned();
     }
@@ -239,6 +271,9 @@ impl AgentTerminal {
         let Some(session) = &self.session else {
             return false;
         };
+        if !session.running {
+            return false;
+        }
         let stroke = &event.keystroke;
         let bytes = if stroke.modifiers.secondary() && stroke.key == "v" {
             cx.read_from_clipboard()
@@ -284,12 +319,14 @@ impl AgentTerminal {
             .terminal
             .lock()
             .resize(SizedTerminal { lines, cols });
-        session.notifier.on_resize(WindowSize {
-            num_lines: lines.min(u16::MAX as usize) as u16,
-            num_cols: cols.min(u16::MAX as usize) as u16,
-            cell_width: 8,
-            cell_height: 16,
-        });
+        if session.running {
+            session.notifier.on_resize(WindowSize {
+                num_lines: lines.min(u16::MAX as usize) as u16,
+                num_cols: cols.min(u16::MAX as usize) as u16,
+                cell_width: 8,
+                cell_height: 16,
+            });
+        }
     }
 
     pub fn scroll(&mut self, lines: i32) {

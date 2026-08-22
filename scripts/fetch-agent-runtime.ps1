@@ -27,11 +27,14 @@ try {
 
     Expand-Archive $piArchive -DestinationPath (Join-Path $temp "pi")
     tar -xzf $extensionArchive -C $temp
-    Copy-Item (Join-Path $temp "pi/pi.exe") (Join-Path $runtime "pi.exe") -Force
+    # Pi's executable loads its built-in themes and native helpers beside itself. Copy the complete
+    # release payload; a lone pi.exe starts under ConPTY but exits as soon as the TUI loads.
+    Copy-Item (Join-Path $temp "pi/*") $runtime -Recurse -Force
     $extension = Join-Path $runtime "qrate-pi-extension"
     New-Item -ItemType Directory -Force -Path $extension | Out-Null
     Copy-Item (Join-Path $temp "qrate-pi-extension-$extensionVersion/SYSTEM.md") $extension -Force
     Copy-Item (Join-Path $temp "qrate-pi-extension-$extensionVersion/extensions") $extension -Recurse -Force
+    Copy-Item (Join-Path $temp "qrate-pi-extension-$extensionVersion/src") $extension -Recurse -Force
     Copy-Item (Join-Path $temp "qrate-pi-extension-$extensionVersion/skills") $extension -Recurse -Force
     Write-Host "Fetched Pi $piVersion and qrate-pi-extension $extensionVersion into $runtime"
 }

@@ -105,13 +105,7 @@ Section "Install"
   ; Pi is the only program exposed by Agent's terminal. Its qrate extension is loaded by an
   ; absolute path, so it ships as one private subtree rather than as a user-installed Pi package.
   SetOutPath "$INSTDIR\agent"
-  File "${SRCDIR}\agent\pi.exe"
-  SetOutPath "$INSTDIR\agent\qrate-pi-extension"
-  File "${SRCDIR}\agent\qrate-pi-extension\SYSTEM.md"
-  SetOutPath "$INSTDIR\agent\qrate-pi-extension\extensions"
-  File "${SRCDIR}\agent\qrate-pi-extension\extensions\qrate.ts"
-  SetOutPath "$INSTDIR\agent\qrate-pi-extension\skills\qrate-live-review"
-  File "${SRCDIR}\agent\qrate-pi-extension\skills\qrate-live-review\SKILL.md"
+  File /r "${SRCDIR}\agent\*"
   SetOutPath "$INSTDIR"
 
   ; Start Menu + Desktop shortcuts. $SMPROGRAMS/$DESKTOP already resolve to the per-user or

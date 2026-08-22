@@ -39,9 +39,22 @@ fn prepare() -> Result<AgentRuntime, String> {
     let program = root.join(if cfg!(windows) { "pi.exe" } else { "pi" });
     let package = root.join("qrate-pi-extension");
     let extension = package.join("extensions/qrate.ts");
+    let extension_bridge = package.join("src/bridge.ts");
+    let extension_permissions = package.join("src/permissions.ts");
     let skill = package.join("skills/qrate-live-review/SKILL.md");
     let source_system = package.join("SYSTEM.md");
-    for required in [&program, &extension, &skill, &source_system] {
+    let dark_theme = root.join("theme/dark.json");
+    let light_theme = root.join("theme/light.json");
+    for required in [
+        &program,
+        &extension,
+        &extension_bridge,
+        &extension_permissions,
+        &skill,
+        &source_system,
+        &dark_theme,
+        &light_theme,
+    ] {
         if !required.is_file() {
             return Err(format!("{} is missing", required.display()));
         }
