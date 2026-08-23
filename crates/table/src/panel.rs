@@ -963,7 +963,21 @@ impl Render for TablePanel {
                 cx.notify();
             }))
             // The find input propagates Escape (it doesn't consume it), so dismiss the bar here.
-            .on_action(cx.listener(|this, _: &Escape, window, cx| this.dismiss_search(window, cx)))
+            //
+            // Only when the bar's own fields hold the key, though. `Escape` is bound in the `Input`
+            // context, which the *cell* editor is in too, and this listener is an ancestor of both —
+            // so without the check, Escape in a cell editor either closed the find bar behind it or,
+            // with the bar already shut, was swallowed by a no-op handler and did nothing at all.
+            // An action stops propagating by default, so declining it has to be explicit.
+            .on_action(cx.listener(|this, _: &Escape, window, cx| {
+                let mine = this.search_input.focus_handle(cx).is_focused(window)
+                    || this.replace_input.focus_handle(cx).is_focused(window);
+                if mine {
+                    this.dismiss_search(window, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_action(cx.listener(|this, _: &EditCell, window, cx| this.edit_selected(window, cx)))
             .on_action(cx.listener(|this, _: &InsertNote, window, cx| {
                 note::open_on_selection(&this.state.clone(), window, cx)

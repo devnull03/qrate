@@ -876,10 +876,15 @@ impl Render for DetailsPanel {
             // no editor open the key isn't this action at all — the panel's own `escape` binding
             // makes it `table::Deselect`, which is what replaces the Clear button the bundle used
             // to carry.
+            // An action stops propagating by default, so an Escape this panel has no edit to
+            // discard has to be handed back explicitly — otherwise it dies here instead of
+            // reaching whatever else was listening.
             .on_action(cx.listener(|this, _: &Escape, window, cx| {
                 if this.editing.take().is_some() {
                     this.focus_handle.focus(window, cx);
                     cx.notify();
+                } else {
+                    cx.propagate();
                 }
             }))
             .child(
