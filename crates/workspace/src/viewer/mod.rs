@@ -30,6 +30,21 @@ use gpui_component::{
 use crate::viewer::find::Find;
 use crate::viewer::transport::Transport;
 
+// `CloseViewerLayer` is Escape while a viewer is open: the find panel if it is showing, else the
+// viewer itself.
+//
+// An action rather than a key handled in `Viewer`'s `on_key_down`, because gpui resolves every
+// matching *binding* before it runs a single key listener — so a listener can never outrank a
+// binding, however deep it sits. The centre-scoped viewer is mounted inside `ViewsPanel`, whose
+// context binds Escape to `Deselect`; as a listener the viewer's own Escape was unreachable there
+// and the key dropped the row selection instead of closing the overlay. As a binding in the deeper
+// `VIEWER_CONTEXT` it sorts first, and its handler stops the dispatch.
+actions!(qrate, [CloseViewerLayer]);
+
+/// Key context of the viewer overlay. Deeper than `ViewsPanel`'s and the workspace's, which is what
+/// makes Escape mean "close me" wherever the overlay is mounted.
+pub const VIEWER_CONTEXT: &str = "Viewer";
+
 /// How wide the find panel opens, and how far it may be dragged either way. The floor keeps a row
 /// wide enough to show context around a match; the ceiling stops the panel swallowing the page.
 const PANEL: Pixels = px(384.);
@@ -364,9 +379,20 @@ impl Render for Viewer {
 
         div()
             .track_focus(&self.focus_handle)
+            .key_context(VIEWER_CONTEXT)
             .id("viewer")
             .role(Role::Group)
             .aria_label("File viewer")
+            // The find panel is the inner layer, so Escape dismisses it before the viewer.
+            .on_action(cx.listener(|this, _: &CloseViewerLayer, window, cx| {
+                if this.find_open {
+                    this.find_open = false;
+                    window.focus(&this.focus_handle, cx);
+                    cx.notify();
+                } else {
+                    close_viewer(cx);
+                }
+            }))
             // Fills whichever overlay slot mounted it; `absolute` so it stacks over that slot's
             // content. `top_0`/`left_0` are load-bearing: with no insets an absolute box takes a
             // *static* position, i.e. after its in-flow siblings — so in the centre slot, whose
@@ -390,13 +416,6 @@ impl Render for Viewer {
                     "f" if ev.keystroke.modifiers.secondary() && this.document => {
                         this.open_find(window, cx);
                     }
-                    // The panel is the inner layer, so Escape dismisses it before the viewer.
-                    "escape" if this.find_open => {
-                        this.find_open = false;
-                        window.focus(&this.focus_handle, cx);
-                        cx.notify();
-                    }
-                    "escape" => close_viewer(cx),
                     // The keys anyone reading a document reaches for first. Harmless on a photo,
                     // where there is only ever one page to move between — but kept off a video,
                     // whose position is the scrubber's, and whose thumb would be left behind.

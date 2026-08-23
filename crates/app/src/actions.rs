@@ -78,10 +78,14 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // Backspace deleting *text* while the cell editor or the find bar holds focus.
         KeyBinding::new("backspace", table::Clear, Some(table::GRID_CONTEXT)),
         KeyBinding::new("delete", table::Clear, Some(table::GRID_CONTEXT)),
-        // Escape drops the selection — what the Details panel used to spend a button on. Scoped to
-        // the three places a selection is visible rather than bound globally: the find bar, the
-        // cell editor, a popup menu and the fullscreen viewer all answer Escape with "close me",
-        // and each of those contexts sits deeper than these, so it keeps that meaning there.
+        // Escape drops the selection — what the Details panel used to spend a button on. It is the
+        // *last* thing Escape can mean, so it is scoped to the three places a selection is visible
+        // rather than bound globally, and anything that answers Escape with "close me" has to
+        // outrank it from a deeper context.
+        //
+        // Deeper context, not a deeper key handler: gpui resolves every matching binding before it
+        // runs one `on_key_down` listener, so a listener loses to a binding no matter where it
+        // sits. That is what left the gallery's viewer unable to close — see `CloseViewerLayer`.
         KeyBinding::new("escape", table::Deselect, Some(table::GRID_CONTEXT)),
         KeyBinding::new(
             "escape",
@@ -89,6 +93,12 @@ pub fn key_bindings() -> Vec<KeyBinding> {
             Some(workspace::DETAILS_META.name),
         ),
         KeyBinding::new("escape", table::Deselect, Some(workspace::VIEWS_CONTEXT)),
+        // Beats all three above by depth wherever the overlay is mounted.
+        KeyBinding::new(
+            "escape",
+            workspace::CloseViewerLayer,
+            Some(workspace::VIEWER_CONTEXT),
+        ),
     ]
     .into_iter()
     // Ctrl+1, Ctrl+2, … pick a view directly, in `ViewMode::ALL` order — so a new view gets its
@@ -127,4 +137,57 @@ pub fn register_global_handlers(cx: &mut App) {
     // globally is the only place that catches it from any panel.
     cx.on_action(|_: &table::Undo, cx| table::history_step(false, cx));
     cx.on_action(|_: &table::Redo, cx| table::history_step(true, cx));
+}
+
+#[cfg(test)]
+mod tests {
+    // Never `use super::*`: the parent has `use gpui::*`, and chaining that glob into a test module
+    // lets gpui's `test` macro shadow the `#[test]` its own expansion emits (see CLAUDE.md).
+    use gpui::{KeyContext, Keymap, Keystroke};
+
+    use crate::actions::key_bindings;
+
+    /// What Escape resolves to for a focus chain, outermost context first. gpui sorts the matching
+    /// bindings by how deep their context sits, so the first one is what actually runs — which
+    /// makes this the whole Escape priority ranking, readable without a window.
+    fn escape_action(contexts: &[&str]) -> Option<&'static str> {
+        let keymap = Keymap::new(key_bindings());
+        let stack: Vec<KeyContext> = contexts
+            .iter()
+            .map(|context| KeyContext::parse(context).expect("test context parses"))
+            .collect();
+        let escape = Keystroke::parse("escape").expect("escape parses");
+        let (bindings, _) = keymap.bindings_for_input(&[escape], &stack);
+        bindings.first().map(|binding| binding.action().name())
+    }
+
+    /// The bug this ranking was written for: a photo opened from a gallery card mounts inside
+    /// `ViewsPanel`, so both contexts are live at once. Escape has to close the overlay; dropping
+    /// the row selection out from under it left the picture on screen with an empty Details panel.
+    #[test]
+    fn the_viewer_outranks_deselect_wherever_it_is_mounted() {
+        assert_eq!(
+            escape_action(&["ViewsPanel", "Viewer"]),
+            Some("qrate::CloseViewerLayer"),
+            "a gallery-scoped viewer closes before the selection is dropped"
+        );
+        assert_eq!(
+            escape_action(&["Viewer"]),
+            Some("qrate::CloseViewerLayer"),
+            "and a workspace-scoped one, which has no ViewsPanel above it"
+        );
+    }
+
+    /// Deselect is the last thing Escape can mean, so it still has to be the answer wherever
+    /// nothing deeper is open — otherwise fixing the ranking above would just break the key.
+    #[test]
+    fn deselect_still_answers_escape_in_each_place_a_selection_shows() {
+        for context in ["DataTable", "DetailsPanel", "ViewsPanel"] {
+            assert_eq!(
+                escape_action(&[context]),
+                Some("qrate::Deselect"),
+                "{context} drops the selection when no overlay is open"
+            );
+        }
+    }
 }

@@ -7,7 +7,7 @@ mod panels;
 mod viewer;
 mod views;
 
-pub use viewer::{Scope as ViewerScope, open_viewer};
+pub use viewer::{CloseViewerLayer, Scope as ViewerScope, VIEWER_CONTEXT, open_viewer};
 
 pub use dock_button::DockToggleButton;
 pub use panel_registry::{BarSide, PANELS, PanelMeta, PanelRegistry, bar_side};
