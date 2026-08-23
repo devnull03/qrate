@@ -61,8 +61,19 @@ fn seed(
     delegate.editing = state;
 }
 
+/// Leave edit mode without writing the typed text anywhere — Escape, the spreadsheet convention.
+/// Reports whether there was an edit to abandon, so a caller that finds none can hand the key on
+/// rather than swallowing it.
+///
+/// Dropping the state is the whole cancel: closing the editor moves focus back to the grid, and
+/// the blur that follows reaches [`commit`], which finds `Idle` and writes nothing. The editor's
+/// abandoned text needs no clearing either — [`seed`] overwrites it when the next edit opens.
+pub(crate) fn cancel(delegate: &mut QrateTableDelegate) -> bool {
+    !matches!(std::mem::take(&mut delegate.editing), EditState::Idle)
+}
+
 /// Write the editor's current text back into whatever is being edited and leave edit mode. No-op
-/// if nothing is (e.g. a stray blur).
+/// if nothing is (e.g. a stray blur, or an edit [`cancel`] has already dropped).
 ///
 /// A rename comes back for the caller to run instead of being applied here: re-keying a column
 /// reaches into the table state this is already inside, and re-entering that `update` would panic.
@@ -79,4 +90,107 @@ pub(crate) fn commit(
     }
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
     None
+}
+
+#[cfg(test)]
+mod tests {
+    // Never `use super::*` here — the chained `gpui::*` glob would let gpui's `test` macro shadow
+    // the `#[test]` its own expansion emits (see CLAUDE.md).
+    use gpui::TestAppContext;
+
+    use crate::editing::{self, EditState};
+    use crate::{TablePanel, TableStateHandle};
+
+    fn project() -> settings::project::CurrentProject {
+        settings::project::CurrentProject {
+            file: std::env::temp_dir().join("qrate-editing-cancel.qrate"),
+            data: settings::project::ProjectData {
+                name: "T".into(),
+                columns: Vec::new(),
+                headers: vec!["Title".into()],
+                rows: vec![vec!["before".into()]],
+                row_ids: vec![1],
+                values: Default::default(),
+            },
+        }
+    }
+
+    fn panel(
+        cx: &mut TestAppContext,
+    ) -> gpui::Entity<gpui_component::table::TableState<crate::delegate::QrateTableDelegate>> {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(project());
+        });
+        cx.add_window_view(TablePanel::new);
+        cx.update(|cx| {
+            cx.try_global::<TableStateHandle>()
+                .and_then(|h| h.0.upgrade())
+                .expect("the panel publishes its state handle")
+        })
+    }
+
+    /// Escape is the one exit from a cell edit that must not write. It cannot stop the blur that
+    /// follows, and that blur runs the same commit path Enter does — so dropping the edit state is
+    /// what has to make the commit a no-op. The editor is left empty here, which is why a cancel
+    /// that failed would show up as a *blanked* cell rather than an unchanged one.
+    #[gpui::test]
+    fn escape_abandons_the_edit_and_the_blur_after_it_writes_nothing(cx: &mut TestAppContext) {
+        let state = panel(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, cx| {
+                let delegate = state.delegate_mut();
+                delegate.editing = EditState::Editing { row: 0, col: 0 };
+
+                assert!(editing::cancel(delegate), "there was an edit to abandon");
+                assert_eq!(delegate.editing, EditState::Idle);
+
+                assert!(editing::commit(delegate, cx).is_none());
+                assert_eq!(
+                    delegate
+                        .cell(0, 0)
+                        .map(|c| c.to_string())
+                        .unwrap_or_default(),
+                    "before",
+                    "the blur after Escape must leave the cell alone"
+                );
+            });
+        });
+    }
+
+    /// The other half: without the cancel, that same commit does write — so the assertion above is
+    /// about `cancel` and not about a commit path that never fires.
+    #[gpui::test]
+    fn a_commit_with_no_cancel_still_writes_the_editors_text(cx: &mut TestAppContext) {
+        let state = panel(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, cx| {
+                let delegate = state.delegate_mut();
+                delegate.editing = EditState::Editing { row: 0, col: 0 };
+
+                assert!(editing::commit(delegate, cx).is_none());
+                assert_eq!(
+                    delegate
+                        .cell(0, 0)
+                        .map(|c| c.to_string())
+                        .unwrap_or_default(),
+                    "",
+                    "an uncancelled commit writes whatever the editor holds"
+                );
+            });
+        });
+    }
+
+    /// Nothing to abandon has to be reported as such: the Escape handler hands the key on when
+    /// this is false, and swallowing it there is what used to make Escape a dead key mid-edit.
+    #[gpui::test]
+    fn cancelling_outside_an_edit_reports_nothing_to_do(cx: &mut TestAppContext) {
+        let state = panel(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                assert!(!editing::cancel(state.delegate_mut()));
+            });
+        });
+    }
 }

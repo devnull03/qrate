@@ -970,10 +970,25 @@ impl Render for TablePanel {
             // with the bar already shut, was swallowed by a no-op handler and did nothing at all.
             // An action stops propagating by default, so declining it has to be explicit.
             .on_action(cx.listener(|this, _: &Escape, window, cx| {
-                let mine = this.search_input.focus_handle(cx).is_focused(window)
-                    || this.replace_input.focus_handle(cx).is_focused(window);
-                if mine {
+                if this.search_input.focus_handle(cx).is_focused(window)
+                    || this.replace_input.focus_handle(cx).is_focused(window)
+                {
                     this.dismiss_search(window, cx);
+                    return;
+                }
+                // Escape abandons a cell edit (or a column rename) instead of committing it, which
+                // is what every spreadsheet does and the only way to back out of a mistyped cell.
+                // Enter and clicking away still commit — this is the one exit that does not.
+                if this.state.update(cx, |state, cx| {
+                    let cancelled = editing::cancel(state.delegate_mut());
+                    if cancelled {
+                        cx.notify();
+                    }
+                    cancelled
+                }) {
+                    // The editor has just gone away; the grid's own keys live on *its* focus
+                    // handle, so they need it back.
+                    this.focus_table(window, cx);
                 } else {
                     cx.propagate();
                 }
