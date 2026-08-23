@@ -26,6 +26,10 @@ use serde_json::json;
 use workspace::{AgentCall, AgentEntry};
 
 const POLL: Duration = Duration::from_millis(250);
+/// The tick while the bridge is switched off. Nothing is listening, so the only thing a tick can
+/// discover is the setting being turned back on — and a second of latency on a toggle is invisible,
+/// where 250 ms of it is four main-thread wake-ups a second for a feature nobody enabled.
+const IDLE_POLL: Duration = Duration::from_secs(1);
 /// How long an authenticated agent may go quiet before the panel calls it disconnected. The
 /// protocol has no session and no goodbye — one request, one answer, socket closed — so silence is
 /// the only signal there is.
@@ -68,7 +72,8 @@ pub fn init(cx: &mut App) {
         let mut seen: HashMap<SharedString, Instant> = HashMap::new();
 
         loop {
-            cx.background_executor().timer(POLL).await;
+            let tick = if serving.is_some() { POLL } else { IDLE_POLL };
+            cx.background_executor().timer(tick).await;
 
             let wanted = cx.update(settings_says_on);
             match (wanted, serving.is_some()) {

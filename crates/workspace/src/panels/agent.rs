@@ -140,6 +140,13 @@ impl Default for AgentHistory {
 /// in a loop cannot grow the list without bound.
 const HISTORY_LIMIT: usize = 200;
 
+/// How often the panel drains a running Pi session — roughly a frame, so output arrives as it is
+/// written rather than in visible steps.
+const LIVE_TICK: Duration = Duration::from_millis(33);
+/// The tick with no session open. The cost of the slower rate is paid once, on the first frame of
+/// a newly started session; the cost of *not* slowing down is paid from launch until quit.
+const IDLE_TICK: Duration = Duration::from_millis(250);
+
 /// File one thing that happened. Called by the transport, which is the only thing that sees them.
 pub fn record(call: AgentCall, cx: &mut App) {
     let history = cx.default_global::<AgentHistory>();
@@ -186,15 +193,20 @@ impl AgentPanel {
         let scroll = ScrollHandle::new();
         let terminal_size = Rc::new(Cell::new((100, 32)));
         let terminal_task = cx.spawn(async move |this, cx| {
+            // The panel is built with the window, not when it is first opened, so this loop runs
+            // for the app's whole life. At 30 Hz unconditionally it woke the main thread thirty
+            // times a second to ask a terminal that did not exist whether it had output. The fast
+            // tick is what a live session needs; with no session there is nothing to drain.
+            let mut idle = true;
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(33))
-                    .await;
+                let tick = if idle { IDLE_TICK } else { LIVE_TICK };
+                cx.background_executor().timer(tick).await;
                 let keep_going = this
                     .update(cx, |panel, cx| {
                         if panel.terminal.poll() {
                             cx.notify();
                         }
+                        idle = !panel.terminal.is_running();
                         true
                     })
                     .unwrap_or(false);
