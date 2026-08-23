@@ -6,8 +6,8 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, BorderStyle, Bounds, Context, InteractiveElement as _, IntoElement, MouseButton,
-    ParentElement as _, Pixels, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    AnyElement, BorderStyle, Bounds, Context, ElementId, InteractiveElement as _, IntoElement,
+    MouseButton, ParentElement as _, Pixels, StatefulInteractiveElement as _, Styled as _, Window,
     canvas, div, fill, outline, point, px, size,
 };
 use gpui_component::menu::ContextMenuExt as _;
@@ -77,8 +77,13 @@ pub(crate) fn render_cell(
 
     div()
         // The library ids the *wrapper* cell `table-cell:{r}:{c}`; this is the inner div, and it
-        // needs its own id before it can carry a tooltip or a context menu.
-        .id(SharedString::from(format!("cell-note:{row_ix}:{col_ix}")))
+        // needs its own id before it can carry a tooltip or a context menu. `NamedInteger` over a
+        // formatted string: the name half is a static `SharedString`, so an id costs no allocation
+        // — and this runs for every cell on screen, every frame.
+        .id(ElementId::NamedInteger(
+            "cell-note".into(),
+            (row_ix * delegate.column_count() + col_ix) as u64,
+        ))
         .size_full()
         // Own the containing block for the capture canvas below: without this it resolves against
         // the library's cell div, whose padding makes "the bounds" ambiguous.
