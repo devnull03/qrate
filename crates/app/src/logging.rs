@@ -60,7 +60,7 @@ pub fn init() {
         }
     }
 
-    let _ = log::set_boxed_logger(Box::new(QuietWindowTeardown(CombinedLogger::new(sinks))));
+    let _ = log::set_boxed_logger(Box::new(QuietGpuiNoise(CombinedLogger::new(sinks))));
     log::set_max_level(LevelFilter::Debug);
 
     // Chained rather than replaced: the default hook is what prints a panic to a developer's
@@ -81,12 +81,24 @@ fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// Demotes gpui's window-teardown errors to debug.
+/// Removes GPUI's unactionable focus-node notice and demotes window-teardown errors to debug.
+///
+/// GPUI reports the missing focus node at info level every time focus reaches an internal element
+/// without an accessibility role. It is not actionable from a qrate log, so omit that exact notice
+/// while retaining other accessibility diagnostics.
 ///
 /// Closing a window always produces them: a detached per-window callback outlives the window,
 /// reads it, and `log_err`s the expected miss. Kept in the file for teardown debugging, but not at
 /// a level that makes every pasted bug report open with three errors nobody can act on.
-struct QuietWindowTeardown(Box<dyn Log>);
+struct QuietGpuiNoise(Box<dyn Log>);
+
+fn is_accessibility_focus_noise(record: &Record) -> bool {
+    record.target() == "gpui::window::a11y"
+        && record
+            .args()
+            .to_string()
+            .starts_with("a11y: focused element")
+}
 
 fn is_window_teardown(record: &Record) -> bool {
     if record.level() != Level::Error || !record.target().starts_with("gpui") {
@@ -96,7 +108,7 @@ fn is_window_teardown(record: &Record) -> bool {
     message == "window not found" || message.starts_with("Invalid window handle")
 }
 
-impl Log for QuietWindowTeardown {
+impl Log for QuietGpuiNoise {
     fn enabled(&self, metadata: &Metadata) -> bool {
         self.0.enabled(metadata)
     }
@@ -106,6 +118,9 @@ impl Log for QuietWindowTeardown {
     }
 
     fn log(&self, record: &Record) {
+        if is_accessibility_focus_noise(record) {
+            return;
+        }
         if is_window_teardown(record) {
             self.0.log(
                 &Record::builder()
@@ -294,6 +309,32 @@ mod tests {
             "gpui::window",
             log::Level::Warn,
             "window not found"
+        ));
+    }
+
+    #[test]
+    fn only_gpui_missing_focus_nodes_are_suppressed() {
+        let noisy = |target: &str, message: &str| {
+            super::is_accessibility_focus_noise(
+                &log::Record::builder()
+                    .level(log::Level::Info)
+                    .target(target)
+                    .args(format_args!("{message}"))
+                    .build(),
+            )
+        };
+
+        assert!(noisy(
+            "gpui::window::a11y",
+            "a11y: focused element (FocusId(6v1)) has no accessibility node"
+        ));
+        assert!(!noisy(
+            "gpui::window::a11y",
+            "a11y: accessibility tree failed to update"
+        ));
+        assert!(!noisy(
+            "app::window::a11y",
+            "a11y: focused element (FocusId(6v1)) has no accessibility node"
         ));
     }
 
