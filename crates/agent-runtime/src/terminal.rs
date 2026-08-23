@@ -44,7 +44,16 @@ pub struct TerminalPalette {
 pub struct TerminalScreen {
     pub text: String,
     pub highlights: Vec<(Range<usize>, HighlightStyle)>,
+    pub backgrounds: Vec<TerminalBackground>,
     pub auth_urls: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+pub struct TerminalBackground {
+    pub line: usize,
+    pub start_column: usize,
+    pub end_column: usize,
+    pub color: Hsla,
 }
 
 /// Ask the user's ordinary Pi installation to resolve its OpenRouter credential. The credential
@@ -141,17 +150,9 @@ fn terminal_style(
     dynamic: &Colors,
 ) -> HighlightStyle {
     let inverse = cell.flags.contains(Flags::INVERSE);
-    let (foreground, background) = if inverse {
-        (cell.bg, cell.fg)
-    } else {
-        (cell.fg, cell.bg)
-    };
+    let foreground = if inverse { cell.bg } else { cell.fg };
     let mut style = HighlightStyle {
         color: Some(resolve_color(foreground, palette, dynamic)),
-        // The default terminal background is qrate's panel background. Omitting it is what keeps
-        // empty cells transparent while still honoring explicit ANSI background colors.
-        background_color: (background != Color::Named(NamedColor::Background))
-            .then(|| resolve_color(background, palette, dynamic)),
         ..Default::default()
     };
     if cell.flags.contains(Flags::BOLD) {
@@ -194,9 +195,23 @@ fn terminal_style(
         style.fade_out = Some(0.45);
     }
     if cell.flags.contains(Flags::HIDDEN) {
-        style.color = style.background_color.or(Some(palette.background));
+        style.color = terminal_background(cell, palette, dynamic).or(Some(palette.background));
     }
     style
+}
+
+fn terminal_background(
+    cell: &TerminalCell,
+    palette: TerminalPalette,
+    dynamic: &Colors,
+) -> Option<Hsla> {
+    let background = if cell.flags.contains(Flags::INVERSE) {
+        cell.fg
+    } else {
+        cell.bg
+    };
+    (background != Color::Named(NamedColor::Background))
+        .then(|| resolve_color(background, palette, dynamic))
 }
 
 fn is_auth_url(url: &str) -> bool {
@@ -608,6 +623,7 @@ impl AgentTerminal {
             return TerminalScreen {
                 text: String::new(),
                 highlights: Vec::new(),
+                backgrounds: Vec::new(),
                 auth_urls: Vec::new(),
             };
         };
@@ -624,6 +640,7 @@ impl AgentTerminal {
             .map(|_| Vec::with_capacity(COLS))
             .collect();
         let mut auth_urls = Vec::new();
+        let mut backgrounds: Vec<TerminalBackground> = Vec::new();
         let mut seen_urls = HashSet::new();
         let top = -(content.display_offset as i32);
         for indexed in content.display_iter {
@@ -632,6 +649,24 @@ impl AgentTerminal {
                 .ok()
                 .and_then(|line| lines.get_mut(line))
             {
+                let line = usize::try_from(line).expect("visible terminal line is non-negative");
+                let column = indexed.point.column.0;
+                if let Some(color) = terminal_background(indexed.cell, palette, content.colors) {
+                    if let Some(previous) = backgrounds.last_mut()
+                        && previous.line == line
+                        && previous.end_column == column
+                        && previous.color == color
+                    {
+                        previous.end_column += 1;
+                    } else {
+                        backgrounds.push(TerminalBackground {
+                            line,
+                            start_column: column,
+                            end_column: column + 1,
+                            color,
+                        });
+                    }
+                }
                 if let Some(hyperlink) = indexed.cell.hyperlink() {
                     let uri = hyperlink.uri();
                     if is_auth_url(uri) && seen_urls.insert(uri.to_owned()) {
@@ -703,6 +738,7 @@ impl AgentTerminal {
         TerminalScreen {
             text,
             highlights,
+            backgrounds,
             auth_urls,
         }
     }
@@ -715,7 +751,7 @@ mod tests {
     use alacritty_terminal::vte::ansi::{Color, Rgb};
     use gpui::hsla;
 
-    use super::{TerminalPalette, is_auth_url, terminal_style};
+    use super::{TerminalPalette, is_auth_url, terminal_background, terminal_style};
 
     fn palette() -> TerminalPalette {
         TerminalPalette {
@@ -750,12 +786,9 @@ mod tests {
         let default_style = terminal_style(&cell, palette(), &colors);
         assert_eq!(default_style.fade_out, Some(0.45));
         assert_eq!(default_style.background_color, None);
+        assert_eq!(terminal_background(&cell, palette(), &colors), None);
 
         cell.bg = Color::Spec(Rgb { r: 1, g: 2, b: 3 });
-        assert!(
-            terminal_style(&cell, palette(), &colors)
-                .background_color
-                .is_some()
-        );
+        assert!(terminal_background(&cell, palette(), &colors).is_some());
     }
 }

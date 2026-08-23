@@ -362,6 +362,7 @@ impl Render for AgentPanel {
         } else {
             StyledText::new(terminal_screen.text).with_highlights(terminal_screen.highlights)
         };
+        let terminal_backgrounds = terminal_screen.backgrounds;
         let terminal_status = self.terminal.status().to_owned();
         let terminal_running = self.terminal.is_running();
 
@@ -457,7 +458,6 @@ impl Render for AgentPanel {
                                         cx.notify();
                                     },
                                 ))
-                                .child(terminal_content)
                                 .child({
                                     let measured = self.terminal_size.clone();
                                     canvas(
@@ -477,13 +477,39 @@ impl Render for AgentPanel {
                                                 window.defer(cx, |window, _| window.refresh());
                                             }
                                         },
-                                        |_, _, _, _| {},
+                                        move |bounds, _, window, _| {
+                                            for background in &terminal_backgrounds {
+                                                let bounds = Bounds {
+                                                    origin: point(
+                                                        bounds.origin.x
+                                                            + px(8.)
+                                                            + px(
+                                                                8. * background.start_column
+                                                                    as f32,
+                                                            ),
+                                                        bounds.origin.y
+                                                            + px(4.)
+                                                            + px(16. * background.line as f32),
+                                                    ),
+                                                    size: size(
+                                                        px(
+                                                            8. * (background.end_column
+                                                                - background.start_column)
+                                                                as f32,
+                                                        ),
+                                                        px(16.),
+                                                    ),
+                                                };
+                                                window.paint_quad(fill(bounds, background.color));
+                                            }
+                                        },
                                     )
                                     .absolute()
                                     .top_0()
                                     .left_0()
                                     .size_full()
-                                }),
+                                })
+                                .child(terminal_content),
                         ),
                 )
             })
