@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-pub use settings::project::{ProjectColumn, RowId, StoredNote, write_notes};
+pub use settings::project::{ProjectColumn, ProjectSpec, RowId, StoredNote, write_notes};
 
 pub fn sanitize_file_stem(name: &str) -> String {
     let cleaned: String = name
@@ -51,32 +51,12 @@ pub fn open_project(file: &Path, cx: &mut gpui::App) -> anyhow::Result<String> {
     Ok(name)
 }
 
-/// Creates the `<name>.qrate` file in `save_dir`; returns the file path
-/// (what the recents list and the launcher show). `files_folder` is only
-/// persisted (as a path) — qrate never copies the files themselves; row
-/// images are re-resolved against this folder every time the project opens.
-#[allow(clippy::too_many_arguments)]
-pub fn write_project_file(
-    save_dir: &str,
-    name: &str,
-    source: &str,
-    link_method: Option<&str>,
-    files_folder: Option<&str>,
-    columns: &[ProjectColumn],
-    headers: &[String],
-    rows: &[Vec<String>],
-) -> anyhow::Result<String> {
+/// Creates the `<spec.name>.qrate` file in `save_dir`; returns the file path
+/// (what the recents list and the launcher show). Row images are re-resolved against
+/// `spec.files_folder` every time the project opens, which is why only the path is stored.
+pub fn write_project_file(save_dir: &str, spec: &ProjectSpec<'_>) -> anyhow::Result<String> {
     std::fs::create_dir_all(save_dir)?;
-    let file = project_file_path(save_dir, name);
-    settings::project::create_project_file(
-        &file,
-        name,
-        source,
-        link_method,
-        files_folder,
-        columns,
-        headers,
-        rows,
-    )?;
+    let file = project_file_path(save_dir, spec.name);
+    settings::project::create_project_file(&file, spec)?;
     Ok(file.to_string_lossy().to_string())
 }

@@ -510,7 +510,7 @@ mod tests {
     // emits, recursing until rustc's stack overflows.
     use crate::{DATASET_MAIN, Diagnostic, Diagnostics, Filed, Location, Severity, Source, init};
     use gpui::{App, SharedString, TestAppContext};
-    use settings::project::{CurrentProject, ProjectData, StoredNote};
+    use settings::project::{CurrentProject, ProjectData, ProjectSpec, StoredNote};
 
     /// The row index is a second copy of the truth in `items`, so every mutation has to rebuild
     /// it. This is the test that fails if a future one forgets.
@@ -671,8 +671,15 @@ mod tests {
         let file = dir.join("load.qrate");
         let _ = std::fs::remove_file(&file);
 
-        settings::project::create_project_file(&file, "T", "CSV", None, None, &[], &[], &[])
-            .unwrap();
+        settings::project::create_project_file(
+            &file,
+            &ProjectSpec {
+                name: "T",
+                source: "CSV",
+                ..Default::default()
+            },
+        )
+        .unwrap();
         settings::project::write_notes(
             &file,
             "note",
@@ -743,8 +750,15 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let file = dir.join("author.qrate");
         let _ = std::fs::remove_file(&file);
-        settings::project::create_project_file(&file, "T", "CSV", None, None, &[], &[], &[])
-            .unwrap();
+        settings::project::create_project_file(
+            &file,
+            &ProjectSpec {
+                name: "T",
+                source: "CSV",
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let cell = Location {
             dataset: DATASET_MAIN.into(),

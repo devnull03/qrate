@@ -1206,8 +1206,7 @@ fn project_page(cx: &App) -> SettingPage {
                     "Where row images and linked files are looked up. qrate never copies them, so \
                  moving the folder means pointing this at its new home.",
                     "Choose files folder",
-                    false,
-                    true,
+                    settings::Picks::Directories,
                     |cx: &App| {
                         cx.try_global::<CurrentProject>()
                             .and_then(|p| p.data.values.get(settings::project::FILES_FOLDER_KEY))

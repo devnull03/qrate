@@ -186,22 +186,40 @@ fn open_ro(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Everything a new `.qrate` file is made of.
+///
+/// A struct rather than eight positional parameters: `"T", "CSV", None, None, &[], &[], &[]` at a
+/// call site names none of its own blanks, and the wizard's `write_project_file` took the same
+/// eight in the same order — two signatures to keep in step, and two
+/// `#[allow(clippy::too_many_arguments)]` to go with them. `Default` gives a blank project, so a
+/// caller writes only the fields it actually has.
+#[derive(Default)]
+pub struct ProjectSpec<'a> {
+    pub name: &'a str,
+    pub source: &'a str,
+    /// The wizard's Files-step link method, if one was chosen.
+    pub link_method: Option<&'a str>,
+    /// The wizard's Files-step folder, if one was chosen and linked. Only ever persisted as a
+    /// path — qrate never copies the files themselves.
+    pub files_folder: Option<&'a str>,
+    /// The configured column list, which may differ from `headers` when a column config was loaded.
+    pub columns: &'a [ProjectColumn],
+    /// The raw spreadsheet. Empty `headers` is a blank project and gets no `dataset_main` table.
+    pub headers: &'a [String],
+    pub rows: &'a [Vec<String>],
+}
+
 /// Creates `path` (a `.qrate` file) with the v3 schema and the imported data.
-/// `headers`/`rows` are the raw spreadsheet; `columns` the configured column
-/// list (may differ from `headers` when a column config was loaded). Blank
-/// projects pass empty `headers` and get no `dataset_main` table. `files_folder`
-/// is the wizard's Files-step folder path, if one was chosen and linked.
-#[allow(clippy::too_many_arguments)]
-pub fn create_project_file(
-    path: &Path,
-    name: &str,
-    source: &str,
-    link_method: Option<&str>,
-    files_folder: Option<&str>,
-    columns: &[ProjectColumn],
-    headers: &[String],
-    rows: &[Vec<String>],
-) -> Result<()> {
+pub fn create_project_file(path: &Path, spec: &ProjectSpec<'_>) -> Result<()> {
+    let &ProjectSpec {
+        name,
+        source,
+        link_method,
+        files_folder,
+        columns,
+        headers,
+        rows,
+    } = spec;
     let conn = open_rw(path).with_context(|| format!("Create project at {path:?}"))?;
     conn.pragma_update(None, "application_id", QRATE_APPLICATION_ID)
         .context("Set application_id")?;
@@ -821,7 +839,15 @@ mod tests {
     }
 
     fn blank_project(path: &Path) {
-        create_project_file(path, "Notes", "CSV", None, None, &[], &[], &[]).unwrap();
+        create_project_file(
+            path,
+            &ProjectSpec {
+                name: "Notes",
+                source: "CSV",
+                ..Default::default()
+            },
+        )
+        .unwrap();
     }
 
     /// A project written before notes carried a date and an author must still open, still read its
@@ -932,17 +958,18 @@ mod tests {
         let path = tempfile("types.qrate");
         create_project_file(
             &path,
-            "Types",
-            "CSV + folder",
-            None,
-            None,
-            &[ProjectColumn {
-                name: "Digital ID".into(),
-                data_type: "Text".into(),
-                notes: "the scan".into(),
-            }],
-            &["Digital ID".to_string()],
-            &[vec!["1".to_string()]],
+            &ProjectSpec {
+                name: "Types",
+                source: "CSV + folder",
+                columns: &[ProjectColumn {
+                    name: "Digital ID".into(),
+                    data_type: "Text".into(),
+                    notes: "the scan".into(),
+                }],
+                headers: &["Digital ID".to_string()],
+                rows: &[vec!["1".to_string()]],
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -975,13 +1002,15 @@ mod tests {
         }];
         create_project_file(
             &path,
-            "Test Project",
-            "CSV + folder",
-            Some("exact filename"),
-            Some("/photos"),
-            &columns,
-            &headers,
-            &rows,
+            &ProjectSpec {
+                name: "Test Project",
+                source: "CSV + folder",
+                link_method: Some("exact filename"),
+                files_folder: Some("/photos"),
+                columns: &columns,
+                headers: &headers,
+                rows: &rows,
+            },
         )
         .unwrap();
 
@@ -1049,7 +1078,17 @@ mod tests {
         let path = tempfile("save.qrate");
         let headers = vec!["Digital ID".to_string(), "Title".to_string()];
         let rows = vec![vec!["1".to_string(), "First".to_string()]];
-        create_project_file(&path, "S", "CSV", None, None, &[], &headers, &rows).unwrap();
+        create_project_file(
+            &path,
+            &ProjectSpec {
+                name: "S",
+                source: "CSV",
+                headers: &headers,
+                rows: &rows,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // Edit a cell and add a row, then save the whole table back.
         let edited = vec![
@@ -1072,7 +1111,17 @@ mod tests {
         let path = tempfile("stable-row-notes.qrate");
         let headers = vec!["Title".to_string()];
         let rows: Vec<_> = (0..6).map(|i| vec![format!("item {i}")]).collect();
-        create_project_file(&path, "S", "CSV", None, None, &[], &headers, &rows).unwrap();
+        create_project_file(
+            &path,
+            &ProjectSpec {
+                name: "S",
+                source: "CSV",
+                headers: &headers,
+                rows: &rows,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         write_notes(
             &path,
             "note",
@@ -1126,7 +1175,15 @@ mod tests {
     #[test]
     fn load_project_file_caches_settings_values() {
         let path = tempfile("values.qrate");
-        create_project_file(&path, "V", "Blank", None, None, &[], &[], &[]).unwrap();
+        create_project_file(
+            &path,
+            &ProjectSpec {
+                name: "V",
+                source: "Blank",
+                ..Default::default()
+            },
+        )
+        .unwrap();
         write_setting(&path, "table_stripes", "true").unwrap();
 
         let data = load_project_file(&path).unwrap();
@@ -1142,7 +1199,15 @@ mod tests {
     #[test]
     fn clearing_an_override_removes_the_row() {
         let path = tempfile("clear.qrate");
-        create_project_file(&path, "C", "Blank", None, None, &[], &[], &[]).unwrap();
+        create_project_file(
+            &path,
+            &ProjectSpec {
+                name: "C",
+                source: "Blank",
+                ..Default::default()
+            },
+        )
+        .unwrap();
         write_setting(&path, "table_stripes", "true").unwrap();
         assert!(
             load_project_file(&path)
@@ -1165,7 +1230,15 @@ mod tests {
     #[test]
     fn writer_flushes_latest_value_per_key() {
         let path = tempfile("writer.qrate");
-        create_project_file(&path, "W", "Blank", None, None, &[], &[], &[]).unwrap();
+        create_project_file(
+            &path,
+            &ProjectSpec {
+                name: "W",
+                source: "Blank",
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let writer = ProjectSettingsWriter::start();
         writer.enqueue(&path, "dock_layout", "{\"v\":1}".into());
@@ -1180,7 +1253,15 @@ mod tests {
     #[test]
     fn blank_project_has_no_dataset_table() {
         let path = tempfile("blank.qrate");
-        create_project_file(&path, "Blank", "Blank", None, None, &[], &[], &[]).unwrap();
+        create_project_file(
+            &path,
+            &ProjectSpec {
+                name: "Blank",
+                source: "Blank",
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let conn = Connection::open(&path).unwrap();
         let n: i64 = conn
             .query_row(

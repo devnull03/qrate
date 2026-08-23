@@ -303,8 +303,7 @@ impl Setting {
                 label,
                 description,
                 prompt,
-                true,
-                false,
+                Picks::Files,
                 move |cx: &App| user_text(key, cx),
                 move |val: SharedString, cx: &mut App| AppSettings::set_text(key, val, cx),
             ),
@@ -319,8 +318,7 @@ impl Setting {
                 label,
                 description,
                 prompt,
-                false,
-                true,
+                Picks::Directories,
                 move |cx: &App| user_text(key, cx),
                 move |val: SharedString, cx: &mut App| AppSettings::set_text(key, val, cx),
             ),
@@ -360,17 +358,28 @@ fn resettable<T: 'static>(key: &'static str, field: SettingField<T>) -> SettingF
 /// A read-only path row with a Browse button. `read`/`write` are the only difference between the
 /// user-wide pickers and a project-scoped one, so both go through here rather than through two
 /// copies of the `InputState` handling.
-#[allow(clippy::too_many_arguments)]
+/// What a path picker's Browse button opens. An enum rather than the `files: bool,
+/// directories: bool` pair it replaces: every call site passed one `true` and one `false`, and
+/// `true, false` in argument position named neither of them.
+#[derive(Clone, Copy)]
+pub enum Picks {
+    Files,
+    Directories,
+}
+
 pub fn path_picker_item(
     key: &'static str,
     label: &'static str,
     description: &'static str,
     prompt: &'static str,
-    files: bool,
-    directories: bool,
+    picks: Picks,
     read: impl Fn(&App) -> SharedString + 'static,
     write: impl Fn(SharedString, &mut App) + Send + Sync + 'static,
 ) -> SettingItem {
+    let (files, directories) = match picks {
+        Picks::Files => (true, false),
+        Picks::Directories => (false, true),
+    };
     let prompt: SharedString = prompt.into();
     let write = Arc::new(write);
     SettingItem::new(

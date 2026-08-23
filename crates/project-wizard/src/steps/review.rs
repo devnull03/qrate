@@ -128,13 +128,15 @@ impl ProjectWizard {
 
         match project::write_project_file(
             &self.save_path,
-            &name,
-            &source,
-            link_method,
-            files_folder,
-            &columns,
-            &headers,
-            &rows,
+            &project::ProjectSpec {
+                name: &name,
+                source: &source,
+                link_method,
+                files_folder,
+                columns: &columns,
+                headers: &headers,
+                rows: &rows,
+            },
         ) {
             Ok(file) => {
                 // Imported notes become Problems-panel entries. Non-fatal: a lost note must not
