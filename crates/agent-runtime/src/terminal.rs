@@ -1,5 +1,6 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::process::Command;
 use std::sync::{Arc, mpsc};
 
@@ -10,9 +11,15 @@ use alacritty_terminal::event::{Event, EventListener, Notify as _, OnResize as _
 use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::sync::FairMutex;
+use alacritty_terminal::term::cell::{Cell as TerminalCell, Flags};
+use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::tty::{self, Options, Shell};
-use gpui::{App, KeyDownEvent};
+use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
+use gpui::{
+    App, FontStyle, FontWeight, HighlightStyle, Hsla, KeyDownEvent, StrikethroughStyle,
+    UnderlineStyle, px, rgb,
+};
 
 use crate::AgentRuntime;
 
@@ -20,6 +27,25 @@ const COLS: usize = 100;
 const LINES: usize = 32;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[derive(Clone, Copy)]
+pub struct TerminalPalette {
+    pub foreground: Hsla,
+    pub background: Hsla,
+    pub muted: Hsla,
+    pub red: Hsla,
+    pub green: Hsla,
+    pub yellow: Hsla,
+    pub blue: Hsla,
+    pub magenta: Hsla,
+    pub cyan: Hsla,
+}
+
+pub struct TerminalScreen {
+    pub text: String,
+    pub highlights: Vec<(Range<usize>, HighlightStyle)>,
+    pub auth_urls: Vec<String>,
+}
 
 /// Ask the user's ordinary Pi installation to resolve its OpenRouter credential. The credential
 /// stays in memory and is passed to the qrate-owned Pi process through its environment; it is never
@@ -45,6 +71,175 @@ fn global_openrouter_credential(program: &std::path::Path) -> Option<String> {
         }
     }
     None
+}
+
+fn rgb_color(color: Rgb) -> Hsla {
+    rgb((u32::from(color.r) << 16) | (u32::from(color.g) << 8) | u32::from(color.b)).into()
+}
+
+fn indexed_color(index: u8) -> Hsla {
+    const ANSI: [u32; 16] = [
+        0x000000, 0xcc0000, 0x4e9a06, 0xc4a000, 0x3465a4, 0x75507b, 0x06989a, 0xd3d7cf, 0x555753,
+        0xef2929, 0x8ae234, 0xfce94f, 0x729fcf, 0xad7fa8, 0x34e2e2, 0xeeeeec,
+    ];
+    match index {
+        0..=15 => rgb(ANSI[usize::from(index)]).into(),
+        16..=231 => {
+            let index = index - 16;
+            let levels = [0, 95, 135, 175, 215, 255];
+            rgb_color(Rgb {
+                r: levels[usize::from(index / 36)],
+                g: levels[usize::from((index % 36) / 6)],
+                b: levels[usize::from(index % 6)],
+            })
+        }
+        232..=255 => {
+            let value = 8 + (index - 232) * 10;
+            rgb_color(Rgb {
+                r: value,
+                g: value,
+                b: value,
+            })
+        }
+    }
+}
+
+fn named_color(color: NamedColor, palette: TerminalPalette) -> Hsla {
+    match color {
+        NamedColor::Foreground | NamedColor::BrightForeground => palette.foreground,
+        NamedColor::Background => palette.background,
+        NamedColor::Cursor => palette.foreground,
+        NamedColor::DimForeground => palette.muted,
+        NamedColor::Red | NamedColor::BrightRed | NamedColor::DimRed => palette.red,
+        NamedColor::Green | NamedColor::BrightGreen | NamedColor::DimGreen => palette.green,
+        NamedColor::Yellow | NamedColor::BrightYellow | NamedColor::DimYellow => palette.yellow,
+        NamedColor::Blue | NamedColor::BrightBlue | NamedColor::DimBlue => palette.blue,
+        NamedColor::Magenta | NamedColor::BrightMagenta | NamedColor::DimMagenta => palette.magenta,
+        NamedColor::Cyan | NamedColor::BrightCyan | NamedColor::DimCyan => palette.cyan,
+        NamedColor::Black | NamedColor::DimBlack => indexed_color(0),
+        NamedColor::White | NamedColor::DimWhite => indexed_color(7),
+        NamedColor::BrightBlack => indexed_color(8),
+        NamedColor::BrightWhite => indexed_color(15),
+    }
+}
+
+fn resolve_color(color: Color, palette: TerminalPalette, dynamic: &Colors) -> Hsla {
+    match color {
+        Color::Named(color) => dynamic[color]
+            .map(rgb_color)
+            .unwrap_or_else(|| named_color(color, palette)),
+        Color::Spec(color) => rgb_color(color),
+        Color::Indexed(index) => dynamic[usize::from(index)]
+            .map(rgb_color)
+            .unwrap_or_else(|| indexed_color(index)),
+    }
+}
+
+fn terminal_style(
+    cell: &TerminalCell,
+    palette: TerminalPalette,
+    dynamic: &Colors,
+) -> HighlightStyle {
+    let inverse = cell.flags.contains(Flags::INVERSE);
+    let (foreground, background) = if inverse {
+        (cell.bg, cell.fg)
+    } else {
+        (cell.fg, cell.bg)
+    };
+    let mut style = HighlightStyle {
+        color: Some(resolve_color(foreground, palette, dynamic)),
+        // The default terminal background is qrate's panel background. Omitting it is what keeps
+        // empty cells transparent while still honoring explicit ANSI background colors.
+        background_color: (background != Color::Named(NamedColor::Background))
+            .then(|| resolve_color(background, palette, dynamic)),
+        ..Default::default()
+    };
+    if cell.flags.contains(Flags::BOLD) {
+        style.font_weight = Some(FontWeight::BOLD);
+    }
+    if cell.flags.contains(Flags::ITALIC) {
+        style.font_style = Some(FontStyle::Italic);
+    }
+    if cell.flags.intersects(Flags::ALL_UNDERLINES) {
+        style.underline = Some(UnderlineStyle {
+            thickness: px(1.),
+            color: cell
+                .underline_color()
+                .map(|color| resolve_color(color, palette, dynamic)),
+            wavy: cell.flags.contains(Flags::UNDERCURL),
+        });
+    }
+    if cell.flags.contains(Flags::STRIKEOUT) {
+        style.strikethrough = Some(StrikethroughStyle {
+            thickness: px(1.),
+            color: None,
+        });
+    }
+    if cell.flags.contains(Flags::DIM)
+        || matches!(
+            cell.fg,
+            Color::Named(
+                NamedColor::DimForeground
+                    | NamedColor::DimBlack
+                    | NamedColor::DimRed
+                    | NamedColor::DimGreen
+                    | NamedColor::DimYellow
+                    | NamedColor::DimBlue
+                    | NamedColor::DimMagenta
+                    | NamedColor::DimCyan
+                    | NamedColor::DimWhite
+            )
+        )
+    {
+        style.fade_out = Some(0.45);
+    }
+    if cell.flags.contains(Flags::HIDDEN) {
+        style.color = style.background_color.or(Some(palette.background));
+    }
+    style
+}
+
+fn is_auth_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let Some(authority_and_path) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let authority = authority_and_path.split('/').next().unwrap_or_default();
+    let host = authority
+        .rsplit('@')
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default();
+    let trusted_host = [
+        "x.ai",
+        "openrouter.ai",
+        "openai.com",
+        "anthropic.com",
+        "claude.ai",
+        "google.com",
+        "github.com",
+        "microsoft.com",
+        "qwen.ai",
+        "alibabacloud.com",
+    ]
+    .iter()
+    .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")));
+    trusted_host
+        && [
+            "/auth",
+            "/oauth",
+            "/device",
+            "/login",
+            "/authorize",
+            "accounts.",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 struct TerminalSize;
@@ -408,14 +603,28 @@ impl AgentTerminal {
         }
     }
 
-    pub fn screen(&self) -> String {
+    pub fn screen(&self, palette: TerminalPalette) -> TerminalScreen {
         let Some(session) = &self.session else {
-            return String::new();
+            return TerminalScreen {
+                text: String::new(),
+                highlights: Vec::new(),
+                auth_urls: Vec::new(),
+            };
         };
+        struct RenderedCell {
+            text: String,
+            style: HighlightStyle,
+            trimmable: bool,
+        }
+
         let terminal = session.terminal.lock();
         let content = terminal.renderable_content();
         let cursor = content.cursor.point;
-        let mut lines = vec![String::with_capacity(COLS); terminal.screen_lines()];
+        let mut lines: Vec<Vec<RenderedCell>> = (0..terminal.screen_lines())
+            .map(|_| Vec::with_capacity(COLS))
+            .collect();
+        let mut auth_urls = Vec::new();
+        let mut seen_urls = HashSet::new();
         let top = -(content.display_offset as i32);
         for indexed in content.display_iter {
             let line = indexed.point.line.0 - top;
@@ -423,22 +632,130 @@ impl AgentTerminal {
                 .ok()
                 .and_then(|line| lines.get_mut(line))
             {
-                output.push(if indexed.point == cursor {
-                    '█'
-                } else {
-                    indexed.cell.c
-                });
-                if let Some(extra) = indexed.cell.zerowidth() {
-                    output.extend(extra);
+                if let Some(hyperlink) = indexed.cell.hyperlink() {
+                    let uri = hyperlink.uri();
+                    if is_auth_url(uri) && seen_urls.insert(uri.to_owned()) {
+                        auth_urls.push(uri.to_owned());
+                    }
                 }
+                if indexed
+                    .cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    continue;
+                }
+                let is_cursor = indexed.point == cursor;
+                let mut text = String::new();
+                text.push(if is_cursor { '█' } else { indexed.cell.c });
+                if let Some(extra) = indexed.cell.zerowidth() {
+                    text.extend(extra);
+                }
+                output.push(RenderedCell {
+                    trimmable: !is_cursor
+                        && indexed.cell.c == ' '
+                        && indexed.cell.bg == Color::Named(NamedColor::Background)
+                        && !indexed.cell.flags.contains(Flags::INVERSE),
+                    text,
+                    style: terminal_style(indexed.cell, palette, content.colors),
+                });
             }
         }
-        lines
-            .into_iter()
-            .map(|line| line.trim_end().to_owned())
-            .collect::<Vec<_>>()
-            .join("\n")
-            .trim_end()
-            .to_owned()
+        for line in &mut lines {
+            while line.last().is_some_and(|cell| cell.trimmable) {
+                line.pop();
+            }
+        }
+        while lines.last().is_some_and(Vec::is_empty) {
+            lines.pop();
+        }
+
+        let mut text = String::new();
+        let mut highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+        let line_count = lines.len();
+        for (line_index, line) in lines.into_iter().enumerate() {
+            for cell in line {
+                let start = text.len();
+                text.push_str(&cell.text);
+                let end = text.len();
+                if let Some((range, style)) = highlights.last_mut()
+                    && range.end == start
+                    && *style == cell.style
+                {
+                    range.end = end;
+                } else {
+                    highlights.push((start..end, cell.style));
+                }
+            }
+            if line_index + 1 < line_count {
+                text.push('\n');
+            }
+        }
+
+        for token in text.split_whitespace() {
+            let url = token
+                .trim_start_matches(['<', '(', '[', '{'])
+                .trim_end_matches(['>', ')', ']', '}', '.', ',', ';']);
+            if is_auth_url(url) && seen_urls.insert(url.to_owned()) {
+                auth_urls.push(url.to_owned());
+            }
+        }
+        TerminalScreen {
+            text,
+            highlights,
+            auth_urls,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alacritty_terminal::term::cell::{Cell, Flags};
+    use alacritty_terminal::term::color::Colors;
+    use alacritty_terminal::vte::ansi::{Color, Rgb};
+    use gpui::hsla;
+
+    use super::{TerminalPalette, is_auth_url, terminal_style};
+
+    fn palette() -> TerminalPalette {
+        TerminalPalette {
+            foreground: hsla(0., 0., 0.1, 1.),
+            background: hsla(0., 0., 0.9, 1.),
+            muted: hsla(0., 0., 0.5, 1.),
+            red: hsla(0., 1., 0.5, 1.),
+            green: hsla(0.3, 1., 0.5, 1.),
+            yellow: hsla(0.15, 1., 0.5, 1.),
+            blue: hsla(0.6, 1., 0.5, 1.),
+            magenta: hsla(0.8, 1., 0.5, 1.),
+            cyan: hsla(0.5, 1., 0.5, 1.),
+        }
+    }
+
+    #[test]
+    fn only_authentication_urls_are_auto_opened() {
+        assert!(is_auth_url(
+            "https://accounts.x.ai/oauth2/device?user_code=ABCD"
+        ));
+        assert!(is_auth_url("https://openrouter.ai/auth?callback=true"));
+        assert!(!is_auth_url("https://example.com/a-link-from-model-output"));
+        assert!(!is_auth_url("https://example.com/oauth/device"));
+        assert!(!is_auth_url("javascript:alert(1)"));
+    }
+
+    #[test]
+    fn dim_text_and_explicit_backgrounds_survive_rendering() {
+        let mut cell = Cell::default();
+        cell.flags.insert(Flags::DIM);
+        let colors = Colors::default();
+        let default_style = terminal_style(&cell, palette(), &colors);
+        assert_eq!(default_style.fade_out, Some(0.45));
+        assert_eq!(default_style.background_color, None);
+
+        cell.bg = Color::Spec(Rgb { r: 1, g: 2, b: 3 });
+        assert!(
+            terminal_style(&cell, palette(), &colors)
+                .background_color
+                .is_some()
+        );
     }
 }

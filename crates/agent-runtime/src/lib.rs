@@ -4,4 +4,4 @@ mod runtime;
 mod terminal;
 
 pub use runtime::{AgentRuntime, init};
-pub use terminal::AgentTerminal;
+pub use terminal::{AgentTerminal, TerminalPalette, TerminalScreen};

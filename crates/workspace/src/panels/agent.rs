@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -172,6 +172,7 @@ pub struct AgentPanel {
     scroll: ScrollHandle,
     terminal: agent_runtime::AgentTerminal,
     terminal_size: Rc<Cell<(usize, usize)>>,
+    opened_auth_urls: HashSet<String>,
     _terminal_task: Task<()>,
     /// Refreshes on any entry. One `observe_global` and no re-binding — the history is plain data
     /// that is never rebuilt.
@@ -208,6 +209,7 @@ impl AgentPanel {
             scroll: scroll.clone(),
             terminal: Default::default(),
             terminal_size,
+            opened_auth_urls: HashSet::new(),
             _terminal_task: terminal_task,
             // ponytail: follows the tail unconditionally. Only worth remembering whether the
             // reader had scrolled away if watching a live agent while reading back proves annoying.
@@ -261,6 +263,7 @@ impl Panel for AgentPanel {
                 .on_click(cx.listener(|this, ix: &usize, _w, cx| {
                     this.view = View::ALL[*ix];
                     if this.view == View::Terminal && !this.terminal.is_running() {
+                        this.opened_auth_urls.clear();
                         this.terminal.start(true, cx);
                     }
                     cx.notify();
@@ -284,7 +287,7 @@ impl Panel for AgentPanel {
 }
 
 impl Render for AgentPanel {
-    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.view == View::Terminal
             && !self.terminal.is_running()
             && matches!(
@@ -295,15 +298,54 @@ impl Render for AgentPanel {
         {
             self.terminal.start(true, cx);
         }
-        let theme = cx.theme();
-        let (muted, danger, info, border, hover_bg) = (
-            theme.muted_foreground,
-            theme.danger,
-            theme.info,
-            theme.border,
-            theme.secondary_hover,
-        );
+        let (
+            foreground,
+            background,
+            muted,
+            danger,
+            success,
+            warning,
+            info,
+            accent,
+            border,
+            hover_bg,
+        ) = {
+            let theme = cx.theme();
+            (
+                theme.foreground,
+                theme.background,
+                theme.muted_foreground,
+                theme.danger,
+                theme.success,
+                theme.warning,
+                theme.info,
+                theme.accent,
+                theme.border,
+                theme.secondary_hover,
+            )
+        };
         let crop = cx.try_global::<BottomDockCrop>().map_or(px(0.), |c| c.0);
+        let (terminal_cols, terminal_lines) = self.terminal_size.get();
+        self.terminal.resize(terminal_cols, terminal_lines);
+        let terminal_screen = self.terminal.screen(agent_runtime::TerminalPalette {
+            foreground,
+            background,
+            muted,
+            red: danger,
+            green: success,
+            yellow: warning,
+            blue: info,
+            magenta: accent,
+            cyan: info,
+        });
+        if let Some(url) = terminal_screen
+            .auth_urls
+            .iter()
+            .find(|url| self.opened_auth_urls.insert((*url).clone()))
+            .cloned()
+        {
+            window.defer(cx, move |_window, cx| cx.open_url(&url));
+        }
         let history = cx.try_global::<AgentHistory>();
         let empty = history.is_none_or(|h| h.calls.is_empty());
         let all = history.map_or_else(String::new, |h| {
@@ -313,9 +355,13 @@ impl Render for AgentPanel {
                 .collect::<Vec<_>>()
                 .join("\n")
         });
-        let (terminal_cols, terminal_lines) = self.terminal_size.get();
-        self.terminal.resize(terminal_cols, terminal_lines);
-        let terminal_screen = self.terminal.screen();
+        let terminal_content = if terminal_screen.text.is_empty() {
+            StyledText::new(
+                "Use /login openrouter once, then Pi will use OpenRouter's free router by default.",
+            )
+        } else {
+            StyledText::new(terminal_screen.text).with_highlights(terminal_screen.highlights)
+        };
         let terminal_status = self.terminal.status().to_owned();
         let terminal_running = self.terminal.is_running();
 
@@ -351,6 +397,7 @@ impl Render for AgentPanel {
                                         .label("New")
                                         .xsmall()
                                         .on_click(cx.listener(|this, _, _, cx| {
+                                            this.opened_auth_urls.clear();
                                             this.terminal.start(false, cx);
                                         })),
                                 )
@@ -369,6 +416,7 @@ impl Render for AgentPanel {
                                         .label("Restart")
                                         .xsmall()
                                         .on_click(cx.listener(|this, _, _, cx| {
+                                            this.opened_auth_urls.clear();
                                             this.terminal.start(true, cx);
                                         })),
                                 )
@@ -389,7 +437,7 @@ impl Render for AgentPanel {
                                 .flex_1()
                                 .min_h_0()
                                 .overflow_hidden()
-                                .bg(theme.background)
+                                .bg(background)
                                 .px_2()
                                 .pt_1()
                                 .pb(px(4.) + crop)
@@ -409,11 +457,7 @@ impl Render for AgentPanel {
                                         cx.notify();
                                     },
                                 ))
-                                .child(if terminal_screen.is_empty() {
-                                    "Use /login openrouter once, then Pi will use OpenRouter's free router by default.".to_owned()
-                                } else {
-                                    terminal_screen
-                                })
+                                .child(terminal_content)
                                 .child({
                                     let measured = self.terminal_size.clone();
                                     canvas(
