@@ -14,6 +14,7 @@ use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::path::{Path, PathBuf};
 
 use image::RgbaImage;
+use image::buffer::ConvertBuffer as _;
 
 /// How much disk the cache may hold before old entries are dropped.
 ///
@@ -26,10 +27,18 @@ const CAP: u64 = 2 * 1024 * 1024 * 1024;
 /// Where the downscaled copies live — the platform's own cache location, so an OS cleanup tool
 /// treats them as what they are. `None` if it can't be created, which degrades to decoding from
 /// source every time rather than failing the preview.
+///
+/// Resolved once per process: the location cannot move while qrate runs, and every [`read`] and
+/// [`write`] goes through here, so creating the directory each time charged a syscall to every
+/// cache hit. A failure is cached too — the fallback is decoding from source, not an error.
 pub fn dir() -> Option<PathBuf> {
-    let dir = dirs::cache_dir()?.join("qrate").join("thumbnails");
-    fs::create_dir_all(&dir).ok()?;
-    Some(dir)
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = dirs::cache_dir()?.join("qrate").join("thumbnails");
+        fs::create_dir_all(&dir).ok()?;
+        Some(dir)
+    })
+    .clone()
 }
 
 /// Identity of one cached rendering. The file's length and mtime are in the hash, so editing or
@@ -86,7 +95,9 @@ pub fn write(key: &str, image: &RgbaImage) {
             image::ExtendedColorType::Rgba8,
         )
     } else {
-        let opaque = image::DynamicImage::ImageRgba8(image.clone()).to_rgb8();
+        // `ConvertBuffer` drops the alpha channel straight into a fresh RGB buffer. Going via
+        // `DynamicImage` copied the RGBA one first, so a 40-megapixel scan allocated twice.
+        let opaque: image::RgbImage = image.convert();
         image::codecs::jpeg::JpegEncoder::new_with_quality(cursor, 85).encode(
             opaque.as_raw(),
             opaque.width(),

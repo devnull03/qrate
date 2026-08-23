@@ -162,6 +162,11 @@ impl Asset for Preview {
 /// answer costs a PDFium load or a walk through a TIFF's image list. Keyed by path and mtime, so a
 /// file replaced on disk is re-counted rather than answered from a stale entry.
 ///
+/// The extension is checked *before* the memo, because building the key stats the file: a
+/// photograph can only ever answer one, and paying a syscall per card per frame to look that up was
+/// most of a scrolling gallery's filesystem traffic. Only the two formats that can hold more than
+/// one page reach the cache at all.
+///
 /// ponytail: unbounded map — one `usize` per file ever previewed, which even a six-figure
 /// collection keeps in the low megabytes. Give it the byte budget `thumb` uses if that stops being
 /// true.
@@ -170,6 +175,12 @@ pub fn page_count(path: &Path) -> usize {
     type Stamp = (PathBuf, Option<SystemTime>);
     static COUNTS: std::sync::OnceLock<std::sync::Mutex<HashMap<Stamp, usize>>> =
         std::sync::OnceLock::new();
+
+    let count: fn(&Path) -> usize = match extension(path).as_deref() {
+        Some(extension) if pdf::handles(extension) => |path| pdf::page_count(path).unwrap_or(1),
+        Some("tif" | "tiff") => tiff_pages,
+        _ => return 1,
+    };
 
     let key: Stamp = (
         path.to_path_buf(),
@@ -181,11 +192,7 @@ pub fn page_count(path: &Path) -> usize {
     {
         return pages;
     }
-    let pages = match extension(path).as_deref() {
-        Some(extension) if pdf::handles(extension) => pdf::page_count(path).unwrap_or(1),
-        Some("tif" | "tiff") => tiff_pages(path),
-        _ => 1,
-    };
+    let pages = count(path);
     if let Ok(mut counts) = counts.lock() {
         counts.insert(key, pages);
     }
