@@ -30,6 +30,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # These archives have their own top-level `pi` directory, and the macOS package must merge
+      # two executables plus both sets of native helpers. A syntax check cannot catch a plausible
+      # but wrong path here, so exercise the same downloads and assembly the release uses.
+      - name: Check Unix agent runtime package
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          chmod +x scripts/fetch-agent-runtime.sh
+          destination="$RUNNER_TEMP/qrate-agent-runtime"
+          if [ "$RUNNER_OS" = macOS ]; then
+            scripts/fetch-agent-runtime.sh "$destination" darwin-universal
+            archs="$(lipo -archs "$destination/agent/pi")"
+            [[ " $archs " == *" x86_64 "* ]]
+            [[ " $archs " == *" arm64 "* ]]
+            test -d "$destination/agent/native/darwin/prebuilds/darwin-x64"
+            test -d "$destination/agent/native/darwin/prebuilds/darwin-arm64"
+            test -f "$destination/agent/node_modules/@mariozechner/clipboard/clipboard.darwin-x64.node"
+            test -f "$destination/agent/node_modules/@mariozechner/clipboard/clipboard.darwin-arm64.node"
+          else
+            scripts/fetch-agent-runtime.sh "$destination" linux-x64
+            file "$destination/agent/pi" | grep -q 'ELF 64-bit'
+          fi
+          test -x "$destination/agent/pi"
+          test -f "$destination/agent/qrate-pi-extension/SYSTEM.md"
+
+      - name: Check Windows agent runtime package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP "qrate-agent-runtime"
+          ./scripts/fetch-agent-runtime.ps1 -Destination $destination
+          $runtime = Join-Path $destination "agent"
+          if (-not (Test-Path (Join-Path $runtime "pi.exe") -PathType Leaf)) {
+            throw "Pi executable was not packaged at agent/pi.exe"
+          }
+          if (-not (Test-Path (Join-Path $runtime "qrate-pi-extension/SYSTEM.md") -PathType Leaf)) {
+            throw "qrate Pi extension was not packaged beside the runtime"
+          }
+
       # gpui_linux (wayland + x11), font-kit's fontconfig, reqwest's default
       # native-tls, and rodio's ALSA backend (`preview::playback`) are the only
       # things that need system libraries.
