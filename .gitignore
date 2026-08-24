@@ -21,3 +21,4 @@ plugins/islandora/
 # The OAuth client JSON Google hands you. Named here because the download lands with this shape
 # and a stray copy in the repo root is the easiest way to publish it by accident.
 client_secret_*.json
+sample.zip
