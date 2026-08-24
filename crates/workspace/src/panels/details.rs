@@ -397,6 +397,17 @@ impl DetailsPanel {
         cx.notify();
     }
 
+    /// Abandon the open field before moving focus, so the blur subscription cannot commit it.
+    /// Reports whether this Escape belonged to the field editor.
+    fn cancel_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.editing.take().is_none() {
+            return false;
+        }
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+        true
+    }
+
     /// The floating field editor — the grid's own box, anchored over the field it edits and
     /// clamped to the field list. `None` until the field has measured itself, one frame after the
     /// click.
@@ -880,10 +891,7 @@ impl Render for DetailsPanel {
             // discard has to be handed back explicitly — otherwise it dies here instead of
             // reaching whatever else was listening.
             .on_action(cx.listener(|this, _: &Escape, window, cx| {
-                if this.editing.take().is_some() {
-                    this.focus_handle.focus(window, cx);
-                    cx.notify();
-                } else {
+                if !this.cancel_edit(window, cx) {
                     cx.propagate();
                 }
             }))
@@ -1309,6 +1317,36 @@ mod tests {
             title(cx).unwrap_or_default(),
             "two",
             "the panel wrote through the grid's own history"
+        );
+    }
+
+    /// Escape clears the field target before returning focus to the panel. The blur that follows
+    /// still reaches `commit`, but with no target left it must not write the draft into the grid.
+    #[gpui::test]
+    fn escape_abandons_a_details_field_edit(cx: &mut TestAppContext) {
+        project_with_table(cx);
+        let state = cx.update(|cx| {
+            cx.try_global::<table::TableStateHandle>()
+                .and_then(|h| h.0.upgrade())
+                .expect("the table panel publishes its state handle")
+        });
+        let (panel, cx) = cx.add_window_view(DetailsPanel::new);
+        state.update(cx, |state, cx| state.set_selected_cell(1, 2, cx));
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.edit_field(&"Title".into(), &"two".into(), window, cx);
+            panel
+                .editor
+                .update(cx, |editor, cx| editor.set_value("draft", window, cx));
+            assert!(panel.cancel_edit(window, cx));
+            panel.commit(cx); // The blur subscription takes this same no-op path.
+        });
+
+        assert_eq!(
+            state
+                .read_with(cx, |state, _| state.delegate().cell(1, 1).cloned())
+                .unwrap_or_default(),
+            "two"
         );
     }
 

@@ -595,6 +595,22 @@ impl TablePanel {
         self.state.read(cx).focus_handle(cx).focus(window, cx);
     }
 
+    /// Abandon the open note before moving focus, so the blur subscription sees no location to
+    /// write. Reports whether this Escape belonged to a note editor.
+    fn cancel_note_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let cancelled = self.state.update(cx, |state, cx| {
+            let cancelled = state.delegate_mut().note_edit.take().is_some();
+            if cancelled {
+                cx.notify();
+            }
+            cancelled
+        });
+        if cancelled {
+            self.focus_table(window, cx);
+        }
+        cancelled
+    }
+
     /// Enter opens the selected cell for editing, the spreadsheet convention. Bound in the grid's
     /// own key context, so it can't fire while the editor already has focus and Enter means commit.
     fn edit_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -974,6 +990,11 @@ impl Render for TablePanel {
                     || this.replace_input.focus_handle(cx).is_focused(window)
                 {
                     this.dismiss_search(window, cx);
+                    return;
+                }
+                // Like a cell edit, a note owns the blur that Escape is about to cause. Drop that
+                // ownership first or `_note_sub` will mistake the blur for a commit.
+                if this.cancel_note_edit(window, cx) {
                     return;
                 }
                 // Escape abandons a cell edit (or a column rename) instead of committing it, which
@@ -1381,11 +1402,126 @@ const SUGGEST_H: f32 = 180.;
 #[cfg(test)]
 mod tests {
     // Never `use super::*` here — the parent's `use gpui::*` would shadow `#[test]`.
+    use diagnostics::{DATASET_MAIN, Diagnostic, Diagnostics, Location, Severity, Source};
     use gpui::{Bounds, Pixels, SharedString, TestAppContext, point, px, size};
 
     /// `paste_cells` output as `(row, col, text)` with plain strs, for readable assertions.
     fn wrote(cells: &[(usize, usize, SharedString)]) -> Vec<(usize, usize, &str)> {
         cells.iter().map(|(r, c, v)| (*r, *c, v.as_ref())).collect()
+    }
+
+    fn note_location(row: usize) -> Location {
+        Location {
+            dataset: DATASET_MAIN.into(),
+            row: Some(row),
+            row_id: Some(row as i64 + 1),
+            column: Some("Title".into()),
+        }
+    }
+
+    fn project_with_notes(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(settings::project::CurrentProject {
+                file: std::env::temp_dir().join("qrate-note-cancel.qrate"),
+                data: settings::project::ProjectData {
+                    name: "T".into(),
+                    columns: Vec::new(),
+                    headers: vec!["Title".into()],
+                    rows: vec![vec!["one".into()], vec!["two".into()]],
+                    row_ids: vec![1, 2],
+                    values: Default::default(),
+                },
+            });
+        });
+    }
+
+    /// Escape must clear the note's target before returning focus to the grid. That focus move
+    /// inevitably blurs the input; if the target survived, the blur subscription would overwrite
+    /// the existing note or create the new draft.
+    #[gpui::test]
+    fn escape_abandons_existing_and_new_note_drafts(cx: &mut TestAppContext) {
+        project_with_notes(cx);
+        let existing = note_location(0);
+        cx.update(|cx| {
+            Diagnostics::set(
+                &Source::Note,
+                DATASET_MAIN,
+                vec![Diagnostic {
+                    location: existing.clone(),
+                    severity: Severity::Note,
+                    source: Source::Note,
+                    message: "original".into(),
+                    filed: None,
+                }],
+                cx,
+            );
+        });
+        let (panel, cx) = cx.add_window_view(super::TablePanel::new);
+
+        for (location, seed) in [(existing.clone(), "original"), (note_location(1), "")] {
+            panel.update_in(cx, |panel, window, cx| {
+                panel.state.update(cx, |state, cx| {
+                    let editor = state.delegate().note_editor.clone();
+                    editor.update(cx, |input, cx| {
+                        input.set_value(seed, window, cx);
+                        input.focus(window, cx);
+                        input.set_value("draft", window, cx);
+                    });
+                    state.delegate_mut().note_edit = Some(location);
+                    cx.notify();
+                });
+                assert!(panel.cancel_note_edit(window, cx));
+                let editor = panel.state.read(cx).delegate().note_editor.clone();
+                editor.update(cx, |_input, cx| {
+                    cx.emit(gpui_component::input::InputEvent::Blur)
+                });
+            });
+            cx.run_until_parked();
+        }
+
+        cx.update(|_, cx| {
+            assert_eq!(
+                Diagnostics::note_at(DATASET_MAIN, Some(0), Some("Title"), cx).as_deref(),
+                Some("original")
+            );
+            assert_eq!(
+                Diagnostics::note_at(DATASET_MAIN, Some(1), Some("Title"), cx),
+                None
+            );
+        });
+    }
+
+    /// Cancellation is the exceptional exit: moving focus normally still commits the note.
+    #[gpui::test]
+    fn an_ordinary_note_blur_still_commits(cx: &mut TestAppContext) {
+        project_with_notes(cx);
+        let location = note_location(0);
+        let (panel, cx) = cx.add_window_view(super::TablePanel::new);
+        panel.update_in(cx, |panel, window, cx| {
+            panel.state.update(cx, |state, cx| {
+                let editor = state.delegate().note_editor.clone();
+                editor.update(cx, |input, cx| {
+                    input.set_value("committed", window, cx);
+                    input.focus(window, cx);
+                });
+                state.delegate_mut().note_edit = Some(location);
+                cx.notify();
+            });
+            let editor = panel.state.read(cx).delegate().note_editor.clone();
+            editor.update(cx, |_input, cx| {
+                cx.emit(gpui_component::input::InputEvent::Blur)
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|_, cx| {
+            assert_eq!(
+                Diagnostics::note_at(DATASET_MAIN, Some(0), Some("Title"), cx).as_deref(),
+                Some("committed")
+            );
+        });
     }
 
     /// What Backspace and Delete do to the selection, and the promise that it is one undo step.
