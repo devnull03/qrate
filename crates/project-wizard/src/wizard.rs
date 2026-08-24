@@ -5,8 +5,10 @@
 
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::combobox::{ComboboxEvent, ComboboxState};
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::label::Label;
+use gpui_component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_component::stepper::{Stepper, StepperItem};
 use gpui_component::{
     ActiveTheme, Disableable, Root, Sizable, StyledExt, TitleBar, h_flex, v_flex,
@@ -55,6 +57,23 @@ pub enum LoadConfigTab {
     Sheet,
 }
 
+#[derive(Clone, PartialEq)]
+pub(crate) struct ColumnChoice {
+    pub(crate) value: SharedString,
+    pub(crate) label: SharedString,
+}
+
+impl SearchableListItem for ColumnChoice {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.value
+    }
+}
 pub struct ProjectWizard {
     pub(crate) step: WizardStep,
     pub(crate) entry_kind: EntryKind,
@@ -96,6 +115,13 @@ pub struct ProjectWizard {
     pub(crate) config_file_path: String,
     pub(crate) config_preview: Option<ColumnConfigPreview>,
     pub(crate) config_error: Option<SharedString>,
+    pub(crate) title_column: Option<String>,
+    pub(crate) file_column: Option<String>,
+    pub(crate) title_picker: Entity<ComboboxState<SearchableVec<ColumnChoice>>>,
+    pub(crate) file_picker: Entity<ComboboxState<SearchableVec<ColumnChoice>>>,
+    pub(crate) required_column_choices: Vec<ColumnChoice>,
+    _title_picker_sub: Subscription,
+    _file_picker_sub: Subscription,
 }
 
 impl ProjectWizard {
@@ -126,6 +152,56 @@ impl ProjectWizard {
                 .placeholder("Choose a folder…")
                 .default_value(default_save_dir.clone())
         });
+        let required_column_choices = vec![ColumnChoice {
+            value: "".into(),
+            label: "Choose a column…".into(),
+        }];
+        let title_picker = cx.new(|cx| {
+            ComboboxState::new(
+                SearchableVec::new(required_column_choices.clone()),
+                vec![],
+                window,
+                cx,
+            )
+            .multiple(false)
+            .searchable(false)
+        });
+        let file_picker = cx.new(|cx| {
+            ComboboxState::new(
+                SearchableVec::new(required_column_choices.clone()),
+                vec![],
+                window,
+                cx,
+            )
+            .multiple(false)
+            .searchable(false)
+        });
+        let title_picker_sub = cx.subscribe(
+            &title_picker,
+            |this, _, event: &ComboboxEvent<SearchableVec<ColumnChoice>>, cx| {
+                if let ComboboxEvent::Change(values) = event {
+                    let selected = values.first().map(ToString::to_string);
+                    if selected.as_deref() == this.file_column.as_deref() {
+                        this.file_column = Some(String::new());
+                    }
+                    this.title_column = selected;
+                    cx.notify();
+                }
+            },
+        );
+        let file_picker_sub = cx.subscribe(
+            &file_picker,
+            |this, _, event: &ComboboxEvent<SearchableVec<ColumnChoice>>, cx| {
+                if let ComboboxEvent::Change(values) = event {
+                    let selected = values.first().map(ToString::to_string);
+                    if selected.as_deref() == this.title_column.as_deref() {
+                        this.title_column = Some(String::new());
+                    }
+                    this.file_column = selected;
+                    cx.notify();
+                }
+            },
+        );
 
         Self {
             step: WizardStep::Name,
@@ -159,6 +235,13 @@ impl ProjectWizard {
             config_file_path: String::new(),
             config_preview: None,
             config_error: None,
+            title_column: (entry_kind == EntryKind::Blank).then(|| "Title".to_string()),
+            file_column: (entry_kind == EntryKind::Blank).then(|| "File".to_string()),
+            title_picker,
+            file_picker,
+            required_column_choices,
+            _title_picker_sub: title_picker_sub,
+            _file_picker_sub: file_picker_sub,
         }
     }
 
@@ -175,7 +258,7 @@ impl ProjectWizard {
                 .as_ref()
                 .map(|p| p.headers.clone())
                 .unwrap_or_default(),
-            EntryKind::Blank => Vec::new(),
+            EntryKind::Blank => vec!["Title".into(), "File".into()],
         }
     }
 
@@ -240,6 +323,17 @@ impl ProjectWizard {
                 {
                     return Err("Load a column config, or pick a different source".into());
                 }
+                let title = self.title_column.as_deref().unwrap_or_default();
+                let file = self.file_column.as_deref().unwrap_or_default();
+                if title.is_empty() {
+                    return Err("Choose the column that contains each row's title".into());
+                }
+                if file.is_empty() {
+                    return Err("Choose the column that contains each row's file".into());
+                }
+                if title == file {
+                    return Err("Title and File must use different columns".into());
+                }
                 Ok(())
             }
             WizardStep::Review => Ok(()),
@@ -263,7 +357,9 @@ impl ProjectWizard {
     /// Shared by the manual Next click and the auto-advance after a
     /// just-succeeded sheet check (see `steps/files.rs::check_sheet_link`).
     pub(crate) fn advance_past_files(&mut self) {
-        self.step = if self.skips_link() {
+        self.step = if self.entry_kind == EntryKind::Blank {
+            WizardStep::Review
+        } else if self.skips_link() {
             WizardStep::Columns
         } else {
             WizardStep::Link
@@ -275,7 +371,9 @@ impl ProjectWizard {
         if !self.skips_link() {
             items.push(("Link", WizardStep::Link));
         }
-        items.push(("Columns", WizardStep::Columns));
+        if self.entry_kind != EntryKind::Blank {
+            items.push(("Columns", WizardStep::Columns));
+        }
         items.push(("Create", WizardStep::Review));
         items
     }
@@ -325,6 +423,7 @@ impl ProjectWizard {
                     WizardStep::Link
                 }
             }
+            (EntryKind::Blank, WizardStep::Review) => WizardStep::Files,
             (_, WizardStep::Review) => WizardStep::Columns,
         };
         cx.notify();

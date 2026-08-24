@@ -78,6 +78,67 @@ fn column_settings(
     map
 }
 
+fn project_columns(
+    headers: &[String],
+    preview: Option<&ColumnConfigPreview>,
+    title_column: &str,
+    file_column: &str,
+) -> Vec<project::ProjectColumn> {
+    let mut columns: Vec<project::ProjectColumn> = preview
+        .map(|preview| {
+            preview
+                .entries
+                .iter()
+                .map(|entry| project::ProjectColumn {
+                    name: entry.name.clone(),
+                    data_type: entry.data_type.clone(),
+                    notes: entry.description.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            headers
+                .iter()
+                .map(|name| project::ProjectColumn {
+                    name: name.clone(),
+                    data_type: settings::columns::ColumnType::Text.as_str().into(),
+                    notes: String::new(),
+                })
+                .collect()
+        });
+
+    for required in [title_column, file_column] {
+        if !required.is_empty()
+            && !columns
+                .iter()
+                .any(|column| column.name.eq_ignore_ascii_case(required))
+        {
+            columns.push(project::ProjectColumn {
+                name: required.to_string(),
+                data_type: settings::columns::ColumnType::Text.as_str().into(),
+                notes: String::new(),
+            });
+        }
+    }
+    for column in &mut columns {
+        let kind = settings::columns::ColumnType::from_declared(&column.data_type);
+        if matches!(
+            kind,
+            settings::columns::ColumnType::Title | settings::columns::ColumnType::Filename
+        ) {
+            column.data_type = settings::columns::ColumnType::Text.as_str().into();
+        }
+        if column.name.eq_ignore_ascii_case(title_column) {
+            column.name = title_column.to_string();
+            column.data_type = settings::columns::ColumnType::Title.as_str().into();
+        } else if column.name.eq_ignore_ascii_case(file_column) {
+            column.name = file_column.to_string();
+            column.data_type = settings::columns::ColumnType::Filename.as_str().into();
+        }
+    }
+    columns
+}
+
 impl ProjectWizard {
     pub(crate) fn create_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.project_name(cx);
@@ -92,36 +153,20 @@ impl ProjectWizard {
             LinkMethod::ExactFilename => "exact filename",
             LinkMethod::CustomPattern => "custom pattern",
         });
-        // Prefer config from the Columns step; else fall back to spreadsheet headers, all Text.
-        let columns: Vec<project::ProjectColumn> = self
-            .config_preview
-            .as_ref()
-            .map(|p| {
-                p.entries
-                    .iter()
-                    .map(|e| project::ProjectColumn {
-                        name: e.name.clone(),
-                        data_type: e.data_type.clone(),
-                        notes: e.description.clone(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_else(|| {
-                self.spreadsheet_headers()
-                    .into_iter()
-                    .map(|name| project::ProjectColumn {
-                        name,
-                        data_type: "Text".into(),
-                        notes: String::new(),
-                    })
-                    .collect()
-            });
-        // The imported rows themselves — the whole point of the `.qrate` file.
+        let spreadsheet_headers = self.spreadsheet_headers();
+        let columns = project_columns(
+            &spreadsheet_headers,
+            self.config_preview.as_ref(),
+            self.title_column.as_deref().unwrap_or_default(),
+            self.file_column.as_deref().unwrap_or_default(),
+        );
+        // The imported rows themselves — the whole point of the `.qrate` file. Blank projects
+        // still create the empty dataset with their required Title and File headers.
         let (headers, rows) = self
             .csv_preview
             .as_ref()
-            .map(|p| (p.headers.clone(), p.rows.clone()))
-            .unwrap_or_default();
+            .map(|preview| (preview.headers.clone(), preview.rows.clone()))
+            .unwrap_or_else(|| (spreadsheet_headers, Vec::new()));
         // Skipped files → the folder field is stale, same reasoning as `link_method` above.
         let files_folder = (!self.skip_files && !self.folder_path.trim().is_empty())
             .then_some(self.folder_path.as_str());
@@ -248,10 +293,14 @@ impl ProjectWizard {
             .map(|c| c.entries.len())
             .unwrap_or_else(|| self.spreadsheet_headers().len());
         let columns_line = {
-            let source_desc = match self.column_source {
-                ColumnSource::AutoFromSpreadsheet => "Auto-matched from spreadsheet",
-                ColumnSource::LoadFromFileOrSheet => "Loaded from file/Sheet",
-                ColumnSource::SkipForNow => "Set up later",
+            let source_desc = if self.entry_kind == EntryKind::Blank {
+                "Required Title and File columns"
+            } else {
+                match self.column_source {
+                    ColumnSource::AutoFromSpreadsheet => "Auto-matched from spreadsheet",
+                    ColumnSource::LoadFromFileOrSheet => "Loaded from file/Sheet",
+                    ColumnSource::SkipForNow => "Set up later",
+                }
             };
             format!("{source_desc} · {column_count} columns")
         };
@@ -282,5 +331,72 @@ impl ProjectWizard {
             )
         // The shared wizard footer supplies the "Create Project" (Next) and
         // "← Back" controls — see `ProjectWizard::render_footer`.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use settings::columns::ColumnType;
+
+    use crate::data::{ColumnConfigEntry, ColumnConfigPreview};
+
+    use super::project_columns;
+
+    fn roles(columns: &[crate::project::ProjectColumn]) -> Vec<(&str, ColumnType)> {
+        columns
+            .iter()
+            .map(|column| {
+                (
+                    column.name.as_str(),
+                    ColumnType::from_declared(&column.data_type),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn configured_columns_materialize_the_required_roles() {
+        let headers = vec!["Object Name".into(), "Digital Path".into()];
+        let preview = ColumnConfigPreview {
+            entries: vec![
+                ColumnConfigEntry {
+                    name: "Object Name".into(),
+                    data_type: "Title".into(),
+                    ..Default::default()
+                },
+                ColumnConfigEntry {
+                    name: "Digital Path".into(),
+                    data_type: "Filename".into(),
+                    ..Default::default()
+                },
+            ],
+        };
+
+        assert_eq!(
+            roles(&project_columns(
+                &headers,
+                Some(&preview),
+                "Object Name",
+                "Digital Path"
+            )),
+            vec![
+                ("Object Name", ColumnType::Title),
+                ("Digital Path", ColumnType::Filename)
+            ]
+        );
+    }
+
+    #[test]
+    fn bare_headers_materialize_the_required_roles() {
+        let headers = vec!["Title".into(), "File".into(), "Notes".into()];
+
+        assert_eq!(
+            roles(&project_columns(&headers, None, "Title", "File")),
+            vec![
+                ("Title", ColumnType::Title),
+                ("File", ColumnType::Filename),
+                ("Notes", ColumnType::Text)
+            ]
+        );
     }
 }
