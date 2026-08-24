@@ -109,7 +109,7 @@ pub fn init(cx: &mut App) {
             };
             loop {
                 match listener.accept() {
-                    Ok((stream, _)) => cx.update(|cx| serve(stream, token, &mut seen, cx)),
+                    Ok((stream, _)) => serve(stream, token, &mut seen, cx).await,
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(err) => {
                         log::warn!("agent bridge dropped a connection: {err}");
@@ -168,7 +168,7 @@ fn start() -> Option<(TcpListener, String)> {
     })?;
     let port = listener.local_addr().map_or(0, |addr| addr.port());
     let endpoint = json!({
-        "bridge_protocol": 1,
+        "bridge_protocol": 2,
         "url": format!("http://127.0.0.1:{port}"),
         "token": token
     });
@@ -208,11 +208,11 @@ pub fn shutdown() {
     }
 }
 
-fn serve(
+async fn serve(
     mut stream: TcpStream,
     token: &str,
     seen: &mut HashMap<SharedString, Instant>,
-    cx: &mut App,
+    cx: &mut gpui::AsyncApp,
 ) {
     let framed = stream
         .set_read_timeout(Some(POLL))
@@ -243,10 +243,12 @@ fn serve(
         .as_ref()
         .is_ok_and(|request| request.credential.as_deref() == Some(token));
     if authenticated && !seen.contains_key(&agent) {
-        workspace::record_agent_call(
-            lifecycle(agent.clone(), "connected", "first call from this agent"),
-            cx,
-        );
+        cx.update(|cx| {
+            workspace::record_agent_call(
+                lifecycle(agent.clone(), "connected", "first call from this agent"),
+                cx,
+            )
+        });
     }
     if authenticated {
         seen.insert(agent.clone(), Instant::now());
@@ -277,7 +279,10 @@ fn serve(
             ),
             Ok(request) => {
                 (method, detail) = summarize(&request);
-                match table::respond_to_agent(request, cx) {
+                let response = cx
+                    .update(|cx| table::respond_to_agent_async(request, cx))
+                    .await;
+                match response {
                     Ok(response) => {
                         let outcome = describe(&response.result);
                         (
@@ -298,20 +303,22 @@ fn serve(
         },
     };
 
-    workspace::record_agent_call(
-        AgentCall {
-            agent,
-            label: method,
-            detail,
-            outcome,
-            entry: match refused {
-                true => AgentEntry::Refused,
-                false => AgentEntry::Answered,
+    cx.update(|cx| {
+        workspace::record_agent_call(
+            AgentCall {
+                agent,
+                label: method,
+                detail,
+                outcome,
+                entry: match refused {
+                    true => AgentEntry::Refused,
+                    false => AgentEntry::Answered,
+                },
+                took: started.elapsed(),
             },
-            took: started.elapsed(),
-        },
-        cx,
-    );
+            cx,
+        )
+    });
 
     let body = payload.to_string();
     let reply = format!(
@@ -334,12 +341,20 @@ fn summarize(request: &ai::agent::Request) -> (SharedString, SharedString) {
         .unwrap_or_else(|| "?".into());
 
     let detail = match request {
-        ai::agent::Request::Rows { rows } => format!("{} row(s)", rows.len()).into(),
-        ai::agent::Request::SearchRows { query, limit } => format!("“{query}”, max {limit}").into(),
+        ai::agent::Request::Query(query) => {
+            format!("{:?}, max {}", query.source, query.limit).into()
+        }
         ai::agent::Request::StageFindings { revision, findings } => {
             format!("{} finding(s) at revision {}", findings.len(), revision.0).into()
         }
-        _ => SharedString::default(),
+        ai::agent::Request::ProgramSave { source } => {
+            format!("{} source byte(s)", source.len()).into()
+        }
+        ai::agent::Request::ProgramRun { revision, .. } => {
+            format!("at revision {}", revision.0).into()
+        }
+        ai::agent::Request::Thumbnails { items } => format!("{} thumbnail(s)", items.len()).into(),
+        ai::agent::Request::Overview => SharedString::default(),
     };
     (method, detail)
 }
@@ -348,17 +363,23 @@ fn summarize(request: &ai::agent::Request) -> (SharedString, SharedString) {
 /// call happened; the archive's own data does not belong in a debugging list.
 fn describe(result: &ai::agent::ResultSet) -> SharedString {
     match result {
-        ai::agent::ResultSet::ProjectSummary(summary) => format!(
+        ai::agent::ResultSet::Overview(overview) => format!(
             "{} rows × {} columns",
-            summary.row_count, summary.column_count
+            overview.project.row_count, overview.project.column_count
         )
         .into(),
-        ai::agent::ResultSet::Columns { columns } => format!("{} columns", columns.len()).into(),
-        ai::agent::ResultSet::Rows { rows } => format!("{} rows", rows.len()).into(),
-        ai::agent::ResultSet::Diagnostics { diagnostics } => {
-            format!("{} diagnostics", diagnostics.len()).into()
+        ai::agent::ResultSet::Query(page) => {
+            format!("{} returned, {} remaining", page.returned, page.remaining).into()
         }
-        ai::agent::ResultSet::SelectedRows { rows } => format!("{} selected", rows.len()).into(),
+        ai::agent::ResultSet::ProgramSaved { version, hash } => {
+            format!("program v{version} {hash}").into()
+        }
+        ai::agent::ResultSet::ProgramRun(output) => {
+            format!("program v{} in {} ms", output.version, output.elapsed_ms).into()
+        }
+        ai::agent::ResultSet::Thumbnails { items } => {
+            format!("{} thumbnail(s)", items.len()).into()
+        }
         ai::agent::ResultSet::Staged { accepted, stale } => {
             format!("{accepted} staged, {} stale", stale.len()).into()
         }
@@ -369,7 +390,12 @@ fn describe(result: &ai::agent::ResultSet) -> SharedString {
 fn wire_name(error: &ai::agent::RequestError) -> SharedString {
     serde_json::to_value(error)
         .ok()
-        .and_then(|value| value.as_str().map(SharedString::from))
+        .and_then(|value| {
+            value
+                .get("code")
+                .and_then(|code| code.as_str())
+                .map(SharedString::from)
+        })
         .unwrap_or_else(|| "request_error".into())
 }
 

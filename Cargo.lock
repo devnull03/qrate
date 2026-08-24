@@ -5509,6 +5509,7 @@ dependencies = [
  "log",
  "mlua",
  "plugin-api",
+ "preview",
  "reqwest",
  "serde_json",
  "settings",
@@ -7689,15 +7690,19 @@ name = "table"
 version = "0.3.0-alpha.2"
 dependencies = [
  "ai",
+ "base64",
  "diagnostics",
  "gpui",
  "gpui-component",
  "log",
  "plugin-api",
+ "plugin-host",
+ "preview",
  "regex",
  "serde",
  "serde_json",
  "settings",
+ "sha2",
 ]
 
 [[package]]

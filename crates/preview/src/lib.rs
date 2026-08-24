@@ -355,9 +355,31 @@ pub fn search(path: &Path, needle: &str) -> Vec<Match> {
     pdf::search(path, needle).unwrap_or_default()
 }
 
+/// The same cached 512px preview the UI uses, encoded as PNG for a bounded agent attachment.
+/// The caller already resolved `path` through qrate's linked-files index; this function never
+/// exposes the path or original bytes.
+pub fn thumbnail_png(path: &Path, page: usize) -> Option<Vec<u8>> {
+    let pixels = thumbnail_pixels(path, CARD, page)?;
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(pixels)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .ok()?;
+    Some(encoded.into_inner())
+}
+
 /// Decode `path`, shrink it to fit `max_edge`, and hand back something gpui can draw. Runs on a
 /// background thread; `None` for anything that won't decode, which the caller turns into the icon.
 fn render(path: &Path, max_edge: u32, page: usize) -> Option<Arc<RenderImage>> {
+    let mut bgra = thumbnail_pixels(path, max_edge, page)?;
+    // `RenderImage` is documented as BGRA and gpui only swaps inside its own decode path, so an
+    // image built by hand has to arrive already swapped or every preview draws blue-for-red.
+    for px in bgra.pixels_mut() {
+        px.0.swap(0, 2);
+    }
+    Some(Arc::new(RenderImage::new([Frame::new(bgra)])))
+}
+
+fn thumbnail_pixels(path: &Path, max_edge: u32, page: usize) -> Option<image::RgbaImage> {
     // A full-size rendering is not cached: it would be a second copy of the original file on disk,
     // and it is wanted once, while someone is looking at it.
     let key = (max_edge != FULL)
@@ -374,13 +396,7 @@ fn render(path: &Path, max_edge: u32, page: usize) -> Option<Arc<RenderImage>> {
         }
     };
 
-    // `RenderImage` is documented as BGRA and gpui only swaps inside its own decode path, so an
-    // image built by hand has to arrive already swapped or every preview draws blue-for-red.
-    let mut bgra = scaled;
-    for px in bgra.pixels_mut() {
-        px.0.swap(0, 2);
-    }
-    Some(Arc::new(RenderImage::new([Frame::new(bgra)])))
+    Some(scaled)
 }
 
 /// The ladder: each tier is asked in turn and the first one that produces pixels wins.

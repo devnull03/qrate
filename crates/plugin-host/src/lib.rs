@@ -10,8 +10,13 @@
 //! other `.lua` file beside its `init.lua`, and nothing else — the host reads the folder, so the
 //! sandbox never gains a way to name a file itself.
 
+mod agent_program;
 mod plugin;
 
+pub use agent_program::{
+    AgentDiagnostic, AgentProgramError, AgentProgramOutput, AgentSnapshot, DEADLINE, MAX_OUTPUT,
+    MEMORY_LIMIT, run_agent_program, validate_agent_program,
+};
 pub use plugin::{Env, LuaPlugin, PERMISSION_NET, Writes};
 // So the Settings window can render a plugin's knobs without depending on `plugin-api` directly.
 pub use plugin_api::{SettingKind, SettingScope, SettingSpec};

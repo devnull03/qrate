@@ -1,19 +1,33 @@
 //! Live-table adapter for the external-agent contract: the reads, and the one draft-only write.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ai::agent::{
-    Column, Diagnostic, Field, Finding, ProjectSummary, Request, RequestError, Response, ResultSet,
-    Row, Severity, TableRevision,
+    Column, Count, DiagnosticSummary, FilterOp, Finding, MAX_RESULT_BYTES, Overview, ProgramAudit,
+    ProgramOutput, ProjectSummary, Query, QueryResult, QuerySource, Request, RequestError,
+    Response, ResultSet, Severity, TableRevision,
 };
+use base64::Engine as _;
 use diagnostics::{DATASET_MAIN, FixProviders, Location, Source};
-use gpui::{App, Global, SharedString};
+use gpui::{App, Global, SharedString, Task};
+use sha2::{Digest as _, Sha256};
 
 use crate::{QrateTableDelegate, TableStateHandle};
 
 /// The diagnostics source every staged finding is filed under. One name for the whole agent, so a
 /// re-run replaces its own drafts wholesale instead of stacking a second copy beside them.
 pub const AGENT_SOURCE: &str = "agent";
+
+#[derive(Default)]
+struct AgentProgram {
+    source: String,
+    version: u64,
+    hash: String,
+}
+impl Global for AgentProgram {}
+static PROGRAM_RUNS: AtomicU64 = AtomicU64::new(1);
 
 /// Answer one validated agent request from qrate's live table state.
 ///
@@ -24,8 +38,12 @@ pub const AGENT_SOURCE: &str = "agent";
 pub fn respond_to_agent(request: Request, cx: &mut App) -> Result<Response, RequestError> {
     request.validate()?;
 
-    if let Request::StageFindings { revision, findings } = request {
-        return stage_findings(revision, findings, cx);
+    match request {
+        Request::StageFindings { revision, findings } => {
+            return stage_findings(revision, findings, cx);
+        }
+        Request::ProgramSave { source } => return save_program(source, cx),
+        _ => {}
     }
 
     let project = cx
@@ -40,7 +58,381 @@ pub fn respond_to_agent(request: Request, cx: &mut App) -> Result<Response, Requ
     let revision = TableRevision(delegate.values_generation());
 
     let result = match request {
-        Request::ProjectSummary => ResultSet::ProjectSummary(ProjectSummary {
+        Request::Overview => ResultSet::Overview(overview(project, delegate, cx)),
+        Request::Query(query) => ResultSet::Query(run_query(query, revision, delegate, cx)?),
+        Request::ProgramRun {
+            revision: judged,
+            args,
+        } => {
+            if judged != revision {
+                return Err(RequestError::StaleCursor);
+            }
+            let program = cx
+                .try_global::<AgentProgram>()
+                .ok_or(RequestError::ProgramUnavailable)?;
+            let (version, hash, source) = (
+                program.version,
+                program.hash.clone(),
+                program.source.clone(),
+            );
+            let snapshot = program_snapshot(revision, delegate, cx);
+            let output =
+                plugin_host::run_agent_program(&source, &args, snapshot).map_err(|error| {
+                    log::warn!("agent scratch program {hash} failed: {error}");
+                    if error.kind == "output_too_large" {
+                        RequestError::ProgramOutputTooLarge(error.detail)
+                    } else {
+                        RequestError::ProgramFailed(error.detail)
+                    }
+                })?;
+            let run_id = format!(
+                "{}-{}-{}",
+                &hash[..12],
+                revision.0,
+                PROGRAM_RUNS.fetch_add(1, Ordering::Relaxed)
+            );
+            let audit = ProgramAudit {
+                run_id,
+                revision,
+                version,
+                hash: hash.clone(),
+                elapsed_ms: output.elapsed_ms,
+                memory_limit_bytes: plugin_host::MEMORY_LIMIT,
+                deadline_ms: plugin_host::DEADLINE.as_millis() as u64,
+                output_limit_bytes: plugin_host::MAX_OUTPUT,
+                status: "success".into(),
+                output_bytes: output.output_bytes,
+            };
+            log::info!(
+                "agent program run {} revision {} version {} sha256 {} status success elapsed_ms {} output_bytes {}",
+                audit.run_id,
+                revision.0,
+                version,
+                hash,
+                audit.elapsed_ms,
+                audit.output_bytes
+            );
+            ResultSet::ProgramRun(ProgramOutput {
+                version,
+                hash,
+                value: output.value,
+                logs: output.logs,
+                elapsed_ms: output.elapsed_ms,
+                audit,
+            })
+        }
+        Request::Thumbnails { items } => {
+            let mut thumbnails = Vec::with_capacity(items.len());
+            for item in items {
+                let path = delegate
+                    .row_image(item.row)
+                    .ok_or(RequestError::ThumbnailUnavailable)?;
+                let bytes = preview::thumbnail_png(path, item.page)
+                    .ok_or(RequestError::ThumbnailUnavailable)?;
+                thumbnails.push(ai::agent::Thumbnail {
+                    row: item.row,
+                    page: item.page,
+                    media_type: "image/png".into(),
+                    data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                });
+            }
+            ResultSet::Thumbnails { items: thumbnails }
+        }
+        Request::ProgramSave { .. } | Request::StageFindings { .. } => unreachable!(),
+    };
+
+    Ok(Response { revision, result })
+}
+
+/// Capture live GPUI-owned state now, then do bounded analysis away from the UI thread.
+pub fn respond_to_agent_async(
+    request: Request,
+    cx: &mut App,
+) -> Task<Result<Response, RequestError>> {
+    if let Err(error) = request.validate() {
+        return Task::ready(Err(error));
+    }
+    match request {
+        Request::ProgramSave { source } => {
+            let Some(state) = cx
+                .try_global::<TableStateHandle>()
+                .and_then(|handle| handle.0.upgrade())
+            else {
+                return Task::ready(Err(RequestError::TableUnavailable));
+            };
+            let revision = TableRevision(state.read(cx).delegate().values_generation());
+            let version = cx
+                .try_global::<AgentProgram>()
+                .map_or(1, |program| program.version + 1);
+            let background = cx.background_executor().spawn(async move {
+                plugin_host::validate_agent_program(&source)
+                    .map_err(|error| RequestError::ProgramCompileFailed(error.detail))?;
+                let hash = format!("{:x}", Sha256::digest(source.as_bytes()));
+                Ok::<_, RequestError>((source, hash))
+            });
+            cx.spawn(async move |cx| {
+                let (source, hash) = background.await?;
+                cx.update(|cx| {
+                    cx.set_global(AgentProgram {
+                        source,
+                        version,
+                        hash: hash.clone(),
+                    })
+                });
+                Ok(Response {
+                    revision,
+                    result: ResultSet::ProgramSaved { version, hash },
+                })
+            })
+        }
+        Request::Query(query) => {
+            let Some(project) = cx.try_global::<settings::project::CurrentProject>() else {
+                return Task::ready(Err(RequestError::ProjectUnavailable));
+            };
+            let Some(state) = cx
+                .try_global::<TableStateHandle>()
+                .and_then(|handle| handle.0.upgrade())
+            else {
+                return Task::ready(Err(RequestError::TableUnavailable));
+            };
+            let state = state.read(cx);
+            let delegate = state.delegate();
+            let revision = TableRevision(delegate.values_generation());
+            let diagnostic_source = matches!(query.source, QuerySource::Diagnostics { .. });
+            let schema = if diagnostic_source {
+                ["row", "column", "severity", "source", "message"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            } else {
+                std::iter::once("row".into())
+                    .chain(project.data.headers.iter().cloned())
+                    .collect()
+            };
+            let records = match &query.source {
+                QuerySource::Diagnostics {
+                    severities,
+                    sources,
+                } => diagnostic_records(cx, severities, sources),
+                source => row_records(delegate, source),
+            };
+            cx.background_executor().spawn(async move {
+                run_query_records(query, revision, records, schema, diagnostic_source).map(
+                    |result| Response {
+                        revision,
+                        result: ResultSet::Query(result),
+                    },
+                )
+            })
+        }
+        Request::ProgramRun {
+            revision: judged,
+            args,
+        } => {
+            let Some(state) = cx
+                .try_global::<TableStateHandle>()
+                .and_then(|handle| handle.0.upgrade())
+            else {
+                return Task::ready(Err(RequestError::TableUnavailable));
+            };
+            let state = state.read(cx);
+            let delegate = state.delegate();
+            let revision = TableRevision(delegate.values_generation());
+            if judged != revision {
+                return Task::ready(Err(RequestError::StaleCursor));
+            }
+            let Some(program) = cx.try_global::<AgentProgram>() else {
+                return Task::ready(Err(RequestError::ProgramUnavailable));
+            };
+            let (version, hash, source) = (
+                program.version,
+                program.hash.clone(),
+                program.source.clone(),
+            );
+            let snapshot = program_snapshot(revision, delegate, cx);
+            cx.background_executor().spawn(async move {
+                let run_id = format!(
+                    "{}-{}-{}",
+                    &hash[..12],
+                    revision.0,
+                    PROGRAM_RUNS.fetch_add(1, Ordering::Relaxed)
+                );
+                let output = match plugin_host::run_agent_program(&source, &args, snapshot) {
+                    Ok(output) => output,
+                    Err(error) => {
+                        log::warn!(
+                            "agent program run {} revision {} version {} sha256 {} status {} elapsed_ms {} output_bytes 0 memory_limit_bytes {} deadline_ms {} output_limit_bytes {}",
+                            run_id, revision.0, version, hash, error.kind, error.elapsed_ms,
+                            plugin_host::MEMORY_LIMIT, plugin_host::DEADLINE.as_millis(), plugin_host::MAX_OUTPUT
+                        );
+                        return Err(if error.kind == "output_too_large" {
+                            RequestError::ProgramOutputTooLarge(error.detail)
+                        } else {
+                            RequestError::ProgramFailed(error.detail)
+                        });
+                    }
+                };
+                let audit = ProgramAudit {
+                    run_id,
+                    revision,
+                    version,
+                    hash: hash.clone(),
+                    elapsed_ms: output.elapsed_ms,
+                    memory_limit_bytes: plugin_host::MEMORY_LIMIT,
+                    deadline_ms: plugin_host::DEADLINE.as_millis() as u64,
+                    output_limit_bytes: plugin_host::MAX_OUTPUT,
+                    status: "success".into(),
+                    output_bytes: output.output_bytes,
+                };
+                log::info!(
+                    "agent program run {} revision {} version {} sha256 {} status success elapsed_ms {} output_bytes {} memory_limit_bytes {} deadline_ms {} output_limit_bytes {}",
+                    audit.run_id, revision.0, version, hash, audit.elapsed_ms, audit.output_bytes,
+                    audit.memory_limit_bytes, audit.deadline_ms, audit.output_limit_bytes
+                );
+                Ok(Response {
+                    revision,
+                    result: ResultSet::ProgramRun(ProgramOutput {
+                        version,
+                        hash,
+                        value: output.value,
+                        logs: output.logs,
+                        elapsed_ms: output.elapsed_ms,
+                        audit,
+                    }),
+                })
+            })
+        }
+        Request::Thumbnails { items } => {
+            let Some(state) = cx
+                .try_global::<TableStateHandle>()
+                .and_then(|handle| handle.0.upgrade())
+            else {
+                return Task::ready(Err(RequestError::TableUnavailable));
+            };
+            let state = state.read(cx);
+            let delegate = state.delegate();
+            let revision = TableRevision(delegate.values_generation());
+            let paths: Result<Vec<_>, _> = items
+                .into_iter()
+                .map(|item| {
+                    delegate
+                        .row_image(item.row)
+                        .map(|path| (item, path.to_path_buf()))
+                        .ok_or(RequestError::ThumbnailUnavailable)
+                })
+                .collect();
+            let Ok(paths) = paths else {
+                return Task::ready(Err(RequestError::ThumbnailUnavailable));
+            };
+            cx.background_executor().spawn(async move {
+                let mut thumbnails = Vec::with_capacity(paths.len());
+                for (item, path) in paths {
+                    let bytes = preview::thumbnail_png(&path, item.page)
+                        .ok_or(RequestError::ThumbnailUnavailable)?;
+                    thumbnails.push(ai::agent::Thumbnail {
+                        row: item.row,
+                        page: item.page,
+                        media_type: "image/png".into(),
+                        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                    });
+                }
+                Ok(Response {
+                    revision,
+                    result: ResultSet::Thumbnails { items: thumbnails },
+                })
+            })
+        }
+        other => Task::ready(respond_to_agent(other, cx)),
+    }
+}
+
+fn program_snapshot(
+    revision: TableRevision,
+    delegate: &QrateTableDelegate,
+    cx: &App,
+) -> plugin_host::AgentSnapshot {
+    let columns: Vec<SharedString> = delegate
+        .row_fields(0)
+        .into_iter()
+        .map(|(column, _)| column)
+        .collect();
+    let rows = (0..delegate.row_count())
+        .map(|row| {
+            delegate
+                .row_fields(row)
+                .into_iter()
+                .map(|(_, value)| value)
+                .collect()
+        })
+        .collect();
+    let diagnostics = diagnostics::Diagnostics::all(cx)
+        .iter()
+        .map(|diagnostic| plugin_host::AgentDiagnostic {
+            row: diagnostic.location.row,
+            column: diagnostic.location.column.as_ref().map(ToString::to_string),
+            severity: format!("{:?}", diagnostic.severity).to_lowercase(),
+            source: diagnostic.source.label().to_string(),
+            message: diagnostic.message.to_string(),
+        })
+        .collect();
+    plugin_host::AgentSnapshot {
+        revision: revision.0,
+        columns,
+        rows,
+        selected_rows: delegate.selected_source_rows(),
+        diagnostics,
+        files: (0..delegate.row_count())
+            .map(|row| delegate.row_image(row).map(ToOwned::to_owned))
+            .collect(),
+    }
+}
+
+fn save_program(source: String, cx: &mut App) -> Result<Response, RequestError> {
+    let state = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+        .ok_or(RequestError::TableUnavailable)?;
+    let revision = TableRevision(state.read(cx).delegate().values_generation());
+    plugin_host::validate_agent_program(&source).map_err(|error| {
+        log::warn!("agent scratch program was not activated: {error}");
+        RequestError::ProgramCompileFailed(error.detail)
+    })?;
+    let hash = format!("{:x}", Sha256::digest(source.as_bytes()));
+    let version = cx.try_global::<AgentProgram>().map_or(1, |p| p.version + 1);
+    cx.set_global(AgentProgram {
+        source,
+        version,
+        hash: hash.clone(),
+    });
+    Ok(Response {
+        revision,
+        result: ResultSet::ProgramSaved { version, hash },
+    })
+}
+
+fn overview(
+    project: &settings::project::CurrentProject,
+    delegate: &QrateTableDelegate,
+    cx: &App,
+) -> Overview {
+    let mut summary = DiagnosticSummary::default();
+    let mut sources = BTreeMap::<String, usize>::new();
+    for diagnostic in diagnostics::Diagnostics::all(cx).iter() {
+        match diagnostic.severity {
+            diagnostics::Severity::Error => summary.errors += 1,
+            diagnostics::Severity::Warning => summary.warnings += 1,
+            diagnostics::Severity::Note => summary.notes += 1,
+        }
+        *sources
+            .entry(diagnostic.source.label().to_string())
+            .or_default() += 1;
+    }
+    summary.sources = sources
+        .into_iter()
+        .map(|(value, count)| Count { value, count })
+        .collect();
+    Overview {
+        project: ProjectSummary {
             name: project.display_name(),
             row_count: delegate.row_count(),
             column_count: delegate.column_count(),
@@ -49,72 +441,324 @@ pub fn respond_to_agent(request: Request, cx: &mut App) -> Result<Response, Requ
                 .values
                 .get(settings::project::FILES_FOLDER_KEY)
                 .is_some_and(|value| !value.text().trim().is_empty()),
-        }),
-        Request::Columns => ResultSet::Columns {
-            columns: project
-                .data
-                .headers
-                .iter()
-                .map(|name| {
-                    let configured = project
-                        .data
-                        .columns
-                        .iter()
-                        .find(|column| column.name == *name);
-                    Column {
-                        name: name.clone(),
-                        data_type: configured
-                            .map_or_else(String::new, |column| column.data_type.clone()),
-                        notes: configured.map_or_else(String::new, |column| column.notes.clone()),
-                    }
-                })
-                .collect(),
         },
-        Request::Rows { rows } => ResultSet::Rows {
-            rows: rows
-                .into_iter()
-                .filter(|&row| row < delegate.row_count())
-                .map(|row| row_from(delegate, row))
-                .collect(),
-        },
-        Request::SearchRows { query, limit } => {
-            let query = query.to_lowercase();
-            ResultSet::Rows {
-                rows: (0..delegate.row_count())
-                    .filter(|&row| {
-                        delegate.row_fields(row).iter().any(|(column, value)| {
-                            column.to_lowercase().contains(&query)
-                                || value.to_lowercase().contains(&query)
-                        })
-                    })
-                    .take(limit)
-                    .map(|row| row_from(delegate, row))
-                    .collect(),
-            }
-        }
-        Request::Diagnostics => ResultSet::Diagnostics {
-            diagnostics: diagnostics::Diagnostics::all(cx)
-                .iter()
-                .map(|diagnostic| Diagnostic {
-                    row: diagnostic.location.row,
-                    column: diagnostic.location.column.as_ref().map(ToString::to_string),
-                    severity: match diagnostic.severity {
-                        diagnostics::Severity::Error => Severity::Error,
-                        diagnostics::Severity::Warning => Severity::Warning,
-                        diagnostics::Severity::Note => Severity::Note,
-                    },
-                    source: diagnostic.source.label().to_string(),
-                    message: diagnostic.message.to_string(),
-                })
-                .collect(),
-        },
-        Request::SelectedRows => ResultSet::SelectedRows {
-            rows: delegate.selected_source_rows(),
-        },
-        Request::StageFindings { .. } => unreachable!("staging returned above"),
-    };
+        columns: project
+            .data
+            .headers
+            .iter()
+            .map(|name| {
+                let configured = project
+                    .data
+                    .columns
+                    .iter()
+                    .find(|column| column.name == *name);
+                Column {
+                    name: name.clone(),
+                    data_type: configured
+                        .map_or_else(String::new, |column| column.data_type.clone()),
+                    notes: configured.map_or_else(String::new, |column| column.notes.clone()),
+                }
+            })
+            .collect(),
+        selected_rows: delegate.selected_source_rows().len(),
+        diagnostics: summary,
+    }
+}
 
-    Ok(Response { revision, result })
+type Record = HashMap<String, serde_json::Value>;
+
+fn run_query(
+    query: Query,
+    revision: TableRevision,
+    delegate: &QrateTableDelegate,
+    cx: &App,
+) -> Result<QueryResult, RequestError> {
+    let diagnostic_source = matches!(query.source, QuerySource::Diagnostics { .. });
+    let source_schema: Vec<String> = if diagnostic_source {
+        ["row", "column", "severity", "source", "message"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    } else {
+        std::iter::once("row".into())
+            .chain(delegate.dataset_snapshot().0)
+            .collect()
+    };
+    let records = match &query.source {
+        QuerySource::Diagnostics {
+            severities,
+            sources,
+        } => diagnostic_records(cx, severities, sources),
+        source => row_records(delegate, source),
+    };
+    run_query_records(query, revision, records, source_schema, diagnostic_source)
+}
+
+fn run_query_records(
+    query: Query,
+    revision: TableRevision,
+    mut records: Vec<Record>,
+    source_schema: Vec<String>,
+    diagnostic_source: bool,
+) -> Result<QueryResult, RequestError> {
+    let fingerprint = query_fingerprint(&query);
+    let offset = cursor_offset(query.cursor.as_deref(), revision, fingerprint)?;
+    if let QuerySource::Search { text: needle } = &query.source {
+        let needle = needle.to_lowercase();
+        records.retain(|record| {
+            record.iter().any(|(field, value)| {
+                field.to_lowercase().contains(&needle)
+                    || text(Some(value)).to_lowercase().contains(&needle)
+            })
+        });
+    }
+    records.retain(|record| {
+        query
+            .filters
+            .iter()
+            .all(|filter| filter_matches(record, filter))
+    });
+
+    let referenced = query
+        .select
+        .iter()
+        .chain(query.group_by.iter())
+        .chain(query.distinct.iter())
+        .chain(query.filters.iter().map(|filter| &filter.field))
+        .chain(query.order_by.iter().map(|order| &order.field));
+    if referenced
+        .into_iter()
+        .any(|field| !source_schema.contains(field))
+    {
+        return Err(RequestError::UnknownField);
+    }
+
+    let mut fields = if let Some(distinct) = &query.distinct {
+        let mut values = records
+            .iter()
+            .map(|record| text(record.get(distinct)))
+            .collect::<Vec<_>>();
+        values.sort();
+        values.dedup();
+        records = values
+            .into_iter()
+            .map(|value| Record::from([(distinct.clone(), value.into())]))
+            .collect();
+        vec![distinct.clone()]
+    } else if query.group_by.is_empty() {
+        if query.select.is_empty() {
+            if diagnostic_source {
+                ["row", "column", "severity", "source", "message"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            } else {
+                source_schema.clone()
+            }
+        } else {
+            query.select.clone()
+        }
+    } else {
+        let mut fields = query.group_by.clone();
+        fields.push("count".into());
+        let mut grouped = BTreeMap::<Vec<String>, usize>::new();
+        for record in &records {
+            let key = query
+                .group_by
+                .iter()
+                .map(|field| text(record.get(field)))
+                .collect();
+            *grouped.entry(key).or_default() += 1;
+        }
+        records = grouped
+            .into_iter()
+            .map(|(key, count)| {
+                let mut record = Record::new();
+                for (field, value) in query.group_by.iter().zip(key) {
+                    record.insert(field.clone(), value.into());
+                }
+                record.insert("count".into(), count.into());
+                record
+            })
+            .collect();
+        fields
+    };
+    if fields.is_empty() {
+        fields.push("row".into());
+    }
+    if let Some(order) = &query.order_by {
+        if !fields.contains(&order.field)
+            && (query.distinct.is_some() || !query.group_by.is_empty())
+        {
+            return Err(RequestError::UnknownField);
+        }
+        records.sort_by_key(|record| text(record.get(&order.field)).to_lowercase());
+        if order.descending {
+            records.reverse();
+        }
+    }
+
+    let total = records.len();
+    if offset > total {
+        return Err(RequestError::InvalidCursor);
+    }
+    let mut items = Vec::new();
+    // Reserve the schema and bounded pagination metadata, then serialize each candidate once.
+    let mut used = serde_json::to_vec(&fields).map_or(MAX_RESULT_BYTES, |value| value.len()) + 512;
+    let end = total.min(offset + query.limit);
+    for record in &records[offset..end] {
+        let item: Vec<_> = fields
+            .iter()
+            .map(|field| {
+                record
+                    .get(field)
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null)
+            })
+            .collect();
+        let prospective = serde_json::to_vec(&item).map_or(MAX_RESULT_BYTES + 1, |v| v.len());
+        if used + prospective > MAX_RESULT_BYTES && items.is_empty() {
+            return Err(RequestError::ResultItemTooLarge);
+        }
+        if used + prospective > MAX_RESULT_BYTES {
+            break;
+        }
+        used += prospective;
+        items.push(item);
+    }
+    let consumed = offset + items.len();
+    let remaining = total.saturating_sub(consumed);
+    let next_cursor =
+        (remaining > 0).then(|| format!("{}:{fingerprint:016x}:{consumed}", revision.0));
+    Ok(QueryResult {
+        fields,
+        returned: items.len(),
+        items,
+        remaining,
+        truncated: remaining > 0,
+        next_cursor,
+    })
+}
+
+fn row_records(delegate: &QrateTableDelegate, source: &QuerySource) -> Vec<Record> {
+    let rows: Vec<usize> = match source {
+        QuerySource::AllRows | QuerySource::Search { .. } => (0..delegate.row_count()).collect(),
+        QuerySource::SelectedRows => delegate.selected_source_rows(),
+        QuerySource::Rows { rows } => rows.clone(),
+        QuerySource::Diagnostics { .. } => unreachable!(),
+    };
+    rows.into_iter()
+        .filter(|row| *row < delegate.row_count())
+        .map(|row| {
+            let mut record = Record::from([("row".into(), row.into())]);
+            for (column, value) in delegate.row_fields(row) {
+                record.insert(column.to_string(), value.to_string().into());
+            }
+            record
+        })
+        .collect()
+}
+
+fn diagnostic_records(cx: &App, severities: &[Severity], sources: &[String]) -> Vec<Record> {
+    diagnostics::Diagnostics::all(cx)
+        .iter()
+        .filter_map(|diagnostic| {
+            let severity = match diagnostic.severity {
+                diagnostics::Severity::Error => Severity::Error,
+                diagnostics::Severity::Warning => Severity::Warning,
+                diagnostics::Severity::Note => Severity::Note,
+            };
+            let source = diagnostic.source.label().to_string();
+            if (!severities.is_empty() && !severities.contains(&severity))
+                || (!sources.is_empty() && !sources.contains(&source))
+            {
+                return None;
+            }
+            Some(Record::from([
+                (
+                    "row".into(),
+                    diagnostic
+                        .location
+                        .row
+                        .map_or(serde_json::Value::Null, Into::into),
+                ),
+                (
+                    "column".into(),
+                    diagnostic
+                        .location
+                        .column
+                        .as_ref()
+                        .map_or(serde_json::Value::Null, |v| v.to_string().into()),
+                ),
+                (
+                    "severity".into(),
+                    format!("{severity:?}").to_lowercase().into(),
+                ),
+                ("source".into(), source.into()),
+                ("message".into(), diagnostic.message.to_string().into()),
+            ]))
+        })
+        .collect()
+}
+
+fn filter_matches(record: &Record, filter: &ai::agent::QueryFilter) -> bool {
+    let actual = text(record.get(&filter.field));
+    let expected = filter.value.as_deref().unwrap_or_default();
+    match filter.op {
+        FilterOp::Equals => actual.eq_ignore_ascii_case(expected),
+        FilterOp::NotEquals => !actual.eq_ignore_ascii_case(expected),
+        FilterOp::Contains => actual.to_lowercase().contains(&expected.to_lowercase()),
+        FilterOp::StartsWith => actual.to_lowercase().starts_with(&expected.to_lowercase()),
+        FilterOp::EndsWith => actual.to_lowercase().ends_with(&expected.to_lowercase()),
+        FilterOp::IsBlank => actual.is_empty(),
+        FilterOp::IsNotBlank => !actual.is_empty(),
+    }
+}
+
+fn text(value: Option<&serde_json::Value>) -> String {
+    match value {
+        Some(serde_json::Value::String(value)) => value.clone(),
+        Some(value) => value.to_string(),
+        None => String::new(),
+    }
+}
+
+fn query_fingerprint(query: &Query) -> u64 {
+    let mut normalized = query.clone();
+    normalized.cursor = None;
+    let mut hasher = DefaultHasher::new();
+    serde_json::to_string(&normalized)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
+fn cursor_offset(
+    cursor: Option<&str>,
+    revision: TableRevision,
+    fingerprint: u64,
+) -> Result<usize, RequestError> {
+    let Some(cursor) = cursor else { return Ok(0) };
+    let mut parts = cursor.split(':');
+    let cursor_revision = parts
+        .next()
+        .and_then(|v| v.parse::<u64>().ok())
+        .ok_or(RequestError::InvalidCursor)?;
+    let cursor_fingerprint = parts
+        .next()
+        .and_then(|v| u64::from_str_radix(v, 16).ok())
+        .ok_or(RequestError::InvalidCursor)?;
+    let offset = parts
+        .next()
+        .and_then(|v| v.parse::<usize>().ok())
+        .ok_or(RequestError::InvalidCursor)?;
+    if parts.next().is_some() || cursor_fingerprint != fingerprint {
+        return Err(RequestError::InvalidCursor);
+    }
+    if cursor_revision != revision.0 {
+        return Err(RequestError::StaleCursor);
+    }
+    Ok(offset)
 }
 
 /// One agent proposal, held until somebody opens the Fixes menu on its cell.
@@ -252,24 +896,13 @@ fn offer_staged(location: &Location, text: &str, cx: &App) -> Vec<diagnostics::F
         .unwrap_or_default()
 }
 
-fn row_from(delegate: &QrateTableDelegate, row: usize) -> Row {
-    Row {
-        index: row,
-        fields: delegate
-            .row_fields(row)
-            .into_iter()
-            .map(|(column, value)| Field {
-                column: column.to_string(),
-                value: value.to_string(),
-            })
-            .collect(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     // Never `use super::*` here — see the note on `note.rs`'s test module.
-    use ai::agent::{Finding, ProjectSummary, Request, RequestError, ResultSet, TableRevision};
+    use ai::agent::{
+        Finding, Overview, ProjectSummary, Query, QuerySource, Request, RequestError, ResultSet,
+        TableRevision,
+    };
     use diagnostics::{DATASET_MAIN, Location};
     use gpui::TestAppContext;
 
@@ -306,7 +939,7 @@ mod tests {
     fn no_open_project_does_not_leak_table_state(cx: &mut TestAppContext) {
         cx.update(|cx| {
             assert_eq!(
-                respond_to_agent(Request::ProjectSummary, cx),
+                respond_to_agent(Request::Overview, cx),
                 Err(RequestError::ProjectUnavailable)
             );
         });
@@ -320,29 +953,33 @@ mod tests {
 
         cx.update(|cx| {
             assert!(matches!(
-                respond_to_agent(Request::ProjectSummary, cx)
-                    .unwrap()
-                    .result,
-                ResultSet::ProjectSummary(ProjectSummary {
-                    row_count: 3,
-                    column_count: 2,
+                respond_to_agent(Request::Overview, cx).unwrap().result,
+                ResultSet::Overview(Overview {
+                    project: ProjectSummary {
+                        row_count: 3,
+                        column_count: 2,
+                        ..
+                    },
                     ..
                 })
             ));
 
-            let ResultSet::Columns { columns } =
-                respond_to_agent(Request::Columns, cx).unwrap().result
+            let ResultSet::Overview(Overview { columns, .. }) =
+                respond_to_agent(Request::Overview, cx).unwrap().result
             else {
                 panic!("columns answered with another result set");
             };
             let names: Vec<_> = columns.iter().map(|column| column.name.as_str()).collect();
             assert_eq!(names, ["Title", "Medium"]);
 
-            let ResultSet::Rows { rows } = respond_to_agent(
-                Request::SearchRows {
-                    query: "video".into(),
+            let ResultSet::Query(page) = respond_to_agent(
+                Request::Query(Query {
+                    source: QuerySource::Search {
+                        text: "video".into(),
+                    },
                     limit: 10,
-                },
+                    ..Query::default()
+                }),
                 cx,
             )
             .unwrap()
@@ -350,9 +987,35 @@ mod tests {
             else {
                 panic!("search answered with another result set");
             };
-            assert_eq!(rows.len(), 1, "case-insensitive search matched cell values");
-            assert_eq!(rows[0].index, 1);
-            assert_eq!(rows[0].fields[0].value, "Wharf");
+            assert_eq!(
+                page.items.len(),
+                1,
+                "case-insensitive search matched cell values"
+            );
+            assert_eq!(page.items[0][0], 1);
+            assert_eq!(page.items[0][1], "Wharf");
+
+            let ResultSet::Query(distinct) = respond_to_agent(
+                Request::Query(Query {
+                    distinct: Some("Medium".into()),
+                    limit: 20,
+                    ..Query::default()
+                }),
+                cx,
+            )
+            .unwrap()
+            .result
+            else {
+                panic!("distinct answered with another result set")
+            };
+            assert_eq!(distinct.fields, ["Medium"]);
+            assert_eq!(
+                distinct.items,
+                [
+                    vec![serde_json::Value::from("Film")],
+                    vec![serde_json::Value::from("Video")]
+                ]
+            );
         });
     }
 
@@ -380,25 +1043,29 @@ mod tests {
         cx.update(|cx| {
             assert!(
                 matches!(
-                    respond_to_agent(Request::ProjectSummary, cx)
-                        .unwrap()
-                        .result,
-                    ResultSet::ProjectSummary(ProjectSummary { row_count: 3, .. })
+                    respond_to_agent(Request::Overview, cx).unwrap().result,
+                    ResultSet::Overview(Overview {
+                        project: ProjectSummary { row_count: 3, .. },
+                        ..
+                    })
                 ),
                 "the filter hid a row from the count"
             );
-            assert_eq!(
-                respond_to_agent(Request::SelectedRows, cx).unwrap().result,
-                ResultSet::SelectedRows { rows: vec![2] }
-            );
-
-            let ResultSet::Rows { rows } = respond_to_agent(Request::Rows { rows: vec![2] }, cx)
-                .unwrap()
-                .result
+            let ResultSet::Query(page) = respond_to_agent(
+                Request::Query(Query {
+                    source: QuerySource::SelectedRows,
+                    limit: 20,
+                    ..Query::default()
+                }),
+                cx,
+            )
+            .unwrap()
+            .result
             else {
                 panic!("rows answered with another result set");
             };
-            assert_eq!(rows[0].fields[0].value, "Cannery");
+            assert_eq!(page.items[0][0], 2);
+            assert_eq!(page.items[0][1], "Cannery");
         });
     }
 
@@ -463,14 +1130,21 @@ mod tests {
                 "the fix is offered against the judged text"
             );
             assert_eq!(offered[0].replacement, "Harvest, 1962");
-            let ResultSet::Rows { rows } = respond_to_agent(Request::Rows { rows: vec![0] }, cx)
-                .unwrap()
-                .result
+            let ResultSet::Query(page) = respond_to_agent(
+                Request::Query(Query {
+                    source: QuerySource::Rows { rows: vec![0] },
+                    limit: 20,
+                    ..Query::default()
+                }),
+                cx,
+            )
+            .unwrap()
+            .result
             else {
                 panic!("rows answered with another result set");
             };
             assert_eq!(
-                rows[0].fields[0].value, "Harvest",
+                page.items[0][1], "Harvest",
                 "staging a replacement must not write the cell"
             );
             assert!(
