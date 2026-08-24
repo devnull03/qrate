@@ -1,6 +1,6 @@
-//! Right-side status-bar widget: shown only while `update_check::AvailableUpdate` is set. Clicking
-//! the text opens the release's platform installer; the close button dismisses it for that
-//! version.
+//! Right-side title-bar widget: shown only while `update_check::AvailableUpdate` is set. Clicking
+//! the text opens the site's download page for the platform installer; the close button dismisses
+//! it for that version.
 
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
@@ -29,7 +29,7 @@ impl Render for UpdateNotice {
         let Some(update) = cx.try_global::<AvailableUpdate>().cloned() else {
             return div();
         };
-        let url = update.download_url.clone();
+        let url = update.download_page.clone();
         div().child(
             gpui_component::h_flex()
                 .id("update-notice")

@@ -86,9 +86,9 @@ impl Render for AboutWindow {
                         }
                         Check::Done(Some(UpdateStatus::Available {
                             version,
-                            download_url,
+                            download_page,
                         })) => {
-                            let url = download_url.clone();
+                            let url = download_page.clone();
                             h_flex()
                                 .gap_2()
                                 .items_center()

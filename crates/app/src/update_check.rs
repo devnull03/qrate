@@ -1,13 +1,17 @@
 //! One-shot GitHub release check at startup: is the latest tagged release newer than the version
 //! baked into this build? If so, the [`AvailableUpdate`] global carries the platform-matching
-//! download link for `status_items::UpdateNotice` to show. Never downloads or installs anything
-//! itself — `.github/workflows/release.yml` already builds the installer this links to.
+//! download link for `title_items::UpdateNotice` to show. Never downloads or installs anything
+//! itself — the link goes to the site's download page for the platform asset.
 
 use gpui::{App, AppContext as _, Global, Task};
 use serde::Deserialize;
 use settings::AppSettings;
 
 const API_URL: &str = "https://api.github.com/repos/devnull03/qrate/releases/latest";
+
+/// Downloads go through the site rather than straight at the GitHub asset, so the reader lands on
+/// a page that can say what an unsigned build will do before their browser starts saving one.
+const DOWNLOAD_PAGE: &str = "https://qrate.dvnl.work/thanks";
 
 /// Matches the asset names `release.yml` packages under.
 #[cfg(target_os = "windows")]
@@ -29,13 +33,12 @@ struct Release {
 #[derive(Deserialize)]
 struct Asset {
     name: String,
-    browser_download_url: String,
 }
 
 #[derive(Clone)]
 pub struct AvailableUpdate {
     pub version: String,
-    pub download_url: String,
+    pub download_page: String,
 }
 
 impl Global for AvailableUpdate {}
@@ -59,7 +62,7 @@ pub enum UpdateStatus {
     UpToDate,
     Available {
         version: String,
-        download_url: String,
+        download_page: String,
     },
 }
 
@@ -79,7 +82,7 @@ pub fn check_now(cx: &App) -> Task<Option<UpdateStatus>> {
             .find(|a| a.name.ends_with(ASSET_SUFFIX))?;
         Some(UpdateStatus::Available {
             version: latest,
-            download_url: asset.browser_download_url.clone(),
+            download_page: format!("{DOWNLOAD_PAGE}?a={}", asset.name),
         })
     })
 }
@@ -92,7 +95,7 @@ pub fn check(cx: &mut App) {
     cx.spawn(async move |cx| {
         let Some(UpdateStatus::Available {
             version,
-            download_url,
+            download_page,
         }) = task.await
         else {
             return;
@@ -107,7 +110,7 @@ pub fn check(cx: &mut App) {
             }
             cx.set_global(AvailableUpdate {
                 version,
-                download_url,
+                download_page,
             });
         });
     })

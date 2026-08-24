@@ -1,3 +1,5 @@
+mod update_notice;
+
 use gpui::*;
 use gpui_component::{
     dock::{DockArea, DockPlacement},
@@ -7,6 +9,7 @@ use plugin_api::{Bar, Side};
 
 use crate::actions::{ToggleBottomDock, ToggleLeftDock, ToggleRightDock};
 use crate::status_items::PluginBar;
+use update_notice::UpdateNotice;
 use window_wrapper::{BarRegistry, title_bar::TitleBarRegistry};
 use workspace::DockToggleButton;
 
@@ -25,6 +28,13 @@ pub fn build_title_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> Tit
     // Before the dock buttons, so plugin text sits inboard of them.
     let plugins = cx.new(|cx| PluginBar::new(Bar::Title, Side::Right, cx));
     registry.items_mut().add_right(plugins);
+
+    // Dismissible "an update is available" text, shown only once `update_check::check` finds one.
+    // Text before buttons, on the same reasoning as the plugin bar above.
+    let update_notice = cx.new(UpdateNotice::new);
+    registry
+        .items_mut()
+        .add_right_if(update_notice, UpdateNotice::occupied);
 
     // The label and action each button hovers with: the action is what makes the tooltip print
     // Ctrl or ⌘ to match whoever is reading it, rather than a string that is wrong on one platform.
