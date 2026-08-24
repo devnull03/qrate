@@ -38,28 +38,39 @@ fn sync_required_picker(
         state.set_selected_indices(vec![IndexPath::new(index)], window, cx);
     });
 }
+
+fn inferred_required_column(
+    headers: &[String],
+    config: Option<&data::ColumnConfigPreview>,
+    kind: settings::columns::ColumnType,
+) -> Option<String> {
+    config
+        .and_then(|config| {
+            config.entries.iter().find_map(|entry| {
+                (settings::columns::ColumnType::from_declared(&entry.data_type) == kind)
+                    .then(|| {
+                        headers
+                            .iter()
+                            .find(|header| header.eq_ignore_ascii_case(&entry.name))
+                            .cloned()
+                    })
+                    .flatten()
+            })
+        })
+        .or_else(|| {
+            headers
+                .iter()
+                .find(|header| settings::columns::ColumnType::from_declared(header) == kind)
+                .cloned()
+        })
+}
 impl ProjectWizard {
     fn inferred_required_column(&self, kind: settings::columns::ColumnType) -> Option<String> {
-        let headers = self.spreadsheet_headers();
-        self.config_preview
-            .as_ref()
-            .and_then(|config| {
-                config.entries.iter().find_map(|entry| {
-                    (settings::columns::ColumnType::from_declared(&entry.data_type) == kind)
-                        .then(|| {
-                            headers
-                                .iter()
-                                .find(|header| header.eq_ignore_ascii_case(&entry.name))
-                                .cloned()
-                        })
-                        .flatten()
-                })
-            })
-            .or_else(|| {
-                headers
-                    .into_iter()
-                    .find(|header| settings::columns::ColumnType::from_declared(header) == kind)
-            })
+        inferred_required_column(
+            &self.spreadsheet_headers(),
+            self.config_preview.as_ref(),
+            kind,
+        )
     }
 
     fn prefill_required_columns(&mut self) {
@@ -556,5 +567,48 @@ impl ProjectWizard {
                     .text_sm()
                     .text_color(cx.theme().muted_foreground),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use settings::columns::ColumnType;
+
+    use crate::data::{ColumnConfigEntry, ColumnConfigPreview};
+    use crate::steps::columns::inferred_required_column;
+
+    #[test]
+    fn declared_config_roles_take_priority_over_header_names() {
+        let headers = vec!["Title".into(), "Object Name".into(), "File".into()];
+        let config = ColumnConfigPreview {
+            entries: vec![ColumnConfigEntry {
+                name: "Object Name".into(),
+                data_type: "Title".into(),
+                ..Default::default()
+            }],
+        };
+
+        assert_eq!(
+            inferred_required_column(&headers, Some(&config), ColumnType::Title).as_deref(),
+            Some("Object Name")
+        );
+        assert_eq!(
+            inferred_required_column(&headers, Some(&config), ColumnType::Filename).as_deref(),
+            Some("File")
+        );
+    }
+
+    #[test]
+    fn unrelated_headers_do_not_infer_required_roles() {
+        let headers = vec!["Identifier".into(), "Description".into()];
+
+        assert_eq!(
+            inferred_required_column(&headers, None, ColumnType::Title),
+            None
+        );
+        assert_eq!(
+            inferred_required_column(&headers, None, ColumnType::Filename),
+            None
+        );
     }
 }

@@ -124,6 +124,20 @@ pub struct ProjectWizard {
     _file_picker_sub: Subscription,
 }
 
+fn required_columns(title: Option<&str>, file: Option<&str>) -> Result<(), &'static str> {
+    let title = title.unwrap_or_default();
+    let file = file.unwrap_or_default();
+    if title.is_empty() {
+        return Err("Choose the column that contains each row's title");
+    }
+    if file.is_empty() {
+        return Err("Choose the column that contains each row's file");
+    }
+    if title == file {
+        return Err("Title and File must use different columns");
+    }
+    Ok(())
+}
 impl ProjectWizard {
     pub fn new(entry_kind: EntryKind, window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.set_window_title("New Project — qrate");
@@ -323,18 +337,8 @@ impl ProjectWizard {
                 {
                     return Err("Load a column config, or pick a different source".into());
                 }
-                let title = self.title_column.as_deref().unwrap_or_default();
-                let file = self.file_column.as_deref().unwrap_or_default();
-                if title.is_empty() {
-                    return Err("Choose the column that contains each row's title".into());
-                }
-                if file.is_empty() {
-                    return Err("Choose the column that contains each row's file".into());
-                }
-                if title == file {
-                    return Err("Title and File must use different columns".into());
-                }
-                Ok(())
+                required_columns(self.title_column.as_deref(), self.file_column.as_deref())
+                    .map_err(Into::into)
             }
             WizardStep::Review => Ok(()),
         }
@@ -620,4 +624,17 @@ pub(crate) fn option_card(
                 .text_color(cx.theme().muted_foreground)
                 .child(description.into()),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::wizard::required_columns;
+
+    #[test]
+    fn columns_step_requires_two_distinct_roles() {
+        assert!(required_columns(Some("Title"), Some("File")).is_ok());
+        assert!(required_columns(None, Some("File")).is_err());
+        assert!(required_columns(Some("Title"), None).is_err());
+        assert!(required_columns(Some("Same"), Some("Same")).is_err());
+    }
 }
