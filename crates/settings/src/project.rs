@@ -29,6 +29,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
+const COLUMN_NOTES_WRITE_PREFIX: &str = "column_notes:";
+
 use anyhow::{Context as _, Result};
 use rusqlite::{Connection, OptionalExtension as _, params};
 
@@ -172,6 +174,31 @@ impl CurrentProject {
         if let Err(err) = write_column_types(&file, name, data_type, &cleared) {
             log::error!("failed to save the type of column {name}: {err}");
         }
+        crate::dirty::mark(crate::dirty::COLUMN_SETTINGS, cx);
+    }
+
+    /// Updates a column description in memory immediately and queues the durable `__columns`
+    /// write, so typing does not force SQLite to fsync each keystroke.
+    pub fn set_column_notes(name: &str, notes: &str, cx: &mut gpui::App) {
+        let file = {
+            let project = cx.global_mut::<Self>();
+            match project
+                .data
+                .columns
+                .iter_mut()
+                .find(|column| column.name == name)
+            {
+                Some(column) => column.notes = notes.to_string(),
+                None => project.data.columns.push(ProjectColumn {
+                    name: name.to_string(),
+                    data_type: crate::columns::ColumnType::Text.as_str().to_string(),
+                    notes: notes.to_string(),
+                }),
+            }
+            project.file.clone()
+        };
+        let key = format!("{COLUMN_NOTES_WRITE_PREFIX}{name}");
+        queue_write(&file, &key, notes, cx);
         crate::dirty::mark(crate::dirty::COLUMN_SETTINGS, cx);
     }
 }
@@ -456,6 +483,18 @@ fn write_column_types(path: &Path, name: &str, data_type: &str, cleared: &[Strin
     Ok(())
 }
 
+/// Upserts one column's description without disturbing its declared type.
+pub fn write_column_notes(path: &Path, name: &str, notes: &str) -> Result<()> {
+    let conn = open_rw(path)?;
+    conn.execute(
+        "INSERT INTO __columns(name, data_type, notes) VALUES (?1, ?2, ?3)
+         ON CONFLICT(name) DO UPDATE SET notes = excluded.notes",
+        params![name, crate::columns::ColumnType::Text.as_str(), notes],
+    )
+    .context("Upsert column description")?;
+    Ok(())
+}
+
 /// Re-key a column's declared type and description to its new name. `__columns` is keyed by name,
 /// so without this a rename would look like the old column vanishing and a fresh, untyped one
 /// appearing. No row for that name (a column nobody configured) is nothing to move.
@@ -681,10 +720,17 @@ impl ProjectSettingsWriter {
             Err(_) => return,
         };
         for ((file, key), value) in drained {
-            if let Err(err) = write_setting(&file, &key, &value) {
+            if let Err(err) = write_queued(&file, &key, &value) {
                 log::error!("failed to save project setting {key}: {err}");
             }
         }
+    }
+}
+
+fn write_queued(file: &Path, key: &str, value: &str) -> Result<()> {
+    match key.strip_prefix(COLUMN_NOTES_WRITE_PREFIX) {
+        Some(column) => write_column_notes(file, column, value),
+        None => write_setting(file, key, value),
     }
 }
 
@@ -705,7 +751,7 @@ pub fn queue_write(file: &Path, key: &str, value: &str, cx: &gpui::App) {
     match writer {
         Some(w) => w.enqueue(file, key, value.to_string()),
         None => {
-            if let Err(err) = write_setting(file, key, value) {
+            if let Err(err) = write_queued(file, key, value) {
                 log::error!("failed to save project setting {key}: {err}");
             }
         }
@@ -1006,6 +1052,8 @@ mod tests {
 
         write_column_type(&path, "Digital ID", "Filename").unwrap();
         write_column_type(&path, "Taken", "Date").unwrap();
+        write_column_notes(&path, "Digital ID", "the master scan filename").unwrap();
+        write_column_notes(&path, "Taken", "capture date").unwrap();
 
         let columns = load_project_file(&path).unwrap().columns;
         let by_name = |n: &str| {
@@ -1014,8 +1062,11 @@ mod tests {
                 .find(|c| c.name == n)
                 .map(|c| (c.data_type.as_str(), c.notes.as_str()))
         };
-        assert_eq!(by_name("Digital ID"), Some(("Filename", "the scan")));
-        assert_eq!(by_name("Taken"), Some(("Date", "")));
+        assert_eq!(
+            by_name("Digital ID"),
+            Some(("Filename", "the master scan filename"))
+        );
+        assert_eq!(by_name("Taken"), Some(("Date", "capture date")));
     }
 
     #[test]

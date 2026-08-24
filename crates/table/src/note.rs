@@ -119,17 +119,35 @@ pub(crate) fn squiggle(severity: Severity, cx: &App) -> impl IntoElement {
     .h(px(SQUIGGLE_H + SQUIGGLE_T))
 }
 
-/// Every diagnostic at a location, newline-joined — the cell's hover tooltip.
+/// The column description followed by every diagnostic at a location — the cell/header tooltip.
 pub(crate) fn tooltip_text(location: &Location, cx: &App) -> Option<SharedString> {
-    let messages: Vec<_> = Diagnostics::at(
+    let description = location.column.as_deref().and_then(|name| {
+        cx.try_global::<settings::project::CurrentProject>()
+            .and_then(|project| {
+                project
+                    .data
+                    .columns
+                    .iter()
+                    .find(|column| column.name == name)
+            })
+            .map(|column| column.notes.trim())
+            .filter(|notes| !notes.is_empty())
+    });
+    let diagnostics = Diagnostics::at(
         &location.dataset,
         location.row,
         location.column.as_deref(),
         cx,
     )
-    .map(|d| d.message.as_ref())
-    .collect();
-    (!messages.is_empty()).then(|| messages.join("\n").into())
+    .map(|diagnostic| diagnostic.message.as_ref())
+    .collect::<Vec<_>>()
+    .join("\n");
+    match (description, diagnostics.is_empty()) {
+        (Some(description), false) => Some(format!("{description}\n\n{diagnostics}").into()),
+        (Some(description), true) => Some(description.to_string().into()),
+        (None, false) => Some(diagnostics.into()),
+        (None, true) => None,
+    }
 }
 
 /// The rows a row command acts on: the whole selection when the clicked row is inside it, else

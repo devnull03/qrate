@@ -16,6 +16,7 @@ qrate's bundled Pi runs as a contained child process. Stop, Restart, panel teard
 ### Protocol 2 methods
 
 - `overview`: compact project, column, selection, diagnostic-count, and revision information.
+- `overview` column `data_type` values include `Title` for the primary human-readable row name.
 - `query`: bounded live rows or diagnostics. Sources are `all_rows`, `selected_rows`, `rows`, `search`, and filtered `diagnostics`. Operations include `select`, `where`, `distinct`, `group_by`, `order_by`, `limit`, and revision-bound `cursor`.
 - `program_save`: validate and activate a confined Luau function without running it.
 - `program_run`: run the saved function once against an immutable snapshot at an exact revision.

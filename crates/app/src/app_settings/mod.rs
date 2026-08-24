@@ -1,6 +1,7 @@
 mod config;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
@@ -653,6 +654,10 @@ struct Pickers {
     columns: HashMap<String, Picker<ColumnItem>>,
     /// One per `(plugin, mapping, column)`, so the ids are built at runtime rather than named here.
     maps: HashMap<String, Picker<OptionItem>>,
+    descriptions: HashMap<String, Picker<OptionItem>>,
+    // ponytail: empty rows live only for this app session; a persisted description reconstructs
+    // itself on the next launch, and an abandoned empty row should not.
+    description_rows: HashSet<(PathBuf, String)>,
     /// One per declared `password` setting.
     secrets: HashMap<String, Secret>,
     /// The one language picker, in a map only so it is the same shape as the others — see
@@ -1153,10 +1158,118 @@ fn columns_page(cx: &App) -> SettingPage {
     SettingPage::new("Columns")
         .group(group)
         .group(spelling)
+        .group(descriptions_group(project, &headers, cx))
         .group(data_types_group(headers))
         .group(authority_accounts_group(cx))
         .group(authority_columns_group(project, cx))
         .group(config_file_group())
+}
+
+fn descriptions_group(project: &CurrentProject, headers: &[ColumnItem], cx: &App) -> SettingGroup {
+    let file = project.file.clone();
+    let session_rows = cx
+        .try_global::<Pickers>()
+        .map(|pickers| &pickers.description_rows);
+    let mut group = SettingGroup::new().title("Descriptions").description(
+        "Explain what each column means. Descriptions appear in the grid and agent context.",
+    );
+    let mut missing = Vec::new();
+
+    for header in headers {
+        let notes = project
+            .data
+            .columns
+            .iter()
+            .find(|column| column.name == header.name)
+            .map(|column| column.notes.as_str())
+            .unwrap_or_default();
+        let shown = !notes.trim().is_empty()
+            || session_rows
+                .is_some_and(|rows| rows.contains(&(file.clone(), header.name.to_string())));
+        if !shown {
+            missing.push(OptionItem {
+                value: header.name.clone(),
+                label: header.name.clone(),
+            });
+            continue;
+        }
+
+        let getter_name = header.name.clone();
+        let setter_name = header.name.clone();
+        group = group.item(
+            SettingItem::new(
+                header.name.clone(),
+                SettingField::input(
+                    move |cx: &App| {
+                        cx.try_global::<CurrentProject>()
+                            .and_then(|project| {
+                                project
+                                    .data
+                                    .columns
+                                    .iter()
+                                    .find(|column| column.name == getter_name)
+                            })
+                            .map(|column| column.notes.clone().into())
+                            .unwrap_or_default()
+                    },
+                    move |notes: SharedString, cx: &mut App| {
+                        if let Some(file) = cx
+                            .try_global::<CurrentProject>()
+                            .map(|project| project.file.clone())
+                        {
+                            cx.default_global::<Pickers>()
+                                .description_rows
+                                .insert((file, setter_name.to_string()));
+                            CurrentProject::set_column_notes(&setter_name, &notes, cx);
+                        }
+                    },
+                ),
+            )
+            .layout(Axis::Vertical),
+        );
+    }
+
+    if !missing.is_empty() {
+        group = group.item(SettingItem::new(
+            "Add a description",
+            SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
+                description_picker(missing.clone(), window, cx)
+            }),
+        ));
+    }
+    group
+}
+
+fn description_picker(options: Vec<OptionItem>, window: &mut Window, cx: &mut App) -> AnyElement {
+    let state = picker(
+        |pickers| &mut pickers.descriptions,
+        "add-description".into(),
+        options,
+        PickerKind {
+            multiple: false,
+            searchable: false,
+        },
+        |values: &[SharedString], cx: &mut App| {
+            let Some(column) = values.first().filter(|value| !value.is_empty()) else {
+                return;
+            };
+            let Some(file) = cx
+                .try_global::<CurrentProject>()
+                .map(|project| project.file.clone())
+            else {
+                return;
+            };
+            cx.default_global::<Pickers>()
+                .description_rows
+                .insert((file, column.to_string()));
+        },
+        window,
+        cx,
+    );
+    Combobox::new(&state)
+        .small()
+        .placeholder("Choose a column…")
+        .into_any_element()
 }
 
 /// What each column holds, as one picker per type. Inverted from the obvious row-per-column shape
