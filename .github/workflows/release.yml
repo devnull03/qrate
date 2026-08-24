@@ -146,6 +146,10 @@ jobs:
   build-windows:
     needs: version
     runs-on: windows-latest
+    # rust-lld ships with Rust and accepts the MSVC linker interface, avoiding the slower link.exe
+    # without another installation step.
+    env:
+      RUSTFLAGS: -C linker=rust-lld
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

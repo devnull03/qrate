@@ -71,9 +71,8 @@ jobs:
 
       # gpui_linux (wayland + x11), font-kit's fontconfig, reqwest's default
       # native-tls, and rodio's ALSA backend (`preview::playback`) are the only
-      # things that need system libraries.
-      # mold replaces the single-threaded default linker; macOS already ships a parallel one and
-      # Windows-MSVC cannot select rust-lld on stable.
+      # things that need system libraries. mold replaces the single-threaded
+      # default linker; macOS already ships a parallel one.
       - name: Install Linux system libraries
         if: runner.os == 'Linux'
         run: |
@@ -90,6 +89,14 @@ jobs:
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
+
+      # rust-lld ships with Rust and accepts the MSVC linker interface, avoiding the slower link.exe
+      # without another installation step. This runs before rust-cache so its key includes the flag.
+      - name: Configure Windows linker
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          'RUSTFLAGS=-C linker=rust-lld' >> $env:GITHUB_ENV
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
