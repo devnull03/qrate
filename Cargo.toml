@@ -20,7 +20,7 @@ members = [
 default-members = ["crates/app"]
 
 [workspace.package]
-version = "0.2.0-alpha.3"
+version = "0.3.0-alpha.1"
 edition = "2024"
 
 # Dev runtime was crawling on the 2k-row table because unoptimized gpui/text-shaping
