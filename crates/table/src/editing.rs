@@ -2,7 +2,7 @@
 //! becomes editable by swapping its rendered text for a shared inline `InputState` (see
 //! `selection.rs`, which does the swap) and committing the typed value back on blur/Enter.
 
-use gpui::{Context, SharedString, Window};
+use gpui::{Context, PathPromptOptions, SharedString, Window};
 use gpui_component::table::TableState;
 
 use crate::delegate::QrateTableDelegate;
@@ -28,6 +28,42 @@ pub(crate) fn start(
     window: &mut Window,
     cx: &mut Context<TableState<QrateTableDelegate>>,
 ) {
+    if crate::column_type(delegate, col, cx) == settings::columns::ColumnType::Filename {
+        let folder = cx
+            .try_global::<settings::project::CurrentProject>()
+            .and_then(|project| {
+                project
+                    .data
+                    .values
+                    .get(settings::project::FILES_FOLDER_KEY)
+                    .map(|value| value.text())
+            })
+            .unwrap_or_default();
+        let prompt = if folder.is_empty() {
+            "Choose the file for this row".into()
+        } else {
+            format!("Choose a file from {folder}").into()
+        };
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(prompt),
+        });
+        cx.spawn_in(window, async move |_, cx| {
+            if let Ok(Ok(Some(paths))) = receiver.await
+                && let Some(name) = paths
+                    .first()
+                    .and_then(|path| path.file_name())
+                    .and_then(|name| name.to_str())
+            {
+                let name: SharedString = name.to_owned().into();
+                let _ = cx.update(|_, cx| crate::write_cell(row, col, name, cx));
+            }
+        })
+        .detach();
+        return;
+    }
     let value = delegate.cell(row, col).cloned().unwrap_or_default();
     seed(delegate, value, EditState::Editing { row, col }, window, cx);
 }
@@ -96,7 +132,7 @@ pub(crate) fn commit(
 mod tests {
     // Never `use super::*` here — the chained `gpui::*` glob would let gpui's `test` macro shadow
     // the `#[test]` its own expansion emits (see CLAUDE.md).
-    use gpui::TestAppContext;
+    use gpui::{AppContext as _, TestAppContext};
 
     use crate::editing::{self, EditState};
     use crate::{TablePanel, TableStateHandle};
@@ -106,7 +142,11 @@ mod tests {
             file: std::env::temp_dir().join("qrate-editing-cancel.qrate"),
             data: settings::project::ProjectData {
                 name: "T".into(),
-                columns: Vec::new(),
+                columns: vec![settings::project::ProjectColumn {
+                    name: "Title".into(),
+                    data_type: "Filename".into(),
+                    notes: String::new(),
+                }],
                 headers: vec!["Title".into()],
                 rows: vec![vec!["before".into()]],
                 row_ids: vec![1],
@@ -157,6 +197,21 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[gpui::test]
+    fn a_filename_cell_opens_the_picker_without_opening_the_text_editor(cx: &mut TestAppContext) {
+        let state = panel(cx);
+        let window = cx.windows()[0];
+        cx.update_window(window, |_, window, cx| {
+            state.update(cx, |state, cx| {
+                editing::start(state.delegate_mut(), 0, 0, window, cx);
+                assert_eq!(state.delegate().editing, EditState::Idle);
+            });
+        })
+        .unwrap();
+        assert!(cx.did_prompt_for_paths());
+        cx.simulate_path_prompt_response(|_| None);
     }
 
     /// The other half: without the cancel, that same commit does write — so the assertion above is

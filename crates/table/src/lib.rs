@@ -39,6 +39,7 @@ use gpui::{
 };
 use gpui_component::table::TableState;
 use plugin_api::CommandContext;
+use settings::columns::ColumnType;
 
 /// Global handle to the live table state, so cross-crate status-bar items (the fake-data button
 /// and the selected-cell widget in the `app` crate) can reach the table.
@@ -73,6 +74,20 @@ pub(crate) struct EditSpawn {
     pub scroll: Option<Point<Pixels>>,
 }
 impl Global for EditSpawn {}
+
+pub(crate) fn column_type(delegate: &QrateTableDelegate, col: usize, cx: &App) -> ColumnType {
+    let name = delegate.column_name(col);
+    cx.try_global::<settings::project::CurrentProject>()
+        .and_then(|project| {
+            project
+                .data
+                .columns
+                .iter()
+                .find(|column| column.name == name)
+        })
+        .map(|column| ColumnType::from_declared(&column.data_type))
+        .unwrap_or_default()
+}
 
 /// Re-run every registered validator against the live table. The other half of reloading plugins:
 /// dropping one clears its findings, but only a run publishes the replacements.
