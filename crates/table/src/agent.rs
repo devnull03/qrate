@@ -913,7 +913,11 @@ mod tests {
             file: std::env::temp_dir().join("qrate-agent-smoke.qrate"),
             data: settings::project::ProjectData {
                 name: "T".into(),
-                columns: Vec::new(),
+                columns: vec![settings::project::ProjectColumn {
+                    name: "Title".into(),
+                    data_type: "Title".into(),
+                    notes: "The primary display title".into(),
+                }],
                 headers: vec!["Title".into(), "Medium".into()],
                 rows: vec![
                     vec!["Harvest".into(), "Film".into()],
@@ -971,6 +975,8 @@ mod tests {
             };
             let names: Vec<_> = columns.iter().map(|column| column.name.as_str()).collect();
             assert_eq!(names, ["Title", "Medium"]);
+            assert_eq!(columns[0].data_type, "Title");
+            assert_eq!(columns[0].notes, "The primary display title");
 
             let ResultSet::Query(page) = respond_to_agent(
                 Request::Query(Query {
