@@ -25,6 +25,7 @@ pub fn init(cx: &mut App) {
                 "embedded Pi {PI_VERSION} ready at {}",
                 runtime.program.display()
             );
+            crate::terminal::warm_global_credential(runtime.program.clone());
             cx.set_global(runtime);
         }
         Err(err) => log::warn!("embedded Pi is unavailable: {err}"),

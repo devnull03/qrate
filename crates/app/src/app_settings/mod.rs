@@ -62,6 +62,29 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                     }
                     .into_item(cx),
                 ),
+            )
+            .group(
+                SettingGroup::new()
+                    .title("Terminal")
+                    .item(
+                        Setting::Text {
+                            key: workspace::AGENT_FONT_KEY,
+                            label: "Font",
+                            description: "A monospace family installed on this machine, such as \
+                                          Cascadia Mono or Consolas. Leave empty to let qrate \
+                                          pick one. A proportional font will not line up.",
+                        }
+                        .into_item(cx),
+                    )
+                    .item(
+                        Setting::Dropdown {
+                            key: workspace::AGENT_FONT_SIZE_KEY,
+                            label: "Font size",
+                            description: "Larger type gives the agent fewer columns to draw in.",
+                            options: workspace::AGENT_FONT_SIZES,
+                        }
+                        .into_item(cx),
+                    ),
             ),
         SettingPage::new("Spelling").group(spelling_group(cx)),
         google_page(cx),

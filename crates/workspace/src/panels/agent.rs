@@ -1,4 +1,5 @@
 use std::collections::{HashSet, VecDeque};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
@@ -147,6 +148,24 @@ const LIVE_TICK: Duration = Duration::from_millis(33);
 /// a newly started session; the cost of *not* slowing down is paid from launch until quit.
 const IDLE_TICK: Duration = Duration::from_millis(250);
 
+/// The face Pi's terminal draws with. Empty means "whichever monospace font this machine has".
+pub const AGENT_FONT_KEY: &str = "agent_terminal_font";
+/// The point size of that face, as text, because that is what a dropdown stores.
+pub const AGENT_FONT_SIZE_KEY: &str = "agent_terminal_font_size";
+/// Sizes offered in Settings. The stored half is what [`terminal_type`] parses.
+pub const AGENT_FONT_SIZES: &[(&str, &str)] = &[
+    ("12", "12 px"),
+    ("13", "13 px"),
+    ("14", "14 px (default)"),
+    ("16", "16 px"),
+    ("18", "18 px"),
+    ("20", "20 px"),
+];
+const DEFAULT_FONT_SIZE: f32 = 14.;
+/// 14px type on a 16px line is what the panel shipped with, and a terminal wants the leading to
+/// track the type rather than stay put.
+const LINE_SPACING: f32 = 8. / 7.;
+
 /// The grid the PTY is told to use has to be the grid gpui will actually lay the glyphs out on, so
 /// `cell` is measured from the resolved font rather than assumed.
 fn terminal_dimensions(
@@ -165,19 +184,62 @@ fn terminal_dimensions(
     )
 }
 
-/// The advance and line height of the monospace text style the terminal is rendered with.
-fn terminal_cell(window: &Window) -> Size<Pixels> {
-    let style = window.text_style();
-    let rem_size = window.rem_size();
-    let font_size = style.font_size.to_pixels(rem_size);
-    let font_id = window.text_system().resolve_font(&style.font());
-    size(
-        window
-            .text_system()
-            .advance(font_id, font_size, 'm')
-            .map_or(px(8.), |advance| advance.width),
-        style.line_height_in_pixels(rem_size),
-    )
+/// The face and size the terminal draws with, after the archivist's preferences.
+///
+/// Everything that has to agree about the grid — the styled text, the cell measurement, the line
+/// height — reads this one function, so a setting cannot move the glyphs without moving the
+/// columns they were counted into.
+fn terminal_type(cx: &App) -> (SharedString, Pixels, Pixels) {
+    let configured = settings::effective_text(AGENT_FONT_KEY, cx);
+    let family = if configured.trim().is_empty() {
+        installed_monospace(cx)
+    } else {
+        configured
+    };
+    let size = settings::effective_text(AGENT_FONT_SIZE_KEY, cx)
+        .parse()
+        .unwrap_or(DEFAULT_FONT_SIZE);
+    (family, px(size), px((size * LINE_SPACING).round()))
+}
+
+/// `monospace` is a CSS generic, not a family any OS ships — asking for it silently lands on the
+/// proportional UI font, and then no two columns of the grid are the same width. Name a real face.
+fn installed_monospace(cx: &App) -> SharedString {
+    static FAMILY: OnceLock<String> = OnceLock::new();
+    FAMILY
+        .get_or_init(|| {
+            let available: HashSet<String> =
+                cx.text_system().all_font_names().into_iter().collect();
+            [
+                "Cascadia Mono",
+                "Consolas",
+                "SF Mono",
+                "Menlo",
+                "DejaVu Sans Mono",
+                "Liberation Mono",
+                "Noto Sans Mono",
+            ]
+            .into_iter()
+            .find(|family| available.contains(*family))
+            .unwrap_or_else(|| {
+                log::warn!(
+                    "no known monospace font is installed; Pi's terminal grid will be ragged"
+                );
+                "monospace"
+            })
+            .to_owned()
+        })
+        .clone()
+        .into()
+}
+
+/// The advance one terminal cell occupies in the font the terminal draws with.
+fn terminal_advance(window: &Window, family: SharedString, font_size: Pixels) -> Pixels {
+    let font_id = window.text_system().resolve_font(&font(family));
+    window
+        .text_system()
+        .advance(font_id, font_size, 'm')
+        .map_or(px(8.), |advance| advance.width)
 }
 
 /// File one thing that happened. Called by the transport, which is the only thing that sees them.
@@ -219,6 +281,9 @@ pub struct AgentPanel {
     _sub: Subscription,
     /// Re-renders when the bottom dock opens or closes, so the padding tracks it.
     _crop_sub: Subscription,
+    /// Re-renders when the terminal's font or size changes, in either scope.
+    _settings_sub: Subscription,
+    _project_sub: Subscription,
 }
 
 impl AgentPanel {
@@ -262,6 +327,13 @@ impl AgentPanel {
                 cx.notify();
             }),
             _crop_sub: cx.observe_global::<BottomDockCrop>(|_this: &mut Self, cx| cx.notify()),
+            // Changing the font resizes the grid, so the PTY has to be told before Pi redraws.
+            // Both stores, because the type can be set user-wide or per project.
+            _settings_sub: cx
+                .observe_global::<settings::AppSettings>(|_this: &mut Self, cx| cx.notify()),
+            _project_sub: cx.observe_global::<settings::project::CurrentProject>(
+                |_this: &mut Self, cx| cx.notify(),
+            ),
         }
     }
 }
@@ -334,7 +406,7 @@ impl Panel for AgentPanel {
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.opened_auth_urls.clear();
                             this.view = View::Terminal;
-                            this.terminal.start(false, cx);
+                            this.terminal.new_session(cx);
                             cx.notify();
                         }))
                         .context_menu(move |menu, _window, _cx| {
@@ -449,6 +521,7 @@ impl Render for AgentPanel {
         } else {
             StyledText::new(terminal_screen.text).with_highlights(terminal_screen.highlights)
         };
+        let (terminal_font, terminal_font_size, terminal_line_height) = terminal_type(cx);
         let terminal_status = self.terminal.status().to_owned();
 
         v_flex()
@@ -469,25 +542,27 @@ impl Render for AgentPanel {
                     v_flex()
                         .size_full()
                         .min_h_0()
-                        .child(
-                            h_flex()
-                                .flex_shrink_0()
-                                .gap_1()
-                                .items_center()
-                                .px_2()
-                                .py_1()
-                                .border_b_1()
-                                .border_color(border)
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .text_xs()
-                                        .text_color(muted)
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(terminal_status),
-                                ),
-                        )
+                        .when(!terminal_status.is_empty(), |terminal| {
+                            terminal.child(
+                                h_flex()
+                                    .flex_shrink_0()
+                                    .gap_1()
+                                    .items_center()
+                                    .px_2()
+                                    .py_1()
+                                    .border_b_1()
+                                    .border_color(border)
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .child(terminal_status),
+                                    ),
+                            )
+                        })
                         .child(
                             div()
                                 .relative()
@@ -498,9 +573,9 @@ impl Render for AgentPanel {
                                 .px_2()
                                 .pt_1()
                                 .pb(px(4.) + crop)
-                                .text_sm()
-                                .line_height(px(16.))
-                                .font_family("monospace")
+                                .text_size(terminal_font_size)
+                                .line_height(terminal_line_height)
+                                .font_family(terminal_font.clone())
                                 .on_scroll_wheel(cx.listener(
                                     |this, event: &ScrollWheelEvent, _window, cx| {
                                         let lines = match event.delta {
@@ -521,7 +596,14 @@ impl Render for AgentPanel {
                                                 bounds.size.width,
                                                 bounds.size.height,
                                                 crop,
-                                                terminal_cell(window),
+                                                size(
+                                                    terminal_advance(
+                                                        window,
+                                                        terminal_font.clone(),
+                                                        terminal_font_size,
+                                                    ),
+                                                    terminal_line_height,
+                                                ),
                                             );
                                             let Some(panel) = agent_panel.upgrade() else {
                                                 return;
@@ -675,11 +757,11 @@ mod tests {
     // the built-in one and expand into itself.
     use std::time::Duration;
 
-    use gpui::{TestAppContext, px, size};
+    use gpui::{SharedString, TestAppContext, px, size};
 
     use crate::panels::agent::{
-        AgentCall, AgentHistory, AgentPanel, Entry, HISTORY_LIMIT, View, record,
-        terminal_dimensions,
+        AGENT_FONT_KEY, AGENT_FONT_SIZE_KEY, AgentCall, AgentHistory, AgentPanel, Entry,
+        HISTORY_LIMIT, View, record, terminal_dimensions, terminal_type,
     };
 
     fn call(label: &str, entry: Entry) -> AgentCall {
@@ -697,12 +779,36 @@ mod tests {
         }
     }
 
+    /// An unset size falls back to the shipped 14/16, and a chosen one carries its leading with it
+    /// — a font that grew without its line height would overlap rows.
+    #[gpui::test]
+    fn the_configured_font_size_takes_its_line_height_with_it(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(settings::AppSettings::default());
+            let (_, size, line) = terminal_type(cx);
+            assert_eq!((size, line), (px(14.), px(16.)));
+
+            let mut app = settings::AppSettings::default();
+            app.values
+                .insert(AGENT_FONT_SIZE_KEY.into(), settings::Val::Text("20".into()));
+            app.values.insert(
+                AGENT_FONT_KEY.into(),
+                settings::Val::Text("Consolas".into()),
+            );
+            cx.set_global(app);
+            let (family, size, line) = terminal_type(cx);
+            assert_eq!(family, SharedString::from("Consolas"));
+            assert_eq!((size, line), (px(20.), px(23.)));
+        });
+    }
+
     /// The panel must render before anything has called, and after — the empty state is what an
     /// archivist sees on every launch that never starts the bridge. All three entry kinds render,
     /// because each takes its own colour branch.
     #[gpui::test]
     fn renders_empty_and_every_entry_kind(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
+        cx.update(|cx| cx.set_global(settings::AppSettings::default()));
         cx.add_window_view(AgentPanel::new);
 
         cx.update(|cx| {
@@ -718,6 +824,7 @@ mod tests {
     #[gpui::test]
     fn each_view_renders_and_the_terminal_is_the_default(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
+        cx.update(|cx| cx.set_global(settings::AppSettings::default()));
         cx.update(|cx| record(call("rows", Entry::Answered), cx));
 
         let (panel, cx) = cx.add_window_view(AgentPanel::new);
