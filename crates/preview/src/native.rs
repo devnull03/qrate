@@ -170,13 +170,13 @@ mod windows_shell {
             }
 
             // A DIB is BGRA; the rest of the pipeline works in RGBA and swaps once at the end.
-            for px in bytes.chunks_exact_mut(4) {
+            for px in bytes.as_chunks_mut::<4>().0 {
                 px.swap(0, 2);
             }
             // Some thumbnail providers return an opaque image with the alpha byte left at zero,
             // which would otherwise draw as nothing at all.
-            if bytes.chunks_exact(4).all(|px| px[3] == 0) {
-                for px in bytes.chunks_exact_mut(4) {
+            if bytes.as_chunks::<4>().0.iter().all(|px| px[3] == 0) {
+                for px in bytes.as_chunks_mut::<4>().0 {
                     px[3] = 255;
                 }
             }
