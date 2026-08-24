@@ -1,4 +1,5 @@
 use std::collections::{HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -273,6 +274,7 @@ pub struct AgentPanel {
     view: View,
     scroll: ScrollHandle,
     terminal: agent_runtime::AgentTerminal,
+    project: Option<PathBuf>,
     terminal_size: (usize, usize),
     opened_auth_urls: HashSet<String>,
     _terminal_task: Task<()>,
@@ -289,6 +291,9 @@ pub struct AgentPanel {
 impl AgentPanel {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let scroll = ScrollHandle::new();
+        let project = cx
+            .try_global::<settings::project::CurrentProject>()
+            .map(|project| project.file.clone());
         let terminal_task = cx.spawn(async move |this, cx| {
             // The panel is built with the window, not when it is first opened, so this loop runs
             // for the app's whole life. At 30 Hz unconditionally it woke the main thread thirty
@@ -317,6 +322,7 @@ impl AgentPanel {
             view: View::Terminal,
             scroll: scroll.clone(),
             terminal: Default::default(),
+            project,
             terminal_size: (100, 32),
             opened_auth_urls: HashSet::new(),
             _terminal_task: terminal_task,
@@ -331,9 +337,23 @@ impl AgentPanel {
             // Both stores, because the type can be set user-wide or per project.
             _settings_sub: cx
                 .observe_global::<settings::AppSettings>(|_this: &mut Self, cx| cx.notify()),
-            _project_sub: cx.observe_global::<settings::project::CurrentProject>(
-                |_this: &mut Self, cx| cx.notify(),
-            ),
+            _project_sub: cx.observe_global::<settings::project::CurrentProject>(|this, cx| {
+                let project = cx
+                    .global::<settings::project::CurrentProject>()
+                    .file
+                    .clone();
+                if this.project.as_ref() != Some(&project) {
+                    this.project = Some(project.clone());
+                    cx.set_global(AgentHistory::default());
+                    if this.terminal.is_running()
+                        && this.terminal.project() != Some(project.as_path())
+                    {
+                        this.opened_auth_urls.clear();
+                        this.terminal.start(true, cx);
+                    }
+                }
+                cx.notify();
+            }),
         }
     }
 }

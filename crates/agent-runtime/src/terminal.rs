@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, OnceLock, mpsc};
 
@@ -40,6 +42,29 @@ const COLS: usize = 100;
 const LINES: usize = 32;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn project_session_dir(profile: &Path, project: &Path) -> PathBuf {
+    let stem = project
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("project");
+    let stem: String = stem
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let stem = if stem.is_empty() { "project" } else { &stem };
+    let mut hasher = DefaultHasher::new();
+    project.hash(&mut hasher);
+    profile
+        .join("sessions")
+        .join(format!("{stem}-{:016x}", hasher.finish()))
+}
 
 #[derive(Clone, Copy)]
 pub struct TerminalPalette {
@@ -418,6 +443,7 @@ impl Drop for WindowsProcess {
 
 pub struct AgentTerminal {
     session: Option<Session>,
+    project: Option<PathBuf>,
     status: String,
     scroll_remainder: f32,
 }
@@ -426,6 +452,7 @@ impl Default for AgentTerminal {
     fn default() -> Self {
         Self {
             session: None,
+            project: None,
             status: "Pi has not started.".to_owned(),
             scroll_remainder: 0.,
         }
@@ -435,6 +462,10 @@ impl Default for AgentTerminal {
 impl AgentTerminal {
     pub fn is_running(&self) -> bool {
         self.session.as_ref().is_some_and(|session| session.running)
+    }
+
+    pub fn project(&self) -> Option<&Path> {
+        self.project.as_deref()
     }
 
     pub fn status(&self) -> &str {
@@ -452,12 +483,12 @@ impl AgentTerminal {
             self.status = "Open a qrate project before starting Pi.".to_owned();
             return;
         };
-        let cwd = project
-            .file
+        let project_file = project.file.clone();
+        let cwd = project_file
             .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
+            .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
-        let session_dir = runtime.profile.join("sessions").join("qrate");
+        let session_dir = project_session_dir(&runtime.profile, &project_file);
         if let Err(err) = std::fs::create_dir_all(&session_dir) {
             log::error!(
                 "could not create embedded Pi session directory {}: {err}",
@@ -595,6 +626,7 @@ impl AgentTerminal {
             #[cfg(windows)]
             process,
         });
+        self.project = Some(project_file);
         log::info!("embedded Pi process started");
         // A resumed session says nothing: Pi's own banner is already on screen, and the status line
         // is worth the row it costs only when something needs saying.
@@ -647,6 +679,7 @@ impl AgentTerminal {
             log::info!("stopping embedded Pi");
         }
         self.session = None;
+        self.project = None;
         self.status = "Pi is stopped.".to_owned();
     }
 
@@ -876,7 +909,9 @@ mod tests {
 
     #[cfg(windows)]
     use super::{CREATE_NO_WINDOW, WindowsProcess};
-    use super::{TerminalPalette, is_auth_url, terminal_background, terminal_style};
+    use super::{
+        TerminalPalette, is_auth_url, project_session_dir, terminal_background, terminal_style,
+    };
 
     fn palette() -> TerminalPalette {
         TerminalPalette {
@@ -890,6 +925,22 @@ mod tests {
             magenta: hsla(0.8, 1., 0.5, 1.),
             cyan: hsla(0.5, 1., 0.5, 1.),
         }
+    }
+
+    #[test]
+    fn project_session_directories_are_distinct_and_stable() {
+        let profile = std::path::Path::new("profile");
+        let first = std::path::Path::new("one/catalogue.qrate");
+        let second = std::path::Path::new("two/catalogue.qrate");
+
+        assert_eq!(
+            project_session_dir(profile, first),
+            project_session_dir(profile, first)
+        );
+        assert_ne!(
+            project_session_dir(profile, first),
+            project_session_dir(profile, second)
+        );
     }
 
     #[test]
