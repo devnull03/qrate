@@ -1,0 +1,9 @@
+{
+  "projectId": "8a1a1545-7731-4a7c-ba35-5ab5fbbc2c9c",
+  "shape": "package",
+  "pkg": "qrate-site",
+  "globalName": "QrateSite",
+  "buildCmd": "bun run build",
+  "cssEntry": ".design-sync/.cache/site.css",
+  "readmeHeader": ".design-sync/conventions.md"
+}
