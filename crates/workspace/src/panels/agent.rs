@@ -1,6 +1,4 @@
-use std::cell::Cell;
 use std::collections::{HashSet, VecDeque};
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
@@ -10,7 +8,9 @@ use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, IconName, Sizable as _, button::Button, h_flex, v_flex,
+    ActiveTheme as _, IconName, Sizable as _,
+    button::{Button, ButtonVariants as _},
+    h_flex, v_flex,
 };
 
 use crate::BottomDockCrop;
@@ -147,6 +147,15 @@ const LIVE_TICK: Duration = Duration::from_millis(33);
 /// a newly started session; the cost of *not* slowing down is paid from launch until quit.
 const IDLE_TICK: Duration = Duration::from_millis(250);
 
+fn terminal_dimensions(width: Pixels, height: Pixels, crop: Pixels) -> (usize, usize) {
+    (
+        ((f32::from(width) - 16.) / 8.).floor().max(2.) as usize,
+        ((f32::from(height) - 8. - f32::from(crop)) / 16.)
+            .floor()
+            .max(2.) as usize,
+    )
+}
+
 /// File one thing that happened. Called by the transport, which is the only thing that sees them.
 pub fn record(call: AgentCall, cx: &mut App) {
     let history = cx.default_global::<AgentHistory>();
@@ -178,7 +187,7 @@ pub struct AgentPanel {
     view: View,
     scroll: ScrollHandle,
     terminal: agent_runtime::AgentTerminal,
-    terminal_size: Rc<Cell<(usize, usize)>>,
+    terminal_size: (usize, usize),
     opened_auth_urls: HashSet<String>,
     _terminal_task: Task<()>,
     /// Refreshes on any entry. One `observe_global` and no re-binding — the history is plain data
@@ -191,7 +200,6 @@ pub struct AgentPanel {
 impl AgentPanel {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let scroll = ScrollHandle::new();
-        let terminal_size = Rc::new(Cell::new((100, 32)));
         let terminal_task = cx.spawn(async move |this, cx| {
             // The panel is built with the window, not when it is first opened, so this loop runs
             // for the app's whole life. At 30 Hz unconditionally it woke the main thread thirty
@@ -220,7 +228,7 @@ impl AgentPanel {
             view: View::Terminal,
             scroll: scroll.clone(),
             terminal: Default::default(),
-            terminal_size,
+            terminal_size: (100, 32),
             opened_auth_urls: HashSet::new(),
             _terminal_task: terminal_task,
             // ponytail: follows the tail unconditionally. Only worth remembering whether the
@@ -262,28 +270,70 @@ impl Panel for AgentPanel {
         _w: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
+        let panel = cx.entity().downgrade();
         Some(
-            TabBar::new("agent-view")
-                .segmented()
-                .small()
-                .selected_index(
-                    View::ALL
-                        .iter()
-                        .position(|view| *view == self.view)
-                        .unwrap_or(0),
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(
+                    TabBar::new("agent-view")
+                        .segmented()
+                        .small()
+                        .selected_index(
+                            View::ALL
+                                .iter()
+                                .position(|view| *view == self.view)
+                                .unwrap_or(0),
+                        )
+                        .on_click(cx.listener(|this, ix: &usize, _w, cx| {
+                            this.view = View::ALL[*ix];
+                            if this.view == View::Terminal && !this.terminal.is_running() {
+                                this.opened_auth_urls.clear();
+                                this.terminal.start(true, cx);
+                            }
+                            cx.notify();
+                        }))
+                        .children(
+                            View::ALL
+                                .into_iter()
+                                .map(|view| Tab::new().icon(view.icon()).label(view.label())),
+                        ),
                 )
-                .on_click(cx.listener(|this, ix: &usize, _w, cx| {
-                    this.view = View::ALL[*ix];
-                    if this.view == View::Terminal && !this.terminal.is_running() {
-                        this.opened_auth_urls.clear();
-                        this.terminal.start(true, cx);
-                    }
-                    cx.notify();
-                }))
-                .children(
-                    View::ALL
-                        .into_iter()
-                        .map(|view| Tab::new().icon(view.icon()).label(view.label())),
+                // Starting a session is the common action, so it is the click; stopping and
+                // restarting an existing one are rare, so they are the right-click.
+                .child(
+                    Button::new("agent-new-session")
+                        .icon(IconName::Plus)
+                        .ghost()
+                        .xsmall()
+                        .tooltip("New Pi session")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.opened_auth_urls.clear();
+                            this.view = View::Terminal;
+                            this.terminal.start(false, cx);
+                            cx.notify();
+                        }))
+                        .context_menu(move |menu, _window, _cx| {
+                            let (stop, restart) = (panel.clone(), panel.clone());
+                            menu.item(PopupMenuItem::new("Stop").on_click(move |_, _, cx| {
+                                stop.update(cx, |this, cx| {
+                                    this.terminal.stop();
+                                    cx.notify();
+                                })
+                                .ok();
+                            }))
+                            .item(
+                                PopupMenuItem::new("Restart").on_click(move |_, _, cx| {
+                                    restart
+                                        .update(cx, |this, cx| {
+                                            this.opened_auth_urls.clear();
+                                            this.terminal.start(true, cx);
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                }),
+                            )
+                        }),
                 ),
         )
     }
@@ -337,8 +387,9 @@ impl Render for AgentPanel {
             )
         };
         let crop = cx.try_global::<BottomDockCrop>().map_or(px(0.), |c| c.0);
-        let (terminal_cols, terminal_lines) = self.terminal_size.get();
+        let (terminal_cols, terminal_lines) = self.terminal_size;
         self.terminal.resize(terminal_cols, terminal_lines);
+        let agent_panel = cx.entity().downgrade();
         let terminal_screen = self.terminal.screen(agent_runtime::TerminalPalette {
             foreground,
             background,
@@ -376,7 +427,6 @@ impl Render for AgentPanel {
         };
         let terminal_backgrounds = terminal_screen.backgrounds;
         let terminal_status = self.terminal.status().to_owned();
-        let terminal_running = self.terminal.is_running();
 
         v_flex()
             .size_full()
@@ -406,36 +456,7 @@ impl Render for AgentPanel {
                                 .border_b_1()
                                 .border_color(border)
                                 .child(
-                                    Button::new("agent-new-session")
-                                        .label("New")
-                                        .xsmall()
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.opened_auth_urls.clear();
-                                            this.terminal.start(false, cx);
-                                        })),
-                                )
-                                .child(
-                                    Button::new("agent-stop")
-                                        .label("Stop")
-                                        .xsmall()
-                                        .disabled(!terminal_running)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.terminal.stop();
-                                            cx.notify();
-                                        })),
-                                )
-                                .child(
-                                    Button::new("agent-restart")
-                                        .label("Restart")
-                                        .xsmall()
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.opened_auth_urls.clear();
-                                            this.terminal.start(true, cx);
-                                        })),
-                                )
-                                .child(
                                     div()
-                                        .ml_1()
                                         .min_w_0()
                                         .text_xs()
                                         .text_color(muted)
@@ -471,23 +492,23 @@ impl Render for AgentPanel {
                                     },
                                 ))
                                 .child({
-                                    let measured = self.terminal_size.clone();
                                     canvas(
-                                        move |bounds, window, cx| {
-                                            let next = (
-                                                ((f32::from(bounds.size.width) - 16.) / 8.)
-                                                    .floor()
-                                                    .max(2.) as usize,
-                                                ((f32::from(bounds.size.height)
-                                                    - 8.
-                                                    - f32::from(crop))
-                                                    / 16.)
-                                                    .floor()
-                                                    .max(2.) as usize,
+                                        move |bounds, _, cx| {
+                                            let next = terminal_dimensions(
+                                                bounds.size.width,
+                                                bounds.size.height,
+                                                crop,
                                             );
-                                            if measured.replace(next) != next {
-                                                window.defer(cx, |window, _| window.refresh());
-                                            }
+                                            let Some(panel) = agent_panel.upgrade() else {
+                                                return;
+                                            };
+                                            panel.update(cx, |panel, cx| {
+                                                if panel.terminal_size != next {
+                                                    panel.terminal_size = next;
+                                                    panel.terminal.resize(next.0, next.1);
+                                                    cx.notify();
+                                                }
+                                            });
                                         },
                                         move |bounds, _, window, _| {
                                             for background in &terminal_backgrounds {
@@ -655,10 +676,11 @@ mod tests {
     // the built-in one and expand into itself.
     use std::time::Duration;
 
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, px};
 
     use crate::panels::agent::{
         AgentCall, AgentHistory, AgentPanel, Entry, HISTORY_LIMIT, View, record,
+        terminal_dimensions,
     };
 
     fn call(label: &str, entry: Entry) -> AgentCall {
@@ -748,5 +770,12 @@ mod tests {
                 ["+0:00", "claude-code", "rows", "3 row(s)", "3 rows", "2ms"]
             );
         });
+    }
+
+    #[test]
+    fn terminal_dimensions_follow_the_measured_panel() {
+        assert_eq!(terminal_dimensions(px(816.), px(520.), px(0.)), (100, 32));
+        assert_eq!(terminal_dimensions(px(416.), px(264.), px(0.)), (50, 16));
+        assert_eq!(terminal_dimensions(px(8.), px(8.), px(30.)), (2, 2));
     }
 }
