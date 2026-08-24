@@ -415,13 +415,11 @@ fn flush_all_state(cx: &mut gpui::App) {
 }
 
 fn main() {
+    // First, so failures in GPUI platform construction and startup still reach the log file.
+    logging::init();
     let app = gpui_platform::application().with_assets(assets::Assets);
 
     app.run(move |cx| {
-        // First, so a failure during the startup below — the case where no window ever appears to
-        // report it — still reaches the log file.
-        logging::init();
-
         gpui_component::init(cx);
 
         // Settings ------------------------------------

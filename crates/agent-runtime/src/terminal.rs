@@ -7,6 +7,19 @@ use std::sync::{Arc, mpsc};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt as _;
 
+#[cfg(windows)]
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
+use windows::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+    SetInformationJobObject,
+};
+#[cfg(windows)]
+use windows::Win32::System::Threading::TerminateProcess;
+#[cfg(windows)]
+use windows::core::PCWSTR;
+
 use alacritty_terminal::event::{Event, EventListener, Notify as _, OnResize as _, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
 use alacritty_terminal::grid::{Dimensions, Scroll};
@@ -306,11 +319,94 @@ struct Session {
     notifier: Notifier,
     events: mpsc::Receiver<Event>,
     running: bool,
+    #[cfg(windows)]
+    process: WindowsProcess,
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        if self.running {
+            self.process.terminate();
+        }
         let _ = self.notifier.0.send(Msg::Shutdown);
+    }
+}
+
+#[cfg(windows)]
+struct WindowsProcess {
+    process: HANDLE,
+    job: Option<HANDLE>,
+    pid: Option<u32>,
+}
+
+#[cfg(windows)]
+impl WindowsProcess {
+    fn attach(pty: &tty::Pty) -> Self {
+        let watcher = pty.child_watcher();
+        let process = HANDLE(watcher.raw_handle());
+        let pid = watcher.pid().map(std::num::NonZeroU32::get);
+        Self::attach_handle(process, pid)
+    }
+
+    fn attach_handle(process: HANDLE, pid: Option<u32>) -> Self {
+        let job = Self::job(process).inspect_err(|err| {
+            log::warn!(
+                "could not contain embedded Pi process {} in a Windows job object: {err}; stop will terminate only Pi itself",
+                pid.map_or_else(|| "unknown".to_owned(), |pid| pid.to_string())
+            );
+        }).ok();
+        Self { process, job, pid }
+    }
+
+    fn job(process: HANDLE) -> windows::core::Result<HANDLE> {
+        unsafe {
+            let job = CreateJobObjectW(None, PCWSTR::null())?;
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if let Err(err) = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+            .and_then(|()| AssignProcessToJobObject(job, process))
+            {
+                let _ = CloseHandle(job);
+                return Err(err);
+            }
+            Ok(job)
+        }
+    }
+
+    fn terminate(&mut self) {
+        let result = unsafe {
+            match self.job.take() {
+                Some(job) => CloseHandle(job),
+                None => TerminateProcess(self.process, 1),
+            }
+        };
+        match result {
+            Ok(()) => log::info!(
+                "terminated embedded Pi process {}",
+                self.pid
+                    .map_or_else(|| "unknown".to_owned(), |pid| pid.to_string())
+            ),
+            Err(err) => log::warn!(
+                "could not terminate embedded Pi process {}: {err}",
+                self.pid
+                    .map_or_else(|| "unknown".to_owned(), |pid| pid.to_string())
+            ),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsProcess {
+    fn drop(&mut self) {
+        if let Some(job) = self.job.take() {
+            let _ = unsafe { CloseHandle(job) };
+        }
     }
 }
 
@@ -387,7 +483,9 @@ impl AgentTerminal {
             "--provider".to_owned(),
             "openrouter".to_owned(),
             "--model".to_owned(),
-            "openrouter/free".to_owned(),
+            // Pi removes the pinned provider prefix before resolving the model. Doubling it makes
+            // the remaining ID exactly `openrouter/free` instead of the fuzzy pattern `free`.
+            "openrouter/openrouter/free".to_owned(),
             "--no-extensions".to_owned(),
             "--extension".to_owned(),
             runtime.extension.to_string_lossy().into_owned(),
@@ -465,6 +563,8 @@ impl AgentTerminal {
                 return;
             }
         };
+        #[cfg(windows)]
+        let process = WindowsProcess::attach(&pty);
         let event_loop = match EventLoop::new(terminal.clone(), listener, pty, true, false) {
             Ok(event_loop) => event_loop,
             Err(err) => {
@@ -480,6 +580,8 @@ impl AgentTerminal {
             notifier,
             events,
             running: true,
+            #[cfg(windows)]
+            process,
         });
         log::info!("embedded Pi process started");
         self.status = if continue_previous {
@@ -573,10 +675,13 @@ impl AgentTerminal {
         };
         let cols = cols.max(2);
         let lines = lines.max(2);
-        session
-            .terminal
-            .lock()
-            .resize(SizedTerminal { lines, cols });
+        {
+            let mut terminal = session.terminal.lock();
+            if terminal.columns() == cols && terminal.screen_lines() == lines {
+                return;
+            }
+            terminal.resize(SizedTerminal { lines, cols });
+        }
         if session.running {
             session.notifier.on_resize(WindowSize {
                 num_lines: lines.min(u16::MAX as usize) as u16,
@@ -746,11 +851,24 @@ impl AgentTerminal {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use std::os::windows::io::AsRawHandle as _;
+    #[cfg(windows)]
+    use std::os::windows::process::CommandExt as _;
+    #[cfg(windows)]
+    use std::process::Command;
+    #[cfg(windows)]
+    use std::time::{Duration, Instant};
+
     use alacritty_terminal::term::cell::{Cell, Flags};
     use alacritty_terminal::term::color::Colors;
     use alacritty_terminal::vte::ansi::{Color, Rgb};
     use gpui::hsla;
+    #[cfg(windows)]
+    use windows::Win32::Foundation::HANDLE;
 
+    #[cfg(windows)]
+    use super::{CREATE_NO_WINDOW, WindowsProcess};
     use super::{TerminalPalette, is_auth_url, terminal_background, terminal_style};
 
     fn palette() -> TerminalPalette {
@@ -776,6 +894,33 @@ mod tests {
         assert!(!is_auth_url("https://example.com/a-link-from-model-output"));
         assert!(!is_auth_url("https://example.com/oauth/device"));
         assert!(!is_auth_url("javascript:alert(1)"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminating_a_windows_process_guard_stops_its_child() {
+        let mut child = Command::new("cmd.exe")
+            .args(["/d", "/s", "/c", "ping -n 30 127.0.0.1 > nul"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn a long-lived child");
+        let mut process =
+            WindowsProcess::attach_handle(HANDLE(child.as_raw_handle()), Some(child.id()));
+        assert!(
+            process.job.is_some(),
+            "test child was not assigned to a job"
+        );
+
+        process.terminate();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if child.try_wait().expect("read child status").is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = child.kill();
+        panic!("the guarded child survived termination");
     }
 
     #[test]

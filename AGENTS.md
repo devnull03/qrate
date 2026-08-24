@@ -11,6 +11,8 @@ POST one JSON request to `url` with `Authorization: Bearer <token>`, `Content-Ty
 
 The bridge never changes a cell. `stage_findings` only replaces that agent's draft findings in the Problems panel and optionally offers whole-cell replacements in the Fixes menu.
 
+qrate's bundled Pi runs as a contained child process. Stop, Restart, panel teardown, and app exit terminate its process tree; do not rely on an older Pi process surviving a restart.
+
 ### Protocol 2 methods
 
 - `overview`: compact project, column, selection, diagnostic-count, and revision information.
