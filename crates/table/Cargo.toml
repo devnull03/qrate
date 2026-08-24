@@ -14,6 +14,10 @@ ai = { path = "../ai" }
 diagnostics = { path = "../diagnostics" }
 plugin-api = { path = "../plugin-api" }
 settings = { path = "../settings" }
+plugin-host = { path = "../plugin-host" }
+preview = { path = "../preview" }
+base64 = "0.22"
+sha2 = "0.10"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

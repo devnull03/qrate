@@ -1,77 +1,151 @@
-//! The narrow contract between a running qrate app and an external agent: reads of live project
-//! state, and one call that hands findings back as drafts without changing a cell.
+//! Protocol v2 between a running qrate app and an external review agent.
 //!
-//! This module deliberately knows nothing about MCP, GPUI, or a model provider. A transport and
-//! the app-side adapter can both depend on these serializable messages without the `ai` crate
-//! depending back on the table or UI.
+//! Reads are progressive: a cheap overview, a bounded declarative query, and optional scratch
+//! programs and thumbnails. The only state-changing request publishes draft findings; it never
+//! changes a table cell.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-/// An agent-visible table revision. A later state-changing request must echo this value so qrate
-/// can reject a proposal made against stale cell contents.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct TableRevision(pub u64);
 
-/// What an external agent may ask of the bridge. Every variant but [`Request::StageFindings`] is
-/// a read; that one publishes advisory diagnostics and still changes no cell.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Request {
-    ProjectSummary,
-    Columns,
-    Rows {
-        rows: Vec<usize>,
+    Overview,
+    Query(Query),
+    ProgramSave {
+        source: String,
     },
-    SearchRows {
-        query: String,
-        limit: usize,
+    ProgramRun {
+        revision: TableRevision,
+        #[serde(default)]
+        args: Value,
     },
-    Diagnostics,
-    SelectedRows,
-    /// Hand back what a review found, as drafts. `revision` is the table the batch was judged
-    /// against, echoed from the read that produced it.
+    Thumbnails {
+        items: Vec<ThumbnailRequest>,
+    },
     StageFindings {
         revision: TableRevision,
         findings: Vec<Finding>,
     },
 }
 
-/// One draft finding: where it is, why, and — optionally — what the agent proposes the cell should
-/// say instead.
-///
-/// A proposal is never applied by staging it. `expected` is the cell text the agent judged, and a
-/// draft is only ever offered against a cell that still says exactly that, so an archivist who
-/// edited the cell in the meantime is not offered a correction to text nobody checked.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct Query {
+    #[serde(default)]
+    pub source: QuerySource,
+    #[serde(default)]
+    pub select: Vec<String>,
+    #[serde(default, rename = "where")]
+    pub filters: Vec<QueryFilter>,
+    #[serde(default)]
+    pub group_by: Vec<String>,
+    /// Return each exact value of one field once. Mutually exclusive with `select` and `group_by`.
+    pub distinct: Option<String>,
+    pub order_by: Option<OrderBy>,
+    #[serde(default = "default_query_limit")]
+    pub limit: usize,
+    pub cursor: Option<String>,
+}
+
+impl Default for Query {
+    fn default() -> Self {
+        Self {
+            source: QuerySource::default(),
+            select: Vec::new(),
+            filters: Vec::new(),
+            group_by: Vec::new(),
+            distinct: None,
+            order_by: None,
+            limit: DEFAULT_QUERY_LIMIT,
+            cursor: None,
+        }
+    }
+}
+
+fn default_query_limit() -> usize {
+    DEFAULT_QUERY_LIMIT
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum QuerySource {
+    #[default]
+    AllRows,
+    SelectedRows,
+    Rows {
+        rows: Vec<usize>,
+    },
+    Search {
+        text: String,
+    },
+    Diagnostics {
+        #[serde(default)]
+        severities: Vec<Severity>,
+        #[serde(default)]
+        sources: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct QueryFilter {
+    pub field: String,
+    pub op: FilterOp,
+    pub value: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilterOp {
+    Equals,
+    NotEquals,
+    Contains,
+    StartsWith,
+    EndsWith,
+    IsBlank,
+    IsNotBlank,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct OrderBy {
+    pub field: String,
+    #[serde(default)]
+    pub descending: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ThumbnailRequest {
+    pub row: usize,
+    #[serde(default)]
+    pub page: usize,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct Finding {
-    /// Source-row index, as handed out by [`Request::Rows`] — never a filtered-view index.
     pub row: usize,
     pub column: String,
     pub severity: Severity,
-    /// Why this is a finding, in the archivist's terms. This is what the Problems panel shows.
     pub message: String,
     pub expected: String,
-    /// The cell's whole new text, not a fragment. `None` is an observation with no fix to offer.
     pub replacement: Option<String>,
 }
 
 impl Request {
-    /// Reject oversized or ambiguous requests before the app reads live project data.
     pub fn validate(&self) -> Result<(), RequestError> {
         match self {
-            Self::Rows { rows } if rows.is_empty() => Err(RequestError::EmptyRows),
-            Self::Rows { rows } if rows.len() > MAX_ROWS_PER_REQUEST => {
-                Err(RequestError::TooManyRows)
+            Self::Query(query) => query.validate(),
+            Self::ProgramSave { source } if source.trim().is_empty() => {
+                Err(RequestError::EmptyProgram)
             }
-            Self::SearchRows { query, .. } if query.trim().is_empty() => {
-                Err(RequestError::EmptyQuery)
+            Self::ProgramSave { source } if source.len() > MAX_PROGRAM_BYTES => {
+                Err(RequestError::ProgramTooLarge)
             }
-            Self::SearchRows { query, .. } if query.len() > MAX_QUERY_LEN => {
-                Err(RequestError::QueryTooLong)
-            }
-            Self::SearchRows { limit, .. } if *limit == 0 || *limit > MAX_ROWS_PER_REQUEST => {
-                Err(RequestError::InvalidSearchLimit)
+            Self::Thumbnails { items } if items.is_empty() => Err(RequestError::EmptyThumbnails),
+            Self::Thumbnails { items } if items.len() > MAX_THUMBNAILS => {
+                Err(RequestError::TooManyThumbnails)
             }
             Self::StageFindings { findings, .. } if findings.len() > MAX_FINDINGS => {
                 Err(RequestError::TooManyFindings)
@@ -91,42 +165,71 @@ impl Request {
     }
 }
 
-pub const MAX_ROWS_PER_REQUEST: usize = 100;
-pub const MAX_QUERY_LEN: usize = 256;
-pub const MAX_FINDINGS: usize = 200;
-/// A finding is a sentence for the Problems panel, not an essay — and the panel's row is one line.
-pub const MAX_MESSAGE_LEN: usize = 512;
+impl Query {
+    fn validate(&self) -> Result<(), RequestError> {
+        if self.limit == 0 || self.limit > MAX_QUERY_LIMIT {
+            return Err(RequestError::InvalidQueryLimit);
+        }
+        if self.select.len() > MAX_QUERY_FIELDS || self.group_by.len() > MAX_GROUP_FIELDS {
+            return Err(RequestError::TooManyQueryFields);
+        }
+        if self.distinct.is_some() && (!self.select.is_empty() || !self.group_by.is_empty()) {
+            return Err(RequestError::ConflictingQueryOperations);
+        }
+        if self.filters.len() > MAX_QUERY_FILTERS {
+            return Err(RequestError::TooManyQueryFilters);
+        }
+        if let QuerySource::Rows { rows } = &self.source
+            && (rows.is_empty() || rows.len() > MAX_EXPLICIT_ROWS)
+        {
+            return Err(RequestError::InvalidExplicitRows);
+        }
+        if let QuerySource::Search { text } = &self.source
+            && (text.trim().is_empty() || text.len() > MAX_QUERY_TEXT)
+        {
+            return Err(RequestError::InvalidSearchText);
+        }
+        Ok(())
+    }
+}
 
-/// A successful read response. Every result carries the revision used to produce it.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub const DEFAULT_QUERY_LIMIT: usize = 20;
+pub const MAX_QUERY_LIMIT: usize = 50;
+pub const MAX_QUERY_FIELDS: usize = 64;
+pub const MAX_GROUP_FIELDS: usize = 4;
+pub const MAX_QUERY_FILTERS: usize = 16;
+pub const MAX_EXPLICIT_ROWS: usize = 100;
+pub const MAX_QUERY_TEXT: usize = 256;
+pub const MAX_PROGRAM_BYTES: usize = 64 * 1024;
+pub const MAX_THUMBNAILS: usize = 4;
+pub const MAX_FINDINGS: usize = 200;
+pub const MAX_MESSAGE_LEN: usize = 512;
+pub const MAX_RESULT_BYTES: usize = 16 * 1024;
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Response {
     pub revision: TableRevision,
     #[serde(flatten)]
     pub result: ResultSet,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum ResultSet {
-    ProjectSummary(ProjectSummary),
-    Columns {
-        columns: Vec<Column>,
-    },
-    Rows {
-        rows: Vec<Row>,
-    },
-    Diagnostics {
-        diagnostics: Vec<Diagnostic>,
-    },
-    SelectedRows {
-        rows: Vec<usize>,
-    },
-    /// `stale` indexes into the submitted batch, so an agent learns which drafts to re-read rather
-    /// than only how many were dropped.
-    Staged {
-        accepted: usize,
-        stale: Vec<usize>,
-    },
+    Overview(Overview),
+    Query(QueryResult),
+    ProgramSaved { version: u64, hash: String },
+    ProgramRun(ProgramOutput),
+    Thumbnails { items: Vec<Thumbnail> },
+    Staged { accepted: usize, stale: Vec<usize> },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct Overview {
+    pub project: ProjectSummary,
+    pub columns: Vec<Column>,
+    pub selected_rows: usize,
+    pub diagnostics: DiagnosticSummary,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -144,26 +247,61 @@ pub struct Column {
     pub notes: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-pub struct Row {
-    /// Source-row index, never a filtered-view index.
-    pub index: usize,
-    pub fields: Vec<Field>,
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct DiagnosticSummary {
+    pub errors: usize,
+    pub warnings: usize,
+    pub notes: usize,
+    pub sources: Vec<Count>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-pub struct Field {
-    pub column: String,
+pub struct Count {
     pub value: String,
+    pub count: usize,
+}
+
+/// A schema-once page. Every item uses the positions in `fields`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct QueryResult {
+    pub fields: Vec<String>,
+    pub items: Vec<Vec<Value>>,
+    pub returned: usize,
+    pub remaining: usize,
+    pub truncated: bool,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ProgramOutput {
+    pub version: u64,
+    pub hash: String,
+    pub value: Value,
+    pub logs: Vec<String>,
+    pub elapsed_ms: u64,
+    pub audit: ProgramAudit,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-pub struct Diagnostic {
-    pub row: Option<usize>,
-    pub column: Option<String>,
-    pub severity: Severity,
-    pub source: String,
-    pub message: String,
+pub struct ProgramAudit {
+    pub run_id: String,
+    pub revision: TableRevision,
+    pub version: u64,
+    pub hash: String,
+    pub elapsed_ms: u64,
+    pub memory_limit_bytes: usize,
+    pub deadline_ms: u64,
+    pub output_limit_bytes: usize,
+    pub status: String,
+    pub output_bytes: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct Thumbnail {
+    pub row: usize,
+    pub page: usize,
+    pub media_type: String,
+    pub data: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -174,17 +312,30 @@ pub enum Severity {
     Note,
 }
 
-/// Errors that may be returned without reading or exposing project data.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "code", content = "detail", rename_all = "snake_case")]
 pub enum RequestError {
     ProjectUnavailable,
     TableUnavailable,
-    EmptyRows,
-    TooManyRows,
-    EmptyQuery,
-    QueryTooLong,
-    InvalidSearchLimit,
+    InvalidQueryLimit,
+    TooManyQueryFields,
+    TooManyQueryFilters,
+    InvalidExplicitRows,
+    InvalidSearchText,
+    InvalidCursor,
+    StaleCursor,
+    UnknownField,
+    ConflictingQueryOperations,
+    ResultItemTooLarge,
+    EmptyProgram,
+    ProgramTooLarge,
+    ProgramUnavailable,
+    ProgramCompileFailed(String),
+    ProgramFailed(String),
+    ProgramOutputTooLarge(String),
+    EmptyThumbnails,
+    TooManyThumbnails,
+    ThumbnailUnavailable,
     TooManyFindings,
     EmptyFindingMessage,
     FindingMessageTooLong,
@@ -192,101 +343,74 @@ pub enum RequestError {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Finding, MAX_FINDINGS, MAX_MESSAGE_LEN, MAX_QUERY_LEN, MAX_ROWS_PER_REQUEST, Request,
-        RequestError, ResultSet, Severity, TableRevision,
-    };
+    use super::*;
 
-    fn finding(message: &str) -> Finding {
-        Finding {
-            row: 0,
-            column: "Title".into(),
-            severity: Severity::Warning,
-            message: message.into(),
-            expected: "Harvest".into(),
-            replacement: Some("Harvest, 1962".into()),
-        }
-    }
-
-    fn staged(findings: Vec<Finding>) -> Result<(), RequestError> {
-        Request::StageFindings {
-            revision: TableRevision(1),
-            findings,
-        }
-        .validate()
-    }
-
-    /// A batch of drafts is bounded before any of it reaches the Problems panel: an agent must not
-    /// be able to bury the archivist's own findings under thousands of its own, or push an essay
-    /// into a one-line panel row.
     #[test]
-    fn staged_findings_are_bounded_and_must_say_something() {
-        assert_eq!(staged(vec![finding("date is a guess")]), Ok(()));
-        assert_eq!(staged(vec![]), Ok(()), "an empty batch retracts");
+    fn query_defaults_are_small_and_bounded() {
+        let request: Request =
+            serde_json::from_value(serde_json::json!({"method":"query","params":{}})).unwrap();
+        let Request::Query(query) = request else {
+            panic!()
+        };
+        assert_eq!(query.limit, DEFAULT_QUERY_LIMIT);
+        assert_eq!(query.source, QuerySource::AllRows);
+        assert_eq!(query.validate(), Ok(()));
         assert_eq!(
-            staged(vec![finding("x"); MAX_FINDINGS + 1]),
-            Err(RequestError::TooManyFindings)
-        );
-        assert_eq!(
-            staged(vec![finding("  ")]),
-            Err(RequestError::EmptyFindingMessage)
-        );
-        assert_eq!(
-            staged(vec![finding(&"x".repeat(MAX_MESSAGE_LEN + 1))]),
-            Err(RequestError::FindingMessageTooLong)
+            Query {
+                limit: MAX_QUERY_LIMIT + 1,
+                ..query
+            }
+            .validate(),
+            Err(RequestError::InvalidQueryLimit)
         );
     }
 
     #[test]
-    fn request_validation_bounds_agent_reads() {
+    fn dynamic_inputs_are_bounded() {
         assert_eq!(
-            Request::Rows { rows: vec![] }.validate(),
-            Err(RequestError::EmptyRows)
+            Request::Thumbnails { items: vec![] }.validate(),
+            Err(RequestError::EmptyThumbnails)
         );
         assert_eq!(
-            Request::Rows {
-                rows: vec![0; MAX_ROWS_PER_REQUEST + 1]
-            }
-            .validate(),
-            Err(RequestError::TooManyRows)
+            Request::ProgramSave { source: " ".into() }.validate(),
+            Err(RequestError::EmptyProgram)
         );
         assert_eq!(
-            Request::SearchRows {
-                query: " ".into(),
-                limit: 1
+            Query {
+                distinct: Some("Title".into()),
+                select: vec!["Title".into()],
+                ..Query::default()
             }
             .validate(),
-            Err(RequestError::EmptyQuery)
-        );
-        assert_eq!(
-            Request::SearchRows {
-                query: "x".repeat(MAX_QUERY_LEN + 1),
-                limit: 1
-            }
-            .validate(),
-            Err(RequestError::QueryTooLong)
-        );
-        assert_eq!(
-            Request::SearchRows {
-                query: "title".into(),
-                limit: 0
-            }
-            .validate(),
-            Err(RequestError::InvalidSearchLimit)
+            Err(RequestError::ConflictingQueryOperations)
         );
     }
 
     #[test]
-    fn protocol_tags_preserve_the_requested_operation() {
-        let request = serde_json::to_value(Request::SelectedRows).unwrap();
-        assert_eq!(request["method"], "selected_rows");
+    fn errors_have_a_stable_code_and_optional_bounded_detail() {
+        let value = serde_json::to_value(RequestError::ProgramCompileFailed(
+            "line 1: expected function".into(),
+        ))
+        .unwrap();
+        assert_eq!(value["code"], "program_compile_failed");
+        assert_eq!(value["detail"], "line 1: expected function");
+    }
 
-        let response = serde_json::to_value(super::Response {
+    #[test]
+    fn pages_are_schema_once() {
+        let value = serde_json::to_value(Response {
             revision: TableRevision(4),
-            result: ResultSet::SelectedRows { rows: vec![1, 3] },
+            result: ResultSet::Query(QueryResult {
+                fields: vec!["row".into(), "Title".into()],
+                items: vec![vec![Value::from(2), Value::from("Harvest")]],
+                returned: 1,
+                remaining: 0,
+                truncated: false,
+                next_cursor: None,
+            }),
         })
         .unwrap();
-        assert_eq!(response["revision"], 4);
-        assert_eq!(response["result"], "selected_rows");
+        assert_eq!(value["result"], "query");
+        assert_eq!(value["items"][0][1], "Harvest");
     }
 }

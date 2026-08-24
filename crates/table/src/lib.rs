@@ -20,7 +20,7 @@ mod panel;
 pub mod photos;
 mod row_index;
 
-pub use agent::{AGENT_SOURCE, respond_to_agent};
+pub use agent::{AGENT_SOURCE, respond_to_agent, respond_to_agent_async};
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 /// The grid's right-click menu, so a gallery card can raise the same one a row does rather than
 /// growing a second, quietly diverging copy.
