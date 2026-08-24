@@ -11,7 +11,6 @@ pub struct AgentRuntime {
     pub program: PathBuf,
     pub leading_args: Vec<String>,
     pub extension: PathBuf,
-    pub skill: PathBuf,
     pub profile: PathBuf,
     pub endpoint: PathBuf,
 }
@@ -42,7 +41,6 @@ fn prepare() -> Result<AgentRuntime, String> {
     let extension = package.join("extensions/qrate.ts");
     let extension_bridge = package.join("src/bridge.ts");
     let extension_permissions = package.join("src/permissions.ts");
-    let skill = package.join("skills/qrate-live-review/SKILL.md");
     let source_system = package.join("SYSTEM.md");
     let dark_theme = root.join("theme/dark.json");
     let light_theme = root.join("theme/light.json");
@@ -51,7 +49,6 @@ fn prepare() -> Result<AgentRuntime, String> {
         &extension,
         &extension_bridge,
         &extension_permissions,
-        &skill,
         &source_system,
         &dark_theme,
         &light_theme,
@@ -85,7 +82,6 @@ fn prepare() -> Result<AgentRuntime, String> {
         program,
         leading_args: Vec::new(),
         extension,
-        skill,
         profile,
         endpoint,
     })

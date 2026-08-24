@@ -4,8 +4,8 @@ set -euo pipefail
 destination="${1:?usage: fetch-agent-runtime.sh <destination> <linux-x64|darwin-universal>}"
 platform="${2:?usage: fetch-agent-runtime.sh <destination> <linux-x64|darwin-universal>}"
 pi_version=0.84.2
-extension_version=0.1.0
-extension_sha=16683b3ec9d93c3955b121a282d0c8ff8dfd8087a0fac4eb4297e24f9a516926
+extension_version=0.2.0
+extension_sha=4274eac1b90141c40d06b7e8f63349f36f40a0572490119296785b20da19b938
 runtime="$(cd "$(dirname "$destination")" && pwd)/$(basename "$destination")/agent"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -42,5 +42,4 @@ mkdir -p "$runtime/qrate-pi-extension"
 cp "$tmp/qrate-pi-extension-$extension_version/SYSTEM.md" "$runtime/qrate-pi-extension/"
 cp -R "$tmp/qrate-pi-extension-$extension_version/extensions" "$runtime/qrate-pi-extension/"
 cp -R "$tmp/qrate-pi-extension-$extension_version/src" "$runtime/qrate-pi-extension/"
-cp -R "$tmp/qrate-pi-extension-$extension_version/skills" "$runtime/qrate-pi-extension/"
 echo "Fetched Pi $pi_version and qrate-pi-extension $extension_version into $runtime"

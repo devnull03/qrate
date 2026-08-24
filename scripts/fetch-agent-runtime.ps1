@@ -5,9 +5,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $piVersion = "0.84.2"
-$extensionVersion = "0.1.0"
+$extensionVersion = "0.2.0"
 $piSha256 = "741fc1ae1afecb573ac2888e011188ff446b3940f4aabe1583f60bf55be8a3d0"
-$extensionSha256 = "16683b3ec9d93c3955b121a282d0c8ff8dfd8087a0fac4eb4297e24f9a516926"
+$extensionSha256 = "4274eac1b90141c40d06b7e8f63349f36f40a0572490119296785b20da19b938"
 $runtime = Join-Path ([System.IO.Path]::GetFullPath($Destination)) "agent"
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("qrate-agent-" + [guid]::NewGuid())
 
@@ -35,7 +35,6 @@ try {
     Copy-Item (Join-Path $temp "qrate-pi-extension-$extensionVersion/SYSTEM.md") $extension -Force
     Copy-Item (Join-Path $temp "qrate-pi-extension-$extensionVersion/extensions") $extension -Recurse -Force
     Copy-Item (Join-Path $temp "qrate-pi-extension-$extensionVersion/src") $extension -Recurse -Force
-    Copy-Item (Join-Path $temp "qrate-pi-extension-$extensionVersion/skills") $extension -Recurse -Force
     Write-Host "Fetched Pi $piVersion and qrate-pi-extension $extensionVersion into $runtime"
 }
 finally {

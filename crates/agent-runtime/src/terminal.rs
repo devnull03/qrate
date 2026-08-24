@@ -506,11 +506,9 @@ impl AgentTerminal {
             session_dir.display()
         );
         log::debug!(
-            "embedded Pi resources: extension={} (exists={}), skill={} (exists={}), endpoint={} (exists={})",
+            "embedded Pi resources: extension={} (exists={}), endpoint={} (exists={})",
             runtime.extension.display(),
             runtime.extension.is_file(),
-            runtime.skill.display(),
-            runtime.skill.is_file(),
             runtime.endpoint.display(),
             runtime.endpoint.is_file()
         );
@@ -527,8 +525,6 @@ impl AgentTerminal {
             "--extension".to_owned(),
             runtime.extension.to_string_lossy().into_owned(),
             "--no-skills".to_owned(),
-            "--skill".to_owned(),
-            runtime.skill.to_string_lossy().into_owned(),
             "--no-context-files".to_owned(),
             "--no-approve".to_owned(),
             "--session-dir".to_owned(),
