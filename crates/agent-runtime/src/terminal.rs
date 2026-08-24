@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::process::Command;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, OnceLock, mpsc};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt as _;
@@ -58,6 +58,20 @@ pub struct TerminalScreen {
     pub text: String,
     pub highlights: Vec<(Range<usize>, HighlightStyle)>,
     pub auth_urls: Vec<String>,
+}
+
+static GLOBAL_CREDENTIAL: OnceLock<Option<String>> = OnceLock::new();
+
+/// Resolve the fallback credential once, on a background thread.
+///
+/// Each probe spawns Pi, which costs a second or more cold; doing that inside `start` froze the
+/// window on every session start. Called from `init`, so it is settled long before a panel opens.
+// ponytail: a start that beats the probe loses the fallback for that run and says so in the log.
+// Make it a real async handoff if that ever bites; blocking the UI to close the race is worse.
+pub fn warm_global_credential(program: std::path::PathBuf) {
+    std::thread::spawn(move || {
+        let _ = GLOBAL_CREDENTIAL.set(global_openrouter_credential(&program));
+    });
 }
 
 /// Ask the user's ordinary Pi installation to resolve its OpenRouter credential. The credential
@@ -494,15 +508,21 @@ impl AgentTerminal {
         }
 
         let mut env: HashMap<String, String> = std::env::vars().collect();
-        if let Some(credential) = global_openrouter_credential(&runtime.program) {
-            // A qrate-local auth.json still takes priority inside Pi. This is only a fallback to the
-            // user's global Pi login, and avoids duplicating a refresh token on disk.
-            env.insert("OPENROUTER_API_KEY".to_owned(), credential);
-            log::info!("embedded Pi can use the global Pi OpenRouter login as an auth fallback");
-        } else {
-            log::info!(
+        match GLOBAL_CREDENTIAL.get() {
+            Some(Some(credential)) => {
+                // A qrate-local auth.json still takes priority inside Pi. This is only a fallback
+                // to the user's global Pi login, and avoids duplicating a refresh token on disk.
+                env.insert("OPENROUTER_API_KEY".to_owned(), credential.clone());
+                log::info!(
+                    "embedded Pi can use the global Pi OpenRouter login as an auth fallback"
+                );
+            }
+            Some(None) => log::info!(
                 "no global Pi OpenRouter login is available; embedded Pi will use its isolated login or OpenRouter's anonymous free router"
-            );
+            ),
+            None => log::warn!(
+                "the global Pi login was still being resolved when this session started; embedded Pi will use its isolated login for this run"
+            ),
         }
         // Keep Pi's provider login under its isolated profile, but preserve the ordinary process
         // environment for TLS, proxies, locale, and platform support.
@@ -576,8 +596,10 @@ impl AgentTerminal {
             process,
         });
         log::info!("embedded Pi process started");
+        // A resumed session says nothing: Pi's own banner is already on screen, and the status line
+        // is worth the row it costs only when something needs saying.
         self.status = if continue_previous {
-            "Resuming this project's Pi session…".to_owned()
+            String::new()
         } else {
             "Started a new Pi session.".to_owned()
         };
@@ -604,6 +626,20 @@ impl AgentTerminal {
             );
         }
         changed
+    }
+
+    /// Clear the conversation and start over.
+    ///
+    /// Pi's own `/new` does this in place. Respawning the process costs a cold start and drops the
+    /// scrollback, so only fall back to that when there is no running session to ask.
+    pub fn new_session(&mut self, cx: &App) {
+        match &self.session {
+            Some(session) if session.running => {
+                session.notifier.notify(Cow::Borrowed(b"/new\r".as_slice()));
+                self.status = "Started a new Pi session.".to_owned();
+            }
+            _ => self.start(false, cx),
+        }
     }
 
     pub fn stop(&mut self) {
