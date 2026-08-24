@@ -57,16 +57,7 @@ pub struct TerminalPalette {
 pub struct TerminalScreen {
     pub text: String,
     pub highlights: Vec<(Range<usize>, HighlightStyle)>,
-    pub backgrounds: Vec<TerminalBackground>,
     pub auth_urls: Vec<String>,
-}
-
-#[derive(Clone, Copy)]
-pub struct TerminalBackground {
-    pub line: usize,
-    pub start_column: usize,
-    pub end_column: usize,
-    pub color: Hsla,
 }
 
 /// Ask the user's ordinary Pi installation to resolve its OpenRouter credential. The credential
@@ -166,6 +157,7 @@ fn terminal_style(
     let foreground = if inverse { cell.bg } else { cell.fg };
     let mut style = HighlightStyle {
         color: Some(resolve_color(foreground, palette, dynamic)),
+        background_color: terminal_background(cell, palette, dynamic),
         ..Default::default()
     };
     if cell.flags.contains(Flags::BOLD) {
@@ -728,7 +720,6 @@ impl AgentTerminal {
             return TerminalScreen {
                 text: String::new(),
                 highlights: Vec::new(),
-                backgrounds: Vec::new(),
                 auth_urls: Vec::new(),
             };
         };
@@ -745,7 +736,6 @@ impl AgentTerminal {
             .map(|_| Vec::with_capacity(COLS))
             .collect();
         let mut auth_urls = Vec::new();
-        let mut backgrounds: Vec<TerminalBackground> = Vec::new();
         let mut seen_urls = HashSet::new();
         let top = -(content.display_offset as i32);
         for indexed in content.display_iter {
@@ -754,24 +744,6 @@ impl AgentTerminal {
                 .ok()
                 .and_then(|line| lines.get_mut(line))
             {
-                let line = usize::try_from(line).expect("visible terminal line is non-negative");
-                let column = indexed.point.column.0;
-                if let Some(color) = terminal_background(indexed.cell, palette, content.colors) {
-                    if let Some(previous) = backgrounds.last_mut()
-                        && previous.line == line
-                        && previous.end_column == column
-                        && previous.color == color
-                    {
-                        previous.end_column += 1;
-                    } else {
-                        backgrounds.push(TerminalBackground {
-                            line,
-                            start_column: column,
-                            end_column: column + 1,
-                            color,
-                        });
-                    }
-                }
                 if let Some(hyperlink) = indexed.cell.hyperlink() {
                     let uri = hyperlink.uri();
                     if is_auth_url(uri) && seen_urls.insert(uri.to_owned()) {
@@ -843,7 +815,6 @@ impl AgentTerminal {
         TerminalScreen {
             text,
             highlights,
-            backgrounds,
             auth_urls,
         }
     }
@@ -934,6 +905,11 @@ mod tests {
         assert_eq!(terminal_background(&cell, palette(), &colors), None);
 
         cell.bg = Color::Spec(Rgb { r: 1, g: 2, b: 3 });
+        // The background rides the same style run as the glyph, so gpui places the two together.
+        assert_eq!(
+            terminal_style(&cell, palette(), &colors).background_color,
+            terminal_background(&cell, palette(), &colors)
+        );
         assert!(terminal_background(&cell, palette(), &colors).is_some());
     }
 }

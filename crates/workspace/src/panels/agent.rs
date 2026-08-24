@@ -147,12 +147,36 @@ const LIVE_TICK: Duration = Duration::from_millis(33);
 /// a newly started session; the cost of *not* slowing down is paid from launch until quit.
 const IDLE_TICK: Duration = Duration::from_millis(250);
 
-fn terminal_dimensions(width: Pixels, height: Pixels, crop: Pixels) -> (usize, usize) {
+/// The grid the PTY is told to use has to be the grid gpui will actually lay the glyphs out on, so
+/// `cell` is measured from the resolved font rather than assumed.
+fn terminal_dimensions(
+    width: Pixels,
+    height: Pixels,
+    crop: Pixels,
+    cell: Size<Pixels>,
+) -> (usize, usize) {
     (
-        ((f32::from(width) - 16.) / 8.).floor().max(2.) as usize,
-        ((f32::from(height) - 8. - f32::from(crop)) / 16.)
+        ((f32::from(width) - 16.) / f32::from(cell.width))
             .floor()
             .max(2.) as usize,
+        ((f32::from(height) - 8. - f32::from(crop)) / f32::from(cell.height))
+            .floor()
+            .max(2.) as usize,
+    )
+}
+
+/// The advance and line height of the monospace text style the terminal is rendered with.
+fn terminal_cell(window: &Window) -> Size<Pixels> {
+    let style = window.text_style();
+    let rem_size = window.rem_size();
+    let font_size = style.font_size.to_pixels(rem_size);
+    let font_id = window.text_system().resolve_font(&style.font());
+    size(
+        window
+            .text_system()
+            .advance(font_id, font_size, 'm')
+            .map_or(px(8.), |advance| advance.width),
+        style.line_height_in_pixels(rem_size),
     )
 }
 
@@ -425,7 +449,6 @@ impl Render for AgentPanel {
         } else {
             StyledText::new(terminal_screen.text).with_highlights(terminal_screen.highlights)
         };
-        let terminal_backgrounds = terminal_screen.backgrounds;
         let terminal_status = self.terminal.status().to_owned();
 
         v_flex()
@@ -493,11 +516,12 @@ impl Render for AgentPanel {
                                 ))
                                 .child({
                                     canvas(
-                                        move |bounds, _, cx| {
+                                        move |bounds, window, cx| {
                                             let next = terminal_dimensions(
                                                 bounds.size.width,
                                                 bounds.size.height,
                                                 crop,
+                                                terminal_cell(window),
                                             );
                                             let Some(panel) = agent_panel.upgrade() else {
                                                 return;
@@ -510,32 +534,7 @@ impl Render for AgentPanel {
                                                 }
                                             });
                                         },
-                                        move |bounds, _, window, _| {
-                                            for background in &terminal_backgrounds {
-                                                let bounds = Bounds {
-                                                    origin: point(
-                                                        bounds.origin.x
-                                                            + px(8.)
-                                                            + px(
-                                                                8. * background.start_column
-                                                                    as f32,
-                                                            ),
-                                                        bounds.origin.y
-                                                            + px(4.)
-                                                            + px(16. * background.line as f32),
-                                                    ),
-                                                    size: size(
-                                                        px(
-                                                            8. * (background.end_column
-                                                                - background.start_column)
-                                                                as f32,
-                                                        ),
-                                                        px(16.),
-                                                    ),
-                                                };
-                                                window.paint_quad(fill(bounds, background.color));
-                                            }
-                                        },
+                                        |_, _, _, _| {},
                                     )
                                     .absolute()
                                     .top_0()
@@ -676,7 +675,7 @@ mod tests {
     // the built-in one and expand into itself.
     use std::time::Duration;
 
-    use gpui::{TestAppContext, px};
+    use gpui::{TestAppContext, px, size};
 
     use crate::panels::agent::{
         AgentCall, AgentHistory, AgentPanel, Entry, HISTORY_LIMIT, View, record,
@@ -774,8 +773,20 @@ mod tests {
 
     #[test]
     fn terminal_dimensions_follow_the_measured_panel() {
-        assert_eq!(terminal_dimensions(px(816.), px(520.), px(0.)), (100, 32));
-        assert_eq!(terminal_dimensions(px(416.), px(264.), px(0.)), (50, 16));
-        assert_eq!(terminal_dimensions(px(8.), px(8.), px(30.)), (2, 2));
+        let cell = size(px(8.), px(16.));
+        assert_eq!(
+            terminal_dimensions(px(816.), px(520.), px(0.), cell),
+            (100, 32)
+        );
+        assert_eq!(
+            terminal_dimensions(px(416.), px(264.), px(0.), cell),
+            (50, 16)
+        );
+        assert_eq!(terminal_dimensions(px(8.), px(8.), px(30.), cell), (2, 2));
+        // A wider cell than the old hardcoded 8px must yield fewer columns, not the same count.
+        assert_eq!(
+            terminal_dimensions(px(816.), px(520.), px(0.), size(px(8.4), px(16.))),
+            (95, 32)
+        );
     }
 }
