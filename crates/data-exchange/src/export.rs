@@ -74,15 +74,20 @@ pub const CSL_FIELDS: [&str; 5] = ["id", "title", "author", "issued", "URL"];
 /// `columns` is every header paired with the type the project declares for it.
 pub fn derive_csl_mapping(columns: &[(String, ColumnType)]) -> CslMapping {
     let mut mapping = CslMapping::new();
-    let mut put = |field: &str, header: &String| {
-        mapping.entry(field.to_string()).or_insert(header.clone());
-    };
+    fn put(mapping: &mut CslMapping, field: &str, header: &str) {
+        mapping
+            .entry(field.to_string())
+            .or_insert(header.to_owned());
+    }
     for (header, kind) in columns {
         match kind {
-            ColumnType::Identifier => put("id", header),
-            ColumnType::Date => put("issued", header),
-            ColumnType::Url => put("URL", header),
-            ColumnType::Text => put("title", header),
+            ColumnType::Title => {
+                mapping.insert("title".to_string(), header.clone());
+            }
+            ColumnType::Identifier => put(&mut mapping, "id", header),
+            ColumnType::Date => put(&mut mapping, "issued", header),
+            ColumnType::Url => put(&mut mapping, "URL", header),
+            ColumnType::Text => put(&mut mapping, "title", header),
             _ => {}
         }
     }
@@ -232,9 +237,9 @@ mod tests {
         let (headers, rows) = grid();
         let mapping = derive_csl_mapping(&[
             ("Digital ID".into(), ColumnType::Identifier),
-            ("Title".into(), ColumnType::Text),
-            ("Taken".into(), ColumnType::Date),
             ("Notes".into(), ColumnType::Text),
+            ("Title".into(), ColumnType::Title),
+            ("Taken".into(), ColumnType::Date),
         ]);
         let items = csl_items(&headers, &rows, &mapping);
 

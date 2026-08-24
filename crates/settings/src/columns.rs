@@ -33,6 +33,8 @@ use crate::project::CurrentProject;
 pub enum ColumnType {
     #[default]
     Text,
+    /// The primary human-readable name of a row.
+    Title,
     /// A date, validated as EDTF.
     Date,
     /// Names a file in the project's files folder.
@@ -47,6 +49,7 @@ impl ColumnType {
     /// Canonical spelling — what the wizard writes and `column_config.csv` should say.
     pub fn as_str(self) -> &'static str {
         match self {
+            ColumnType::Title => "Title",
             ColumnType::Text => "Text",
             ColumnType::Date => "Date",
             ColumnType::Filename => "Filename",
@@ -57,7 +60,8 @@ impl ColumnType {
     }
 
     /// Every type, in the order the wizard offers them.
-    pub const ALL: [ColumnType; 6] = [
+    pub const ALL: [ColumnType; 7] = [
+        ColumnType::Title,
         ColumnType::Text,
         ColumnType::Date,
         ColumnType::Filename,
@@ -71,6 +75,7 @@ impl ColumnType {
     /// over a synonym. Anything unrecognised is [`Self::Text`], the type that assumes least.
     pub fn from_declared(declared: &str) -> Self {
         match declared.trim().to_ascii_lowercase().as_str() {
+            "title" => ColumnType::Title,
             "date" | "datetime" | "time" | "year" | "edtf" => ColumnType::Date,
             "filename" | "file" | "filepath" | "path" => ColumnType::Filename,
             "number" | "integer" | "int" | "float" | "decimal" => ColumnType::Number,
@@ -81,9 +86,9 @@ impl ColumnType {
     }
 
     /// Whether cells hold prose — the question spell checking and any other language-aware rule
-    /// asks. Everything that is not [`Self::Text`] is a code, a number, or a machine handle.
+    /// asks.
     pub fn is_prose(self) -> bool {
-        self == ColumnType::Text
+        matches!(self, ColumnType::Title | ColumnType::Text)
     }
 }
 

@@ -141,8 +141,24 @@ impl CurrentProject {
     /// Synchronous rather than queued: [`ProjectSettingsWriter`] is keyed by `__settings` key and
     /// this is another table, and picking a type is one deliberate click, not a drag.
     pub fn set_column_type(name: &str, data_type: &str, cx: &mut gpui::App) {
-        let file = {
+        let kind = crate::columns::ColumnType::from_declared(data_type);
+        let single_holder = matches!(
+            kind,
+            crate::columns::ColumnType::Title | crate::columns::ColumnType::Filename
+        );
+        let (file, cleared) = {
             let p = cx.global_mut::<Self>();
+            let mut cleared = Vec::new();
+            if single_holder {
+                for column in &mut p.data.columns {
+                    if column.name != name
+                        && crate::columns::ColumnType::from_declared(&column.data_type) == kind
+                    {
+                        column.data_type = crate::columns::ColumnType::Text.as_str().to_string();
+                        cleared.push(column.name.clone());
+                    }
+                }
+            }
             match p.data.columns.iter_mut().find(|c| c.name == name) {
                 Some(column) => column.data_type = data_type.to_string(),
                 None => p.data.columns.push(ProjectColumn {
@@ -151,9 +167,9 @@ impl CurrentProject {
                     notes: String::new(),
                 }),
             }
-            p.file.clone()
+            (p.file.clone(), cleared)
         };
-        if let Err(err) = write_column_type(&file, name, data_type) {
+        if let Err(err) = write_column_types(&file, name, data_type, &cleared) {
             log::error!("failed to save the type of column {name}: {err}");
         }
         crate::dirty::mark(crate::dirty::COLUMN_SETTINGS, cx);
@@ -415,13 +431,28 @@ pub fn delete_setting(path: &Path, key: &str) -> Result<()> {
 /// header nobody configured — gets a row, which is what lets a type be set on any column the table
 /// shows rather than only the ones the wizard wrote.
 pub fn write_column_type(path: &Path, name: &str, data_type: &str) -> Result<()> {
-    let conn = open_rw(path)?;
-    conn.execute(
-        "INSERT INTO __columns(name, data_type, notes) VALUES (?1, ?2, NULL)
-         ON CONFLICT(name) DO UPDATE SET data_type = excluded.data_type",
-        params![name, data_type],
-    )
-    .context("Upsert column type")?;
+    write_column_types(path, name, data_type, &[])
+}
+
+fn write_column_types(path: &Path, name: &str, data_type: &str, cleared: &[String]) -> Result<()> {
+    let mut conn = open_rw(path)?;
+    let transaction = conn.transaction().context("Begin column type update")?;
+    for cleared_name in cleared {
+        transaction
+            .execute(
+                "UPDATE __columns SET data_type = ?2 WHERE name = ?1",
+                params![cleared_name, crate::columns::ColumnType::Text.as_str()],
+            )
+            .context("Clear unique column type")?;
+    }
+    transaction
+        .execute(
+            "INSERT INTO __columns(name, data_type, notes) VALUES (?1, ?2, NULL)
+             ON CONFLICT(name) DO UPDATE SET data_type = excluded.data_type",
+            params![name, data_type],
+        )
+        .context("Upsert column type")?;
+    transaction.commit().context("Commit column type update")?;
     Ok(())
 }
 
