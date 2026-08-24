@@ -84,8 +84,9 @@ fn version() -> &'static str {
 /// Removes GPUI's unactionable focus-node notice and demotes window-teardown errors to debug.
 ///
 /// GPUI reports the missing focus node at info level every time focus reaches an internal element
-/// without an accessibility role. It is not actionable from a qrate log, so omit that exact notice
-/// while retaining other accessibility diagnostics.
+/// without an accessibility role, and narrates every accessibility tree update — one line per
+/// frame, which was four fifths of a session log. Neither is actionable from a qrate log, so omit
+/// those two notices while retaining other accessibility diagnostics.
 ///
 /// Closing a window always produces them: a detached per-window callback outlives the window,
 /// reads it, and `log_err`s the expected miss. Kept in the file for teardown debugging, but not at
@@ -93,11 +94,11 @@ fn version() -> &'static str {
 struct QuietGpuiNoise(Box<dyn Log>);
 
 fn is_accessibility_focus_noise(record: &Record) -> bool {
-    record.target() == "gpui::window::a11y"
-        && record
-            .args()
-            .to_string()
-            .starts_with("a11y: focused element")
+    if !record.target().starts_with("gpui::window") {
+        return false;
+    }
+    let message = record.args().to_string();
+    message.starts_with("a11y: focused element") || message.starts_with("Sending a11y tree update")
 }
 
 fn is_window_teardown(record: &Record) -> bool {
