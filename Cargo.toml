@@ -43,7 +43,7 @@ csv = "1.3"
 # crate — a pinned rev here would fork into a second, type-incompatible copy. Reproducibility
 # comes from the committed Cargo.lock, which pins the exact resolved shas.
 gpui = { git = "https://github.com/zed-industries/zed" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "wayland", "x11"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
 dirs = "6"
