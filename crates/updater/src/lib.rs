@@ -256,13 +256,13 @@ pub fn detect_installation() -> Result<Installation> {
     if let Some(parent) = executable.parent() {
         candidates.push((parent.to_path_buf(), parent.join(MARKER_NAME)));
         #[cfg(target_os = "macos")]
-        if parent.ends_with("Contents/MacOS") {
-            if let Some(root) = parent.parent().and_then(Path::parent) {
-                candidates.push((
-                    root.to_path_buf(),
-                    root.join("Contents/Resources").join(MARKER_NAME),
-                ));
-            }
+        if parent.ends_with("Contents/MacOS")
+            && let Some(root) = parent.parent().and_then(Path::parent)
+        {
+            candidates.push((
+                root.to_path_buf(),
+                root.join("Contents/Resources").join(MARKER_NAME),
+            ));
         }
     }
     for (root, marker_path) in candidates {
@@ -382,11 +382,12 @@ fn installation_at(root: &Path, executable: &Path) -> Result<Installation> {
     })
 }
 
-fn apply_nsis(job: &UpdateJob) -> Result<()> {
+fn apply_nsis(_job: &UpdateJob) -> Result<()> {
     #[cfg(not(target_os = "windows"))]
     bail!("NSIS updates are only supported on Windows");
     #[cfg(target_os = "windows")]
     {
+        let job = _job;
         let status = Command::new(&job.artifact_path)
             .args(["/S", "/UPDATE=1", "/RESTART=1"])
             .status()
