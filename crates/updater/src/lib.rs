@@ -311,6 +311,19 @@ pub fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
 }
 
 pub fn run_job(job_path: &Path) -> Result<()> {
+    let key =
+        VerifyingKey::from_bytes(&UPDATE_PUBLIC_KEY).context("invalid embedded update key")?;
+    run_job_with(job_path, &key, &updates_dir()?, spawn_installed)
+}
+
+/// The trust key, the state directory, and the relaunch are parameters so an update can be applied
+/// to a throwaway installation in a test — including the failure that has to roll one back.
+fn run_job_with(
+    job_path: &Path,
+    key: &VerifyingKey,
+    updates: &Path,
+    launch: impl FnOnce(&UpdateJob, &Path) -> std::io::Result<()>,
+) -> Result<()> {
     let job: UpdateJob = serde_json::from_slice(&fs::read(job_path)?)?;
     ensure!(job.schema == 1, "unsupported update job schema");
     let installation = installation_at(&job.install_root, &job.executable)?;
@@ -318,7 +331,7 @@ pub fn run_job(job_path: &Path) -> Result<()> {
         installation.marker.packaged_version == job.expected_current_version,
         "installed version changed after staging"
     );
-    let (manifest, _) = verify_envelope(&job.envelope)?;
+    let (manifest, _) = verify_with(key, &job.envelope)?;
     ensure!(
         manifest.version == job.target_version,
         "update job version mismatch"
@@ -328,9 +341,9 @@ pub fn run_job(job_path: &Path) -> Result<()> {
 
     let result = match installation.marker.kind {
         InstallKind::WindowsNsis => apply_nsis(&job),
-        InstallKind::WindowsPortable => apply_zip(&job),
-        InstallKind::MacosBundle => apply_macos(&job),
-        InstallKind::LinuxTar => apply_tar(&job),
+        InstallKind::WindowsPortable => apply_zip(&job, updates, launch),
+        InstallKind::MacosBundle => apply_macos(&job, updates, launch),
+        InstallKind::LinuxTar => apply_tar(&job, updates, launch),
         InstallKind::WindowsMsi => bail!("MSI installations are administrator-managed"),
     };
     if let Err(error) = &result {
@@ -340,7 +353,7 @@ pub fn run_job(job_path: &Path) -> Result<()> {
             message: format!("{error:#}"),
             backup_path: None,
         };
-        let _ = write_json_atomic(&updates_dir()?.join(RECEIPT_NAME), &receipt);
+        let _ = write_json_atomic(&updates.join(RECEIPT_NAME), &receipt);
     }
     result
 }
@@ -386,7 +399,11 @@ fn apply_nsis(job: &UpdateJob) -> Result<()> {
     }
 }
 
-fn apply_zip(job: &UpdateJob) -> Result<()> {
+fn apply_zip(
+    job: &UpdateJob,
+    updates: &Path,
+    launch: impl FnOnce(&UpdateJob, &Path) -> std::io::Result<()>,
+) -> Result<()> {
     let temp = tempfile::Builder::new()
         .prefix("qrate-update-")
         .tempdir_in(
@@ -407,10 +424,14 @@ fn apply_zip(job: &UpdateJob) -> Result<()> {
             std::io::copy(&mut entry, &mut fs::File::create(output)?)?;
         }
     }
-    swap_and_launch(job, temp.keep())
+    swap_and_launch(job, temp.keep(), updates, launch)
 }
 
-fn apply_tar(job: &UpdateJob) -> Result<()> {
+fn apply_tar(
+    job: &UpdateJob,
+    updates: &Path,
+    launch: impl FnOnce(&UpdateJob, &Path) -> std::io::Result<()>,
+) -> Result<()> {
     let temp = tempfile::Builder::new()
         .prefix("qrate-update-")
         .tempdir_in(
@@ -427,10 +448,14 @@ fn apply_tar(job: &UpdateJob) -> Result<()> {
         "Linux update must contain one application directory"
     );
     let staged = entries.pop().unwrap().path();
-    swap_and_launch(job, staged)
+    swap_and_launch(job, staged, updates, launch)
 }
 
-fn apply_macos(_job: &UpdateJob) -> Result<()> {
+fn apply_macos(
+    _job: &UpdateJob,
+    _updates: &Path,
+    _launch: impl FnOnce(&UpdateJob, &Path) -> std::io::Result<()>,
+) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     bail!("DMG updates are only supported on macOS");
     #[cfg(target_os = "macos")]
@@ -458,11 +483,16 @@ fn apply_macos(_job: &UpdateJob) -> Result<()> {
             .arg(mount.path())
             .status();
         ensure!(status.success(), "stage qrate app bundle");
-        swap_and_launch(job, staged)
+        swap_and_launch(job, staged, _updates, _launch)
     }
 }
 
-fn swap_and_launch(job: &UpdateJob, staged: PathBuf) -> Result<()> {
+fn swap_and_launch(
+    job: &UpdateJob,
+    staged: PathBuf,
+    updates: &Path,
+    launch: impl FnOnce(&UpdateJob, &Path) -> std::io::Result<()>,
+) -> Result<()> {
     let backup = job.install_root.with_extension("qrate-old");
     if backup.exists() {
         fs::remove_dir_all(&backup)?;
@@ -483,13 +513,8 @@ fn swap_and_launch(job: &UpdateJob, staged: PathBuf) -> Result<()> {
         message: "Update installed; waiting for qrate to start".into(),
         backup_path: Some(backup.clone()),
     };
-    write_json_atomic(&updates_dir()?.join(RECEIPT_NAME), &receipt)?;
-    let launch = if cfg!(target_os = "macos") {
-        Command::new("open").arg(&job.install_root).spawn()
-    } else {
-        Command::new(&new_executable).spawn()
-    };
-    if let Err(error) = launch {
+    write_json_atomic(&updates.join(RECEIPT_NAME), &receipt)?;
+    if let Err(error) = launch(job, &new_executable) {
         let _ = fs::remove_dir_all(&job.install_root);
         let _ = fs::rename(&backup, &job.install_root);
         return Err(error).context("launch updated qrate");
@@ -497,8 +522,23 @@ fn swap_and_launch(job: &UpdateJob, staged: PathBuf) -> Result<()> {
     Ok(())
 }
 
+fn spawn_installed(job: &UpdateJob, executable: &Path) -> std::io::Result<()> {
+    if cfg!(target_os = "macos") {
+        Command::new("open")
+            .arg(&job.install_root)
+            .spawn()
+            .map(drop)
+    } else {
+        Command::new(executable).spawn().map(drop)
+    }
+}
+
 pub fn mark_healthy(current_version: &Version) -> Result<Option<UpdateReceipt>> {
-    let path = updates_dir()?.join(RECEIPT_NAME);
+    mark_healthy_in(&updates_dir()?, current_version)
+}
+
+fn mark_healthy_in(updates: &Path, current_version: &Version) -> Result<Option<UpdateReceipt>> {
+    let path = updates.join(RECEIPT_NAME);
     let Ok(bytes) = fs::read(&path) else {
         return Ok(None);
     };
@@ -688,5 +728,249 @@ mod tests {
             ReleaseChannel::Stable
         );
         assert!(!ReleaseChannel::Stable.accepts(&version("1.1.0-beta.1")));
+    }
+}
+
+/// Applying an update is the one thing here that destroys a working installation before it has a
+/// new one, so these drive the real swap against throwaway trees rather than mocking it.
+#[cfg(test)]
+mod apply_tests {
+    use super::{
+        ENVELOPE_SCHEMA, InstallKind, InstallMarker, JOB_NAME, MARKER_NAME, RECEIPT_NAME,
+        ReceiptStatus, ReleaseChannel, SignedEnvelope, UpdateArtifact, UpdateJob, UpdateManifest,
+        UpdateReceipt, mark_healthy_in, run_job_with, sha256_file, write_json_atomic,
+    };
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use ed25519_dalek::{Signer as _, SigningKey};
+    use semver::Version;
+    use std::{
+        fs,
+        io::Write as _,
+        path::{Path, PathBuf},
+    };
+
+    const FROM: &str = "0.4.0-alpha.1";
+    const TO: &str = "0.5.0-beta.1";
+
+    fn marker(version: &str) -> String {
+        serde_json::to_string(&InstallMarker {
+            schema: 1,
+            kind: InstallKind::WindowsPortable,
+            packaged_version: Version::parse(version).unwrap(),
+        })
+        .unwrap()
+    }
+
+    /// An installation of `version`: the marker the helper checks, the executable it relaunches,
+    /// and one payload file that proves which version is actually on disk afterwards.
+    fn install(root: &Path, version: &str) {
+        fs::create_dir_all(root).unwrap();
+        fs::write(root.join(MARKER_NAME), marker(version)).unwrap();
+        fs::write(root.join("qrate.exe"), b"executable").unwrap();
+        fs::write(root.join("payload.txt"), version).unwrap();
+    }
+
+    /// The portable package is a zip of the installation's *contents*, so build it that way.
+    fn package(path: &Path, version: &str) {
+        let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, body) in [
+            (MARKER_NAME, marker(version)),
+            ("qrate.exe", "executable".to_string()),
+            ("payload.txt", version.to_string()),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    fn job(key: &SigningKey, root: &Path, artifact: &Path) -> UpdateJob {
+        let (sha256, size) = sha256_file(artifact).unwrap();
+        let manifest = UpdateManifest {
+            channel: ReleaseChannel::Beta,
+            version: Version::parse(TO).unwrap(),
+            published_at: "2026-08-26T00:00:00Z".into(),
+            release_notes_url: format!("https://github.com/devnull03/qrate/releases/tag/v{TO}"),
+            artifacts: vec![UpdateArtifact {
+                kind: InstallKind::WindowsPortable,
+                os: std::env::consts::OS.into(),
+                arch: std::env::consts::ARCH.into(),
+                url: format!("https://github.com/devnull03/qrate/releases/download/v{TO}/q.zip"),
+                size,
+                sha256,
+            }],
+        };
+        let payload = serde_json::to_vec(&manifest).unwrap();
+        UpdateJob {
+            schema: 1,
+            envelope: SignedEnvelope {
+                schema: ENVELOPE_SCHEMA,
+                key_id: super::UPDATE_KEY_ID.into(),
+                signature_base64: STANDARD.encode(key.sign(&payload).to_bytes()),
+                payload_base64: STANDARD.encode(&payload),
+            },
+            artifact_path: artifact.to_path_buf(),
+            install_root: root.to_path_buf(),
+            executable: root.join("qrate.exe"),
+            expected_current_version: Version::parse(FROM).unwrap(),
+            target_version: Version::parse(TO).unwrap(),
+        }
+    }
+
+    /// One staged update, ready to apply: the install tree, the signed job, and where the helper
+    /// keeps its state.
+    struct Staged {
+        _home: tempfile::TempDir,
+        key: SigningKey,
+        root: PathBuf,
+        updates: PathBuf,
+        job_path: PathBuf,
+    }
+
+    fn stage() -> Staged {
+        let home = tempfile::tempdir().unwrap();
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let root = home.path().join("qrate");
+        let updates = home.path().join("updates");
+        install(&root, FROM);
+        let artifact = home.path().join("qrate-next.zip");
+        package(&artifact, TO);
+        let job_path = updates.join(JOB_NAME);
+        write_json_atomic(&job_path, &job(&key, &root, &artifact)).unwrap();
+        Staged {
+            _home: home,
+            key,
+            root,
+            updates,
+            job_path,
+        }
+    }
+
+    fn receipt(updates: &Path) -> UpdateReceipt {
+        serde_json::from_slice(&fs::read(updates.join(RECEIPT_NAME)).unwrap()).unwrap()
+    }
+
+    fn payload_version(root: &Path) -> String {
+        fs::read_to_string(root.join("payload.txt")).unwrap()
+    }
+
+    #[test]
+    fn applies_a_signed_update_and_keeps_the_old_install_until_it_starts() {
+        let staged = stage();
+        let mut launched = None;
+
+        run_job_with(
+            &staged.job_path,
+            &staged.key.verifying_key(),
+            &staged.updates,
+            |_, executable| {
+                launched = Some(executable.to_path_buf());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        // The whole tree moved, not just the executable — a partial swap is the version skew this
+        // design exists to prevent.
+        assert_eq!(payload_version(&staged.root), TO);
+        assert!(
+            fs::read_to_string(staged.root.join(MARKER_NAME))
+                .unwrap()
+                .contains(TO)
+        );
+        assert_eq!(launched.unwrap(), staged.root.join("qrate.exe"));
+
+        // The previous install is kept until the new one proves it starts.
+        let backup = staged.root.with_extension("qrate-old");
+        assert!(backup.exists());
+        let pending = receipt(&staged.updates);
+        assert_eq!(pending.status, ReceiptStatus::AwaitingHealth);
+        assert_eq!(pending.backup_path.as_deref(), Some(backup.as_path()));
+
+        let healthy = mark_healthy_in(&staged.updates, &Version::parse(TO).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(healthy.status, ReceiptStatus::Healthy);
+        assert!(
+            !backup.exists(),
+            "a healthy start should reclaim the backup"
+        );
+    }
+
+    #[test]
+    fn restores_the_previous_install_when_the_update_will_not_start() {
+        let staged = stage();
+
+        let error = run_job_with(
+            &staged.job_path,
+            &staged.key.verifying_key(),
+            &staged.updates,
+            |_, _| Err(std::io::Error::other("could not launch")),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("launch"));
+
+        // Rolled all the way back: the old version runs again and nothing is left half-swapped.
+        assert_eq!(payload_version(&staged.root), FROM);
+        assert!(
+            fs::read_to_string(staged.root.join(MARKER_NAME))
+                .unwrap()
+                .contains(FROM)
+        );
+        assert!(!staged.root.with_extension("qrate-old").exists());
+        assert_eq!(receipt(&staged.updates).status, ReceiptStatus::Failed);
+    }
+
+    #[test]
+    fn refuses_an_update_signed_by_the_wrong_key() {
+        let staged = stage();
+
+        let error = run_job_with(
+            &staged.job_path,
+            &SigningKey::from_bytes(&[9; 32]).verifying_key(),
+            &staged.updates,
+            |_, _| panic!("an unverified update must never reach the swap"),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("signature"));
+        assert_eq!(payload_version(&staged.root), FROM);
+    }
+
+    #[test]
+    fn refuses_an_artifact_that_does_not_match_its_signed_digest() {
+        let staged = stage();
+        let job: UpdateJob = serde_json::from_slice(&fs::read(&staged.job_path).unwrap()).unwrap();
+        package(&job.artifact_path, "9.9.9-tampered");
+
+        let error = run_job_with(
+            &staged.job_path,
+            &staged.key.verifying_key(),
+            &staged.updates,
+            |_, _| panic!("a tampered artifact must never reach the swap"),
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("checksum") || message.contains("size"),
+            "{message}"
+        );
+        assert_eq!(payload_version(&staged.root), FROM);
+    }
+
+    #[test]
+    fn refuses_an_installation_that_moved_on_since_staging() {
+        let staged = stage();
+        // Something else updated qrate between the download and the restart.
+        fs::write(staged.root.join(MARKER_NAME), marker("0.4.5")).unwrap();
+
+        let error = run_job_with(
+            &staged.job_path,
+            &staged.key.verifying_key(),
+            &staged.updates,
+            |_, _| panic!("a stale job must never reach the swap"),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("installed version changed"));
     }
 }
