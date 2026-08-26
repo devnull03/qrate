@@ -60,6 +60,10 @@ OutFile "${OUTFILE}"
 SetCompressor /SOLID lzma
 
 !include "MUI2.nsh"
+!include "FileFunc.nsh"
+!include "LogicLib.nsh"
+
+Var UpdateRestart
 
 !define MUI_ICON   "${ICONFILE}"
 !define MUI_UNICON "${ICONFILE}"
@@ -84,6 +88,8 @@ VIAddVersionKey "FileVersion"     "${VERSION}"
 VIAddVersionKey "ProductVersion"  "${VERSION}"
 
 Function .onInit
+  ${GetParameters} $R0
+  ${GetOptions} $R0 "/RESTART=" $UpdateRestart
   !insertmacro MULTIUSER_INIT
 FunctionEnd
 
@@ -94,6 +100,11 @@ FunctionEnd
 Section "Install"
   SetOutPath "$INSTDIR"
   File /oname=${EXENAME} "${SRCEXE}"
+  File /oname=qrate-update-helper.exe "${SRCDIR}\qrate-update-helper.exe"
+
+  FileOpen $0 "$INSTDIR\qrate-install.json" w
+  FileWrite $0 '{$\r$\n  "schema": 1,$\r$\n  "kind": "windows-nsis",$\r$\n  "packaged_version": "${VERSION}"$\r$\n}$\r$\n'
+  FileClose $0
 
   ; Preview sidecars, taken from beside the built executable — see scripts/fetch-binaries.sh.
   ; PDFium is loaded dynamically and ffmpeg is run as a subprocess, and both tiers fall back to a
@@ -124,12 +135,18 @@ Section "Install"
   WriteRegStr   SHCTX "${UNINSTKEY}" "UninstallString" "$INSTDIR\Uninstall.exe"
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoModify" 1
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoRepair" 1
+
+  ${If} $UpdateRestart == "1"
+    Exec '"$INSTDIR\${EXENAME}"'
+  ${EndIf}
 SectionEnd
 
 Section "Uninstall"
   Delete "$INSTDIR\${EXENAME}"
   Delete "$INSTDIR\pdfium.dll"
   Delete "$INSTDIR\ffmpeg.exe"
+  Delete "$INSTDIR\qrate-update-helper.exe"
+  Delete "$INSTDIR\qrate-install.json"
   RMDir /r "$INSTDIR\agent"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir  "$INSTDIR"

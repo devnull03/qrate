@@ -77,13 +77,17 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release -p app --target ${{ matrix.target }}
+        run: |
+          cargo build --release -p app --target ${{ matrix.target }}
+          cargo build --release -p updater --bin qrate-update-helper --target ${{ matrix.target }}
 
       - name: Upload arch binary
         uses: actions/upload-artifact@v4
         with:
           name: macos-bin-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/app
+          path: |
+            target/${{ matrix.target }}/release/app
+            target/${{ matrix.target }}/release/qrate-update-helper
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -107,6 +111,11 @@ jobs:
             macos-bins/macos-bin-aarch64-apple-darwin/app \
             -output universal-app
           lipo -info universal-app
+          lipo -create \
+            macos-bins/macos-bin-x86_64-apple-darwin/qrate-update-helper \
+            macos-bins/macos-bin-aarch64-apple-darwin/qrate-update-helper \
+            -output qrate-update-helper
+          lipo -info qrate-update-helper
 
       # `bundle-mac.sh` picks the sidecars up from beside the binary it is given, so they have to
       # land next to `universal-app`. PDFium's universal build, not a per-arch one: a single-arch
@@ -119,6 +128,7 @@ jobs:
         env:
           QRATE_PDFIUM_ARCH: univ
           QRATE_SKIP_FFMPEG: 1
+          QRATE_STRICT_BINARIES: 1
         run: |
           chmod +x scripts/fetch-binaries.sh
           ./scripts/fetch-binaries.sh .
@@ -156,7 +166,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --release -p app
+        run: |
+          cargo build --release -p app
+          cargo build --release -p updater --bin qrate-update-helper
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress
@@ -178,8 +190,10 @@ jobs:
       # PDFium and ffmpeg are loaded at runtime from beside the executable. Windows has no package
       # manager we can rely on, so both ship with the app — without them a released build shows a
       # type icon for every PDF and video. This is what makes the installer large (ffmpeg is most
-      # of it); the download failing is not fatal, it just produces a degraded build.
+      # of it). Strict release mode fails this job if either sidecar is missing.
       - name: Fetch preview binaries
+        env:
+          QRATE_STRICT_BINARIES: 1
         shell: bash
         run: |
           mkdir -p dist/portable
@@ -196,10 +210,16 @@ jobs:
           $ver = "${{ needs.version.outputs.version }}"
           $vi = "${{ needs.version.outputs.vi_version }}"
           Copy-Item target/release/app.exe dist/portable/qrate.exe
+          Copy-Item target/release/qrate-update-helper.exe dist/portable/qrate-update-helper.exe
+          @{ schema = 1; kind = "windows-portable"; packaged_version = $ver } |
+            ConvertTo-Json | Set-Content -Encoding utf8 dist/portable/qrate-install.json
           # Zip the staging folder's *contents*, so the sidecars sit beside qrate.exe on extract —
           # which is exactly where the preview tiers look for them.
           Compress-Archive -Path dist/portable/* `
             -DestinationPath "dist/qrate-$ver-x86_64.zip" -Force
+
+          @{ schema = 1; kind = "windows-msi"; packaged_version = $ver } |
+            ConvertTo-Json | Set-Content -Encoding utf8 dist/portable/qrate-install-msi.json
 
           $nsis = "C:\Program Files (x86)\NSIS\makensis.exe"
           & $nsis `
@@ -260,7 +280,9 @@ jobs:
             libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libasound2-dev
 
       - name: Build
-        run: cargo build --release -p app
+        run: |
+          cargo build --release -p app
+          cargo build --release -p updater --bin qrate-update-helper
 
       - name: Package tarball
         run: |
@@ -269,11 +291,15 @@ jobs:
           stage="qrate-$ver-x86_64-linux"
           mkdir -p "$stage"
           cp target/release/app "$stage/qrate"
+          cp target/release/qrate-update-helper "$stage/qrate-update-helper"
+          chmod +x "$stage/qrate-update-helper"
+          printf '{\n  "schema": 1,\n  "kind": "linux-tar",\n  "packaged_version": "%s"\n}\n' \
+            "$ver" > "$stage/qrate-install.json"
           cp assets/icons/app-icon.png "$stage/qrate.png"
           # PDFium ships in the tarball beside the binary, where the preview tier looks for it.
           # ffmpeg does not: it is one `apt install` away and every distro packages it, so we
           # would be shipping ~50 MB to duplicate something already on most machines.
-          QRATE_SKIP_FFMPEG=1 ./scripts/fetch-binaries.sh "$stage"
+          QRATE_SKIP_FFMPEG=1 QRATE_STRICT_BINARIES=1 ./scripts/fetch-binaries.sh "$stage"
           chmod +x scripts/fetch-agent-runtime.sh
           ./scripts/fetch-agent-runtime.sh "$stage" linux-x64
           printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=qrate' \
@@ -294,6 +320,7 @@ jobs:
   release:
     needs: [version, bundle-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
+    environment: release-signing
     steps:
       # Only the final artifacts — not the intermediate per-arch macOS binaries.
       - uses: actions/download-artifact@v4
@@ -315,10 +342,16 @@ jobs:
           sha256sum *.dmg *.zip *-setup.exe *.msi *.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Build and sign update manifest
+        env:
+          QRATE_UPDATE_SIGNING_KEY: ${{ secrets.QRATE_UPDATE_SIGNING_KEY }}
+        run: node scripts/build-update-manifest.mjs dist "${{ needs.version.outputs.tag }}"
+
       - name: Publish draft release
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          prerelease: ${{ contains(needs.version.outputs.version, '-') }}
           tag_name: ${{ needs.version.outputs.tag }}
           name: ${{ needs.version.outputs.tag }}
           fail_on_unmatched_files: true
@@ -329,6 +362,7 @@ jobs:
             dist/*.msi
             dist/*.tar.gz
             dist/SHA256SUMS.txt
+            dist/update-manifest.json
           body: |
             ## qrate ${{ needs.version.outputs.tag }}
 

@@ -24,11 +24,16 @@ dist="$root/dist"
 app="$dist/${app_name}.app"
 
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$dist"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Helpers" "$dist"
 
 # ---- Executable ------------------------------------------------------------
 cp "$BIN" "$app/Contents/MacOS/$executable"
 chmod +x "$app/Contents/MacOS/$executable"
+
+cp "$(dirname "$BIN")/qrate-update-helper" "$app/Contents/Helpers/qrate-update-helper"
+chmod +x "$app/Contents/Helpers/qrate-update-helper"
+printf '{\n  "schema": 1,\n  "kind": "macos-bundle",\n  "packaged_version": "%s"\n}\n' \
+  "$VERSION" > "$app/Contents/Resources/qrate-install.json"
 
 # ---- Preview sidecars ------------------------------------------------------
 # PDFium is dlopen'd and ffmpeg is spawned, both looked for beside the executable first (see

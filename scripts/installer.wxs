@@ -60,6 +60,13 @@
                      WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" Advertise="yes" />
         </File>
       </Component>
+      <Component Id="UpdateHelper" Guid="*">
+        <File Id="QrateUpdateHelper" Source="$(var.SrcDir)\qrate-update-helper.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="InstallMarker" Guid="*">
+        <File Id="QrateInstallMarker" Source="$(var.SrcDir)\qrate-install-msi.json"
+              Name="qrate-install.json" KeyPath="yes" />
+      </Component>
 
       <!-- Preview sidecars — see scripts/fetch-binaries.sh. Both are optional at runtime (the
            preview tiers fall back to a type icon without them); HasPdfium/HasFfmpeg only guard

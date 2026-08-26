@@ -21,6 +21,7 @@
 #   QRATE_PDFIUM_ARCH=univ   Fetch the macOS universal build, for a lipo'd bundle.
 #   QRATE_SKIP_FFMPEG=1      PDFium only. CI wants the small, quick download so the PDF tests
 #                            exercise real rendering; the runners already provide ffmpeg.
+#   QRATE_STRICT_BINARIES=1  Fail if an expected release sidecar cannot be downloaded or found.
 set -euo pipefail
 
 DEST="${1:-target/debug}"
@@ -47,8 +48,12 @@ echo "==> platform: $PLATFORM-$ARCH, destination: $DEST"
 # --- PDFium (Apache-2.0 or BSD-3) --------------------------------------------------------------
 PDFIUM_URL="https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-$PLATFORM-$ARCH.tgz"
 echo "==> pdfium: $PDFIUM_URL"
-curl -sSL --fail --max-time 300 -o "$WORK/pdfium.tgz" "$PDFIUM_URL"
-tar xzf "$WORK/pdfium.tgz" -C "$WORK"
+if curl -sSL --fail --max-time 300 -o "$WORK/pdfium.tgz" "$PDFIUM_URL"; then
+  tar xzf "$WORK/pdfium.tgz" -C "$WORK"
+else
+  echo "    PDFium download failed; PDF previews will fall back to an icon" >&2
+  if [ -n "${QRATE_STRICT_BINARIES:-}" ]; then exit 1; fi
+fi
 # The archive puts the shared library under bin/ or lib/ depending on the platform, so search the
 # whole extraction rather than guessing. Verified rather than assumed: a silent miss here would
 # produce a release that shows an icon for every PDF, with nothing in the build log to say why.
@@ -59,7 +64,7 @@ while IFS= read -r lib; do
 done < <(find "$WORK" -type f \
   \( -name 'pdfium.dll' -o -name 'libpdfium.so' -o -name 'libpdfium.dylib' \) 2>/dev/null)
 
-if [ "$found" -eq 0 ]; then
+if [ "$found" -eq 0 ] && [ -n "${QRATE_STRICT_BINARIES:-}" ]; then
   echo "::error::no PDFium library inside $PDFIUM_URL — archive layout changed?" >&2
   exit 1
 fi
@@ -79,6 +84,11 @@ elif [ "$PLATFORM" = "win" ]; then
     echo "    installed ffmpeg.exe"
   else
     echo "    ffmpeg download failed; video previews will fall back to an icon" >&2
+    if [ -n "${QRATE_STRICT_BINARIES:-}" ]; then exit 1; fi
+  fi
+  if [ -n "${QRATE_STRICT_BINARIES:-}" ] && [ ! -f "$DEST/ffmpeg.exe" ]; then
+    echo "::error::ffmpeg.exe is missing from the strict release payload" >&2
+    exit 1
   fi
 elif command -v ffmpeg >/dev/null 2>&1; then
   echo "==> ffmpeg: already on PATH ($(command -v ffmpeg))"
