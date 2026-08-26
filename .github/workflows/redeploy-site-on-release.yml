@@ -30,7 +30,7 @@ jobs:
       # deploy was requested, so it shows in the repo's Deployments sidebar instead
       # of leaving that box empty now that GitHub Pages is off.
       - name: Record the deployment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const deployment = await github.rest.repos.createDeployment({

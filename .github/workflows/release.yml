@@ -35,7 +35,7 @@ jobs:
       tag: ${{ steps.v.outputs.tag }}
       vi_version: ${{ steps.v.outputs.vi_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Derive and verify version
         id: v
         run: |
@@ -68,7 +68,7 @@ jobs:
       matrix:
         target: [x86_64-apple-darwin, aarch64-apple-darwin]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -82,7 +82,7 @@ jobs:
           cargo build --release -p updater --bin qrate-update-helper --target ${{ matrix.target }}
 
       - name: Upload arch binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-bin-${{ matrix.target }}
           path: |
@@ -97,9 +97,9 @@ jobs:
     needs: [version, build-macos]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Download arch binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: macos-bin-*
           path: macos-bins
@@ -144,7 +144,7 @@ jobs:
           chmod +x scripts/bundle-mac.sh
           scripts/bundle-mac.sh universal-app "${{ needs.version.outputs.version }}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-dmg
           path: dist/*.dmg
@@ -161,7 +161,7 @@ jobs:
     env:
       RUSTFLAGS: -C linker=rust-lld
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -250,7 +250,7 @@ jobs:
         shell: bash
         run: ls -lh dist/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-build
           path: |
@@ -268,7 +268,7 @@ jobs:
     needs: version
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -308,7 +308,7 @@ jobs:
           mkdir -p dist
           tar -czf "dist/$stage.tar.gz" "$stage"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-build
           path: dist/*.tar.gz
@@ -323,18 +323,18 @@ jobs:
     environment: release-signing
     steps:
       # The signing script lives in the repo; only this job needs it, and only this job has the key.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Only the final artifacts — not the intermediate per-arch macOS binaries.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: macos-dmg
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: windows-build
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: linux-build
           path: dist
@@ -354,7 +354,7 @@ jobs:
           ./scripts/build-update-manifest.sh dist "${{ needs.version.outputs.tag }}"
 
       - name: Publish draft release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           prerelease: ${{ contains(needs.version.outputs.version, '-') }}

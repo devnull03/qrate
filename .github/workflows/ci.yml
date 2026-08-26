@@ -28,7 +28,7 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # These archives have their own top-level `pi` directory, and the macOS package must merge
       # two executables plus both sets of native helpers. A syntax check cannot catch a plausible
