@@ -1,0 +1,21 @@
+[package]
+name = "updater"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+ed25519-dalek.workspace = true
+flate2.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+zip.workspace = true
+
+[[bin]]
+name = "qrate-update-helper"
+path = "src/main.rs"

@@ -14,6 +14,7 @@ members = [
   "crates/settings",
   "crates/spellcheck",
   "crates/table",
+  "crates/updater",
   "crates/window-wrapper",
   "crates/workspace",
 ]
@@ -56,4 +57,11 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1.0.221", features = ["derive", "rc"] }
 serde_json = { version = "1.0.144", features = ["preserve_order", "raw_value"] }
 schemars = { version = "1.0", features = ["indexmap2"] }
+base64 = "0.22"
+ed25519-dalek = "2"
+semver = { version = "1", features = ["serde"] }
+sha2 = "0.10"
+tempfile = "3"
+tar = "0.4"
+flate2 = "1"
 zip = "2"
