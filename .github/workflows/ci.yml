@@ -1,6 +1,8 @@
 name: CI
 
-# Runs on every push to `dev` and on PRs targeting `dev` or `main`.
+# Runs on every push to `dev` and on PRs targeting `dev` or `main`. Pushes to `main` are release
+# traffic and gated by the PR run that preceded them, so `workflow_dispatch` is how `main` gets
+# checked on demand.
 on:
   push:
     branches: [dev]
