@@ -28,10 +28,27 @@ use settings::{Setting, columns, project::CurrentProject};
 
 /// Where the Columns page sits in [`build_pages`], for the Data menu's "Column Settings…". An index
 /// rather than a title because `SettingPage` does not hand its title back.
-pub const COLUMNS_PAGE: usize = 1;
+pub const COLUMNS_PAGE: usize = 2;
 
 pub fn build_pages(cx: &App) -> Vec<SettingPage> {
     let mut pages = vec![
+        SettingPage::new("Application").group(
+            SettingGroup::new().title("Updates").item(
+                SettingItem::new(
+                    "Automatic updates",
+                    SettingField::switch(
+                        |cx: &App| crate::update_check::automatic_updates(cx),
+                        |on: bool, cx: &mut App| {
+                            settings::AppSettings::set_bool(updater::AUTO_UPDATE_KEY, on, cx);
+                        },
+                    ),
+                )
+                .description(
+                    "Check for and download signed qrate updates in the background. Installing \
+                     always waits for you to choose Restart to update.",
+                ),
+            ),
+        ),
         SettingPage::new("Table")
             .group(
                 SettingGroup::new().title("Appearance").item(

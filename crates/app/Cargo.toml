@@ -17,6 +17,8 @@ sysinfo.workspace = true
 # Update check only — the release-download GET, blocking, on a background thread. `ai` already
 # pins the version.
 reqwest = { version = "0.12", features = ["blocking", "json"] }
+async-channel = "2"
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
@@ -43,6 +45,7 @@ settings = { path = "../settings" }
 # The dictionary is half a megabyte, so only the composition root links it — see `crates/spellcheck`.
 spellcheck = { path = "../spellcheck" }
 table = { path = "../table" }
+updater = { path = "../updater" }
 plugin-api = { path = "../plugin-api" }
 # Plugins are loaded here and nowhere else — see `plugin_host::reload`.
 plugin-host = { path = "../plugin-host" }

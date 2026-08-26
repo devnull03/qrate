@@ -1,52 +1,82 @@
-//! Right-side title-bar widget: shown only while `update_check::AvailableUpdate` is set. Clicking
-//! the text opens the site's download page for the platform installer; the close button dismisses
-//! it for that version.
+//! Compact title-bar surface for download progress and the explicit update restart.
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{IconName, Sizable as _};
 
-use crate::update_check::AvailableUpdate;
+use crate::update_check::{AutoUpdater, UpdateStatus};
 
 pub struct UpdateNotice {
-    _sub: Subscription,
+    updater: Option<Entity<AutoUpdater>>,
+    _sub: Option<Subscription>,
 }
 
 impl UpdateNotice {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        Self {
-            _sub: cx.observe_global::<AvailableUpdate>(|_, cx| cx.notify()),
-        }
+        let updater = AutoUpdater::get(cx);
+        let sub = updater
+            .as_ref()
+            .map(|updater| cx.observe(updater, |_, _, cx| cx.notify()));
+        Self { updater, _sub: sub }
     }
 
     pub fn occupied(cx: &App) -> bool {
-        cx.has_global::<AvailableUpdate>()
+        AutoUpdater::get(cx).is_some_and(|updater| updater.read(cx).visible())
     }
 }
 
 impl Render for UpdateNotice {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(update) = cx.try_global::<AvailableUpdate>().cloned() else {
-            return div();
+        let Some(updater) = self.updater.as_ref() else {
+            return div().into_any_element();
         };
-        let url = update.download_page.clone();
-        div().child(
-            gpui_component::h_flex()
-                .id("update-notice")
-                .gap_1()
-                .items_center()
-                .cursor_pointer()
-                .on_click(move |_, _, cx| cx.open_url(&url))
-                .child(format!("Update available: v{}", update.version))
-                .child(
-                    Button::new("dismiss-update")
-                        .icon(IconName::Close)
-                        .ghost()
-                        .xsmall()
-                        .on_click(|_, _, cx| {
-                            crate::update_check::dismiss(cx);
-                        }),
-                ),
-        )
+        let updater = updater.read(cx);
+        if !updater.visible() {
+            return div().into_any_element();
+        }
+        let label = match updater.status() {
+            UpdateStatus::Downloading {
+                version,
+                received,
+                total,
+            } => total
+                .filter(|total| *total > 0)
+                .map(|total| {
+                    format!(
+                        "Downloading v{version}: {}%",
+                        received.saturating_mul(100) / total
+                    )
+                })
+                .unwrap_or_else(|| format!("Downloading qrate v{version}…")),
+            UpdateStatus::Ready { version, .. } => format!("Restart to update qrate to v{version}"),
+            UpdateStatus::Error { .. } => "Update failed — open About to retry".into(),
+            _ => return div().into_any_element(),
+        };
+        let ready = matches!(updater.status(), UpdateStatus::Ready { .. });
+        gpui_component::h_flex()
+            .id("update-notice")
+            .gap_1()
+            .items_center()
+            .when(ready, |this| {
+                this.cursor_pointer().on_click(move |_, _, cx| {
+                    if let Err(error) = crate::update_check::restart(cx) {
+                        log::error!("failed to restart for update: {error:#}");
+                    }
+                })
+            })
+            .child(label)
+            .child(
+                Button::new("dismiss-update")
+                    .icon(IconName::Close)
+                    .ghost()
+                    .xsmall()
+                    .on_click(|_, _, cx| {
+                        if let Some(updater) = AutoUpdater::get(cx) {
+                            updater.update(cx, |updater, cx| updater.dismiss(cx));
+                        }
+                    }),
+            )
+            .into_any_element()
     }
 }

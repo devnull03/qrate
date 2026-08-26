@@ -29,7 +29,7 @@ pub fn build_title_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> Tit
     let plugins = cx.new(|cx| PluginBar::new(Bar::Title, Side::Right, cx));
     registry.items_mut().add_right(plugins);
 
-    // Dismissible "an update is available" text, shown only once `update_check::check` finds one.
+    // Download progress and the explicit restart action from the signed updater.
     // Text before buttons, on the same reasoning as the plugin bar above.
     let update_notice = cx.new(UpdateNotice::new);
     registry

@@ -1,5 +1,4 @@
-//! The About window: version/build info plus an on-demand release check. Reuses
-//! `update_check::check_now` for the HTTP call — this is the only other call site.
+//! About qrate, including the shared signed-updater status and manual retry surface.
 
 use gpui::*;
 use gpui_component::button::Button;
@@ -8,43 +7,34 @@ use gpui_component::{
 };
 use window_wrapper::WindowRegistry;
 
-use crate::update_check::{self, UpdateStatus};
+use crate::update_check::{AutoUpdater, UpdateStatus};
 
 const ABOUT_WINDOW_KIND: &str = "about";
 
-/// Result of the on-demand check this window triggers when it opens. `Done(None)` covers both a
-/// network failure and a missing platform asset — `check_now` doesn't distinguish them, and
-/// neither does the user's next move (try again later).
-enum Check {
-    Checking,
-    Done(Option<UpdateStatus>),
-}
-
 pub struct AboutWindow {
-    check: Check,
+    updater: Option<Entity<AutoUpdater>>,
+    _sub: Option<Subscription>,
 }
 
 impl AboutWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.set_window_title("About qrate");
-        let task = update_check::check_now(cx);
-        cx.spawn(async move |this, cx| {
-            let status = task.await;
-            this.update(cx, |this, cx| {
-                this.check = Check::Done(status);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-        Self {
-            check: Check::Checking,
-        }
+        let updater = AutoUpdater::get(cx);
+        let sub = updater
+            .as_ref()
+            .map(|updater| cx.observe(updater, |_, _, cx| cx.notify()));
+        crate::update_check::check_now(cx);
+        Self { updater, _sub: sub }
     }
 }
 
 impl Render for AboutWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let status = self
+            .updater
+            .as_ref()
+            .map(|updater| updater.read(cx).status().clone())
+            .unwrap_or_else(|| UpdateStatus::Disabled("Updater is unavailable".into()));
         v_flex()
             .size_full()
             .child(
@@ -69,51 +59,82 @@ impl Render for AboutWindow {
                         .text_sm()
                         .text_color(cx.theme().muted_foreground),
                     )
-                    .child(match &self.check {
-                        Check::Checking => Label::new("Checking for updates…")
+                    .child(match status {
+                        UpdateStatus::Disabled(reason) => Label::new(reason)
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .into_any_element(),
-                        Check::Done(None) => Label::new("Could not check for updates")
+                        UpdateStatus::Idle => h_flex()
+                            .gap_2()
+                            .child(Label::new("You're up to date").text_sm())
+                            .child(
+                                Button::new("about-check")
+                                    .label("Check again")
+                                    .small()
+                                    .on_click(|_, _, cx| crate::update_check::check_now(cx)),
+                            )
+                            .into_any_element(),
+                        UpdateStatus::Checking => Label::new("Checking for updates…")
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .into_any_element(),
-                        Check::Done(Some(UpdateStatus::UpToDate)) => {
-                            Label::new("You're up to date")
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .into_any_element()
-                        }
-                        Check::Done(Some(UpdateStatus::Available {
+                        UpdateStatus::Downloading {
                             version,
-                            download_page,
-                        })) => {
-                            let url = download_page.clone();
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(
-                                    Label::new(format!("Update available: v{version}")).text_sm(),
-                                )
-                                .child(
-                                    Button::new("about-download")
-                                        .label("Download")
-                                        .small()
-                                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                                )
+                            received,
+                            total,
+                        } => {
+                            let detail = total
+                                .filter(|total| *total > 0)
+                                .map(|total| format!(" — {}%", received * 100 / total))
+                                .unwrap_or_default();
+                            Label::new(format!("Downloading v{version}{detail}"))
+                                .text_sm()
                                 .into_any_element()
                         }
+                        UpdateStatus::Ready {
+                            version,
+                            release_notes_url,
+                        } => h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(Label::new(format!("qrate v{version} is ready")).text_sm())
+                            .child(
+                                Button::new("about-release-notes")
+                                    .label("Release notes")
+                                    .small()
+                                    .on_click(move |_, _, cx| cx.open_url(&release_notes_url)),
+                            )
+                            .child(
+                                Button::new("about-restart")
+                                    .label("Restart to update")
+                                    .small()
+                                    .on_click(move |_, _, cx| {
+                                        if let Err(error) = crate::update_check::restart(cx) {
+                                            log::error!("failed to restart for update: {error:#}");
+                                        }
+                                    }),
+                            )
+                            .into_any_element(),
+                        UpdateStatus::Error { stage, message, .. } => h_flex()
+                            .gap_2()
+                            .child(Label::new(format!("{stage} failed: {message}")).text_sm())
+                            .child(
+                                Button::new("about-retry")
+                                    .label("Retry")
+                                    .small()
+                                    .on_click(|_, _, cx| crate::update_check::check_now(cx)),
+                            )
+                            .into_any_element(),
                     }),
             )
     }
 }
 
-/// Opens the About window, focusing the existing one if it's already open.
 pub(crate) fn open_about_window(cx: &mut gpui::App) {
     if WindowRegistry::focus_or_clear(ABOUT_WINDOW_KIND, cx).is_some() {
         return;
     }
-    let win_size = size(px(360.0), px(220.0));
+    let win_size = size(px(460.0), px(240.0));
     let bounds = Bounds::centered(None, win_size, cx);
     let window_options = WindowOptions {
         titlebar: Some(TitleBar::title_bar_options()),

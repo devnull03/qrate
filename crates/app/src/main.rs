@@ -453,7 +453,7 @@ fn main() {
         plugin_host::on_command_finished(table::revalidate_now);
         plugin_host::reload(cx);
         register_spell_checker(cx);
-        update_check::check(cx);
+        update_check::init(cx);
         diagnostics::AsyncValidators::register(
             table::file_links::SOURCE,
             table::file_links::check,
