@@ -45,6 +45,9 @@ if (existsSync(feedPath)) {
   console.warn(`no qrate-site checkout at ${sitePath}; patch its feed route with x = ${raw.x}`);
 }
 
+execFileSync('gh', ['api', '-X', 'PUT', 'repos/devnull03/qrate/environments/release-signing'], {
+  stdio: ['ignore', 'ignore', 'inherit'],
+});
 execFileSync(
   'gh',
   ['secret', 'set', 'QRATE_UPDATE_SIGNING_KEY', '--env', 'release-signing', '--body-file', '-'],
