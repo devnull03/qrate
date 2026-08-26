@@ -322,6 +322,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: release-signing
     steps:
+      # The signing script lives in the repo; only this job needs it, and only this job has the key.
+      - uses: actions/checkout@v4
+
       # Only the final artifacts — not the intermediate per-arch macOS binaries.
       - uses: actions/download-artifact@v4
         with:
@@ -345,7 +348,10 @@ jobs:
       - name: Build and sign update manifest
         env:
           QRATE_UPDATE_SIGNING_KEY: ${{ secrets.QRATE_UPDATE_SIGNING_KEY }}
-        run: node scripts/build-update-manifest.mjs dist "${{ needs.version.outputs.tag }}"
+        shell: bash
+        run: |
+          chmod +x scripts/build-update-manifest.sh
+          ./scripts/build-update-manifest.sh dist "${{ needs.version.outputs.tag }}"
 
       - name: Publish draft release
         uses: softprops/action-gh-release@v2
