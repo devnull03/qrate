@@ -199,7 +199,6 @@ impl Render for DockToggleButton {
                             if let Some(placement) = placement {
                                 area.update(cx, |area, cx| {
                                     crate::toggle_dock_immediately(area, placement, window, cx);
-                                    cx.emit(DockEvent::LayoutChanged);
                                 });
                             }
                         }

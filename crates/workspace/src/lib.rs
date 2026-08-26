@@ -64,15 +64,15 @@ pub struct BottomDockCrop(pub Pixels);
 
 impl Global for BottomDockCrop {}
 
-/// Toggle a dock and collapse its panel tree in the same UI turn. `gpui-component` normally
-/// defers the collapse until the next turn; that leaves the centre (and therefore the grid) at its
-/// old size for one frame after the dock button is clicked.
+/// Toggle a dock, collapse its panel tree, and publish the resulting layout in the same UI turn.
+/// Every caller gets the same grid redraw and persistence behavior because the state change owns
+/// its event.
 pub(crate) fn toggle_dock_immediately(
     area: &DockArea,
     placement: DockPlacement,
     window: &mut Window,
-    cx: &mut App,
-) {
+    cx: &mut Context<DockArea>,
+) -> bool {
     let dock = match placement {
         DockPlacement::Left => area.left_dock(),
         DockPlacement::Bottom => area.bottom_dock(),
@@ -81,13 +81,15 @@ pub(crate) fn toggle_dock_immediately(
     }
     .cloned();
     let Some(dock) = dock else {
-        return;
+        return false;
     };
     dock.update(cx, |dock, cx| {
         let open = !dock.is_open();
         dock.panel().clone().set_collapsed(!open, window, cx);
         dock.set_open(open, window, cx);
     });
+    cx.emit(DockEvent::LayoutChanged);
+    true
 }
 
 pub struct Workspace {
@@ -179,7 +181,7 @@ impl Workspace {
         // Whichever path ran above built the panels; this is what learns where they landed.
         PanelRegistry::sync(&dock_area, cx);
 
-        // Persist on `LayoutChanged` (inner changes only); `toggle_dock` and the app-quit flush cover the rest.
+        // Every dock mutation emits `LayoutChanged`, which persists it and repaints the workspace.
         let _layout_sub = cx.subscribe(&dock_area, |_this, area, event: &DockEvent, cx| {
             if matches!(event, DockEvent::LayoutChanged) {
                 Self::persist_layout(&area, cx);
@@ -212,9 +214,6 @@ impl Workspace {
         self.dock_area.update(cx, |area, cx| {
             toggle_dock_immediately(area, placement, window, cx);
         });
-        // `Dock::set_open` only notifies, never emits `LayoutChanged`, so persist the toggle here.
-        Self::persist_layout(&self.dock_area, cx);
-        cx.notify();
     }
 
     /// Serializes the dock state into the open project's `.qrate` (debounced,
@@ -398,7 +397,125 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     // Never `use super::*` here — this file's `use gpui::*` would shadow `#[test]`.
-    use crate::prune;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use gpui::{
+        Context, FocusHandle, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
+        ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, actions, div,
+        point, px,
+    };
+    use gpui_component::dock::{DockEvent, DockPlacement};
+    use gpui_component::menu::ContextMenuExt as _;
+
+    use crate::{BottomDockCrop, Workspace, prune, toggle_dock_immediately};
+
+    actions!(workspace_context_menu_test, [CloseMenu]);
+
+    struct ContextMenuRoot {
+        content_focus: FocusHandle,
+        received: Rc<Cell<bool>>,
+    }
+
+    impl Render for ContextMenuRoot {
+        fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl IntoElement {
+            let received = self.received.clone();
+            div()
+                .size_full()
+                .child(
+                    div()
+                        .id("content")
+                        .h(px(40.))
+                        .track_focus(&self.content_focus),
+                )
+                .child(
+                    div()
+                        .id("action-bar")
+                        .h(px(60.))
+                        .on_action(move |_: &CloseMenu, _, _| received.set(true))
+                        .child(
+                            div()
+                                .id("tab")
+                                .size_full()
+                                .context_menu(|menu, _, _| menu.menu("Close", Box::new(CloseMenu))),
+                        ),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn context_menu_restores_one_stable_focus_target(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let received = Rc::new(Cell::new(false));
+        let (root, cx) = cx.add_window_view({
+            let received = received.clone();
+            move |window, cx| {
+                let content_focus = cx.focus_handle();
+                content_focus.focus(window, cx);
+                ContextMenuRoot {
+                    content_focus,
+                    received,
+                }
+            }
+        });
+        let content_focus = root.read_with(cx, |root, _| root.content_focus.clone());
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            _ = window.draw(cx);
+        });
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Right,
+            position: point(px(50.), px(70.)),
+            modifiers: Default::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            _ = window.draw(cx);
+        });
+        cx.simulate_keystrokes("down enter");
+        cx.run_until_parked();
+
+        assert!(received.get());
+        cx.update(|window, cx| {
+            assert_eq!(window.focused(cx).as_ref(), Some(&content_focus));
+        });
+    }
+
+    #[gpui::test]
+    fn dock_toggle_publishes_its_own_layout_event(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(settings::SettingsPersistence::default());
+        });
+        let (workspace, cx) = cx.add_window_view(Workspace::new);
+        let dock_area = cx.update(|_, cx| workspace.read(cx).dock_area.clone());
+        let layout_events = Rc::new(Cell::new(0));
+        let _subscription = cx.update(|_, cx| {
+            let dock_area = dock_area.clone();
+            let layout_events = layout_events.clone();
+            workspace.update(cx, |_, cx| {
+                cx.subscribe(&dock_area, move |_, _, event, _| {
+                    if matches!(event, DockEvent::LayoutChanged) {
+                        layout_events.set(layout_events.get() + 1);
+                    }
+                })
+            })
+        });
+
+        cx.update(|window, cx| {
+            dock_area.update(cx, |area, cx| {
+                toggle_dock_immediately(area, DockPlacement::Bottom, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        assert_eq!(layout_events.get(), 1);
+        cx.update(|_, cx| assert_eq!(cx.global::<BottomDockCrop>().0, px(29.)));
+    }
 
     /// The real thing, lifted out of a project whose left dock came back with an "Unnamed" tab
     /// beside Details on every launch: an empty `TabPanel` sitting in a tab slot, and an

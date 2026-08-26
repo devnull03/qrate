@@ -161,21 +161,25 @@ impl PanelRegistry {
         let Some(placement) = Self::placement(name, cx) else {
             return;
         };
-        if Self::visible(name, dock_area, cx) {
+        let toggled = if Self::visible(name, dock_area, cx) {
             dock_area.update(cx, |area, cx| {
                 crate::toggle_dock_immediately(area, placement, window, cx)
-            });
+            })
         } else {
-            if !dock_area.read(cx).is_dock_open(placement, cx) {
+            let toggled = if !dock_area.read(cx).is_dock_open(placement, cx) {
                 dock_area.update(cx, |area, cx| {
                     crate::toggle_dock_immediately(area, placement, window, cx)
-                });
-            }
+                })
+            } else {
+                false
+            };
             Self::bring_to_front(name, placement, dock_area, window, cx);
+            toggled
+        };
+        // Revealing another tab changes the layout without opening or closing its dock.
+        if !toggled {
+            dock_area.update(cx, |_, cx| cx.emit(DockEvent::LayoutChanged));
         }
-        // Neither `Dock::set_open` nor the reveal below emits anything, and every bar button reads
-        // this state — so say it once here, which also drives the layout's own persistence.
-        dock_area.update(cx, |_, cx| cx.emit(DockEvent::LayoutChanged));
     }
 
     /// Make `name` the tab in front of its dock.
