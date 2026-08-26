@@ -5,7 +5,7 @@ import { getReleases } from '../../lib/releases.js';
 
 export const prerender = true;
 
-// qrate embeds this key's other half; scripts/provision-update-key.mjs in the app repo patches
+// qrate embeds this key's other half; scripts/provision-update-key.sh in the app repo patches
 // both copies at once. Verifying here too means an unsigned or tampered manifest fails the
 // deployment rather than becoming an update every installed app has to reject.
 const publicKey = createPublicKey({
