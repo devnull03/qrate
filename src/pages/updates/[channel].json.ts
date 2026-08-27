@@ -12,7 +12,7 @@ const publicKey = createPublicKey({
   key: {
     kty: 'OKP',
     crv: 'Ed25519',
-    x: 'lcbVbumf-oKRKsakO-T-9Dsa0q5tAAJOvBInfOhbGPY',
+    x: 'nMEzl5epxOjXtTy1X2tLBHycfRppjX2SA-oEITdYZ-Q',
   },
   format: 'jwk',
 });
