@@ -80,6 +80,9 @@ Var UpdateRestart
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_CONFIRM
+; The components page is how the two "keep my data?" choices are offered. Both are off by default:
+; uninstalling should never destroy an archivist's work unless they ask for it.
+!insertmacro MUI_UNPAGE_COMPONENTS
 !insertmacro MUI_UNPAGE_INSTFILES
 
 !insertmacro MUI_LANGUAGE "English"
@@ -145,7 +148,14 @@ Section "Install"
   ${EndIf}
 SectionEnd
 
-Section "Uninstall"
+; qrate keeps everything it generates under $LOCALAPPDATA\qrate, deliberately outside $INSTDIR so
+; updates and uninstalls cannot destroy it. That means the uninstaller has to remove it on purpose.
+; Per-user data, so an all-users uninstall elevated as a different account clears that account's
+; copy, not the archivist's — which is one more reason the installer now defaults to per-user.
+!define DATADIR "$LOCALAPPDATA\${APPNAME}"
+
+Section "un.qrate" SEC_UNAPP
+  SectionIn RO
   Delete "$INSTDIR\${EXENAME}"
   Delete "$INSTDIR\pdfium.dll"
   Delete "$INSTDIR\ffmpeg.exe"
@@ -158,4 +168,46 @@ Section "Uninstall"
   Delete "$DESKTOP\${APPNAME}.lnk"
   DeleteRegKey SHCTX "${UNINSTKEY}"
   DeleteRegKey SHCTX "Software\${APPNAME}"
+
+  ; Caches and downloaded tooling always go: they are rebuilt or re-fetched on demand, so keeping
+  ; them costs ~100 MB and buys nothing once qrate is gone.
+  RMDir /r "${DATADIR}\thumbnails"
+  RMDir /r "${DATADIR}\updates"
+  RMDir /r "${DATADIR}\logs"
+  RMDir /r "${DATADIR}\pi-agent\bin"
+  Delete "${DATADIR}\pi-agent\models-store.json"
+  Delete "${DATADIR}\pi-agent\SYSTEM.md"
+  Delete "${DATADIR}\agent-bridge.json"
 SectionEnd
+
+Section /o "un.Settings, plugins and dictionary" SEC_UNDATA
+  Delete "${DATADIR}\settings.sqlite3"
+  Delete "${DATADIR}\dictionary.txt"
+  RMDir /r "${DATADIR}\dictionaries"
+  RMDir /r "${DATADIR}\plugins"
+  RMDir /r "${DATADIR}\plugin-storage"
+  RMDir /r "${DATADIR}\themes"
+SectionEnd
+
+Section /o "un.Agent conversations and memory" SEC_UNAGENT
+  RMDir /r "${DATADIR}\pi-agent\sessions"
+  Delete "${DATADIR}\pi-agent\auth.json"
+  Delete "${DATADIR}\pi-agent\settings.json"
+SectionEnd
+
+; Hidden, and last: drop the folders only if the choices above emptied them. RMDir without /r
+; refuses a non-empty directory, so anything the user kept keeps its home.
+Section "-un.Prune" SEC_UNPRUNE
+  RMDir "${DATADIR}\pi-agent"
+  RMDir "${DATADIR}"
+SectionEnd
+
+!insertmacro MUI_UNFUNCTION_DESCRIPTION_BEGIN
+  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_UNAPP} \
+    "Remove qrate itself, along with its caches and downloaded tools."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_UNDATA} \
+    "Also remove your settings, custom dictionary, installed plugins and themes. Your projects are \
+     stored wherever you created them and are never touched."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_UNAGENT} \
+    "Also remove the agent's saved conversations for every project, and what it remembers from them."
+!insertmacro MUI_UNFUNCTION_DESCRIPTION_END
