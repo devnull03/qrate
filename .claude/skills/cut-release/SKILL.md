@@ -138,8 +138,16 @@ gh release edit vX.Y.Z-suffix --notes-file /path/to/notes.md
 ## 9. Publish
 
 ```bash
-gh release edit vX.Y.Z-suffix --draft=false --prerelease=<true|false>   # from step 1's answer
+gh release edit vX.Y.Z-suffix --draft=false --prerelease=<true|false> --latest   # from step 1's answer
 ```
+
+`--latest` is not optional and not implied. The workflow creates the draft with `prerelease: true`
+whenever the version has a suffix, and GitHub decides "Latest" **at that moment** — clearing the
+prerelease flag afterwards does not recompute it. Without `--latest`, the release publishes fine,
+gets its own page, and every "latest release" surface keeps pointing at the previous one: the API's
+`/releases/latest`, the repository sidebar, and the site's download buttons, which read that API.
+This is exactly what happened to v0.4.0-alpha.2 and v0.4.0-alpha.3. Omit it only for a release
+that genuinely should not be the latest (a backport, or a true pre-release).
 
 ## 10. Verify
 

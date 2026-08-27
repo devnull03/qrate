@@ -1,0 +1,68 @@
+name: Warm release cache
+
+# A release runs on a tag ref, and GitHub only lets a run restore caches saved on its own ref or on
+# the default branch. Every tag is its own ref, so release.yml was starting from an empty cache
+# every time and spending ~23 minutes on Windows recompiling dependencies that had not changed.
+# (The cache keys already matched across releases — the ref scope was the whole problem.)
+#
+# This job saves exactly the caches release.yml restores, on `main`, where a tag run can read them.
+# It shares their `shared-key`, so the keys line up despite the different job names.
+on:
+  push:
+    branches: [main]
+    # Only when the dependency graph actually moves. Everything else reuses what is already there.
+    paths:
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/warm-release-cache.yml'
+  # An unread cache is evicted after 7 days, which would silently put releases back to cold builds.
+  schedule:
+    - cron: '0 4 */3 * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  warm:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            shared-key: release
+          - os: ubuntu-22.04
+            shared-key: release
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            shared-key: release-x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            shared-key: release-aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    # Matches release.yml's Windows leg; the linker choice is part of what gets cached.
+    env:
+      RUSTFLAGS: ${{ matrix.os == 'windows-latest' && '-C linker=rust-lld' || '' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.shared-key }}
+
+      # gpui needs these to build at all on Linux — same list as release.yml's Linux leg.
+      - name: Install system libraries
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev pkg-config libssl-dev \
+            libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libasound2-dev
+
+      # The same release-profile build a tag run does, so the cache holds artifacts it can reuse
+      # rather than a debug tree it cannot.
+      - name: Build
+        run: |
+          cargo build --release -p app ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+          cargo build --release -p updater --bin qrate-update-helper ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
