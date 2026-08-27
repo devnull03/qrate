@@ -51,6 +51,18 @@ fi
 
 # `gh secret set --env` fails against an environment that does not exist yet.
 gh api -X PUT repos/devnull03/qrate/environments/release-signing > /dev/null
+before="$(gh api repos/devnull03/qrate/environments/release-signing/secrets \
+  --jq '.secrets[] | select(.name == "QRATE_UPDATE_SIGNING_KEY") | .updated_at' 2>/dev/null || true)"
 gh secret set QRATE_UPDATE_SIGNING_KEY --env release-signing < "$WORK/key.pem"
-echo "==> stored QRATE_UPDATE_SIGNING_KEY in the release-signing environment"
+
+# The private key is deleted on exit, so an upload that quietly did nothing leaves a public key
+# nobody can ever sign for. Prove the secret actually moved before trusting it.
+after="$(gh api repos/devnull03/qrate/environments/release-signing/secrets \
+  --jq '.secrets[] | select(.name == "QRATE_UPDATE_SIGNING_KEY") | .updated_at')"
+if [ -z "$after" ] || [ "$after" = "$before" ]; then
+  echo "::error::the signing secret did not change — the patched public keys have no private half" >&2
+  echo "         revert the two patched files and run this again" >&2
+  exit 1
+fi
+echo "==> stored QRATE_UPDATE_SIGNING_KEY in the release-signing environment ($after)"
 echo "==> commit the two patched files, then run cargo test -p updater"
