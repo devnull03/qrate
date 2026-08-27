@@ -92,9 +92,10 @@
       <ComponentGroupRef Id="AgentFiles" />
     </Feature>
 
-    <!-- No license page: institutions run this silently (`msiexec /i ... /quiet`) via GPO/SCCM,
-         and an interactive double-click gets the same unsigned-build SmartScreen prompt the NSIS
-         installer does either way. -->
+    <!-- WixUI_Minimal always shows a license page. Without this variable it shows WiX's own
+         placeholder, which is lorem ipsum. Rendered from LICENSE.md at package time so the dialog
+         cannot drift from the licence the project actually ships under. -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
     <ui:WixUI Id="WixUI_Minimal" />
   </Package>
 </Wix>

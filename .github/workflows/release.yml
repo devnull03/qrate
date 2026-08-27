@@ -234,8 +234,10 @@ jobs:
 
           $hasPdfium = if (Test-Path dist/portable/pdfium.dll) { 1 } else { 0 }
           $hasFfmpeg = if (Test-Path dist/portable/ffmpeg.exe) { 1 } else { 0 }
+          bash scripts/license-to-rtf.sh LICENSE.md dist/license.rtf
           wix build scripts\installer.wxs -ext WixToolset.UI.wixext `
             -d "Version=$vi" `
+            -d "LicenseRtf=$PWD\dist\license.rtf" `
             -d "SrcExe=$PWD\dist\portable\qrate.exe" `
             -d "SrcDir=$PWD\dist\portable" `
             -d "IconFile=$PWD\assets\icons\app-icon.ico" `
@@ -402,7 +404,8 @@ jobs:
             Without it those files fall back to a file-type icon; nothing else is affected.
 
             > [!NOTE]
-            > These builds are **unsigned**.
+            > These builds are **unsigned**. This is about who Windows and macOS think
+            > published the app, and is separate from the signature qrate checks on an update.
             > - **Windows:** SmartScreen may warn "unknown publisher" — click *More info → Run anyway*.
             > - **macOS:** right-click the app → *Open* the first time, or run
             >   `xattr -dr com.apple.quarantine "/Applications/qrate.app"`.

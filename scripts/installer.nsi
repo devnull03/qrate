@@ -50,6 +50,10 @@ Unicode true
 ; Must be defined, and MultiUser.nsh included, before MUI2.nsh.
 !define MULTIUSER_EXECUTIONLEVEL Highest
 !define MULTIUSER_MUI
+; Default to installing for the current user only. An archivist on a managed machine usually has no
+; administrator rights, and a per-user install needs none — the all-users option is still on the
+; install-mode page for anyone who wants it, and MSI is the route for deploying to a whole site.
+!define MULTIUSER_INSTALLMODE_DEFAULT_CURRENTUSER
 !define MULTIUSER_INSTALLMODE_INSTDIR "${APPNAME}"
 !define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_KEY "Software\${APPNAME}"
 !define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_VALUENAME "InstallDir"
