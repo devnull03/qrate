@@ -414,7 +414,18 @@ impl ProjectWizard {
     }
 
     fn render_advanced_mapping(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let headers = self.spreadsheet_headers();
+        // Title and File are picked above, in the required-columns section. Listing them here too
+        // showed each one twice with two different answers — the picker's and the config's.
+        let headers: Vec<String> = self
+            .spreadsheet_headers()
+            .into_iter()
+            .filter(|h| {
+                ![self.title_column.as_deref(), self.file_column.as_deref()]
+                    .iter()
+                    .flatten()
+                    .any(|chosen| chosen == h)
+            })
+            .collect();
         let config = self.config_preview.clone();
         let open = self.show_advanced_mapping;
 
