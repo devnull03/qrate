@@ -58,6 +58,9 @@ impl Render for UpdateNotice {
             .id("update-notice")
             .gap_1()
             .items_center()
+            // The title bar wraps its children in a `WindowControlArea::Drag` hitbox, which Windows
+            // hit-tests as HTCAPTION and never delivers a click from — see `DockToggleButton`.
+            .occlude()
             .when(ready, |this| {
                 this.cursor_pointer().on_click(move |_, _, cx| {
                     if let Err(error) = crate::update_check::restart(cx) {

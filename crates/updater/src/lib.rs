@@ -557,6 +557,10 @@ fn mark_healthy_in(updates: &Path, current_version: &Version) -> Result<Option<U
         receipt.status = ReceiptStatus::Healthy;
         receipt.message = "Update installed successfully".into();
         write_json_atomic(&path, &receipt)?;
+        // The job has been applied, so leaving it is both ~70 MB of installer nobody needs and a
+        // job the helper would happily run a second time.
+        let _ = fs::remove_file(updates.join(JOB_NAME));
+        let _ = fs::remove_dir_all(updates.join(current_version.to_string()));
     }
     Ok(Some(receipt))
 }
@@ -900,6 +904,14 @@ mod apply_tests {
         assert!(
             !backup.exists(),
             "a healthy start should reclaim the backup"
+        );
+        assert!(
+            !staged.job_path.exists(),
+            "an applied job must not be left where the helper would run it again"
+        );
+        assert!(
+            !staged.updates.join(TO).exists(),
+            "the downloaded installer is dead weight once it is installed"
         );
     }
 
