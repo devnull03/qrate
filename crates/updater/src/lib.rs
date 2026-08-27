@@ -365,12 +365,16 @@ fn installation_at(root: &Path, executable: &Path) -> Result<Installation> {
         executable.starts_with(&root),
         "qrate executable is outside its marked installation"
     );
-    let marker_path = if cfg!(target_os = "macos") {
-        root.join("Contents/Resources").join(MARKER_NAME)
-    } else {
-        root.join(MARKER_NAME)
-    };
-    let marker: InstallMarker = serde_json::from_slice(&fs::read(marker_path)?)?;
+    // Probed, not chosen by host OS: the marker's location is a property of the package layout —
+    // beside the executable for flat packages, under Resources for a macOS bundle.
+    let bytes = [
+        root.join(MARKER_NAME),
+        root.join("Contents/Resources").join(MARKER_NAME),
+    ]
+    .iter()
+    .find_map(|path| fs::read(path).ok())
+    .context("installation has no qrate marker")?;
+    let marker: InstallMarker = serde_json::from_slice(&bytes)?;
     ensure!(
         marker.schema == 1 && marker.kind.self_managed(),
         "installation is not self-managed"
