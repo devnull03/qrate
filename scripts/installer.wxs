@@ -33,7 +33,13 @@
            Scope="perMachine">
 
     <SummaryInformation Description="qrate Installer" />
-    <MajorUpgrade DowngradeErrorMessage="A newer version of qrate is already installed." />
+    <!-- AllowSameVersionUpgrades is what makes alpha-to-alpha upgrades work at all. ProductVersion
+         has to be numeric, so every 0.4.0-alpha.N builds as 0.4.0.0, and a plain MajorUpgrade only
+         fires on a strictly greater version — installing a newer alpha over an older one silently
+         did nothing. The fourth field cannot rescue this either: Windows Installer ignores it when
+         comparing versions. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of qrate is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <Icon Id="AppIcon" SourceFile="$(var.IconFile)" />
