@@ -107,6 +107,8 @@ pub struct ProjectWizard {
     pub(crate) link_method: LinkMethod,
     pub(crate) link_pattern_input: Entity<InputState>,
     pub(crate) show_advanced_pattern: bool,
+    /// Look for filenames in subfolders too, not just directly in the files folder.
+    pub(crate) recurse_subfolders: bool,
 
     // Columns step
     pub(crate) column_source: ColumnSource,
@@ -238,6 +240,9 @@ impl ProjectWizard {
             link_method: LinkMethod::ExactFilename,
             link_pattern_input,
             show_advanced_pattern: false,
+            // On by default: `table::photos` resolves rows against the whole tree, so an
+            // off-by-default check would report fewer matches than the app will actually find.
+            recurse_subfolders: true,
             // Blank has no spreadsheet to auto-derive columns from.
             column_source: if entry_kind == EntryKind::Blank {
                 ColumnSource::SkipForNow

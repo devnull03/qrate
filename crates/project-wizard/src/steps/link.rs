@@ -3,6 +3,7 @@
 //! collapsible advanced section offers a custom naming pattern.
 
 use gpui::{prelude::FluentBuilder, *};
+use gpui_component::checkbox::Checkbox;
 use gpui_component::collapsible::Collapsible;
 use gpui_component::input::Input;
 use gpui_component::label::Label;
@@ -44,6 +45,16 @@ impl ProjectWizard {
                     this.link_method = LinkMethod::ExactFilename;
                     cx.notify();
                 })),
+            )
+            .child(
+                Checkbox::new("link-recursive")
+                    .label("Also search subfolders")
+                    .checked(self.recurse_subfolders)
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.recurse_subfolders = *checked;
+                        this.revalidate_folder();
+                        cx.notify();
+                    })),
             )
             .child(match &self.folder_match {
                 Some(m) => inline_message(

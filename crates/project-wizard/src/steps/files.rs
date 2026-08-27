@@ -101,7 +101,7 @@ impl ProjectWizard {
         self.revalidate_folder();
     }
 
-    fn revalidate_folder(&mut self) {
+    pub(crate) fn revalidate_folder(&mut self) {
         if self.folder_path.is_empty() {
             self.folder_match = None;
             self.folder_error = None;
@@ -110,10 +110,9 @@ impl ProjectWizard {
         let result = match self.entry_kind {
             // Sheet reuses `csv_preview` (its fetched xlsx is adapted into the
             // same preview shape), so both match folders against real row data.
-            EntryKind::Csv | EntryKind::Sheet => self
-                .csv_preview
-                .as_ref()
-                .map(|preview| data::match_folder(preview, &self.folder_path)),
+            EntryKind::Csv | EntryKind::Sheet => self.csv_preview.as_ref().map(|preview| {
+                data::match_folder(preview, &self.folder_path, self.recurse_subfolders)
+            }),
             EntryKind::Blank => None,
         };
         match result {
