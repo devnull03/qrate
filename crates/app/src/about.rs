@@ -23,7 +23,14 @@ impl AboutWindow {
         let sub = updater
             .as_ref()
             .map(|updater| cx.observe(updater, |_, _, cx| cx.notify()));
-        crate::update_check::check_now(cx);
+        if updater.as_ref().is_some_and(|updater| {
+            matches!(
+                updater.read(cx).status(),
+                UpdateStatus::Idle | UpdateStatus::UpToDate
+            )
+        }) {
+            crate::update_check::check_now(cx);
+        }
         Self { updater, _sub: sub }
     }
 }
@@ -35,6 +42,7 @@ impl Render for AboutWindow {
             .as_ref()
             .map(|updater| updater.read(cx).status().clone())
             .unwrap_or_else(|| UpdateStatus::Disabled("Updater is unavailable".into()));
+        let progress_percent = status.progress_percent();
         v_flex()
             .size_full()
             .child(
@@ -66,9 +74,19 @@ impl Render for AboutWindow {
                             .into_any_element(),
                         UpdateStatus::Idle => h_flex()
                             .gap_2()
-                            .child(Label::new("You're up to date").text_sm())
+                            .child(Label::new("Updates are checked automatically").text_sm())
                             .child(
                                 Button::new("about-check")
+                                    .label("Check now")
+                                    .small()
+                                    .on_click(|_, _, cx| crate::update_check::check_now(cx)),
+                            )
+                            .into_any_element(),
+                        UpdateStatus::UpToDate => h_flex()
+                            .gap_2()
+                            .child(Label::new("You're up to date").text_sm())
+                            .child(
+                                Button::new("about-check-again")
                                     .label("Check again")
                                     .small()
                                     .on_click(|_, _, cx| crate::update_check::check_now(cx)),
@@ -78,14 +96,9 @@ impl Render for AboutWindow {
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .into_any_element(),
-                        UpdateStatus::Downloading {
-                            version,
-                            received,
-                            total,
-                        } => {
-                            let detail = total
-                                .filter(|total| *total > 0)
-                                .map(|total| format!(" — {}%", received * 100 / total))
+                        UpdateStatus::Downloading { version, .. } => {
+                            let detail = progress_percent
+                                .map(|percent| format!(" — {percent}%"))
                                 .unwrap_or_default();
                             Label::new(format!("Downloading v{version}{detail}"))
                                 .text_sm()
@@ -108,12 +121,12 @@ impl Render for AboutWindow {
                                 Button::new("about-restart")
                                     .label("Restart to update")
                                     .small()
-                                    .on_click(move |_, _, cx| {
-                                        if let Err(error) = crate::update_check::restart(cx) {
-                                            log::error!("failed to restart for update: {error:#}");
-                                        }
-                                    }),
+                                    .on_click(crate::restart_for_update),
                             )
+                            .into_any_element(),
+                        UpdateStatus::Restarting => Label::new("Restarting to install update…")
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
                             .into_any_element(),
                         UpdateStatus::Error { stage, message, .. } => h_flex()
                             .gap_2()

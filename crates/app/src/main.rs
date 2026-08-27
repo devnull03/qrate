@@ -414,6 +414,47 @@ fn flush_all_state(cx: &mut gpui::App) {
     agent_bridge::shutdown();
 }
 
+pub(crate) fn restart_for_update(_: &ClickEvent, window: &mut Window, cx: &mut gpui::App) {
+    let restart = |cx: &mut gpui::App| match update_check::prepare_restart(cx) {
+        Ok(helper) => {
+            flush_all_state(cx);
+            cx.set_restart_path(helper);
+            cx.restart();
+        }
+        Err(error) => {
+            log::error!("failed to prepare update restart: {error:#}");
+            if let Some(updater) = update_check::AutoUpdater::get(cx) {
+                updater.update(cx, |updater, cx| updater.fail_restart(&error, cx));
+            }
+        }
+    };
+
+    if !settings::dirty::Dirty::has(settings::dirty::PROJECT_DATA, cx) {
+        restart(cx);
+        return;
+    }
+
+    let answer = window.prompt(
+        PromptLevel::Warning,
+        "You have unsaved changes.",
+        Some("Save them before restarting to update?"),
+        &["Save", "Don't Save", "Cancel"],
+        cx,
+    );
+    cx.spawn(async move |cx| {
+        let choice = answer.await.unwrap_or(2);
+        cx.update(|cx| {
+            match choice {
+                0 => {}
+                1 => settings::dirty::clear(settings::dirty::PROJECT_DATA, cx),
+                _ => return,
+            }
+            restart(cx);
+        });
+    })
+    .detach();
+}
+
 fn main() {
     // First, so failures in GPUI platform construction and startup still reach the log file.
     logging::init();

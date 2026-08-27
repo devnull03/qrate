@@ -1,5 +1,7 @@
 //! Trusted update metadata, installation provenance, and post-exit update jobs.
 
+#[cfg(feature = "client")]
+use std::time::Duration;
 use std::{
     fs,
     io::{Read as _, Write as _},
@@ -115,6 +117,14 @@ pub struct UpdateJob {
     pub target_version: Version,
 }
 
+#[derive(Clone, Debug)]
+pub struct StagedUpdate {
+    pub envelope: SignedEnvelope,
+    pub path: PathBuf,
+    pub version: Version,
+    pub release_notes_url: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct UpdateReceipt {
     pub version: Version,
@@ -190,6 +200,77 @@ pub fn validate_update(
         return Ok(None);
     };
     Ok(Some((manifest, artifact)))
+}
+
+#[cfg(feature = "client")]
+pub fn fetch_and_stage(
+    feed: &str,
+    installation: &Installation,
+    current: &Version,
+    mut found: impl FnMut(Version),
+    mut progress: impl FnMut(u64, u64),
+) -> Result<Option<StagedUpdate>> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("qrate-updater")
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let envelope: SignedEnvelope = client.get(feed).send()?.error_for_status()?.json()?;
+    let Some((manifest, artifact)) = validate_update(&envelope, installation, current)? else {
+        return Ok(None);
+    };
+    found(manifest.version.clone());
+    let dir = updates_dir()?.join(manifest.version.to_string());
+    fs::create_dir_all(&dir)?;
+    let filename = artifact
+        .url
+        .rsplit('/')
+        .next()
+        .context("artifact URL has no filename")?;
+    let final_path = dir.join(filename);
+    if final_path.exists() && verify_artifact(&final_path, &artifact).is_ok() {
+        return Ok(Some(StagedUpdate {
+            envelope,
+            path: final_path,
+            version: manifest.version,
+            release_notes_url: manifest.release_notes_url,
+        }));
+    }
+
+    let partial = final_path.with_extension("partial");
+    let mut response = client.get(&artifact.url).send()?.error_for_status()?;
+    if let Some(content_length) = response.content_length() {
+        ensure!(
+            content_length == artifact.size,
+            "server content length differs from signed manifest"
+        );
+    }
+    let mut output = fs::File::create(&partial)?;
+    let mut received = 0_u64;
+    let mut reported_percent = None;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = response.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        received += read as u64;
+        ensure!(received <= artifact.size, "download exceeded signed size");
+        output.write_all(&buffer[..read])?;
+        let percent = received.saturating_mul(100) / artifact.size;
+        if reported_percent != Some(percent) {
+            reported_percent = Some(percent);
+            progress(received, artifact.size);
+        }
+    }
+    output.sync_all()?;
+    verify_artifact(&partial, &artifact)?;
+    fs::rename(&partial, &final_path)?;
+    Ok(Some(StagedUpdate {
+        envelope,
+        path: final_path,
+        version: manifest.version,
+        release_notes_url: manifest.release_notes_url,
+    }))
 }
 
 /// Channel, ordering, and artifact rules on an already-verified manifest.
@@ -313,7 +394,16 @@ pub fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
 pub fn run_job(job_path: &Path) -> Result<()> {
     let key =
         VerifyingKey::from_bytes(&UPDATE_PUBLIC_KEY).context("invalid embedded update key")?;
-    run_job_with(job_path, &key, &updates_dir()?, spawn_installed)
+    let job = fs::read(job_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<UpdateJob>(&bytes).ok());
+    let result = run_job_with(job_path, &key, &updates_dir()?, spawn_installed);
+    if result.is_err()
+        && let Some(job) = job
+    {
+        let _ = spawn_installed(&job, &job.executable);
+    }
+    result
 }
 
 /// The trust key, the state directory, and the relaunch are parameters so an update can be applied
@@ -325,27 +415,29 @@ fn run_job_with(
     launch: impl FnOnce(&UpdateJob, &Path) -> std::io::Result<()>,
 ) -> Result<()> {
     let job: UpdateJob = serde_json::from_slice(&fs::read(job_path)?)?;
-    ensure!(job.schema == 1, "unsupported update job schema");
-    let installation = installation_at(&job.install_root, &job.executable)?;
-    ensure!(
-        installation.marker.packaged_version == job.expected_current_version,
-        "installed version changed after staging"
-    );
-    let (manifest, _) = verify_with(key, &job.envelope)?;
-    ensure!(
-        manifest.version == job.target_version,
-        "update job version mismatch"
-    );
-    let artifact = artifact_for(&manifest, &installation)?;
-    verify_artifact(&job.artifact_path, artifact)?;
+    let result = (|| {
+        ensure!(job.schema == 1, "unsupported update job schema");
+        let installation = installation_at(&job.install_root, &job.executable)?;
+        ensure!(
+            installation.marker.packaged_version == job.expected_current_version,
+            "installed version changed after staging"
+        );
+        let (manifest, _) = verify_with(key, &job.envelope)?;
+        ensure!(
+            manifest.version == job.target_version,
+            "update job version mismatch"
+        );
+        let artifact = artifact_for(&manifest, &installation)?;
+        verify_artifact(&job.artifact_path, artifact)?;
 
-    let result = match installation.marker.kind {
-        InstallKind::WindowsNsis => apply_nsis(&job),
-        InstallKind::WindowsPortable => apply_zip(&job, updates, launch),
-        InstallKind::MacosBundle => apply_macos(&job, updates, launch),
-        InstallKind::LinuxTar => apply_tar(&job, updates, launch),
-        InstallKind::WindowsMsi => bail!("MSI installations are administrator-managed"),
-    };
+        match installation.marker.kind {
+            InstallKind::WindowsNsis => apply_nsis(&job),
+            InstallKind::WindowsPortable => apply_zip(&job, updates, launch),
+            InstallKind::MacosBundle => apply_macos(&job, updates, launch),
+            InstallKind::LinuxTar => apply_tar(&job, updates, launch),
+            InstallKind::WindowsMsi => bail!("MSI installations are administrator-managed"),
+        }
+    })();
     if let Err(error) = &result {
         let receipt = UpdateReceipt {
             version: job.target_version.clone(),
@@ -952,6 +1044,7 @@ mod apply_tests {
         .unwrap_err();
         assert!(format!("{error:#}").contains("signature"));
         assert_eq!(payload_version(&staged.root), FROM);
+        assert_eq!(receipt(&staged.updates).status, ReceiptStatus::Failed);
     }
 
     #[test]
@@ -973,6 +1066,7 @@ mod apply_tests {
             "{message}"
         );
         assert_eq!(payload_version(&staged.root), FROM);
+        assert_eq!(receipt(&staged.updates).status, ReceiptStatus::Failed);
     }
 
     #[test]
@@ -989,5 +1083,6 @@ mod apply_tests {
         )
         .unwrap_err();
         assert!(format!("{error:#}").contains("installed version changed"));
+        assert_eq!(receipt(&staged.updates).status, ReceiptStatus::Failed);
     }
 }

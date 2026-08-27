@@ -3,7 +3,9 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::{IconName, Sizable as _};
+use gpui_component::{
+    Disableable as _, IconName, Sizable as _, progress::ProgressCircle, spinner::Spinner,
+};
 
 use crate::update_check::{AutoUpdater, UpdateStatus};
 
@@ -35,25 +37,43 @@ impl Render for UpdateNotice {
         if !updater.visible() {
             return div().into_any_element();
         }
-        let label = match updater.status() {
-            UpdateStatus::Downloading {
-                version,
-                received,
-                total,
-            } => total
-                .filter(|total| *total > 0)
-                .map(|total| {
-                    format!(
-                        "Downloading v{version}: {}%",
-                        received.saturating_mul(100) / total
-                    )
-                })
-                .unwrap_or_else(|| format!("Downloading qrate v{version}…")),
-            UpdateStatus::Ready { version, .. } => format!("Restart to update qrate to v{version}"),
-            UpdateStatus::Error { .. } => "Update failed — open About to retry".into(),
+        let control = match updater.status() {
+            UpdateStatus::Downloading { version, .. } => {
+                let percent = updater.status().progress_percent().unwrap_or_default();
+                Button::new("update-downloading")
+                    .label(format!("Downloading qrate v{version}…"))
+                    .icon(ProgressCircle::new("update-progress").value(percent as f32))
+                    .small()
+                    .disabled(true)
+                    .tooltip(format!("{percent}% downloaded"))
+                    .into_any_element()
+            }
+            UpdateStatus::Ready { version, .. } => Button::new("update-ready")
+                .label("Restart to update")
+                .icon(IconName::ArrowDown)
+                .small()
+                .tooltip(format!("Install qrate v{version}"))
+                .on_click(crate::restart_for_update)
+                .into_any_element(),
+            UpdateStatus::Restarting => Button::new("update-restarting")
+                .label("Restarting…")
+                .icon(Spinner::new().xsmall())
+                .small()
+                .disabled(true)
+                .into_any_element(),
+            UpdateStatus::Error { .. } => Button::new("update-error")
+                .label("Update failed")
+                .icon(IconName::TriangleAlert)
+                .small()
+                .tooltip("Open About to retry")
+                .on_click(|_, _, cx| crate::about::open_about_window(cx))
+                .into_any_element(),
             _ => return div().into_any_element(),
         };
-        let ready = matches!(updater.status(), UpdateStatus::Ready { .. });
+        let dismissible = matches!(
+            updater.status(),
+            UpdateStatus::Ready { .. } | UpdateStatus::Error { .. }
+        );
         gpui_component::h_flex()
             .id("update-notice")
             .gap_1()
@@ -61,25 +81,21 @@ impl Render for UpdateNotice {
             // The title bar wraps its children in a `WindowControlArea::Drag` hitbox, which Windows
             // hit-tests as HTCAPTION and never delivers a click from — see `DockToggleButton`.
             .occlude()
-            .when(ready, |this| {
-                this.cursor_pointer().on_click(move |_, _, cx| {
-                    if let Err(error) = crate::update_check::restart(cx) {
-                        log::error!("failed to restart for update: {error:#}");
-                    }
-                })
+            .child(control)
+            .when(dismissible, |this| {
+                this.child(
+                    Button::new("dismiss-update")
+                        .icon(IconName::Close)
+                        .ghost()
+                        .xsmall()
+                        .tooltip("Dismiss")
+                        .on_click(|_, _, cx| {
+                            if let Some(updater) = AutoUpdater::get(cx) {
+                                updater.update(cx, |updater, cx| updater.dismiss(cx));
+                            }
+                        }),
+                )
             })
-            .child(label)
-            .child(
-                Button::new("dismiss-update")
-                    .icon(IconName::Close)
-                    .ghost()
-                    .xsmall()
-                    .on_click(|_, _, cx| {
-                        if let Some(updater) = AutoUpdater::get(cx) {
-                            updater.update(cx, |updater, cx| updater.dismiss(cx));
-                        }
-                    }),
-            )
             .into_any_element()
     }
 }

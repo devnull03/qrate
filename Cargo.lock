@@ -274,7 +274,6 @@ dependencies = [
  "plugin-host",
  "preview",
  "project-wizard",
- "reqwest",
  "schemars",
  "semver",
  "serde",
@@ -8422,12 +8421,15 @@ dependencies = [
  "base64",
  "ed25519-dalek",
  "flate2",
+ "log",
+ "reqwest",
  "semver",
  "serde",
  "serde_json",
  "sha2",
  "tar",
  "tempfile",
+ "windows 0.62.2",
  "zip",
 ]
 

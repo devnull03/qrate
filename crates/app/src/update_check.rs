@@ -1,18 +1,12 @@
 //! Signed background updates and the GPUI-facing updater state.
 
-use std::{
-    fs,
-    io::{Read as _, Write as _},
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
-};
+use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{Context as _, Result};
 use gpui::{App, AppContext as _, Context, Entity, Global, Task};
 use semver::Version;
 use settings::AppSettings;
-use updater::{InstallKind, Installation, JOB_NAME, ReleaseChannel, SignedEnvelope, UpdateJob};
+use updater::{InstallKind, Installation, JOB_NAME, ReleaseChannel, StagedUpdate, UpdateJob};
 
 const BETA_FEED: &str = "https://qrate.dvnl.work/updates/beta.json";
 const STABLE_FEED: &str = "https://qrate.dvnl.work/updates/stable.json";
@@ -31,15 +25,17 @@ pub enum UpdateStatus {
     Disabled(Arc<str>),
     Idle,
     Checking,
+    UpToDate,
     Downloading {
         version: Version,
         received: u64,
-        total: Option<u64>,
+        total: u64,
     },
     Ready {
         version: Version,
         release_notes_url: String,
     },
+    Restarting,
     Error {
         stage: &'static str,
         message: Arc<str>,
@@ -51,8 +47,29 @@ impl UpdateStatus {
     pub fn visible(&self) -> bool {
         matches!(
             self,
-            Self::Downloading { .. } | Self::Ready { .. } | Self::Error { manual: true, .. }
+            Self::Downloading { .. }
+                | Self::Ready { .. }
+                | Self::Restarting
+                | Self::Error { manual: true, .. }
         )
+    }
+
+    pub fn progress_percent(&self) -> Option<u64> {
+        let Self::Downloading {
+            received, total, ..
+        } = self
+        else {
+            return None;
+        };
+        Some(received.saturating_mul(100).checked_div(*total)?.min(100))
+    }
+}
+
+fn no_update_status(manual: bool) -> UpdateStatus {
+    if manual {
+        UpdateStatus::UpToDate
+    } else {
+        UpdateStatus::Idle
     }
 }
 
@@ -66,20 +83,13 @@ pub struct AutoUpdater {
     poll_task: Option<Task<()>>,
 }
 
-#[derive(Clone)]
-struct StagedUpdate {
-    envelope: SignedEnvelope,
-    path: PathBuf,
-    version: Version,
-}
-
 struct GlobalUpdater(Entity<AutoUpdater>);
 impl Global for GlobalUpdater {}
 
 enum DownloadEvent {
     Found(Version),
-    Progress { received: u64, total: Option<u64> },
-    Done(Result<StagedUpdate>),
+    Progress { received: u64, total: u64 },
+    Done(Result<Option<StagedUpdate>>),
 }
 
 impl AutoUpdater {
@@ -128,7 +138,12 @@ impl AutoUpdater {
     }
 
     pub fn poll(&mut self, manual: bool, cx: &mut Context<Self>) {
-        if self.pending {
+        if self.pending
+            || matches!(
+                self.status,
+                UpdateStatus::Ready { .. } | UpdateStatus::Restarting
+            )
+        {
             return;
         }
         let Some(installation) = self.installation.clone() else {
@@ -154,7 +169,7 @@ impl AutoUpdater {
         };
         let (tx, rx) = async_channel::unbounded();
         cx.background_spawn(async move {
-            let result = fetch_and_stage(
+            let result = updater::fetch_and_stage(
                 feed,
                 &installation,
                 &current,
@@ -177,7 +192,7 @@ impl AutoUpdater {
                         this.status = UpdateStatus::Downloading {
                             version,
                             received: 0,
-                            total: None,
+                            total: 1,
                         };
                         cx.notify();
                     }
@@ -191,15 +206,18 @@ impl AutoUpdater {
                             cx.notify();
                         }
                     }
-                    DownloadEvent::Done(Ok(staged)) => {
+                    DownloadEvent::Done(Ok(Some(staged))) => {
                         this.pending = false;
                         this.status = UpdateStatus::Ready {
                             version: staged.version.clone(),
-                            release_notes_url: updater::verify_envelope(&staged.envelope)
-                                .map(|(manifest, _)| manifest.release_notes_url)
-                                .unwrap_or_default(),
+                            release_notes_url: staged.release_notes_url.clone(),
                         };
                         this.staged = Some(staged);
+                        cx.notify();
+                    }
+                    DownloadEvent::Done(Ok(None)) => {
+                        this.pending = false;
+                        this.status = no_update_status(manual);
                         cx.notify();
                     }
                     DownloadEvent::Done(Err(error)) => {
@@ -227,6 +245,15 @@ impl AutoUpdater {
         .detach();
     }
 
+    pub fn fail_restart(&mut self, error: &anyhow::Error, cx: &mut Context<Self>) {
+        self.status = UpdateStatus::Error {
+            stage: "restart",
+            message: format!("{error:#}").into(),
+            manual: true,
+        };
+        cx.notify();
+    }
+
     fn start_polling(&mut self, cx: &mut Context<Self>) {
         if automatic_updates(cx) {
             self.poll(false, cx);
@@ -249,7 +276,7 @@ impl AutoUpdater {
     }
 }
 
-pub fn restart(cx: &mut App) -> Result<()> {
+pub fn prepare_restart(cx: &mut App) -> Result<PathBuf> {
     let entity = AutoUpdater::get(cx).context("updater is unavailable")?;
     let (staged, installation) = {
         let updater = entity.read(cx);
@@ -285,9 +312,11 @@ pub fn restart(cx: &mut App) -> Result<()> {
         target_version: staged.version,
     };
     updater::write_json_atomic(&updater::updates_dir()?.join(JOB_NAME), &job)?;
-    cx.set_restart_path(helper);
-    cx.restart();
-    Ok(())
+    entity.update(cx, |updater, cx| {
+        updater.status = UpdateStatus::Restarting;
+        cx.notify();
+    });
+    Ok(helper)
 }
 
 fn helper_path(installation: &Installation) -> PathBuf {
@@ -299,70 +328,6 @@ fn helper_path(installation: &Installation) -> PathBuf {
         .join("Contents/Helpers/qrate-update-helper");
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     return installation.root.join("qrate-update-helper");
-}
-
-fn fetch_and_stage(
-    feed: &str,
-    installation: &Installation,
-    current: &Version,
-    mut found: impl FnMut(Version),
-    mut progress: impl FnMut(u64, Option<u64>),
-) -> Result<StagedUpdate> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("qrate-updater")
-        .timeout(Duration::from_secs(30))
-        .build()?;
-    let envelope: SignedEnvelope = client.get(feed).send()?.error_for_status()?.json()?;
-    let Some((manifest, artifact)) = updater::validate_update(&envelope, installation, current)?
-    else {
-        anyhow::bail!("qrate is up to date");
-    };
-    found(manifest.version.clone());
-    let dir = updater::updates_dir()?.join(manifest.version.to_string());
-    fs::create_dir_all(&dir)?;
-    let filename = artifact
-        .url
-        .rsplit('/')
-        .next()
-        .context("artifact URL has no filename")?;
-    let final_path = dir.join(filename);
-    if final_path.exists() && updater::verify_artifact(&final_path, &artifact).is_ok() {
-        return Ok(StagedUpdate {
-            envelope,
-            path: final_path,
-            version: manifest.version,
-        });
-    }
-    let partial = final_path.with_extension("partial");
-    let mut response = client.get(&artifact.url).send()?.error_for_status()?;
-    let total = response.content_length();
-    if let Some(total) = total {
-        ensure!(
-            total == artifact.size,
-            "server content length differs from signed manifest"
-        );
-    }
-    let mut output = fs::File::create(&partial)?;
-    let mut received = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = response.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        received += read as u64;
-        ensure!(received <= artifact.size, "download exceeded signed size");
-        output.write_all(&buffer[..read])?;
-        progress(received, total);
-    }
-    output.sync_all()?;
-    updater::verify_artifact(&partial, &artifact)?;
-    fs::rename(&partial, &final_path)?;
-    Ok(StagedUpdate {
-        envelope,
-        path: final_path,
-        version: manifest.version,
-    })
 }
 
 pub fn init(cx: &mut App) {
@@ -382,5 +347,35 @@ pub fn init(cx: &mut App) {
 pub fn check_now(cx: &mut App) {
     if let Some(updater) = AutoUpdater::get(cx) {
         updater.update(cx, |updater, cx| updater.poll(true, cx));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use semver::Version;
+
+    use super::{UpdateStatus, no_update_status};
+
+    #[test]
+    fn no_update_is_only_visible_after_a_manual_check() {
+        assert!(matches!(no_update_status(true), UpdateStatus::UpToDate));
+        assert!(matches!(no_update_status(false), UpdateStatus::Idle));
+    }
+
+    #[test]
+    fn signed_download_progress_is_bounded() {
+        let status = UpdateStatus::Downloading {
+            version: Version::new(1, 0, 0),
+            received: 75,
+            total: 100,
+        };
+        assert_eq!(status.progress_percent(), Some(75));
+
+        let oversized = UpdateStatus::Downloading {
+            version: Version::new(1, 0, 0),
+            received: 101,
+            total: 100,
+        };
+        assert_eq!(oversized.progress_percent(), Some(100));
     }
 }
