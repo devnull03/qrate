@@ -66,12 +66,12 @@ impl ProjectWizard {
                 None => div().into_any_element(),
             })
             .child(match &self.folder_match {
-                Some(m) if m.extra_files > 0 => inline_message(
+                Some(m) if !m.extra_files.is_empty() => inline_message(
                     "link-extra",
                     format!(
-                        "{} file{} in this folder aren't mentioned in your spreadsheet — they'll be left out unless you link them",
-                        m.extra_files,
-                        if m.extra_files == 1 { "" } else { "s" }
+                        "{} file{} in this folder aren't mentioned in your spreadsheet — each one gets its own row, empty apart from its filename",
+                        m.extra_files.len(),
+                        if m.extra_files.len() == 1 { "" } else { "s" }
                     ),
                     MsgKind::Warning,
                 )

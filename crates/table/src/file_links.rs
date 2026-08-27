@@ -147,4 +147,29 @@ mod tests {
         let values = vec![SharedString::from("2021_05_034")];
         assert!(missing(&index, &values).is_empty());
     }
+
+    /// Everything the panel can show a picture for has to pass here, or the row reads as broken
+    /// while its own preview is on screen: an exported path, a master's extension over an access
+    /// derivative, and an item id whose parts are only partly present.
+    #[test]
+    fn nothing_the_details_panel_can_resolve_is_reported_broken() {
+        let dir = folder_with(
+            "agreement",
+            &["2021_05_034.jpg", "2020_04_001_002.jpg", "real.jpg"],
+        );
+        let index = PhotoIndex::build(dir.to_str().unwrap());
+        let values: Vec<SharedString> = [
+            "masters/2021_05_034.TIF",
+            "2020_04_001",
+            "real.jpg",
+            "gone.jpg",
+        ]
+        .iter()
+        .map(|v| SharedString::from(*v))
+        .collect();
+
+        let found = missing(&index, &values);
+        assert_eq!(found.len(), 1, "only the file that truly isn't there");
+        assert_eq!(found[0].0, 3);
+    }
 }

@@ -750,7 +750,12 @@ impl TablePanel {
             .get(settings::project::FILES_FOLDER_KEY)
             .map(|v| v.text().to_string())
             .unwrap_or_default();
-        photos::resolve_row_images(&data.headers, &data.rows, &folder)
+        photos::resolve_row_images(
+            &data.headers,
+            &data.rows,
+            &folder,
+            &photos::declared_file_columns(data),
+        )
     }
 
     /// Save the current column order + widths into the open project's `.qrate` file

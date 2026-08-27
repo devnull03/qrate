@@ -6,11 +6,11 @@
 //! Real collections nest files inconsistently: some batches are flat
 //! (`access/2021_05/2021_05_034.jpg`), others put one item's files a level deeper
 //! (`access/2020_04/2020_04_001/2020_04_001_001.jpg`). A single non-recursive directory listing
-//! (as `project_wizard::data::match_folder` uses for its yes/no folder check) can't resolve
-//! individual rows against that shape, so this walks the whole folder tree — mirroring
+//! can't resolve individual rows against that shape, so this walks the whole folder tree — mirroring
 //! `index_access_files` in the CA migration scripts (`islandora_workbench/g/scripts/ca-migration/
 //! prepare_ingest.py`), which solves the identical problem for the same source data.
 
+use settings::columns::ColumnType;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -41,19 +41,27 @@ fn index_files(folder: &Path) -> HashMap<String, PathBuf> {
             if path.is_dir() {
                 stack.push(path);
             } else {
-                index.entry(name.to_lowercase()).or_insert(path);
+                // Two batches can hold the same filename. Keeping the first by path rather than
+                // the first walked means the same row shows the same picture on every launch.
+                index
+                    .entry(name.to_lowercase())
+                    .and_modify(|kept| {
+                        if path < *kept {
+                            *kept = path.clone();
+                        }
+                    })
+                    .or_insert(path);
             }
         }
     }
     index
 }
 
-/// A recursive index of `folder`'s files, queryable by exact filename or filename stem
-/// (case-insensitive) — the same two-tier match `project_wizard::data::match_folder` uses for
-/// its folder-level check, just resolved per file instead of only counting matches.
+/// A recursive index of `folder`'s files, queryable by every name a file answers to
+/// ([`settings::filenames::keys`]) — the same rule `project_wizard::data::match_folder` accepts
+/// the folder with, resolved per file instead of only counting matches.
 pub struct PhotoIndex {
-    by_name: HashMap<String, PathBuf>,
-    by_stem: HashMap<String, PathBuf>,
+    by_key: HashMap<String, PathBuf>,
 }
 
 impl PhotoIndex {
@@ -61,38 +69,51 @@ impl PhotoIndex {
     /// `folder` doesn't exist or isn't readable — a missing/stale files folder degrades every
     /// row to "no image" rather than failing the whole project load.
     pub fn build(folder: &str) -> Self {
-        let by_name = index_files(Path::new(folder));
-        let by_stem = by_name
-            .iter()
-            .map(|(name, path)| {
-                let stem = Path::new(name)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(name)
-                    .to_string();
-                (stem, path.clone())
-            })
-            .collect();
-        Self { by_name, by_stem }
+        let mut by_key: HashMap<String, PathBuf> = HashMap::new();
+        for (name, path) in index_files(Path::new(folder)) {
+            for key in settings::filenames::keys(&name) {
+                // An item id keys every one of its parts; keeping the first by name makes the
+                // Details panel show part 001 rather than whichever the walk reached first.
+                by_key
+                    .entry(key)
+                    .and_modify(|kept| {
+                        if path < *kept {
+                            *kept = path.clone();
+                        }
+                    })
+                    .or_insert_with(|| path.clone());
+            }
+        }
+        Self { by_key }
     }
 
     pub(crate) fn resolve_cell(&self, cell: &str) -> Option<&PathBuf> {
-        let c = cell.trim().to_lowercase();
-        if c.is_empty() {
-            return None;
-        }
-        self.by_name.get(&c).or_else(|| self.by_stem.get(&c))
+        settings::filenames::lookup_keys(cell)
+            .iter()
+            .find_map(|key| self.by_key.get(key))
     }
 
-    /// The image path for `row`'s cells, if any cell names a file this index found. Checks a
-    /// "file"/"filename"-headed column first (the shape of the CA CSVs this was built against),
-    /// then falls back to every cell — matching `match_folder`'s tolerance for spreadsheets
-    /// without that exact header.
-    fn resolve_row(&self, headers: &[String], row: &[String]) -> Option<PathBuf> {
-        let file_col = headers.iter().position(|h| {
-            let h = h.trim().to_lowercase();
-            h == "file" || h == "filename"
-        });
+    /// The image path for `row`'s cells, if any cell names a file this index found. Checks the
+    /// columns the project *declares* as filenames first — those are what `file_links` reports
+    /// against, and a picture resolved from some other cell while the declared one is reported
+    /// broken is the disagreement people notice — then a "file"/"filename" header (the shape of
+    /// the CA CSVs this was built against), then every cell, matching `match_folder`'s tolerance
+    /// for spreadsheets with neither.
+    fn resolve_row(
+        &self,
+        headers: &[String],
+        declared: &[String],
+        row: &[String],
+    ) -> Option<PathBuf> {
+        let file_col = headers
+            .iter()
+            .position(|h| declared.iter().any(|d| d == h))
+            .or_else(|| {
+                headers.iter().position(|h| {
+                    let h = h.trim().to_lowercase();
+                    h == "file" || h == "filename"
+                })
+            });
         if let Some(hit) = file_col
             .and_then(|ix| row.get(ix))
             .and_then(|c| self.resolve_cell(c))
@@ -103,6 +124,16 @@ impl PhotoIndex {
     }
 }
 
+/// The columns a project declares as holding a filename. Previews resolve against these before
+/// guessing, so they judge the same cell the Problems panel reports on.
+pub fn declared_file_columns(data: &settings::project::ProjectData) -> Vec<String> {
+    data.columns
+        .iter()
+        .filter(|c| ColumnType::from_declared(&c.data_type) == ColumnType::Filename)
+        .map(|c| c.name.clone())
+        .collect()
+}
+
 /// Resolves every row to its image path (if any), for `QrateTableDelegate` to store alongside
 /// the grid. `folder` is `settings::project::FILES_FOLDER_KEY`'s value — empty means no folder
 /// was linked, so every row resolves to `None`.
@@ -110,13 +141,14 @@ pub fn resolve_row_images(
     headers: &[String],
     rows: &[Vec<String>],
     folder: &str,
+    declared: &[String],
 ) -> Vec<Option<PathBuf>> {
     if folder.trim().is_empty() {
         return vec![None; rows.len()];
     }
     let index = PhotoIndex::build(folder);
     rows.iter()
-        .map(|row| index.resolve_row(headers, row))
+        .map(|row| index.resolve_row(headers, declared, row))
         .collect()
 }
 
@@ -150,7 +182,7 @@ mod tests {
             vec!["2021_05_069".into(), "2021_05_069.jpg".into()],
             vec!["2021_05_999".into(), "missing.jpg".into()],
         ];
-        let images = resolve_row_images(&headers, &rows, dir.to_str().unwrap());
+        let images = resolve_row_images(&headers, &rows, dir.to_str().unwrap(), &[]);
         assert_eq!(images[0], Some(dir.join("2021_05_034.jpg")));
         assert_eq!(images[1], Some(dir.join("2021_05_069.jpg")));
         assert_eq!(images[2], None);
@@ -168,7 +200,7 @@ mod tests {
             vec!["2020_04_001_001".into(), "2020_04_001_001.jpg".into()],
             vec!["2020_04_001_002".into(), "2020_04_001_002.jpg".into()],
         ];
-        let images = resolve_row_images(&headers, &rows, dir.to_str().unwrap());
+        let images = resolve_row_images(&headers, &rows, dir.to_str().unwrap(), &[]);
         assert_eq!(
             images[0],
             Some(dir.join("2020_04_001").join("2020_04_001_001.jpg"))
@@ -180,13 +212,46 @@ mod tests {
     }
 
     #[test]
+    fn an_item_id_resolves_to_the_first_of_its_parts() {
+        // The row names the item; the folder holds its numbered parts. Whichever order the walk
+        // reached them in, the panel shows part 001.
+        let dir = tempdir("multi-part");
+        touch(&dir.join("2020_04_001_002.jpg"));
+        touch(&dir.join("2020_04_001_001.jpg"));
+
+        let index = PhotoIndex::build(dir.to_str().unwrap());
+        assert_eq!(
+            index.resolve_cell("2020_04_001"),
+            Some(&dir.join("2020_04_001_001.jpg"))
+        );
+    }
+
+    /// The sheet names the master, exported with its folder ahead of it; the linked folder holds
+    /// the access derivative. The declared column is consulted first and still resolves.
+    #[test]
+    fn a_declared_column_naming_the_master_resolves_the_derivative() {
+        let dir = tempdir("extension-drift");
+        touch(&dir.join("2021_05_034.jpg"));
+
+        let headers = vec!["Digital ID".into(), "Media".into()];
+        let rows = vec![vec!["unrelated".into(), "masters/2021_05_034.TIF".into()]];
+        let images = resolve_row_images(
+            &headers,
+            &rows,
+            dir.to_str().unwrap(),
+            &["Media".to_string()],
+        );
+        assert_eq!(images[0], Some(dir.join("2021_05_034.jpg")));
+    }
+
+    #[test]
     fn falls_back_to_any_cell_without_a_file_column() {
         let dir = tempdir("no-file-header");
         touch(&dir.join("photo1.png"));
 
         let headers = vec!["Digital ID".into(), "Notes".into()];
         let rows = vec![vec!["photo1".into(), "some notes".into()]];
-        let images = resolve_row_images(&headers, &rows, dir.to_str().unwrap());
+        let images = resolve_row_images(&headers, &rows, dir.to_str().unwrap(), &[]);
         assert_eq!(images[0], Some(dir.join("photo1.png")));
     }
 
@@ -202,12 +267,13 @@ mod tests {
         assert!(index.resolve_cell("._2021_05_034.jpg").is_none());
         assert!(index.resolve_cell(".ds_store").is_none());
 
-        let empty = resolve_row_images(&[], &[vec![]], "");
+        let empty = resolve_row_images(&[], &[vec![]], "", &[]);
         assert_eq!(empty, vec![None]);
         let missing = resolve_row_images(
             &["file".to_string()],
             &[vec!["2021_05_034.jpg".to_string()]],
             "/nonexistent/qrate-photos-folder",
+            &[],
         );
         assert_eq!(missing, vec![None]);
     }

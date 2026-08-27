@@ -121,12 +121,15 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
     }
 
     let images = if format == ExportFormat::Zip {
-        let folder = cx
-            .try_global::<CurrentProject>()
+        let project = cx.try_global::<CurrentProject>();
+        let folder = project
             .and_then(|p| p.data.values.get(settings::project::FILES_FOLDER_KEY))
             .map(|v| v.text().to_string())
             .unwrap_or_default();
-        table::photos::resolve_row_images(&headers, &rows, &folder)
+        let declared = project
+            .map(|p| table::photos::declared_file_columns(&p.data))
+            .unwrap_or_default();
+        table::photos::resolve_row_images(&headers, &rows, &folder, &declared)
             .into_iter()
             .flatten()
             .collect()

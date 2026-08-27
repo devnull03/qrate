@@ -69,7 +69,10 @@ pub struct SheetCheckResult {
 pub struct FolderMatch {
     pub matched_rows: usize,
     pub total_rows: usize,
-    pub extra_files: usize,
+    /// Files in the folder no row claims, by name. Kept rather than counted: project creation
+    /// turns each one into an otherwise-empty row so the file is in the collection instead of
+    /// silently left behind.
+    pub extra_files: Vec<String>,
 }
 
 /// Why a files folder was turned down. Each variant carries what the archivist needs to act on
@@ -187,30 +190,11 @@ pub fn list_files(folder: &str, recursive: bool) -> Result<Vec<String>, FolderEr
     Ok(files)
 }
 
-/// Every name a file answers to: its filename, its stem, and each separator-truncated prefix of
-/// that stem. The prefixes are what let a row match a *partial* item — one whose media arrives as
-/// `2020_04_001_001.jpg`, `2020_04_001_002.jpg` under the id `2020_04_001`, with any number of
-/// its parts missing. Without them a whole shoot of multi-part items reads as "no matches".
-fn file_keys(name: &str) -> Vec<String> {
-    let lower = name.to_lowercase();
-    let stem = Path::new(&lower)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(&lower)
-        .to_string();
-    let mut keys = vec![lower.clone(), stem.clone()];
-    keys.extend(
-        stem.match_indices(['_', '-', '.', ' '])
-            .map(|(at, _)| stem[..at].to_string())
-            .filter(|p| !p.is_empty()),
-    );
-    keys
-}
-
 /// Matches spreadsheet rows against files in `folder` by looking for any cell whose value names a
 /// file there — by filename, filename stem, or the id a multi-part item's files are built from
-/// (see [`file_keys`]), case insensitively. Summarized here for the Files step's inline
-/// validation; the Link step's "match by exact filename" shows the same numbers.
+/// ([`settings::filenames::keys`], the same rule `table::photos` resolves rows with once the
+/// project is open). Summarized here for the Files step's inline validation; the Link step's
+/// "match by exact filename" shows the same numbers.
 pub fn match_folder(
     preview: &SpreadsheetPreview,
     folder: &str,
@@ -219,7 +203,7 @@ pub fn match_folder(
     let files = list_files(folder, recursive)?;
     let mut by_key: HashMap<String, Vec<usize>> = HashMap::new();
     for (ix, name) in files.iter().enumerate() {
-        for key in file_keys(name) {
+        for key in settings::filenames::keys(name) {
             by_key.entry(key).or_default().push(ix);
         }
     }
@@ -229,11 +213,9 @@ pub fn match_folder(
     let mut used_files: HashSet<usize> = HashSet::new();
     for row in &preview.rows {
         let hit = row.iter().find_map(|cell| {
-            let c = cell.trim().to_lowercase();
-            if c.is_empty() {
-                return None;
-            }
-            by_key.get(&c)
+            settings::filenames::lookup_keys(cell)
+                .iter()
+                .find_map(|key| by_key.get(key))
         });
         match hit {
             Some(hit) => {
@@ -282,7 +264,12 @@ pub fn match_folder(
     Ok(FolderMatch {
         matched_rows,
         total_rows: preview.rows.len(),
-        extra_files: files.len().saturating_sub(used_files.len()),
+        extra_files: files
+            .into_iter()
+            .enumerate()
+            .filter(|(ix, _)| !used_files.contains(ix))
+            .map(|(_, name)| name)
+            .collect(),
     })
 }
 
@@ -487,7 +474,7 @@ mod tests {
         let m = match_folder(&preview, photos.to_str().unwrap(), false).unwrap();
         assert_eq!(m.matched_rows, 4);
         assert_eq!(m.total_rows, 4);
-        assert_eq!(m.extra_files, 0);
+        assert!(m.extra_files.is_empty());
     }
 
     #[test]
@@ -536,7 +523,7 @@ mod tests {
         let m = match_folder(&preview, dir.to_str().unwrap(), true).unwrap();
         assert_eq!(m.matched_rows, 1);
         assert_eq!(m.total_rows, 2);
-        assert_eq!(m.extra_files, 0);
+        assert!(m.extra_files.is_empty());
     }
 
     #[test]

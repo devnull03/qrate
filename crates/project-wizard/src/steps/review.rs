@@ -162,11 +162,27 @@ impl ProjectWizard {
         );
         // The imported rows themselves — the whole point of the `.qrate` file. Blank projects
         // still create the empty dataset with their required Title and File headers.
-        let (headers, rows) = self
+        let (headers, mut rows) = self
             .csv_preview
             .as_ref()
             .map(|preview| (preview.headers.clone(), preview.rows.clone()))
             .unwrap_or_else(|| (spreadsheet_headers, Vec::new()));
+        // A file in the folder that no row names is still part of the collection. It arrives as
+        // its own row, empty but for the filename, so it can be catalogued in qrate instead of
+        // being noticed only when someone counts the folder.
+        if !self.skip_files
+            && let Some(m) = &self.folder_match
+            && let Some(file_col) = self
+                .file_column
+                .as_deref()
+                .and_then(|name| headers.iter().position(|h| h == name))
+        {
+            rows.extend(m.extra_files.iter().map(|file| {
+                let mut row = vec![String::new(); headers.len()];
+                row[file_col] = file.clone();
+                row
+            }));
+        }
         // Skipped files → the folder field is stale, same reasoning as `link_method` above.
         let files_folder = (!self.skip_files && !self.folder_path.trim().is_empty())
             .then_some(self.folder_path.as_str());
@@ -275,8 +291,8 @@ impl ProjectWizard {
                         LinkMethod::ExactFilename => "exact filename",
                         LinkMethod::CustomPattern => "custom pattern",
                     };
-                    let extra = if m.extra_files > 0 {
-                        format!(" · {} not linked", m.extra_files)
+                    let extra = if !m.extra_files.is_empty() {
+                        format!(" · {} added as empty rows", m.extra_files.len())
                     } else {
                         String::new()
                     };
