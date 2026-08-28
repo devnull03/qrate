@@ -483,14 +483,55 @@ fn apply_nsis(_job: &UpdateJob) -> Result<()> {
     bail!("NSIS updates are only supported on Windows");
     #[cfg(target_os = "windows")]
     {
+        use std::{ffi::OsStr, os::windows::ffi::OsStrExt as _};
+
+        use windows::{
+            Win32::{
+                Foundation::CloseHandle,
+                System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject},
+                UI::{
+                    Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW},
+                    WindowsAndMessaging::SW_SHOWNORMAL,
+                },
+            },
+            core::PCWSTR,
+        };
+
         let job = _job;
-        let status = Command::new(&job.artifact_path)
-            .args(["/S", "/UPDATE=1", "/RESTART=1"])
-            .status()
-            .context("run qrate update installer")?;
+        let wide = |text: &OsStr| {
+            text.encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<u16>>()
+        };
+        let file = wide(job.artifact_path.as_os_str());
+        let verb = wide(OsStr::new("runas"));
+        let parameters = wide(OsStr::new("/S /UPDATE=1 /RESTART=1"));
+        // CreateProcess cannot raise a UAC prompt, so an admin installer fails it with error 740.
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS,
+            lpVerb: PCWSTR(verb.as_ptr()),
+            lpFile: PCWSTR(file.as_ptr()),
+            lpParameters: PCWSTR(parameters.as_ptr()),
+            nShow: SW_SHOWNORMAL.0,
+            ..Default::default()
+        };
+        unsafe { ShellExecuteExW(&mut info) }.context("run qrate update installer")?;
         ensure!(
-            status.success(),
-            "qrate update installer failed with {status}"
+            !info.hProcess.is_invalid(),
+            "qrate update installer did not start"
+        );
+        let mut code = 0u32;
+        let read = unsafe {
+            WaitForSingleObject(info.hProcess, INFINITE);
+            let read = GetExitCodeProcess(info.hProcess, &mut code);
+            let _ = CloseHandle(info.hProcess);
+            read
+        };
+        read.context("read qrate update installer exit code")?;
+        ensure!(
+            code == 0,
+            "qrate update installer failed with exit code {code}"
         );
         Ok(())
     }
