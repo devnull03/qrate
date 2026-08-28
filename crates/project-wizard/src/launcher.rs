@@ -213,6 +213,9 @@ impl Render for Launcher {
                                     .flex_none()
                                     .justify_between()
                                     .items_baseline()
+                                    // Everything but the scrollbar keeps clear of the divider by
+                                    // the same amount the Create New column does.
+                                    .pr_5()
                                     .child(div().text_lg().font_semibold().child("Recent Projects"))
                                     .child(
                                         div()
@@ -231,6 +234,7 @@ impl Render for Launcher {
                                 el.child(
                                     div()
                                         .flex_none()
+                                        .pr_5()
                                         .text_sm()
                                         .text_color(cx.theme().danger)
                                         .child(msg),
@@ -245,9 +249,9 @@ impl Render for Launcher {
                                     // Scrollbar, not bare overflow: a launcher opened on a long
                                     // history has to say there is more of it below the fold.
                                     .overflow_y_scrollbar()
-                                    // Holds the rows off the scrollbar, which draws at this column's
-                                    // right edge — without it the bar sits over the remove buttons.
-                                    .pr_3()
+                                    // Matches the `pl_5` on the other side of the divider, and holds the
+                                    // rows off the scrollbar drawn at this column's right edge.
+                                    .pr_5()
                                     .child(v_flex().gap_2().child(recent_list)),
                             ),
                     )
