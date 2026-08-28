@@ -19,6 +19,21 @@ use crate::wizard::{self, EntryKind};
 
 pub const LAUNCHER_WINDOW_KIND: &str = "project-launcher";
 
+/// The launcher's one spacing unit — the window's inset on every side, what each column keeps off
+/// the divider, and the air under each heading. One value so nothing here drifts a few pixels away
+/// from the rest and makes the window look assembled from parts.
+const GAP: Pixels = px(24.);
+
+/// How far a `text_lg` heading already sits below the top of its own box, and above the bottom of
+/// it: line height, which no padding can see. Subtracted wherever a heading meets a [`GAP`], or the
+/// window reads top-heavy against its even sides.
+const HEADING_LEAD: Pixels = px(12.);
+
+/// Width the overlay scrollbar takes out of the recents column's right inset. Without it the list
+/// sits further from the divider than the Create New cards do, and the divider stops looking
+/// centred between them.
+const SCROLLBAR: Pixels = px(6.);
+
 /// Set once at startup (see `crates/app/src/main.rs`) so the launcher can
 /// open the real main window without depending on the `app` crate.
 #[derive(Clone, Copy)]
@@ -200,18 +215,17 @@ impl Render for Launcher {
                     .min_h(px(0.))
                     // No gap between the columns: the recents column runs to the divider so its
                     // scrollbar sits at the far right, and the list pads itself off it instead.
-                    // Less padding above than beside: a heading carries its own leading, and
-                    // with an even inset the window reads as top-heavy.
-                    .px_5()
-                    .pt_2()
-                    .pb_5()
+                    // No bottom inset: the list runs to the frame, so a long history reads as
+                    // continuing rather than as ending in a band of empty window.
+                    .px(GAP)
+                    .pt(GAP - HEADING_LEAD)
                     .child(
                         v_flex()
                             .flex_1()
                             // min_h(0) overrides the flex default min-height:auto so the inner list scrolls, not the column.
                             .min_h(px(0.))
                             .min_w(px(0.))
-                            .gap_2()
+                            .gap(px(0.))
                             .child(
                                 h_flex()
                                     .flex_none()
@@ -219,10 +233,11 @@ impl Render for Launcher {
                                     .items_baseline()
                                     // Everything but the scrollbar keeps clear of the divider by
                                     // the same amount the Create New column does.
-                                    .pr_5()
-                                    // A heading needs more air under it than the list rows keep
-                                    // between themselves, or it reads as the first row.
-                                    .pb_2()
+                                    .pr(GAP)
+                                    // The heading carries the air under it, not the list: the
+                                    // rows scroll, and a gap that scrolls with them is a gap that
+                                    // disappears the moment somebody uses the list.
+                                    .pb(GAP - HEADING_LEAD)
                                     .child(div().text_lg().font_semibold().child("Recent Projects"))
                                     .child(
                                         div()
@@ -241,7 +256,8 @@ impl Render for Launcher {
                                 el.child(
                                     div()
                                         .flex_none()
-                                        .pr_5()
+                                        .pr(GAP)
+                                        .pb(GAP - HEADING_LEAD)
                                         .text_sm()
                                         .text_color(cx.theme().danger)
                                         .child(msg),
@@ -256,21 +272,22 @@ impl Render for Launcher {
                                     // Scrollbar, not bare overflow: a launcher opened on a long
                                     // history has to say there is more of it below the fold.
                                     .overflow_y_scrollbar()
-                                    // Matches the `pl_5` on the other side of the divider, and holds the
-                                    // rows off the scrollbar drawn at this column's right edge.
-                                    .pr_5()
-                                    .child(v_flex().gap_2().child(recent_list)),
+                                    // Matches the inset on the other side of the divider, and holds
+                                    // the rows off the scrollbar drawn at this column's right edge.
+                                    .pr(GAP - SCROLLBAR)
+                                    .child(recent_list),
                             ),
                     )
                     .child(
                         v_flex()
                             .w(px(220.))
                             .flex_none()
-                            .gap_2()
-                            .pl_5()
+                            .gap(GAP - HEADING_LEAD)
+                            .pl(GAP)
+                            .pb(GAP)
                             .border_l_1()
                             .border_color(cx.theme().border)
-                            .child(div().text_lg().font_semibold().pb_2().child("Create New"))
+                            .child(div().text_lg().font_semibold().child("Create New"))
                             .child(create_card(
                                 "new-blank",
                                 "Blank",
