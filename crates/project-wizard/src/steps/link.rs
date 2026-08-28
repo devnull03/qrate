@@ -1,7 +1,3 @@
-//! Stage 3.5 · Link your files to rows. Default "match by exact filename"
-//! reuses the folder match already computed in the Files step; the
-//! collapsible advanced section offers a custom naming pattern.
-
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::collapsible::Collapsible;
@@ -112,7 +108,6 @@ impl ProjectWizard {
                     )
                     .content(
                         v_flex().gap_2().mt_2().child(
-                            // Pattern input lives inside the option card, revealed once it's selected.
                             option_card(
                                 "link-pattern",
                                 "Use a custom pattern",

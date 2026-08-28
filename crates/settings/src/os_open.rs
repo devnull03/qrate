@@ -82,7 +82,6 @@ pub fn reveal_in_folder(path: &Path) -> std::io::Result<()> {
             .status()
             .is_ok_and(|s| s.success());
         if !selected {
-            // ponytail: opens the folder without highlighting; good enough where dbus isn't there.
             let dir = if path.is_dir() {
                 path
             } else {

@@ -672,8 +672,6 @@ struct Pickers {
     /// One per `(plugin, mapping, column)`, so the ids are built at runtime rather than named here.
     maps: HashMap<String, Picker<OptionItem>>,
     descriptions: HashMap<String, Picker<OptionItem>>,
-    // ponytail: empty rows live only for this app session; a persisted description reconstructs
-    // itself on the next launch, and an abandoned empty row should not.
     description_rows: HashSet<(PathBuf, String)>,
     /// One per declared `password` setting.
     secrets: HashMap<String, Secret>,

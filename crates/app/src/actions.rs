@@ -126,8 +126,6 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 /// `NewProject` is registered in `main.rs` alongside `OpenSettings` (it needs to call into the
 /// `project-wizard` crate). Only `NewWindow` is still a stub here.
 pub fn register_global_handlers(cx: &mut App) {
-    // ponytail: NewWindow is blocked on the bar registries being globals (single-window) —
-    // de-globalize them per-window first.
     cx.on_action(|_: &NewWindow, _cx| log::warn!("NewWindow: TODO (bar registries are global)"));
     cx.on_action(|_: &Save, cx| table::save_now(cx));
     // One handler for all three bindings above: which view was showing the selection doesn't

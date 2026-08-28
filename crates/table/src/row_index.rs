@@ -1,7 +1,3 @@
-//! The pinned row-number column at table column 0. Display-only — never routes through
-//! `cell.rs`/`editing.rs`, so it can't be edited; `TablePanel`'s event bridge bounces any
-//! native cell selection landing here onto the first data column.
-
 use std::sync::OnceLock;
 
 use gpui::prelude::FluentBuilder as _;
@@ -17,7 +13,6 @@ use diagnostics::Diagnostics;
 use crate::delegate::QrateTableDelegate;
 use crate::note::{self, Target};
 
-/// Table-column index of the pinned row-number column. Data columns start at 1.
 pub(crate) const COL_IX: usize = 0;
 
 const WIDTH: f32 = 48.;
@@ -36,16 +31,12 @@ pub(crate) fn column() -> Column {
         .clone()
 }
 
-/// `row_ix` is a source (not view) row index.
 pub(crate) fn render_td(
     delegate: &QrateTableDelegate,
     row_ix: usize,
     highlighted: bool,
     cx: &mut Context<TableState<QrateTableDelegate>>,
 ) -> gpui::AnyElement {
-    // Active row's number reads in full-strength text on a filled cell (like a sheet's row
-    // header); other rows stay muted. The `#` column is `fixed_left`, so this stays visible and
-    // highlighted while scrolling horizontally.
     let (fg, bg) = if highlighted {
         (cx.theme().foreground, cx.theme().secondary_hover)
     } else {

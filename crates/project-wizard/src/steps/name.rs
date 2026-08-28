@@ -1,5 +1,3 @@
-//! Stage 2 · Name — every entry path goes through this step.
-
 use std::sync::Arc;
 
 use gpui::{prelude::FluentBuilder, *};
@@ -19,8 +17,6 @@ impl ProjectWizard {
             self.name_error = Some("Give your project a name to continue".into());
             return false;
         }
-        // ponytail: fs .exists() runs per keystroke via the live subscription;
-        // debounce if it ever stutters.
         if project::name_taken(&self.save_path, &name) {
             self.name_error = Some(
                 "This name is already taken — try another, or pick a different save folder".into(),
@@ -36,8 +32,6 @@ impl ProjectWizard {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        // `save_path` is the model; the readonly input is only how `PathPickerApp` draws it. Guarded
-        // so an unconditional `set_value` doesn't notify its way into a repaint loop.
         let want = self.save_path.clone();
         self.save_path_input.update(cx, |input, cx| {
             if input.value() != want {

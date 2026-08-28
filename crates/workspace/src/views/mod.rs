@@ -146,8 +146,6 @@ impl ViewsPanel {
     ) -> Self {
         let table = cx.new(|cx| TablePanel::new(window, cx));
         let cols = gallery::columns(cx) as f32;
-        // `max` before `min`: each setter re-clamps the current value against the *other* bound as
-        // it stands, and the default min is 0 — so lowering the ceiling first would trap the value.
         let thumb = cx.new(|_| {
             SliderState::new()
                 .max(gallery::COLS_MAX)
@@ -166,7 +164,6 @@ impl ViewsPanel {
             } else {
                 settings::AppSettings::set_text(gallery::COLUMNS_KEY, text, cx);
             }
-            // The label is drawn by the parent TabPanel, which does not observe this panel.
             cx.refresh_windows();
             cx.notify();
         });
@@ -174,8 +171,6 @@ impl ViewsPanel {
             focus_handle: cx.focus_handle(),
             table,
             dock_area,
-            // The project's last view. `TablePanel::new` above has already loaded that project,
-            // so the arrangement restored alongside it already matches this.
             view: ViewMode::parse(&settings::effective_text(VIEW_MODE_KEY, cx)),
             body_width: px(0.),
             state: None,
@@ -189,7 +184,6 @@ impl ViewsPanel {
             _thumb_sub,
         };
         this.bind(cx);
-        // Publish before the first render so the View menu works from the moment the window is up.
         cx.set_global(ActiveViewsPanel(cx.entity().downgrade()));
         this
     }
@@ -258,10 +252,6 @@ fn switch(panel: &Entity<ViewsPanel>, mode: ViewMode, window: &mut Window, cx: &
         return;
     };
 
-    // Nothing below holds a lease on `panel`.
-    //
-    // A photo opened from a card belongs to the gallery; leaving it up would cover whatever the
-    // next view draws.
     if crate::viewer::viewer_in(ViewerScope::Centre, cx).is_some() {
         crate::viewer::close_viewer(cx);
     }
@@ -272,7 +262,6 @@ fn switch(panel: &Entity<ViewsPanel>, mode: ViewMode, window: &mut Window, cx: &
         settings::AppSettings::set_text(VIEW_MODE_KEY, text, cx);
     }
     if let Some(area) = dock_area.upgrade() {
-        // Snapshot where the panels sit before moving them, as the view being left.
         layout::capture(leaving, &area, cx);
         layout::apply(mode, &area, window, cx);
     }
@@ -347,8 +336,6 @@ impl Panel for ViewsPanel {
         if self.view != ViewMode::Table {
             return None;
         }
-        // Clicked from the title bar, which is outside this panel's focus — so drive the grid
-        // through its entity rather than dispatching the `Search` action.
         let table = self.table.downgrade();
         Some(vec![
             Button::new("table-search")
@@ -378,9 +365,6 @@ impl Render for ViewsPanel {
                     .flex_1()
                     .min_h_0()
                     .relative()
-                    // The gallery needs to know how wide it is to pick a column count; nothing
-                    // else measures this panel. Guarded so writing the width can't re-trigger
-                    // itself into a repaint loop.
                     .child(
                         canvas(
                             move |bounds, _, cx| {
@@ -409,9 +393,6 @@ impl Render for ViewsPanel {
                             cx,
                         ),
                     })
-                    // The clicked card's photo, over the grid of thumbnails but under nothing
-                    // else — the docked panels stay put, which is the whole point of scoping it
-                    // here instead of over the workspace. Escape or the ✕ puts the cards back.
                     .children(crate::viewer::viewer_in(ViewerScope::Centre, cx)),
             )
     }
@@ -426,7 +407,6 @@ impl Render for ViewsPanel {
 /// edits and the selection on every switch. `move_panel`/`toggle_dock` re-arrange the panels that
 /// already exist, so nothing is rebuilt.
 ///
-/// ponytail: placements and open/closed only, no dock sizes — those live in `DockAreaState` and
 /// already persist only at quit. Widen this if per-view widths ever matter.
 mod layout {
     use gpui::{App, Entity, Window};
@@ -550,8 +530,6 @@ mod layout {
                 continue;
             };
             let to = parse_placement(&slot.placement, meta.default_placement);
-            // Moving already opens the target dock and closes an emptied source, so ask about the
-            // open state only once the panel is where it belongs.
             PanelRegistry::move_panel(meta.name, to, dock_area, window, cx);
             let open = dock_area.read(cx).is_dock_open(to, cx);
             if open != slot.open {
@@ -566,7 +544,6 @@ mod layout {
 
 #[cfg(test)]
 mod tests {
-    // Never `use super::*` here — the parent's `use gpui::*` would shadow `#[test]`.
     use std::sync::Arc;
 
     use gpui::{AppContext as _, TestAppContext};

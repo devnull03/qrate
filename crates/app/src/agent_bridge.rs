@@ -155,8 +155,6 @@ fn start() -> Option<(TcpListener, String)> {
         .inspect_err(|err| log::error!("agent bridge could not poll its listener: {err}"))
         .ok()?;
 
-    // ponytail: `RandomState` keys are OS randomness gathered at process start, which is the
-    // strongest source std exposes. Swap in `getrandom` if this ever guards more than loopback.
     let token = format!(
         "{:016x}{:016x}",
         RandomState::new().hash_one(0u8),

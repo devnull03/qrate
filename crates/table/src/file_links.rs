@@ -27,7 +27,6 @@ pub const SOURCE: &str = "files";
 /// Validation runs on every commit, and walking a collection's folder tree per keystroke is not
 /// something to do on the UI thread. The folder is a path in the project file, so it only changes
 /// when someone re-links it.
-// ponytail: not watched — a file added or deleted outside qrate is noticed on the next re-link
 // or project open. Watch the folder if that gap starts confusing people.
 #[derive(Default)]
 struct Walked {

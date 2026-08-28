@@ -147,9 +147,6 @@ pub struct Viewer {
     transport: Option<Transport>,
     /// The scrubber, present exactly when the file is a video ffmpeg could measure.
     ///
-    /// ponytail: scrub-only, no sound and no motion. Playing it inline means piping raw frames out
-    /// of ffmpeg alongside a second decoder for the audio and keeping the two in step — a media
-    /// player. The button beside the scrubber hands that job to one that already exists.
     scrubber: Option<Entity<SliderState>>,
     /// Where the thumb sits mid-drag, which is what the readout shows; `page` only follows it on
     /// release.

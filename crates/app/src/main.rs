@@ -373,7 +373,6 @@ fn reveal_in_table(location: &diagnostics::Location, cx: &mut gpui::App) {
         (row, col)
     };
 
-    // ponytail: a row filtered out of view is silently unreachable; clearing the user's filter
     // on what they think is a navigation click would be worse than nothing happening.
     match delegate_lookup {
         (Some(Some(row)), Some(Some(col))) => {

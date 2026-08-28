@@ -44,8 +44,6 @@ const DOCK_LAYOUT_VERSION: usize = 3;
 /// gpui_component keeps a fixed ~29px title strip for a *closed* bottom dock (dock.rs) so it
 /// stays clickable — for us it just "sticks out". We drive the bottom dock from our own bar,
 /// so we crop that strip off the bottom instead.
-/// ponytail: magic 29 mirrors the library's hardcoded strip height; drop this whole hack if
-/// gpui_component ever exposes a "hide when closed" option for bottom docks.
 const BOTTOM_DOCK_STRIP_PX: f32 = 29.;
 
 /// How many pixels the strip crop above is currently eating off the bottom of the *side* docks,
@@ -57,7 +55,6 @@ const BOTTOM_DOCK_STRIP_PX: f32 = 29.;
 /// last 29px of real content with it. The center is unaffected (the strip occupied that space
 /// anyway), which is why only the side panels compensate.
 ///
-/// ponytail: a global rather than plumbing, because it's a workspace-level hack the panels
 /// shouldn't have in their signatures; dies with `BOTTOM_DOCK_STRIP_PX`.
 #[derive(Copy, Clone, Default, PartialEq)]
 pub struct BottomDockCrop(pub Pixels);
@@ -221,7 +218,6 @@ impl Workspace {
     ///
     /// Also the app-quit path (via `dock_area()`): dock edge-resizes never fire
     /// any event, so the final sizes are only guaranteed to be captured at quit.
-    /// ponytail: mid-session edge-resizes persist only at quit; hook the dock's
     /// resize if gpui_component ever emits an event for it.
     pub fn persist_layout(dock_area: &Entity<DockArea>, cx: &mut App) {
         let state = dock_area.read(cx).dump(cx);

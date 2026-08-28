@@ -1,7 +1,3 @@
-//! Stage 3a/3b · Files — the CSV and Google Sheet forks. Both need a files
-//! folder and share the same folder-matching validation; only the top field
-//! (spreadsheet file vs. sheet link) differs.
-
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::alert::Alert;
 use gpui_component::button::Button;
@@ -13,7 +9,6 @@ use gpui_component::{ActiveTheme, Disableable, Sizable, StyledExt, h_flex, v_fle
 use crate::data;
 use crate::wizard::{EntryKind, ProjectWizard};
 
-/// Every per-step status line in the wizard. `id` only has to be unique among its siblings.
 pub(crate) fn inline_message(
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
@@ -108,8 +103,6 @@ impl ProjectWizard {
             return;
         }
         let result = match self.entry_kind {
-            // Sheet reuses `csv_preview` (its fetched xlsx is adapted into the
-            // same preview shape), so both match folders against real row data.
             EntryKind::Csv | EntryKind::Sheet => self.csv_preview.as_ref().map(|preview| {
                 data::match_folder(preview, &self.folder_path, self.recurse_subfolders)
             }),
@@ -131,10 +124,6 @@ impl ProjectWizard {
         }
     }
 
-    /// `auto_advance` lets the Next button (which doubles as "Check" while the
-    /// sheet is unverified) skip the extra click once the check succeeds and
-    /// the folder already matches — the explicit "Check" button never does
-    /// this, since clicking it isn't a request to leave the step.
     pub(crate) fn check_sheet_link(&mut self, auto_advance: bool, cx: &mut Context<Self>) {
         let link = self.sheet_link_input.read(cx).value().to_string();
         // Fetch is a blocking network call — run it on a background thread so
@@ -168,8 +157,6 @@ impl ProjectWizard {
                 })
                 .unwrap_or(false);
             if ready {
-                // Brief pause so the "found N rows" success message is visible
-                // before the step changes out from under the user.
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(600))
                     .await;
@@ -199,10 +186,6 @@ impl ProjectWizard {
             .child(self.render_skip_files_toggle(cx))
     }
 
-    /// The "Files folder" picker, shared by all three Files variants. Dims and
-    /// disables itself when "add files later" is checked — only this field, not
-    /// the spreadsheet/sheet input above it. `show_status` appends the
-    /// folder-match result (Blank has no spreadsheet to match against).
     fn folder_field(
         &self,
         browse_id: &'static str,
@@ -249,8 +232,6 @@ impl ProjectWizard {
             .children(status)
     }
 
-    /// "I'll add files later" — flips `skip_files`, which also skips the Link
-    /// step (see `ProjectWizard::skips_link`). Shown on every Files variant.
     fn render_skip_files_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let checked = self.skip_files;
         h_flex()

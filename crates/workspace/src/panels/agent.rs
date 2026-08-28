@@ -120,7 +120,6 @@ impl Logged {
 /// log of somebody else's questions inside the archivist's project file.
 pub struct AgentHistory {
     /// Start of the first entry, which every `at` is measured from.
-    // ponytail: elapsed rather than a wall clock — nothing in the tree formats local time, and
     // ordering plus elapsed is what reading a live list needs. Give it a real timestamp if it ever
     // has to line up with qrate.log.
     started: Instant,
@@ -326,7 +325,6 @@ impl AgentPanel {
             terminal_size: (100, 32),
             opened_auth_urls: HashSet::new(),
             _terminal_task: terminal_task,
-            // ponytail: follows the tail unconditionally. Only worth remembering whether the
             // reader had scrolled away if watching a live agent while reading back proves annoying.
             _sub: cx.observe_global::<AgentHistory>(move |_, cx| {
                 scroll.scroll_to_bottom();

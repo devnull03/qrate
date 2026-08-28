@@ -24,10 +24,8 @@ use crate::{
     note, photos, row_index,
 };
 
-/// Settings key for the saved column layout (order + widths) in the project's `.qrate` file.
 const COLUMN_LAYOUT_KEY: &str = "table_columns";
 
-/// Settings key for how many leading columns are frozen, stored as a decimal count.
 pub(crate) const FROZEN_COLUMNS_KEY: &str = "table_frozen_columns";
 
 /// Push the settings the delegate caches into it. Called wherever either store changes, since the
@@ -41,8 +39,6 @@ fn apply_settings(delegate: &mut QrateTableDelegate, cx: &App) {
     );
 }
 
-// The grid's own actions, declared here (not in `app`) since app→table is one-way; `app` binds the
-// keys and puts Undo/Redo/Cut/Copy/Paste in the Edit menu.
 actions!(
     qrate,
     [
@@ -74,55 +70,31 @@ actions!(
 /// focus — the editor is a sibling of the table, so this context isn't in its dispatch chain.
 pub const GRID_CONTEXT: &str = "DataTable";
 
-/// The grid view: a virtualized text table with a pinned row-number column, native
-/// cell/row/column selection, movable + resizable columns, and double-click-to-edit cells.
-/// Mounted by `workspace`'s view host, which owns the dock chrome around it.
 pub struct TablePanel {
     focus_handle: FocusHandle,
     state: Entity<TableState<QrateTableDelegate>>,
-    /// Commits an in-progress cell edit when the inline editor loses focus or the user presses
-    /// Enter. Held alive for as long as the panel exists.
     _edit_sub: Subscription,
-    /// Saves the open note when its editor loses focus or the user presses Enter.
     _note_sub: Subscription,
-    /// Reloads the table when a different project is opened while this window is up.
     _project_sub: Subscription,
     /// Which project's data is currently loaded. `CurrentProject` is mutated by *every*
     /// project-scoped setting write, so `_project_sub` fires far more often than the project
     /// actually changes; without this guard a column-settings toggle would re-run `set_data` and
     /// wipe the user's active filters and selection.
     loaded_project: Option<std::path::PathBuf>,
-    /// Repaints on a user-scope settings change (e.g. the stripe toggle with no project open).
-    /// The project-scope case already repaints via `_project_sub`, since writing a project
-    /// setting mutates the `CurrentProject` global.
     _settings_sub: Subscription,
     /// Bridges the table's native `TableEvent`s to app behavior: keeps the delegate's selection
     /// cursor, starts edits on double-click, persists the column layout, and re-emits
     /// `TableChanged` so cross-crate readers refresh off one signal.
     _table_sub: Subscription,
-    /// The free-text find bar's editor, rendered at the top of this panel while `search_open`.
-    /// Its `Change`/`PressEnter` events drive match recomputation and next/prev navigation.
     search_input: Entity<InputState>,
-    /// Whether the find bar is shown. Toggled by `Search` (Ctrl+F / the toolbar button) and
-    /// dismissed by Escape.
     search_open: bool,
-    /// Current find hits as `(view_row, data_col)` in view order, recomputed on every query
-    /// change. Empty when the query is blank or matches nothing.
     search_matches: Vec<(usize, usize)>,
-    /// Index into `search_matches` of the hit currently scrolled to / selected.
     search_ix: usize,
-    /// The find bar's match-case / whole-word / regex toggles (Zed's three search options).
     search_opts: SearchOpts,
-    /// True when regex mode is on and the query doesn't parse — flips the readout to "Invalid
-    /// regex" instead of a misleading "No results".
     search_error: bool,
-    /// Repaints the find bar's "N of M" readout as its search box is typed into.
     _search_sub: Subscription,
-    /// The replacement text, on the find bar's second row while `replace_open`.
     replace_input: Entity<InputState>,
-    /// Whether that second row is shown. Off by default (Zed's chevron): most finds don't replace.
     replace_open: bool,
-    /// Replaces the current match on Enter in the replacement box.
     _replace_sub: Subscription,
     /// Pending debounced autosave (the "timed" mode). Replacing it drops the prior task, which
     /// cancels its timer — that drop *is* the debounce, coalescing a burst of edits into one write.
@@ -133,9 +105,6 @@ pub struct TablePanel {
 
 impl TablePanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Multi-line so long values wrap; the box grows to fit them (`cell_editor`) and the input
-        // scrolls once it can't grow further. `submit_on_enter` keeps Enter as commit
-        // (Shift+Enter inserts a newline).
         let editor = cx.new(|cx| {
             InputState::new(window, cx)
                 .multi_line(true)
@@ -150,8 +119,6 @@ impl TablePanel {
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in table"));
         let replace_input = cx.new(|cx| InputState::new(window, cx).placeholder("Replace with"));
         let mut delegate = QrateTableDelegate::new(editor.clone(), note_editor.clone());
-        // Show the open project's data, restoring its saved column order/widths. Without a
-        // project (dev launch straight into the main window) the table starts empty.
         let mut loaded_project = None;
         if let Some(project) = cx.try_global::<settings::project::CurrentProject>() {
             delegate.set_data(
@@ -174,11 +141,8 @@ impl TablePanel {
                 .col_selectable(true)
                 .col_resizable(true)
                 .col_movable(true)
-                // Our `#` column is the row header, so hide the library's blank strip.
                 .row_header(false)
         });
-        // Publish the handle so cross-crate readers (status bar, Details panel) can reach the
-        // table; they observe this global to re-bind when the panel is rebuilt.
         cx.set_global(TableStateHandle(state.downgrade()));
 
         let table_state = state.clone();
@@ -193,8 +157,6 @@ impl TablePanel {
                 if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
                     return;
                 }
-                // A blur means focus already went where the user clicked; only Enter leaves it
-                // homeless.
                 let by_enter = matches!(event, InputEvent::PressEnter { .. });
                 let rename = table_state.update(cx, |state, cx| {
                     let rename = editing::commit(state.delegate_mut(), cx);
@@ -202,7 +164,6 @@ impl TablePanel {
                     cx.notify();
                     rename
                 });
-                // Outside that `update`: re-keying a column reaches back into this same table.
                 if let Some((col, name)) = rename {
                     crate::structural(crate::Structural::RenameColumn { col, name }, cx);
                 }
@@ -214,7 +175,6 @@ impl TablePanel {
                 if by_enter {
                     this.focus_table(window, cx);
                 }
-                // The commit marked PROJECT_DATA dirty; persist per the Autosave setting.
                 this.schedule_autosave(cx);
             },
         );
@@ -245,14 +205,8 @@ impl TablePanel {
             |_this, state, event: &TableEvent, window, cx| {
                 match event {
                     TableEvent::SelectCell(row, col) if *col == row_index::COL_IX => {
-                        // Native selection ignores `selectable(false)`, so the `#` column reports a
-                        // cell hit. Turn it into a whole-row selection — the row header's job, and
-                        // the mirror of clicking a column header.
                         let view = *row;
                         let modifiers = window.modifiers();
-                        // Shift builds a run of items here, not the cell rectangle it draws inside
-                        // the grid: the `#` column is the row handle, so a range down it is a range
-                        // of whole rows.
                         if !modifiers.secondary() && !modifiers.shift {
                             state.update(cx, |s, cx| {
                                 s.delegate_mut().selected_rows.clear();
@@ -275,12 +229,8 @@ impl TablePanel {
                         // filter change and cross-crate readers index the real data. The range
                         // stays in view coordinates — see `QrateTableDelegate::range`.
                         //
-                        // ponytail: shift-click only. Extending with shift+arrow means forking the
-                        // library's cell-navigation key handling; do that if anyone asks.
                         let (view, col) = (*view, *col - 1);
                         let modifiers = window.modifiers();
-                        // ⌘-click picks whole items wherever it lands, so a multi-selection can be
-                        // built without aiming at the narrow `#` column.
                         if modifiers.secondary() {
                             state.update(cx, |s, cx| {
                                 if let Some(source) = s.delegate().source(view) {
@@ -293,15 +243,11 @@ impl TablePanel {
                         let extend = modifiers.shift;
                         state.update(cx, |s, _| {
                             let delegate = s.delegate_mut();
-                            // A plain click is a fresh start; a shift-click is still growing the
-                            // cell rectangle and must not drop the items it was drawn from.
                             if !extend {
                                 delegate.selected_rows.clear();
                             }
                             delegate.range = match (extend, delegate.range) {
-                                // Grow the existing rectangle from its original anchor.
                                 (true, Some((anchor, _))) => Some((anchor, (view, col))),
-                                // First shift-click: anchor at wherever the cursor already was.
                                 (true, None) => delegate
                                     .selection
                                     .and_then(|s| match s {
@@ -325,7 +271,6 @@ impl TablePanel {
                             }
                         });
                     }
-                    // The pinned `#` column isn't a data column, so selecting it clears instead.
                     TableEvent::SelectColumn(col) if *col != row_index::COL_IX => {
                         let sel = Some(Selection::Column(*col - 1));
                         state.update(cx, |s, _| s.delegate_mut().selection = sel);
@@ -347,11 +292,9 @@ impl TablePanel {
                         state.update(cx, |s, _| s.delegate_mut().set_column_widths(widths));
                         Self::persist_columns(state, cx);
                     }
-                    // The delegate's `move_column` hook already reordered the data.
                     TableEvent::MoveColumn(..) => Self::persist_columns(state, cx),
                     _ => {}
                 }
-                // Cross-crate readers refresh off this single signal.
                 state.update(cx, |_, cx| cx.emit(TableChanged));
             },
         );
@@ -360,7 +303,6 @@ impl TablePanel {
             cx.observe_global::<settings::project::CurrentProject>(|this: &mut Self, cx| {
                 let project = cx.global::<settings::project::CurrentProject>();
                 let file = project.file.clone();
-                // A project-scoped setting write: re-apply per-column settings only, don't reload (loses state).
                 if this.loaded_project.as_ref() == Some(&file) {
                     this.state.update(cx, |state, cx| {
                         apply_settings(state.delegate_mut(), cx);
@@ -402,8 +344,6 @@ impl TablePanel {
             cx.notify();
         });
 
-        // Typing in the find bar recomputes matches (jumping to the first); Enter/Shift-Enter
-        // steps to the next/previous match.
         let _search_sub =
             cx.subscribe(
                 &search_input,
@@ -493,15 +433,12 @@ impl TablePanel {
         cx.notify();
     }
 
-    /// Flip one of the three search toggles and re-run the find. `pick` selects which bool.
     fn toggle_opt(&mut self, pick: fn(&mut SearchOpts) -> &mut bool, cx: &mut Context<Self>) {
         let flag = pick(&mut self.search_opts);
         *flag = !*flag;
         self.refresh_search(cx);
     }
 
-    /// Step `delta` matches forward (+1) or back (-1), wrapping, and scroll/select the landing
-    /// cell. No-op with no matches.
     fn goto_match(&mut self, delta: isize, cx: &mut Context<Self>) {
         // Re-scan first: matches are view indices, and a filter change since last keystroke invalidates them.
         let needle = self.search_input.read(cx).value().to_string();
@@ -520,14 +457,10 @@ impl TablePanel {
         cx.notify();
     }
 
-    /// Scroll the current match into view and set it as the native cell selection — reusing the
-    /// library's own highlight instead of building span-level match highlighting.
     fn select_current_match(&mut self, cx: &mut Context<Self>) {
         let Some(&(view_row, data_col)) = self.search_matches.get(self.search_ix) else {
             return;
         };
-        // `set_selected_cell` already centre-scrolls the row, so no separate `scroll_to_row`.
-        // +1 for the pinned row-index column.
         self.state.update(cx, |state, cx| {
             state.set_selected_cell(view_row, data_col + 1, cx)
         });
@@ -564,9 +497,6 @@ impl TablePanel {
         self.select_current_match(cx);
     }
 
-    /// Toggle the find bar. Opening focuses the query editor; closing returns focus to the table.
-    /// Public for the view host's toolbar button, which can't dispatch the `Search` action —
-    /// that only fires while focus is already inside this panel.
     pub fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_open = !self.search_open;
         if self.search_open {
@@ -579,7 +509,6 @@ impl TablePanel {
         cx.notify();
     }
 
-    /// Dismiss the find bar (Escape) and return focus to the table. No-op if already closed.
     fn dismiss_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.search_open {
             return;
@@ -611,8 +540,6 @@ impl TablePanel {
         cancelled
     }
 
-    /// Enter opens the selected cell for editing, the spreadsheet convention. Bound in the grid's
-    /// own key context, so it can't fire while the editor already has focus and Enter means commit.
     fn edit_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.state.update(cx, |state, cx| {
             let Some(Selection::Cell { row, col }) = state.delegate().selection() else {
@@ -650,8 +577,6 @@ impl TablePanel {
         crate::structural(pick(&rows, col), cx);
     }
 
-    /// Open the rename editor on the selected column, the menu-bar half of the header's
-    /// "Rename column…".
     fn rename_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((_, col)) = self.structural_target(cx) else {
             return;
@@ -691,7 +616,6 @@ impl TablePanel {
         }
     }
 
-    /// Blank every cell in the selection, as one undo step. Cut's second half, and Edit ▸ Clear.
     fn clear_range(&mut self, cx: &mut Context<Self>) {
         let Some((rows, cols)) = self.state.read(cx).delegate().range_cells() else {
             return;
@@ -779,16 +703,12 @@ impl TablePanel {
         settings::dirty::mark(settings::dirty::COLUMN_LAYOUT, cx);
     }
 
-    /// The floating cell editor, sized to its content and pinned to where the edit opened. `None`
-    /// unless something is being edited *and* the cell (or header) has measured it, one frame
-    /// later.
     fn cell_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.state.read(cx);
         let editing = state.delegate().editing;
         let (row, col) = match editing {
             EditState::Idle => return None,
             EditState::Editing { row, col } => (row, col),
-            // A header has no row; the label below is the only thing that wants one.
             EditState::Renaming { col } => (0, col),
         };
         let scroll = point(
@@ -828,8 +748,6 @@ impl TablePanel {
         let scrolled = scroll != spawn_scroll;
         let accent = cx.theme().primary;
         let box_el = box_el
-            // Once the grid has moved under the box, name the cell it belongs to — the column's
-            // own header, which beats a spreadsheet letter when the columns are named.
             .when(scrolled, |b| {
                 b.child(
                     div()
@@ -863,8 +781,6 @@ impl TablePanel {
         };
         let delegate = state.delegate();
         let ctx = CommandContext {
-            // Left empty: a suggestion request goes to every plugin, so only the host can say which
-            // bucket belongs to which of them.
             column_settings: serde_json::Value::Null,
             column: Some(delegate.column_name(col)),
             column_key: Some(delegate.column_key(col)),
@@ -875,7 +791,6 @@ impl TablePanel {
         (hooks.suggest)(&ctx, cx);
     }
 
-    /// The completion list under the editor, drawn from whatever the last request came back with.
     fn suggestions(
         &self,
         row: usize,
@@ -925,8 +840,6 @@ impl TablePanel {
                         .hover(|row| row.bg(cx.theme().accent))
                         .child(item)
                         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                            // Filled in, not committed: the user may still want to add a second
-                            // sub-delimited value before leaving the cell.
                             editor.update(cx, |input, cx| {
                                 input.set_value(chosen.clone(), window, cx)
                             });
@@ -972,14 +885,12 @@ impl Render for TablePanel {
 
         v_flex()
             .size_full()
-            // `TablePanel` context + tracked focus so Ctrl+F reaches the toggle even when no cell holds focus.
             .key_context("TablePanel")
             .track_focus(&self.focus_handle)
             .id("table-panel")
             .role(Role::Group)
             .aria_label("Table")
             .on_action(cx.listener(|this, _: &Search, window, cx| this.toggle_search(window, cx)))
-            // Ctrl+H opens the bar with the replacement row already out, rather than toggling it.
             .on_action(cx.listener(|this, _: &Replace, window, cx| {
                 this.replace_open = true;
                 if !this.search_open {
@@ -1071,7 +982,6 @@ impl Render for TablePanel {
             // Find bar renders here, not in `title_suffix`: the parent `TabPanel` never observes us to redraw it.
             .when(self.search_open, |this| {
                 let opts = self.search_opts;
-                // A compact toggle button (case / word / regex), highlighted while active.
                 let toggle = |id: &'static str,
                               icon: Option<IconName>,
                               label: &'static str,
@@ -1189,7 +1099,6 @@ impl Render for TablePanel {
                                 h_flex()
                                     .gap_1()
                                     .items_center()
-                                    // Indent past the chevron so the two inputs line up.
                                     .pl_7()
                                     .child(div().flex_1().child(Input::new(&self.replace_input)))
                                     .child(
@@ -1243,8 +1152,6 @@ impl Render for TablePanel {
     }
 }
 
-/// Clipboard text as a grid. The trailing newline a spreadsheet adds to a copied range is dropped,
-/// or it would paste a row of blanks under the real ones.
 pub(crate) fn parse_tsv(text: &str) -> Vec<Vec<&str>> {
     text.strip_suffix('\n')
         .unwrap_or(text)
@@ -1267,7 +1174,6 @@ pub(crate) fn paste_cells(
     cols: RangeInclusive<usize>,
     reach: &[usize],
 ) -> Cells {
-    // One value over a multi-cell selection means "make them all this" — the bulk edit.
     if let [line] = block
         && let [value] = line.as_slice()
         && (rows.len() > 1 || cols.clone().count() > 1)
@@ -1288,7 +1194,6 @@ pub(crate) fn paste_cells(
             cells.push((row, cols.start() + offset, SharedString::from(*value)));
         }
     }
-    // Columns past the last one are dropped by `apply_edit`, which writes only cells that exist.
     cells
 }
 
@@ -1344,8 +1249,6 @@ pub fn editor_box(
         .relative()
         .w(size.width)
         .h(size.height)
-        // Swallow mouse events so clicking inside the box doesn't fall through to whatever is
-        // painted behind it and move the selection.
         .occlude()
         .bg(cx.theme().background)
         .border_1()
@@ -1396,15 +1299,10 @@ const PAD_X: f32 = cell::CELL_PAD_X * 2. + 2. + INPUT_RIGHT_MARGIN;
 const INPUT_RIGHT_MARGIN: f32 = 10.;
 const PAD_Y: f32 = cell::CELL_PAD_Y * 2. + 2.;
 
-/// Height of the `C6` tab that marks the box once the grid has scrolled under it.
 const TAB_H: f32 = 16.;
 
-/// How long the edits have to stop before the validators re-run. Short enough that squiggles feel
-/// immediate, long enough that a burst of commits — a paste, held-down undo — costs one pass.
 const REVALIDATE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
 
-/// The completion list under the cell editor. Wide enough for a vocabulary term, short enough that
-/// it does not cover the rows a user is comparing against.
 const SUGGEST_W: f32 = 220.;
 const SUGGEST_H: f32 = 180.;
 
@@ -1414,7 +1312,6 @@ mod tests {
     use diagnostics::{DATASET_MAIN, Diagnostic, Diagnostics, Location, Severity, Source};
     use gpui::{Bounds, Pixels, SharedString, TestAppContext, point, px, size};
 
-    /// `paste_cells` output as `(row, col, text)` with plain strs, for readable assertions.
     fn wrote(cells: &[(usize, usize, SharedString)]) -> Vec<(usize, usize, &str)> {
         cells.iter().map(|(r, c, v)| (*r, *c, v.as_ref())).collect()
     }
@@ -1563,7 +1460,6 @@ mod tests {
         let (panel, cx) = cx.add_window_view(super::TablePanel::new);
         let state = panel.read_with(cx, |panel, _| panel.state.clone());
 
-        // A two-cell selection: row 1, both columns — what shift-clicking across them leaves.
         cx.update(|_, cx| {
             state.update(cx, |state, _| {
                 state.delegate_mut().selection =
@@ -1613,7 +1509,6 @@ mod tests {
         );
     }
 
-    /// The same single value over a single cell is an ordinary paste, not a fill.
     #[test]
     fn one_clipboard_value_over_one_cell_writes_only_that_cell() {
         let block = super::parse_tsv("x");
@@ -1631,7 +1526,6 @@ mod tests {
         );
     }
 
-    /// `reach` is short at the end of the view; the rows that don't exist are simply not written.
     #[test]
     fn a_block_taller_than_the_grid_is_clipped_not_grown() {
         let block = super::parse_tsv("a\nb\nc");
@@ -1648,7 +1542,6 @@ mod tests {
         assert_eq!(wrote(&cells), vec![(2, 0, "a"), (9, 0, "b")]);
     }
 
-    /// A 120x32 cell whose top-left is 200px from the table's right edge and 100px from its bottom.
     fn cell_and_table() -> (Bounds<Pixels>, Bounds<Pixels>) {
         let cell = Bounds::new(point(px(300.), px(50.)), size(px(120.), px(32.)));
         let table = Bounds::new(point(px(0.), px(0.)), size(px(500.), px(150.)));
@@ -1669,7 +1562,6 @@ mod tests {
         assert_eq!(got, size(px(150. + super::PAD_X), px(32.)));
     }
 
-    /// A short value with hard newlines fits horizontally but not vertically.
     #[test]
     fn hard_newlines_grow_the_box_down_even_when_the_text_fits() {
         let (cell, table) = cell_and_table();
@@ -1681,7 +1573,6 @@ mod tests {
     fn text_past_the_table_edge_wraps_and_grows_down() {
         let (cell, table) = cell_and_table();
         let got = super::editor_size(cell, table, px(900.), px(20.), |_| 3);
-        // Width capped at the table's right edge; height = 3 wrapped lines + padding.
         assert_eq!(got, size(px(200.), px(60. + super::PAD_Y)));
     }
 

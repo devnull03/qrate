@@ -37,8 +37,6 @@ pub fn keys(name: &str) -> Vec<String> {
 ///
 /// Deliberately not [`keys`]: a file offers up its id prefixes so the parts of one item can be
 /// found together, but a cell reading `2020` must not claim the whole shoot.
-// ponytail: one filename per cell. Split on a separator here if multi-value file columns
-// (`a.jpg|b.jpg`) turn up in real exports.
 pub fn lookup_keys(cell: &str) -> Vec<String> {
     let lower = cell.trim().to_lowercase();
     if lower.is_empty() {

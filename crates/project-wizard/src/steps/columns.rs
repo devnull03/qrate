@@ -220,7 +220,6 @@ impl ProjectWizard {
 
     /// Fetches the given public Sheet as `.xlsx` and turns its headers into a
     /// column config (one Text column each).
-    // ponytail: blocking fetch on the UI thread — fine for a "Check" click;
     // move to the background executor if it ever drags.
     fn load_config_from_sheet(&mut self, cx: &mut Context<Self>) {
         let link = self.sheet_link_input.read(cx).value().to_string();

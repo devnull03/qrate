@@ -48,8 +48,6 @@ pub fn init() {
         ColorChoice::Auto,
     )];
 
-    // ponytail: rotation-on-start caps retention at two files but not their size — a run that
-    // errors in a loop grows unbounded. Add a size roll if that ever costs someone disk.
     if let Some(path) = log_path() {
         if let Some(dir) = path.parent() {
             let _ = fs::create_dir_all(dir);
