@@ -198,9 +198,13 @@ impl Render for Launcher {
                     // and `min_h(0)` lets the list inside it scroll.
                     .items_stretch()
                     .min_h(px(0.))
-                    // No gap: the recents column runs to the divider so its scrollbar sits at
-                    // the far right, and the list pads itself off it instead.
-                    .p_5()
+                    // No gap between the columns: the recents column runs to the divider so its
+                    // scrollbar sits at the far right, and the list pads itself off it instead.
+                    // Less padding above than beside: a heading carries its own leading, and
+                    // with an even inset the window reads as top-heavy.
+                    .px_5()
+                    .pt_2()
+                    .pb_5()
                     .child(
                         v_flex()
                             .flex_1()
@@ -216,6 +220,9 @@ impl Render for Launcher {
                                     // Everything but the scrollbar keeps clear of the divider by
                                     // the same amount the Create New column does.
                                     .pr_5()
+                                    // A heading needs more air under it than the list rows keep
+                                    // between themselves, or it reads as the first row.
+                                    .pb_2()
                                     .child(div().text_lg().font_semibold().child("Recent Projects"))
                                     .child(
                                         div()
@@ -263,7 +270,7 @@ impl Render for Launcher {
                             .pl_5()
                             .border_l_1()
                             .border_color(cx.theme().border)
-                            .child(div().text_lg().font_semibold().child("Create New"))
+                            .child(div().text_lg().font_semibold().pb_2().child("Create New"))
                             .child(create_card(
                                 "new-blank",
                                 "Blank",
