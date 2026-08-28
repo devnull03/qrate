@@ -59,7 +59,8 @@ pub struct DetailsPanel {
     _handle_sub: Subscription,
     /// Re-renders on any table change (selection, edits, column moves).
     _table_sub: Option<Subscription>,
-    /// Re-renders when the bottom dock opens/closes, so the strip-crop padding tracks it.
+    /// Re-renders when the bottom dock opens/closes, so the panel gives the strip crop back as
+    /// padding and keeps the same usable height either way.
     _crop_sub: Subscription,
     /// The field editor, shared across whichever field is open — the same one-per-panel
     /// arrangement the grid uses for its cell editor.
@@ -314,16 +315,13 @@ impl DetailsPanel {
                     ),
             )
             .when(open, |section| {
-                let crop = cx.try_global::<BottomDockCrop>().map_or(px(0.), |c| c.0);
                 section.child(
                     div()
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scrollbar()
                         .px_3()
-                        // Same crop compensation the field list makes: the closed bottom dock's
-                        // strip covers this panel's last 29px, which is where the newest note sits.
-                        .pb(px(8.) + crop)
+                        .pb_2()
                         .child(
                             v_flex()
                                 .gap_2()
@@ -759,11 +757,7 @@ impl Render for DetailsPanel {
         // when the count changes — so the fields jumped on the way out and the notes came back at
         // whatever height that rescale had left, not the one they were dragged to. Pinned, the
         // stored size is never touched, and reopening restores it exactly.
-        //
-        // The floor includes the crop because the header sits at the top of the panel: a closed
-        // bottom dock covers the side docks' last 29px, and without the allowance the whole
-        // collapsed bar lands inside that band.
-        let collapsed_h = NOTES_HEADER_H + f32::from(crop);
+        let collapsed_h = NOTES_HEADER_H;
         let notes_range = match self.notes_open {
             true => px(80.)..px(320.),
             false => px(collapsed_h)..px(collapsed_h),
@@ -878,6 +872,11 @@ impl Render for DetailsPanel {
         // text-undo mid-edit.
         div()
             .size_full()
+            // The whole panel gives the bottom-strip crop back at once, rather than each scrolling
+            // region padding itself: the split below sizes its panes against whatever height it is
+            // handed, so a panel that grew 29px when the bottom dock closed re-scaled the image
+            // pane under the pointer. Paid here, the split's height never changes.
+            .pb(crop)
             .key_context(DETAILS_META.name)
             .track_focus(&self.focus_handle)
             .id("details-panel")
@@ -1082,8 +1081,7 @@ impl Render for DetailsPanel {
                                             // Clear of the resize handle above, so the first field
                                             // doesn't sit flush against it.
                                             .pt_2()
-                                            // Pad by the bottom-strip crop (29px closed / 0 open) so it doesn't eat the last field row.
-                                            .pb(px(12.) + crop)
+                                            .pb(px(12.))
                                             .child(
                                                 div()
                                                     .rounded(cx.theme().radius)
