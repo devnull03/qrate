@@ -5,9 +5,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $piVersion = "0.84.2"
-$extensionVersion = "0.2.0"
+$extensionVersion = "0.2.1"
 $piSha256 = "741fc1ae1afecb573ac2888e011188ff446b3940f4aabe1583f60bf55be8a3d0"
-$extensionSha256 = "4274eac1b90141c40d06b7e8f63349f36f40a0572490119296785b20da19b938"
+$extensionSha256 = "feb4ce5dcb59f5d936122541b776a85cd9d2541e121b7c47de7c4efb517ed37d"
 $runtime = Join-Path ([System.IO.Path]::GetFullPath($Destination)) "agent"
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("qrate-agent-" + [guid]::NewGuid())
 
