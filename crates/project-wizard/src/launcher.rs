@@ -23,6 +23,9 @@ pub const LAUNCHER_WINDOW_KIND: &str = "project-launcher";
 #[derive(Clone, Copy)]
 pub struct LauncherHooks {
     pub open_main_window: fn(&mut App),
+    /// The title bar's right-hand control — updater state and the app menu. Same inversion as
+    /// above: every action in it belongs to the `app` crate, which builds the view.
+    pub title_items: fn(&mut App) -> AnyView,
 }
 
 impl Global for LauncherHooks {}
@@ -32,14 +35,22 @@ pub struct Launcher {
     /// Shown above the recents list when opening a project fails (missing or
     /// unreadable `.qrate`).
     error: Option<SharedString>,
+    /// `None` in a build with no hooks installed — the launcher is the first window up, and it
+    /// still has to open without them.
+    title_items: Option<AnyView>,
 }
 
 impl Launcher {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.set_window_title("Open Project — qrate");
+        let title_items = cx
+            .try_global::<LauncherHooks>()
+            .copied()
+            .map(|hooks| (hooks.title_items)(cx));
         Self {
             recents: recent::list(cx),
             error: None,
+            title_items,
         }
     }
 
@@ -168,14 +179,28 @@ impl Render for Launcher {
                 TitleBar::new()
                     .text_xs()
                     .text_color(cx.theme().foreground)
-                    .child(Label::new("qrate").font_semibold()),
+                    .child(Label::new("qrate").font_semibold())
+                    // Pushed to the right of the window's own controls' inboard edge, the way the
+                    // main window's title bar arranges its own right-hand group.
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .justify_end()
+                            .pr_4()
+                            .children(self.title_items.clone()),
+                    ),
             )
             .child(
                 h_flex()
                     .id("launcher-body")
                     .flex_1()
+                    // `h_flex` centres its children on the cross axis, which let a recents list
+                    // taller than the window hang off both ends of the body — over the title bar
+                    // at the top, past the frame at the bottom, and never scrolling because
+                    // nothing bounded its height. Stretched, the column is exactly the body tall
+                    // and `min_h(0)` lets the list inside it scroll.
+                    .items_stretch()
                     .min_h(px(0.))
-                    .h_full()
                     .gap_5()
                     .p_5()
                     .child(
