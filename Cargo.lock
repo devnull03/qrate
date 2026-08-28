@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "agent-runtime"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "alacritty_terminal",
  "gpui",
@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "ai"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -253,7 +253,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "app"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "agent-runtime",
  "ai",
@@ -1018,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "checks"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "diagnostics",
  "edtf",
@@ -1635,7 +1635,7 @@ checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 
 [[package]]
 name = "data-exchange"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "base64",
  "calamine",
@@ -1755,7 +1755,7 @@ dependencies = [
 
 [[package]]
 name = "diagnostics"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -5589,7 +5589,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "plugin-api"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "gpui",
  "serde_json",
@@ -5598,7 +5598,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-host"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "diagnostics",
  "gpui",
@@ -5752,7 +5752,7 @@ dependencies = [
 
 [[package]]
 name = "preview"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -5814,7 +5814,7 @@ dependencies = [
 
 [[package]]
 name = "project-wizard"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "anyhow",
  "csv",
@@ -6987,7 +6987,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -7211,7 +7211,7 @@ dependencies = [
 
 [[package]]
 name = "spellcheck"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "diagnostics",
  "gpui",
@@ -7724,7 +7724,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "ai",
  "base64",
@@ -8415,7 +8415,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "updater"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -9166,7 +9166,7 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "window-wrapper"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -9903,7 +9903,7 @@ dependencies = [
 
 [[package]]
 name = "workspace"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "agent-runtime",
  "diagnostics",
