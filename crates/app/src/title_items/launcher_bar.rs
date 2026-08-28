@@ -8,7 +8,7 @@
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_component::{IconName, Sizable as _, h_flex};
+use gpui_component::{Sizable as _, h_flex};
 
 use window_wrapper::OpenBrowser;
 
@@ -35,51 +35,64 @@ impl LauncherBar {
 impl Render for LauncherBar {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         // The full menu bar belongs to a window with a project in it — File, Edit and Insert have
-        // nothing to act on here. What's left is the app itself: what it can open, what it runs,
-        // and where to report it when it misbehaves.
+        // nothing to act on here. What's left splits in two: what the app can do, and where to
+        // read about it or report it. The window's own name is the first menu's label, so the
+        // title bar gains a menu without gaining a word.
         h_flex()
-            .gap_1()
+            .w_full()
             .items_center()
-            .child(self.update.clone())
+            .justify_between()
             .child(
-                Button::new("launcher-menu")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Menu)
-                    .tooltip("qrate")
-                    .dropdown_menu(|menu, _, _| {
-                        menu.menu("New Project…", Box::new(NewProject))
-                            .menu("Settings…", Box::new(OpenSettings))
-                            .item(
-                                PopupMenuItem::new("Check for Updates")
-                                    .on_click(|_, _, cx| crate::update_check::check_now(cx)),
-                            )
-                            .separator()
-                            .menu("Plugins Folder", Box::new(OpenPluginsFolder))
-                            .menu("Reload Plugins", Box::new(ReloadPlugins))
-                            .separator()
-                            .menu(
-                                "Repository",
-                                Box::new(OpenBrowser {
-                                    url: REPO_URL.into(),
-                                }),
-                            )
-                            .menu(
-                                "Releases",
-                                Box::new(OpenBrowser {
-                                    url: "https://qrate.dvnl.work/releases".into(),
-                                }),
-                            )
-                            .separator()
-                            .menu("Copy Debug Info", Box::new(CopyDebugInfo))
-                            .menu("Report an Issue", Box::new(ReportIssue))
-                            .menu("Open Logs Folder", Box::new(OpenLogsFolder))
-                            .separator()
-                            .menu(
-                                format!("Version {}", env!("CARGO_PKG_VERSION")),
-                                Box::new(OpenAbout),
-                            )
-                    }),
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("launcher-menu")
+                            .ghost()
+                            .xsmall()
+                            .label("qrate")
+                            .dropdown_menu(|menu, _, _| {
+                                menu.menu("New Project…", Box::new(NewProject))
+                                    .separator()
+                                    .menu("Settings…", Box::new(OpenSettings))
+                                    .menu("Plugins Folder", Box::new(OpenPluginsFolder))
+                                    .menu("Reload Plugins", Box::new(ReloadPlugins))
+                                    .separator()
+                                    .item(
+                                        PopupMenuItem::new("Check for Updates").on_click(
+                                            |_, _, cx| crate::update_check::check_now(cx),
+                                        ),
+                                    )
+                                    .menu(
+                                        format!("Version {}", env!("CARGO_PKG_VERSION")),
+                                        Box::new(OpenAbout),
+                                    )
+                            }),
+                    )
+                    .child(
+                        Button::new("launcher-help")
+                            .ghost()
+                            .xsmall()
+                            .label("Help")
+                            .dropdown_menu(|menu, _, _| {
+                                menu.menu(
+                                    "Repository",
+                                    Box::new(OpenBrowser {
+                                        url: REPO_URL.into(),
+                                    }),
+                                )
+                                .menu(
+                                    "Releases",
+                                    Box::new(OpenBrowser {
+                                        url: "https://qrate.dvnl.work/releases".into(),
+                                    }),
+                                )
+                                .separator()
+                                .menu("Copy Debug Info", Box::new(CopyDebugInfo))
+                                .menu("Report an Issue", Box::new(ReportIssue))
+                                .menu("Open Logs Folder", Box::new(OpenLogsFolder))
+                            }),
+                    ),
             )
+            .child(self.update.clone())
     }
 }

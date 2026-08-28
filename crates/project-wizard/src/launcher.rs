@@ -9,6 +9,7 @@
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::label::Label;
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme, IconName, Root, Sizable, StyledExt, TitleBar, h_flex, v_flex};
 use window_wrapper::WindowRegistry;
 
@@ -23,8 +24,8 @@ pub const LAUNCHER_WINDOW_KIND: &str = "project-launcher";
 #[derive(Clone, Copy)]
 pub struct LauncherHooks {
     pub open_main_window: fn(&mut App),
-    /// The title bar's right-hand control — updater state and the app menu. Same inversion as
-    /// above: every action in it belongs to the `app` crate, which builds the view.
+    /// The title bar's contents — the app menus and the updater's state. Same inversion as
+    /// above: every action in them belongs to the `app` crate, which builds the view.
     pub title_items: fn(&mut App) -> AnyView,
 }
 
@@ -179,16 +180,12 @@ impl Render for Launcher {
                 TitleBar::new()
                     .text_xs()
                     .text_color(cx.theme().foreground)
-                    .child(Label::new("qrate").font_semibold())
-                    // Pushed to the right of the window's own controls' inboard edge, the way the
-                    // main window's title bar arranges its own right-hand group.
-                    .child(
-                        h_flex()
-                            .flex_1()
-                            .justify_end()
-                            .pr_4()
-                            .children(self.title_items.clone()),
-                    ),
+                    // The window's name is the first menu's own label once `app` has installed
+                    // its hooks; the plain word is what a build without them falls back to.
+                    .map(|bar| match self.title_items.clone() {
+                        Some(items) => bar.child(h_flex().flex_1().pr_4().child(items)),
+                        None => bar.child(Label::new("qrate").font_semibold()),
+                    }),
             )
             .child(
                 h_flex()
@@ -201,7 +198,8 @@ impl Render for Launcher {
                     // and `min_h(0)` lets the list inside it scroll.
                     .items_stretch()
                     .min_h(px(0.))
-                    .gap_5()
+                    // No gap: the recents column runs to the divider so its scrollbar sits at
+                    // the far right, and the list pads itself off it instead.
                     .p_5()
                     .child(
                         v_flex()
@@ -244,7 +242,12 @@ impl Render for Launcher {
                                     .id("recents-scroll")
                                     .flex_1()
                                     .min_h(px(0.))
-                                    .overflow_y_scroll()
+                                    // Scrollbar, not bare overflow: a launcher opened on a long
+                                    // history has to say there is more of it below the fold.
+                                    .overflow_y_scrollbar()
+                                    // Holds the rows off the scrollbar, which draws at this column's
+                                    // right edge — without it the bar sits over the remove buttons.
+                                    .pr_3()
                                     .child(v_flex().gap_2().child(recent_list)),
                             ),
                     )
