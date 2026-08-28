@@ -183,6 +183,12 @@ impl ProjectWizard {
                 row
             }));
         }
+        // A project with no rows is a grid with nothing to type into — the first row has to be
+        // created before anything else can be, so create it here rather than making the archivist
+        // find Insert Row on an empty screen.
+        if rows.is_empty() {
+            rows.push(vec![String::new(); headers.len()]);
+        }
         // Skipped files → the folder field is stale, same reasoning as `link_method` above.
         let files_folder = (!self.skip_files && !self.folder_path.trim().is_empty())
             .then_some(self.folder_path.as_str());
