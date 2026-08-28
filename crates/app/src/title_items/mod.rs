@@ -1,3 +1,4 @@
+pub mod launcher_bar;
 mod update_notice;
 
 use gpui::*;

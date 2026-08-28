@@ -478,7 +478,10 @@ fn main() {
 
         // Lets the launcher (in the `project-wizard` crate, which can't depend on `app`) open
         // the real main window without a crate cycle. See `project_wizard::launcher`.
-        cx.set_global(LauncherHooks { open_main_window });
+        cx.set_global(LauncherHooks {
+            open_main_window,
+            title_items: title_items::launcher_bar::LauncherBar::view,
+        });
 
         // Same inversion for the Problems panel: `diagnostics` must not depend on `table`, so
         // the jump comes back through here. See `diagnostics::DiagnosticHooks`.
