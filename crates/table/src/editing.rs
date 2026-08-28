@@ -2,6 +2,8 @@
 //! becomes editable by swapping its rendered text for a shared inline `InputState` (see
 //! `selection.rs`, which does the swap) and committing the typed value back on blur/Enter.
 
+use std::path::Path;
+
 use gpui::{Context, PathPromptOptions, SharedString, Window};
 use gpui_component::table::TableState;
 
@@ -50,15 +52,30 @@ pub(crate) fn start(
             multiple: false,
             prompt: Some(prompt),
         });
+        let had_folder = !folder.is_empty();
         cx.spawn_in(window, async move |_, cx| {
             if let Ok(Ok(Some(paths))) = receiver.await
-                && let Some(name) = paths
-                    .first()
-                    .and_then(|path| path.file_name())
-                    .and_then(|name| name.to_str())
+                && let Some(path) = paths.first()
+                && let Some(name) = path.file_name().and_then(|name| name.to_str())
             {
                 let name: SharedString = name.to_owned().into();
-                let _ = cx.update(|_, cx| crate::write_cell(row, col, name, cx));
+                let parent = path.parent().map(Path::to_path_buf);
+                let _ = cx.update(|_, cx| {
+                    // A project with no files folder resolves every row to no file, so the picked
+                    // file would name a preview qrate could never find. The first file chosen by
+                    // hand says where the collection lives; later pickers only fill in a cell.
+                    if !had_folder
+                        && let Some(parent) = parent
+                        && cx.has_global::<settings::project::CurrentProject>()
+                    {
+                        settings::project::CurrentProject::set_text(
+                            settings::project::FILES_FOLDER_KEY,
+                            parent.to_string_lossy().into_owned().into(),
+                            cx,
+                        );
+                    }
+                    crate::write_cell(row, col, name, cx);
+                });
             }
         })
         .detach();
@@ -212,6 +229,57 @@ mod tests {
         .unwrap();
         assert!(cx.did_prompt_for_paths());
         cx.simulate_path_prompt_response(|_| None);
+    }
+
+    /// A project created blank has no files folder, so every row resolves to no file — the picked
+    /// file would name a preview qrate could never find. Picking the first one says where the
+    /// collection lives, and the row has to show it without waiting for a reopen.
+    #[gpui::test]
+    async fn the_first_picked_file_becomes_the_files_folder_and_resolves(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join("qrate-editing-first-pick");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("2020_04_001.jpg");
+        std::fs::write(&file, "x").unwrap();
+
+        let state = panel(cx);
+        let window = cx.windows()[0];
+        cx.update_window(window, |_, window, cx| {
+            state.update(cx, |state, cx| {
+                editing::start(state.delegate_mut(), 0, 0, window, cx);
+            });
+        })
+        .unwrap();
+        cx.simulate_path_prompt_response(|_| Some(vec![file.clone()]));
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            let project = cx.global::<settings::project::CurrentProject>();
+            assert_eq!(
+                project
+                    .data
+                    .values
+                    .get(settings::project::FILES_FOLDER_KEY)
+                    .map(|v| v.text().to_string()),
+                Some(dir.to_string_lossy().into_owned()),
+                "the picked file's folder becomes the project's"
+            );
+            state.update(cx, |state, _| {
+                assert_eq!(
+                    state
+                        .delegate()
+                        .cell(0, 0)
+                        .map(|c| c.to_string())
+                        .as_deref(),
+                    Some("2020_04_001.jpg")
+                );
+                assert_eq!(
+                    state.delegate().row_image(0),
+                    Some(file.as_path()),
+                    "the preview resolves without reopening the project"
+                );
+            });
+        });
     }
 
     /// The other half: without the cancel, that same commit does write — so the assertion above is

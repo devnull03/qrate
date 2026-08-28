@@ -152,6 +152,28 @@ pub fn resolve_row_images(
         .collect()
 }
 
+/// Re-resolves the live grid's images against disk and hands them back to the delegate. The cached
+/// paths were resolved from the text a filename cell held when the project opened, so an edit to
+/// one leaves the Details panel showing the file the row used to name until this runs.
+pub(crate) fn refresh(
+    state: &mut gpui_component::table::TableState<crate::delegate::QrateTableDelegate>,
+    cx: &gpui::App,
+) {
+    let Some(project) = cx.try_global::<settings::project::CurrentProject>() else {
+        return;
+    };
+    let folder = project
+        .data
+        .values
+        .get(settings::project::FILES_FOLDER_KEY)
+        .map(|v| v.text().to_string())
+        .unwrap_or_default();
+    let declared = declared_file_columns(&project.data);
+    let (headers, _, rows) = state.delegate().dataset_snapshot();
+    let paths = resolve_row_images(&headers, &rows, &folder, &declared);
+    state.delegate_mut().set_image_paths(paths);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

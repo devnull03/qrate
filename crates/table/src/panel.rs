@@ -669,7 +669,11 @@ impl TablePanel {
             return;
         }
         self.state.update(cx, |state, cx| {
+            let files = crate::names_a_file(state.delegate(), &cells, cx);
             state.delegate_mut().apply_edit(cells);
+            if files {
+                photos::refresh(state, cx);
+            }
             cx.emit(TableChanged);
             cx.notify();
         });

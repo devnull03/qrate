@@ -174,13 +174,29 @@ pub fn write_cells(cells: Vec<(usize, usize, SharedString)>, cx: &mut App) {
         return;
     };
     state.update(cx, |state, cx| {
+        let files = names_a_file(state.delegate(), &cells, cx);
         state.delegate_mut().apply_edit(cells);
+        if files {
+            photos::refresh(state, cx);
+        }
         cx.emit(delegate::TableChanged);
         cx.notify();
     });
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
     revalidate_now(cx);
     autosave(cx);
+}
+
+/// Whether a batch of edits touches a column the project declares as holding a filename — the only
+/// edits that can change which file a row previews.
+pub(crate) fn names_a_file(
+    delegate: &delegate::QrateTableDelegate,
+    cells: &[(usize, usize, SharedString)],
+    cx: &App,
+) -> bool {
+    cells
+        .iter()
+        .any(|(_, col, _)| column_type(delegate, *col, cx) == ColumnType::Filename)
 }
 
 /// Undo or redo the last grid edit, then do everything a committed edit does. A free function
