@@ -1,145 +1,81 @@
 # qrate
 
-qrate is an open-source desktop application for collection catalogs. It uses a spreadsheet grid, project metadata, linked files, validation, and exports. Archives, libraries, museums, and researchers can keep control of their data.
+<p align="center">
+  <img src="assets/icons/logo.svg" width="112" alt="qrate logo">
+</p>
 
-qrate uses [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) and Rust.
+**A desktop catalog for collections that need to stay useful, portable, and under your control.**
 
-## Features
+qrate helps archives, libraries, museums, researchers, and small collection teams describe and care for collections without giving up their data to a hosted system. Work in a familiar spreadsheet-style grid, connect records to the files they describe, find problems before they spread, and export your catalog when it is time to share or move it.
 
-- Create a blank project, import a CSV file and its folder, or start from a Google Sheet link.
-- Store each project in one portable `.qrate` SQLite file.
-- Edit records in a spreadsheet grid.
-- Search, replace, copy, paste, undo, redo, and filter records.
-- Add, remove, rename, freeze, and reorder rows and columns.
-- Link records to files and photos, by exact filename or by your own pattern.
-- Switch between the grid and a gallery of thumbnails.
-- View images, documents, audio, and video in the details panel, and open one fullscreen to zoom, pan, page, and search inside it.
-- Add cell notes and read validation problems in the Problems panel.
-- Check spelling in over 60 languages, date formats, file links, and headings against LCSH, GeoNames, and Wikidata.
-- Apply a suggested correction from the cell's Fixes menu.
-- Set column types, descriptions, authority lists, and spell-check options for each project.
-- Export data as CSV, JSON-LD, CSL-JSON, or a ZIP archive.
-- Export to a new Google Sheet, or sync an existing one, after you switch it on.
-- Let an AI agent that you run read the open project, and review what it read in the Agent panel.
-- Use local Luau plugins for validation, column configuration, and bar items.
+[Download qrate](https://github.com/devnull03/qrate/releases) · [Read the user guide](docs/index.md) · [Contribute](CONTRIBUTING.md)
 
-> **Early release:** qrate is currently `0.2.0-alpha.1`. Keep backups of important collections. Report problems with steps that reproduce the problem.
+> **Early release:** qrate is currently `0.4.0-beta.2`. Keep backups of important collections and report reproducible problems in an issue.
 
-## Quick start
+## Why qrate
 
-### Run from source
+Collection data rarely lives in just one place. A spreadsheet names an object, a folder holds its images or scans, and a receiving system asks for a different export format. qrate brings that everyday work together while keeping the catalog as a portable project file you can retain and move.
 
-qrate uses the Rust stable toolchain. Complete these steps:
+![Diagram comparing a disconnected cataloguing toolchain with qrate's unified workspace for metadata, media, diagnostics, and authorities.](docs/assets/final-report/toolchain.png)
 
-1. Install Rust with `rustup`.
-2. Install the `rustfmt` and `clippy` components.
-3. Clone this repository.
-4. Run the application:
+- **Keep ownership of your work.** Each project is a portable `.qrate` SQLite file; linked media remains where you keep it. qrate does not require an account or a hosted service.
+- **Describe collections with less friction.** Create a project, import a CSV and its folder, or start from a Google Sheet. Edit, search, filter, copy and paste, undo changes, and tailor columns to the collection.
+- **See the records and the material together.** Link by filename or a pattern, browse a gallery of thumbnails, and preview images, documents, audio, and video alongside each record.
+- **Catch problems while you work.** Check spelling, date formats, file links, headings, and selected authority sources. Review a proposed whole-cell correction before applying it.
+- **Take your data where it needs to go.** Export CSV, JSON-LD, CSL-JSON, or a ZIP archive. Google Sheets export and sync are available when you choose to enable them.
+- **Use AI with a human in control.** An optional local agent can review the open project and stage findings in the Problems panel. It cannot change a cell; you decide what to accept.
 
-   ```sh
-   cargo run
-   ```
+## A typical workflow
 
-The first build downloads Rust dependencies. Later builds use Cargo's build cache.
+1. Create a blank project or bring in an existing CSV or Google Sheet.
+2. Describe and organize records in the grid; configure the fields that matter to your collection.
+3. Link supporting photos, scans, recordings, or video, then inspect them from the record.
+4. Use the Problems panel to review data-quality checks and proposed corrections.
+5. Export a clean catalog in the format your next system or collaborator needs.
 
-The launcher can create a blank project, import a CSV file and its folder, or read a Google Sheet. The [`sample/`](sample) directory has a sample collection and photos.
+![Project creation flow from the qrate launcher through Google Sheets import, grid setup, and column configuration.](docs/assets/final-report/project-creation.png)
 
-### Optional preview tools
+## See qrate at work
 
-Common image formats work without extra tools. PDF previews use PDFium. Video frame previews use ffmpeg.
+![A collection record open in qrate with its scanned item, metadata grid, validation squiggles, and Problems panel.](docs/assets/final-report/diagnostics.png)
 
-qrate looks beside its executable for these tools. It then looks on your system `PATH`. If qrate cannot find a tool, it shows a file-type icon.
+*Review a collection record, its linked media, and every problem found across the project in one workspace.*
 
-To get the supported development binaries, run:
+![qrate's agent bridge shows that an agent can stage findings but only an archivist can apply a change.](docs/assets/final-report/agent-bridge.png)
 
-```sh
-./scripts/fetch-binaries.sh
-```
+*Optional AI review is advisory: it stages findings for the archivist to accept or reject.*
 
-The script puts the binaries beside the executable that `cargo run` uses. See [`docs/dev/SETUP.md`](docs/dev/SETUP.md) for platform requirements and release instructions.
+![A qrate gallery view with a dense collection of generated thumbnails and project-wide diagnostic counts.](docs/assets/final-report/gallery.png)
 
-## Project data and privacy
+*Browse large linked-media collections in a thumbnail gallery without losing sight of data quality.*
 
-A `.qrate` file is a project. It contains the collection grid, settings, notes, and other project metadata. Linked media stays in its current location. Moving a project does not copy its linked files.
+## Get qrate
 
-qrate does not require an account or a hosted service. Google Sheets export is off until you switch it on in **Settings ▸ Google**; until then the menu does not show it. Sign-in happens on your own machine, and qrate reaches only the sheets it made or you picked. Plugins run locally. Install plugins only from sources that you trust.
+Download the installer or portable build for your platform from [GitHub Releases](https://github.com/devnull03/qrate/releases). Release assets are available for Windows, macOS, and Linux. Releases are currently unsigned, so Windows SmartScreen or macOS Gatekeeper may ask for confirmation the first time you open qrate.
 
-## Agent panel
+PDF preview support is included in release builds. For video previews and some less-common image formats, install `ffmpeg` and make it available on your system `PATH`.
 
-qrate can run its bundled Pi agent in a restricted terminal, using OpenRouter's free router by
-default after you sign in. Pi can read the open project and stage findings you review in the
-Problems panel; the qrate bridge can never change a cell. See
-[`docs/agent-panel.md`](docs/agent-panel.md) for how to read the panel, and
-[`AGENTS.md`](AGENTS.md) for the protocol.
+## Your data and privacy
 
-## Development
+A `.qrate` file stores the collection grid, settings, notes, and project metadata. Linked media is not copied into it, so you remain in charge of where those files live.
 
-The workspace uses Rust edition 2024. The main application crate is `crates/app`. Run these commands from the repository root:
+qrate works without an account. Google Sheets integration is off until you enable it in **Settings ▸ Google**; sign-in happens on your machine, and qrate only accesses sheets it creates or you select. Plugins run locally—install them only from sources you trust.
 
-```sh
-cargo run
-cargo test --workspace
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings -A dead_code
-```
+## Learn more
 
-The last three commands match the project quality checks. CI runs them on Windows, macOS, and Linux.
-
-### Workspace
-
-| Crate | Responsibility |
-| --- | --- |
-| `app` | Application setup, windows, menus, themes, logging, and exports |
-| `agent-runtime` | Bundled Pi discovery, isolated profile, and restricted terminal session |
-| `table` | Spreadsheet grid, editing, history, filters, notes, and file links |
-| `workspace` | Panels, docks, the gallery view, and the fullscreen viewer |
-| `window-wrapper` | Title bar, status bar, and window registry |
-| `settings` | User settings and the `.qrate` project store |
-| `project-wizard` | Launcher, recent projects, and project creation and import |
-| `data-exchange` | CSV, JSON-LD, CSL-JSON, ZIP, and Google Sheets data exchange |
-| `diagnostics` | Validation, spelling checks, corrections, and problems panel |
-| `checks` | Date formats and authority lookups |
-| `spellcheck` | Dictionaries for diagnostics |
-| `plugin-host` | Luau runtime and local plugin loading |
-| `plugin-api` | Types that plugins use |
-| `preview` | Thumbnails, format checks, and native media preview tools |
-| `ai` | Planned interfaces for AI review and embeddings |
-
-### Plugins
-
-qrate plugins are local folders. qrate does not download plugin packages at run time. The [qrate plugin template](https://github.com/devnull03/qrate-plugin-template) contains the host API and type definitions. Plugin authors should use that template. Do not depend on internal Rust crates.
-
-## Documentation
-
-User docs live in [`docs/`](docs), starting at [`docs/index.md`](docs/index.md), and cover
-projects, the grid, diagnostics, columns, export, the Agent panel, and plugins.
-
-Contributor docs live in [`docs/dev`](docs/dev):
-
-- [`docs/dev/SETUP.md`](docs/dev/SETUP.md) — local setup, CI, and release instructions
-- [`docs/dev/REPLICATION-GUIDE.md`](docs/dev/REPLICATION-GUIDE.md) — project environment setup
-- [`docs/dev/plugin-systems-and-lsp.md`](docs/dev/plugin-systems-and-lsp.md) — plugin system design notes
-- [`NOTICES`](NOTICES) — third-party material and notices
+- [Projects](docs/projects.md) — create, import, and open projects
+- [The grid](docs/grid.md) — edit, search, filter, and undo
+- [Files and photos](docs/files-and-photos.md) — link and view collection material
+- [Diagnostics](docs/diagnostics.md) — checks, problems, and fixes
+- [Columns](docs/columns.md) — types, authority lists, and project settings
+- [Export and Google Sheets](docs/export-and-sync.md) — move data in and out
+- [Agent panel](docs/agent-panel.md) — review data with an optional local agent
+- [Plugins](docs/plugins/index.md) — extend qrate locally
 
 ## Contributing
 
-Contributions are welcome. Complete these steps before you submit code:
-
-1. Open an issue or pull request with a clear description.
-2. Run the formatting check.
-3. Run Clippy.
-4. Run the test suite.
-
-When you contribute, you license your work under the AGPL-3.0. Contributors keep copyright in their work. qrate does not use a Contributor License Agreement or copyright assignment.
+qrate is open source and welcomes bug reports, documentation improvements, plugins, design feedback, and code contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, pull-request expectations, and the checks GitHub Actions runs.
 
 ## License
 
-Copyright © 2026 Arnav Mehta.
-
-qrate is free software under the [GNU Affero General Public License v3.0](LICENSE.md). You can download, run, study, modify, and share qrate without payment. This includes use in an archive, library, museum, or university. Using qrate to catalog a collection creates no obligation.
-
-The AGPL applies when you distribute a modified qrate. It also applies when you offer a modified qrate over a network. In both cases, give users your changes under the same license. This license keeps qrate open. It does not restrict the institutions that use it.
-
-**Commercial licensing.** Ask if the AGPL does not fit your use case. The copyright holder can offer a separate license for their work. Other copyright holders must agree to license their work separately.
-
-**Bundled third-party material** and its licenses are in [NOTICES](NOTICES).
+Copyright © 2026 Arnav Mehta. qrate is free software under the [GNU Affero General Public License v3.0](LICENSE.md). See [NOTICES](NOTICES) for bundled third-party material and licenses.
