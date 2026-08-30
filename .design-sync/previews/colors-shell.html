@@ -1,0 +1,27 @@
+<!-- @dsCard group="Colors" viewport="760x300" name="Page shell" subtitle="Paper-and-ink tokens — fixed across all six themes" -->
+<html><head><link rel="stylesheet" href="../styles.css"><style>
+  body{margin:0;padding:18px}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .sw{border:1px solid var(--rule-soft)}
+  .chip{height:52px}
+  .lbl{font-family:var(--font-mono);font-size:11px;padding:6px 8px;color:var(--dim);line-height:1.45}
+  .lbl b{display:block;color:var(--ink);font-weight:600}
+</style></head><body>
+<p class="eyebrow">Theme-invariant</p>
+<h3 style="font-size:19px;margin:6px 0 14px">Page shell</h3>
+<div class="grid">
+  <div class="sw"><div class="chip" style="background:var(--paper)"></div><div class="lbl"><b>--paper</b>bg-paper</div></div>
+  <div class="sw"><div class="chip" style="background:var(--ground)"></div><div class="lbl"><b>--ground</b>bg-ground</div></div>
+  <div class="sw"><div class="chip" style="background:var(--ink)"></div><div class="lbl"><b>--ink</b>text-ink / bg-ink</div></div>
+  <div class="sw"><div class="chip" style="background:var(--rust)"></div><div class="lbl"><b>--rust</b>text-rust</div></div>
+  <div class="sw"><div class="chip" style="background:var(--body)"></div><div class="lbl"><b>--body</b>text-body</div></div>
+  <div class="sw"><div class="chip" style="background:var(--dim)"></div><div class="lbl"><b>--dim</b>text-dim</div></div>
+  <div class="sw"><div class="chip" style="background:var(--faint)"></div><div class="lbl"><b>--faint</b>text-faint</div></div>
+  <div class="sw"><div class="chip" style="background:var(--nav-fg)"></div><div class="lbl"><b>--nav-fg</b>text-nav</div></div>
+</div>
+<div style="display:flex;gap:18px;margin-top:14px;font-family:var(--font-mono);font-size:11px;color:var(--dim)">
+  <span style="flex:1;border-top:1px solid var(--rule);padding-top:6px">--rule / border-rule</span>
+  <span style="flex:1;border-top:1px solid var(--rule-soft);padding-top:6px">--rule-soft</span>
+  <span style="flex:1;border-top:1px solid var(--rule-nav);padding-top:6px">--rule-nav</span>
+</div>
+</body></html>

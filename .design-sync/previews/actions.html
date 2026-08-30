@@ -1,0 +1,22 @@
+<!-- @dsCard group="Components" viewport="760x260" name="Actions" subtitle="Accent button, outline button, inline link, mono command" -->
+<html><head><link rel="stylesheet" href="../styles.css"><style>
+  body{margin:0;padding:18px}
+  .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+  .cap{font-family:var(--font-mono);font-size:11px;color:var(--faint);margin:0 0 6px}
+</style></head><body>
+<p class="cap">Primary / secondary / disabled</p>
+<div class="row">
+  <a href="#" class="inline-block bg-accent text-on-accent px-4 py-2 hover:underline">Download for macOS</a>
+  <a href="#" class="inline-block border border-ink text-ink px-4 py-2 hover:underline">Read the docs</a>
+  <span class="inline-block border border-rule text-faint px-4 py-2">Windows — soon</span>
+</div>
+<p class="cap">Inline link and eyebrow link</p>
+<div class="row">
+  <a href="#" class="text-ink underline">Changelog</a>
+  <a href="#" class="eyebrow">View all releases &rarr;</a>
+</div>
+<p class="cap">Command</p>
+<div class="row">
+  <code class="font-mono text-sm bg-ground text-body px-3 py-2 border border-rule-soft">brew install qrate</code>
+</div>
+</body></html>

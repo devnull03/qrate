@@ -1,0 +1,20 @@
+<!-- @dsCard group="Components" viewport="760x330" name="App chrome" subtitle="--app-* tokens for mocking the qrate desktop window inside the site" -->
+<html><head><link rel="stylesheet" href="../styles.css"><style>
+  body{margin:0;padding:18px}
+  table{border-collapse:collapse;width:100%;font-size:12px}
+  td,th{border-bottom:1px solid var(--app-row-border);padding:5px 9px;text-align:left}
+  th{background:var(--app-head);color:var(--app-head-fg);font-weight:600}
+  tr:nth-child(even) td{background:var(--app-even)}
+</style></head><body>
+<p class="eyebrow">Desktop app mock</p>
+<div style="margin-top:8px;border:1px solid var(--app-border);background:var(--app-bg);color:var(--app-fg);font-family:var(--font-sans)">
+  <div style="background:var(--app-title);border-bottom:1px solid var(--app-border);padding:6px 10px;font-size:12px;font-weight:600">qrate — Islandora Collection</div>
+  <table>
+    <tr><th>File</th><th>Title</th><th>Status</th></tr>
+    <tr><td>IMG_0431.tif</td><td>Ledger, page 12</td><td style="color:var(--app-muted)">Ready</td></tr>
+    <tr style="background:var(--app-active-bg)"><td style="border-left:2px solid var(--app-active-border)">IMG_0432.tif</td><td>Ledger, page 13</td><td style="color:var(--app-warn)">Missing subject</td></tr>
+    <tr><td>IMG_0433.tif</td><td>Ledger, page 14</td><td style="color:var(--app-danger)">Upload failed</td></tr>
+  </table>
+  <div style="border-top:1px solid var(--app-border);padding:5px 10px;font-family:var(--font-mono);font-size:11px;color:var(--app-muted)">3 items · 1 error</div>
+</div>
+</body></html>
