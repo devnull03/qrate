@@ -32,7 +32,7 @@ export async function getReleases() {
 }
 
 // The API returns newest first. The newest release wins even when it is a
-// pre-release — the alphas are the current build, so a stale stable must not
+// pre-release — the betas are the current build, so a stale stable must not
 // drive the hero button or the download table.
 export function latest(releases) {
   return releases[0] ?? null;

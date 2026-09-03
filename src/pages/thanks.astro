@@ -1,7 +1,7 @@
 ---
 // Where every download button lands. The button does not link at the asset: it
 // links here with ?a=<filename>, and this page starts the download itself. That
-// buys the one thing the alpha needs most, which is somewhere to say the builds
+// buys the one thing the beta needs most, which is somewhere to say the builds
 // are unsigned before Gatekeeper or SmartScreen says it first.
 import Base from '../layouts/Base.astro';
 import { getReleases, latest, assetIndex, getChecksums, humanSize, REPO } from '../lib/releases.js';
@@ -147,7 +147,7 @@ const code =
 
   <section class="grid grid-cols-1 border-b border-rule md:grid-cols-2">
     <div class="gut border-b border-rule py-[26px] md:border-b-0 md:border-r md:p-[34px]">
-      <h2 class="m-0 mb-2.5 text-xl font-semibold tracking-[-0.02em]">This is an alpha build</h2>
+      <h2 class="m-0 mb-2.5 text-xl font-semibold tracking-[-0.02em]">This is a beta build</h2>
       <div class="text-[14px] leading-[1.7] text-body">
         Keep backups of important collections, and report problems with the steps that reproduce
         them. Nothing you catalogue leaves your machine either way: a project is one file on your
