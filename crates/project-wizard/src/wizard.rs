@@ -24,7 +24,7 @@ pub const WIZARD_WINDOW_KIND: &str = "project-creation";
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EntryKind {
     Blank,
-    Csv,
+    LocalFile,
     Sheet,
 }
 
@@ -88,10 +88,10 @@ pub struct ProjectWizard {
     /// Live-validates the name as it's typed; kept alive by holding it here.
     _name_sub: Subscription,
 
-    // Files step - CSV
-    pub(crate) csv_path: String,
-    pub(crate) csv_preview: Option<SpreadsheetPreview>,
-    pub(crate) csv_error: Option<SharedString>,
+    // Files step - local spreadsheet file
+    pub(crate) local_path: String,
+    pub(crate) spreadsheet_preview: Option<SpreadsheetPreview>,
+    pub(crate) local_error: Option<SharedString>,
     pub(crate) folder_path: String,
     pub(crate) folder_match: Option<FolderMatch>,
     pub(crate) folder_error: Option<SharedString>,
@@ -227,9 +227,9 @@ impl ProjectWizard {
             save_path_input,
             name_error: None,
             _name_sub: name_sub,
-            csv_path: String::new(),
-            csv_preview: None,
-            csv_error: None,
+            local_path: String::new(),
+            spreadsheet_preview: None,
+            local_error: None,
             folder_path: String::new(),
             folder_match: None,
             folder_error: None,
@@ -270,10 +270,10 @@ impl ProjectWizard {
 
     pub(crate) fn spreadsheet_headers(&self) -> Vec<String> {
         match self.entry_kind {
-            // Sheet reuses `csv_preview` too — its fetched CSV is parsed the
+            // Sheet reuses `spreadsheet_preview` too — its fetched CSV is parsed the
             // same way (see steps/files.rs `check_sheet_link`).
-            EntryKind::Csv | EntryKind::Sheet => self
-                .csv_preview
+            EntryKind::LocalFile | EntryKind::Sheet => self
+                .spreadsheet_preview
                 .as_ref()
                 .map(|p| p.headers.clone())
                 .unwrap_or_default(),
@@ -308,9 +308,9 @@ impl ProjectWizard {
             }
             WizardStep::Files => match self.entry_kind {
                 // `skip_files` waives only the folder requirement, not the spreadsheet/sheet check.
-                EntryKind::Csv => {
-                    if self.csv_preview.is_none() {
-                        return Err("Choose a valid CSV spreadsheet".into());
+                EntryKind::LocalFile => {
+                    if self.spreadsheet_preview.is_none() {
+                        return Err("Choose a valid spreadsheet file".into());
                     }
                     if !self.skip_files && self.folder_match.is_none() {
                         return Err("Choose a files folder that matches your spreadsheet".into());

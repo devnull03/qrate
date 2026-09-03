@@ -144,7 +144,7 @@ impl ProjectWizard {
         let name = self.project_name(cx);
         let source = match self.entry_kind {
             EntryKind::Blank => "Blank".to_string(),
-            EntryKind::Csv => "CSV + folder".to_string(),
+            EntryKind::LocalFile => "Spreadsheet + folder".to_string(),
             EntryKind::Sheet => "Google Sheet".to_string(),
         };
         // When files are skipped the folder/link state is stale — don't let the
@@ -163,7 +163,7 @@ impl ProjectWizard {
         // The imported rows themselves — the whole point of the `.qrate` file. Blank projects
         // still create the empty dataset with their required Title and File headers.
         let (headers, mut rows) = self
-            .csv_preview
+            .spreadsheet_preview
             .as_ref()
             .map(|preview| (preview.headers.clone(), preview.rows.clone()))
             .unwrap_or_else(|| (spreadsheet_headers, Vec::new()));
@@ -209,7 +209,7 @@ impl ProjectWizard {
                 // Imported notes become Problems-panel entries. Non-fatal: a lost note must not
                 // fail project creation. `open_project` below wakes the diagnostics loader,
                 // which reads them straight back, so this write is the single source of truth.
-                if let Some(preview) = &self.csv_preview {
+                if let Some(preview) = &self.spreadsheet_preview {
                     let notes: Vec<_> = preview
                         .notes
                         .iter()
@@ -282,11 +282,11 @@ impl ProjectWizard {
         let name = self.project_name(cx);
         let source = match self.entry_kind {
             EntryKind::Blank => "Blank project",
-            EntryKind::Csv => "CSV + folder",
+            EntryKind::LocalFile => "Spreadsheet + folder",
             EntryKind::Sheet => "Google Sheet",
         };
         let spreadsheet_line = self
-            .csv_preview
+            .spreadsheet_preview
             .as_ref()
             .map(|p| format!("{} rows · {} columns", p.rows.len(), p.headers.len()));
         // Skipped files → no folder was matched, so don't show a stale Files line.

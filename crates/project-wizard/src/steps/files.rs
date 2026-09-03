@@ -30,7 +30,7 @@ pub(crate) enum MsgKind {
 }
 
 impl ProjectWizard {
-    fn browse_for_csv(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn browse_for_local_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -43,7 +43,7 @@ impl ProjectWizard {
             {
                 let s = path.to_string_lossy().to_string();
                 this.update(cx, |this, cx| {
-                    this.set_csv_path(s, cx);
+                    this.set_local_path(s, cx);
                     cx.notify();
                 })
                 .ok();
@@ -76,16 +76,16 @@ impl ProjectWizard {
         let _ = window;
     }
 
-    fn set_csv_path(&mut self, path: String, _cx: &mut Context<Self>) {
-        self.csv_path = path;
-        match data::load_csv_preview(&self.csv_path) {
+    fn set_local_path(&mut self, path: String, _cx: &mut Context<Self>) {
+        self.local_path = path;
+        match data::load_spreadsheet_preview(&self.local_path) {
             Ok(preview) => {
-                self.csv_preview = Some(preview);
-                self.csv_error = None;
+                self.spreadsheet_preview = Some(preview);
+                self.local_error = None;
             }
             Err(e) => {
-                self.csv_error = Some(e.message().into());
-                self.csv_preview = None;
+                self.local_error = Some(e.message().into());
+                self.spreadsheet_preview = None;
             }
         }
         self.revalidate_folder();
@@ -103,9 +103,11 @@ impl ProjectWizard {
             return;
         }
         let result = match self.entry_kind {
-            EntryKind::Csv | EntryKind::Sheet => self.csv_preview.as_ref().map(|preview| {
-                data::match_folder(preview, &self.folder_path, self.recurse_subfolders)
-            }),
+            EntryKind::LocalFile | EntryKind::Sheet => {
+                self.spreadsheet_preview.as_ref().map(|preview| {
+                    data::match_folder(preview, &self.folder_path, self.recurse_subfolders)
+                })
+            }
             EntryKind::Blank => None,
         };
         match result {
@@ -142,13 +144,13 @@ impl ProjectWizard {
                                 row_count: preview.rows.len(),
                                 used_first_tab: true,
                             });
-                            this.csv_preview = Some(preview);
+                            this.spreadsheet_preview = Some(preview);
                             this.sheet_error = None;
                         }
                         Err(e) => {
                             this.sheet_error = Some(e.to_string().into());
                             this.sheet_check = None;
-                            this.csv_preview = None;
+                            this.spreadsheet_preview = None;
                         }
                     }
                     this.revalidate_folder();
@@ -176,7 +178,7 @@ impl ProjectWizard {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let body = match self.entry_kind {
-            EntryKind::Csv => self.render_csv_files(window, cx).into_any_element(),
+            EntryKind::LocalFile => self.render_local_files(window, cx).into_any_element(),
             EntryKind::Sheet => self.render_sheet_files(window, cx).into_any_element(),
             EntryKind::Blank => self.render_blank_files(window, cx).into_any_element(),
         };
@@ -264,15 +266,15 @@ impl ProjectWizard {
             .child(self.folder_field("browse-folder-blank", false, cx))
     }
 
-    fn render_csv_files(
+    fn render_local_files(
         &mut self,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let csv_display = if self.csv_path.is_empty() {
-            "Choose a CSV file…".to_string()
+        let path_display = if self.local_path.is_empty() {
+            "Choose a spreadsheet file…".to_string()
         } else {
-            self.csv_path.clone()
+            self.local_path.clone()
         };
 
         v_flex()
@@ -286,7 +288,7 @@ impl ProjectWizard {
             .child(
                 v_flex()
                     .gap_1()
-                    .child(Label::new("Spreadsheet (CSV)").text_sm())
+                    .child(Label::new("Spreadsheet (CSV, Excel, ODS)").text_sm())
                     .child(
                         h_flex()
                             .gap_2()
@@ -301,26 +303,28 @@ impl ProjectWizard {
                                     .border_color(cx.theme().border)
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(csv_display),
+                                    .child(path_display),
                             )
                             .child(
-                                Button::new("browse-csv")
+                                Button::new("browse-local")
                                     .label("Browse…")
                                     .outline()
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.browse_for_csv(window, cx)
+                                        this.browse_for_local_file(window, cx)
                                     })),
                             ),
                     )
-                    .child(match (&self.csv_preview, &self.csv_error) {
+                    .child(match (&self.spreadsheet_preview, &self.local_error) {
                         (Some(p), _) => inline_message(
-                            "csv-status",
+                            "local-status",
                             format!("{} rows, {} columns found", p.rows.len(), p.headers.len()),
                             MsgKind::Success,
                         )
                         .into_any_element(),
-                        (None, Some(e)) => inline_message("csv-status", e.clone(), MsgKind::Error)
-                            .into_any_element(),
+                        (None, Some(e)) => {
+                            inline_message("local-status", e.clone(), MsgKind::Error)
+                                .into_any_element()
+                        }
                         (None, None) => div().into_any_element(),
                     }),
             )

@@ -1,5 +1,5 @@
 //! The qrate "New Project" wizard: the Photoshop-style [`launcher`] shown on
-//! open, and the multi-step [`wizard`] it launches for the Blank / CSV /
+//! open, and the multi-step [`wizard`] it launches for the Blank / local-spreadsheet /
 //! Google Sheet entry paths. See `crates/project-wizard/../../chats/chat1.md`
 //! in the design handoff bundle for the UX rationale behind each step.
 

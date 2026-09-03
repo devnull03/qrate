@@ -546,7 +546,7 @@ impl ProjectWizard {
                 option_card(
                     "col-load",
                     "Load from a file or Sheet link…",
-                    "Same picker as your main import — CSV file or Google Sheet.",
+                    "Same picker as your main import — a local spreadsheet or a Google Sheet.",
                     load_selected,
                     cx,
                 )

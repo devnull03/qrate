@@ -1,37 +1,82 @@
-//! Real CSV parsing and folder-matching logic used by the Files, Link, and
-//! Columns steps. Both a local CSV and a Google Sheet fetched by `data-exchange` become a
-//! [`SpreadsheetPreview`], so they run through the same [`match_folder`] path from here on.
+//! Real spreadsheet parsing and folder-matching logic used by the Files, Link, and
+//! Columns steps. A local file (CSV/TSV or an Excel/ODS workbook) and a Google Sheet fetched by
+//! `data-exchange` both become a [`SpreadsheetPreview`], so they run through the same
+//! [`match_folder`] path from here on.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
+use calamine::{Data, Reader, open_workbook_auto};
 use data_exchange::{SpreadsheetError, SpreadsheetPreview};
 use settings::columns::ColumnType;
 
-pub fn load_csv_preview(path: &str) -> Result<SpreadsheetPreview, SpreadsheetError> {
+/// Headers plus rows, however the file spells them. Both the import preview and the column-config
+/// loader read through here, so a config written as a workbook loads like a CSV one.
+fn read_grid(path: &str) -> Result<(Vec<String>, Vec<Vec<String>>), SpreadsheetError> {
     let p = Path::new(path);
-    let looks_like_csv = p
+    let ext = p
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("csv"))
-        .unwrap_or(false);
-    if !looks_like_csv {
-        return Err(SpreadsheetError::NotCsv);
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+
+    match ext.as_str() {
+        "csv" | "tsv" => {
+            let mut rdr = csv::ReaderBuilder::new()
+                .has_headers(true)
+                .flexible(true)
+                .delimiter(if ext == "tsv" { b'\t' } else { b',' })
+                .from_path(p)
+                .map_err(|e| SpreadsheetError::Io(e.to_string()))?;
+            let headers = rdr
+                .headers()
+                .map_err(|e| SpreadsheetError::Io(e.to_string()))?
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let mut rows = Vec::new();
+            for result in rdr.records() {
+                let record = result.map_err(|e| SpreadsheetError::Io(e.to_string()))?;
+                rows.push(record.iter().map(|s| s.to_string()).collect());
+            }
+            Ok((headers, rows))
+        }
+        "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" => {
+            let mut wb = open_workbook_auto(p).map_err(|e| SpreadsheetError::Io(e.to_string()))?;
+            // First tab, matching how a fetched Google Sheet is taken.
+            let name = wb
+                .sheet_names()
+                .first()
+                .cloned()
+                .ok_or(SpreadsheetError::Empty)?;
+            let range = wb
+                .worksheet_range(&name)
+                .map_err(|e| SpreadsheetError::Io(e.to_string()))?;
+            let mut grid = range.rows().map(|r| r.iter().map(cell_text).collect());
+            let headers = grid.next().unwrap_or_default();
+            Ok((headers, grid.collect()))
+        }
+        _ => Err(SpreadsheetError::UnsupportedFormat),
     }
+}
 
-    let mut rdr = csv::ReaderBuilder::new()
-        .has_headers(true)
-        .flexible(true)
-        .from_path(p)
-        .map_err(|e| SpreadsheetError::Io(e.to_string()))?;
+/// A cell as the archivist sees it in Excel. Dates are the reason this isn't `to_string()` —
+/// `Data`'s own Display prints a date as the serial number underneath it.
+fn cell_text(cell: &Data) -> String {
+    match cell {
+        Data::Empty => String::new(),
+        Data::DateTime(dt) => match dt.as_datetime() {
+            Some(dt) if dt.time() == Default::default() => dt.format("%Y-%m-%d").to_string(),
+            Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+            None => dt.as_f64().to_string(),
+        },
+        other => other.to_string(),
+    }
+}
 
-    let headers: Vec<String> = rdr
-        .headers()
-        .map_err(|e| SpreadsheetError::Io(e.to_string()))?
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+pub fn load_spreadsheet_preview(path: &str) -> Result<SpreadsheetPreview, SpreadsheetError> {
+    let (headers, rows) = read_grid(path)?;
 
     if headers.iter().all(|h| h.trim().is_empty()) {
         return Err(SpreadsheetError::Empty);
@@ -40,12 +85,6 @@ pub fn load_csv_preview(path: &str) -> Result<SpreadsheetPreview, SpreadsheetErr
     // row is almost certainly a data row and there's no real header.
     if headers.iter().all(|h| h.trim().parse::<f64>().is_ok()) {
         return Err(SpreadsheetError::NoHeaderRow);
-    }
-
-    let mut rows = Vec::new();
-    for result in rdr.records() {
-        let record = result.map_err(|e| SpreadsheetError::Io(e.to_string()))?;
-        rows.push(record.iter().map(|s| s.to_string()).collect());
     }
     if rows.is_empty() {
         return Err(SpreadsheetError::Empty);
@@ -355,24 +394,19 @@ fn yes_no(cell: &str) -> Option<bool> {
     }
 }
 
-/// Loads a `column_config.csv`-shaped file (Column Name, Data Type, Description, and optionally
+/// Loads a `column_config`-shaped file (Column Name, Data Type, Description, and optionally
 /// Authority, Spellcheck, Severity plus a column per plugin mapping) and checks it against the
 /// spreadsheet's own headers. Only Column Name and Data Type are required, so a hand-written
-/// three-column file still loads.
+/// three-column file still loads. Reads through [`read_grid`], so a config saved as a workbook
+/// loads the same as a CSV one.
 pub fn load_column_config(
     path: &str,
     against_headers: &[String],
 ) -> Result<ColumnConfigPreview, ColumnConfigError> {
-    let mut rdr = csv::ReaderBuilder::new()
-        .has_headers(true)
-        .flexible(true)
-        .from_path(path)
-        .map_err(|e| ColumnConfigError::Io(e.to_string()))?;
-
-    let headers = rdr
-        .headers()
-        .map_err(|e| ColumnConfigError::Io(e.to_string()))?
-        .clone();
+    let (headers, records) = read_grid(path).map_err(|e| match e {
+        SpreadsheetError::Io(m) => ColumnConfigError::Io(m),
+        _ => ColumnConfigError::Io("it isn't a CSV, TSV, Excel or ODS file we can read".into()),
+    })?;
 
     let at = |wanted: &str| headers.iter().position(|h| h.eq_ignore_ascii_case(wanted));
     let (name_ix, type_ix) = (at("Column Name"), at("Data Type"));
@@ -392,24 +426,19 @@ pub fn load_column_config(
 
     let mut entries = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    for result in rdr.records() {
-        let record = result.map_err(|e| ColumnConfigError::Io(e.to_string()))?;
-        let name = record.get(name_ix).unwrap_or_default().trim().to_string();
+    for record in records {
+        let at = |ix: usize| record.get(ix).map(String::as_str).unwrap_or_default();
+        let name = at(name_ix).trim().to_string();
         if name.is_empty() {
             continue;
         }
         if !seen.insert(name.to_lowercase()) {
             return Err(ColumnConfigError::DuplicateNames(name));
         }
-        let cell = |ix: Option<usize>| {
-            ix.and_then(|i| record.get(i))
-                .unwrap_or_default()
-                .trim()
-                .to_string()
-        };
+        let cell = |ix: Option<usize>| ix.map(at).unwrap_or_default().trim().to_string();
         entries.push(ColumnConfigEntry {
             name: name.clone(),
-            data_type: canonical_type(record.get(type_ix).unwrap_or_default()),
+            data_type: canonical_type(at(type_ix)),
             description: cell(desc_ix),
             authority: Some(cell(authority_ix)).filter(|s| !s.is_empty()),
             spellcheck: yes_no(&cell(spellcheck_ix)),
@@ -451,24 +480,35 @@ mod tests {
     #[test]
     fn loads_sample_csv() {
         let csv = sample_dir().join("aderman_collection.csv");
-        let preview = load_csv_preview(csv.to_str().unwrap()).unwrap();
+        let preview = load_spreadsheet_preview(csv.to_str().unwrap()).unwrap();
         assert_eq!(preview.headers[0], "Digital ID");
         assert_eq!(preview.rows.len(), 4);
         assert_eq!(preview.headers.len(), 6);
     }
 
     #[test]
-    fn rejects_non_csv() {
+    fn rejects_unsupported_format() {
         assert!(matches!(
-            load_csv_preview("/tmp/whatever.txt"),
-            Err(SpreadsheetError::NotCsv)
+            load_spreadsheet_preview("/tmp/whatever.txt"),
+            Err(SpreadsheetError::UnsupportedFormat)
         ));
+    }
+
+    #[test]
+    fn reads_tab_separated() {
+        let dir = std::env::temp_dir().join("qrate_tsv_test");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rows.tsv");
+        fs::write(&path, "Digital ID\tTitle\n1\tA photo\n").unwrap();
+        let preview = load_spreadsheet_preview(path.to_str().unwrap()).unwrap();
+        assert_eq!(preview.headers, vec!["Digital ID", "Title"]);
+        assert_eq!(preview.rows, vec![vec!["1", "A photo"]]);
     }
 
     #[test]
     fn matches_sample_photos_by_digital_id() {
         let csv = sample_dir().join("aderman_collection.csv");
-        let preview = load_csv_preview(csv.to_str().unwrap()).unwrap();
+        let preview = load_spreadsheet_preview(csv.to_str().unwrap()).unwrap();
         let photos = sample_dir().join("photos");
         // Digital IDs 1-4 match photos/1.jpg..4.jpg by filename stem.
         let m = match_folder(&preview, photos.to_str().unwrap(), false).unwrap();
@@ -496,7 +536,7 @@ mod tests {
     #[test]
     fn folder_errors() {
         let csv = sample_dir().join("aderman_collection.csv");
-        let preview = load_csv_preview(csv.to_str().unwrap()).unwrap();
+        let preview = load_spreadsheet_preview(csv.to_str().unwrap()).unwrap();
         assert!(matches!(
             match_folder(&preview, "/nonexistent/folder", true),
             Err(FolderError::NotFound)
@@ -682,9 +722,10 @@ mod tests {
     #[test]
     fn the_sample_column_config_loads_against_the_sample_collection() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sample");
-        let headers = load_csv_preview(root.join("aderman_collection.csv").to_str().unwrap())
-            .unwrap()
-            .headers;
+        let headers =
+            load_spreadsheet_preview(root.join("aderman_collection.csv").to_str().unwrap())
+                .unwrap()
+                .headers;
         let entries =
             load_column_config(root.join("column_config.csv").to_str().unwrap(), &headers)
                 .unwrap()

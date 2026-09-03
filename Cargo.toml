@@ -37,6 +37,9 @@ debug = false
 [workspace.dependencies]
 alacritty_terminal = "0.26.0"
 anyhow = "1"
+# Reads xlsx/xlsm/xlsb/xls/ods through one API, so the wizard gains every desktop
+# spreadsheet format for the price of one extension match.
+calamine = { version = "0.31", features = ["dates"] }
 csv = "1.3"
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "wayland", "x11"] }

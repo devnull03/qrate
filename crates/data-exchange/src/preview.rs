@@ -53,7 +53,7 @@ impl From<SheetData> for SpreadsheetPreview {
 
 #[derive(Clone, Debug)]
 pub enum SpreadsheetError {
-    NotCsv,
+    UnsupportedFormat,
     Empty,
     NoHeaderRow,
     Io(String),
@@ -62,7 +62,9 @@ pub enum SpreadsheetError {
 impl SpreadsheetError {
     pub fn message(&self) -> String {
         match self {
-            SpreadsheetError::NotCsv => "That doesn't look like a CSV file".into(),
+            SpreadsheetError::UnsupportedFormat => {
+                "That doesn't look like a spreadsheet — try a CSV, TSV, Excel or ODS file".into()
+            }
             SpreadsheetError::Empty => "This spreadsheet has no rows yet".into(),
             SpreadsheetError::NoHeaderRow => {
                 "We couldn't find a header row — the first row looks like data".into()

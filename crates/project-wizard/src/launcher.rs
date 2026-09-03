@@ -295,9 +295,9 @@ impl Render for Launcher {
                                 cx,
                             ))
                             .child(create_card(
-                                "new-csv",
-                                "CSV + folder",
-                                "Import a spreadsheet and its files.",
+                                "new-local",
+                                "Spreadsheet + folder",
+                                "Import a CSV or Excel file and its folder.",
                                 cx,
                             ))
                             // Public-link import is independent of the OAuth export/sync setting.
@@ -320,7 +320,7 @@ fn create_card(
     cx: &mut Context<Launcher>,
 ) -> impl IntoElement {
     let entry_kind = match id {
-        "new-csv" => EntryKind::Csv,
+        "new-local" => EntryKind::LocalFile,
         "new-sheet" => EntryKind::Sheet,
         _ => EntryKind::Blank,
     };
