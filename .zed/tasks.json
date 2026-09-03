@@ -1,4 +1,7 @@
 // Project tasks — Alt+T opens the picker (see keymap: task::Spawn)
+//
+// The check/clippy/test tasks set CARGO_TARGET_DIR so they don't invalidate what
+// `cargo run` and rust-analyzer built. See CLAUDE.md ▸ Commands.
 [
   {
     "label": "cargo run (app)",
@@ -15,16 +18,18 @@
     "command": "cargo build"
   },
   {
-    "label": "cargo check",
-    "command": "cargo check"
+    "label": "cargo clippy (reuses rust-analyzer's build)",
+    "command": "cargo clippy --workspace --all-targets",
+    "env": { "CARGO_TARGET_DIR": "target/rust-analyzer" }
   },
   {
     "label": "cargo test",
-    "command": "cargo test"
+    "command": "cargo test --workspace",
+    "env": { "CARGO_TARGET_DIR": "target/ci" }
   },
   {
-    "label": "cargo clippy",
-    "command": "cargo clippy --all-targets"
+    "label": "CI (fmt + clippy + test)",
+    "command": "./scripts/ci.sh"
   },
   {
     "label": "lazygit",

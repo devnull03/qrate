@@ -1,0 +1,19 @@
+{
+  // rust-analyzer runs inside the shared lspmux instance, not as Zed's private child process —
+  // so the MCP server Claude Code talks to queries the same analysis Zed is showing.
+  // Requires `lspmux server` to be running (see ~/.local/lspmux-shim/lspmux-autostart.vbs).
+  "lsp": {
+    "rust-analyzer": {
+      "binary": {
+        "path": "C:\\Users\\Arnav\\.local\\lspmux-shim\\rust-analyzer.cmd",
+        "arguments": [],
+        "ignore_system_version": true
+      },
+      "initialization_options": {
+        // Its own target dir, so checks never invalidate what `cargo run` built.
+        "cargo": { "targetDir": true },
+        "check": { "command": "clippy" }
+      }
+    }
+  }
+}

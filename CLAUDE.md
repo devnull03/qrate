@@ -26,12 +26,40 @@ If a request is ambiguous, ask whether the user wants:
 
 ## Commands
 
-```bash
-cargo run                 # launch the app (binary crate is `crates/app`)
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings -A dead_code
-cargo fmt --all --check
-```
+This machine has 16 cores and not much patience — cargo is capped to `-j10` in `.cargo/config.toml`,
+and **only one cargo may run at a time**. Two cargos sharing a target dir take a lock on it, so the
+second one does not go faster, it waits while the first burns the machine.
+
+Take the cheapest rung that answers the question:
+
+1. **Ask the `rust-analyzer` MCP server.** It is wired into the *same* rust-analyzer instance Zed is
+   running (see below), so `rust_analyzer_diagnostics`, `definition`, `references` and `hover` cost
+   no compile at all — the analysis already happened. This is the default for "does this compile",
+   "who calls this", "what type is this".
+2. `cargo test -p <crate>` — when one crate changed and you need its tests.
+3. `./scripts/ci.sh` — the full gate, before a PR only.
+
+If the MCP server is unavailable, the fallback is `CARGO_TARGET_DIR=target/rust-analyzer cargo
+clippy --workspace --all-targets`, which at least reuses rust-analyzer's artifacts instead of
+building its own.
+
+**How the sharing works.** `lspmux` holds one rust-analyzer per workspace and multiplexes clients
+onto it; Zed and the MCP server both connect through the stdio shim at
+`~/.local/lspmux-shim/rust-analyzer.cmd` instead of spawning their own. `lspmux status` shows the
+instance and its clients. If Rust support dies in both at once, the daemon is down — start it with
+`lspmux server`.
+
+`cargo run` launches the app (binary crate is `crates/app`) out of the default `target/`.
+
+**Three target dirs, on purpose.** A unit's fingerprint includes the rustc wrapper and the args after
+`--`, so a plain build, plain clippy, and `clippy -- -D warnings` each invalidate the other two when
+they share a dir — alternating them rebuilds gpui forever. Keeping them apart trades disk for CPU.
+
+| Dir | Who writes it |
+|---|---|
+| `target/` | `cargo run` / `cargo build` |
+| `target/rust-analyzer` | Zed's rust-analyzer (`.zed/settings.json`), and rung 2 above |
+| `target/ci` | `scripts/ci.sh` |
 
 `cargo fmt` can fail with OS error 1224 when Zed holds a file memory-mapped. It is not a code
 problem — read the `--check` diff and apply it by hand rather than fighting the formatter.
@@ -168,12 +196,10 @@ lands on this remote.
 
 ### Pull requests
 
-- **Before opening any PR, reproduce CI locally and make it green.** CI (`.github/workflows/ci.yml`; Windows, macOS and Linux) runs exactly these three, in order — run the same before every PR and don't open it until all pass:
-  ```bash
-  cargo fmt --all --check
-  cargo clippy --workspace --all-targets -- -D warnings -A dead_code
-  cargo test --workspace          # CI runs `cargo nextest run --workspace`; either is fine locally
-  ```
+- **Before opening any PR, reproduce CI locally and make it green.** `./scripts/ci.sh` runs the same
+  three checks CI does (`.github/workflows/ci.yml`; Windows, macOS and Linux), in the same order, in
+  `target/ci`. Don't open the PR until it passes. This is the *only* routine reason to compile the
+  whole workspace — while iterating, stay on the cheap rungs under **Commands**.
   Clippy allows `-A dead_code` (this repo scaffolds UI ahead of its consumers) but hard-fails every other warning. `clippy --all-targets` + `test` already compile everything, so there's no separate build step. Scope the checks to affected crates while iterating, but run the full `--workspace` form once before pushing.
 - Open the PR with `gh pr create`; PRs target `dev` or `main` (the branches CI gates). Body gets a short summary + a **Verification** line stating which of the three checks you ran and that they passed.
 - **After opening the PR, check for a GitHub Copilot code review and audit it.** Fetch its comments (`gh pr view <n> --comments`, or `gh api repos/{owner}/{repo}/pulls/{n}/comments`), then for each suggestion decide implement vs. dismiss: apply the correct/worthwhile ones and push to the same branch, skip false positives and noise. Report back which you applied vs. dismissed and why — don't blindly accept or ignore the whole review.

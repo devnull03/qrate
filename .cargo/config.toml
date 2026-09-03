@@ -1,0 +1,4 @@
+[build]
+# 16 logical cores, but a full gpui rebuild at -j16 starves the editor and the app.
+# Leaves headroom so the machine stays usable while cargo works.
+jobs = 10
