@@ -18,7 +18,16 @@ cargo run
 
 The first build downloads Rust dependencies. The [`sample/`](sample) directory contains a sample collection and images for local testing. qrate builds and runs without optional preview binaries; PDF and video preview coverage needs the tools described in [the development setup guide](docs/dev/SETUP.md).
 
-Linux contributors also need the system libraries listed in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Google Sheets sign-in is optional for local development and needs local credentials; setup details are in [the development setup guide](docs/dev/SETUP.md).
+Linux contributors also need the system libraries listed in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). GPUI links `fontconfig`, `freetype`, `alsa-lib` and `openssl` through `pkg-config` at build time, and `dlopen`s `libxkbcommon`, `wayland`, `vulkan-loader`, `libGL` and the X11 client libraries at run time — a build that links cleanly still fails to start without the second group. Without `pkg-config` on `PATH` the build stops in `yeslogic-fontconfig-sys`.
+
+On NixOS, or with Nix installed anywhere, the shell in this repository supplies all of that and sets `LD_LIBRARY_PATH` so `cargo run` works:
+
+```sh
+nix develop      # flake, pins nixpkgs through flake.lock
+nix-shell        # same shell without flakes, using your own channel
+```
+
+Both read [`nix/devshell.nix`](nix/devshell.nix), so they cannot drift apart. Google Sheets sign-in is optional for local development and needs local credentials; setup details are in [the development setup guide](docs/dev/SETUP.md).
 
 ## Make a contribution
 
