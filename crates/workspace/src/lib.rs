@@ -510,6 +510,54 @@ mod tests {
         cx.update(|_, cx| assert_eq!(cx.global::<BottomDockCrop>().0, px(29.)));
     }
 
+    /// Shift+Esc, end to end on the real workspace. `app` binds the key to `dock::ToggleZoom`
+    /// globally and handles it nowhere: the skin's frame carries the only handler, so the action
+    /// has to travel from the focused panel up to the group holding it.
+    ///
+    /// Both halves of the zoom gate are load-bearing here. Every panel in this crate answered
+    /// `zoomable() -> None` before the 0.6 port, and a panel that still refuses is skipped in
+    /// silence — no error, no zoom — which is exactly what this asserts against.
+    #[gpui::test]
+    fn shift_escape_zooms_the_focused_panel(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(settings::SettingsPersistence::default());
+        });
+        let (workspace, cx) = cx.add_window_view(Workspace::new);
+        let dock_area = cx.update(|_, cx| workspace.read(cx).dock_area.clone());
+        cx.run_until_parked();
+
+        // Focus a docked panel, so the action starts from inside a tab group rather than at the
+        // window root, where nothing would answer it.
+        cx.update(|window, cx| {
+            let panel = crate::PanelRegistry::entries(cx)
+                .iter()
+                .find(|entry| entry.meta.name == "DetailsPanel")
+                .map(|entry| entry.view.clone())
+                .expect("the default layout docks Details");
+            panel.focus_handle(cx).focus(window, cx);
+        });
+        cx.run_until_parked();
+
+        assert!(
+            !cx.read(|cx| dock_area.read(cx).is_zoomed()),
+            "nothing is zoomed to begin with"
+        );
+
+        cx.dispatch_action(gpui_component::dock::ToggleZoom);
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| dock_area.read(cx).is_zoomed()),
+            "the focused panel's group fills the window"
+        );
+
+        // Zooming out is never refused, so the same key always gets the docks back.
+        cx.dispatch_action(gpui_component::dock::ToggleZoom);
+        cx.run_until_parked();
+        assert!(!cx.read(|cx| dock_area.read(cx).is_zoomed()));
+    }
+
     /// The real thing, lifted out of a project whose left dock came back with an "Unnamed" tab
     /// beside Details on every launch: an empty `TabPanel` sitting in a tab slot, and an
     /// `active_index` of 1 that points past the end once it is gone.
