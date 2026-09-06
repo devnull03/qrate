@@ -403,8 +403,8 @@ pub fn path_picker_item(
             });
             let write = Arc::clone(&write);
             PathPickerApp {
-                field_size: options.size,
-                button_size: Some(options.size),
+                field_size: options.size(),
+                button_size: Some(options.size()),
                 button_id: SharedString::from(format!("browse-{key}")),
                 files,
                 directories,

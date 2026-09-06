@@ -13,7 +13,7 @@ use gpui::{
     IntoElement, ParentElement as _, Path, SharedString, Styled as _, Window, canvas, deferred,
     div, point, px,
 };
-use gpui_component::input::Input;
+use gpui_component::input::Textarea;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::table::TableState;
 use gpui_component::{ActiveTheme as _, h_flex};
@@ -724,7 +724,7 @@ pub(crate) fn editor(
                         .text_color(cx.theme().muted_foreground)
                         .child(scope),
                 )
-                .child(Input::new(&delegate.note_editor).h_full()),
+                .child(Textarea::new(&delegate.note_editor).h_full()),
         ))
         .into_any_element(),
     )

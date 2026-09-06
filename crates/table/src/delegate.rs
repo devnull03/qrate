@@ -7,7 +7,7 @@ use gpui::{
     Window, div, px,
 };
 use gpui_component::{
-    input::InputState,
+    input::TextareaState,
     table::{Column, TableDelegate, TableState},
 };
 use serde::{Deserialize, Serialize};
@@ -64,11 +64,11 @@ pub struct QrateTableDelegate {
     pub(crate) selected_rows: BTreeSet<usize>,
     pub(crate) editing: EditState,
     /// Shared single-line editor, reused across whichever cell is being edited.
-    pub(crate) editor: Entity<InputState>,
+    pub(crate) editor: Entity<TextareaState>,
     /// Which cell/row/column the note editor is open on, if any.
     pub(crate) note_edit: Option<Location>,
     /// Shared note editor, the same one-per-table arrangement as [`Self::editor`].
-    pub(crate) note_editor: Entity<InputState>,
+    pub(crate) note_editor: Entity<TextareaState>,
     /// Each row's resolved image path, parallel to `rows`. `None` until `TablePanel` resolves it.
     image_paths: Vec<Option<PathBuf>>,
     /// View→source row mapping: `visible_rows[view] == source`. The library only ever sees this
@@ -96,7 +96,7 @@ pub struct QrateTableDelegate {
 }
 
 impl QrateTableDelegate {
-    pub(crate) fn new(editor: Entity<InputState>, note_editor: Entity<InputState>) -> Self {
+    pub(crate) fn new(editor: Entity<TextareaState>, note_editor: Entity<TextareaState>) -> Self {
         Self {
             columns: Vec::new(),
             rows: Vec::new(),

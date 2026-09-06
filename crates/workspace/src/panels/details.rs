@@ -8,9 +8,9 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme, IconName, Sizable, StyledExt as _,
     button::{Button, ButtonVariants},
-    dock::{DockPlacement, Panel, PanelControl, PanelEvent},
+    dock::{BasePanel, DockPlacement, Panel, PanelEvent},
     h_flex,
-    input::{Escape, InputEvent, InputState},
+    input::{Escape, InputEvent, TextareaState},
     resizable::{resizable_panel, v_resizable},
     scroll::ScrollableElement,
     table::TableState,
@@ -64,7 +64,7 @@ pub struct DetailsPanel {
     _crop_sub: Subscription,
     /// The field editor, shared across whichever field is open — the same one-per-panel
     /// arrangement the grid uses for its cell editor.
-    editor: Entity<InputState>,
+    editor: Entity<TextareaState>,
     /// `(source_rows, data_col)` of the field being edited, in the grid's own coordinates so a
     /// filter change between opening and committing can't redirect the write. Several rows when
     /// the field belongs to a bundle: one edit box writing the same value down the selection.
@@ -105,9 +105,7 @@ impl DetailsPanel {
         // *wrapped* height, and a single-line input runs the text off the right edge instead.
         // `submit_on_enter` keeps Enter committing the field (Shift+Enter inserts a newline).
         let editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .submit_on_enter(true)
+            TextareaState::new(window, cx).submit_on_enter(true)
         });
         let _editor_sub = cx.subscribe(&editor, |this, _input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
@@ -462,22 +460,24 @@ impl Focusable for DetailsPanel {
 
 impl EventEmitter<PanelEvent> for DetailsPanel {}
 
-impl Panel for DetailsPanel {
+impl BasePanel for DetailsPanel {
     fn panel_name(&self) -> &'static str {
         "DetailsPanel"
     }
 
-    fn title(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Details")
-    }
-
-    // The library always renders the ⋯ menu button; these just empty it of Close + Zoom.
+    // The library always renders the ⋯ menu button; this just empties it of Close.
     fn closable(&self, _cx: &App) -> bool {
         false
     }
 
-    fn zoomable(&self, _cx: &App) -> Option<PanelControl> {
-        None
+    fn zoomable(&self, _cx: &App) -> bool {
+        true
+    }
+}
+
+impl Panel for DetailsPanel {
+    fn title(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from("Details")
     }
 }
 
