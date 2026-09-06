@@ -131,7 +131,7 @@ impl Render for DockToggleButton {
         // points at one panel, which can sit in an open dock and still be hidden behind a sibling
         // tab — lighting up for that aims the reader at something not on screen.
         let lit = self.dock.upgrade().is_some_and(|area| match self.toggles {
-            Toggles::Dock(placement) => area.read(cx).is_dock_open(placement, cx),
+            Toggles::Dock(placement) => area.read(cx).is_dock_open(placement),
             Toggles::Panel(meta) => PanelRegistry::visible(meta.name, &area, cx),
         });
 

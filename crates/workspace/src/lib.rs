@@ -22,7 +22,8 @@ use std::sync::Arc;
 
 use gpui::*;
 use gpui_component::dock::{
-    DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, PanelView, register_panel,
+    BasePanelView, DockArea, DockAreaState, DockEvent, DockLayout, DockPlacement, DockSkin,
+    panel_handle, register_panel,
 };
 use settings::AppSettings;
 
@@ -65,27 +66,18 @@ impl Global for BottomDockCrop {}
 /// Every caller gets the same grid redraw and persistence behavior because the state change owns
 /// its event.
 pub(crate) fn toggle_dock_immediately(
-    area: &DockArea,
+    area: &mut DockArea,
     placement: DockPlacement,
     window: &mut Window,
     cx: &mut Context<DockArea>,
 ) -> bool {
-    let dock = match placement {
-        DockPlacement::Left => area.left_dock(),
-        DockPlacement::Bottom => area.bottom_dock(),
-        DockPlacement::Right => area.right_dock(),
-        DockPlacement::Center => None,
-    }
-    .cloned();
-    let Some(dock) = dock else {
+    // The centre is not a dock, and a dock we never built cannot be toggled.
+    if placement == DockPlacement::Center || !area.has_dock(placement) {
         return false;
-    };
-    dock.update(cx, |dock, cx| {
-        let open = !dock.is_open();
-        dock.panel().clone().set_collapsed(!open, window, cx);
-        dock.set_open(open, window, cx);
-    });
-    cx.emit(DockEvent::LayoutChanged);
+    }
+    // Collapsing the panel tree and emitting `LayoutChanged` are both `toggle_dock`'s job now —
+    // it used to take driving the `Dock` entity by hand.
+    area.toggle_dock(placement, window, cx);
     true
 }
 
@@ -101,21 +93,27 @@ impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Register panel constructors so a persisted layout can be reconstructed by name.
         // The centre is the view host, not the grid — the grid is one view it mounts.
-        register_panel(cx, "ViewsPanel", |weak, _state, _info, window, cx| {
-            Box::new(cx.new(|cx| ViewsPanel::new(weak, window, cx)))
+        // `panel_handle` rather than a bare entity: base stores what it is given, and a skin can
+        // only recover presentation — our titles, the view switcher — from the wrapper. A bare
+        // entity still docks and persists, it just draws its `panel_name` where the title goes.
+        register_panel(cx, "ViewsPanel", |ctx, window, cx| {
+            let weak = ctx.dock_area();
+            panel_handle(cx.new(|cx| ViewsPanel::new(weak, window, cx)))
         });
-        register_panel(cx, "DetailsPanel", |_weak, _state, _info, window, cx| {
-            Box::new(cx.new(|cx| DetailsPanel::new(window, cx)))
+        register_panel(cx, "DetailsPanel", |_ctx, window, cx| {
+            panel_handle(cx.new(|cx| DetailsPanel::new(window, cx)))
         });
-        register_panel(cx, "AgentPanel", |_weak, _state, _info, window, cx| {
-            Box::new(cx.new(|cx| AgentPanel::new(window, cx)))
+        register_panel(cx, "AgentPanel", |_ctx, window, cx| {
+            panel_handle(cx.new(|cx| AgentPanel::new(window, cx)))
         });
-        register_panel(cx, "ProblemsPanel", |_weak, _state, _info, window, cx| {
-            Box::new(cx.new(|cx| ProblemsPanel::new(window, cx)))
+        register_panel(cx, "ProblemsPanel", |_ctx, window, cx| {
+            panel_handle(cx.new(|cx| ProblemsPanel::new(window, cx)))
         });
 
-        let dock_area =
-            cx.new(|cx| DockArea::new("qrate-main", Some(DOCK_LAYOUT_VERSION), window, cx));
+        // The appearance is a separate object in 0.6, installed as the area's renderer. The
+        // handle it hands back is how its settings are reached afterwards.
+        let (dock_area, skin) =
+            DockSkin::dock_area("qrate-main", Some(DOCK_LAYOUT_VERSION), window, cx);
 
         // Restore if saved, else build default; building first then loading would orphan a throwaway table.
         if !Self::restore_layout(&dock_area, window, cx) {
@@ -123,57 +121,59 @@ impl Workspace {
             let centre = cx.new(|cx| ViewsPanel::new(weak.clone(), window, cx));
             // Which dock each panel starts in is the panel's own declaration, so they're built
             // as a flat list and grouped by it rather than one `set_*_dock` call apiece.
-            let panels: [(&PanelMeta, Arc<dyn PanelView>); 3] = [
+            let panels: [(&PanelMeta, Arc<dyn BasePanelView>); 3] = [
                 (
                     &DETAILS_META,
-                    Arc::new(cx.new(|cx| DetailsPanel::new(window, cx))),
+                    panel_handle(cx.new(|cx| DetailsPanel::new(window, cx))),
                 ),
                 (
                     &PROBLEMS_META,
-                    Arc::new(cx.new(|cx| ProblemsPanel::new(window, cx))),
+                    panel_handle(cx.new(|cx| ProblemsPanel::new(window, cx))),
                 ),
                 (
                     &AGENT_META,
-                    Arc::new(cx.new(|cx| AgentPanel::new(window, cx))),
+                    panel_handle(cx.new(|cx| AgentPanel::new(window, cx))),
                 ),
             ];
 
             dock_area.update(cx, |area, cx| {
-                // `tab`, not `panel`: `DockItem::panel` embeds the centre bare, with no title bar
-                // at all — and the title bar is where the view switcher lives. Restoring a saved
-                // layout always produces tabs anyway, so this only fixes the first launch, which
-                // would otherwise come up with no way to leave the grid.
-                area.set_center(DockItem::tab(centre, &weak, window, cx), window, cx);
-                for placement in [
-                    DockPlacement::Left,
-                    DockPlacement::Right,
-                    DockPlacement::Bottom,
+                // `tabs`, not a bare panel: a bare centre has no title bar at all — and the title
+                // bar is where the view switcher lives. Restoring a saved layout always produces
+                // tabs anyway, so this only fixes the first launch, which would otherwise come up
+                // with no way to leave the grid.
+                area.set_center(
+                    DockLayout::tabs().panel_view(panel_handle(centre), cx),
+                    window,
+                    cx,
+                );
+                for (placement, size) in [
+                    (DockPlacement::Left, px(300.)),
+                    (DockPlacement::Right, px(340.)),
+                    (DockPlacement::Bottom, px(200.)),
                 ] {
-                    let items: Vec<Arc<dyn PanelView>> = panels
+                    let mut layout = DockLayout::tabs();
+                    let mut filled = false;
+                    for (_, view) in panels
                         .iter()
                         .filter(|(meta, _)| meta.default_placement == placement)
-                        .map(|(_, view)| view.clone())
-                        .collect();
-                    if items.is_empty() {
+                    {
+                        layout = layout.panel_view(view.clone(), cx);
+                        filled = true;
+                    }
+                    if !filled {
                         continue;
                     }
-                    let item = DockItem::tabs(items, &weak, window, cx);
-                    match placement {
-                        DockPlacement::Left => {
-                            area.set_left_dock(item, Some(px(300.)), true, window, cx)
-                        }
-                        DockPlacement::Right => {
-                            area.set_right_dock(item, Some(px(340.)), true, window, cx)
-                        }
-                        _ => area.set_bottom_dock(item, Some(px(200.)), true, window, cx),
-                    }
+                    // Size is a property of the dock now, not an argument to filling it — and
+                    // `set_dock` deliberately preserves the size of whatever it replaces.
+                    area.set_dock(placement, layout, window, cx);
+                    area.set_dock_size(placement, size, window, cx);
                 }
             });
         }
 
         // We drive dock open/close from our own title/status-bar buttons, so hide the built-in
-        // toggle arrows. Done in both paths — `load` doesn't carry this runtime-only flag.
-        dock_area.update(cx, |area, cx| area.set_toggle_button_visible(false, cx));
+        // toggle arrows. A skin setting in 0.6, so it survives `load` without being reapplied.
+        skin.set_toggle_button_visible(false, cx);
 
         // Whichever path ran above built the panels; this is what learns where they landed.
         PanelRegistry::sync(&dock_area, cx);
@@ -351,10 +351,7 @@ fn prune(node: &mut serde_json::Value) {
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Bottom dock closed: overhang 29px and clip to hide the library's residual strip; open: sit flush.
-        let bottom_open = self
-            .dock_area
-            .read(cx)
-            .is_dock_open(DockPlacement::Bottom, cx);
+        let bottom_open = self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom);
         let overshoot = if bottom_open {
             px(0.)
         } else {

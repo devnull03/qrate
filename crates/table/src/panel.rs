@@ -105,11 +105,10 @@ pub struct TablePanel {
 
 impl TablePanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let editor = cx.new(|cx| {
-            TextareaState::new(window, cx).submit_on_enter(true)
-        });
+        let editor = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true));
         let note_editor = cx.new(|cx| {
-            TextareaState::new(window, cx).submit_on_enter(true)
+            TextareaState::new(window, cx)
+                .submit_on_enter(true)
                 .placeholder("Note")
         });
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in table"));

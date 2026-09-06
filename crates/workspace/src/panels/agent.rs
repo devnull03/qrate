@@ -462,7 +462,6 @@ impl Panel for AgentPanel {
                 ),
         )
     }
-
 }
 
 impl Render for AgentPanel {
