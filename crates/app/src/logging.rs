@@ -91,8 +91,18 @@ fn version() -> &'static str {
 /// a level that makes every pasted bug report open with three errors nobody can act on.
 struct QuietGpuiNoise(Box<dyn Log>);
 
+/// Whether `target` is one gpui logs under.
+///
+/// The empty string is one of them. gpui's error helper builds the target from the caller's file
+/// path by splitting on a `crates/` segment — which exists in zed's own checkout and not in the
+/// published `gpui-pre`, unpacked as `…/gpui-pre-0.3.3/src/…`, so every error it logs arrives
+/// with no target at all. Our own modules always have one, so nothing of ours is caught here.
+fn logged_by_gpui(target: &str) -> bool {
+    target.starts_with("gpui") || target.is_empty()
+}
+
 fn is_accessibility_focus_noise(record: &Record) -> bool {
-    if !record.target().starts_with("gpui::window") {
+    if !logged_by_gpui(record.target()) {
         return false;
     }
     let message = record.args().to_string();
@@ -100,7 +110,7 @@ fn is_accessibility_focus_noise(record: &Record) -> bool {
 }
 
 fn is_window_teardown(record: &Record) -> bool {
-    if record.level() != Level::Error || !record.target().starts_with("gpui") {
+    if record.level() != Level::Error || !logged_by_gpui(record.target()) {
         return false;
     }
     let message = record.args().to_string();
@@ -297,12 +307,18 @@ mod tests {
             error,
             "Invalid window handle (0x80040102)"
         ));
+        // The published `gpui-pre` logs with no target at all: gpui's error helper derives one
+        // from a `crates/` path segment that only exists in zed's own checkout. Missing this case
+        // put 162 of these in one session's log the first time the app ran on 0.6.
+        assert!(teardown("", error, "window not found"));
 
         assert!(!teardown(
             "gpui_windows::platform",
             error,
             "DirectX device lost"
         ));
+        // An untargeted error still has to *say* it is a teardown to be demoted.
+        assert!(!teardown("", error, "DirectX device lost"));
         assert!(!teardown("app::logging", error, "window not found"));
         assert!(!teardown(
             "gpui::window",
@@ -333,6 +349,11 @@ mod tests {
         ));
         assert!(!noisy(
             "app::window::a11y",
+            "a11y: focused element (FocusId(6v1)) has no accessibility node"
+        ));
+        // Untargeted, for the same reason the teardown filter accepts it.
+        assert!(noisy(
+            "",
             "a11y: focused element (FocusId(6v1)) has no accessibility node"
         ));
     }
