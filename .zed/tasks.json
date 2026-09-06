@@ -1,7 +1,8 @@
 // Project tasks — Alt+T opens the picker (see keymap: task::Spawn)
 //
 // The check/clippy/test tasks set CARGO_TARGET_DIR so they don't invalidate what
-// `cargo run` and rust-analyzer built. See CLAUDE.md ▸ Commands.
+// `cargo run` and rust-analyzer built. The "(nix)" tasks supply GPUI's Linux libraries through
+// `nix/devshell.nix`; with direnv and nix-direnv, the plain tasks work on Linux too.
 [
   {
     "label": "cargo run (app)",
@@ -30,6 +31,27 @@
   {
     "label": "CI (fmt + clippy + test)",
     "command": "./scripts/ci.sh"
+  },
+  {
+    "label": "cargo run (nix)",
+    "command": "nix-shell --run 'cargo run -p app'",
+    "reveal": "always",
+    "use_new_terminal": false
+  },
+  {
+    "label": "cargo test (nix)",
+    "command": "nix-shell --run 'CARGO_TARGET_DIR=target/ci cargo test --workspace'"
+  },
+  {
+    "label": "CI checks (nix)",
+    "command": "nix-shell --run './scripts/ci.sh'",
+    "reveal": "always"
+  },
+  {
+    "label": "nix dev shell",
+    "command": "nix-shell",
+    "reveal": "always",
+    "use_new_terminal": true
   },
   {
     "label": "lazygit",
