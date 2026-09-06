@@ -41,10 +41,14 @@ anyhow = "1"
 # spreadsheet format for the price of one extension match.
 calamine = { version = "0.31", features = ["dates"] }
 csv = "1.3"
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "wayland", "x11"] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component" }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
+# SPIKE: gpui-kit 0.6. Upstream moved off zed's git repo onto the crates.io `gpui-pre*`
+# snapshot, so these are renamed packages rather than new names in our source — every
+# `use gpui::*` / `use gpui_component::*` in the workspace keeps resolving unchanged, which
+# makes every remaining compile error genuine API drift.
+gpui = { package = "gpui-pre", version = "0.3" }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3", features = ["font-kit", "wayland", "x11"] }
+gpui-component = { version = "0.6" }
+gpui-component-assets = { package = "gpui-kit-assets", version = "0.6" }
 dirs = "6"
 log = "0.4"
 # cpal-plus-symphonia glue. `preview` already decodes audio with symphonia for cover art, and the

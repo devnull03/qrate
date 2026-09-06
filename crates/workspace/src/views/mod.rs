@@ -17,7 +17,7 @@ use gpui_component::table::TableState;
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
     button::Button,
-    dock::{DockArea, Panel, PanelControl, PanelEvent},
+    dock::{BasePanel, DockArea, Panel, PanelEvent},
     h_flex,
     slider::{Slider, SliderEvent, SliderState},
     tab::{Tab, TabBar},
@@ -279,11 +279,24 @@ impl Focusable for ViewsPanel {
 
 impl EventEmitter<PanelEvent> for ViewsPanel {}
 
-impl Panel for ViewsPanel {
+impl BasePanel for ViewsPanel {
     fn panel_name(&self) -> &'static str {
         "ViewsPanel"
     }
 
+    /// Centre panel: not closable, so the main view always keeps its body.
+    fn closable(&self, _cx: &App) -> bool {
+        false
+    }
+
+    /// Zooming the centre is the point of Shift+Esc — it drops the surrounding docks and gives
+    /// the grid or the gallery the whole window.
+    fn zoomable(&self, _cx: &App) -> bool {
+        true
+    }
+}
+
+impl Panel for ViewsPanel {
     /// The centre has no name worth showing, so the title cell carries the view switcher instead —
     /// which puts it at the far left of the same row as the Find button and the ⋯ menu.
     ///
@@ -316,18 +329,6 @@ impl Panel for ViewsPanel {
                     )
             },
         )
-    }
-
-    /// Centre panel: not closable, so the main view always keeps its body.
-    fn closable(&self, _cx: &App) -> bool {
-        false
-    }
-
-    /// A zoom control makes no sense for the main body. Note this *does* render: `zoomable: None`
-    /// only greys the ⋯ menu's "Zoom In" entry and drops the zoom toolbar button — the ⋯ itself
-    /// is unconditional in `TabPanel::render_toolbar`.
-    fn zoomable(&self, _cx: &App) -> Option<PanelControl> {
-        None
     }
 
     /// Rendered by `TabPanel::render_toolbar` immediately left of the ⋯ menu, forced to

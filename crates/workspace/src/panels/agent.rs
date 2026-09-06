@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::dock::{DockPlacement, Panel, PanelControl, PanelEvent};
+use gpui_component::dock::{BasePanel, DockPlacement, Panel, PanelEvent};
 use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tab::{Tab, TabBar};
@@ -364,11 +364,22 @@ impl Focusable for AgentPanel {
 
 impl EventEmitter<PanelEvent> for AgentPanel {}
 
-impl Panel for AgentPanel {
+impl BasePanel for AgentPanel {
     fn panel_name(&self) -> &'static str {
         "AgentPanel"
     }
 
+    // The library always renders the ⋯ menu button; this just empties it of Close.
+    fn closable(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn zoomable(&self, _cx: &App) -> bool {
+        true
+    }
+}
+
+impl Panel for AgentPanel {
     fn title(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from("Agent")
     }
@@ -452,14 +463,6 @@ impl Panel for AgentPanel {
         )
     }
 
-    // The library always renders the ⋯ menu button; these just empty it of Close + Zoom.
-    fn closable(&self, _cx: &App) -> bool {
-        false
-    }
-
-    fn zoomable(&self, _cx: &App) -> Option<PanelControl> {
-        None
-    }
 }
 
 impl Render for AgentPanel {

@@ -6,6 +6,7 @@
 //!      (e.g. the dock toggles, handled on the `App` root in `main.rs`).
 
 use gpui::*;
+use gpui_component::dock::ToggleZoom;
 
 use crate::app_menus::OpenSettings;
 
@@ -36,6 +37,12 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // Save the open project's data to its `.qrate` file. Global: saving shouldn't depend on
         // where focus sits (a focused cell editor's `Input` context doesn't bind Ctrl+S).
         KeyBinding::new("secondary-s", Save, None),
+        // Zoom the focused panel to fill the window, Zed's Shift+Esc. Global and unhandled by us:
+        // the library mounts the `ToggleZoom` handler on every tab panel's own frame, so the
+        // action dispatches from wherever focus sits up to the panel containing it — which is
+        // what makes one binding mean "zoom *this* panel". A panel opts out with
+        // `BasePanel::zoomable`; zooming back out is never refused, so this cannot strand anyone.
+        KeyBinding::new("shift-escape", ToggleZoom, None),
         KeyBinding::new("secondary-b", ToggleLeftDock, None),
         KeyBinding::new("secondary-`", ToggleBottomDock, None),
         KeyBinding::new("secondary-alt-b", ToggleRightDock, None),

@@ -6,7 +6,7 @@ use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Escape, Input, InputEvent, InputState},
+    input::{Escape, Input, InputEvent, InputState, Textarea, TextareaState},
     table::{DataTable, TableEvent, TableState},
     v_flex,
 };
@@ -106,14 +106,10 @@ pub struct TablePanel {
 impl TablePanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .submit_on_enter(true)
+            TextareaState::new(window, cx).submit_on_enter(true)
         });
         let note_editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .submit_on_enter(true)
+            TextareaState::new(window, cx).submit_on_enter(true)
                 .placeholder("Note")
         });
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in table"));
@@ -1205,7 +1201,7 @@ pub(crate) fn paste_cells(
 /// suggestion list) needs a height it can't compute itself. Place the result with
 /// `deferred(float_at(anchor.origin, within, box))`.
 pub fn editor_box(
-    editor: &Entity<InputState>,
+    editor: &Entity<TextareaState>,
     anchor: Bounds<Pixels>,
     within: Bounds<Pixels>,
     window: &mut Window,
@@ -1256,7 +1252,7 @@ pub fn editor_box(
         .rounded(cx.theme().radius)
         .shadow_lg()
         .child(
-            Input::new(editor)
+            Textarea::new(editor)
                 .appearance(false)
                 .h_full()
                 .px(px(cell::CELL_PAD_X))

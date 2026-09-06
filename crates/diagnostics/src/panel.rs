@@ -3,7 +3,7 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::dock::{Panel, PanelControl, PanelEvent};
+use gpui_component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
@@ -213,22 +213,24 @@ impl Focusable for ProblemsPanel {
 
 impl EventEmitter<PanelEvent> for ProblemsPanel {}
 
-impl Panel for ProblemsPanel {
+impl BasePanel for ProblemsPanel {
     fn panel_name(&self) -> &'static str {
         "ProblemsPanel"
     }
 
-    fn title(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Problems")
-    }
-
-    // The library always renders the ⋯ menu button; these just empty it of Close + Zoom.
+    // The library always renders the ⋯ menu button; this just empties it of Close.
     fn closable(&self, _cx: &App) -> bool {
         false
     }
 
-    fn zoomable(&self, _cx: &App) -> Option<PanelControl> {
-        None
+    fn zoomable(&self, _cx: &App) -> bool {
+        true
+    }
+}
+
+impl Panel for ProblemsPanel {
+    fn title(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from("Problems")
     }
 }
 
