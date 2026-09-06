@@ -195,4 +195,37 @@ mod tests {
             );
         }
     }
+
+    /// Shift+Esc zooms the focused panel, and does it in every context Escape means something
+    /// else in. The two keys share a base key and differ only by the modifier, so a binding that
+    /// captured plain Escape here would take the selection and the viewer down with it — and the
+    /// zoom itself is asserted on the real workspace in `workspace`'s own tests.
+    #[test]
+    fn shift_escape_zooms_without_disturbing_plain_escape() {
+        let keymap = Keymap::new(key_bindings());
+        let shift_escape = Keystroke::parse("shift-escape").expect("shift-escape parses");
+        for contexts in [
+            vec!["DataTable"],
+            vec!["DetailsPanel"],
+            vec!["ViewsPanel", "Viewer"],
+        ] {
+            let stack: Vec<KeyContext> = contexts
+                .iter()
+                .map(|context| KeyContext::parse(context).expect("test context parses"))
+                .collect();
+            let (bindings, _) =
+                keymap.bindings_for_input(std::slice::from_ref(&shift_escape), &stack);
+            assert_eq!(
+                bindings.first().map(|binding| binding.action().name()),
+                Some("dock::ToggleZoom"),
+                "{contexts:?} zooms on shift-escape"
+            );
+            // The modifier is the whole difference, so plain Escape has to be untouched.
+            assert_ne!(
+                escape_action(&contexts),
+                Some("dock::ToggleZoom"),
+                "{contexts:?} keeps its own meaning for a bare Escape"
+            );
+        }
+    }
 }
