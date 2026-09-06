@@ -104,9 +104,7 @@ impl DetailsPanel {
         // `multi_line`, like the grid's cell editor: `editor_box` sizes the box to the value's
         // *wrapped* height, and a single-line input runs the text off the right edge instead.
         // `submit_on_enter` keeps Enter committing the field (Shift+Enter inserts a newline).
-        let editor = cx.new(|cx| {
-            TextareaState::new(window, cx).submit_on_enter(true)
-        });
+        let editor = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true));
         let _editor_sub = cx.subscribe(&editor, |this, _input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
                 this.commit(cx);

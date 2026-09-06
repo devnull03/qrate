@@ -1,17 +1,19 @@
 //! Which dock each panel is in, and what it puts in the status bar.
 //!
-//! gpui_component owns the docking; what it has no notion of is a panel that *moves*, or a bar
-//! button that follows one. Both need an answer to "where is DetailsPanel right now?", and this
-//! is the only place that has one: `DockItem::remove_panel` takes `&self` and never pops from
-//! the `DockItem::Tabs` snapshot it removes from, so the library's own view of a dock's contents
-//! is wrong from the first move onwards. Never re-derive a placement from `DockItem`.
+//! The dock owns the arrangement; what it has no notion of is a bar button that follows a panel
+//! around. That needs an answer to "where is DetailsPanel right now?", and this is where it
+//! lives — alongside each panel's icon, label and bar side.
+//!
+//! Unlike the `DockItem` model this replaced, the placement here is a *cache* of something the
+//! dock already knows: a `PaneTree` is the single source of truth for what a dock holds, and
+//! [`PanelRegistry::sync`] re-reads it rather than tracking moves by hand.
 
 use std::sync::Arc;
 
 use gpui::*;
 use gpui_component::{
     IconName,
-    dock::{DockArea, DockEvent, DockItem, DockPlacement, PanelView},
+    dock::{BasePanelView, DockArea, DockEvent, DockPlacement, InsertTarget, NodeId, PaneRef},
 };
 
 use crate::Workspace;
@@ -62,7 +64,7 @@ pub static PANELS: [&PanelMeta; 3] = [&DETAILS_META, &PROBLEMS_META, &AGENT_META
 
 pub struct PanelEntry {
     pub meta: &'static PanelMeta,
-    pub view: Arc<dyn PanelView>,
+    pub view: Arc<dyn BasePanelView>,
     pub placement: DockPlacement,
 }
 
@@ -89,34 +91,24 @@ impl PanelRegistry {
     /// "Dock is open" alone lights a button up for a panel hidden behind its neighbour, which
     /// points the reader at something they cannot see.
     ///
-    /// Read off the live `TabPanel`, not the `DockItem` membership snapshot this module warns
-    /// about: which tab is active is state the library keeps current.
     pub fn visible(name: &str, dock_area: &Entity<DockArea>, cx: &App) -> bool {
         let Some(placement) = Self::placement(name, cx) else {
             return false;
         };
         let area = dock_area.read(cx);
-        if !area.is_dock_open(placement, cx) {
+        if !area.is_dock_open(placement) {
             return false;
         }
-        let dock = match placement {
-            DockPlacement::Left => area.left_dock(),
-            DockPlacement::Right => area.right_dock(),
-            _ => area.bottom_dock(),
-        };
         let mut front = Vec::new();
-        if let Some(dock) = dock {
-            frontmost(dock.read(cx).panel(), cx, &mut front);
-        }
+        frontmost(area, placement, cx, &mut front);
         front.contains(&name)
     }
 
     /// Rebuild from what the dock area actually holds. Called after every layout construction:
     /// `DockArea::load` builds fresh panel entities from the saved names, so any entry made
-    /// before it would point at an orphan. Only correct immediately after a load or a default
-    /// build, while the `DockItem` snapshots still match reality.
+    /// before it would point at an orphan.
     pub fn sync(dock_area: &Entity<DockArea>, cx: &mut App) {
-        let mut found: Vec<(DockPlacement, Arc<dyn PanelView>)> = Vec::new();
+        let mut found: Vec<(DockPlacement, Arc<dyn BasePanelView>)> = Vec::new();
         {
             let area = dock_area.read(cx);
             for placement in [
@@ -124,14 +116,7 @@ impl PanelRegistry {
                 DockPlacement::Right,
                 DockPlacement::Bottom,
             ] {
-                let dock = match placement {
-                    DockPlacement::Left => area.left_dock(),
-                    DockPlacement::Right => area.right_dock(),
-                    _ => area.bottom_dock(),
-                };
-                if let Some(dock) = dock {
-                    collect(dock.read(cx).panel(), placement, &mut found);
-                }
+                collect(area, placement, &mut found);
             }
         }
 
@@ -166,7 +151,7 @@ impl PanelRegistry {
                 crate::toggle_dock_immediately(area, placement, window, cx)
             })
         } else {
-            let toggled = if !dock_area.read(cx).is_dock_open(placement, cx) {
+            let toggled = if !dock_area.read(cx).is_dock_open(placement) {
                 dock_area.update(cx, |area, cx| {
                     crate::toggle_dock_immediately(area, placement, window, cx)
                 })
@@ -184,10 +169,10 @@ impl PanelRegistry {
 
     /// Make `name` the tab in front of its dock.
     ///
-    /// The library exposes no "activate this tab": `TabPanel::set_active_ix` is private and
-    /// `add_panel` returns early for a panel already in the strip. `DockItem::active_index` is
-    /// what is public, and it wants an index into the *live* tab order — which `dump` reports and
-    /// the `DockItem::Tabs` snapshot beside it does not, for the reason this module opens with.
+    /// A move onto the panel's own group at its own index: the tree edit is a no-op, so the tab
+    /// order is untouched and `activate` is the whole point. There is still no public "select
+    /// this tab" on `DockArea` — `TabGroup::select_tab` needs the group entity, which the area
+    /// keeps to itself.
     fn bring_to_front(
         name: &str,
         placement: DockPlacement,
@@ -195,34 +180,47 @@ impl PanelRegistry {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let area = dock_area.read(cx);
-        let dock = match placement {
-            DockPlacement::Left => area.left_dock(),
-            DockPlacement::Right => area.right_dock(),
-            _ => area.bottom_dock(),
-        };
-        let Some(dock) = dock.cloned() else {
+        let Some((node, ix, panel)) = ({
+            let area = dock_area.read(cx);
+            area.layout(placement).and_then(|tree| {
+                let mut found = None;
+                tree.root().walk(&mut |node| {
+                    let PaneRef::Tabs { panels, .. } = node.kind() else {
+                        return;
+                    };
+                    if found.is_some() {
+                        return;
+                    }
+                    found = panels
+                        .iter()
+                        .position(|id| {
+                            area.panel(*id)
+                                .is_some_and(|panel| panel.panel_name(cx) == name)
+                        })
+                        .map(|ix| (node.id(), ix, panels[ix]));
+                });
+                found
+            })
+        }) else {
             return;
         };
-        let item = dock.read(cx).panel().clone();
-        if !matches!(item, DockItem::Tabs { .. }) {
-            return;
-        }
-        let Some(index) = item
-            .view()
-            .dump(cx)
-            .children
-            .iter()
-            .position(|child| child.panel_name == name)
-        else {
-            return;
-        };
-        let item = item.active_index(index, cx);
-        dock.update(cx, |dock, cx| dock.set_panel(item, window, cx));
+        dock_area.update(cx, |area, cx| {
+            area.move_panel(
+                panel,
+                InsertTarget::Tabs {
+                    node,
+                    ix: Some(ix),
+                    activate: true,
+                },
+                window,
+                cx,
+            );
+        });
     }
 
-    /// Move a panel to another dock, keeping the panel entity — and so its state — alive. The
-    /// library has no `move_panel`; `remove_panel` + `add_panel` hand the same `Arc` across.
+    /// Move a panel to another dock, keeping the panel entity — and so its state — alive.
+    /// `DockArea::move_panel` is built for exactly this: the panel never leaves the dock, so it
+    /// is never told it was removed, and its active state carries across.
     pub fn move_panel(
         name: &str,
         to: DockPlacement,
@@ -241,9 +239,21 @@ impl PanelRegistry {
             return;
         }
 
+        let panel = view.panel_id(cx);
+        let Some(node) = tabs_node(dock_area.read(cx), to) else {
+            return;
+        };
         dock_area.update(cx, |area, cx| {
-            area.remove_panel(view.clone(), from, window, cx);
-            area.add_panel(view, to, None, window, cx);
+            area.move_panel(
+                panel,
+                InsertTarget::Tabs {
+                    node,
+                    ix: None,
+                    activate: true,
+                },
+                window,
+                cx,
+            );
         });
         cx.update_global::<Self, _>(|this, _| {
             if let Some(entry) = this.0.iter_mut().find(|entry| entry.meta.name == name) {
@@ -257,10 +267,10 @@ impl PanelRegistry {
         dock_area.update(cx, |area, cx| {
             // An emptied dock keeps rendering as a bare tab strip, and a closed target dock would
             // swallow the panel we just moved into it.
-            if source_empty && area.is_dock_open(from, cx) {
+            if source_empty && area.is_dock_open(from) {
                 crate::toggle_dock_immediately(area, from, window, cx);
             }
-            if !area.is_dock_open(to, cx) {
+            if !area.is_dock_open(to) {
                 crate::toggle_dock_immediately(area, to, window, cx);
             }
         });
@@ -269,42 +279,49 @@ impl PanelRegistry {
 }
 
 /// The panels a dock is actually showing — one per tab group, since a split shows several at once.
-fn frontmost<'a>(item: &DockItem, cx: &'a App, out: &mut Vec<&'a str>) {
-    match item {
-        DockItem::Tabs { view, .. } => out.extend(
-            view.read(cx)
-                .active_panel(cx)
+fn frontmost(area: &DockArea, placement: DockPlacement, cx: &App, out: &mut Vec<&'static str>) {
+    let Some(tree) = area.layout(placement) else {
+        return;
+    };
+    tree.root().walk(&mut |node| {
+        let PaneRef::Tabs { panels, active_ix } = node.kind() else {
+            return;
+        };
+        out.extend(
+            panels
+                .get(active_ix)
+                .and_then(|id| area.panel(*id))
                 .map(|panel| panel.panel_name(cx)),
-        ),
-        DockItem::Panel { view, .. } => out.push(view.panel_name(cx)),
-        DockItem::Split { items, .. } => {
-            for item in items {
-                frontmost(item, cx, out);
-            }
-        }
-        DockItem::Tiles { .. } => {}
-    }
+        );
+    });
 }
 
-/// Flatten a dock's item tree into the panels it holds. Recursive because a restored layout can
-/// come back as a `Split` even though nothing here builds one.
+/// The panels a dock holds, in tree order. A restored layout can come back as a split even
+/// though nothing here builds one, so this asks the tree rather than assuming one group.
 fn collect(
-    item: &DockItem,
+    area: &DockArea,
     placement: DockPlacement,
-    out: &mut Vec<(DockPlacement, Arc<dyn PanelView>)>,
+    out: &mut Vec<(DockPlacement, Arc<dyn BasePanelView>)>,
 ) {
-    match item {
-        DockItem::Tabs { items, .. } => {
-            out.extend(items.iter().map(|view| (placement, view.clone())))
+    let Some(tree) = area.layout(placement) else {
+        return;
+    };
+    out.extend(
+        tree.panels()
+            .filter_map(|id| area.panel(id).map(|panel| (placement, panel.clone()))),
+    );
+}
+
+/// The first tab group in a dock, which is where a panel moved there belongs.
+fn tabs_node(area: &DockArea, placement: DockPlacement) -> Option<NodeId> {
+    let tree = area.layout(placement)?;
+    let mut found = None;
+    tree.root().walk(&mut |node| {
+        if found.is_none() && matches!(node.kind(), PaneRef::Tabs { .. }) {
+            found = Some(node.id());
         }
-        DockItem::Panel { view, .. } => out.push((placement, view.clone())),
-        DockItem::Split { items, .. } => {
-            for item in items {
-                collect(item, placement, out);
-            }
-        }
-        DockItem::Tiles { .. } => {}
-    }
+    });
+    found
 }
 
 #[cfg(test)]
@@ -313,15 +330,14 @@ mod tests {
     use std::sync::Arc;
 
     use gpui::{AppContext as _, TestAppContext};
-    use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelView};
+    use gpui_component::dock::{BasePanelView, DockArea, DockLayout, DockPlacement, panel_handle};
 
     use crate::panel_registry::PanelRegistry;
     use crate::panels::{AgentPanel, DetailsPanel};
     use diagnostics::ProblemsPanel;
 
-    /// The registry is the only record of where a panel is: the library's `DockItem` snapshot
-    /// goes stale the moment anything moves. So this covers both halves — that `sync` reads the
-    /// real arrangement, and that a move updates it and takes the emptied dock down with it.
+    /// Covers both halves of the registry — that `sync` reads the real arrangement out of the
+    /// pane tree, and that a move updates it and takes the emptied dock down with it.
     #[gpui::test]
     fn a_move_updates_the_placement_and_closes_the_dock_it_emptied(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -335,21 +351,24 @@ mod tests {
 
         cx.update(|window, cx| {
             dock_area.update(cx, |area, cx| {
-                let weak = cx.entity().downgrade();
-                let details: Arc<dyn PanelView> =
-                    Arc::new(cx.new(|cx| DetailsPanel::new(window, cx)));
-                let agent: Arc<dyn PanelView> = Arc::new(cx.new(|cx| AgentPanel::new(window, cx)));
-                let problems: Arc<dyn PanelView> =
-                    Arc::new(cx.new(|cx| ProblemsPanel::new(window, cx)));
-                let tabs = |panel, cx: &mut gpui::App, window: &mut gpui::Window| {
-                    DockItem::tabs(vec![panel], &weak, window, cx)
-                };
-                let left = tabs(details, cx, window);
-                area.set_left_dock(left, None, true, window, cx);
-                let right = tabs(agent, cx, window);
-                area.set_right_dock(right, None, true, window, cx);
-                let bottom = tabs(problems, cx, window);
-                area.set_bottom_dock(bottom, None, true, window, cx);
+                let details: Arc<dyn BasePanelView> =
+                    panel_handle(cx.new(|cx| DetailsPanel::new(window, cx)));
+                let agent: Arc<dyn BasePanelView> =
+                    panel_handle(cx.new(|cx| AgentPanel::new(window, cx)));
+                let problems: Arc<dyn BasePanelView> =
+                    panel_handle(cx.new(|cx| ProblemsPanel::new(window, cx)));
+                for (placement, panel) in [
+                    (DockPlacement::Left, details),
+                    (DockPlacement::Right, agent),
+                    (DockPlacement::Bottom, problems),
+                ] {
+                    area.set_dock(
+                        placement,
+                        DockLayout::tabs().panel_view(panel, cx),
+                        window,
+                        cx,
+                    );
+                }
             });
             PanelRegistry::sync(&dock_area, cx);
         });
@@ -375,8 +394,8 @@ mod tests {
                 Some(DockPlacement::Right)
             );
             let area = dock_area.read(cx);
-            assert!(!area.is_dock_open(DockPlacement::Left, cx), "left emptied");
-            assert!(area.is_dock_open(DockPlacement::Right, cx), "right open");
+            assert!(!area.is_dock_open(DockPlacement::Left), "left emptied");
+            assert!(area.is_dock_open(DockPlacement::Right), "right open");
         });
     }
 }

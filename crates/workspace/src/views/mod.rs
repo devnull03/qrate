@@ -498,7 +498,7 @@ mod layout {
                 Some(PanelSlot {
                     name: meta.name.to_string(),
                     placement: placement_name(placement).to_string(),
-                    open: area.is_dock_open(placement, cx),
+                    open: area.is_dock_open(placement),
                 })
             })
             .collect();
@@ -532,7 +532,7 @@ mod layout {
             };
             let to = parse_placement(&slot.placement, meta.default_placement);
             PanelRegistry::move_panel(meta.name, to, dock_area, window, cx);
-            let open = dock_area.read(cx).is_dock_open(to, cx);
+            let open = dock_area.read(cx).is_dock_open(to);
             if open != slot.open {
                 dock_area.update(cx, |area, cx| {
                     crate::toggle_dock_immediately(area, to, window, cx)
@@ -548,7 +548,7 @@ mod tests {
     use std::sync::Arc;
 
     use gpui::{AppContext as _, TestAppContext};
-    use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelView};
+    use gpui_component::dock::{BasePanelView, DockArea, DockLayout, DockPlacement, panel_handle};
 
     use crate::panel_registry::PanelRegistry;
     use crate::views::{ViewMode, ViewsPanel};
@@ -588,12 +588,16 @@ mod tests {
             let weak = dock_area.downgrade();
             let panel = cx.new(|cx| ViewsPanel::new(weak.clone(), window, cx));
             dock_area.update(cx, |area, cx| {
-                let centre: Arc<dyn PanelView> = Arc::new(panel.clone());
-                area.set_center(DockItem::panel(centre), window, cx);
-                let details: Arc<dyn PanelView> =
-                    Arc::new(cx.new(|cx| crate::panels::DetailsPanel::new(window, cx)));
-                let left = DockItem::tabs(vec![details], &weak, window, cx);
-                area.set_left_dock(left, None, true, window, cx);
+                let centre: Arc<dyn BasePanelView> = panel_handle(panel.clone());
+                area.set_center(DockLayout::tabs().panel_view(centre, cx), window, cx);
+                let details: Arc<dyn BasePanelView> =
+                    panel_handle(cx.new(|cx| crate::panels::DetailsPanel::new(window, cx)));
+                area.set_dock(
+                    DockPlacement::Left,
+                    DockLayout::tabs().panel_view(details, cx),
+                    window,
+                    cx,
+                );
             });
             PanelRegistry::sync(&dock_area, cx);
             panel
