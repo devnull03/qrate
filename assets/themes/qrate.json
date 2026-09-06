@@ -25,7 +25,6 @@
         "accent.background": "#f1f3f4",
         "accent.foreground": "#202124",
         "accordion.background": "#ffffff",
-        "accordion.hover.background": "#f8f9fa",
         "muted.background": "#f1f3f4",
         "muted.foreground": "#5f6368",
 
@@ -158,7 +157,6 @@
         "accent.background": "#404040",
         "accent.foreground": "#bbbbbb",
         "accordion.background": "#333333",
-        "accordion.hover.background": "#383838",
         "muted.background": "#404040",
         "muted.foreground": "#777777",
 

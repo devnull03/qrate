@@ -13,7 +13,10 @@ use std::sync::Arc;
 use gpui::*;
 use gpui_component::{
     IconName,
-    dock::{BasePanelView, DockArea, DockEvent, DockPlacement, InsertTarget, NodeId, PaneRef},
+    dock::{
+        BasePanelView, DockArea, DockEvent, DockLayout, DockPlacement, InsertTarget, NodeId,
+        PaneRef,
+    },
 };
 
 use crate::Workspace;
@@ -240,10 +243,16 @@ impl PanelRegistry {
         }
 
         let panel = view.panel_id(cx);
-        let Some(node) = tabs_node(dock_area.read(cx), to) else {
-            return;
-        };
         dock_area.update(cx, |area, cx| {
+            // A dock that was never built, or that a previous move emptied, has no group to
+            // merge into. Give it one first: `move_panel` wants a node to aim at, and unlike
+            // `add_panel_view` it detaches the panel from wherever it currently sits.
+            if tabs_node(area, to).is_none() {
+                area.set_dock(to, DockLayout::tabs(), window, cx);
+            }
+            let Some(node) = tabs_node(area, to) else {
+                return;
+            };
             area.move_panel(
                 panel,
                 InsertTarget::Tabs {
