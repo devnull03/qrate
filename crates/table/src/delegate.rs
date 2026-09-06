@@ -63,7 +63,9 @@ pub struct QrateTableDelegate {
     /// common case: one selected row lives in `selection` alone and never reaches this set.
     pub(crate) selected_rows: BTreeSet<usize>,
     pub(crate) editing: EditState,
-    /// Shared single-line editor, reused across whichever cell is being edited.
+    /// Shared cell editor, reused across whichever cell is being edited. Multi-line so a long
+    /// value wraps inside the editor box instead of running off its right edge; Enter still
+    /// commits it, and Shift+Enter is what inserts a newline.
     pub(crate) editor: Entity<TextareaState>,
     /// Which cell/row/column the note editor is open on, if any.
     pub(crate) note_edit: Option<Location>,
