@@ -11,12 +11,29 @@ $extensionSha256 = "feb4ce5dcb59f5d936122541b776a85cd9d2541e121b7c47de7c4efb517e
 $runtime = Join-Path ([System.IO.Path]::GetFullPath($Destination)) "agent"
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("qrate-agent-" + [guid]::NewGuid())
 
+function Download-ReleaseAsset([string] $Uri, [string] $OutFile) {
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            Invoke-WebRequest $Uri -OutFile $OutFile
+            return
+        }
+        catch {
+            if ($attempt -eq 3) {
+                throw
+            }
+            $delay = 2 * $attempt
+            Write-Warning "Download failed (attempt $attempt of 3): $($_.Exception.Message). Retrying in $delay seconds."
+            Start-Sleep -Seconds $delay
+        }
+    }
+}
+
 New-Item -ItemType Directory -Force -Path $runtime, $temp | Out-Null
 try {
     $piArchive = Join-Path $temp "pi.zip"
     $extensionArchive = Join-Path $temp "extension.tar.gz"
-    Invoke-WebRequest "https://github.com/earendil-works/pi/releases/download/v$piVersion/pi-$Platform.zip" -OutFile $piArchive
-    Invoke-WebRequest "https://github.com/devnull03/qrate-pi-extension/releases/download/v$extensionVersion/qrate-pi-extension-$extensionVersion.tar.gz" -OutFile $extensionArchive
+    Download-ReleaseAsset "https://github.com/earendil-works/pi/releases/download/v$piVersion/pi-$Platform.zip" $piArchive
+    Download-ReleaseAsset "https://github.com/devnull03/qrate-pi-extension/releases/download/v$extensionVersion/qrate-pi-extension-$extensionVersion.tar.gz" $extensionArchive
 
     if ((Get-FileHash $piArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $piSha256) {
         throw "Pi archive checksum did not match v$piVersion"
