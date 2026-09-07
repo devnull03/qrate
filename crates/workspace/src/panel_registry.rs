@@ -8,7 +8,7 @@
 //! dock already knows: a `PaneTree` is the single source of truth for what a dock holds, and
 //! [`PanelRegistry::sync`] re-reads it rather than tracking moves by hand.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use gpui::*;
 use gpui_component::{
@@ -138,6 +138,86 @@ impl PanelRegistry {
             })
             .collect();
         cx.set_global(Self(entries));
+    }
+
+    /// Keep qrate's tool panels in one tab group per edge dock.
+    ///
+    /// gpui-kit exposes only a whole-layout drag lock. qrate keeps dragging enabled, then folds a
+    /// split drop back into tabs and returns a centre drop to the panel's previous edge.
+    pub fn enforce_edge_tabs(dock_area: &Entity<DockArea>, window: &mut Window, cx: &mut App) {
+        let previous: HashMap<&str, DockPlacement> = Self::entries(cx)
+            .iter()
+            .map(|entry| (entry.meta.name, entry.placement))
+            .collect();
+        let centre_moves = {
+            let area = dock_area.read(cx);
+            area.layout(DockPlacement::Center)
+                .into_iter()
+                .flat_map(|tree| tree.panels())
+                .filter_map(|id| {
+                    let name = area.panel(id)?.panel_name(cx);
+                    let meta = PANELS.iter().find(|meta| meta.name == name)?;
+                    let destination = previous
+                        .get(name)
+                        .copied()
+                        .filter(|placement| *placement != DockPlacement::Center)
+                        .unwrap_or(meta.default_placement);
+                    Some((id, destination))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        dock_area.update(cx, |area, cx| {
+            for (panel, destination) in centre_moves {
+                if tabs_node(area, destination).is_none() {
+                    area.set_dock(destination, DockLayout::tabs(), window, cx);
+                }
+                if let Some(node) = tabs_node(area, destination) {
+                    area.move_panel(
+                        panel,
+                        InsertTarget::Tabs {
+                            node,
+                            ix: None,
+                            activate: true,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }
+
+            for placement in [
+                DockPlacement::Left,
+                DockPlacement::Right,
+                DockPlacement::Bottom,
+            ] {
+                let Some(tree) = area.layout(placement) else {
+                    continue;
+                };
+                if matches!(tree.root().kind(), PaneRef::Tabs { .. }) {
+                    continue;
+                }
+                let Some(target) = tabs_node(area, placement) else {
+                    continue;
+                };
+                let panels = tree
+                    .panels()
+                    .filter(|panel| tree.find_panel_node(*panel) != Some(target))
+                    .collect::<Vec<_>>();
+                for panel in panels {
+                    area.move_panel(
+                        panel,
+                        InsertTarget::Tabs {
+                            node: target,
+                            ix: None,
+                            activate: true,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }
+        });
     }
 
     /// Show a panel, or put it away if it is already the one in front.

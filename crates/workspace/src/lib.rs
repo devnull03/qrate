@@ -175,17 +175,26 @@ impl Workspace {
         // toggle arrows. A skin setting in 0.6, so it survives `load` without being reapplied.
         skin.set_toggle_button_visible(false, cx);
 
+        // Saved layouts from older builds may contain arrangements qrate no longer permits.
+        PanelRegistry::enforce_edge_tabs(&dock_area, window, cx);
         // Whichever path ran above built the panels; this is what learns where they landed.
         PanelRegistry::sync(&dock_area, cx);
 
-        // Every dock mutation emits `LayoutChanged`, which persists it and repaints the workspace.
-        let _layout_sub = cx.subscribe(&dock_area, |_this, area, event: &DockEvent, cx| {
-            if matches!(event, DockEvent::LayoutChanged) {
-                Self::persist_layout(&area, cx);
-                // Re-render the workspace so the bottom-strip crop tracks the dock's open state.
-                cx.notify();
-            }
-        });
+        // Every dock mutation emits `LayoutChanged`, which normalizes user drags, refreshes the
+        // status-bar placement cache, persists the result and repaints the workspace.
+        let _layout_sub = cx.subscribe_in(
+            &dock_area,
+            window,
+            |_this, area, event: &DockEvent, window, cx| {
+                if matches!(event, DockEvent::LayoutChanged) {
+                    PanelRegistry::enforce_edge_tabs(area, window, cx);
+                    PanelRegistry::sync(area, cx);
+                    Self::persist_layout(area, cx);
+                    // Re-render the workspace so the bottom-strip crop tracks the dock's open state.
+                    cx.notify();
+                }
+            },
+        );
 
         let _viewer_sub = cx.observe_global::<viewer::ActiveViewer>(|_this, cx| cx.notify());
 
@@ -398,10 +407,15 @@ mod tests {
         ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, actions, div,
         point, px,
     };
-    use gpui_component::dock::{DockEvent, DockPlacement};
     use gpui_component::menu::ContextMenuExt as _;
+    use gpui_component::{
+        Placement,
+        dock::{DockEvent, DockPlacement, InsertTarget, PaneRef},
+    };
 
-    use crate::{BottomDockCrop, Workspace, prune, toggle_dock_immediately};
+    use crate::{
+        BarSide, BottomDockCrop, PanelRegistry, Workspace, bar_side, prune, toggle_dock_immediately,
+    };
 
     actions!(workspace_context_menu_test, [CloseMenu]);
 
@@ -508,6 +522,142 @@ mod tests {
 
         assert_eq!(layout_events.get(), 1);
         cx.update(|_, cx| assert_eq!(cx.global::<BottomDockCrop>().0, px(29.)));
+    }
+
+    #[gpui::test]
+    fn dragged_tools_become_edge_tabs_and_move_their_status_item(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(settings::SettingsPersistence::default());
+        });
+        let (workspace, cx) = cx.add_window_view(Workspace::new);
+        let dock_area = cx.update(|_, cx| workspace.read(cx).dock_area.clone());
+        cx.run_until_parked();
+
+        // Model a drop on the lower half of Details: gpui-kit first creates a split.
+        cx.update(|window, cx| {
+            let agent = PanelRegistry::entries(cx)
+                .iter()
+                .find(|entry| entry.meta.name == "AgentPanel")
+                .map(|entry| entry.view.panel_id(cx))
+                .expect("Agent is docked");
+            let details_group = dock_area
+                .read(cx)
+                .layout(DockPlacement::Left)
+                .expect("left dock")
+                .root()
+                .id();
+            dock_area.update(cx, |area, cx| {
+                area.move_panel(
+                    agent,
+                    InsertTarget::Split {
+                        node: details_group,
+                        placement: Placement::Bottom,
+                        size: None,
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|_, cx| {
+            let area = dock_area.read(cx);
+            assert!(
+                matches!(
+                    area.layout(DockPlacement::Left)
+                        .expect("left dock")
+                        .root()
+                        .kind(),
+                    PaneRef::Tabs { .. }
+                ),
+                "the split drop is folded into the edge's tab group"
+            );
+            assert_eq!(
+                PanelRegistry::placement("AgentPanel", cx),
+                Some(DockPlacement::Left)
+            );
+        });
+
+        // A normal tab drop into another edge stays there and refreshes the status-bar cache.
+        cx.update(|window, cx| {
+            let agent = PanelRegistry::entries(cx)
+                .iter()
+                .find(|entry| entry.meta.name == "AgentPanel")
+                .map(|entry| entry.view.panel_id(cx))
+                .expect("Agent is docked");
+            let bottom_group = dock_area
+                .read(cx)
+                .layout(DockPlacement::Bottom)
+                .expect("bottom dock")
+                .root()
+                .id();
+            dock_area.update(cx, |area, cx| {
+                area.move_panel(
+                    agent,
+                    InsertTarget::Tabs {
+                        node: bottom_group,
+                        ix: None,
+                        activate: true,
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|_, cx| {
+            let placement =
+                PanelRegistry::placement("AgentPanel", cx).expect("Agent stays registered");
+            assert_eq!(placement, DockPlacement::Bottom);
+            assert!(matches!(bar_side(placement), BarSide::Centre));
+        });
+
+        // The document centre is not a tool dock; a drop there returns to the previous edge.
+        cx.update(|window, cx| {
+            let agent = PanelRegistry::entries(cx)
+                .iter()
+                .find(|entry| entry.meta.name == "AgentPanel")
+                .map(|entry| entry.view.panel_id(cx))
+                .expect("Agent is docked");
+            let centre_group = dock_area
+                .read(cx)
+                .layout(DockPlacement::Center)
+                .expect("centre layout")
+                .root()
+                .id();
+            dock_area.update(cx, |area, cx| {
+                area.move_panel(
+                    agent,
+                    InsertTarget::Split {
+                        node: centre_group,
+                        placement: Placement::Right,
+                        size: None,
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|_, cx| {
+            assert_eq!(
+                PanelRegistry::placement("AgentPanel", cx),
+                Some(DockPlacement::Bottom)
+            );
+            let area = dock_area.read(cx);
+            let centre_names = area
+                .layout(DockPlacement::Center)
+                .expect("centre layout")
+                .panels()
+                .filter_map(|id| area.panel(id).map(|panel| panel.panel_name(cx)))
+                .collect::<Vec<_>>();
+            assert_eq!(centre_names, ["ViewsPanel"]);
+        });
     }
 
     /// Shift+Esc, end to end on the real workspace. `app` binds the key to `dock::ToggleZoom`
