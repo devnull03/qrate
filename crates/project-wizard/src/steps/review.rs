@@ -139,6 +139,25 @@ fn project_columns(
     columns
 }
 
+fn append_extra_file_rows(
+    headers: &[String],
+    rows: &mut Vec<Vec<String>>,
+    file_column: Option<&str>,
+    folder_match: Option<&crate::data::FolderMatch>,
+) {
+    let Some((files, file_col)) = folder_match
+        .map(|matched| matched.extra_files.as_slice())
+        .zip(file_column.and_then(|name| headers.iter().position(|header| header == name)))
+    else {
+        return;
+    };
+    rows.extend(files.iter().map(|file| {
+        let mut row = vec![String::new(); headers.len()];
+        row[file_col] = file.clone();
+        row
+    }));
+}
+
 impl ProjectWizard {
     pub(crate) fn create_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.project_name(cx);
@@ -170,18 +189,13 @@ impl ProjectWizard {
         // A file in the folder that no row names is still part of the collection. It arrives as
         // its own row, empty but for the filename, so it can be catalogued in qrate instead of
         // being noticed only when someone counts the folder.
-        if !self.skip_files
-            && let Some(m) = &self.folder_match
-            && let Some(file_col) = self
-                .file_column
-                .as_deref()
-                .and_then(|name| headers.iter().position(|h| h == name))
-        {
-            rows.extend(m.extra_files.iter().map(|file| {
-                let mut row = vec![String::new(); headers.len()];
-                row[file_col] = file.clone();
-                row
-            }));
+        if !self.skip_files {
+            append_extra_file_rows(
+                &headers,
+                &mut rows,
+                self.file_column.as_deref(),
+                self.folder_match.as_ref(),
+            );
         }
         // A project with no rows is a grid with nothing to type into — the first row has to be
         // created before anything else can be, so create it here rather than making the archivist
@@ -293,6 +307,13 @@ impl ProjectWizard {
         let files_line = (!self.skip_files)
             .then(|| {
                 self.folder_match.as_ref().map(|m| {
+                    if self.entry_kind == EntryKind::Blank {
+                        return format!(
+                            "{} file{} · each becomes a table row",
+                            m.extra_files.len(),
+                            if m.extra_files.len() == 1 { "" } else { "s" },
+                        );
+                    }
                     let method = match self.link_method {
                         LinkMethod::ExactFilename => "exact filename",
                         LinkMethod::CustomPattern => "custom pattern",
@@ -360,9 +381,9 @@ impl ProjectWizard {
 mod tests {
     use settings::columns::ColumnType;
 
-    use crate::data::{ColumnConfigEntry, ColumnConfigPreview};
+    use crate::data::{ColumnConfigEntry, ColumnConfigPreview, FolderMatch};
 
-    use super::project_columns;
+    use super::{append_extra_file_rows, project_columns};
 
     fn roles(columns: &[crate::project::ProjectColumn]) -> Vec<(&str, ColumnType)> {
         columns
@@ -418,6 +439,27 @@ mod tests {
                 ("Title", ColumnType::Title),
                 ("File", ColumnType::Filename),
                 ("Notes", ColumnType::Text)
+            ]
+        );
+    }
+
+    #[test]
+    fn blank_folder_files_become_rows_in_the_file_column() {
+        let headers = vec!["Title".into(), "File".into()];
+        let mut rows = Vec::new();
+        let folder = FolderMatch {
+            matched_rows: 0,
+            total_rows: 0,
+            extra_files: vec!["one.jpg".into(), "two.png".into()],
+        };
+
+        append_extra_file_rows(&headers, &mut rows, Some("File"), Some(&folder));
+
+        assert_eq!(
+            rows,
+            [
+                vec![String::new(), "one.jpg".into()],
+                vec![String::new(), "two.png".into()],
             ]
         );
     }

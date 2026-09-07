@@ -326,7 +326,12 @@ impl ProjectWizard {
                     }
                     Ok(())
                 }
-                EntryKind::Blank => Ok(()),
+                EntryKind::Blank => {
+                    if !self.skip_files && self.folder_match.is_none() {
+                        return Err("Choose a files folder, or say you'll add one later".into());
+                    }
+                    Ok(())
+                }
             },
             WizardStep::Link => {
                 if self.link_method == LinkMethod::CustomPattern
