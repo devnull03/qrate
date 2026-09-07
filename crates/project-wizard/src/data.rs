@@ -229,6 +229,16 @@ pub fn list_files(folder: &str, recursive: bool) -> Result<Vec<String>, FolderEr
     Ok(files)
 }
 
+/// Every file in a folder-backed blank project is new collection material, so all of them become
+/// otherwise-empty rows rather than being matched against spreadsheet rows that do not exist.
+pub fn inventory_folder(folder: &str, recursive: bool) -> Result<FolderMatch, FolderError> {
+    Ok(FolderMatch {
+        matched_rows: 0,
+        total_rows: 0,
+        extra_files: list_files(folder, recursive)?,
+    })
+}
+
 /// Matches spreadsheet rows against files in `folder` by looking for any cell whose value names a
 /// file there — by filename, filename stem, or the id a multi-part item's files are built from
 /// ([`settings::filenames::keys`], the same rule `table::photos` resolves rows with once the
@@ -531,6 +541,20 @@ mod tests {
         let mut deep = list_files(dir.to_str().unwrap(), true).unwrap();
         deep.sort();
         assert_eq!(deep, ["nested.jpg", "top.jpg"]);
+    }
+
+    #[test]
+    fn blank_project_inventory_turns_every_file_into_an_extra() {
+        let dir = tempdir("qrate-blank-folder");
+        fs::create_dir_all(dir.join("batch")).unwrap();
+        fs::write(dir.join("one.jpg"), "x").unwrap();
+        fs::write(dir.join("batch").join("two.png"), "x").unwrap();
+
+        let mut inventory = inventory_folder(dir.to_str().unwrap(), true).unwrap();
+        inventory.extra_files.sort();
+        assert_eq!(inventory.matched_rows, 0);
+        assert_eq!(inventory.total_rows, 0);
+        assert_eq!(inventory.extra_files, ["one.jpg", "two.png"]);
     }
 
     #[test]

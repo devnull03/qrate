@@ -108,7 +108,10 @@ impl ProjectWizard {
                     data::match_folder(preview, &self.folder_path, self.recurse_subfolders)
                 })
             }
-            EntryKind::Blank => None,
+            EntryKind::Blank => Some(data::inventory_folder(
+                &self.folder_path,
+                self.recurse_subfolders,
+            )),
         };
         match result {
             Some(Ok(m)) => {
@@ -263,7 +266,7 @@ impl ProjectWizard {
                     .text_sm()
                     .text_color(cx.theme().muted_foreground),
             )
-            .child(self.folder_field("browse-folder-blank", false, cx))
+            .child(self.folder_field("browse-folder-blank", true, cx))
     }
 
     fn render_local_files(
@@ -389,6 +392,16 @@ impl ProjectWizard {
 
     fn render_folder_status(&self) -> AnyElement {
         match (&self.folder_match, &self.folder_error) {
+            (Some(m), _) if self.entry_kind == EntryKind::Blank => inline_message(
+                "folder-status",
+                format!(
+                    "{} file{} will become table rows",
+                    m.extra_files.len(),
+                    if m.extra_files.len() == 1 { "" } else { "s" },
+                ),
+                MsgKind::Success,
+            )
+            .into_any_element(),
             (Some(m), _) if m.matched_rows == m.total_rows => inline_message(
                 "folder-status",
                 format!("{} of {} files matched", m.matched_rows, m.total_rows),
