@@ -75,11 +75,16 @@ pub fn viewer_in(scope: Scope, cx: &App) -> Option<Entity<Viewer>> {
 }
 
 /// Opens `path` in the shared viewer overlay, replacing any viewer already open.
-pub fn open_viewer(path: PathBuf, scope: Scope, cx: &mut App) {
+pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut App) {
     let document = preview::has_text(&path);
     let video = preview::has_video(&path);
     let details = preview::describe(&path);
     let probe_path = path.clone();
+    let return_focus = cx
+        .try_global::<ActiveViewer>()
+        .and_then(|active| active.0.as_ref())
+        .map(|viewer| viewer.read(cx).return_focus.clone())
+        .unwrap_or_else(|| window.focused(cx));
     let viewer = cx.new(|cx| Viewer {
         transport: Transport::new(path.clone(), cx),
         path,
@@ -95,6 +100,7 @@ pub fn open_viewer(path: PathBuf, scope: Scope, cx: &mut App) {
         offset: Point::default(),
         drag_from: None,
         focus_handle: cx.focus_handle(),
+        return_focus,
         focused: false,
         find: Find::default(),
         find_open: false,
@@ -121,10 +127,17 @@ pub fn open_viewer(path: PathBuf, scope: Scope, cx: &mut App) {
     cx.set_global(ActiveViewer(Some(viewer)));
 }
 
-pub fn close_viewer(cx: &mut App) {
+pub fn close_viewer(window: &mut Window, cx: &mut App) {
     // Without this the recording plays on over an empty screen, with nothing left to stop it.
     preview::playback::stop(cx);
+    let return_focus = cx
+        .try_global::<ActiveViewer>()
+        .and_then(|active| active.0.as_ref())
+        .and_then(|viewer| viewer.read(cx).return_focus.clone());
     cx.set_global(ActiveViewer(None));
+    if let Some(return_focus) = return_focus {
+        return_focus.focus(window, cx);
+    }
 }
 
 pub struct Viewer {
@@ -158,6 +171,8 @@ pub struct Viewer {
     /// Last pointer position while dragging; `None` when not panning.
     drag_from: Option<Point<Pixels>>,
     focus_handle: FocusHandle,
+    /// Where focus belonged before the overlay took it.
+    return_focus: Option<FocusHandle>,
     /// Grabs focus on first render so Escape reaches [`Self`]; set once so we don't re-focus.
     focused: bool,
     find: Find,
@@ -387,7 +402,7 @@ impl Render for Viewer {
                     window.focus(&this.focus_handle, cx);
                     cx.notify();
                 } else {
-                    close_viewer(cx);
+                    close_viewer(window, cx);
                 }
             }))
             // Fills whichever overlay slot mounted it; `absolute` so it stacks over that slot's
@@ -751,7 +766,7 @@ impl Render for Viewer {
                             .ghost()
                             .small()
                             .tooltip("Close (Esc)")
-                            .on_click(cx.listener(|_, _, _, cx| close_viewer(cx))),
+                            .on_click(cx.listener(|_, _, window, cx| close_viewer(window, cx))),
                     ),
             )
     }
@@ -760,42 +775,83 @@ impl Render for Viewer {
 #[cfg(test)]
 mod tests {
     // Never `use super::*` here — the parent's `use gpui::*` would shadow `#[test]`.
-    use gpui::TestAppContext;
+    use gpui::{
+        Context, FocusHandle, InteractiveElement as _, IntoElement, Render, TestAppContext,
+        VisualTestContext, Window, div,
+    };
 
     use crate::viewer::{Scope, close_viewer, open_viewer, viewer_in};
+
+    struct FocusProbe(FocusHandle);
+
+    impl Render for FocusProbe {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().track_focus(&self.0)
+        }
+    }
+
+    fn with_window(cx: &mut TestAppContext) -> &mut VisualTestContext {
+        let (_, cx) = cx.add_window_view(|_, cx| FocusProbe(cx.focus_handle()));
+        cx
+    }
 
     /// One global feeds two mount slots — the workspace overlay and the centre panel. Exactly one
     /// may claim it: drop the scope check and the viewer paints twice, once in each slot, with two
     /// sets of live controls over each other.
     #[gpui::test]
     fn only_the_slot_it_was_opened_for_mounts_the_viewer(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
         let path = std::path::PathBuf::from("/nonexistent/qrate-scope-test.jpg");
-        cx.update(|cx| {
-            open_viewer(path.clone(), Scope::Centre, cx);
+        cx.update(|window, cx| {
+            open_viewer(path.clone(), Scope::Centre, window, cx);
             assert!(viewer_in(Scope::Centre, cx).is_some());
             assert!(viewer_in(Scope::Workspace, cx).is_none());
 
             // Opening in the other scope replaces rather than stacks.
-            open_viewer(path, Scope::Workspace, cx);
+            open_viewer(path, Scope::Workspace, window, cx);
             assert!(viewer_in(Scope::Workspace, cx).is_some());
             assert!(viewer_in(Scope::Centre, cx).is_none());
 
-            close_viewer(cx);
+            close_viewer(window, cx);
             assert!(viewer_in(Scope::Workspace, cx).is_none());
             assert!(viewer_in(Scope::Centre, cx).is_none());
         });
     }
 
     #[gpui::test]
+    fn closing_the_viewer_restores_its_callers_focus(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
+        cx.update(|window, cx| {
+            let caller = cx.focus_handle();
+            caller.focus(window, cx);
+            open_viewer(
+                "/nonexistent/qrate-focus-test.jpg".into(),
+                Scope::Workspace,
+                window,
+                cx,
+            );
+            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+            let viewer_focus = viewer.read(cx).focus_handle.clone();
+            viewer_focus.focus(window, cx);
+            assert!(viewer.read(cx).focus_handle.is_focused(window));
+
+            close_viewer(window, cx);
+
+            assert!(caller.is_focused(window));
+        });
+    }
+
+    #[gpui::test]
     fn file_details_are_kept_without_restatting_during_render(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
         let path = std::env::temp_dir().join("qrate-viewer-details.jpg");
         std::fs::write(&path, b"abc").unwrap();
-        cx.update(|cx| {
-            open_viewer(path.clone(), Scope::Workspace, cx);
+        cx.update(|window, cx| {
+            open_viewer(path.clone(), Scope::Workspace, window, cx);
             std::fs::remove_file(&path).unwrap();
             let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
             assert!(viewer.read(cx).details.is_some());
-            close_viewer(cx);
+            close_viewer(window, cx);
         });
     }
 
@@ -803,9 +859,10 @@ mod tests {
     /// an underflow on page zero would panic on a `usize` subtraction.
     #[gpui::test]
     fn paging_stops_at_both_ends_and_resets_the_view(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
         let path = std::path::PathBuf::from("/nonexistent/qrate-paging-test.pdf");
-        cx.update(|cx| {
-            open_viewer(path, Scope::Workspace, cx);
+        cx.update(|window, cx| {
+            open_viewer(path, Scope::Workspace, window, cx);
             let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
 
             viewer.update(cx, |viewer, _| {
@@ -833,16 +890,17 @@ mod tests {
                 assert_eq!(viewer.page, 2, "cannot go past the last page");
             });
 
-            close_viewer(cx);
+            close_viewer(window, cx);
         });
     }
 
     /// A photo is a one-page document, so the controls stay hidden and the arrow keys do nothing.
     #[gpui::test]
     fn a_single_page_file_never_moves(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
         let path = std::path::PathBuf::from("/nonexistent/qrate-single-page.jpg");
-        cx.update(|cx| {
-            open_viewer(path, Scope::Centre, cx);
+        cx.update(|window, cx| {
+            open_viewer(path, Scope::Centre, window, cx);
             let viewer = viewer_in(Scope::Centre, cx).expect("just opened");
             viewer.update(cx, |viewer, _| {
                 assert_eq!(
@@ -854,7 +912,7 @@ mod tests {
                 viewer.turn_page(-1);
                 assert_eq!(viewer.page, 0);
             });
-            close_viewer(cx);
+            close_viewer(window, cx);
         });
     }
 
@@ -862,19 +920,20 @@ mod tests {
     /// a document" — a silent tape and a tape with no readable header both still need playing.
     #[gpui::test]
     fn only_a_recording_gets_a_transport(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            open_viewer("/nonexistent/take.wav".into(), Scope::Workspace, cx);
+        let cx = with_window(cx);
+        cx.update(|window, cx| {
+            open_viewer("/nonexistent/take.wav".into(), Scope::Workspace, window, cx);
             let recording = viewer_in(Scope::Workspace, cx).expect("just opened");
             recording.update(cx, |viewer, _| {
                 assert!(viewer.transport.is_some(), "a WAV is a recording");
                 assert!(!viewer.document);
             });
 
-            open_viewer("/nonexistent/scan.pdf".into(), Scope::Workspace, cx);
+            open_viewer("/nonexistent/scan.pdf".into(), Scope::Workspace, window, cx);
             let document = viewer_in(Scope::Workspace, cx).expect("just opened");
             document.update(cx, |viewer, _| assert!(viewer.transport.is_none()));
 
-            close_viewer(cx);
+            close_viewer(window, cx);
         });
     }
 
@@ -886,6 +945,7 @@ mod tests {
     /// it is the real path.
     #[gpui::test]
     fn closing_the_viewer_leaves_nothing_playing(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
         // 44-byte canonical WAV header, then a second of 8 kHz 16-bit mono silence.
         let data = 8000usize * 2;
         let mut wav = Vec::new();
@@ -906,10 +966,10 @@ mod tests {
         let path = std::env::temp_dir().join("qrate-viewer-close-stops.wav");
         std::fs::write(&path, &wav).unwrap();
 
-        cx.update(|cx| {
-            open_viewer(path.clone(), Scope::Workspace, cx);
+        cx.update(|window, cx| {
+            open_viewer(path.clone(), Scope::Workspace, window, cx);
             preview::playback::play(&path, cx);
-            close_viewer(cx);
+            close_viewer(window, cx);
             assert!(
                 !preview::playback::position(cx).is_some_and(|(_, playing)| playing),
                 "the recording keeps going after the viewer is gone"
@@ -928,6 +988,7 @@ mod tests {
     fn a_video_scrubs_on_release_and_not_during_the_drag(cx: &mut TestAppContext) {
         use gpui_component::slider::{SliderEvent, SliderValue};
 
+        let cx = with_window(cx);
         let path = std::env::temp_dir().join("qrate-viewer-scrub.mp4");
         let made = std::process::Command::new("ffmpeg")
             .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
@@ -940,12 +1001,12 @@ mod tests {
         }
 
         // An emitted event is delivered when the update flushes, so each half is its own update.
-        let viewer = cx.update(|cx| {
-            open_viewer(path.clone(), Scope::Workspace, cx);
+        let viewer = cx.update(|window, cx| {
+            open_viewer(path.clone(), Scope::Workspace, window, cx);
             viewer_in(Scope::Workspace, cx).expect("just opened")
         });
         cx.run_until_parked();
-        let scrubber = cx.update(|cx| {
+        let scrubber = cx.update(|_, cx| {
             let scrubber = viewer
                 .read(cx)
                 .scrubber
@@ -955,21 +1016,21 @@ mod tests {
             scrubber
         });
 
-        cx.update(|cx| {
+        cx.update(|_, cx| {
             scrubber.update(cx, |_, cx| {
                 cx.emit(SliderEvent::Change(SliderValue::Single(4.)));
             });
         });
-        cx.update(|cx| {
+        cx.update(|_, cx| {
             assert_eq!(viewer.read(cx).scrub, 4, "the readout follows the thumb");
             assert_eq!(viewer.read(cx).page, 0, "but nothing has been rendered yet");
             scrubber.update(cx, |_, cx| {
                 cx.emit(SliderEvent::Release(SliderValue::Single(4.)));
             });
         });
-        cx.update(|cx| {
+        cx.update(|window, cx| {
             assert_eq!(viewer.read(cx).page, 4, "letting go lands on that second");
-            close_viewer(cx);
+            close_viewer(window, cx);
         });
 
         let _ = std::fs::remove_file(&path);
@@ -980,19 +1041,25 @@ mod tests {
     /// "has more than one page".
     #[gpui::test]
     fn a_one_page_document_still_says_so(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            open_viewer("/nonexistent/one-page.pdf".into(), Scope::Workspace, cx);
+        let cx = with_window(cx);
+        cx.update(|window, cx| {
+            open_viewer(
+                "/nonexistent/one-page.pdf".into(),
+                Scope::Workspace,
+                window,
+                cx,
+            );
             let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
             viewer.update(cx, |viewer, _| {
                 assert_eq!(viewer.pages, 1);
                 assert!(viewer.document, "a PDF is a document at any length");
             });
 
-            open_viewer("/nonexistent/scan.jpg".into(), Scope::Workspace, cx);
+            open_viewer("/nonexistent/scan.jpg".into(), Scope::Workspace, window, cx);
             let photo = viewer_in(Scope::Workspace, cx).expect("just opened");
             photo.update(cx, |viewer, _| assert!(!viewer.document));
 
-            close_viewer(cx);
+            close_viewer(window, cx);
         });
     }
 }

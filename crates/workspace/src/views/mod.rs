@@ -241,6 +241,7 @@ impl ViewsPanel {
 /// inside a Windows window proc: a non-unwinding abort, not a catchable error. So the panel's own
 /// state changes under one short lease that is released before anything touches the dock.
 fn switch(panel: &Entity<ViewsPanel>, mode: ViewMode, window: &mut Window, cx: &mut App) {
+    let had_focus = panel.read(cx).focus_handle.contains_focused(window, cx);
     let Some((leaving, dock_area)) = panel.update(cx, |this, cx| {
         (this.view != mode).then(|| {
             let leaving = this.view;
@@ -253,7 +254,7 @@ fn switch(panel: &Entity<ViewsPanel>, mode: ViewMode, window: &mut Window, cx: &
     };
 
     if crate::viewer::viewer_in(ViewerScope::Centre, cx).is_some() {
-        crate::viewer::close_viewer(cx);
+        crate::viewer::close_viewer(window, cx);
     }
     let text = SharedString::from(mode.as_str());
     if cx.has_global::<settings::project::CurrentProject>() {
@@ -264,6 +265,10 @@ fn switch(panel: &Entity<ViewsPanel>, mode: ViewMode, window: &mut Window, cx: &
     if let Some(area) = dock_area.upgrade() {
         layout::capture(leaving, &area, cx);
         layout::apply(mode, &area, window, cx);
+    }
+    if had_focus {
+        let focus = panel.read(cx).focus_handle.clone();
+        focus.focus(window, cx);
     }
     // The switcher is drawn by the parent `TabPanel` (via `Panel::title`), which does not observe
     // this panel — `cx.notify()` above repaints the body but leaves the highlight on the old tab.

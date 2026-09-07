@@ -90,6 +90,39 @@ impl PanelRegistry {
             .map(|entry| entry.placement)
     }
 
+    pub fn focus_frontmost(
+        placement: DockPlacement,
+        dock_area: &Entity<DockArea>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let panel = {
+            let area = dock_area.read(cx);
+            frontmost_panel(area, placement)
+        };
+        if let Some(panel) = panel {
+            panel.focus_handle(cx).focus(window, cx);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn placement_contains_focus(
+        placement: DockPlacement,
+        dock_area: &Entity<DockArea>,
+        window: &Window,
+        cx: &App,
+    ) -> bool {
+        let area = dock_area.read(cx);
+        area.layout(placement).is_some_and(|tree| {
+            tree.panels().any(|id| {
+                area.panel(id)
+                    .is_some_and(|panel| panel.focus_handle(cx).contains_focused(window, cx))
+            })
+        })
+    }
+
     /// Whether this panel is actually on screen — its dock is open *and* it is the tab in front.
     /// "Dock is open" alone lights a button up for a panel hidden behind its neighbour, which
     /// points the reader at something they cannot see.
@@ -229,7 +262,13 @@ impl PanelRegistry {
         let Some(placement) = Self::placement(name, cx) else {
             return;
         };
-        let toggled = if Self::visible(name, dock_area, cx) {
+        let was_visible = Self::visible(name, dock_area, cx);
+        let closing_focus = was_visible
+            && Self::entries(cx)
+                .iter()
+                .find(|entry| entry.meta.name == name)
+                .is_some_and(|entry| entry.view.focus_handle(cx).contains_focused(window, cx));
+        let toggled = if was_visible {
             dock_area.update(cx, |area, cx| {
                 crate::toggle_dock_immediately(area, placement, window, cx)
             })
@@ -247,6 +286,16 @@ impl PanelRegistry {
         // Revealing another tab changes the layout without opening or closing its dock.
         if !toggled {
             dock_area.update(cx, |_, cx| cx.emit(DockEvent::LayoutChanged));
+        }
+        if was_visible {
+            if closing_focus {
+                Self::focus_frontmost(DockPlacement::Center, dock_area, window, cx);
+            }
+        } else if let Some(entry) = Self::entries(cx)
+            .iter()
+            .find(|entry| entry.meta.name == name)
+        {
+            entry.view.focus_handle(cx).focus(window, cx);
         }
     }
 
@@ -383,6 +432,24 @@ fn frontmost(area: &DockArea, placement: DockPlacement, cx: &App, out: &mut Vec<
                 .map(|panel| panel.panel_name(cx)),
         );
     });
+}
+
+fn frontmost_panel(area: &DockArea, placement: DockPlacement) -> Option<Arc<dyn BasePanelView>> {
+    let tree = area.layout(placement)?;
+    let mut found = None;
+    tree.root().walk(&mut |node| {
+        if found.is_some() {
+            return;
+        }
+        let PaneRef::Tabs { panels, active_ix } = node.kind() else {
+            return;
+        };
+        found = panels
+            .get(active_ix)
+            .and_then(|id| area.panel(*id))
+            .cloned();
+    });
+    found
 }
 
 /// The panels a dock holds, in tree order. A restored layout can come back as a split even

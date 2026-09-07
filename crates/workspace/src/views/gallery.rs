@@ -198,7 +198,7 @@ fn card(
                     return;
                 }
                 if let Some(path) = viewable.clone() {
-                    crate::viewer::open_viewer(path, crate::ViewerScope::Centre, cx);
+                    crate::viewer::open_viewer(path, crate::ViewerScope::Centre, window, cx);
                 }
             }
         })
