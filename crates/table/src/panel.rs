@@ -177,12 +177,14 @@ impl TablePanel {
         // Notes are not `PROJECT_DATA`: `set_note` writes `__notes` itself, so this must not also
         // trip the table autosave (which would rewrite the whole dataset for a typed comment).
         let note_state = state.clone();
-        let _note_sub = cx.subscribe(
+        let _note_sub = cx.subscribe_in(
             &note_editor,
-            move |_this, editor, event: &InputEvent, cx| {
+            window,
+            move |this, editor, event: &InputEvent, window, cx| {
                 if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
                     return;
                 }
+                let by_enter = matches!(event, InputEvent::PressEnter { .. });
                 let message = editor.read(cx).value();
                 note_state.update(cx, |state, cx| {
                     let Some(location) = state.delegate_mut().note_edit.take() else {
@@ -191,6 +193,9 @@ impl TablePanel {
                     diagnostics::Diagnostics::set_note(location, message, cx);
                     cx.notify();
                 });
+                if by_enter {
+                    this.focus_table(window, cx);
+                }
             },
         );
 

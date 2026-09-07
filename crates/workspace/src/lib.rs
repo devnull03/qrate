@@ -179,6 +179,8 @@ impl Workspace {
         PanelRegistry::enforce_edge_tabs(&dock_area, window, cx);
         // Whichever path ran above built the panels; this is what learns where they landed.
         PanelRegistry::sync(&dock_area, cx);
+        // A new main window starts in its document, not on the outer action-routing shell.
+        PanelRegistry::focus_frontmost(DockPlacement::Center, &dock_area, window, cx);
 
         // Every dock mutation emits `LayoutChanged`, which normalizes user drags, refreshes the
         // status-bar placement cache, persists the result and repaints the workspace.
@@ -217,9 +219,19 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let was_open = self.dock_area.read(cx).is_dock_open(placement);
+        let closing_focus =
+            PanelRegistry::placement_contains_focus(placement, &self.dock_area, window, cx);
         self.dock_area.update(cx, |area, cx| {
             toggle_dock_immediately(area, placement, window, cx);
         });
+        if was_open {
+            if closing_focus {
+                PanelRegistry::focus_frontmost(DockPlacement::Center, &self.dock_area, window, cx);
+            }
+        } else {
+            PanelRegistry::focus_frontmost(placement, &self.dock_area, window, cx);
+        }
     }
 
     /// Serializes the dock state into the open project's `.qrate` (debounced,
@@ -249,6 +261,7 @@ impl Workspace {
         if Self::restore_layout(&self.dock_area, window, cx) {
             // `load` rebuilt every panel from its saved name, so the old entries are orphans.
             PanelRegistry::sync(&self.dock_area, cx);
+            PanelRegistry::focus_frontmost(DockPlacement::Center, &self.dock_area, window, cx);
         }
     }
 
@@ -522,6 +535,69 @@ mod tests {
 
         assert_eq!(layout_events.get(), 1);
         cx.update(|_, cx| assert_eq!(cx.global::<BottomDockCrop>().0, px(29.)));
+    }
+
+    #[gpui::test]
+    fn opening_a_dock_focuses_it_and_closing_it_returns_to_the_document(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(settings::SettingsPersistence::default());
+        });
+        let (workspace, cx) = cx.add_window_view(Workspace::new);
+        let dock_area = cx.update(|_, cx| workspace.read(cx).dock_area.clone());
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            PanelRegistry::focus_frontmost(DockPlacement::Center, &dock_area, window, cx);
+            workspace.update(cx, |workspace, cx| {
+                workspace.toggle_dock(DockPlacement::Left, window, cx)
+            });
+            assert!(
+                PanelRegistry::placement_contains_focus(
+                    DockPlacement::Center,
+                    &dock_area,
+                    window,
+                    cx,
+                ),
+                "closing an unfocused dock leaves document focus alone"
+            );
+            workspace.update(cx, |workspace, cx| {
+                workspace.toggle_dock(DockPlacement::Left, window, cx)
+            });
+            assert!(
+                PanelRegistry::placement_contains_focus(
+                    DockPlacement::Left,
+                    &dock_area,
+                    window,
+                    cx,
+                ),
+                "opening a dock focuses its active panel"
+            );
+        });
+
+        cx.dispatch_action(gpui_component::dock::ToggleZoom);
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| dock_area.read(cx).is_zoomed()),
+            "Shift+Esc zooms the dock opened by shortcut"
+        );
+        cx.dispatch_action(gpui_component::dock::ToggleZoom);
+
+        cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.toggle_dock(DockPlacement::Left, window, cx)
+            });
+            assert!(
+                PanelRegistry::placement_contains_focus(
+                    DockPlacement::Center,
+                    &dock_area,
+                    window,
+                    cx,
+                ),
+                "closing the focused dock returns focus to the document"
+            );
+        });
     }
 
     #[gpui::test]

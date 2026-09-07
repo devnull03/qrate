@@ -105,11 +105,20 @@ impl DetailsPanel {
         // *wrapped* height, and a single-line input runs the text off the right edge instead.
         // `submit_on_enter` keeps Enter committing the field (Shift+Enter inserts a newline).
         let editor = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true));
-        let _editor_sub = cx.subscribe(&editor, |this, _input, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+        let _editor_sub = cx.subscribe_in(
+            &editor,
+            window,
+            |this, _input, event: &InputEvent, window, cx| {
+                if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    return;
+                }
+                let by_enter = matches!(event, InputEvent::PressEnter { .. });
                 this.commit(cx);
-            }
-        });
+                if by_enter {
+                    this.focus_handle.focus(window, cx);
+                }
+            },
+        );
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             state: None,
@@ -549,10 +558,11 @@ fn render_image_frame(
                                 .ghost()
                                 .small()
                                 .tooltip("View fullscreen")
-                                .on_click(move |_, _, cx| {
+                                .on_click(move |_, window, cx| {
                                     crate::open_viewer(
                                         path.clone(),
                                         crate::ViewerScope::Workspace,
+                                        window,
                                         cx,
                                     )
                                 }),
