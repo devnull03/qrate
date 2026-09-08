@@ -73,6 +73,21 @@ fn no_update_status(manual: bool) -> UpdateStatus {
     }
 }
 
+fn initial_status(development_build: bool, kind: Option<InstallKind>) -> UpdateStatus {
+    match (development_build, kind) {
+        (true, _) => {
+            UpdateStatus::Disabled("Development builds do not update automatically".into())
+        }
+        (false, Some(InstallKind::WindowsMsi)) => {
+            UpdateStatus::Disabled("Updates are managed by your administrator".into())
+        }
+        (false, Some(_)) => UpdateStatus::Idle,
+        (false, None) => {
+            UpdateStatus::Disabled("This source or unmarked build updates manually".into())
+        }
+    }
+}
+
 pub struct AutoUpdater {
     status: UpdateStatus,
     installation: Option<Installation>,
@@ -95,13 +110,12 @@ enum DownloadEvent {
 impl AutoUpdater {
     fn new(cx: &mut Context<Self>) -> Self {
         let installation = updater::detect_installation().ok();
-        let status = match &installation {
-            Some(installation) if installation.marker.kind == InstallKind::WindowsMsi => {
-                UpdateStatus::Disabled("Updates are managed by your administrator".into())
-            }
-            Some(_) => UpdateStatus::Idle,
-            None => UpdateStatus::Disabled("This source or unmarked build updates manually".into()),
-        };
+        let status = initial_status(
+            cfg!(debug_assertions),
+            installation
+                .as_ref()
+                .map(|installation| installation.marker.kind),
+        );
         let _settings_sub = cx.observe_global::<AppSettings>(|this, cx| {
             if automatic_updates(cx) && matches!(this.status, UpdateStatus::Idle) {
                 this.poll(false, cx);
@@ -138,7 +152,8 @@ impl AutoUpdater {
     }
 
     pub fn poll(&mut self, manual: bool, cx: &mut Context<Self>) {
-        if self.pending
+        if matches!(self.status, UpdateStatus::Disabled(_))
+            || self.pending
             || matches!(
                 self.status,
                 UpdateStatus::Ready { .. } | UpdateStatus::Restarting
@@ -255,6 +270,9 @@ impl AutoUpdater {
     }
 
     fn start_polling(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.status, UpdateStatus::Disabled(_)) {
+            return;
+        }
         if automatic_updates(cx) {
             self.poll(false, cx);
         }
@@ -331,13 +349,17 @@ fn helper_path(installation: &Installation) -> PathBuf {
 }
 
 pub fn init(cx: &mut App) {
-    let current = Version::parse(env!("CARGO_PKG_VERSION")).expect("package version is SemVer");
-    match updater::mark_healthy(&current) {
-        Ok(Some(receipt)) if receipt.status == updater::ReceiptStatus::Failed => {
-            log::error!("previous update failed: {}", receipt.message)
+    if cfg!(debug_assertions) {
+        log::info!("automatic updates are disabled in development builds");
+    } else {
+        let current = Version::parse(env!("CARGO_PKG_VERSION")).expect("package version is SemVer");
+        match updater::mark_healthy(&current) {
+            Ok(Some(receipt)) if receipt.status == updater::ReceiptStatus::Failed => {
+                log::error!("previous update failed: {}", receipt.message)
+            }
+            Err(error) => log::warn!("could not finalize previous update: {error:#}"),
+            _ => {}
         }
-        Err(error) => log::warn!("could not finalize previous update: {error:#}"),
-        _ => {}
     }
     let updater = cx.new(AutoUpdater::new);
     cx.set_global(GlobalUpdater(updater.clone()));
@@ -353,8 +375,18 @@ pub fn check_now(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use semver::Version;
+    use updater::InstallKind;
 
-    use super::{UpdateStatus, no_update_status};
+    use super::{UpdateStatus, initial_status, no_update_status};
+
+    #[test]
+    fn development_builds_ignore_packaged_install_markers() {
+        assert!(matches!(
+            initial_status(true, Some(InstallKind::WindowsNsis)),
+            UpdateStatus::Disabled(reason)
+                if reason.as_ref() == "Development builds do not update automatically"
+        ));
+    }
 
     #[test]
     fn no_update_is_only_visible_after_a_manual_check() {
