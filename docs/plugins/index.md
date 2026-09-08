@@ -3,10 +3,28 @@
 A plugin adds checks and commands to qrate. You write it in Lua. qrate runs it inside the app,
 in a sandboxed [Luau](https://luau.org) virtual machine.
 
-A plugin is one folder of `.lua` files. There is no package manager, no registry, and no build
-step. You put the folder in qrate's plugins directory, and qrate finds it at startup.
+A plugin is one folder of `.lua` files. Install reviewed packages from the official catalog, review
+an unlisted public GitHub release, or put a local folder in qrate's plugins directory.
 
 For the full list of hooks and host functions, see the [API reference](api-reference.md).
+
+## Install a plugin
+
+Open **Extensions ▸ Discover Plugins…** for releases in qrate's signed official catalog. qrate checks
+the catalog signature and the package hash before installation. An official listing means that the
+published metadata and exact release bytes were reviewed. It is not a guarantee that third-party
+code is harmless.
+
+Use **Extensions ▸ Install Plugin from Link…** for an unlisted public GitHub repository or release.
+qrate downloads the release ZIP, checks its static package manifest, and shows its source,
+permissions, size, and SHA-256 before it asks for confirmation.
+
+New package installs are disabled. Open **Settings ▸ Plugins** to enable one and separately grant
+network access. The same page shows whether qrate manages the package and can safely remove it.
+
+For local development or an offline installation, open **Extensions ▸ Plugins Folder** and copy a
+single `.lua` file or a plugin folder there. Manual plugins are unmanaged: qrate does not update or
+remove them.
 
 ## What a plugin can do
 
@@ -40,7 +58,8 @@ The name on disk is the plugin's identity. qrate keys the plugin's stored settin
 switch, and its permission grants by that name. Renaming the folder later orphans everything the
 plugin stored. Pick the name first.
 
-`init.lua` returns one table. That table is the manifest. There is no second file to write.
+`init.lua` returns the runtime descriptor. Release packages also have a static
+`qrate-plugin.json` manifest. qrate reads that manifest without running the plugin.
 
 **Settings ▸ Plugins** lists every plugin qrate found, running or not. Each row carries an enable
 switch, the plugin's one-line description, and a network switch when the plugin asks for one. A
@@ -60,7 +79,8 @@ The template holds a small working plugin and the complete type definitions.
 
 | File | What it is |
 |---|---|
-| `init.lua` | The plugin. The table it returns is the manifest. |
+| `init.lua` | The plugin. The table it returns is the runtime descriptor. |
+| `qrate-plugin.json` | Static identity, version, compatibility, license, and permission metadata. |
 | `types/qrate.lua` | Type definitions for the whole API, with the reasoning attached. |
 | `.luaurc` | Points luau-lsp at `types/`. |
 
@@ -118,11 +138,16 @@ Three things in that example apply to every plugin:
 - `row` is 1-based, and it matches the `values` array you were handed.
 - What `on_command` returns is what qrate stores. `validate` reads it back as `settings.column`.
 
-### 4. Load it
+### 4. Check and load it
 
-1. Copy or clone the folder into the plugins directory (**Extensions ▸ Plugins Folder**).
-2. Restart qrate, or click **Extensions ▸ Reload Plugins**.
-3. Open **Settings ▸ Plugins** and confirm your plugin is listed and enabled.
+1. Run `npm run check` to validate the package metadata and archive contents.
+2. Copy or clone the folder into the plugins directory (**Extensions ▸ Plugins Folder**).
+3. Restart qrate, or click **Extensions ▸ Reload Plugins**.
+4. Open **Settings ▸ Plugins** and confirm your plugin is listed and enabled.
+
+Tagging a version in a repository created from the template builds the versioned ZIP and checksum
+as GitHub Release assets. Follow the [marketplace submission guide](https://qrate.dvnl.work/plugins/submit/)
+to propose that release for the official catalog.
 
 ### 5. Iterate
 

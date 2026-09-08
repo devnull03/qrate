@@ -56,7 +56,7 @@ CI cancels older runs for the same branch when a newer commit arrives. A passing
 
 Keep pull requests small enough to review. Explain user-visible changes, note limitations, and include screenshots or a short recording for visual changes when practical. Do not commit secrets, private collection data, or generated build output.
 
-Plugins are a public compatibility surface. If a contribution changes the plugin API, read the repository guidance in [`CLAUDE.md`](CLAUDE.md) before making the change; the API has matching type definitions in companion repositories.
+Plugins are a public compatibility surface. If a contribution changes the plugin API, read the repository guidance in [`CLAUDE.md`](CLAUDE.md) before making the change; the API has matching type definitions in companion repositories. Start new plugins from [`qrate-plugin-template`](https://github.com/devnull03/qrate-plugin-template), and submit versioned release packages through [`qrate-plugin-registry`](https://github.com/devnull03/qrate-plugin-registry).
 
 ## License
 
