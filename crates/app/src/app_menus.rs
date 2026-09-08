@@ -20,6 +20,9 @@ actions!(
         /// The same window as `OpenSettings`, opened on the Columns page — the Data menu promises
         /// a column surface, and landing on whatever page was last used does not keep that promise.
         OpenColumnSettings,
+        DiscoverPlugins,
+        InstallPluginFromLink,
+        ManagePlugins,
         OpenPluginsFolder,
         ReloadPlugins,
         Quit,
@@ -182,6 +185,10 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
             name: "Extensions".into(),
             disabled: false,
             items: vec![
+                MenuItem::action("Discover Plugins…", DiscoverPlugins),
+                MenuItem::action("Install Plugin from Link…", InstallPluginFromLink),
+                MenuItem::action("Manage Plugins…", ManagePlugins),
+                MenuItem::Separator,
                 MenuItem::action("Plugins Folder", OpenPluginsFolder),
                 MenuItem::action("Reload Plugins", ReloadPlugins),
                 MenuItem::Separator,

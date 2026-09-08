@@ -7,7 +7,10 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail, ensure};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -111,11 +114,37 @@ pub struct InstallReceipt {
     pub bytes: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct PackageInspection {
+    pub manifest: PackageManifest,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct DirectRelease {
+    pub repository: String,
+    pub version: String,
+    pub release_url: String,
+    pub artifact_url: String,
+    pub artifact_name: String,
+    pub bytes: u64,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstallSource {
     OfficialCatalog,
     DirectGithub,
+}
+
+pub fn public_key(base64url: &str) -> Result<VerifyingKey> {
+    let bytes: [u8; 32] = URL_SAFE_NO_PAD
+        .decode(base64url)
+        .context("invalid plugin catalog public key encoding")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid plugin catalog public key length"))?;
+    VerifyingKey::from_bytes(&bytes).context("invalid plugin catalog public key")
 }
 
 pub fn verify_catalog(bytes: &[u8], signature_bytes: &[u8], key: &VerifyingKey) -> Result<Catalog> {
@@ -192,6 +221,109 @@ pub fn download_package(url: &str, output: &Path) -> Result<(String, u64)> {
     let sha256 = format!("{:x}", Sha256::digest(&bytes));
     fs::write(output, &bytes)?;
     Ok((sha256, bytes.len() as u64))
+}
+
+pub fn resolve_github_release(source: &str) -> Result<DirectRelease> {
+    let url = reqwest::Url::parse(source).context("invalid GitHub URL")?;
+    ensure!(
+        url.scheme() == "https" && url.host_str() == Some("github.com"),
+        "only public HTTPS GitHub repositories are supported"
+    );
+    ensure!(
+        url.username().is_empty() && url.password().is_none(),
+        "GitHub URL must not contain credentials"
+    );
+    let parts: Vec<_> = url
+        .path_segments()
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty())
+        .collect();
+    ensure!(
+        parts.len() >= 2,
+        "GitHub URL must name an owner and repository"
+    );
+    let owner = parts[0];
+    let repository = parts[1].trim_end_matches(".git");
+    ensure!(
+        owner
+            .bytes()
+            .chain(repository.bytes())
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)),
+        "GitHub owner or repository is invalid"
+    );
+
+    let endpoint = if parts.get(2..4) == Some(&["releases", "tag"]) && parts.len() == 5 {
+        format!(
+            "https://api.github.com/repos/{owner}/{repository}/releases/tags/{}",
+            parts[4]
+        )
+    } else {
+        ensure!(parts.len() == 2, "unsupported GitHub release URL");
+        format!("https://api.github.com/repos/{owner}/{repository}/releases/latest")
+    };
+    #[derive(Deserialize)]
+    struct Asset {
+        name: String,
+        browser_download_url: String,
+        size: u64,
+    }
+    #[derive(Deserialize)]
+    struct Release {
+        tag_name: String,
+        html_url: String,
+        assets: Vec<Asset>,
+    }
+    let release: Release = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .user_agent("qrate-plugin-installer")
+        .build()?
+        .get(endpoint)
+        .send()?
+        .error_for_status()
+        .context("GitHub could not resolve that release")?
+        .json()?;
+    let mut packages = release
+        .assets
+        .into_iter()
+        .filter(|asset| asset.name.to_ascii_lowercase().ends_with(".zip"));
+    let asset = packages
+        .next()
+        .context("GitHub release has no plugin ZIP asset")?;
+    ensure!(
+        packages.next().is_none(),
+        "GitHub release has more than one ZIP asset"
+    );
+    ensure!(
+        asset.size <= MAX_PACKAGE_BYTES,
+        "plugin package is too large"
+    );
+    Ok(DirectRelease {
+        repository: format!("https://github.com/{owner}/{repository}"),
+        version: release.tag_name,
+        release_url: release.html_url,
+        artifact_url: asset.browser_download_url,
+        artifact_name: asset.name,
+        bytes: asset.size,
+    })
+}
+
+pub fn inspect_archive(archive: &Path) -> Result<PackageInspection> {
+    let (sha256, bytes) = sha256_file(archive)?;
+    ensure!(bytes <= MAX_PACKAGE_BYTES, "plugin package is too large");
+    let staging = tempfile::tempdir()?;
+    extract_package(archive, staging.path())?;
+    let manifest: PackageManifest = serde_json::from_slice(
+        &fs::read(staging.path().join("qrate-plugin.json"))
+            .context("plugin package has no qrate-plugin.json")?,
+    )
+    .context("invalid qrate-plugin.json")?;
+    validate_manifest(&manifest, staging.path())?;
+    Ok(PackageInspection {
+        manifest,
+        sha256,
+        bytes,
+    })
 }
 
 pub fn install_archive(
