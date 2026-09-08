@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 pub const CATALOG_KEY_ID: &str = "qrate-plugin-catalog-1";
-pub const CATALOG_URL: &str = "https://devnull03.github.io/qrate-plugin-registry/catalog.json";
+pub const CATALOG_URL: &str = "https://qrate.dvnl.work/plugins/catalog.json";
 pub const MAX_CATALOG_BYTES: usize = 5 * 1024 * 1024;
 pub const MAX_PACKAGE_BYTES: u64 = 100 * 1024 * 1024;
 pub const MAX_EXPANDED_BYTES: u64 = 500 * 1024 * 1024;
