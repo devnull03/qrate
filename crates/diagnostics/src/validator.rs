@@ -26,6 +26,7 @@ pub struct ColumnSnapshot {
     pub data_type: SharedString,
     pub settings: ColumnSettings,
     pub values: Vec<SharedString>,
+    pub subdelimiter: SharedString,
 }
 
 impl ColumnSnapshot {
@@ -47,6 +48,99 @@ pub struct ColumnInfo<'a> {
     pub data_type: &'a str,
     /// This column's per-project preferences, which is where a validator's own knobs live.
     pub settings: &'a ColumnSettings,
+}
+
+#[derive(Clone, Copy)]
+pub struct ColumnValues<'a> {
+    raw: &'a [SharedString],
+    subdelimiter: &'a str,
+}
+
+impl<'a> ColumnValues<'a> {
+    pub fn new(raw: &'a [SharedString], subdelimiter: &'a str) -> Self {
+        Self { raw, subdelimiter }
+    }
+
+    pub fn raw(self) -> &'a [SharedString] {
+        self.raw
+    }
+
+    pub fn iter(self) -> impl Iterator<Item = CellValue<'a>> {
+        self.raw
+            .iter()
+            .enumerate()
+            .map(move |(row, raw)| CellValue {
+                row,
+                raw,
+                subdelimiter: self.subdelimiter,
+            })
+    }
+
+    pub fn replace_part(
+        self,
+        row: usize,
+        observed: &str,
+        replacement: &str,
+    ) -> Option<SharedString> {
+        let raw = self.raw.get(row)?.as_ref();
+        for (offset, _) in raw.match_indices(observed) {
+            let end = offset + observed.len();
+            let bounded = if self.subdelimiter.is_empty() {
+                raw.trim() == observed
+            } else {
+                (raw[..offset].trim_end().ends_with(self.subdelimiter)
+                    || raw[..offset].trim().is_empty())
+                    && (raw[end..].trim_start().starts_with(self.subdelimiter)
+                        || raw[end..].trim().is_empty())
+            };
+            if bounded {
+                let mut result = raw.to_owned();
+                result.replace_range(offset..end, replacement);
+                return Some(result.into());
+            }
+        }
+        None
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct CellValue<'a> {
+    pub row: usize,
+    pub raw: &'a str,
+    subdelimiter: &'a str,
+}
+
+impl<'a> CellValue<'a> {
+    pub fn parts(self) -> ValueParts<'a> {
+        if self.subdelimiter.is_empty() {
+            ValueParts::Whole(
+                (!self.raw.trim().is_empty())
+                    .then_some(self.raw.trim())
+                    .into_iter(),
+            )
+        } else {
+            ValueParts::Split(self.raw.split(self.subdelimiter))
+        }
+    }
+}
+
+pub enum ValueParts<'a> {
+    Whole(std::option::IntoIter<&'a str>),
+    Split(std::str::Split<'a, &'a str>),
+}
+
+impl<'a> Iterator for ValueParts<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            ValueParts::Whole(values) => values.next(),
+            ValueParts::Split(values) => values.find_map(|value| {
+                let value = value.trim();
+                (!value.is_empty()).then_some(value)
+            }),
+        }
+    }
 }
 
 /// `None` addresses the whole column; `Some` addresses a source-row cell.
@@ -84,7 +178,7 @@ pub trait ColumnValidator: 'static {
     /// Check one column top to bottom. `values` is every row's text for this column, in source-row
     /// order, so the returned index *is* the row. Returning nothing means the column is clean —
     /// which is also how a validator that does not apply here opts out.
-    fn validate(&self, column: &ColumnInfo, values: &[SharedString]) -> Vec<ColumnFinding>;
+    fn validate(&self, column: &ColumnInfo, values: ColumnValues<'_>) -> Vec<ColumnFinding>;
 }
 
 /// Producers that cannot answer while the run is on the stack — the plugin host running its VMs,
@@ -173,6 +267,11 @@ impl Validators {
         }
 
         let settings = settings::columns::load(cx);
+        let subdelimiter = if cx.has_global::<settings::AppSettings>() {
+            settings::effective_text(settings::FILTER_SUBDELIMITER_KEY, cx)
+        } else {
+            SharedString::default()
+        };
         let project = cx.try_global::<settings::project::CurrentProject>();
         let blank = ColumnSettings::default();
         // Transposed once, not once per validator: every validator wants the same column-major
@@ -190,6 +289,7 @@ impl Validators {
                     .iter()
                     .map(|r| r.get(ix).cloned().unwrap_or_default())
                     .collect(),
+                subdelimiter: subdelimiter.clone(),
             })
             .collect();
 
@@ -203,7 +303,10 @@ impl Validators {
                             address(
                                 validator.name(),
                                 column,
-                                validator.validate(&column.info(), &column.values),
+                                validator.validate(
+                                    &column.info(),
+                                    ColumnValues::new(&column.values, &column.subdelimiter),
+                                ),
                             )
                         })
                         .collect();
@@ -266,6 +369,28 @@ mod tests {
     use gpui::{SharedString, TestAppContext};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[test]
+    fn column_values_borrow_raw_cells_and_split_without_per_cell_storage() {
+        let raw = [
+            SharedString::from("Busson, Carl W.| Dhillon, Baltej Singh "),
+            SharedString::from(""),
+        ];
+        let values = crate::ColumnValues::new(&raw, "|");
+        let cells: Vec<_> = values.iter().collect();
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[0].row, 0);
+        assert_eq!(
+            cells[0].parts().collect::<Vec<_>>(),
+            ["Busson, Carl W.", "Dhillon, Baltej Singh"]
+        );
+        assert!(cells[1].parts().next().is_none());
+        assert_eq!(
+            values.replace_part(0, "Busson, Carl W.", "Carl W. Busson"),
+            Some("Carl W. Busson| Dhillon, Baltej Singh ".into())
+        );
+        assert!(values.replace_part(0, "Carl", "wrong boundary").is_none());
+    }
+
     /// Flags any cell equal to `bad`, so a test can steer exactly how many items a run produces.
     struct Flag {
         name: &'static str,
@@ -280,15 +405,14 @@ mod tests {
         fn validate(
             &self,
             column: &ColumnInfo,
-            values: &[SharedString],
+            values: crate::ColumnValues<'_>,
         ) -> Vec<super::ColumnFinding> {
             values
                 .iter()
-                .enumerate()
-                .filter(|(_, v)| v.as_ref() == self.bad)
-                .map(|(row, _)| {
+                .filter(|value| value.raw == self.bad)
+                .map(|value| {
                     (
-                        row,
+                        value.row,
                         Severity::Error,
                         format!("{} in {}", self.bad, column.name).into(),
                     )
@@ -449,6 +573,7 @@ mod tests {
             data_type: "Text".into(),
             settings,
             values: vec!["Aderman, Ray".into()],
+            subdelimiter: SharedString::default(),
         }
     }
 

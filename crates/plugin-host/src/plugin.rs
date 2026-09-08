@@ -18,7 +18,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use diagnostics::{ColumnInfo, ColumnValidator, Severity};
+use diagnostics::{ColumnInfo, ColumnValidator, ColumnValues, Severity};
 use gpui::SharedString;
 use mlua::{Function, Lua, LuaOptions, LuaSerdeExt as _, SerializeOptions, StdLib, Table, VmState};
 use plugin_api::{
@@ -505,7 +505,7 @@ impl ColumnValidator for LuaPlugin {
     fn validate(
         &self,
         column: &ColumnInfo,
-        values: &[SharedString],
+        values: ColumnValues<'_>,
     ) -> Vec<diagnostics::ColumnFinding> {
         // A plugin that never loaded reports nothing here; `reload` logged that failure once
         // instead of once per column.
@@ -516,7 +516,7 @@ impl ColumnValidator for LuaPlugin {
             return Vec::new();
         };
 
-        match self.call_validate(loaded, validate, column, values) {
+        match self.call_validate(loaded, validate, column, values.raw()) {
             Ok(found) => found.into_iter().map(Into::into).collect(),
             // Logged, not returned: a plugin that throws is broken code, and this list is what is
             // wrong with the archivist's data. Reporting it here also had to invent a row.
@@ -1118,7 +1118,7 @@ fn setting_spec(item: Table) -> mlua::Result<SettingSpec> {
 mod tests {
     use crate::plugin::HTTP_BUDGET;
     use crate::{Env, LuaPlugin, PERMISSION_NET, PackageDescriptor, Writes};
-    use diagnostics::{ColumnInfo, ColumnValidator, Severity};
+    use diagnostics::{ColumnInfo, ColumnValidator, ColumnValues, Severity};
     use gpui::SharedString;
     use plugin_api::{
         Bar, BarAction, CommandContext, ExportColumn, ExportSnapshot, MenuTarget, SettingKind,
@@ -1272,7 +1272,7 @@ mod tests {
         };
         let values: Vec<SharedString> = values.iter().map(|v| SharedString::from(*v)).collect();
         plugin
-            .validate(&column, &values)
+            .validate(&column, ColumnValues::new(&values, ""))
             .into_iter()
             .map(|f| {
                 (
@@ -1398,7 +1398,8 @@ mod tests {
             data_type: "Text",
             settings: &settings,
         };
-        let found = plugin(ECHO_SETTINGS).validate(&column, &["x".into()]);
+        let values = ["x".into()];
+        let found = plugin(ECHO_SETTINGS).validate(&column, ColumnValues::new(&values, ""));
         assert_eq!(
             found[0].message, "/nil/nil",
             "another plugin's object is invisible"
@@ -1564,7 +1565,8 @@ mod tests {
             data_type: "Text",
             settings: &settings,
         };
-        let found = plugin.validate(&column, &["x".into()]);
+        let values = ["x".into()];
+        let found = plugin.validate(&column, ColumnValues::new(&values, ""));
         assert_eq!(found[0].message, "Film");
     }
 
@@ -2060,7 +2062,12 @@ mod tests {
             data_type: "Text",
             settings: &settings,
         };
-        let run = |plugin: &LuaPlugin| plugin.validate(&column, &["x".into()])[0].message.clone();
+        let values = ["x".into()];
+        let run = |plugin: &LuaPlugin| {
+            plugin.validate(&column, ColumnValues::new(&values, ""))[0]
+                .message
+                .clone()
+        };
 
         let plugin = plugin(source);
         assert!(
@@ -2127,7 +2134,8 @@ mod tests {
                 settings: &settings,
             };
             let values = ["Film; Pottery", "Film", ""];
-            plugin.validate(&column, &values.map(SharedString::from))
+            let values = values.map(SharedString::from);
+            plugin.validate(&column, ColumnValues::new(&values, ""))
         };
 
         let one = checked(json!(["subject"]));
@@ -2183,7 +2191,8 @@ mod tests {
             settings: &settings,
         };
         let values = ["Text", "Nonsense Value", "Still Image"];
-        let found = plugin.validate(&column, &values.map(SharedString::from));
+        let values = values.map(SharedString::from);
+        let found = plugin.validate(&column, ColumnValues::new(&values, ""));
 
         assert_eq!(found.len(), 1, "only the invented term is wrong: {found:?}");
         assert!(

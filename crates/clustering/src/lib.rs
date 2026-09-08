@@ -2,7 +2,8 @@
 pub mod core;
 
 use diagnostics::{
-    ColumnFinding, ColumnInfo, ColumnValidator, DiagnosticGroup, Fix, Location, Severity,
+    ColumnFinding, ColumnInfo, ColumnValidator, ColumnValues, DiagnosticGroup, Fix, Location,
+    Severity,
 };
 use gpui::{App, Global, SharedString};
 use settings::columns::ColumnType;
@@ -29,7 +30,7 @@ impl ColumnValidator for ValueVariants {
         }
     }
 
-    fn validate(&self, column: &ColumnInfo, values: &[SharedString]) -> Vec<ColumnFinding> {
+    fn validate(&self, column: &ColumnInfo, values: ColumnValues<'_>) -> Vec<ColumnFinding> {
         let Ok(mut candidates) = self.candidates.write() else {
             return Vec::new();
         };
@@ -40,7 +41,10 @@ impl ColumnValidator for ValueVariants {
             return Vec::new();
         }
         let mut findings = Vec::new();
-        for pair in core::compare(values.iter().map(|value| value.as_ref())) {
+        let logical = values
+            .iter()
+            .flat_map(|cell| cell.parts().map(move |value| (cell.row, value)));
+        for pair in core::compare_indexed(logical) {
             let group = DiagnosticGroup {
                 key: format!("{:?}", (column.name, &pair.key)).into(),
                 summary: format!(
@@ -51,14 +55,19 @@ impl ColumnValidator for ValueVariants {
             };
             for (value, alternative) in [(&pair.left, &pair.right), (&pair.right, &pair.left)] {
                 for &row in &value.rows {
+                    let Some(replacement) =
+                        values.replace_part(row, &value.displayed, &alternative.displayed)
+                    else {
+                        continue;
+                    };
                     candidates
                         .entry((column.name.to_owned(), row))
-                        .or_insert_with(|| (value.displayed.clone().into(), Vec::new()))
+                        .or_insert_with(|| (values.raw()[row].clone(), Vec::new()))
                         .1
-                        .push(alternative.displayed.clone().into());
+                        .push(replacement);
                     findings.push(ColumnFinding {
                         row: Some(row),
-                        severity: Severity::Note,
+                        severity: Severity::Warning,
                         message: group.summary.clone(),
                         group: Some(group.clone()),
                     });
@@ -102,7 +111,9 @@ pub fn variant_fixes(location: &Location, text: &str, cx: &App) -> Vec<Fix> {
 #[cfg(test)]
 mod tests {
     use crate::{ValueVariants, variant_fixes};
-    use diagnostics::{ColumnInfo, ColumnValidator, DATASET_MAIN, Location};
+    use diagnostics::{
+        ColumnInfo, ColumnValidator, ColumnValues, DATASET_MAIN, Location, Severity,
+    };
     use gpui::TestAppContext;
     use settings::columns::ColumnSettings;
 
@@ -121,9 +132,9 @@ mod tests {
                     &ColumnInfo {
                         name: "Creator",
                         data_type: "Text",
-                        settings: &settings
+                        settings: &settings,
                     },
-                    &values
+                    ColumnValues::new(&values, ""),
                 )
                 .is_empty()
         );
@@ -134,7 +145,7 @@ mod tests {
                 data_type: "Text",
                 settings: &settings,
             },
-            &values,
+            ColumnValues::new(&values, ""),
         );
         assert_eq!(found.len(), 3);
         assert!(found.iter().all(|f| f.group == found[0].group));
@@ -149,5 +160,35 @@ mod tests {
             cx.global::<ValueVariants>().begin_run();
             assert!(variant_fixes(&location, "Agnès Varda", cx).is_empty());
         });
+    }
+
+    #[test]
+    fn subdelimited_cells_compare_each_value_and_keep_whole_cell_fixes() {
+        let variants = ValueVariants::default();
+        let settings = ColumnSettings {
+            variant_review: true,
+            ..Default::default()
+        };
+        let values = [
+            "Busson, Carl W.|Dhillon, Baltej Singh".into(),
+            "Carl W. Busson|Baltej Singh Dhillon".into(),
+        ];
+        let found = variants.validate(
+            &ColumnInfo {
+                name: "Creator",
+                data_type: "Text",
+                settings: &settings,
+            },
+            ColumnValues::new(&values, "|"),
+        );
+        assert_eq!(found.len(), 4);
+        assert!(found.iter().all(|finding| {
+            finding.severity == Severity::Warning && !finding.message.contains('|')
+        }));
+        let candidates = variants.candidates.read().unwrap();
+        let (expected, replacements) = &candidates[&("Creator".to_owned(), 0)];
+        assert_eq!(expected, "Busson, Carl W.|Dhillon, Baltej Singh");
+        assert!(replacements.contains(&"Carl W. Busson|Dhillon, Baltej Singh".into()));
+        assert!(replacements.contains(&"Busson, Carl W.|Baltej Singh Dhillon".into()));
     }
 }

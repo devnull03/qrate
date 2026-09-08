@@ -9,6 +9,7 @@ the right dock. A finding on a cell also shows as a small marker on that cell in
   per-value language selection; short or ambiguous values are left alone instead of being
   checked as the wrong language.
 - **Capitalization**, when a dictionary knows the word but requires a different case.
+  Capitalization findings are warnings. The Notes tab is reserved for user notes.
 - **Value variants**, for columns where you opt into reviewing inconsistent displayed forms.
   This catches punctuation, diacritic, word-order, and close-spelling differences in names,
   organizations, places, subjects, titles, and other labels. Similarity is a review hint, not
@@ -49,6 +50,8 @@ Repeated copies of the same word in one cell count once.
 A cell can also belong to more than one value-variant pair.
 
 The source filter changes both the visible findings and the tab counts.
+It is a multi-select filter. Uncheck one or more diagnostic sources to hide them.
+User notes do not appear as a source because the Notes tab already selects them.
 The severity filter changes the visible findings, but each tab keeps its own total.
 Notes and validators without group metadata remain separate entries.
 
@@ -75,6 +78,10 @@ you always know exactly what you are accepting.
 
 Value-variant fixes offer forms that already occur in the same column. qrate never chooses a
 canonical form, merges records, or changes every matching row automatically.
+
+qrate uses the configured subdelimiter to read multiple logical values in one cell.
+Validators borrow these values as text slices, so splitting does not allocate a list for each cell.
+Value-variant fixes preserve the other logical values and replace the complete cell through the normal edit path.
 
 A fix offered against one version of a cell's text does not apply once that text has
 changed. This stops a stale suggestion from silently overwriting a newer edit.
