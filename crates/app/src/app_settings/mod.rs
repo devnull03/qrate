@@ -29,6 +29,7 @@ use settings::{Setting, columns, project::CurrentProject};
 /// Where the Columns page sits in [`build_pages`], for the Data menu's "Column Settings…". An index
 /// rather than a title because `SettingPage` does not hand its title back.
 pub const COLUMNS_PAGE: usize = 2;
+pub const PLUGINS_PAGE: usize = 7;
 
 pub fn build_pages(cx: &App) -> Vec<SettingPage> {
     let mut pages = vec![

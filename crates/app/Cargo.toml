@@ -19,6 +19,7 @@ semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
+tempfile.workspace = true
 # The agent bridge's request/response types; the transport lives here because only the
 # composition root links both the contract and the live table.
 ai = { path = "../ai" }
@@ -46,6 +47,7 @@ updater = { path = "../updater", features = ["client"] }
 plugin-api = { path = "../plugin-api" }
 # Plugins are loaded here and nowhere else — see `plugin_host::reload`.
 plugin-host = { path = "../plugin-host" }
+plugin-package = { path = "../plugin-package" }
 workspace = { path = "../workspace" }
 
 [build-dependencies]
