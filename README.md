@@ -75,25 +75,31 @@ and point qrate at them under **Settings ▸ Google ▸ Credential endpoint**.
   chooser, so `drive.file` can reach a spreadsheet the user already owns.
   Needs a browser API key in `PICKER_API_KEY`, referrer-restricted to this site.
 
-The Worker only runs for `/oauth/config`; static assets are matched first, so
-every page is still served from the edge with no invocation.
+The Worker runs for `/oauth/config` and the plugin catalog endpoints. Static
+assets are matched first, so every page is still served from the edge.
 
 ## Plugin catalog
 
 The `/plugins` pages are static pages built from qrate's signed plugin catalog.
-Set both variables in the Cloudflare build environment:
+The Worker serves the catalog from Cloudflare KV at these paths:
 
-- `QRATE_PLUGIN_CATALOG_URL` — the HTTPS URL of `catalog.json`.
-- `QRATE_PLUGIN_CATALOG_PUBLIC_KEY` — the base64url `x` value from the
-  registry Ed25519 public JWK.
+- `/plugins/catalog.json`
+- `/plugins/catalog.json.sig`
+- `/plugins/catalog-status.json`
+- `/plugins/schemas/<name>.json`
+
+Set `QRATE_PLUGIN_CATALOG_PUBLIC_KEY` in the Cloudflare build environment. Its
+value is the base64url `x` value from the registry Ed25519 public JWK.
+
+`QRATE_PLUGIN_CATALOG_URL` is optional. It defaults to
+`https://qrate.dvnl.work/plugins/catalog.json`.
 
 The build fetches `catalog.json.sig` beside the catalog. It verifies the SHA-256,
 key ID, and signature before it parses any records. A bad catalog fails the
 build, so Cloudflare keeps the last successful deployment online.
 
-If both variables are absent, the site builds an empty pre-launch catalog page.
-This lets the site branch deploy before the registry publishes its first signed
-catalog. Setting only one variable is an error.
+If the public key is absent, the site builds an empty pre-launch catalog page.
+This lets the site deploy before the registry publishes its first signed catalog.
 
 ## Theming
 

@@ -4,9 +4,8 @@
   "compatibility_date": "2026-08-15",
   "compatibility_flags": ["nodejs_compat"],
 
-  // The Astro Cloudflare adapter's entrypoint — it serves the one non-prerendered
-  // route (/oauth/config). Static assets are matched before the Worker runs, so
-  // every page is served straight from the edge with no invocation.
+  // The Astro Cloudflare adapter's entrypoint — it serves the non-prerendered
+  // routes. Static assets are matched before the Worker runs.
   "main": "@astrojs/cloudflare/entrypoints/server",
 
   "assets": {
@@ -19,6 +18,13 @@
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "404-page"
   },
+
+  "kv_namespaces": [
+    {
+      "binding": "PLUGIN_CATALOG",
+      "id": "7c353c741f4d4c4f8dbf6e93b069128b"
+    }
+  ],
 
   "ratelimits": [
     {

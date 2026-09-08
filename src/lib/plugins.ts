@@ -156,13 +156,11 @@ const parsePlugin = (value: unknown): Plugin => {
 };
 
 async function loadCatalog(): Promise<PluginCatalog> {
-  const url = process.env.QRATE_PLUGIN_CATALOG_URL;
+  const url =
+    process.env.QRATE_PLUGIN_CATALOG_URL ?? 'https://qrate.dvnl.work/plugins/catalog.json';
   const publicKey = process.env.QRATE_PLUGIN_CATALOG_PUBLIC_KEY;
 
-  if (!url && !publicKey) return { configured: false, plugins: [] };
-  if (!url || !publicKey) {
-    throw new Error('Set both QRATE_PLUGIN_CATALOG_URL and QRATE_PLUGIN_CATALOG_PUBLIC_KEY');
-  }
+  if (!publicKey) return { configured: false, plugins: [] };
 
   const [catalogResponse, signatureResponse] = await Promise.all([
     fetch(url, { signal: AbortSignal.timeout(15_000) }),
