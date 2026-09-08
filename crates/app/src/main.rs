@@ -8,6 +8,7 @@ mod app_settings;
 mod assets;
 mod export;
 mod google;
+mod instance_handoff;
 mod logging;
 mod plugin_marketplace;
 mod status_items;
@@ -458,9 +459,18 @@ pub(crate) fn restart_for_update(_: &ClickEvent, window: &mut Window, cx: &mut g
 fn main() {
     // First, so failures in GPUI platform construction and startup still reach the log file.
     logging::init();
-    let app = gpui_platform::application().with_assets(assets::Assets);
-    let initial_link = std::env::args().find(|argument| argument.starts_with("qrate://"));
+    let initial_link = std::env::args()
+        .find(|argument| argument.starts_with("qrate://"))
+        .filter(|link| {
+            plugin_package::parse_install_link(link)
+                .inspect_err(|error| log::warn!("ignored invalid plugin install link: {error:#}"))
+                .is_ok()
+        });
     let (url_sender, url_receiver) = async_channel::unbounded();
+    if !instance_handoff::start(initial_link.as_deref(), url_sender.clone()) {
+        return;
+    }
+    let app = gpui_platform::application().with_assets(assets::Assets);
     app.on_open_urls(move |urls| {
         for url in urls {
             let _ = url_sender.try_send(url);

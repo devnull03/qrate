@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{Read as _, Write as _};
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use base64::{
@@ -126,6 +126,8 @@ pub struct InstallReceipt {
     pub artifact_url: String,
     pub sha256: String,
     pub bytes: u64,
+    #[serde(default)]
+    pub installed_at_unix_seconds: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -602,6 +604,10 @@ fn install_archive_inner(
         ),
         sha256,
         bytes,
+        installed_at_unix_seconds: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
     };
     if let Err(error) = write_json_atomic(&receipt_path, &receipt) {
         let _ = fs::remove_dir_all(&target);
@@ -617,13 +623,29 @@ fn install_archive_inner(
 }
 
 pub fn remove_managed(id: &str, plugins_root: &Path, receipts_root: &Path) -> Result<()> {
-    let receipt = receipt_path(receipts_root, id)?;
-    ensure!(receipt.exists(), "qrate does not manage this plugin");
+    let receipt_path = receipt_path(receipts_root, id)?;
+    let receipt: InstallReceipt = serde_json::from_slice(
+        &fs::read(&receipt_path).context("qrate does not manage this plugin")?,
+    )
+    .context("plugin installation receipt is invalid")?;
+    ensure!(
+        receipt.id == id,
+        "plugin installation receipt does not match"
+    );
     let target = plugins_root.join(id);
     if target.exists() {
+        let manifest: PackageManifest = serde_json::from_slice(
+            &fs::read(target.join("qrate-plugin.json"))
+                .context("managed plugin manifest is unavailable")?,
+        )
+        .context("managed plugin manifest is invalid")?;
+        ensure!(
+            manifest.id == receipt.id && manifest.version == receipt.version,
+            "installed plugin no longer matches its managed receipt"
+        );
         fs::remove_dir_all(target)?;
     }
-    fs::remove_file(receipt)?;
+    fs::remove_file(receipt_path)?;
     Ok(())
 }
 
@@ -988,6 +1010,60 @@ mod tests {
         );
         remove_managed("org.example.plugin", &plugins, &receipts).unwrap();
         assert!(!plugins.join("org.example.plugin").exists());
+    }
+
+    #[test]
+    fn refuses_to_remove_a_managed_path_that_was_replaced() {
+        let root = tempdir().unwrap();
+        let archive = root.path().join("plugin.zip");
+        package(&archive, "org.example.plugin", None);
+        let plugins = root.path().join("plugins");
+        let receipts = root.path().join("receipts");
+        install_archive(
+            &archive,
+            &plugins,
+            &receipts,
+            InstallSource::DirectGithub,
+            None,
+        )
+        .unwrap();
+        let manifest = plugins.join("org.example.plugin/qrate-plugin.json");
+        let mut changed: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        changed["version"] = json!("2.0.0");
+        fs::write(&manifest, serde_json::to_vec(&changed).unwrap()).unwrap();
+
+        assert!(remove_managed("org.example.plugin", &plugins, &receipts).is_err());
+        assert!(plugins.join("org.example.plugin").is_dir());
+    }
+
+    #[test]
+    fn never_replaces_an_unmanaged_plugin_folder() {
+        let root = tempdir().unwrap();
+        let archive = root.path().join("plugin.zip");
+        package(&archive, "org.example.plugin", None);
+        let plugins = root.path().join("plugins");
+        fs::create_dir_all(plugins.join("org.example.plugin")).unwrap();
+        fs::write(
+            plugins.join("org.example.plugin/init.lua"),
+            "return { validate = function() return {} end }",
+        )
+        .unwrap();
+
+        assert!(
+            install_archive(
+                &archive,
+                &plugins,
+                &root.path().join("receipts"),
+                InstallSource::DirectGithub,
+                None,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(plugins.join("org.example.plugin/init.lua")).unwrap(),
+            "return { validate = function() return {} end }"
+        );
     }
 
     #[test]
