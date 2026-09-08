@@ -256,12 +256,16 @@ impl MarketplaceWindow {
                         .parent()
                         .ok_or_else(|| anyhow::anyhow!("plugin folder has no parent"))?;
                     let receipts = plugin_package::receipts_dir(data);
-                    plugin_package::install_archive(
+                    plugin_package::install_archive_checked(
                         temp.path(),
                         &plugins,
                         &receipts,
                         InstallSource::OfficialCatalog,
                         Some((&plugin, &plugin.current)),
+                        |root, manifest| {
+                            plugin_host::validate_package(root, &manifest.id)
+                                .map_err(anyhow::Error::msg)
+                        },
                     )
                 })
                 .await;
@@ -335,8 +339,15 @@ impl MarketplaceWindow {
                     let receipts = plugin_package::receipts_dir(data);
                     let already_managed =
                         plugin_package::read_receipt(&receipts, &inspection.manifest.id)?.is_some();
-                    let result = plugin_package::install_direct_archive(
-                        &archive, &plugins, &receipts, &release,
+                    let result = plugin_package::install_direct_archive_checked(
+                        &archive,
+                        &plugins,
+                        &receipts,
+                        &release,
+                        |root, manifest| {
+                            plugin_host::validate_package(root, &manifest.id)
+                                .map_err(anyhow::Error::msg)
+                        },
                     );
                     let _ = std::fs::remove_file(archive);
                     result.map(|receipt| (receipt, already_managed))

@@ -460,7 +460,33 @@ pub fn install_archive(
     source: InstallSource,
     expected: Option<(&CatalogPlugin, &CatalogRelease)>,
 ) -> Result<InstallReceipt> {
-    install_archive_inner(archive, plugins_root, receipts_root, source, expected, None)
+    install_archive_checked(
+        archive,
+        plugins_root,
+        receipts_root,
+        source,
+        expected,
+        |_, _| Ok(()),
+    )
+}
+
+pub fn install_archive_checked(
+    archive: &Path,
+    plugins_root: &Path,
+    receipts_root: &Path,
+    source: InstallSource,
+    expected: Option<(&CatalogPlugin, &CatalogRelease)>,
+    check: impl FnOnce(&Path, &PackageManifest) -> Result<()>,
+) -> Result<InstallReceipt> {
+    install_archive_inner(
+        archive,
+        plugins_root,
+        receipts_root,
+        source,
+        expected,
+        None,
+        check,
+    )
 }
 
 pub fn install_direct_archive(
@@ -469,6 +495,16 @@ pub fn install_direct_archive(
     receipts_root: &Path,
     release: &DirectRelease,
 ) -> Result<InstallReceipt> {
+    install_direct_archive_checked(archive, plugins_root, receipts_root, release, |_, _| Ok(()))
+}
+
+pub fn install_direct_archive_checked(
+    archive: &Path,
+    plugins_root: &Path,
+    receipts_root: &Path,
+    release: &DirectRelease,
+    check: impl FnOnce(&Path, &PackageManifest) -> Result<()>,
+) -> Result<InstallReceipt> {
     install_archive_inner(
         archive,
         plugins_root,
@@ -476,6 +512,7 @@ pub fn install_direct_archive(
         InstallSource::DirectGithub,
         None,
         Some(release),
+        check,
     )
 }
 
@@ -486,6 +523,7 @@ fn install_archive_inner(
     source: InstallSource,
     expected: Option<(&CatalogPlugin, &CatalogRelease)>,
     direct: Option<&DirectRelease>,
+    check: impl FnOnce(&Path, &PackageManifest) -> Result<()>,
 ) -> Result<InstallReceipt> {
     let (sha256, bytes) = sha256_file(archive)?;
     ensure!(bytes <= MAX_PACKAGE_BYTES, "plugin package is too large");
@@ -543,6 +581,7 @@ fn install_archive_inner(
             "package permissions do not match catalog"
         );
     }
+    check(staging.path(), &manifest).context("plugin failed its runtime contract check")?;
 
     let receipt_path = receipt_path(receipts_root, &manifest.id)?;
     let target = plugins_root.join(&manifest.id);
@@ -883,6 +922,7 @@ mod tests {
     use std::fs;
     use std::io::Write as _;
 
+    use anyhow::bail;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use ed25519_dalek::{Signer as _, SigningKey};
     use serde_json::json;
@@ -891,8 +931,8 @@ mod tests {
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     use super::{
-        CATALOG_KEY_ID, InstallSource, InstallTarget, install_archive, parse_install_link,
-        read_receipt, remove_managed, verify_catalog,
+        CATALOG_KEY_ID, InstallSource, InstallTarget, install_archive, install_archive_checked,
+        parse_install_link, read_receipt, remove_managed, verify_catalog,
     };
 
     fn package(path: &std::path::Path, id: &str, extra: Option<(&str, &[u8])>) {
@@ -1035,6 +1075,41 @@ mod tests {
 
         assert!(remove_managed("org.example.plugin", &plugins, &receipts).is_err());
         assert!(plugins.join("org.example.plugin").is_dir());
+    }
+
+    #[test]
+    fn a_failed_runtime_check_leaves_the_installed_plugin_untouched() {
+        let root = tempdir().unwrap();
+        let archive = root.path().join("plugin.zip");
+        package(&archive, "org.example.plugin", None);
+        let plugins = root.path().join("plugins");
+        let receipts = root.path().join("receipts");
+        install_archive(
+            &archive,
+            &plugins,
+            &receipts,
+            InstallSource::DirectGithub,
+            None,
+        )
+        .unwrap();
+        let installed = plugins.join("org.example.plugin/init.lua");
+        fs::write(&installed, "-- installed version").unwrap();
+
+        let error = install_archive_checked(
+            &archive,
+            &plugins,
+            &receipts,
+            InstallSource::DirectGithub,
+            None,
+            |_, _| bail!("runtime mismatch"),
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("runtime mismatch"));
+        assert_eq!(
+            fs::read_to_string(installed).unwrap(),
+            "-- installed version"
+        );
     }
 
     #[test]

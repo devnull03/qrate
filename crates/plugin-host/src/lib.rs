@@ -696,6 +696,28 @@ fn discover() -> Vec<Discovered> {
     found
 }
 
+/// Loads an extracted managed package before the installer replaces an existing plugin.
+///
+/// This checks the Lua descriptor against the static package contract without running validation
+/// hooks or granting optional permissions.
+pub fn validate_package(root: &Path, id: &str) -> Result<(), String> {
+    let package = package_on_disk(root, id)?
+        .ok_or_else(|| "plugin package has no qrate-plugin.json".to_string())?;
+    let entry = root.join(&package.entry);
+    let source = fs::read_to_string(&entry)
+        .map_err(|error| format!("could not read package entry {}: {error}", entry.display()))?;
+    let entry_name = entry.file_stem().and_then(|name| name.to_str());
+    let env = Env {
+        modules: modules(root, entry_name),
+        ..Env::default()
+    };
+    let plugin = LuaPlugin::load_packaged(id, &source, env, Ok(Some(package.descriptor)));
+    match plugin.load_error() {
+        Some(error) => Err(error.to_string()),
+        None => Ok(()),
+    }
+}
+
 fn package_on_disk(root: &Path, folder_id: &str) -> Result<Option<PackageOnDisk>, String> {
     let bytes = match fs::read(root.join("qrate-plugin.json")) {
         Ok(bytes) => bytes,
