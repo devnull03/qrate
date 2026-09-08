@@ -6,7 +6,7 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::button::Button;
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Root, Sizable as _, StyledExt as _, TitleBar, h_flex,
@@ -19,6 +19,9 @@ use window_wrapper::WindowRegistry;
 
 const MARKETPLACE_WINDOW_KIND: &str = "plugin-marketplace";
 const SITE_URL: &str = "https://qrate.dvnl.work/plugins";
+
+struct MarketplaceHandle(WeakEntity<MarketplaceWindow>);
+impl Global for MarketplaceHandle {}
 
 enum CatalogState {
     Loading,
@@ -43,6 +46,8 @@ pub struct MarketplaceWindow {
     catalog: CatalogState,
     direct: DirectState,
     input: Entity<InputState>,
+    search: Entity<InputState>,
+    _search_subscription: Subscription,
     status: Option<Arc<str>>,
     requested_id: Option<String>,
     direct_source: Option<String>,
@@ -58,6 +63,13 @@ impl MarketplaceWindow {
         window.set_window_title("qrate plugins");
         let input =
             cx.new(|cx| InputState::new(window, cx).placeholder("https://github.com/owner/plugin"));
+        let search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search official plugins"));
+        let search_subscription = cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
         let (requested_id, direct_source) = match target {
             Some(InstallTarget::Registry(id)) => (Some(id), None),
             Some(InstallTarget::Github(source)) => (None, Some(source)),
@@ -67,6 +79,8 @@ impl MarketplaceWindow {
             catalog: CatalogState::Loading,
             direct: DirectState::Idle,
             input,
+            search,
+            _search_subscription: search_subscription,
             status: requested_id
                 .as_ref()
                 .map(|id| format!("Reviewing official catalog entry {id}").into()),
@@ -78,6 +92,25 @@ impl MarketplaceWindow {
             this.input.focus_handle(cx).focus(window, cx);
         }
         this
+    }
+
+    fn apply_target(&mut self, target: InstallTarget, window: &mut Window, cx: &mut Context<Self>) {
+        self.status = None;
+        match target {
+            InstallTarget::Registry(id) => {
+                self.requested_id = Some(id.clone());
+                self.direct_source = None;
+                self.status = Some(format!("Reviewing official catalog entry {id}").into());
+            }
+            InstallTarget::Github(source) => {
+                self.requested_id = None;
+                self.direct_source = Some(source.clone());
+                self.direct = DirectState::Idle;
+                self.input
+                    .update(cx, |input, cx| input.set_value(source, window, cx));
+            }
+        }
+        cx.notify();
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -335,6 +368,7 @@ impl MarketplaceWindow {
 
 impl Render for MarketplaceWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let search = self.search.read(cx).value().to_ascii_lowercase();
         let catalog = match &self.catalog {
             CatalogState::Loading => Label::new("Loading the signed catalog…")
                 .text_sm()
@@ -365,6 +399,13 @@ impl Render for MarketplaceWindow {
                         .iter()
                         .filter(|plugin| {
                             self.requested_id.as_ref().is_none_or(|id| id == &plugin.id)
+                                && (search.is_empty()
+                                    || plugin.id.to_ascii_lowercase().contains(&search)
+                                    || plugin.name.to_ascii_lowercase().contains(&search)
+                                    || plugin.summary.to_ascii_lowercase().contains(&search)
+                                    || plugin.categories.iter().any(|category| {
+                                        category.to_ascii_lowercase().contains(&search)
+                                    }))
                         })
                         .cloned()
                         .map(|plugin| {
@@ -472,6 +513,7 @@ impl Render for MarketplaceWindow {
                     .p_4()
                     .gap_4()
                     .child(Label::new("Official catalog").text_lg().font_semibold())
+                    .child(Input::new(&self.search))
                     .child(catalog)
                     .child(Label::new("Install from GitHub").text_lg().font_semibold())
                     .when_some(self.direct_source.clone(), |view, source| {
@@ -514,7 +556,21 @@ pub fn open_install_target(target: InstallTarget, cx: &mut gpui::App) {
 }
 
 fn open_marketplace(direct: bool, target: Option<InstallTarget>, cx: &mut gpui::App) {
-    if WindowRegistry::focus_or_clear(MARKETPLACE_WINDOW_KIND, cx).is_some() {
+    if let Some(handle) = WindowRegistry::focus_or_clear(MARKETPLACE_WINDOW_KIND, cx) {
+        if let Some(target) = target {
+            handle
+                .update(cx, |_, window, cx| {
+                    if let Some(marketplace) = cx
+                        .try_global::<MarketplaceHandle>()
+                        .and_then(|handle| handle.0.upgrade())
+                    {
+                        marketplace.update(cx, |marketplace, cx| {
+                            marketplace.apply_target(target, window, cx);
+                        });
+                    }
+                })
+                .ok();
+        }
         return;
     }
     let win_size = size(px(760.0), px(620.0));
@@ -526,6 +582,7 @@ fn open_marketplace(direct: bool, target: Option<InstallTarget>, cx: &mut gpui::
     };
     if let Ok(handle) = cx.open_window(options, |window, cx| {
         let view = cx.new(|cx| MarketplaceWindow::new(direct, target, window, cx));
+        cx.set_global(MarketplaceHandle(view.downgrade()));
         cx.new(|cx| Root::new(view, window, cx))
     }) {
         WindowRegistry::register(MARKETPLACE_WINDOW_KIND, handle.into(), cx);
