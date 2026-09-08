@@ -109,7 +109,7 @@ const parsePlugin = (value: unknown): Plugin => {
     throw new Error(`Plugin catalog ${id} has an invalid publication date`);
   }
   const apiVersion = current.api_version;
-  if (!Number.isInteger(apiVersion) || apiVersion !== 1) {
+  if (!Number.isInteger(apiVersion) || (apiVersion as number) < 1 || (apiVersion as number) > 2) {
     throw new Error(`Plugin catalog ${id} needs an unsupported API version`);
   }
   const permissions = strings(current.permissions, 'permissions');
@@ -139,7 +139,9 @@ const parsePlugin = (value: unknown): Plugin => {
     homepage: item.homepage == null ? undefined : url(item.homepage, 'homepage'),
     support: item.support == null ? undefined : url(item.support, 'support URL'),
     icon: item.icon == null ? undefined : url(item.icon, 'icon'),
-    screenshots: strings(item.screenshots ?? [], 'screenshots'),
+    screenshots: strings(item.screenshots ?? [], 'screenshots').map((screenshot) =>
+      url(screenshot, 'screenshot'),
+    ),
     featured: item.featured === true,
     current: {
       version: text(current.version, 'release version'),
