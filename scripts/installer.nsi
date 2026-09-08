@@ -131,6 +131,12 @@ Section "Install"
   CreateShortcut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\${EXENAME}"
   CreateShortcut "$DESKTOP\${APPNAME}.lnk"    "$INSTDIR\${EXENAME}"
 
+  ; Browser install links always pass one quoted URI argument to qrate's strict parser.
+  WriteRegStr SHCTX "Software\Classes\qrate" "" "URL:qrate Protocol"
+  WriteRegStr SHCTX "Software\Classes\qrate" "URL Protocol" ""
+  WriteRegStr SHCTX "Software\Classes\qrate\DefaultIcon" "" "$INSTDIR\${EXENAME},0"
+  WriteRegStr SHCTX "Software\Classes\qrate\shell\open\command" "" '"$INSTDIR\${EXENAME}" "%1"'
+
   ; Uninstaller + Add/Remove Programs entry. SHCTX is HKLM for an all-users install, HKCU for a
   ; per-user one — set by MULTIUSER_INIT to match the mode picked above.
   WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -166,6 +172,7 @@ Section "un.qrate" SEC_UNAPP
   RMDir  "$INSTDIR"
   Delete "$SMPROGRAMS\${APPNAME}.lnk"
   Delete "$DESKTOP\${APPNAME}.lnk"
+  DeleteRegKey SHCTX "Software\Classes\qrate"
   DeleteRegKey SHCTX "${UNINSTKEY}"
   DeleteRegKey SHCTX "Software\${APPNAME}"
 
