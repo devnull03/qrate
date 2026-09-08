@@ -39,6 +39,10 @@ const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 /// anyone reaches for Task Manager. Being *slow* is reported by [`timed`] instead.
 const DEADLINE: Duration = Duration::from_secs(2);
 
+/// Exports can process the complete table once. Give them more time than per-edit validation while
+/// keeping a fixed cancellation point for runaway code.
+const EXPORT_DEADLINE: Duration = Duration::from_secs(10);
+
 /// How long one call into a plugin may take before it is worth telling somebody about. A validator
 /// runs per column on every edit, so anything at this scale is felt as the grid stuttering.
 const SLOW: Duration = Duration::from_millis(150);
@@ -273,7 +277,11 @@ impl LuaPlugin {
 
     /// Every call into Lua restarts the compute budget the interrupt hook enforces.
     fn arm(&self) {
-        *self.shared.deadline.lock().unwrap() = Instant::now() + DEADLINE;
+        self.arm_for(DEADLINE);
+    }
+
+    fn arm_for(&self, duration: Duration) {
+        *self.shared.deadline.lock().unwrap() = Instant::now() + duration;
     }
 
     /// The plugin's own one-line description, shown on its Settings page.
@@ -365,7 +373,7 @@ impl LuaPlugin {
             )
             .map_err(|error| error.to_string())?;
 
-        self.arm();
+        self.arm_for(EXPORT_DEADLINE);
         let value: mlua::Value = timed(&self.id, &format!("export {id}"), || {
             export.call((id, table))
         })
