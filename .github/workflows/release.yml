@@ -312,7 +312,8 @@ jobs:
           chmod +x scripts/fetch-agent-runtime.sh
           ./scripts/fetch-agent-runtime.sh "$stage" linux-x64
           printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=qrate' \
-            'Exec=qrate' 'Icon=qrate' 'Categories=Office;Database;' \
+            'Exec=qrate %u' 'Icon=qrate' 'Terminal=false' \
+            'Categories=Office;Database;' 'MimeType=x-scheme-handler/qrate;' \
             > "$stage/qrate.desktop"
           mkdir -p dist
           tar -czf "dist/$stage.tar.gz" "$stage"
