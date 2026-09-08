@@ -13,6 +13,8 @@ the right dock. A finding on a cell also shows as a small marker on that cell in
   This catches punctuation, diacritic, word-order, and close-spelling differences in names,
   organizations, places, subjects, titles, and other labels. Similarity is a review hint, not
   a claim that two values identify the same entity.
+  Right-click a column header and select **Review value variants** to enable this check.
+  Select the checked command again to disable it.
 - **Date formats**, so a malformed or ambiguous date is caught before export.
 - **File links**, so a row whose linked file cannot be found is reported instead of
   silently showing a blank preview. See [Files and photos](files-and-photos.md).
