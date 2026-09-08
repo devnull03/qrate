@@ -61,16 +61,19 @@ pub enum Scope {
     Centre,
 }
 
-/// The currently-open viewer, if any. Both mount slots observe this.
+/// The currently-open viewer and the focus to restore. Both mount slots observe this.
 #[derive(Default)]
-pub struct ActiveViewer(pub Option<Entity<Viewer>>);
+pub struct ActiveViewer {
+    viewer: Option<Entity<Viewer>>,
+    return_focus: Option<FocusHandle>,
+}
 
 impl Global for ActiveViewer {}
 
 /// The open viewer, if it belongs in `scope`. `None` tells that slot to mount nothing — which is
 /// how one global feeds two slots without ever painting itself twice.
 pub fn viewer_in(scope: Scope, cx: &App) -> Option<Entity<Viewer>> {
-    let viewer = cx.try_global::<ActiveViewer>()?.0.clone()?;
+    let viewer = cx.try_global::<ActiveViewer>()?.viewer.clone()?;
     (viewer.read(cx).scope == scope).then_some(viewer)
 }
 
@@ -82,9 +85,8 @@ pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut Ap
     let probe_path = path.clone();
     let return_focus = cx
         .try_global::<ActiveViewer>()
-        .and_then(|active| active.0.as_ref())
-        .map(|viewer| viewer.read(cx).return_focus.clone())
-        .unwrap_or_else(|| window.focused(cx));
+        .and_then(|active| active.return_focus.clone())
+        .or_else(|| window.focused(cx));
     let viewer = cx.new(|cx| Viewer {
         transport: Transport::new(path.clone(), cx),
         path,
@@ -100,7 +102,6 @@ pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut Ap
         offset: Point::default(),
         drag_from: None,
         focus_handle: cx.focus_handle(),
-        return_focus,
         focused: false,
         find: Find::default(),
         find_open: false,
@@ -124,7 +125,10 @@ pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut Ap
         });
     })
     .detach();
-    cx.set_global(ActiveViewer(Some(viewer)));
+    cx.set_global(ActiveViewer {
+        viewer: Some(viewer),
+        return_focus,
+    });
 }
 
 pub fn close_viewer(window: &mut Window, cx: &mut App) {
@@ -132,9 +136,8 @@ pub fn close_viewer(window: &mut Window, cx: &mut App) {
     preview::playback::stop(cx);
     let return_focus = cx
         .try_global::<ActiveViewer>()
-        .and_then(|active| active.0.as_ref())
-        .and_then(|viewer| viewer.read(cx).return_focus.clone());
-    cx.set_global(ActiveViewer(None));
+        .and_then(|active| active.return_focus.clone());
+    cx.set_global(ActiveViewer::default());
     if let Some(return_focus) = return_focus {
         return_focus.focus(window, cx);
     }
@@ -171,8 +174,6 @@ pub struct Viewer {
     /// Last pointer position while dragging; `None` when not panning.
     drag_from: Option<Point<Pixels>>,
     focus_handle: FocusHandle,
-    /// Where focus belonged before the overlay took it.
-    return_focus: Option<FocusHandle>,
     /// Grabs focus on first render so Escape reaches [`Self`]; set once so we don't re-focus.
     focused: bool,
     find: Find,
@@ -838,6 +839,24 @@ mod tests {
             close_viewer(window, cx);
 
             assert!(caller.is_focused(window));
+        });
+    }
+
+    #[gpui::test]
+    fn viewer_can_close_from_its_own_listener(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
+        cx.update(|window, cx| {
+            open_viewer(
+                "/nonexistent/qrate-reentrant-close-test.jpg".into(),
+                Scope::Workspace,
+                window,
+                cx,
+            );
+            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+
+            viewer.update(cx, |_, cx| close_viewer(window, cx));
+
+            assert!(viewer_in(Scope::Workspace, cx).is_none());
         });
     }
 
