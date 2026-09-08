@@ -2,9 +2,11 @@
 import Base from '../layouts/Base.astro';
 import AppWindow from '../components/AppWindow.astro';
 import { getReleases, latest, assetIndex, REPO } from '../lib/releases.js';
+import { getPluginCatalog } from '../lib/plugins';
 
 const releases = await getReleases();
 const rel = latest(releases);
+const pluginCatalog = await getPluginCatalog();
 
 // One installer per platform, for the hero button the client picks by OS.
 // The order is also the server-rendered fallback order, for no-JS and for
@@ -78,17 +80,20 @@ const screens = [
 ];
 
 const plugins = [
-  {
-    mark: 'Is',
-    dark: true,
-    tag: 'available',
-    tagClass: 'text-rust',
-    name: 'Islandora',
-    body: 'Holds columns to the vocabularies your Islandora site publishes, and offers those terms while you type. Terms are checked where they live, so a hundred thousand of them cost the same as ten.',
-    repo: 'devnull03/qrate-islandora-plugin',
-    action: 'install →',
-    href: 'https://github.com/devnull03/qrate-islandora-plugin',
-  },
+  ...pluginCatalog.plugins
+    .filter((plugin) => plugin.featured && plugin.current.status === 'active')
+    .slice(0, 1)
+    .map((plugin) => ({
+      mark: plugin.name.slice(0, 2),
+      dark: true,
+      tag: 'listed',
+      tagClass: 'text-rust',
+      name: plugin.name,
+      body: plugin.summary,
+      repo: plugin.publisher,
+      action: 'view plugin →',
+      href: `/plugins/${plugin.id}`,
+    })),
   {
     mark: '{ }',
     tag: 'template',
@@ -105,9 +110,9 @@ const plugins = [
     tagClass: 'text-dim',
     name: 'Write your own',
     body: 'Validation, suggestions, column configuration, menu items and status or title bar entries with inline markup. No io, no os, no package: a plugin only reaches what qrate hands it.',
-    repo: 'Extensions ▸ Open Plugins Folder',
-    action: 'read the docs →',
-    href: 'https://github.com/devnull03/qrate-plugin-template#readme',
+    repo: 'Package · release · submit',
+    action: 'publishing guide →',
+    href: '/plugins/submit',
   },
 ];
 
@@ -335,14 +340,14 @@ const mess = [
       <div class="flex flex-col items-baseline gap-2 md:flex-row md:gap-3.5">
         <div class="eyebrow whitespace-nowrap">/05 Plugins</div>
         <h2 class="m-0 text-2xl font-semibold leading-[1.1] md:text-[32px]">
-          Extend it from a folder you control.
+          Find an extension, or make your own.
         </h2>
       </div>
-      <span class="whitespace-nowrap font-mono text-xs text-dim">Help ▸ Open Plugins Folder</span>
+      <a href="/plugins" class="whitespace-nowrap font-mono text-xs text-accent">Browse plugins →</a>
     </div>
     <p class="m-0 mb-4 max-w-[620px] text-[13.5px] leading-[1.65] text-body md:mb-6 md:text-[14.5px]">
       Plugins are Luau, sandboxed, and add validation, column rules, menus and suggestions. Network
-      access stays off until you switch it on.
+      access stays off until you switch it on. Manual folder installation remains available.
     </p>
 
     <div class="grid grid-cols-1 gap-px border border-rule bg-rule md:grid-cols-3">
@@ -384,7 +389,11 @@ const mess = [
       }
     </div>
     <div class="mt-3.5 font-mono text-xs text-dim">
-      One plugin published so far. The template carries type definitions for the whole plugin API.
+      {
+        pluginCatalog.plugins.length
+          ? `${pluginCatalog.plugins.length} listed ${pluginCatalog.plugins.length === 1 ? 'plugin' : 'plugins'}. The template carries type definitions for the whole plugin API.`
+          : 'The catalog is being prepared. The template carries type definitions for the whole plugin API.'
+      }
     </div>
   </section>
 

@@ -78,6 +78,23 @@ and point qrate at them under **Settings ▸ Google ▸ Credential endpoint**.
 The Worker only runs for `/oauth/config`; static assets are matched first, so
 every page is still served from the edge with no invocation.
 
+## Plugin catalog
+
+The `/plugins` pages are static pages built from qrate's signed plugin catalog.
+Set both variables in the Cloudflare build environment:
+
+- `QRATE_PLUGIN_CATALOG_URL` — the HTTPS URL of `catalog.json`.
+- `QRATE_PLUGIN_CATALOG_PUBLIC_KEY` — the base64url `x` value from the
+  registry Ed25519 public JWK.
+
+The build fetches `catalog.json.sig` beside the catalog. It verifies the SHA-256,
+key ID, and signature before it parses any records. A bad catalog fails the
+build, so Cloudflare keeps the last successful deployment online.
+
+If both variables are absent, the site builds an empty pre-launch catalog page.
+This lets the site branch deploy before the registry publishes its first signed
+catalog. Setting only one variable is an error.
+
 ## Theming
 
 Six qrate palettes live as `[data-theme]` blocks in `src/styles/global.css` and

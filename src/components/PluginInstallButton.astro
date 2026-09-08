@@ -1,0 +1,20 @@
+---
+import { installLink } from '../lib/plugins';
+
+const { id, revoked = false } = Astro.props;
+---
+
+{
+  revoked ? (
+    <span class="inline-flex bg-rust px-4 py-2.5 text-[13px] font-medium text-paper">
+      Installation unavailable
+    </span>
+  ) : (
+    <a
+      href={installLink(id)}
+      class="inline-flex bg-accent px-4 py-2.5 text-[13px] font-medium text-on-accent"
+    >
+      Open in qrate
+    </a>
+  )
+}
