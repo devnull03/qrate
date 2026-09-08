@@ -27,8 +27,43 @@ findings each time it runs, and that set replaces what it reported last time.
 
 ## The Problems panel
 
-The panel lists every current finding, grouped and sorted for review. Click a finding to
-jump to the cell it is about.
+Repeated spelling, capitalization, and value-variant findings appear in collapsed groups.
+Each group shows an occurrence count. Expand the group to see its locations.
+The expansion button supports keyboard activation. Click an occurrence to select its cell, row, or column.
+A group header does not select a location or apply a fix.
+
+Findings can describe four scopes:
+
+| Scope | Location label | Navigation |
+|---|---|---|
+| Cell | `Row N · Column` | Select the cell |
+| Row | `Row N` | Select the row |
+| Column | Column name | Select the column |
+| Dataset | Dataset name | No cell selection |
+
+The severity tabs count diagnostic occurrences, not collapsed groups or unique cells.
+Two distinct misspelled words in one cell count as two occurrences.
+Repeated copies of the same word in one cell count once.
+A cell can also belong to more than one value-variant pair.
+
+The source filter changes both the visible findings and the tab counts.
+The severity filter changes the visible findings, but each tab keeps its own total.
+Notes and validators without group metadata remain separate entries.
+
+### Producer contracts
+
+The diagnostics store keeps each finding at its exact location.
+The panel groups findings only when a producer supplies `DiagnosticGroup` metadata.
+Group identity includes the dataset, source, severity, and producer key. The summary is display text, not identity.
+
+Column validators return `ColumnFinding`. A row index describes a cell. An absent row index describes the whole column.
+Row-wide and dataset-wide producers publish addressed diagnostics directly.
+Existing plugin scripts keep their current row-based output format.
+
+Spelling keys include the selected dictionary and observed token.
+Capitalization keys also include the proposed spelling.
+Value-variant keys include the column and an unordered pair of exact displayed values.
+Pair review does not infer that a third similar value identifies the same entity.
 
 ## Applying a fix
 
@@ -41,3 +76,19 @@ canonical form, merges records, or changes every matching row automatically.
 
 A fix offered against one version of a cell's text does not apply once that text has
 changed. This stops a stale suggestion from silently overwriting a newer edit.
+
+Expanded cell occurrences offer the same spelling and fix menus as the grid.
+Row, column, dataset, and group entries do not offer cell fixes.
+Each accepted fix uses the existing undoable cell edit path. Validation then refreshes the groups.
+
+## Design credit
+
+qrate's value-clustering workflow is inspired by OpenRefine's
+[Cluster and edit](https://openrefine.org/docs/manual/cellediting#cluster-and-edit) feature and
+[clustering methods](https://openrefine.org/docs/technical-reference/clustering-in-depth).
+qrate uses an independent implementation for its diagnostics and cataloging workflow.
+This acknowledgment does not imply OpenRefine's endorsement.
+
+OpenRefine publishes its source under BSD-3-Clause and its documentation under CC BY 4.0.
+This implementation does not copy OpenRefine source, documentation text, or UI assets.
+Any future adaptation must retain the applicable copyright, license, and attribution notices.
