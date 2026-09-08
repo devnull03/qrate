@@ -392,6 +392,17 @@ impl Render for MarketplaceWindow {
                     .text_sm()
                     .into_any_element()
             }
+            CatalogState::Ready(plugins)
+                if self
+                    .requested_id
+                    .as_ref()
+                    .is_some_and(|id| !plugins.iter().any(|plugin| &plugin.id == id)) =>
+            {
+                Label::new("That plugin is not in the current signed catalog.")
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .into_any_element()
+            }
             CatalogState::Ready(plugins) => v_flex()
                 .gap_2()
                 .children(
@@ -410,6 +421,19 @@ impl Render for MarketplaceWindow {
                         .cloned()
                         .map(|plugin| {
                             let button_plugin = plugin.clone();
+                            let installed = installed_receipt(&plugin.id);
+                            let current = installed
+                                .as_ref()
+                                .is_some_and(|receipt| receipt.version >= plugin.current.version);
+                            let action = if plugin.current.status == ReleaseStatus::Revoked {
+                                "Revoked"
+                            } else if current {
+                                "Installed"
+                            } else if installed.is_some() {
+                                "Update"
+                            } else {
+                                "Install"
+                            };
                             h_flex()
                                 .justify_between()
                                 .gap_3()
@@ -421,10 +445,20 @@ impl Render for MarketplaceWindow {
                                         .child(Label::new(plugin.name).font_semibold())
                                         .child(
                                             Label::new(format!(
-                                                "{} · {} · API {}",
+                                                "{} · {} · API {} · {} · {} · {}",
                                                 plugin.summary,
                                                 plugin.current.version,
-                                                plugin.current.api_version
+                                                plugin.current.api_version,
+                                                plugin.publisher,
+                                                plugin.license,
+                                                if plugin.current.permissions.is_empty() {
+                                                    "No optional permissions".to_string()
+                                                } else {
+                                                    format!(
+                                                        "Requests {}",
+                                                        plugin.current.permissions.join(", ")
+                                                    )
+                                                }
                                             ))
                                             .text_sm()
                                             .text_color(cx.theme().muted_foreground),
@@ -432,13 +466,12 @@ impl Render for MarketplaceWindow {
                                 )
                                 .child(
                                     Button::new(format!("install-{}", plugin.id))
-                                        .label(if plugin.current.status == ReleaseStatus::Revoked {
-                                            "Revoked"
-                                        } else {
-                                            "Install"
-                                        })
+                                        .label(action)
                                         .small()
-                                        .disabled(plugin.current.status == ReleaseStatus::Revoked)
+                                        .disabled(
+                                            plugin.current.status == ReleaseStatus::Revoked
+                                                || current,
+                                        )
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.install_official(
                                                 button_plugin.clone(),
@@ -477,9 +510,11 @@ impl Render for MarketplaceWindow {
                 .gap_3()
                 .child(
                     Label::new(format!(
-                        "{} {} · {} bytes · SHA-256 {} · {}",
+                        "{} {} · API {} · {} · {} bytes · SHA-256 {} · {}",
                         inspection.manifest.name,
                         inspection.manifest.version,
+                        inspection.manifest.api_version,
+                        inspection.manifest.license,
                         inspection.bytes,
                         inspection.sha256,
                         release.repository
@@ -545,6 +580,15 @@ impl Render for MarketplaceWindow {
                     }),
             )
     }
+}
+
+fn installed_receipt(id: &str) -> Option<plugin_package::InstallReceipt> {
+    plugin_host::plugins_dir().and_then(|plugins| {
+        let data = plugins.parent()?;
+        plugin_package::read_receipt(&plugin_package::receipts_dir(data), id)
+            .ok()
+            .flatten()
+    })
 }
 
 pub fn open_marketplace_window(direct: bool, cx: &mut gpui::App) {
