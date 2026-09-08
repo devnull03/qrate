@@ -1,209 +1,493 @@
-# Spellcheck upgrades
+# Grouped diagnostics and reusable value clustering
 
 ## Purpose
 
-Reduce spelling false positives in multilingual catalogue data, distinguish capitalization from
-spelling, and help cataloguers reconcile alternate spellings of a person's name.
+This branch will make repeated findings easier to review. It will also move value clustering out
+of the spell checker.
 
-## Current system
+A spelling mistake can occur in 100 cells. The Problems panel now shows 100 independent rows. The
+panel should show one problem group with an occurrence count. The user can expand the group and
+jump to each affected location.
 
-- `SpellCheck` owns one `spellbook::Dictionary` behind an `RwLock`. The dictionary is selected and
-  parsed at startup, and changing it requires a restart.
-- Canadian and American English are embedded. Other Hunspell dictionaries can be downloaded, but
-  only the selected dictionary is loaded.
-- The synchronous `ColumnValidator` API already supplies a whole column and its project settings.
-  It is sufficient for both per-value dictionary selection and column-wide name comparison.
-- Spelling corrections use a dedicated `SpellActions` menu. The newer `FixProviders` registry can
-  offer capitalization and name-variant replacements without putting machine-readable data in a
-  diagnostic message.
-- The Problems panel can already filter independent diagnostic sources. Value variants should be a
-  separate source rather than pretending to be spelling errors.
+Value variants have the same need. A pair such as `Agnès Varda` and `Varda, Agnès` is one review
+question, not one unrelated note per cell.
 
-## Research findings
+This branch will keep the first review UI simple. A separate future task will cover a full cluster
+review workspace with canonical value selection and bulk merge controls.
 
-### Language identification
+## Completed baseline
 
-Three Rust language detectors were considered:
+The branch already contains these spell-check upgrades:
 
-| Option | Result |
-|---|---|
-| `whatlang` | Small (81 KiB crate), offline, 70 languages, and exposes confidence. A probe with catalogue-length values found its built-in `> 0.9` reliability rule too conservative: even clear English, Spanish, and German sentences often returned unreliable, while a French sentence was misidentified. Restricting it to four candidate languages did not make short titles reliable. |
-| `whichlang` | Small and fast, but supports only 16 languages and does not expose an ambiguity result suitable for the conservative rule required here. |
-| `lingua` | Designed for short and mixed-language text and exposes a minimum relative distance. Its high-accuracy data is shipped as one model crate per language; the English model alone is about 2.6 MB compressed. Compiling the full downloadable dictionary catalogue into qrate would add dozens of models, while low-accuracy mode explicitly loses accuracy below 120 characters. |
+- qrate loads all installed dictionaries.
+- Each value selects a dictionary only when the evidence is strong enough.
+- Ambiguous and short unknown values do not default to English.
+- Capitalization uses a separate `capitalization` diagnostic source.
+- Candidate proper names do not become ordinary spelling warnings.
+- The opt-in `value variants` validator finds formatting, token order, diacritic, and close-spelling
+  differences.
+- Existing fixes replace one whole cell through the undoable table edit path.
 
-The recommended detector is therefore the dictionaries qrate already downloads. Score each value
-against the installed base-language dictionaries, select a dictionary only when one score clearly
-wins, and report nothing when the evidence is weak or tied. This keeps language support aligned
-with the actual spell-checking capability and adds no second language catalogue.
+These behaviors stay in place during the diagnostic and crate changes.
 
-Regional variants must be one candidate during identification. In particular, `en` and `en-CA`
-cannot compete as if they were different languages. The configured variant remains the regional
-choice when the detected base language is English.
+## Root cause
 
-The exact threshold must be calibrated against a checked-in fixture, not selected from one example.
-The initial rule to test is:
+The diagnostic model stores one `Diagnostic` for one exact `Location`. This is correct for cell
+markers, navigation, notes, fixes, and source replacement.
 
-1. ignore data-shaped and candidate-name tokens before scoring;
-2. require at least two informative tokens when more than one base language is installed;
-3. require the winning dictionary to accept at least 60% of those tokens; and
-4. require a lead of at least 20 percentage points over the runner-up.
+The display model uses the same shape. `ProblemsPanel` converts each `Diagnostic` directly into one
+visible row. It has no stable key that says several diagnostics describe the same problem.
 
-With only one base language available, retain today's behavior. With several languages installed,
-a short, unknown, or tied value produces no spelling finding. One misspelling inside otherwise clear
-prose can still be found because the surrounding known words identify the dictionary.
+The validator boundary also limits built-in synchronous validators. `ColumnValidator::validate`
+returns `(row, severity, message)`. It can report a cell in the current column, but it cannot report
+a column-wide finding.
 
-### Capitalization
+`Location` itself already supports all required scopes:
 
-`spellbook` already preserves Hunspell case rules. Its checker can also ask whether a lowercase word
-would be valid in title or upper case. Token classification should use that information in this
-order:
+- dataset: no row and no column;
+- column: a column and no row;
+- row: a row and no column;
+- cell: both a row and a column.
 
-1. exact dictionary form: clean;
-2. another canonical case is known: capitalization finding and replacement;
-3. unknown title-cased token or title-cased sequence: candidate proper noun, so suppress it;
-4. otherwise: misspelling.
+The branch does not need another location representation. It needs a clear scope view, a richer
+validator result, and a separate grouped panel projection.
 
-This ordering improves the existing “Ignore names” rule. Today capitalized tokens are discarded
-before the dictionary is consulted, so a known word with the wrong case cannot be distinguished
-from an unknown name. All-uppercase catalogue titles remain valid when Hunspell accepts them.
+## Design rules
 
-### Value variants
+1. Keep each diagnostic attached to its exact location.
+2. Let a producer define group identity. Do not parse a human message.
+3. Group only diagnostics from the same dataset, source, severity, and producer key.
+4. Keep diagnostics without group metadata as independent rows.
+5. Keep group aggregation in the diagnostics crate.
+6. Keep matching algorithms out of the diagnostics crate.
+7. Never treat text similarity as proof of entity identity.
+8. Do not add bulk replacement in the first grouped-panel change.
+9. Preserve source replacement and validator severity overrides.
+10. Preserve one-cell fixes on expanded occurrence rows.
 
-Name reconciliation is record linkage, not spell checking. Published comparisons of name-matching
-methods favor token-aware comparisons and Jaro-Winkler-style similarity over raw whole-string
-Levenshtein distance. The requested edit-distance behavior can remain explainable with a smaller
-rule set:
+## Proposed diagnostic contracts
 
-- normalize punctuation and whitespace, apply Unicode NFKC and full case folding, and preserve the
-  displayed value;
-- recognize comma order and compare both direct and family-name-first token orders;
-- treat equal token multisets in a different order as a strong candidate;
-- for spelling variants, require equal token counts, at least one stable exact token, and a bounded
-  normalized Damerau-Levenshtein distance on the remaining aligned token;
-- use accent-insensitive text only to generate candidates, never to silently declare two names
-  equal; and
-- compare distinct values, then attach findings back to every affected row.
+### Location scope
 
-This deliberately does not attempt transliteration, nickname inference, or identity resolution.
-“Bill” and “William” need authority data, not a string-distance threshold.
+Add a derived scope method instead of replacing `Location`:
 
-Variant review should be off by default and enabled per column. The generic rules apply to names,
-organizations, places, subjects, collection titles, and controlled labels without claiming that
-similar text identifies the same entity. Person names additionally benefit from order-aware
-comparison. Places and subjects should prefer their configured authority validator when one is
-available. This is an additive `ColumnSettings` preference, not a replacement profile format. Each
-finding names both displayed forms and the reason they are close. Its fixes offer the other current
-displayed form for that one cell; accepting one uses the existing undoable whole-cell edit path.
-There is no automatic canonical choice and no bulk rewrite.
+```rust
+pub enum Scope<'a> {
+    Dataset,
+    Column(&'a str),
+    Row(usize),
+    Cell { row: usize, column: &'a str },
+}
 
-## Implementation plan
+impl Location {
+    pub fn scope(&self) -> Scope<'_>;
+}
+```
 
-### 1. Establish behavior with fixtures
+This method gives the panel one exhaustive scope match. It does not migrate stored notes or change
+the existing table lookup keys.
 
-- Add a compact multilingual fixture covering long prose, short titles, one-word values, shared
-  words, mixed-language rows, same-cell ambiguity, and a typo surrounded by identifiable prose.
-- Add name pairs and non-pairs covering comma order, token reversal, diacritics, apostrophes,
-  hyphens, initials, unrelated common names, and repeated identical values.
-- Tune the language and edit-distance thresholds against the fixture. Record every threshold beside
-  the rule and test its boundary.
+Add constructors for new call sites:
 
-### 2. Load a dictionary set
+```rust
+Location::dataset(dataset)
+Location::column(dataset, column)
+Location::row(dataset, row, row_id)
+Location::cell(dataset, row, row_id, column)
+```
 
-- Replace the single dictionary field with a map keyed by catalogue code.
-- Load the configured regional dictionary plus every complete downloaded dictionary off the UI
-  thread. Group codes by base language for detection and keep the configured regional variant as
-  the tie-breaker within a group.
-- Replay the custom word list into every loaded dictionary.
-- Keep incomplete or unreadable downloads out of the candidate set. Never fall back to English
-  after another language was confidently identified but its dictionary cannot be loaded.
-- Update settings text to explain that downloaded languages participate automatically. Keep
-  download/remove behavior and the configured regional preference.
+Existing struct literals can migrate when their files change. This branch does not need a
+repository-wide mechanical rewrite.
 
-### 3. Separate detection from word classification
+### Diagnostic group
 
-- Introduce pure functions for tokenization, per-value language scoring, and token classification.
-- Use Unicode-aware boundaries and accept straight and curly apostrophes plus name hyphens.
-- Return an explicit outcome such as `Selected`, `Ambiguous`, or `InsufficientEvidence`; do not
-  encode “unknown” as the default language.
-- Share the selected dictionary and classification path between validation and the right-click
-  suggestion menu so they cannot disagree about which words are misspelled.
+Add optional producer metadata to `Diagnostic`:
 
-### 4. Publish spelling and capitalization separately
+```rust
+pub struct DiagnosticGroup {
+    pub key: SharedString,
+    pub summary: SharedString,
+}
 
-- Keep spelling at `Warning`.
-- Publish capitalization as a quieter `Note` under a distinct `capitalization` source, with wording
-  such as `capitalization: “alice” is known as “Alice”`.
-- Register capitalization replacements through `FixProviders`.
-- Preserve “Add to dictionary” only for actual misspellings.
-- Revisit the “Ignore names” switch after the classifier lands. Prefer removing the switch if the
-  ordered classifier fully subsumes it; do not retain two controls for the same rule.
+pub struct Diagnostic {
+    pub location: Location,
+    pub severity: Severity,
+    pub source: Source,
+    pub message: SharedString,
+    pub group: Option<DiagnosticGroup>,
+    pub filed: Option<Filed>,
+}
+```
 
-### 5. Add opt-in value-variant review
+`key` is machine-readable and stable within one source. `summary` is the text for the collapsed
+group row.
 
-- Add a backward-compatible, default-off `variant_review` field to `ColumnSettings`, the Columns
-  settings picker, and the `column_config.csv` import/export contract.
-- Implement a separate `value variants` validator and a small shared candidate store used by its fix
-  provider.
-- Compare unique normalized values within enabled columns. Start with blocked comparisons by token
-  count and stable token; benchmark a 2,000-row worst-case fixture before deciding whether this must
-  move to a background validator.
-- Emit `Note` findings only above the calibrated threshold. Include the reason: reordered tokens,
-  punctuation/diacritic variation, or one close token.
-- Offer each observed displayed form as an individual whole-cell fix. Revalidation clears resolved
-  findings; undo restores both the value and finding.
+Examples:
 
-### 6. Integrate and document
+| Source | Group key | Summary |
+|---|---|---|
+| `spell` | `en:recieve` | `“recieve” is misspelled` |
+| `capitalization` | `alice→Alice` | `Use “Alice” instead of “alice”` |
+| `value variants` | normalized unordered pair | `“Agnès Varda” and “Varda, Agnès” may be variants` |
 
-- Update Spelling and Columns settings descriptions, `docs/diagnostics.md`, and the sample column
-  configuration.
-- Rebase the Problems panel portion on `gpui-kit-migration` if it lands first. The current overlap is
-  confined to `crates/diagnostics/src/panel.rs`.
-- Run focused unit tests first, then `cargo test --workspace`, `cargo clippy --workspace
-  --all-targets -- -D warnings -A dead_code`, and `cargo fmt --all --check`.
-- Manually verify dictionary download/removal, startup loading, ambiguous short values, both
-  right-click surfaces, undo, and restart persistence.
+The panel groups by `(dataset, source, severity, group.key)`. This prevents an override from hiding
+the severity of some occurrences inside a different tab.
 
-## Diagnostic contract
+Authored notes remain ungrouped. Existing validators remain ungrouped until they supply a group.
 
-| Source | Default severity | Example | Automatic change |
-|---|---|---|---|
-| `spell` | Warning | `misspelled: recieve` | Never |
-| `capitalization` | Note | `capitalization: “alice” is known as “Alice”` | Never |
-| `value variants` | Note | `“Varda, Agnès” may be a reordered form of “Agnès Varda”` | Never |
+### Validator finding
 
-Severity overrides continue to use the existing per-source column setting.
+Replace the tuple return value with a named type:
 
-## Scope
+```rust
+pub struct ColumnFinding {
+    pub row: Option<usize>,
+    pub severity: Severity,
+    pub message: SharedString,
+    pub group: Option<DiagnosticGroup>,
+}
+```
 
-1. Select applicable dictionaries per cell or value using language identification with a documented
-   confidence threshold.
-2. Treat low-confidence and ambiguous language values conservatively instead of flagging them as
-   spelling errors.
-3. Publish known-word case mismatches as a separate capitalization warning.
-4. Suppress title-cased candidate proper nouns from ordinary spelling findings.
-5. Identify likely person-name variants with normalized, order-aware token comparison and edit
-   distance.
-6. Offer an opt-in review flow in which the cataloguer chooses the displayed canonical form.
+`row: Some(row)` reports a cell. `row: None` reports the current column.
+
+The named type makes later fields possible without another tuple migration. It also makes the scope
+of each result visible at its construction site.
+
+The plugin script contract does not change in this branch. `plugin-host` will translate its current
+row findings into ungrouped `ColumnFinding` values.
+
+Row-wide and dataset-wide producers continue to publish addressed `Diagnostic` values. A
+column-wise validator must not claim a row-wide result because it only owns one column snapshot.
+
+## Grouped panel projection
+
+Keep `Diagnostics::items` as the source of truth. Build a derived panel model during
+`ProblemsPanel::refresh`.
+
+```rust
+enum ProblemEntry {
+    Group {
+        id: ProblemGroupId,
+        severity: Severity,
+        summary: SharedString,
+        source: SharedString,
+        occurrences: Vec<Occurrence>,
+    },
+    Occurrence(Occurrence),
+}
+```
+
+The implementation can use a flat visible list after it applies expansion state. This keeps
+`uniform_list` and its fixed row height.
+
+### Collapsed group row
+
+A collapsed row will show:
+
+- the severity icon;
+- the group summary;
+- the source;
+- an `N occurrences` badge;
+- an expand control.
+
+Clicking the expand control will show the occurrence rows. The group row will not choose an
+arbitrary location or apply a fix.
+
+### Occurrence row
+
+An occurrence row will keep the current behavior:
+
+- show `Row N · Column`, row, column, or dataset scope;
+- jump to the location on click;
+- offer the current one-cell spelling and fix menus;
+- read the current cell text when the menu opens.
+
+Column, row, and dataset occurrences have no cell text. Their context menus will omit cell fixes.
+
+### Counts and filters
+
+Severity tabs will keep occurrence totals. A tab that says `Warnings (100)` will still mean 100
+affected locations.
+
+The visible list will show fewer top-level rows after grouping. Each group badge will state its own
+occurrence count.
+
+Source filtering will run before grouping. Severity filtering will also run before grouping. The
+same filtered diagnostics will therefore determine both the tab count and the displayed groups.
+
+### Expansion state
+
+Store expanded `ProblemGroupId` values in `ProblemsPanel`. Clear keys that no longer exist after a
+diagnostic refresh.
+
+Derive the ID from dataset, source, severity, and producer group key. Do not use the visible summary
+or an item index.
+
+## Reusable clustering crate
+
+Create `crates/clustering`.
+
+The crate will own:
+
+- Unicode token normalization;
+- strict, sorted, and diacritic-insensitive keys;
+- candidate blocking;
+- normalized Damerau-Levenshtein comparison;
+- value frequencies and source rows;
+- pair evidence and stable pair keys;
+- the `value variants` validator;
+- its one-cell fix provider.
+
+The crate will depend on:
+
+- `caseless`;
+- `unicode-normalization`;
+- `strsim`;
+- `diagnostics`;
+- `settings`;
+- `gpui` for validator registration state and fix lookup.
+
+The core matching module must stay free of GPUI types. The validator adapter can convert core
+results into `SharedString`, diagnostics, and fixes.
+
+Move these dependencies out of `spellcheck`:
+
+- `caseless`;
+- `unicode-normalization`;
+- `strsim`.
+
+After the move, `spellcheck` will own dictionaries, language selection, spelling, capitalization,
+and custom words. It will not own general value comparison.
+
+The app will register `clustering::ValueVariants` independently from the spell checker. The source
+name remains `value variants` so existing severity settings continue to work.
+
+## Value-variant grouping
+
+The first grouped implementation will review candidate pairs. It will not build transitive entity
+clusters.
+
+For each accepted pair, the clustering crate will return:
+
+- both displayed values;
+- the rows for each value;
+- each value count;
+- the matching reason;
+- a stable unordered pair key.
+
+All diagnostics for that pair will use the same `DiagnosticGroup`. The collapsed summary will show
+both values and the reason.
+
+This avoids unsafe single-link chaining. If A matches B and B matches C, qrate will not assume that
+A matches C.
+
+The future cluster-review workspace can use the same core results. It can add canonical selection,
+member selection, row previews, and one-step bulk edits.
+
+## Files and crates affected
+
+### `crates/diagnostics`
+
+- Add `DiagnosticGroup`, `ColumnFinding`, and the derived `Scope`.
+- Update `address` and `ColumnValidator`.
+- Add a pure panel projection that groups filtered diagnostics.
+- Add expansion state and grouped rows to `ProblemsPanel`.
+- Keep `Diagnostics::set`, `Diagnostics::at`, and the row index atomic.
+- Test grouping, counts, filters, scopes, expansion, navigation, and fixes.
+
+### `crates/spellcheck`
+
+- Return `ColumnFinding` from spelling and capitalization validators.
+- Add stable group keys for repeated spelling and capitalization findings.
+- Remove value-variant code and general comparison dependencies.
+- Keep dictionary behavior unchanged.
+
+### `crates/clustering`
+
+- Receive the current value-variant implementation and tests.
+- Separate the pure matcher from the diagnostic adapter.
+- Return pair evidence, frequencies, rows, and stable pair keys.
+- Publish grouped value-variant findings.
+
+### `crates/checks`
+
+- Return `ColumnFinding` from date checks.
+- Convert authority results to the named type.
+- Leave findings ungrouped unless the rule has a clear stable subject.
+
+### `crates/plugin-host`
+
+- Adapt plugin validator output to `ColumnFinding`.
+- Keep the public Luau result format unchanged.
+- Leave plugin findings ungrouped in this phase.
+
+### `crates/app`
+
+- Register the value-variant validator and fixes from `clustering`.
+- Remove the spell-check ownership link.
+
+### Workspace and documentation
+
+- Add `crates/clustering` to the workspace.
+- Update `Cargo.lock`.
+- Update `CLAUDE.md` crate map.
+- Update `docs/diagnostics.md`.
+- Add OpenRefine credit to the diagnostic documentation.
+
+### Not affected in the first phase
+
+- `table` already supplies one-cell fix hooks and exact location navigation.
+- `workspace` already hosts `ProblemsPanel`.
+- `settings` already stores the opt-in value-variant setting.
+- `plugin-api` does not expose grouped diagnostic metadata yet.
+
+## Implementation sequence
+
+### 1. Pin current behavior
+
+- Add tests for 100 identical spelling findings.
+- Add tests for a value-variant pair that occurs in many rows.
+- Add tests for dataset, column, row, and cell labels.
+- Confirm that fixes query the current cell value.
+
+### 2. Add the diagnostic contracts
+
+- Add `DiagnosticGroup`.
+- Add `ColumnFinding`.
+- Add `Location::scope` and constructors.
+- Update built-in validator implementations.
+- Keep plugin output compatible through its adapter.
+- Confirm that source replacement still clears stale findings.
+
+### 3. Add the pure group projection
+
+- Group only diagnostics with explicit metadata.
+- Keep ungrouped diagnostics independent.
+- Calculate occurrence totals and top-level group totals.
+- Filter before grouping.
+- Sort groups by severity, summary, and stable key.
+- Sort occurrences by table location.
+- Test mixed scopes and mixed severity overrides.
+
+### 4. Render grouped diagnostics
+
+- Render collapsed groups with occurrence badges.
+- Expand groups inline.
+- Keep the list virtualized.
+- Keep navigation and context menus on occurrence rows.
+- Add keyboard and accessibility labels to expansion controls.
+- Remove stale expansion keys after revalidation.
+
+### 5. Teach spelling to group
+
+- Group repeated misspellings by language and normalized token.
+- Group capitalization findings by observed and canonical forms.
+- Keep different replacement targets in different groups.
+- Confirm that 100 repeated mistakes produce one collapsed row and 100 occurrences.
+
+### 6. Extract value clustering
+
+- Create the `clustering` crate.
+- Move the matcher without changing thresholds.
+- Split pure matching from the GPUI adapter.
+- Publish one group for each accepted value pair.
+- Keep fixes cell-specific.
+- Run the existing 2,000-value blocking test in the new crate.
+
+### 7. Document and validate
+
+- Document all four diagnostic scopes.
+- Document group identity and count semantics.
+- Credit OpenRefine as a design influence.
+- Run focused tests after each crate change.
+- Run `./scripts/ci.sh` before the branch is ready for review.
+- Test expansion, filtering, navigation, fixes, undo, and revalidation in the app.
+
+## OpenRefine credit and license boundary
+
+OpenRefine influenced the proposed review flow and the strict-to-broad clustering order:
+
+- OpenRefine, “Cluster and edit”:
+  <https://openrefine.org/docs/manual/cellediting#cluster-and-edit>
+- OpenRefine, “Clustering Methods In-depth”:
+  <https://openrefine.org/docs/technical-reference/clustering-in-depth>
+- OpenRefine source:
+  <https://github.com/OpenRefine/OpenRefine>
+
+OpenRefine documentation uses CC BY 4.0. OpenRefine source code uses the BSD 3-Clause license.
+
+This branch will independently implement the algorithms from their published descriptions and
+standard algorithm references. It will not copy OpenRefine source code, UI assets, or documentation
+text.
+
+Add this acknowledgment to `docs/diagnostics.md`:
+
+> qrate's value-clustering workflow is inspired by OpenRefine's Cluster and edit feature. qrate
+> uses an independent implementation designed for its diagnostics and cataloging workflow.
+
+Link both feature names to the OpenRefine documentation. Do not imply that OpenRefine endorses
+qrate.
+
+An acknowledgment is sufficient for design influence and independently implemented standard
+algorithms. Do not add OpenRefine to `NOTICES` unless qrate copies or adapts its copyrighted source
+or distributes its material.
+
+If later work copies or adapts OpenRefine code:
+
+1. Record the exact upstream file and commit.
+2. Keep the upstream copyright notice.
+3. Add the BSD 3-Clause license text to `NOTICES`.
+4. Mark the adapted qrate file.
+5. Keep documentation excerpts under CC BY 4.0 with title, author, source, license, and change notes.
+
+## Future issue: cluster review workspace
+
+Track the full workspace in [GitHub issue #125](https://github.com/devnull03/qrate/issues/125).
+
+Track this outside the current implementation:
+
+- a dedicated cluster review workspace;
+- value frequencies and affected-row counts;
+- canonical value selection;
+- a custom canonical value;
+- member inclusion and exclusion;
+- sample row and thumbnail context;
+- match evidence and strategy controls;
+- skip and reject judgments;
+- persistent decisions;
+- one-step bulk replacement;
+- re-cluster after an accepted change;
+- value-frequency facets;
+- authority reconciliation candidates;
+- mapping export and reuse.
+
+This issue should cite OpenRefine as a design influence. It should state that qrate will use an
+independent implementation.
 
 ## Non-goals
 
-- Automatically changing names or silently merging records.
-- Treating capitalization warnings as misspellings.
-- Replacing project column descriptions/configuration with a new profile format.
-
-## Dependencies and merge notes
-
-Dictionary and normalization logic can proceed independently. The diagnostic review UI will touch
-the Problems panel and must be rebased on `gpui-kit-migration` before merge if that migration lands
-first.
+- Do not build the full cluster-review workspace on this branch.
+- Do not add phonetic, n-gram, PPM, or authority clustering on this branch.
+- Do not merge similar values automatically.
+- Do not group diagnostics by message text.
+- Do not replace atomic diagnostics with aggregate records.
+- Do not change stored note schema.
+- Do not change the plugin API.
+- Do not add group-wide fixes yet.
 
 ## Definition of done
 
-- Tests cover mixed-language text, ambiguous language, title-cased proper nouns, and case-only
-  mistakes.
-- Name suggestions are explainable, opt-in, and never apply without the user's choice.
-- Findings have distinct wording and severity for spelling, capitalization, and name variants.
-- An installed language that cannot be selected confidently causes no finding rather than an
-  English false positive.
-- Validation and correction menus classify the same token with the same dictionary.
-- A 2,000-row name column stays within the validation latency budget established by the benchmark.
+- Repeated equivalent findings appear as one collapsed group.
+- Each group shows its occurrence count.
+- A user can expand a group and jump to every exact location.
+- Existing one-cell fixes work from expanded occurrences.
+- Dataset, column, row, and cell scopes have clear labels.
+- Source and severity filters produce correct groups and counts.
+- Spelling and capitalization emit stable group metadata.
+- Value clustering lives outside `spellcheck`.
+- Value-variant pairs emit stable group metadata.
+- Similarity never causes an automatic data change.
+- Existing spell-check and value-variant behavior stays intact.
+- Tests cover grouping, scopes, filters, fixes, revalidation, and comparison bounds.
+- The documentation credits OpenRefine without claiming affiliation.
+- The full workspace test and CI script pass.
