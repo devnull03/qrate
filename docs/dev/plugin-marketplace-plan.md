@@ -422,7 +422,7 @@ The site can show this information in an error page. qrate does not trust `statu
 The repository policy must define:
 
 - minimum source and release requirements;
-- allowed licenses and required license files;
+- a required package-root license file and the accepted SPDX identifiers;
 - stable publisher and distribution identity rules;
 - review rules for new plugins and new versions;
 - permission-change review;
@@ -432,6 +432,12 @@ The repository policy must define:
 
 Do not accept a listing through an issue alone. The issue form helps an author prepare a pull
 request. The pull request remains the reviewed change that publication consumes.
+
+Follow Zed's extension-registry model for licenses. A plugin author keeps their copyright and
+chooses an accepted license. V1 accepts Apache-2.0, BSD-2-Clause, BSD-3-Clause, CC-BY-4.0,
+GPL-3.0-only, GPL-3.0-or-later, LGPL-3.0-only, LGPL-3.0-or-later, MIT, Unlicense, and Zlib. Registry
+CI rejects packages with no root license file, an identifier outside this list, or a mismatch
+between the package manifest and license text. The template example uses MIT.
 
 ### `qrate-plugin-template`: author contract and release tooling
 
