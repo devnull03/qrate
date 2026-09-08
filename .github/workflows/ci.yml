@@ -103,6 +103,12 @@ jobs:
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+        with:
+          # PR caches are scoped to that PR's synthetic merge ref, so another PR cannot restore
+          # them. Restore the dependency cache warmed on main and do not spend the repository's
+          # cache quota saving one-off copies. See warm-ci-cache.yml.
+          shared-key: ci
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       # Without PDFium the preview crate's PDF tests assert a clean *decline* rather than a real
       # render — they pass either way, so a build that silently broke rendering would stay green.
