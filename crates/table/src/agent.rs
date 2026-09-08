@@ -834,6 +834,7 @@ fn stage_findings(
             },
             source: Source::Validator(AGENT_SOURCE.into()),
             message: finding.message.into(),
+            group: None,
             // A computed finding carries no filing stamp — it is recomputed, not observed once.
             filed: None,
         });

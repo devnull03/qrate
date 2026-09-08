@@ -8,8 +8,6 @@
 //! is the only difference between one language and the next — no code knows what English is.
 
 pub mod catalogue;
-mod variants;
-pub use variants::{VALUE_VARIANTS_NAME, ValueVariants, variant_fixes};
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -512,7 +510,7 @@ impl SpellCheck {
         column: &ColumnInfo,
         values: &[SharedString],
         kind: FindingKind,
-    ) -> Vec<(usize, Severity, SharedString)> {
+    ) -> Vec<diagnostics::ColumnFinding> {
         if !column.settings.spellcheck || !ColumnType::from_declared(column.data_type).is_prose() {
             return Vec::new();
         }
@@ -522,34 +520,41 @@ impl SpellCheck {
         values
             .iter()
             .enumerate()
-            .filter_map(|(row, value)| {
-                let loaded = dictionaries.for_text(value)?;
-                let mut found: Vec<String> = Vec::new();
+            .flat_map(|(row, value)| {
+                let mut found = Vec::new();
+                let Some(loaded) = dictionaries.for_text(value) else {
+                    return found;
+                };
+                let mut seen = std::collections::BTreeSet::new();
                 for word in words(value, false) {
+                    if !seen.insert(word) {
+                        continue;
+                    }
                     let outcome = classify_word(&loaded.dictionary, word, self.ignore_capitalized);
-                    let item = match (kind, outcome) {
-                        (FindingKind::Spelling, WordOutcome::Misspelled) => word.to_string(),
-                        (FindingKind::Capitalization, WordOutcome::Capitalization(canonical)) => {
-                            format!("“{word}” should be “{canonical}”")
-                        }
+                    let (severity, message, target) = match (kind, outcome) {
+                        (FindingKind::Spelling, WordOutcome::Misspelled) => (
+                            Severity::Warning,
+                            format!("misspelled: {word}"),
+                            String::new(),
+                        ),
+                        (FindingKind::Capitalization, WordOutcome::Capitalization(canonical)) => (
+                            Severity::Note,
+                            format!("capitalization: “{word}” should be “{canonical}”"),
+                            canonical,
+                        ),
                         _ => continue,
                     };
-                    if !found.contains(&item) {
-                        found.push(item);
-                    }
+                    found.push(diagnostics::ColumnFinding {
+                        row: Some(row),
+                        severity,
+                        group: Some(diagnostics::DiagnosticGroup {
+                            key: format!("{:?}", (&loaded.code, word, target)).into(),
+                            summary: message.clone().into(),
+                        }),
+                        message: message.into(),
+                    });
                 }
-                (!found.is_empty()).then(|| match kind {
-                    FindingKind::Spelling => (
-                        row,
-                        Severity::Warning,
-                        format!("misspelled: {}", found.join(", ")).into(),
-                    ),
-                    FindingKind::Capitalization => (
-                        row,
-                        Severity::Note,
-                        format!("capitalization: {}", found.join(", ")).into(),
-                    ),
-                })
+                found
             })
             .collect()
     }
@@ -564,7 +569,7 @@ impl ColumnValidator for SpellCheck {
         &self,
         column: &ColumnInfo,
         values: &[SharedString],
-    ) -> Vec<(usize, Severity, SharedString)> {
+    ) -> Vec<diagnostics::ColumnFinding> {
         self.findings(column, values, FindingKind::Spelling)
     }
 }
@@ -580,7 +585,7 @@ impl ColumnValidator for CapitalizationCheck {
         &self,
         column: &ColumnInfo,
         values: &[SharedString],
-    ) -> Vec<(usize, Severity, SharedString)> {
+    ) -> Vec<diagnostics::ColumnFinding> {
         self.0.findings(column, values, FindingKind::Capitalization)
     }
 }
@@ -621,7 +626,7 @@ mod tests {
         data_type: &str,
         settings: &ColumnSettings,
         values: &[&str],
-    ) -> Vec<(usize, Severity, SharedString)> {
+    ) -> Vec<diagnostics::ColumnFinding> {
         let values: Vec<SharedString> = values.iter().map(|v| SharedString::from(*v)).collect();
         spell.validate(
             &ColumnInfo {
@@ -651,9 +656,9 @@ mod tests {
             &["I did receive the reel", "I did recieve the reel"],
         );
         assert_eq!(found.len(), 1, "only the misspelled row is reported");
-        assert_eq!(found[0].0, 1);
-        assert_eq!(found[0].1, Severity::Warning);
-        assert_eq!(found[0].2, "misspelled: recieve");
+        assert_eq!(found[0].row, Some(1));
+        assert_eq!(found[0].severity, Severity::Warning);
+        assert_eq!(found[0].message, "misspelled: recieve");
     }
 
     #[test]
@@ -670,8 +675,11 @@ mod tests {
             &["alice visited Canada".into()],
         );
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].1, Severity::Note);
-        assert_eq!(found[0].2, "capitalization: “alice” should be “Alice”");
+        assert_eq!(found[0].severity, Severity::Note);
+        assert_eq!(
+            found[0].message,
+            "capitalization: “alice” should be “Alice”"
+        );
     }
 
     #[test]
@@ -795,7 +803,7 @@ mod tests {
         let defaults = ColumnSettings::default();
         let cell = ["shot on betacam"];
         assert_eq!(
-            findings(&spell, "", &defaults, &cell)[0].2,
+            findings(&spell, "", &defaults, &cell)[0].message,
             "misspelled: betacam"
         );
         let mut dictionaries = spell.dictionaries.write().expect("uncontended");
@@ -818,13 +826,13 @@ mod tests {
         // Varda and Anansi are absent from SCOWL, so both flag with the rule off.
         assert_eq!(
             findings(&dictionary(), "", &defaults, &["Agnès Varda"]).len(),
-            1
+            2
         );
         assert!(findings(&names, "", &defaults, &["Agnès Varda"]).is_empty());
         assert!(findings(&names, "", &defaults, &["Anansi the Spider"]).is_empty());
         // A lowercase typo still gets caught, which is the whole point of scoping it to capitals.
         assert_eq!(
-            findings(&names, "", &defaults, &["Varda recieved it"])[0].2,
+            findings(&names, "", &defaults, &["Varda recieved it"])[0].message,
             "misspelled: recieved"
         );
         assert!(checkable("recieve", true));
@@ -840,6 +848,34 @@ mod tests {
             &ColumnSettings::default(),
             &["teh recieve teh reel"],
         );
-        assert_eq!(found[0].2, "misspelled: teh, recieve");
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].message, "misspelled: teh");
+        assert_eq!(found[1].message, "misspelled: recieve");
+    }
+
+    #[test]
+    fn repeated_words_share_groups_but_not_locations() {
+        let found = findings(
+            &dictionary(),
+            "",
+            &ColumnSettings::default(),
+            &["recieve recieve", "recieve"],
+        );
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].group, found[1].group);
+        assert_eq!(found[0].row, Some(0));
+        assert_eq!(found[1].row, Some(1));
+    }
+
+    #[test]
+    fn a_hundred_cells_emit_one_word_group() {
+        let found = findings(
+            &dictionary(),
+            "",
+            &ColumnSettings::default(),
+            &["recieve"; 100],
+        );
+        assert_eq!(found.len(), 100);
+        assert!(found.iter().all(|finding| finding.group == found[0].group));
     }
 }

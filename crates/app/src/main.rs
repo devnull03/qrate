@@ -362,11 +362,11 @@ fn register_spell_checker(cx: &mut gpui::App) {
 }
 
 fn register_variant_checker(cx: &mut gpui::App) {
-    let variants = spellcheck::ValueVariants::default();
+    let variants = clustering::ValueVariants::default();
     diagnostics::Validators::register(Box::new(variants.clone()), cx);
     diagnostics::FixProviders::register(
-        spellcheck::VALUE_VARIANTS_NAME,
-        spellcheck::variant_fixes,
+        clustering::VALUE_VARIANTS_NAME,
+        clustering::variant_fixes,
         cx,
     );
     cx.set_global(variants);

@@ -5,6 +5,7 @@ members = [
   "crates/app",
   "crates/ai",
   "crates/checks",
+  "crates/clustering",
   "crates/data-exchange",
   "crates/diagnostics",
   "crates/plugin-api",

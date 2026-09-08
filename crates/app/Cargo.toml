@@ -41,6 +41,7 @@ preview = { path = "../preview" }
 settings = { path = "../settings" }
 # The dictionary is half a megabyte, so only the composition root links it — see `crates/spellcheck`.
 spellcheck = { path = "../spellcheck" }
+clustering = { path = "../clustering" }
 table = { path = "../table" }
 updater = { path = "../updater", features = ["client"] }
 plugin-api = { path = "../plugin-api" }

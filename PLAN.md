@@ -1,5 +1,33 @@
 # Grouped diagnostics and reusable value clustering
 
+## Implementation status
+
+The seven implementation phases are complete. The full cluster-review workspace remains future work in issue #125.
+
+- The Problems panel groups explicit producer metadata and retains atomic diagnostics.
+- Expansion supports mouse and keyboard input. Occurrence rows retain exact-location navigation.
+- Column validators use `ColumnFinding`. Notes, plugin scripts, and bridge protocol 2 keep their existing storage and wire formats.
+- Spelling emits one finding per distinct observed word per cell, rather than one combined sentence per cell.
+- The new `clustering` crate separates pure matching from diagnostics and fixes.
+- Value-variant fixes verify the expected cell text. Each validation run clears the previous candidate snapshot.
+- Documentation describes scopes, counts, grouping keys, and OpenRefine credit.
+
+Implementation details that refine the original proposal:
+
+- Tab counts mean diagnostic occurrences, not unique affected locations. One cell can contain two words or participate in two pairs.
+- Spelling keys retain the observed token and dictionary code. This avoids combining distinct displayed spellings or correction targets.
+- Pair keys retain both exact displayed forms and the column. Normalization generates evidence, not displayed-value identity.
+- A `begin_run` validator hook clears candidate state for deleted columns and changed projects.
+- The table crate needs adapter and diagnostic-literal updates. Its production edit, navigation, and undo paths do not change.
+
+Validation covers pure grouping, 100 repeated spelling findings, all scopes, source and severity filters,
+expansion persistence, mouse navigation, keyboard expansion, stale fixes, Unicode matching, pair independence,
+the 2,000-value comparison bound, and a real table fix followed by undo and revalidation.
+UI checks use GPUI test windows, not an interactive review of a user's project.
+
+Final local gate: `scripts/ci.sh` passed on Windows. Formatting and workspace Clippy passed.
+The workspace suite passed 375 tests, with 10 existing network or external-plugin tests ignored.
+
 ## Purpose
 
 This branch will make repeated findings easier to review. It will also move value clustering out
@@ -206,14 +234,14 @@ Column, row, and dataset occurrences have no cell text. Their context menus will
 
 ### Counts and filters
 
-Severity tabs will keep occurrence totals. A tab that says `Warnings (100)` will still mean 100
-affected locations.
+Severity tabs keep diagnostic occurrence totals. `Warnings (100)` means 100 warning findings,
+which can include more than one distinct problem at the same location.
 
 The visible list will show fewer top-level rows after grouping. Each group badge will state its own
 occurrence count.
 
-Source filtering will run before grouping. Severity filtering will also run before grouping. The
-same filtered diagnostics will therefore determine both the tab count and the displayed groups.
+Source filtering runs before tab counts and grouping. Severity filtering runs before grouping.
+Each severity tab keeps its own total regardless of the active tab.
 
 ### Expansion state
 
@@ -334,9 +362,9 @@ member selection, row previews, and one-step bulk edits.
 - Update `docs/diagnostics.md`.
 - Add OpenRefine credit to the diagnostic documentation.
 
-### Not affected in the first phase
+### Existing integration points
 
-- `table` already supplies one-cell fix hooks and exact location navigation.
+- `table` supplies one-cell fix hooks and exact location navigation. Its adapters need the new diagnostic types.
 - `workspace` already hosts `ProblemsPanel`.
 - `settings` already stores the opt-in value-variant setting.
 - `plugin-api` does not expose grouped diagnostic metadata yet.
@@ -428,9 +456,8 @@ Add this acknowledgment to `docs/diagnostics.md`:
 Link both feature names to the OpenRefine documentation. Do not imply that OpenRefine endorses
 qrate.
 
-An acknowledgment is sufficient for design influence and independently implemented standard
-algorithms. Do not add OpenRefine to `NOTICES` unless qrate copies or adapts its copyrighted source
-or distributes its material.
+This change credits design influence and uses an independent implementation. It does not distribute OpenRefine material.
+If future work copies or adapts upstream material, review its actual license and add the required notices.
 
 If later work copies or adapts OpenRefine code:
 

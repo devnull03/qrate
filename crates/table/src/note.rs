@@ -789,6 +789,7 @@ mod tests {
                 severity: Severity::Note,
                 source: Source::Note,
                 message: "look at this".into(),
+                group: None,
                 filed: None,
             };
             // A cell note, a whole-row note, and a whole-column note — one per marker site.
@@ -813,6 +814,7 @@ mod tests {
                     severity: Severity::Error,
                     source: v.clone(),
                     message: "bad".into(),
+                    group: None,
                     filed: None,
                 }],
                 cx,

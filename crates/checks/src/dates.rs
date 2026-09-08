@@ -63,7 +63,7 @@ impl ColumnValidator for DateCheck {
         &self,
         column: &ColumnInfo,
         values: &[SharedString],
-    ) -> Vec<(usize, Severity, SharedString)> {
+    ) -> Vec<diagnostics::ColumnFinding> {
         if ColumnType::from_declared(column.data_type) != ColumnType::Date {
             return Vec::new();
         }
@@ -78,6 +78,7 @@ impl ColumnValidator for DateCheck {
                     Severity::Error,
                     format!("“{}” is not an EDTF date", value.trim()).into(),
                 )
+                    .into()
             })
             .collect()
     }

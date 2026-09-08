@@ -260,6 +260,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "checks",
+ "clustering",
  "data-exchange",
  "diagnostics",
  "dirs 6.0.0",
@@ -1108,6 +1109,18 @@ dependencies = [
  "glob",
  "libc",
  "libloading",
+]
+
+[[package]]
+name = "clustering"
+version = "0.4.0-beta.2"
+dependencies = [
+ "caseless",
+ "diagnostics",
+ "gpui-pre",
+ "settings",
+ "strsim",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -7476,15 +7489,12 @@ dependencies = [
 name = "spellcheck"
 version = "0.4.0-beta.2"
 dependencies = [
- "caseless",
  "diagnostics",
  "gpui-pre",
  "log",
  "reqwest",
  "settings",
  "spellbook",
- "strsim",
- "unicode-normalization",
 ]
 
 [[package]]
@@ -8006,6 +8016,7 @@ version = "0.4.0-beta.2"
 dependencies = [
  "ai",
  "base64",
+ "clustering",
  "diagnostics",
  "gpui-component",
  "gpui-pre",

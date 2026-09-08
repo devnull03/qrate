@@ -77,8 +77,9 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | `project-wizard` | new/open project flow, recent projects, the launcher |
 | `data-exchange` | import/export — CSV/JSON-LD/CSL-JSON/ZIP, Google Sheets, preview |
 | `diagnostics` | the validator, spelling checks, fixes, and the problems panel |
-| `checks` | validation primitives (date parsing, authority files). Only `app` depends on it — it reaches `diagnostics` at runtime by registering into the validator registry, not through a `path` dependency |
+| `checks` | date and authority validators, registered by `app` through the `diagnostics` crate |
 | `spellcheck` | dictionary catalogue behind `diagnostics::spelling` |
+| `clustering` | pure value-pair matching, value-variant diagnostics, and cell fixes |
 | `plugin-host` | the Luau runtime that loads and runs plugins |
 | `plugin-api` | the types a plugin sees — see the three-repo rule below |
 | `preview` | turns a linked file into pixels — the format ladder and the thumbnail cache. Native decoders (PDF, video, RAW) belong here so they never reach `table` |

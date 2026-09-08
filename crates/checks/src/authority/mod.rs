@@ -325,7 +325,11 @@ fn publish(jobs: &[Job], subdelimiter: &str, cx: &mut App) {
                         })
                     })
                     .collect();
-                diagnostics::address(name.into(), column, found)
+                diagnostics::address(
+                    name.into(),
+                    column,
+                    found.into_iter().map(Into::into).collect(),
+                )
             })
             .collect();
         Diagnostics::set(&Source::Validator(name.into()), DATASET_MAIN, items, cx);
