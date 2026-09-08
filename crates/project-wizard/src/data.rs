@@ -331,6 +331,8 @@ pub struct ColumnConfigEntry {
     pub authority: Option<String>,
     /// Whether to spell-check it. `None` leaves the default (on) alone.
     pub spellcheck: Option<bool>,
+    /// Whether to review near-duplicate displayed values. `None` leaves the default (off) alone.
+    pub variant_review: Option<bool>,
     /// How loud the authority above reports, as a `Severity` key spelling. Per producer, so each
     /// plugin's own severity travels in [`Self::extra`] beside its mapping instead.
     pub authority_severity: Option<String>,
@@ -385,12 +387,13 @@ fn canonical_type(declared: &str) -> String {
 
 /// The headers this module understands. Everything else in the file is a plugin's, and lands in
 /// [`ColumnConfigEntry::extra`] under its own spelling.
-const KNOWN: [&str; 6] = [
+const KNOWN: [&str; 7] = [
     "Column Name",
     "Data Type",
     "Description",
     "Authority",
     "Spellcheck",
+    "Variant Review",
     "Authority Severity",
 ];
 
@@ -421,7 +424,11 @@ pub fn load_column_config(
     let at = |wanted: &str| headers.iter().position(|h| h.eq_ignore_ascii_case(wanted));
     let (name_ix, type_ix) = (at("Column Name"), at("Data Type"));
     let (desc_ix, authority_ix) = (at("Description"), at("Authority"));
-    let (spellcheck_ix, severity_ix) = (at("Spellcheck"), at("Authority Severity"));
+    let (spellcheck_ix, variant_ix, severity_ix) = (
+        at("Spellcheck"),
+        at("Variant Review"),
+        at("Authority Severity"),
+    );
     // Whatever is left belongs to a plugin, carried through by the name it was written under.
     let extra_ixs: Vec<(usize, String)> = headers
         .iter()
@@ -452,6 +459,7 @@ pub fn load_column_config(
             description: cell(desc_ix),
             authority: Some(cell(authority_ix)).filter(|s| !s.is_empty()),
             spellcheck: yes_no(&cell(spellcheck_ix)),
+            variant_review: yes_no(&cell(variant_ix)),
             authority_severity: Some(cell(severity_ix).to_ascii_lowercase())
                 .filter(|s| !s.is_empty()),
             extra: extra_ixs
