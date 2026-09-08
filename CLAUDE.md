@@ -135,6 +135,8 @@ executable** first and then on the system. A checkout without them builds, launc
 ./scripts/fetch-binaries.sh target/release  # before building an installer
 ```
 
+On Windows, use `./scripts/fetch-binaries.ps1` from PowerShell.
+
 Consequence for tests: `preview`'s PDF and media tests assert *behaviour that depends on what is
 installed*. With the binary present they require a real render; without it they require a clean
 decline. Both directions are real assertions — if a test says "skipping", that is the no-binary
