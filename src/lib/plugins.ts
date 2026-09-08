@@ -9,6 +9,9 @@ export type PluginRelease = {
   permissions: string[];
   published_at: string;
   release_url: string;
+  artifact_url: string;
+  sha256: string;
+  bytes: number;
   status: 'active' | 'revoked';
   revocation_reason?: string;
 };
@@ -48,6 +51,20 @@ type Signature = {
 let catalog: Promise<PluginCatalog> | undefined;
 const MAX_CATALOG_BYTES = 5 * 1024 * 1024;
 const PLUGIN_ID = /^[a-z0-9]+(?:[._-][a-z0-9]+)+$/;
+const SHA256 = /^[a-f0-9]{64}$/i;
+const ACCEPTED_LICENSES = new Set([
+  'Apache-2.0',
+  'BSD-2-Clause',
+  'BSD-3-Clause',
+  'CC-BY-4.0',
+  'GPL-3.0-only',
+  'GPL-3.0-or-later',
+  'LGPL-3.0-only',
+  'LGPL-3.0-or-later',
+  'MIT',
+  'Unlicense',
+  'Zlib',
+]);
 
 const text = (value: unknown, field: string) => {
   if (typeof value !== 'string' || value.trim() === '') throw new Error(`Plugin catalog has no ${field}`);
@@ -90,6 +107,24 @@ const parsePlugin = (value: unknown): Plugin => {
   if (Number.isNaN(Date.parse(publishedAt))) {
     throw new Error(`Plugin catalog ${id} has an invalid publication date`);
   }
+  const apiVersion = current.api_version;
+  if (!Number.isInteger(apiVersion) || apiVersion !== 1) {
+    throw new Error(`Plugin catalog ${id} needs an unsupported API version`);
+  }
+  const permissions = strings(current.permissions, 'permissions');
+  if (new Set(permissions).size !== permissions.length || permissions.some((permission) => permission !== 'net')) {
+    throw new Error(`Plugin catalog ${id} has invalid permissions`);
+  }
+  const license = text(item.license, 'license');
+  if (!ACCEPTED_LICENSES.has(license)) {
+    throw new Error(`Plugin catalog ${id} uses an unsupported license`);
+  }
+  const sha256 = text(current.sha256, 'package SHA-256');
+  if (!SHA256.test(sha256)) throw new Error(`Plugin catalog ${id} has an invalid package SHA-256`);
+  const bytes = current.bytes;
+  if (!Number.isSafeInteger(bytes) || (bytes as number) < 0 || (bytes as number) > 100 * 1024 * 1024) {
+    throw new Error(`Plugin catalog ${id} has an invalid package size`);
+  }
 
   return {
     id,
@@ -97,7 +132,7 @@ const parsePlugin = (value: unknown): Plugin => {
     summary: text(item.summary, 'plugin summary'),
     description: text(item.description, 'plugin description'),
     categories: strings(item.categories, 'categories'),
-    license: text(item.license, 'license'),
+    license,
     publisher: text(item.publisher, 'publisher'),
     repository: url(item.repository, 'repository'),
     homepage: item.homepage == null ? undefined : url(item.homepage, 'homepage'),
@@ -107,15 +142,13 @@ const parsePlugin = (value: unknown): Plugin => {
     featured: item.featured === true,
     current: {
       version: text(current.version, 'release version'),
-      api_version:
-        typeof current.api_version === 'number'
-          ? current.api_version
-          : (() => {
-              throw new Error(`Plugin catalog ${item.id} has an invalid API version`);
-            })(),
-      permissions: strings(current.permissions, 'permissions'),
+      api_version: apiVersion as number,
+      permissions,
       published_at: publishedAt,
       release_url: url(current.release_url, 'release URL'),
+      artifact_url: url(current.artifact_url, 'artifact URL'),
+      sha256: sha256.toLowerCase(),
+      bytes: bytes as number,
       status,
       revocation_reason: optionalText(current.revocation_reason, 'revocation reason'),
     },
