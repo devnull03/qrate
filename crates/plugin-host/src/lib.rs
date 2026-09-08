@@ -488,6 +488,35 @@ pub fn setting_specs(cx: &App) -> Vec<(SharedString, Option<SharedString>, Vec<S
     })
 }
 
+/// Every loaded plugin's File ▸ Export contributions.
+pub fn export_specs(cx: &App) -> Vec<(SharedString, plugin_api::ExportSpec)> {
+    cx.try_global::<Plugins>().map_or(Vec::new(), |plugins| {
+        plugins
+            .loaded
+            .iter()
+            .flat_map(|plugin| {
+                let name = plugin.name();
+                plugin
+                    .exports()
+                    .iter()
+                    .cloned()
+                    .map(move |spec| (name.clone(), spec))
+            })
+            .collect()
+    })
+}
+
+/// Resolve a loaded plugin before its export moves to the background executor.
+pub fn exporter(plugin: &str, cx: &App) -> Option<Arc<LuaPlugin>> {
+    cx.try_global::<Plugins>().and_then(|plugins| {
+        plugins
+            .loaded
+            .iter()
+            .find(|candidate| candidate.name().as_ref() == plugin)
+            .cloned()
+    })
+}
+
 /// One declared setting's stored value, [`Json::Null`] if the plugin has never stored it.
 pub fn setting_value(plugin: &str, spec: &SettingSpec, cx: &App) -> Json {
     let object = match spec.scope {

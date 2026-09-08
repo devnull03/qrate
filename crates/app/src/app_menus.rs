@@ -2,7 +2,7 @@ use gpui::*;
 use window_wrapper::OpenBrowser;
 
 use crate::actions::{NewProject, Save, ToggleBottomDock, ToggleLeftDock, ToggleRightDock};
-use crate::export::{EXPORT_FORMATS, Export};
+use crate::export::{EXPORT_FORMATS, Export, PluginExport};
 use crate::theming::{SwitchTheme, theme_choices};
 
 // The Edit menu's items act on the grid, so they're the grid's actions — `table` declares and
@@ -21,7 +21,6 @@ actions!(
         /// a column surface, and landing on whatever page was last used does not keep that promise.
         OpenColumnSettings,
         DiscoverPlugins,
-        InstallPluginFromLink,
         ManagePlugins,
         OpenPluginsFolder,
         ReloadPlugins,
@@ -52,6 +51,38 @@ fn planned(name: &'static str) -> MenuItem {
     }
 }
 
+fn export_items(cx: &gpui::App) -> Vec<MenuItem> {
+    let mut items: Vec<MenuItem> = EXPORT_FORMATS
+        .iter()
+        .map(|(format, label, _)| MenuItem::Action {
+            name: (*label).into(),
+            action: Box::new(Export { format: *format }),
+            os_action: None,
+            checked: false,
+            disabled: false,
+        })
+        .collect();
+    let plugin_exports = plugin_host::export_specs(cx);
+    if !plugin_exports.is_empty() {
+        items.push(MenuItem::Separator);
+        items.extend(
+            plugin_exports
+                .into_iter()
+                .map(|(plugin, export)| MenuItem::Action {
+                    name: export.label,
+                    action: Box::new(PluginExport {
+                        plugin: plugin.to_string(),
+                        export: export.id.to_string(),
+                    }),
+                    os_action: None,
+                    checked: false,
+                    disabled: false,
+                }),
+        );
+    }
+    items
+}
+
 /// Installs the menu bar. Called at startup and again once the theme registry has loaded, since
 /// the Theme submenu lists what the registry holds — see `theming::on_themes_loaded`.
 ///
@@ -76,16 +107,7 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
                 MenuItem::submenu(Menu {
                     name: "Export".into(),
                     disabled: false,
-                    items: EXPORT_FORMATS
-                        .iter()
-                        .map(|(format, label, _)| MenuItem::Action {
-                            name: (*label).into(),
-                            action: Box::new(Export { format: *format }),
-                            os_action: None,
-                            checked: false,
-                            disabled: false,
-                        })
-                        .collect(),
+                    items: export_items(cx),
                 }),
                 MenuItem::Separator,
                 MenuItem::action("Settings", OpenSettings),
@@ -186,7 +208,6 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
             disabled: false,
             items: vec![
                 MenuItem::action("Discover Plugins…", DiscoverPlugins),
-                MenuItem::action("Install Plugin from Link…", InstallPluginFromLink),
                 MenuItem::action("Manage Plugins…", ManagePlugins),
                 MenuItem::Separator,
                 MenuItem::action("Plugins Folder", OpenPluginsFolder),

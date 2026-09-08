@@ -6,7 +6,7 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::button::Button;
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Root, Sizable as _, StyledExt as _, TitleBar, h_flex,
@@ -52,8 +52,6 @@ pub struct MarketplaceWindow {
     catalog: CatalogState,
     direct: DirectState,
     input: Entity<InputState>,
-    search: Entity<InputState>,
-    _search_subscription: Subscription,
     status: Option<Arc<str>>,
     requested_id: Option<String>,
     direct_source: Option<String>,
@@ -69,13 +67,6 @@ impl MarketplaceWindow {
         window.set_window_title("qrate plugins");
         let input =
             cx.new(|cx| InputState::new(window, cx).placeholder("https://github.com/owner/plugin"));
-        let search =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search official plugins"));
-        let search_subscription = cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        });
         let (requested_id, direct_source) = match target {
             Some(InstallTarget::Registry(id)) => (Some(id), None),
             Some(InstallTarget::Github(source)) => (None, Some(source)),
@@ -85,15 +76,15 @@ impl MarketplaceWindow {
             catalog: CatalogState::Loading,
             direct: DirectState::Idle,
             input,
-            search,
-            _search_subscription: search_subscription,
             status: requested_id
                 .as_ref()
                 .map(|id| format!("Reviewing official catalog entry {id}").into()),
             requested_id,
             direct_source,
         };
-        this.refresh(cx);
+        if this.requested_id.is_some() {
+            this.refresh(cx);
+        }
         if direct && this.direct_source.is_none() {
             this.input.focus_handle(cx).focus(window, cx);
         }
@@ -107,6 +98,7 @@ impl MarketplaceWindow {
                 self.requested_id = Some(id.clone());
                 self.direct_source = None;
                 self.status = Some(format!("Reviewing official catalog entry {id}").into());
+                self.refresh(cx);
             }
             InstallTarget::Github(source) => {
                 self.requested_id = None;
@@ -385,8 +377,8 @@ impl MarketplaceWindow {
 
 impl Render for MarketplaceWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let search = self.search.read(cx).value().to_ascii_lowercase();
         let catalog = match &self.catalog {
+            _ if self.requested_id.is_none() => div().into_any_element(),
             CatalogState::Loading => Label::new("Loading the signed catalog…")
                 .text_sm()
                 .into_any_element(),
@@ -425,16 +417,7 @@ impl Render for MarketplaceWindow {
                 .children(
                     plugins
                         .iter()
-                        .filter(|plugin| {
-                            self.requested_id.as_ref().is_none_or(|id| id == &plugin.id)
-                                && (search.is_empty()
-                                    || plugin.id.to_ascii_lowercase().contains(&search)
-                                    || plugin.name.to_ascii_lowercase().contains(&search)
-                                    || plugin.summary.to_ascii_lowercase().contains(&search)
-                                    || plugin.categories.iter().any(|category| {
-                                        category.to_ascii_lowercase().contains(&search)
-                                    }))
-                        })
+                        .filter(|plugin| self.requested_id.as_ref() == Some(&plugin.id))
                         .cloned()
                         .map(|plugin| {
                             let button_plugin = plugin.clone();
@@ -564,9 +547,14 @@ impl Render for MarketplaceWindow {
                     .overflow_y_scrollbar()
                     .p_4()
                     .gap_4()
-                    .child(Label::new("Official catalog").text_lg().font_semibold())
-                    .child(Input::new(&self.search))
-                    .child(catalog)
+                    .when(self.requested_id.is_some(), |view| {
+                        view.child(
+                            Label::new("Official plugin review")
+                                .text_lg()
+                                .font_semibold(),
+                        )
+                        .child(catalog)
+                    })
                     .child(Label::new("Install from GitHub").text_lg().font_semibold())
                     .when_some(self.direct_source.clone(), |view, source| {
                         view.child(
@@ -606,6 +594,10 @@ fn installed_receipt(id: &str) -> Option<plugin_package::InstallReceipt> {
             .ok()
             .flatten()
     })
+}
+
+pub fn open_catalog(cx: &mut gpui::App) {
+    cx.open_url(SITE_URL);
 }
 
 pub fn open_marketplace_window(direct: bool, cx: &mut gpui::App) {
