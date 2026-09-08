@@ -50,7 +50,7 @@ type Signature = {
 
 let catalog: Promise<PluginCatalog> | undefined;
 const MAX_CATALOG_BYTES = 5 * 1024 * 1024;
-const PLUGIN_ID = /^[a-z0-9]+(?:[._-][a-z0-9]+)+$/;
+const PLUGIN_ID = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)+$/;
 const SHA256 = /^[a-f0-9]{64}$/i;
 const ACCEPTED_LICENSES = new Set([
   'Apache-2.0',
