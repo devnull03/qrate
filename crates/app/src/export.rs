@@ -5,6 +5,7 @@
 //! action, the save dialog, and the CSL field-mapping picker.
 
 use std::cell::RefCell;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -42,6 +43,16 @@ pub struct Export {
     pub format: ExportFormat,
 }
 
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = this_app)]
+#[serde(deny_unknown_fields)]
+pub struct PluginExport {
+    pub plugin: String,
+    pub export: String,
+}
+
+const MAX_PLUGIN_EXPORT_BYTES: usize = 64 * 1024 * 1024;
+
 /// Menu order. Each entry is the label and the filename the save dialog offers; the Sheets target
 /// never touches disk, so it has no name to suggest.
 pub const EXPORT_FORMATS: [(ExportFormat, &str, Option<&str>); 6] = [
@@ -69,6 +80,104 @@ fn grid(cx: &App) -> Option<(Vec<String>, Vec<Vec<String>>)> {
         .and_then(|h| h.0.upgrade())?;
     let (headers, _, rows) = state.read(cx).delegate().dataset_snapshot();
     Some((headers, rows))
+}
+
+/// Ask a plugin for JSON from a fixed live-table snapshot, then let the host save it.
+///
+/// Lua receives no path or file handle. Canceling the save dialog discards the snapshot before the
+/// plugin runs, and dropping qrate cancels the host task.
+pub fn run_plugin(action: &PluginExport, cx: &mut App) {
+    let (Some(project), Some((headers, rows)), Some(plugin)) = (
+        cx.try_global::<CurrentProject>(),
+        grid(cx),
+        plugin_host::exporter(&action.plugin, cx),
+    ) else {
+        log::warn!("plugin export was asked for with no project or plugin available");
+        return;
+    };
+    let Some(spec) = plugin
+        .exports()
+        .iter()
+        .find(|spec| spec.id.as_ref() == action.export)
+        .cloned()
+    else {
+        log::warn!(
+            "{} has no declared export {:?}",
+            action.plugin,
+            action.export
+        );
+        return;
+    };
+    let columns = headers
+        .iter()
+        .map(|name| {
+            let data_type = project
+                .data
+                .columns
+                .iter()
+                .find(|column| &column.name == name)
+                .map_or_else(|| "Text".to_string(), |column| column.data_type.clone());
+            let column = settings::columns::get(name, cx);
+            plugin_api::ExportColumn {
+                name: name.clone().into(),
+                data_type: data_type.into(),
+                settings: column
+                    .plugins
+                    .get(&action.plugin)
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            }
+        })
+        .collect();
+    let snapshot = plugin_api::ExportSnapshot {
+        title: project.display_name().into(),
+        columns,
+        rows: rows
+            .into_iter()
+            .map(|row| row.into_iter().map(SharedString::from).collect())
+            .collect(),
+    };
+    let directory = project
+        .file
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let receiver = cx.prompt_for_new_path(&directory, Some(spec.suggested_name.as_ref()));
+    let export_id = action.export.clone();
+
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(path))) = receiver.await else {
+            return;
+        };
+        let result = cx
+            .background_spawn(async move {
+                let value = plugin
+                    .export(&export_id, &snapshot)
+                    .map_err(anyhow::Error::msg)?;
+                let mut bytes = serde_json::to_vec_pretty(&value)?;
+                bytes.push(b'\n');
+                anyhow::ensure!(
+                    bytes.len() <= MAX_PLUGIN_EXPORT_BYTES,
+                    "plugin export exceeds the {} MiB output limit",
+                    MAX_PLUGIN_EXPORT_BYTES / 1024 / 1024
+                );
+                let parent = path
+                    .parent()
+                    .ok_or_else(|| anyhow::anyhow!("export path has no parent"))?;
+                let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+                temporary.write_all(&bytes)?;
+                temporary.as_file_mut().sync_all()?;
+                temporary
+                    .persist(&path)
+                    .map_err(|error| error.error)
+                    .map(|_| ())?;
+                Ok::<(), anyhow::Error>(())
+            })
+            .await;
+        if let Err(error) = result {
+            log::error!("plugin export failed: {error:#}");
+        }
+    })
+    .detach();
 }
 
 pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {

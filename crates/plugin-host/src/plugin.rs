@@ -14,6 +14,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -21,8 +22,8 @@ use diagnostics::{ColumnInfo, ColumnValidator, Severity};
 use gpui::SharedString;
 use mlua::{Function, Lua, LuaOptions, LuaSerdeExt as _, SerializeOptions, StdLib, Table, VmState};
 use plugin_api::{
-    Bar, BarAction, BarItem, ColumnMapSpec, CommandContext, MenuItem, MenuTarget, SettingKind,
-    SettingScope, SettingSpec, Side,
+    Bar, BarAction, BarItem, ColumnMapSpec, CommandContext, ExportSnapshot, ExportSpec, MenuItem,
+    MenuTarget, SettingKind, SettingScope, SettingSpec, Side,
 };
 use serde_json::Value as Json;
 
@@ -74,7 +75,12 @@ const HTTP_WINDOW: Duration = Duration::from_secs(60);
 /// The descriptor shape this build understands. A plugin written against a later one is refused
 /// rather than run half-understood; every version this host has ever known keeps working, the way
 /// Zed keeps every old WIT world in the tree.
-const API_VERSION: u64 = 1;
+const API_VERSION: u64 = 2;
+
+const MAX_EXPORT_COLUMNS: usize = 512;
+const MAX_EXPORT_ROWS: usize = 250_000;
+const MAX_EXPORT_CELLS: usize = 2_000_000;
+const MAX_EXPORT_INPUT_BYTES: usize = 64 * 1024 * 1024;
 
 /// The one permission that exists. Declared by a plugin, granted by the user, checked here.
 pub const PERMISSION_NET: &str = "net";
@@ -112,6 +118,8 @@ struct Loaded {
     validate: Option<Function>,
     on_command: Option<Function>,
     suggest: Option<Function>,
+    export: Option<Function>,
+    exports: Vec<ExportSpec>,
     menu: Vec<MenuItem>,
     settings: Vec<SettingSpec>,
     bar: Vec<BarItem>,
@@ -281,6 +289,10 @@ impl LuaPlugin {
         self.state.as_ref().map_or(&[], |l| l.settings.as_slice())
     }
 
+    pub fn exports(&self) -> &[ExportSpec] {
+        self.state.as_ref().map_or(&[], |l| l.exports.as_slice())
+    }
+
     /// Replace the project- and user-scope copies after something wrote to them.
     pub fn set_scoped(&self, project: Json, user: Json) {
         *self.scoped.lock().unwrap() = (project, user);
@@ -300,6 +312,68 @@ impl LuaPlugin {
         };
         self.call_command(loaded, on_command, command, ctx)
             .map_err(|err| err.to_string())
+    }
+
+    /// Run one declared JSON export against a bounded immutable table snapshot.
+    pub fn export(&self, id: &str, snapshot: &ExportSnapshot) -> Result<Json, String> {
+        validate_export_snapshot(snapshot)?;
+        let loaded = self.state.as_ref().map_err(String::clone)?;
+        ensure_export_declared(loaded, id)?;
+        let export = loaded
+            .export
+            .as_ref()
+            .ok_or_else(|| "has no `export` function".to_string())?;
+        let lua = &loaded.lua;
+        let table = lua.create_table().map_err(|error| error.to_string())?;
+        table
+            .set("title", snapshot.title.as_ref())
+            .map_err(|error| error.to_string())?;
+        let columns = lua.create_table().map_err(|error| error.to_string())?;
+        for (index, column) in snapshot.columns.iter().enumerate() {
+            let item = lua.create_table().map_err(|error| error.to_string())?;
+            item.set("name", column.name.as_ref())
+                .map_err(|error| error.to_string())?;
+            item.set("data_type", column.data_type.as_ref())
+                .map_err(|error| error.to_string())?;
+            item.set(
+                "settings",
+                to_lua(lua, &column.settings).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            columns
+                .set(index + 1, item)
+                .map_err(|error| error.to_string())?;
+        }
+        table
+            .set("columns", columns)
+            .map_err(|error| error.to_string())?;
+        let rows = lua.create_table().map_err(|error| error.to_string())?;
+        for (index, row) in snapshot.rows.iter().enumerate() {
+            rows.set(
+                index + 1,
+                lua.create_sequence_from(row.iter().map(SharedString::as_ref))
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        table.set("rows", rows).map_err(|error| error.to_string())?;
+        table
+            .set(
+                "settings",
+                self.settings_table(lua, &Json::Null)
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+
+        self.arm();
+        let value: mlua::Value = timed(&self.id, &format!("export {id}"), || {
+            export.call((id, table))
+        })
+        .map_err(|error| error.to_string())?;
+        if value.is_nil() {
+            return Err("export returned no JSON value".to_string());
+        }
+        lua.from_value(value).map_err(|error| error.to_string())
     }
 
     fn call_command(
@@ -452,6 +526,69 @@ fn json_field(lua: &Lua, table: &Table, key: &str) -> mlua::Result<Option<Json>>
     lua.from_value(value).map(Some)
 }
 
+fn validate_export_snapshot(snapshot: &ExportSnapshot) -> Result<(), String> {
+    if snapshot.columns.len() > MAX_EXPORT_COLUMNS {
+        return Err(format!(
+            "table has too many columns for a plugin export (maximum {MAX_EXPORT_COLUMNS})"
+        ));
+    }
+    if snapshot.rows.len() > MAX_EXPORT_ROWS {
+        return Err(format!(
+            "table has too many rows for a plugin export (maximum {MAX_EXPORT_ROWS})"
+        ));
+    }
+    let cells = snapshot
+        .rows
+        .len()
+        .checked_mul(snapshot.columns.len())
+        .ok_or_else(|| "plugin export snapshot is too large".to_string())?;
+    if cells > MAX_EXPORT_CELLS {
+        return Err(format!(
+            "table has too many cells for a plugin export (maximum {MAX_EXPORT_CELLS})"
+        ));
+    }
+    if snapshot
+        .rows
+        .iter()
+        .any(|row| row.len() != snapshot.columns.len())
+    {
+        return Err("plugin export snapshot has inconsistent row widths".to_string());
+    }
+    let mut bytes = snapshot.title.len();
+    for column in &snapshot.columns {
+        bytes = bytes
+            .checked_add(column.name.len())
+            .and_then(|value| value.checked_add(column.data_type.len()))
+            .and_then(|value| {
+                serde_json::to_vec(&column.settings)
+                    .ok()
+                    .and_then(|settings| value.checked_add(settings.len()))
+            })
+            .ok_or_else(|| "plugin export snapshot is too large".to_string())?;
+    }
+    for value in snapshot.rows.iter().flatten() {
+        bytes = bytes
+            .checked_add(value.len())
+            .ok_or_else(|| "plugin export snapshot is too large".to_string())?;
+    }
+    if bytes > MAX_EXPORT_INPUT_BYTES {
+        return Err(format!(
+            "table has too much text for a plugin export (maximum {} MiB)",
+            MAX_EXPORT_INPUT_BYTES / 1024 / 1024
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_export_declared(loaded: &Loaded, id: &str) -> Result<(), String> {
+    loaded
+        .exports
+        .iter()
+        .any(|item| item.id == id)
+        .then_some(())
+        .ok_or_else(|| format!("has no declared export {id:?}"))
+}
+
 fn build(id: &str, source: &str, env: &Env, shared: &Shared) -> mlua::Result<Loaded> {
     // Luau has no `io` and no `package` to remove, and its `debug` is already cut to two
     // functions. Leaving out `OS` and `COROUTINE` costs a plugin its clock and its ability to
@@ -494,6 +631,32 @@ fn build(id: &str, source: &str, env: &Env, shared: &Shared) -> mlua::Result<Loa
     let validate: Option<Function> = descriptor.get("validate")?;
     let on_command: Option<Function> = descriptor.get("on_command")?;
     let suggest: Option<Function> = descriptor.get("suggest")?;
+    let export: Option<Function> = descriptor.get("export")?;
+    let exports = match descriptor.get::<Option<Vec<Table>>>("exports")? {
+        Some(items) => items
+            .into_iter()
+            .map(export_spec)
+            .collect::<mlua::Result<Vec<_>>>()?,
+        None => Vec::new(),
+    };
+    if declared < 2 && (export.is_some() || !exports.is_empty()) {
+        return Err(mlua::Error::runtime("plugin exports require API version 2"));
+    }
+    if export.is_some() != !exports.is_empty() {
+        return Err(mlua::Error::runtime(
+            "`export` and at least one `exports` item must be declared together",
+        ));
+    }
+    let mut export_ids = std::collections::HashSet::new();
+    if let Some(duplicate) = exports
+        .iter()
+        .find(|item| !export_ids.insert(item.id.as_ref()))
+    {
+        return Err(mlua::Error::runtime(format!(
+            "duplicate export id {:?}",
+            duplicate.id
+        )));
+    }
     let menu = match descriptor.get::<Option<Vec<Table>>>("menu")? {
         Some(items) => items
             .into_iter()
@@ -531,9 +694,9 @@ fn build(id: &str, source: &str, env: &Env, shared: &Shared) -> mlua::Result<Loa
         .map(column_map_spec)
         .transpose()?;
 
-    if validate.is_none() && on_command.is_none() && suggest.is_none() {
+    if validate.is_none() && on_command.is_none() && suggest.is_none() && export.is_none() {
         return Err(mlua::Error::runtime(
-            "the returned table has none of `validate`, `on_command` or `suggest`",
+            "the returned table has none of `validate`, `on_command`, `suggest` or `export`",
         ));
     }
     Ok(Loaded {
@@ -551,6 +714,8 @@ fn build(id: &str, source: &str, env: &Env, shared: &Shared) -> mlua::Result<Loa
         validate,
         on_command,
         suggest,
+        export,
+        exports,
         menu,
         settings,
         bar,
@@ -862,6 +1027,37 @@ fn menu_item(item: Table) -> mlua::Result<MenuItem> {
     })
 }
 
+fn export_spec(item: Table) -> mlua::Result<ExportSpec> {
+    let id: String = item.get("id")?;
+    let label: String = item.get("label")?;
+    let suggested_name: String = item.get("suggested_name")?;
+    if id.is_empty()
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte))
+    {
+        return Err(mlua::Error::runtime(format!("invalid export id {id:?}")));
+    }
+    if label.is_empty() {
+        return Err(mlua::Error::runtime("export label must not be empty"));
+    }
+    if suggested_name.is_empty()
+        || Path::new(&suggested_name)
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(suggested_name.as_str())
+    {
+        return Err(mlua::Error::runtime(
+            "export suggested_name must be one filename",
+        ));
+    }
+    Ok(ExportSpec {
+        id: id.into(),
+        label: label.into(),
+        suggested_name: suggested_name.into(),
+    })
+}
+
 fn column_map_spec(item: Table) -> mlua::Result<ColumnMapSpec> {
     Ok(ColumnMapSpec {
         key: item.get::<String>("key")?.into(),
@@ -905,7 +1101,10 @@ mod tests {
     use crate::{Env, LuaPlugin, PERMISSION_NET, PackageDescriptor, Writes};
     use diagnostics::{ColumnInfo, ColumnValidator, Severity};
     use gpui::SharedString;
-    use plugin_api::{Bar, BarAction, CommandContext, MenuTarget, SettingKind, SettingScope, Side};
+    use plugin_api::{
+        Bar, BarAction, CommandContext, ExportColumn, ExportSnapshot, MenuTarget, SettingKind,
+        SettingScope, Side,
+    };
     use serde_json::{Value as Json, json};
     use settings::columns::ColumnSettings;
 
@@ -1653,7 +1852,106 @@ mod tests {
     fn a_plugin_written_against_a_later_api_refuses_to_load() {
         let source = r#"return { api_version = 9, validate = function() return {} end }"#;
         let err = plugin(source).load_error().unwrap_or_default().to_string();
-        assert!(err.contains('9') && err.contains('1'), "{err:?}");
+        assert!(err.contains('9') && err.contains('2'), "{err:?}");
+    }
+
+    #[test]
+    fn exports_require_api_version_two() {
+        let source = r#"
+            return {
+              api_version = 1,
+              exports = {
+                { id = "json", label = "JSON…", suggested_name = "export.json" },
+              },
+              export = function() return {} end,
+            }
+        "#;
+        assert!(
+            plugin(source)
+                .load_error()
+                .is_some_and(|error| error.contains("API version 2"))
+        );
+    }
+
+    #[test]
+    fn export_receives_the_complete_snapshot_and_plugin_settings() {
+        let source = r#"
+            return {
+              api_version = 2,
+              exports = {
+                { id = "json", label = "Example JSON…", suggested_name = "example.json" },
+              },
+              export = function(id, snapshot)
+                return {
+                  id = id,
+                  title = snapshot.title,
+                  column = snapshot.columns[1].name,
+                  data_type = snapshot.columns[1].data_type,
+                  mapping = snapshot.columns[1].settings.mapping,
+                  value = snapshot.rows[2][1],
+                  project = snapshot.settings.project.base,
+                  subdelimiter = snapshot.settings.app.subdelimiter,
+                }
+              end,
+            }
+        "#;
+        let plugin = plugin(source);
+        assert_eq!(plugin.load_error(), None);
+        assert_eq!(plugin.exports().len(), 1);
+        plugin.set_scoped(json!({ "base": "https://example.test/" }), Json::Null);
+        plugin.set_app_settings(";".into());
+        let snapshot = ExportSnapshot {
+            title: "Collection".into(),
+            columns: vec![ExportColumn {
+                name: "Identifier".into(),
+                data_type: "URL".into(),
+                settings: json!({ "mapping": "id" }),
+            }],
+            rows: vec![vec!["one".into()], vec!["two".into()]],
+        };
+
+        assert_eq!(
+            plugin.export("json", &snapshot).unwrap(),
+            json!({
+                "id": "json",
+                "title": "Collection",
+                "column": "Identifier",
+                "data_type": "URL",
+                "mapping": "id",
+                "value": "two",
+                "project": "https://example.test/",
+                "subdelimiter": ";",
+            })
+        );
+        assert!(plugin.export("undeclared", &snapshot).is_err());
+    }
+
+    #[test]
+    fn export_rejects_inconsistent_rows_before_lua_runs() {
+        let source = r#"
+            return {
+              api_version = 2,
+              exports = {
+                { id = "json", label = "JSON…", suggested_name = "export.json" },
+              },
+              export = function() return {} end,
+            }
+        "#;
+        let snapshot = ExportSnapshot {
+            title: "Collection".into(),
+            columns: vec![ExportColumn {
+                name: "Identifier".into(),
+                data_type: "Text".into(),
+                settings: Json::Null,
+            }],
+            rows: vec![vec!["one".into(), "unexpected".into()]],
+        };
+
+        assert!(
+            plugin(source)
+                .export("json", &snapshot)
+                .is_err_and(|error| error.contains("inconsistent row widths"))
+        );
     }
 
     #[test]

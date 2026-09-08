@@ -205,6 +205,38 @@ pub struct CommandContext {
     pub argument: Option<SharedString>,
 }
 
+/// One JSON export a plugin contributes to File ▸ Export.
+///
+/// The plugin supplies only labels and a suggested filename. The host owns the save dialog and
+/// never gives the selected path or a file handle to Lua.
+#[derive(Clone, Debug)]
+pub struct ExportSpec {
+    /// Plugin-local identifier passed back to its `export` function.
+    pub id: SharedString,
+    pub label: SharedString,
+    pub suggested_name: SharedString,
+}
+
+/// One column in the immutable snapshot passed to a plugin export.
+#[derive(Clone, Debug)]
+pub struct ExportColumn {
+    pub name: SharedString,
+    pub data_type: SharedString,
+    /// Only the exporting plugin's settings for this column.
+    pub settings: serde_json::Value,
+}
+
+/// A complete, immutable view of the live table.
+///
+/// Rows contain one string per column in the same order as [`Self::columns`]. Construction and size
+/// limits are host-owned; plugins receive values, never qrate table objects.
+#[derive(Clone, Debug)]
+pub struct ExportSnapshot {
+    pub title: SharedString,
+    pub columns: Vec<ExportColumn>,
+    pub rows: Vec<Vec<SharedString>>,
+}
+
 /// A plugin's offer of what could go in the cell being typed in, and which cell it was asked for.
 ///
 /// The cell is echoed back from the request rather than tracked here, so the table can drop an

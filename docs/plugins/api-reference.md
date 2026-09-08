@@ -7,14 +7,14 @@ sandboxes the virtual machine.
 There is no third surface. Luau's `io`, `os`, and `package` are not loaded, so a capability that
 is not on this page is one no plugin has.
 
-This page describes `api_version` 1. For a getting-started walkthrough, see
+This page describes `api_version` 2. For a getting-started walkthrough, see
 [Plugins](index.md).
 
 ## The descriptor
 
 ```lua
 return {
-  api_version = 1,
+  api_version = 2,
   name = "my-plugin",
   description = "One line, shown on the Settings page.",
   permissions = { "net" },
@@ -23,15 +23,18 @@ return {
   menu = { … },
   bar = { … },
   column_map = { … },
+  exports = { … },
 
   validate = function(column, values, settings) end,
   on_command = function(command, ctx) end,
   suggest = function(ctx) end,
+  export = function(id, snapshot) end,
 }
 ```
 
 Every field is optional, with one rule: the table must carry at least one of `validate`,
-`on_command`, or `suggest`. A descriptor with none of them does nothing, and qrate refuses it.
+`on_command`, `suggest`, or `export`. A descriptor with none of them does nothing, and qrate
+refuses it.
 
 | Field | Value |
 |---|---|
@@ -98,6 +101,50 @@ so anything expensive belongs in a command or behind [storage](#storage) instead
 An error raised inside `validate` goes to the session log, and that run contributes nothing. It
 does not reach the Problems panel: the panel is a list of what is wrong with the data, not with
 the code.
+
+## JSON exports
+
+Plugin exports require `api_version = 2`. API version 1 plugins continue to work without changes.
+
+Declare each File ▸ Export entry in `exports`:
+
+```lua
+exports = {
+  { id = "iiif", label = "IIIF Presentation 3…", suggested_name = "manifest.json" },
+},
+```
+
+Each `id` is local to the plugin. The `label` appears in the Export menu. The suggested name must
+be one file name without a path.
+
+The plugin returns a JSON value from `export`:
+
+```lua
+export = function(id, snapshot)
+  return {
+    label = snapshot.title,
+    items = snapshot.rows,
+  }
+end,
+```
+
+The snapshot does not change during the export. It has these fields:
+
+| Field | Value |
+|---|---|
+| `title` | The project display name. |
+| `columns` | Every column in source order. |
+| `rows` | Every row in source order. Each row has one string for each column. |
+| `settings` | [The settings table](#reading-settings). |
+
+Each column has `name`, `data_type`, and `settings`. The column settings contain only this plugin's
+stored object for that column.
+
+The plugin does not receive a path or file handle. qrate asks the user for a path and writes the
+returned JSON. The user can cancel before the plugin runs.
+
+qrate limits a snapshot to 512 columns, 250,000 rows, two million cells, and 64 MiB of text. qrate
+also limits the JSON output to 64 MiB. The Lua memory and execution limits still apply.
 
 ## Commands
 

@@ -14,9 +14,8 @@ use window_wrapper::OpenBrowser;
 
 use crate::actions::NewProject;
 use crate::app_menus::{
-    CopyDebugInfo, DiscoverPlugins, InstallPluginFromLink, ManagePlugins, OpenAbout,
-    OpenLogsFolder, OpenPluginsFolder, OpenSettings, REPO_URL, ReloadPlugins, ReportBug,
-    ReportUxIssue, RequestFeature,
+    CopyDebugInfo, DiscoverPlugins, ManagePlugins, OpenAbout, OpenLogsFolder, OpenPluginsFolder,
+    OpenSettings, REPO_URL, ReloadPlugins, ReportBug, ReportUxIssue, RequestFeature,
 };
 use crate::title_items::update_notice::UpdateNotice;
 
@@ -61,10 +60,6 @@ impl Render for LauncherBar {
                             .separator()
                             .submenu("Extensions", window, cx, |menu, _, _| {
                                 menu.menu("Discover Plugins…", Box::new(DiscoverPlugins))
-                                    .menu(
-                                        "Install Plugin from Link…",
-                                        Box::new(InstallPluginFromLink),
-                                    )
                                     .menu("Manage Plugins…", Box::new(ManagePlugins))
                                     .separator()
                                     .menu("Plugins Folder", Box::new(OpenPluginsFolder))

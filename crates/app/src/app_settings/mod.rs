@@ -134,18 +134,45 @@ fn notes_group(cx: &App) -> SettingGroup {
 /// no descriptor and switching a broken one off has to work.
 fn plugins_page(cx: &App) -> SettingPage {
     let listing = plugin_host::listing(cx);
+    let install = SettingGroup::new()
+        .title("Find and install")
+        .description(
+            "Browse the official catalog on qrate.dvnl.work, or review a public GitHub release.",
+        )
+        .item(SettingItem::new(
+            "Plugins",
+            SettingField::element(move |_opts: &_, _window: &mut Window, _cx: &mut App| {
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("browse-plugin-catalog")
+                            .small()
+                            .label("Browse catalog")
+                            .on_click(|_, _, cx| crate::plugin_marketplace::open_catalog(cx)),
+                    )
+                    .child(
+                        Button::new("install-plugin-from-github")
+                            .small()
+                            .label("Install from GitHub…")
+                            .on_click(|_, _, cx| {
+                                crate::plugin_marketplace::open_marketplace_window(true, cx);
+                            }),
+                    )
+                    .into_any_element()
+            }),
+        ));
+    let mut page = SettingPage::new("Plugins")
+        .description(
+            "Installed plugins run in a sandbox and reach the network only when you grant access.",
+        )
+        .group(install);
     if listing.is_empty() {
-        return SettingPage::new("Plugins").group(
+        return page.group(
             SettingGroup::new()
                 .title("Installed")
                 .description("No plugins found. Extensions ▸ Plugins Folder is where they go."),
         );
     }
-
-    let mut page = SettingPage::new("Plugins").description(
-        "Scripts found in the plugins folder. A plugin is code from somebody else, so it \
-         reaches the network only if you say so.",
-    );
 
     for plugin in listing {
         let id = plugin.id.clone();

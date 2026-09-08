@@ -22,7 +22,7 @@ pub const MAX_CATALOG_BYTES: usize = 5 * 1024 * 1024;
 pub const MAX_PACKAGE_BYTES: u64 = 100 * 1024 * 1024;
 pub const MAX_EXPANDED_BYTES: u64 = 500 * 1024 * 1024;
 pub const MAX_PACKAGE_FILES: usize = 10_000;
-pub const SUPPORTED_API_VERSION: u64 = 1;
+pub const SUPPORTED_API_VERSION: u64 = 2;
 pub const ACCEPTED_LICENSES: &[&str] = &[
     "Apache-2.0",
     "BSD-2-Clause",

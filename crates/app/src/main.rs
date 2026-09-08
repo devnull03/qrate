@@ -287,6 +287,11 @@ impl Render for App {
             .on_action(cx.listener(|_, action: &export::Export, window, cx| {
                 export::run(action.format, window, cx)
             }))
+            .on_action(
+                cx.listener(|_, action: &export::PluginExport, _, cx| {
+                    export::run_plugin(action, cx)
+                }),
+            )
             .child(
                 v_flex()
                     .size_full()
@@ -527,15 +532,11 @@ fn main() {
 
         cx.on_action(|_: &ReloadPlugins, cx| {
             plugin_host::reload(cx);
+            app_menus::install(cx);
             table::revalidate_now(cx);
         });
         cx.on_action(|_: &OpenPluginsFolder, _| plugin_host::open_plugins_folder());
-        cx.on_action(|_: &app_menus::DiscoverPlugins, cx| {
-            plugin_marketplace::open_marketplace_window(false, cx)
-        });
-        cx.on_action(|_: &app_menus::InstallPluginFromLink, cx| {
-            plugin_marketplace::open_marketplace_window(true, cx)
-        });
+        cx.on_action(|_: &app_menus::DiscoverPlugins, cx| plugin_marketplace::open_catalog(cx));
         cx.on_action(|_: &app_menus::ManagePlugins, cx| {
             open_settings_window(Some(app_settings::PLUGINS_PAGE), cx)
         });
