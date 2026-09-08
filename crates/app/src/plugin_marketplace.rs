@@ -29,12 +29,14 @@ enum CatalogState {
 enum DirectState {
     Idle,
     Loading,
-    Review {
-        release: DirectRelease,
-        inspection: PackageInspection,
-        archive: PathBuf,
-    },
+    Review(Box<DirectReview>),
     Error(Arc<str>),
+}
+
+struct DirectReview {
+    release: DirectRelease,
+    inspection: PackageInspection,
+    archive: PathBuf,
 }
 
 pub struct MarketplaceWindow {
@@ -143,11 +145,13 @@ impl MarketplaceWindow {
                 .await;
             this.update(cx, |this, cx| {
                 this.direct = match result {
-                    Ok((release, inspection, archive)) => DirectState::Review {
-                        release,
-                        inspection,
-                        archive,
-                    },
+                    Ok((release, inspection, archive)) => {
+                        DirectState::Review(Box::new(DirectReview {
+                            release,
+                            inspection,
+                            archive,
+                        }))
+                    }
                     Err(error) => DirectState::Error(format!("{error:#}").into()),
                 };
                 cx.notify();
@@ -251,14 +255,14 @@ impl MarketplaceWindow {
     }
 
     fn install_direct(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let DirectState::Review {
+        let DirectState::Review(review) = &self.direct else {
+            return;
+        };
+        let DirectReview {
             release,
             inspection,
             archive,
-        } = &self.direct
-        else {
-            return;
-        };
+        } = review.as_ref();
         let (release, inspection, archive) = (release.clone(), inspection.clone(), archive.clone());
         let permissions = if inspection.manifest.permissions.is_empty() {
             "No optional permissions".to_string()
@@ -421,11 +425,13 @@ impl Render for MarketplaceWindow {
                 .text_sm()
                 .text_color(cx.theme().danger_foreground)
                 .into_any_element(),
-            DirectState::Review {
+            DirectState::Review(review) => {
+                let DirectReview {
                 release,
                 inspection,
                 ..
-            } => h_flex()
+                } = review.as_ref();
+                h_flex()
                 .justify_between()
                 .gap_3()
                 .child(
@@ -447,7 +453,8 @@ impl Render for MarketplaceWindow {
                             this.install_direct(window, cx);
                         })),
                 )
-                .into_any_element(),
+                .into_any_element()
+            }
         };
 
         v_flex()
