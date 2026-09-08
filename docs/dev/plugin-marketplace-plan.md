@@ -6,9 +6,9 @@ Build a separate public `qrate-plugin-registry` repository for curated plugin me
 release verification. Keep the public website and documentation on qrate's existing `site`
 branch. Keep each plugin's source and releases in its author's repository.
 
-The application installs HTTPS release artifacts with immutable versions and hashes. It does not
+The application installs versioned HTTPS release artifacts pinned by size and SHA-256. It does not
 run `git clone`. The direct-install field accepts a GitHub repository or release URL, so users can
-still paste the link authors share; qrate resolves it to a versioned release artifact.
+still paste the link authors share. qrate resolves it to a versioned release artifact.
 
 This leaves the Lua runtime model simple while giving the marketplace a clear review and trust
 boundary.
@@ -56,11 +56,11 @@ documentation. There is no current benefit to moving it before marketplace work 
 
 | Repository or branch | Owns | Does not own |
 | --- | --- | --- |
-| `qrate` `main` | Desktop installer, plugin host, install UI, deep links, embedded registry public key | Curated listings and third-party source |
-| `qrate-plugin-template` | Canonical Lua API definitions, example plugin, author package tooling | Registry data |
-| Plugin author repositories | Plugin source, tests, release artifacts, support | Official discoverability by itself |
-| `qrate-plugin-registry` | Curated records, schemas, validation CI, catalog signatures, submission policy | Website implementation or plugin source |
-| `qrate` `site` branch | Marketplace pages, documentation, install links, rendering registry data | Trust decisions in the app binary |
+| `qrate` `main` | Desktop installer, plugin host, install UI, deep links, embedded registry public key, user docs | Curated listings and third-party source |
+| `qrate-plugin-template` | Canonical Lua API definitions, example plugin, package manifest, author release tooling | Registry data |
+| Plugin author repositories | Plugin source, tests, release artifacts, release notes, support | Official discoverability by itself |
+| `qrate-plugin-registry` | Curated records, schemas, validation CI, signed catalog, submission and incident policy | Website implementation or plugin source |
+| `qrate` `site` branch | Marketplace pages, author guides, install links, and build-time catalog rendering | Catalog signing or plugin review |
 
 ### Why the registry is a separate repository
 
@@ -115,11 +115,14 @@ Each distributable release includes a non-executable manifest at its package roo
 - The Lua descriptor remains the runtime source of hook, setting, and command declarations.
 
 Authors publish an explicit versioned archive such as
-`qrate-islandora-vocabularies-1.2.0.zip`. The archive has one plugin root and contains its
-manifest, entry file, sibling Lua modules, README, license, and optional editor types.
+`qrate-islandora-vocabularies-1.2.0.zip`. The archive contains its manifest, entry file, sibling Lua
+modules, README, license, and optional editor types at the archive root.
 
 Do not use GitHub-generated "Source code (zip)" downloads as the package contract. A GitHub Release
 asset has an intentional layout and can be checked against the hash in the registry.
+
+GitHub lets a publisher replace a release asset. The URL is not the content identity. The registry
+pins the reviewed bytes with the SHA-256 and size. The app rejects replacement bytes at that URL.
 
 ## Catalog and trust
 
@@ -136,7 +139,7 @@ validates its schema, and caches only the last valid result. A record contains:
 - distribution ID, name, description, categories, icon/screenshots, license, and support links;
 - publisher GitHub account or organization and source repository;
 - exact release version and publication time;
-- immutable artifact URL, byte size, and SHA-256;
+- exact release asset URL, byte size, and SHA-256;
 - supported qrate plugin API version;
 - declared permissions;
 - release notes URL;
@@ -145,6 +148,21 @@ validates its schema, and caches only the last valid result. A record contains:
 The registry's private signing key belongs in a protected GitHub Actions environment requiring
 maintainer approval, never in a repository. Catalogs include a key ID so that key rotation can be
 explicitly supported.
+
+`catalog.json.sig` is a small JSON document:
+
+```json
+{
+  "schema": 1,
+  "key_id": "qrate-plugin-catalog-1",
+  "algorithm": "Ed25519",
+  "sha256": "<catalog SHA-256>",
+  "signature_base64": "<signature of the exact catalog.json bytes>"
+}
+```
+
+The app and site reject an unknown key ID or algorithm. They compare the hash and verify the
+signature before they parse `catalog.json`.
 
 "Official catalog" means the release metadata and artifact hash were reviewed and published in the
 signed catalog. It does not mean qrate guarantees that a plugin is harmless.
@@ -158,8 +176,9 @@ signed catalog. It does not mean qrate guarantees that a plugin is harmless.
 | Manual folder | Files copied or cloned by the user | Unmanaged local code | No qrate update action |
 
 For direct installation, qrate accepts an ordinary public GitHub repository URL or GitHub Release
-URL. It resolves a release asset, then shows the author, repository, exact version, artifact URL,
-SHA-256, permissions, and an unlisted-source warning before it downloads anything.
+URL. It resolves a release asset and shows the source, version, and an unlisted-source warning.
+After the user selects **Review package**, qrate downloads the archive without extracting or running
+it. The final review shows the computed SHA-256 and static manifest before installation.
 
 V1 supports public GitHub releases only. This keeps the workflow familiar without requiring a Git
 executable. Generic `git+https`, SSH, branch, commit, private-repository, submodule, and LFS
@@ -238,12 +257,14 @@ Only signed catalog records receive an Official catalog badge.
 
 The install-from-link flow is:
 
-1. User pastes a GitHub repository or release URL.
+1. The user pastes a GitHub repository or release URL.
 2. qrate resolves a selectable release artifact.
-3. The confirmation screen shows source, publisher, version, immutable URL, hash, description,
-   permissions, and an unlisted-source warning.
-4. The user selects **Install**.
-5. qrate installs the disabled plugin and takes the user to plugin settings.
+3. The source screen shows the publisher, version, asset URL, and an unlisted-source warning.
+4. The user selects **Review package**.
+5. qrate downloads the archive but does not extract or run it.
+6. The review screen shows the computed hash, description, compatibility, and permissions.
+7. The user selects **Install**.
+8. qrate installs the disabled plugin and opens its settings.
 
 Settings remains the single source of truth for enabling a plugin and granting runtime
 permissions. Extend the existing Plugins settings page with source, installed version, update
@@ -306,6 +327,417 @@ the application consumes.
 
 The registry needs `CONTRIBUTING.md`, `SECURITY.md`, `PUBLISHING.md`, `SCHEMA.md`, issue and PR
 templates, a maintainer checklist, and explicit criteria for removing or revoking listings.
+
+## Repository implementation plans
+
+The repositories share contracts, but each repository has one clear job. Each subsection below can
+become an issue or a small issue group in that repository.
+
+### `qrate-plugin-registry`: catalog source and publication
+
+Create `devnull03/qrate-plugin-registry` as a public repository. Use this initial layout:
+
+```text
+.github/
+  ISSUE_TEMPLATE/
+    listing-request.yml
+    security-report.yml
+  workflows/
+    validate.yml
+    publish.yml
+  pull_request_template.md
+plugins/
+  org.islandora.vocabularies.json
+schemas/
+  catalog.schema.json
+  listing.schema.json
+  package.schema.json
+scripts/
+  build-catalog.mjs
+  validate-artifact.mjs
+  validate-records.mjs
+test/
+  fixtures/
+    packages/
+    records/
+CONTRIBUTING.md
+LICENSE
+PUBLISHING.md
+README.md
+SCHEMA.md
+SECURITY.md
+package.json
+```
+
+Keep one source record in `plugins/<distribution-id>.json`. The file contains listing metadata and a
+version history. It does not copy the plugin README or Lua descriptor.
+
+Each version record pins these fields:
+
+- version and publication date;
+- plugin API version;
+- release page and release asset URLs;
+- SHA-256 and byte size;
+- package manifest fields needed for search and install review;
+- review state, revocation state, and replacement version if one exists.
+
+Use `schemas/package.schema.json` as the source of truth for `qrate-plugin.json`. Copy or generate
+the same schema for qrate tests and template checks. Store the schema version in each document.
+
+The pull-request workflow performs these checks:
+
+1. Validate all source records against `listing.schema.json`.
+2. Reject duplicate distribution IDs, versions, release assets, and normalized repository URLs.
+3. Download each new or changed release asset with time and size limits.
+4. Verify the submitted SHA-256 and byte size.
+5. Inspect the ZIP without running Lua.
+6. Reject path traversal, symlinks, duplicate names, invalid roots, and expansion limit violations.
+7. Validate `qrate-plugin.json` against `package.schema.json`.
+8. Compare the package manifest with the registry version record.
+9. Confirm that the release belongs to the declared public GitHub repository.
+10. Build an unsigned catalog and validate it against `catalog.schema.json`.
+11. Attach a short validation report to the pull request.
+
+The first version can use Node and a small set of pinned packages. Use the same validator modules in
+pull-request CI and publication CI. Do not maintain a second validation implementation in workflow
+YAML.
+
+The publication workflow runs after a protected `main` merge. It performs these actions:
+
+1. Repeat all record and artifact checks.
+2. Build `dist/catalog.json` with a stable record order and stable JSON serialization.
+3. Sign the exact catalog bytes with the registry Ed25519 key.
+4. Write `dist/catalog.json.sig` and a small `dist/status.json`.
+5. Publish `dist/` to GitHub Pages at a stable HTTPS URL.
+6. Create a deployment record that contains the source commit.
+7. Trigger a Cloudflare site rebuild.
+
+Use a protected `catalog-production` environment for the private signing key and site deploy hook.
+Require maintainer approval for the publication job. Give the workflow read-only repository access
+plus only the Pages and deployment permissions it needs.
+
+`status.json` contains the catalog schema, generation time, source commit, key ID, and catalog hash.
+The site can show this information in an error page. qrate does not trust `status.json`.
+
+The repository policy must define:
+
+- minimum source and release requirements;
+- allowed licenses and required license files;
+- stable publisher and distribution identity rules;
+- review rules for new plugins and new versions;
+- permission-change review;
+- abandoned-plugin and transfer rules;
+- removal, revocation, appeal, and compromised-release steps;
+- key rotation and emergency catalog publication.
+
+Do not accept a listing through an issue alone. The issue form helps an author prepare a pull
+request. The pull request remains the reviewed change that publication consumes.
+
+### `qrate-plugin-template`: author contract and release tooling
+
+The template currently has five tracked files. It has no tests, package manifest, release workflow,
+or archive tool. The current `init.lua` comment also calls the runtime descriptor a manifest. Change
+that term before the static package manifest is introduced.
+
+Add these files:
+
+```text
+.github/
+  workflows/
+    check.yml
+    release.yml
+qrate-plugin.json
+scripts/
+  package-plugin.mjs
+test/
+  manifest.test.mjs
+LICENSE
+```
+
+Keep the template small. Do not turn it into a JavaScript application. The Node script can use the
+standard library and the local Git executable. It needs no runtime dependency.
+
+`qrate-plugin.json` contains obvious placeholder values that an author must change. The distribution
+ID must not use the local folder name. The README must explain how authors choose and retain a
+stable ID.
+
+`scripts/package-plugin.mjs` performs these actions:
+
+1. Validate the manifest fields and SemVer version.
+2. Confirm that `entry` names a tracked file under the repository root.
+3. Confirm that required README and license files exist.
+4. Collect tracked package files from an explicit allowlist.
+5. Create `dist/<id>-<version>.zip` with files at the ZIP root.
+6. Print and write the SHA-256 and byte size.
+7. Fail if the worktree has package changes that are not committed.
+
+The allowlist includes the manifest, entry file, Lua modules, types, README, license, and plugin
+assets. It excludes `.git`, workflows, tests, local logs, and `dist`.
+
+The check workflow runs on pushes and pull requests. It validates the manifest, runs the package
+script in check mode, and runs Luau type checks. Pin the Luau tool version.
+
+The release workflow runs on a `v*` tag. It requires an exact match between the tag and manifest
+version. It creates the ZIP and checksum, then publishes both as GitHub Release assets. It must fail
+instead of replacing an asset on an existing release.
+
+Update the README with this author path:
+
+1. Create a repository from the GitHub template button.
+2. Set the distribution ID, name, version, repository, license, and permissions.
+3. Develop against `types/qrate.lua`.
+4. Test the plugin in qrate as an unmanaged folder.
+5. Run the local package check.
+6. Tag the release.
+7. Inspect the generated release assets.
+8. Submit the release to the registry.
+
+Keep `types/qrate.lua` as the canonical plugin API copy. Marketplace metadata does not change the
+runtime API. A package schema change does not require a plugin API version increase.
+
+### Plugin author repositories: release ownership
+
+Each plugin repository owns its source and support process. The registry never becomes a source
+mirror.
+
+Authors must:
+
+- keep one stable distribution ID;
+- publish a static package manifest;
+- publish a versioned ZIP and checksum;
+- keep old reviewed assets available;
+- document requested permissions and data use;
+- link release notes and a support or issue page;
+- report a compromised release through the registry security process.
+
+The first-party Islandora plugin is the end-to-end pilot. Apply the template files to that repository
+without replacing its existing tests or documentation. Publish a new release through the same
+workflow that community authors will use. Do not seed the catalog with a hand-built special case.
+
+The pilot must test a folder plugin with sibling modules, network permission, user settings, project
+settings, and a larger real package. Add a second small plugin before launch to test a no-permission
+package and a different publisher.
+
+### `qrate` `main`: package manager, UI, and operating-system integration
+
+Create a focused `plugin-package` crate. Keep package download and installation policy out of
+`plugin-host`. The host continues to load installed Lua and enforce runtime permissions.
+
+The crate owns:
+
+- signed catalog parsing and verification;
+- catalog cache and refresh state;
+- GitHub release URL parsing and direct-release metadata;
+- bounded downloads and SHA-256 checks;
+- safe ZIP inspection and extraction;
+- package manifest validation;
+- install receipts and managed installation paths;
+- atomic install, update, rollback, and removal operations;
+- compatibility, source identity, and permission delta checks.
+
+Expose typed operations to the app. Do not expose raw archive paths or partly installed directories.
+Use one error type that keeps a safe user message and a detailed log cause.
+
+Reuse the updater's Ed25519 envelope rules, SemVer checks, SHA-256 helper, and atomic JSON write
+patterns where their contracts match. Use a separate registry key ID and domain types. Do not make a
+plugin package look like an application update.
+
+Update `plugin-host` to return enough identity for the package manager to match a loaded plugin with
+its receipt. Keep unmanaged folder discovery. Restrict the working-directory `./plugins` path to
+development builds so a packaged app has one production plugin directory.
+
+Add these application surfaces:
+
+- `DiscoverPlugins` and `InstallPluginFromLink` actions in both Extensions menu implementations;
+- a discovery window or workspace panel that uses the signed catalog cache;
+- a source screen and package review screen for direct GitHub installs;
+- managed source, version, integrity, update, and remove fields on the existing Plugins settings page;
+- update and revocation notices that link to release or incident details;
+- recovery actions for failed reloads and retained rollback copies.
+
+Keep enablement and permission grants in the existing Plugins settings page. An install button must
+not enable a plugin or grant `net`.
+
+Update `docs/plugins/index.md` with official, direct, and manual install paths. Update
+`docs/plugins/api-reference.md` only when the runtime API changes. Add package and submission links
+to `CONTRIBUTING.md` and the root README. Update the three-repository rule in `CLAUDE.md` so it names
+the registry schema and site marketplace.
+
+The app startup path must parse a `qrate://` argument before it opens the normal window. Add one
+strict URI parser with unit tests. Both initial launch and existing-process handoff must use the same
+parsed command type.
+
+Package integration includes:
+
+- NSIS URL protocol keys and uninstall cleanup;
+- MSI protocol registration for managed Windows deployments;
+- `CFBundleURLTypes` in the macOS bundle;
+- `x-scheme-handler/qrate` in the Linux desktop file;
+- a local per-user handoff for a second qrate process;
+- focus and install-review routing in the primary process.
+
+Portable builds cannot reliably register a protocol handler. Document manual registration as
+unsupported in V1 and keep the website fallback visible.
+
+Add test layers:
+
+1. Unit tests cover URI, schema, version, source identity, and permission delta rules.
+2. Archive tests cover every hostile fixture.
+3. Local HTTP tests cover catalog, download, cancellation, timeout, and changed bytes.
+4. Integration tests cover install, update, rollback, conflict, and removal.
+5. Packaging smoke tests inspect each platform artifact for protocol registration.
+6. Manual release tests cover a closed app, an open app, an offline app, and a missing app.
+
+Do not add anonymous marketplace telemetry in V1. Existing Cloudflare page analytics can measure site
+traffic. Support reports and registry CI failures are enough for the first rollout.
+
+### `qrate` `site` branch: marketplace and author documentation
+
+The site is an Astro 7 and Starlight project deployed by Cloudflare Workers Builds. It already
+fetches qrate releases at build time. The marketplace must follow the same static-build model.
+
+Add this site structure:
+
+```text
+src/
+  components/
+    PluginCard.astro
+    PluginInstallButton.astro
+    PluginPermissionList.astro
+  lib/
+    plugins.ts
+  pages/
+    plugins/
+      index.astro
+      [id].astro
+      submit.astro
+public/
+  plugin-assets/
+```
+
+`src/lib/plugins.ts` fetches `catalog.json` and `catalog.json.sig` at build time. It verifies the
+signature with Node crypto before it returns records. It validates the catalog schema version and
+fails a production build on a bad signature, bad schema, duplicate ID, or missing required field.
+Local development can use a committed fixture through `QRATE_PLUGIN_CATALOG_URL`.
+
+Do not copy registry records into the site branch. Do not fetch the catalog in the visitor's browser.
+Astro must prerender the browse and detail pages so search engines, no-script users, and the MCP/docs
+surfaces receive complete content.
+
+`/plugins` contains:
+
+- a title and a short explanation of catalog trust;
+- client-side search over the prerendered records;
+- category and permission filters;
+- compatibility, version, publisher, license, and update date on each card;
+- a clear revoked or incompatible state;
+- links to author source, support, and the submission guide.
+
+`/plugins/[id]` contains:
+
+- full listing metadata and screenshots;
+- current version and qrate API compatibility;
+- requested permissions with plain descriptions;
+- release notes, license, publisher, source, and support links;
+- an **Open in qrate** button for an active compatible release;
+- a copyable direct link and manual instructions as fallbacks;
+- the exact Official catalog wording and trust explanation;
+- revocation details instead of an install button for a revoked release.
+
+`PluginInstallButton.astro` creates only this stable link:
+
+```text
+qrate://plugin/install?source=registry&id=<percent-encoded-id>
+```
+
+Do not put an artifact URL, version, hash, or title in the URI. qrate gets current signed data from
+the registry and opens a review screen. Add a visible source link beside the button because browsers
+do not report custom-protocol failure consistently.
+
+`/plugins/submit` explains the author flow and links to the template, registry issue form, registry
+contribution guide, and package schema. Keep the API reference in the synced qrate user docs. Put
+marketplace submission instructions on the site because they span repositories.
+
+Replace the hard-coded `plugins` array on the home page with catalog-backed featured plugin cards.
+Keep the template and **Write your own** cards as separate author calls to action. Change the current
+folder-install wording to discovery wording, and retain a manual-install link.
+
+Add **Plugins** to the main navigation and footer. Add catalog pages to the sitemap and structured
+data. Use `SoftwareApplication` or `SoftwareSourceCode` metadata only where the fields are accurate.
+Do not add rating markup without real ratings.
+
+The site already syncs user docs from `main:docs/`. Update those docs in qrate first, then run
+`bun run sync-docs` on the site branch. Never hand-edit a generated copy under
+`src/content/docs/docs/`.
+
+The registry publication job triggers the existing Cloudflare deploy hook after it publishes the
+signed catalog. This requires no site commit. The Cloudflare build fetches the new catalog and
+prerenders the pages. Keep the release-triggered rebuild because release pages still use build-time
+GitHub data.
+
+Add build tests for:
+
+- a valid signed fixture;
+- a bad signature;
+- a revoked plugin;
+- no plugins;
+- duplicate IDs;
+- a missing screenshot;
+- link generation with reserved characters;
+- mobile and keyboard access for search and filters.
+
+The production build must fail rather than publish stale marketplace data after a signature or
+schema error. Cloudflare keeps the last successful deployment online.
+
+## Cross-repository contracts and order
+
+Three files are public contracts:
+
+| Contract | Source of truth | Consumers |
+| --- | --- | --- |
+| `qrate-plugin.json` schema | Registry `schemas/package.schema.json` | Template, author repositories, qrate |
+| Signed `catalog.json` schema | Registry `schemas/catalog.schema.json` | qrate, site |
+| `qrate://plugin/install` URI | qrate parser tests and ADR | Site |
+
+Use versioned fixture bundles to keep consumers in step. Tag the registry contract as `v1` before
+qrate or the site consumes a production URL. Pin CI downloads to that tag or a commit, not `main`.
+
+Implement the work in this dependency order:
+
+1. Create schemas, fixtures, and unsigned catalog generation in the registry.
+2. Add the package manifest and package check to the template.
+3. Publish the Islandora pilot artifact.
+4. Validate and merge the first registry record.
+5. Add catalog verification and local install tests to qrate.
+6. Add qrate UI after package operations pass without UI.
+7. Add the site against the signed test catalog.
+8. Add operating-system deep links after the app review route exists.
+9. Publish site install buttons only after packaged deep-link tests pass.
+10. Rehearse revocation and key rotation before launch.
+
+For a contract change, open linked pull requests. Merge the source-of-truth change first. Keep each
+consumer compatible with the old and new schema during the transition when possible.
+
+## Pull-request and repository checklist
+
+Use small pull requests that leave a testable state. Do not use one cross-repository launch pull
+request.
+
+| Order | Repository or branch | Pull request | Required result |
+| --- | --- | --- | --- |
+| 1 | `qrate-plugin-registry` | Bootstrap repository and schemas | Source records and fixtures validate without signing |
+| 2 | `qrate-plugin-template` | Add manifest and package checks | A tagged fixture produces the expected ZIP and checksum |
+| 3 | Islandora plugin | Adopt package contract | A real GitHub Release contains validated assets |
+| 4 | `qrate-plugin-registry` | Add Islandora and publication | GitHub Pages serves a signed V1 catalog |
+| 5 | `qrate` `main` | Add `plugin-package` foundation | Local tests install, update, reject, and roll back packages |
+| 6 | `qrate` `main` | Add discovery and management UI | Official and direct install flows work in a packaged app |
+| 7 | `qrate` `main` | Add deep-link and single-instance support | All packaged platforms open the same review route |
+| 8 | `qrate` `site` | Add marketplace pages | Static pages build from the signed catalog |
+| 9 | `qrate` `site` | Publish install buttons | Buttons appear only after packaged deep-link tests pass |
+| 10 | All affected repositories | Documentation and launch pass | Links, policies, fixtures, and runbooks agree |
+
+No marketplace change is required in `qrate-pi-extension`. The extension does not load, install, or
+describe Lua plugins. Add work there only if a later agent feature needs marketplace access.
 
 ## Implementation phases
 
