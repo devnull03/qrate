@@ -4,10 +4,12 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::combobox::{Combobox, ComboboxEvent, ComboboxState};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent};
-use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_component::menu::ContextMenuExt as _;
+use gpui_component::searchable_list::{SearchableListDelegate, SearchableListItem};
 use gpui_component::tab::{Tab, TabBar};
-use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_component::{ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, h_flex, v_flex};
 
 use crate::{
     Diagnostic, DiagnosticHooks, Diagnostics, Location, Scope, Severity, Source, severity_color,
@@ -45,6 +47,77 @@ impl Filter {
         }
     }
 }
+
+#[derive(Clone, PartialEq)]
+struct SourceItem(SharedString);
+
+struct SourceItems(Vec<SourceItem>);
+
+impl SearchableListDelegate for SourceItems {
+    type Item = SourceItem;
+
+    fn items_count(&self, _: usize) -> usize {
+        self.0.len()
+    }
+
+    fn item(&self, ix: IndexPath) -> Option<&Self::Item> {
+        self.0.get(ix.row)
+    }
+
+    fn position<V>(&self, value: &V) -> Option<IndexPath>
+    where
+        Self::Item: SearchableListItem<Value = V>,
+        V: PartialEq,
+    {
+        self.0
+            .iter()
+            .position(|item| item.value() == value)
+            .map(IndexPath::new)
+    }
+
+    fn perform_search(&mut self, _: &str, _: &mut Window, _: &mut App) -> Task<()> {
+        Task::ready(())
+    }
+
+    fn render_item(
+        &self,
+        _: IndexPath,
+        item: &Self::Item,
+        checked: bool,
+        _: &mut Window,
+        _: &mut App,
+    ) -> Option<AnyElement> {
+        Some(
+            h_flex()
+                .gap_1()
+                .child(
+                    Icon::new(IconName::Check)
+                        .xsmall()
+                        .when(!checked, |icon| icon.invisible()),
+                )
+                .child(item.0.clone())
+                .into_any_element(),
+        )
+    }
+}
+
+impl SearchableListItem for SourceItem {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.0.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.0
+    }
+
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        div().child(self.0.clone())
+    }
+}
+
+struct SourceFilterSub(#[allow(dead_code)] Subscription);
 
 /// One list entry, resolved out of the store once per change rather than once per frame. Colours
 /// are not cached here because they come from the theme, which can change without the store doing.
@@ -126,7 +199,10 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
             scope,
             wide,
             message: d.message.clone(),
-            source: d.source.label(),
+            source: match d.source {
+                Source::Note => SharedString::default(),
+                _ => d.source.label(),
+            },
             location: d.location.clone(),
             group: None,
             child,
@@ -169,11 +245,8 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
 pub struct ProblemsPanel {
     focus_handle: FocusHandle,
     filter: Filter,
-    /// Which producer's findings to show, or all of them. Severity says how loud a problem is;
-    /// this says who is talking — with a speller, a files check, an authority, and any number of
-    /// plugins all publishing into one list, "only show me the spelling" is the difference
-    /// between a list and a pile.
-    source: Option<SharedString>,
+    /// Sources unchecked in the multi-select filter. Empty means all diagnostic sources.
+    excluded_sources: BTreeSet<SharedString>,
     /// Distinct sources currently publishing, in display order. Only what is actually here, so
     /// the menu never offers a filter that would empty the list.
     sources: Rc<Vec<SharedString>>,
@@ -194,7 +267,7 @@ impl ProblemsPanel {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             filter: Filter::All,
-            source: None,
+            excluded_sources: BTreeSet::new(),
             sources: Rc::default(),
             rows: Rc::default(),
             counts: [0; 4],
@@ -212,62 +285,82 @@ impl ProblemsPanel {
     /// and the tab counts have to agree — a tab reading "Errors (12)" over a list of two is worse
     /// than no count at all.
     fn admits_source(&self, d: &crate::Diagnostic) -> bool {
-        self.source
-            .as_ref()
-            .is_none_or(|wanted| &d.source.label() == wanted)
+        !self.excluded_sources.contains(&d.source.label())
     }
 
-    /// The "which producer" dropdown. Hidden until something is publishing, so a project with
-    /// only spelling findings doesn't grow a menu with one entry in it.
-    fn source_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (sources, selected, panel) = (self.sources.clone(), self.source.clone(), cx.entity());
-        let label = selected
-            .clone()
-            .unwrap_or_else(|| SharedString::from("All sources"));
-
-        div().pr_1().when(sources.len() > 1, |el| {
-            el.child(
-                Button::new("problems-source")
-                    .ghost()
-                    .small()
-                    .label(label)
-                    .dropdown_menu(move |menu, _window, _cx| {
-                        let pick =
-                            |menu: PopupMenu,
-                             name: Option<SharedString>,
-                             panel: &Entity<ProblemsPanel>| {
-                                let (panel, chosen) = (panel.clone(), name.clone());
-                                menu.item(
-                                    PopupMenuItem::new(
-                                        name.unwrap_or_else(|| SharedString::from("All sources")),
-                                    )
-                                    .on_click(
-                                        move |_, _, cx| {
-                                            panel.update(cx, |this, cx| {
-                                                this.source = chosen.clone();
-                                                this.refresh(cx);
-                                                cx.notify();
-                                            });
-                                        },
-                                    ),
-                                )
-                            };
-                        let menu = pick(menu, None, &panel).separator();
-                        sources
-                            .iter()
-                            .fold(menu, |menu, name| pick(menu, Some(name.clone()), &panel))
-                    }),
-            )
+    fn source_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sources = self.sources.clone();
+        let excluded = self.excluded_sources.clone();
+        let panel = cx.entity();
+        let state = window.use_keyed_state("problems-source-filter", cx, |window, cx| {
+            ComboboxState::new(SourceItems(Vec::new()), Vec::new(), window, cx)
+                .multiple(true)
+                .searchable(false)
+        });
+        window.use_keyed_state("problems-source-sub", cx, |_window, cx| {
+            SourceFilterSub(cx.subscribe(&state, move |_, _, event, cx| {
+                let ComboboxEvent::Change(kept) = event else {
+                    return;
+                };
+                panel.update(cx, |this, cx| {
+                    this.excluded_sources = this
+                        .sources
+                        .iter()
+                        .filter(|source| !kept.contains(source))
+                        .cloned()
+                        .collect();
+                    this.refresh(cx);
+                    cx.notify();
+                });
+            }))
+        });
+        let cached = window.use_keyed_state("problems-source-items", cx, |_, _| Vec::new());
+        if cached.read(cx).as_slice() != sources.as_slice() {
+            state.update(cx, |state, cx| {
+                state.set_items(
+                    SourceItems(sources.iter().cloned().map(SourceItem).collect()),
+                    window,
+                    cx,
+                );
+            });
+            cached.update(cx, |cached, _| *cached = sources.to_vec());
+        }
+        let kept: Vec<_> = sources
+            .iter()
+            .filter(|source| !excluded.contains(*source))
+            .cloned()
+            .collect();
+        let selected = state.read(cx).selected_values();
+        if selected.len() != kept.len() || !kept.iter().all(|source| selected.contains(source)) {
+            state.update(cx, |state, cx| {
+                state.set_selected_indices(
+                    sources
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(ix, source)| {
+                            (!excluded.contains(source)).then_some(IndexPath::new(ix))
+                        })
+                        .collect::<Vec<_>>(),
+                    window,
+                    cx,
+                );
+            });
+        }
+        div().w_48().pr_1().when(sources.len() > 1, |element| {
+            element.child(Combobox::new(&state).placeholder("Filter sources").small())
         })
     }
 
     fn refresh(&mut self, cx: &App) {
         let mut sources: Vec<SharedString> = Diagnostics::all(cx)
             .iter()
+            .filter(|d| d.source != Source::Note)
             .map(|d| d.source.label())
             .collect();
         sources.sort();
         sources.dedup();
+        self.excluded_sources
+            .retain(|source| sources.contains(source));
         self.sources = Rc::new(sources);
 
         self.counts = Filter::ALL.map(|f| {
@@ -317,7 +410,7 @@ impl Panel for ProblemsPanel {
 }
 
 impl Render for ProblemsPanel {
-    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.rows.clone();
         let panel_handle = cx.entity();
         let expanded = self.expanded.clone();
@@ -360,7 +453,7 @@ impl Render for ProblemsPanel {
                                 cx.notify();
                             })),
                     )
-                    .child(self.source_menu(cx)),
+                    .child(self.source_menu(window, cx)),
             )
             .when(rows.is_empty(), |panel| {
                 panel.child(div().p_3().text_color(muted).child("No problems"))
@@ -750,6 +843,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn source_labels_are_descriptive_and_notes_are_not_diagnostic_sources() {
+        for (key, label) in [
+            ("spell", "Spelling"),
+            ("capitalization", "Capitalization"),
+            ("files", "Missing files"),
+            ("date", "Date format"),
+            ("value variants", "Value variants"),
+        ] {
+            assert_eq!(Source::Validator(key.into()).label(), label);
+        }
+        assert_eq!(Source::Note.label(), "User notes");
+    }
+
     /// Picking a source narrows the list *and* the tab counts: a tab reading "Errors (2)" over a
     /// list showing one is worse than no count at all.
     #[gpui::test]
@@ -779,22 +886,39 @@ mod tests {
                     cx,
                 );
             }
+            Diagnostics::set(
+                &Source::Note,
+                DATASET_MAIN,
+                vec![Diagnostic {
+                    location: at(3),
+                    severity: Severity::Note,
+                    source: Source::Note,
+                    message: "user note".into(),
+                    group: None,
+                    filed: None,
+                }],
+                cx,
+            );
         });
 
         let (panel, cx) = cx.add_window_view(ProblemsPanel::new);
         panel.update(cx, |this, cx| {
             assert_eq!(this.sources.len(), 2, "both producers are offered");
-            assert_eq!(this.rows.len(), 3);
-            assert_eq!(this.counts[0], 3, "the All tab counts everything");
+            assert_eq!(this.rows.len(), 4);
+            assert_eq!(this.counts[0], 4, "the All tab counts everything");
 
-            this.source = Some("files".into());
+            this.excluded_sources.insert("Spelling".into());
             this.refresh(cx);
-            assert_eq!(this.rows.len(), 1, "only the files finding survives");
-            assert_eq!(this.counts[0], 1, "and the tab count agrees");
+            assert_eq!(
+                this.rows.len(),
+                2,
+                "the files finding and user note survive"
+            );
+            assert_eq!(this.counts[0], 2, "and the tab count agrees");
 
-            this.source = None;
+            this.excluded_sources.clear();
             this.refresh(cx);
-            assert_eq!(this.rows.len(), 3, "clearing the filter brings them back");
+            assert_eq!(this.rows.len(), 4, "clearing the filter brings them back");
         });
     }
 }

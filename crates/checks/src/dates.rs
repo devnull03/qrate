@@ -6,7 +6,9 @@
 //! value this rejects is usually prose — `circa 1987`, `May 1987`, `1987-5-3` — which is exactly
 //! what an ingest would choke on.
 
-use diagnostics::{ColumnInfo, ColumnValidator, Fix, FixProviders, Location, Severity};
+use diagnostics::{
+    ColumnInfo, ColumnValidator, ColumnValues, Fix, FixProviders, Location, Severity,
+};
 use gpui::{App, SharedString};
 use settings::columns::ColumnType;
 
@@ -62,23 +64,24 @@ impl ColumnValidator for DateCheck {
     fn validate(
         &self,
         column: &ColumnInfo,
-        values: &[SharedString],
+        values: ColumnValues<'_>,
     ) -> Vec<diagnostics::ColumnFinding> {
         if ColumnType::from_declared(column.data_type) != ColumnType::Date {
             return Vec::new();
         }
         values
             .iter()
-            .enumerate()
-            .filter(|(_, value)| !value.trim().is_empty())
-            .filter(|(_, value)| !valid(value.trim()))
-            .map(|(row, value)| {
-                (
-                    row,
-                    Severity::Error,
-                    format!("“{}” is not an EDTF date", value.trim()).into(),
-                )
-                    .into()
+            .flat_map(|cell| {
+                cell.parts()
+                    .filter(|value| !valid(value))
+                    .map(move |value| {
+                        (
+                            cell.row,
+                            Severity::Error,
+                            format!("“{value}” is not an EDTF date").into(),
+                        )
+                            .into()
+                    })
             })
             .collect()
     }
