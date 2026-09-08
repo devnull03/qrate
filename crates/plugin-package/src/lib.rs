@@ -740,15 +740,26 @@ fn validate_manifest(manifest: &PackageManifest, root: &Path) -> Result<()> {
 }
 
 fn validate_id(id: &str) -> Result<()> {
+    let segments: Vec<_> = id.split('.').collect();
     ensure!(
-        !id.is_empty()
-            && id.bytes().all(|byte| byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || b"._-".contains(&byte))
-            && id.contains('.')
-            && !id.starts_with(['.', '-', '_'])
-            && !id.ends_with(['.', '-', '_'])
-            && !id.contains(".."),
+        segments.len() >= 2
+            && id.len() <= 128
+            && segments.iter().all(|segment| {
+                !segment.is_empty()
+                    && segment
+                        .as_bytes()
+                        .first()
+                        .is_some_and(u8::is_ascii_alphanumeric)
+                    && segment
+                        .as_bytes()
+                        .last()
+                        .is_some_and(u8::is_ascii_alphanumeric)
+                    && segment.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || matches!(byte, b'-' | b'_')
+                    })
+            }),
         "invalid plugin ID"
     );
     Ok(())
@@ -944,6 +955,12 @@ mod tests {
             )
             .is_err()
         );
+        for id in ["plugin", "org.-plugin", "org.plugin-", "org..plugin"] {
+            assert!(
+                parse_install_link(&format!("qrate://plugin/install?source=registry&id={id}"))
+                    .is_err()
+            );
+        }
     }
 
     #[test]
