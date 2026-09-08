@@ -26,10 +26,11 @@ export async function catalogArtifactResponse(artifact: CatalogArtifact): Promis
 }
 
 export async function catalogSchemaResponse(schema: string): Promise<Response> {
-  if (!(['catalog', 'listing', 'package'] as string[]).includes(schema)) {
+  const name = schema.endsWith('.schema') ? schema.slice(0, -'.schema'.length) : schema;
+  if (!(['catalog', 'listing', 'package'] as string[]).includes(name)) {
     return new Response('Not found\n', { status: 404 });
   }
-  const body = await env.PLUGIN_CATALOG.get(`schema:${schema as CatalogSchema}`);
+  const body = await env.PLUGIN_CATALOG.get(`schema:${name as CatalogSchema}`);
   if (!body) return unavailable();
 
   return new Response(body, {

@@ -88,8 +88,9 @@ The Worker serves the catalog from Cloudflare KV at these paths:
 - `/plugins/catalog-status.json`
 - `/plugins/schemas/<name>.json`
 
-Set `QRATE_PLUGIN_CATALOG_PUBLIC_KEY` in the Cloudflare build environment. Its
-value is the base64url `x` value from the registry Ed25519 public JWK.
+The site source pins the trusted catalog public key. Set
+`QRATE_PLUGIN_CATALOG_PUBLIC_KEY` in the build environment only to test a
+planned key rotation.
 
 `QRATE_PLUGIN_CATALOG_URL` is optional. It defaults to
 `https://qrate.dvnl.work/plugins/catalog.json`.
@@ -98,8 +99,8 @@ The build fetches `catalog.json.sig` beside the catalog. It verifies the SHA-256
 key ID, and signature before it parses any records. A bad catalog fails the
 build, so Cloudflare keeps the last successful deployment online.
 
-If the public key is absent, the site builds an empty pre-launch catalog page.
-This lets the site deploy before the registry publishes its first signed catalog.
+The site build fails if the configured catalog cannot pass signature and schema
+checks. Cloudflare then keeps the last successful deployment online.
 
 ## Theming
 

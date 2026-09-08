@@ -50,6 +50,7 @@ type Signature = {
 
 let catalog: Promise<PluginCatalog> | undefined;
 const MAX_CATALOG_BYTES = 5 * 1024 * 1024;
+const CATALOG_PUBLIC_KEY = 'FSZ_woODWVPRGLOa6lH3e8tJFovJUnkol-SIo-PGVWU';
 const PLUGIN_ID = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)+$/;
 const SHA256 = /^[a-f0-9]{64}$/i;
 const ACCEPTED_LICENSES = new Set([
@@ -158,9 +159,7 @@ const parsePlugin = (value: unknown): Plugin => {
 async function loadCatalog(): Promise<PluginCatalog> {
   const url =
     process.env.QRATE_PLUGIN_CATALOG_URL ?? 'https://qrate.dvnl.work/plugins/catalog.json';
-  const publicKey = process.env.QRATE_PLUGIN_CATALOG_PUBLIC_KEY;
-
-  if (!publicKey) return { configured: false, plugins: [] };
+  const publicKey = process.env.QRATE_PLUGIN_CATALOG_PUBLIC_KEY ?? CATALOG_PUBLIC_KEY;
 
   const [catalogResponse, signatureResponse] = await Promise.all([
     fetch(url, { signal: AbortSignal.timeout(15_000) }),
