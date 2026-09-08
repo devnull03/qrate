@@ -15,6 +15,7 @@ simplelog.workspace = true
 os_info.workspace = true
 sysinfo.workspace = true
 async-channel = "2"
+single-instance = "0.3.3"
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true

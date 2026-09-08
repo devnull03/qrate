@@ -42,6 +42,12 @@ struct DirectReview {
     archive: PathBuf,
 }
 
+impl Drop for DirectReview {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.archive);
+    }
+}
+
 pub struct MarketplaceWindow {
     catalog: CatalogState,
     direct: DirectState,

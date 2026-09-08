@@ -98,8 +98,14 @@ pub struct Env {
     pub storage: Json,
 }
 
+pub struct PackageDescriptor {
+    pub api_version: u64,
+    pub permissions: Vec<String>,
+}
+
 struct Loaded {
     lua: Lua,
+    api_version: u64,
     /// Overrides the file-derived id when the descriptor declares one.
     name: Option<SharedString>,
     description: Option<SharedString>,
@@ -166,6 +172,31 @@ impl LuaPlugin {
             app: Mutex::new(SharedString::default()),
             shared,
         }
+    }
+
+    pub fn load_packaged(
+        id: &str,
+        source: &str,
+        env: Env,
+        package: Result<Option<PackageDescriptor>, String>,
+    ) -> Self {
+        let mut plugin = Self::load(id, source, env);
+        match (package, plugin.state.as_ref()) {
+            (Err(error), _) => plugin.state = Err(error),
+            (Ok(Some(package)), Ok(loaded))
+                if loaded.api_version != package.api_version
+                    || loaded
+                        .permissions
+                        .iter()
+                        .map(SharedString::as_ref)
+                        .ne(package.permissions.iter().map(String::as_str)) =>
+            {
+                plugin.state =
+                    Err("runtime descriptor does not match qrate-plugin.json".to_string());
+            }
+            _ => {}
+        }
+        plugin
     }
 
     /// This plugin's storage if it changed since the last call, and nothing when it did not — so
@@ -507,6 +538,7 @@ fn build(id: &str, source: &str, env: &Env, shared: &Shared) -> mlua::Result<Loa
     }
     Ok(Loaded {
         lua,
+        api_version: declared,
         // An empty `name` is no name at all, so the file it came from stays the identity rather
         // than the plugin becoming unaddressable.
         name: descriptor
@@ -870,7 +902,7 @@ fn setting_spec(item: Table) -> mlua::Result<SettingSpec> {
 #[cfg(test)]
 mod tests {
     use crate::plugin::HTTP_BUDGET;
-    use crate::{Env, LuaPlugin, PERMISSION_NET, Writes};
+    use crate::{Env, LuaPlugin, PERMISSION_NET, PackageDescriptor, Writes};
     use diagnostics::{ColumnInfo, ColumnValidator, Severity};
     use gpui::SharedString;
     use plugin_api::{Bar, BarAction, CommandContext, MenuTarget, SettingKind, SettingScope, Side};
@@ -881,6 +913,39 @@ mod tests {
     /// something else. `an_ungranted_plugin_cannot_reach_the_network` covers the other case.
     fn plugin(source: &str) -> LuaPlugin {
         LuaPlugin::load("test", source, granted())
+    }
+
+    #[test]
+    fn packaged_plugin_must_match_its_static_descriptor() {
+        let source = r#"return {
+            api_version = 1,
+            permissions = { "net" },
+            validate = function() return {} end,
+        }"#;
+        let matching = LuaPlugin::load_packaged(
+            "org.example.plugin",
+            source,
+            Env::default(),
+            Ok(Some(PackageDescriptor {
+                api_version: 1,
+                permissions: vec!["net".to_string()],
+            })),
+        );
+        assert_eq!(matching.load_error(), None);
+
+        let mismatch = LuaPlugin::load_packaged(
+            "org.example.plugin",
+            source,
+            Env::default(),
+            Ok(Some(PackageDescriptor {
+                api_version: 1,
+                permissions: Vec::new(),
+            })),
+        );
+        assert_eq!(
+            mismatch.load_error(),
+            Some("runtime descriptor does not match qrate-plugin.json")
+        );
     }
 
     fn granted() -> Env {

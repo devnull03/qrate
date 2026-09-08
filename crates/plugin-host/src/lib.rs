@@ -1,14 +1,10 @@
 //! Loads Lua plugins from a folder, runs them off the UI thread, and publishes what they
 //! contribute to the app's menus, bars, and Settings window.
 //!
-//! Neovim's model, not an extension marketplace: a plugin is a `<name>.lua` file or a `<name>/`
-//! directory containing `init.lua`, dropped in by hand, discovered on startup and on demand. There
-//! is no manifest — the table the script returns *is* the descriptor, and it may declare a `name`
-//! to override the one on disk. That name is the plugin's identity, which is what the Problems
-//! panel shows, what its findings are replaced by, and what its settings are stored under, so
-//! renaming a plugin orphans whatever it had already stored. A folder plugin may `require` any
-//! other `.lua` file beside its `init.lua`, and nothing else — the host reads the folder, so the
-//! sandbox never gains a way to name a file itself.
+//! A plugin is a `<name>.lua` file or a `<name>/` directory containing `init.lua`, discovered on
+//! startup and on demand. Managed packages add static `qrate-plugin.json`; the Lua table remains
+//! the runtime descriptor. A folder plugin may `require` sibling `.lua` files, and nothing else —
+//! the host reads the folder, so the sandbox never gains a way to name a file itself.
 
 mod agent_program;
 mod plugin;
@@ -17,7 +13,7 @@ pub use agent_program::{
     AgentDiagnostic, AgentProgramError, AgentProgramOutput, AgentSnapshot, DEADLINE, MAX_OUTPUT,
     MEMORY_LIMIT, run_agent_program, validate_agent_program,
 };
-pub use plugin::{Env, LuaPlugin, PERMISSION_NET, Writes};
+pub use plugin::{Env, LuaPlugin, PERMISSION_NET, PackageDescriptor, Writes};
 // So the Settings window can render a plugin's knobs without depending on `plugin-api` directly.
 pub use plugin_api::{SettingKind, SettingScope, SettingSpec};
 
@@ -156,7 +152,7 @@ pub fn reload(cx: &mut App) {
     // are keyed by the name on disk, which is also the only name a user has to go on before a
     // plugin has successfully loaded.
     let (mut loaded, mut off) = (Vec::new(), Vec::new());
-    for (id, source, modules) in discover() {
+    for (id, source, modules, package) in discover() {
         let state = settings::plugins::state(&id, cx);
         // Switched-off plugins are remembered by name and nothing else: the Settings page has to be
         // able to offer one back, and a VM is exactly what must not be built to do that.
@@ -169,7 +165,9 @@ pub fn reload(cx: &mut App) {
             granted: state.granted,
             storage: read_storage(&id),
         };
-        loaded.push(Arc::new(LuaPlugin::load(&id, &source, env)));
+        loaded.push(Arc::new(LuaPlugin::load_packaged(
+            &id, &source, env, package,
+        )));
     }
 
     let contributions = loaded
@@ -624,8 +622,18 @@ fn invoke(plugin: &SharedString, command: &SharedString, ctx: &CommandContext, c
     .detach();
 }
 
-/// A plugin as it was found on disk: its id, its entry source, and the modules beside it.
-type Discovered = (String, String, Vec<(String, String)>);
+/// A plugin as it was found on disk: its id, entry source, sibling modules, and package contract.
+type Discovered = (
+    String,
+    String,
+    Vec<(String, String)>,
+    Result<Option<PackageDescriptor>, String>,
+);
+
+struct PackageOnDisk {
+    descriptor: PackageDescriptor,
+    entry: String,
+}
 
 /// Every plugin under the searched roots. A plugin is either a
 /// `<name>.lua` file or a `<name>/init.lua` folder — the folder form for anything that outgrows one
@@ -647,7 +655,7 @@ fn discover() -> Vec<Discovered> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let (id, file) = if path.is_dir() {
+            let (id, default_file) = if path.is_dir() {
                 (entry.file_name(), path.join("init.lua"))
             } else if path.extension().is_some_and(|ext| ext == "lua") {
                 match path.file_stem() {
@@ -660,11 +668,25 @@ fn discover() -> Vec<Discovered> {
             // First form wins, so converting `foo.lua` into `foo/` and forgetting to delete the
             // file leaves one plugin rather than two fighting over one settings bucket.
             let id = id.to_string_lossy().into_owned();
-            if found.iter().any(|(seen, _, _)| seen == &id) {
+            if found.iter().any(|(seen, _, _, _)| seen == &id) {
                 continue;
             }
+            let package = if path.is_dir() {
+                package_on_disk(&path, &id)
+            } else {
+                Ok(None)
+            };
+            let file = package
+                .as_ref()
+                .ok()
+                .and_then(Option::as_ref)
+                .map_or(default_file, |package| path.join(&package.entry));
+            let descriptor = package.map(|package| package.map(|package| package.descriptor));
             match fs::read_to_string(&file) {
-                Ok(source) => found.push((id, source, modules(&path))),
+                Ok(source) => {
+                    let entry_name = file.file_stem().and_then(|name| name.to_str());
+                    found.push((id, source, modules(&path, entry_name), descriptor));
+                }
                 // A `<name>/` with no `init.lua` is the usual cause, and vanishing without a word
                 // is what makes it hard to spot.
                 Err(err) => log::warn!("skipping plugin {id}: {} — {err}", file.display()),
@@ -674,9 +696,56 @@ fn discover() -> Vec<Discovered> {
     found
 }
 
+fn package_on_disk(root: &Path, folder_id: &str) -> Result<Option<PackageOnDisk>, String> {
+    let bytes = match fs::read(root.join("qrate-plugin.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("could not read qrate-plugin.json: {error}")),
+    };
+    let manifest: Json = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("invalid qrate-plugin.json: {error}"))?;
+    let id = manifest
+        .get("id")
+        .and_then(Json::as_str)
+        .ok_or_else(|| "qrate-plugin.json has no ID".to_string())?;
+    if id != folder_id {
+        return Err("package ID does not match its installation folder".to_string());
+    }
+    let entry = manifest
+        .get("entry")
+        .and_then(Json::as_str)
+        .ok_or_else(|| "qrate-plugin.json has no entry".to_string())?;
+    if Path::new(entry).file_name().and_then(|name| name.to_str()) != Some(entry) {
+        return Err("package entry must be a root file".to_string());
+    }
+    let api_version = manifest
+        .get("api_version")
+        .and_then(Json::as_u64)
+        .ok_or_else(|| "qrate-plugin.json has no API version".to_string())?;
+    let permissions = manifest
+        .get("permissions")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "qrate-plugin.json has no permissions".to_string())?
+        .iter()
+        .map(|permission| {
+            permission
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "package permission is not a string".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(PackageOnDisk {
+        descriptor: PackageDescriptor {
+            api_version,
+            permissions,
+        },
+        entry: entry.to_string(),
+    }))
+}
+
 /// Every other `.lua` file beside a folder plugin's `init.lua`, as `(name, source)` — what its
 /// `require` can reach. A single-file plugin has none, and neither form searches below one level.
-fn modules(dir: &Path) -> Vec<(String, String)> {
+fn modules(dir: &Path, entry_name: Option<&str>) -> Vec<(String, String)> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -685,7 +754,8 @@ fn modules(dir: &Path) -> Vec<(String, String)> {
         .filter_map(|entry| {
             let path = entry.path();
             let name = path.file_stem()?.to_string_lossy().into_owned();
-            if name == "init" || path.extension().is_none_or(|ext| ext != "lua") {
+            if entry_name == Some(name.as_str()) || path.extension().is_none_or(|ext| ext != "lua")
+            {
                 return None;
             }
             fs::read_to_string(&path)
