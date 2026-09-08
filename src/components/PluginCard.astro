@@ -12,11 +12,20 @@ const revoked = plugin.current.status === 'revoked';
   data-permission={plugin.current.permissions.length ? plugin.current.permissions.join(' ') : 'none'}
 >
   <div class="mb-4 flex items-start justify-between gap-4">
-    <div
-      class="flex size-10 shrink-0 items-center justify-center bg-ink font-mono text-sm font-semibold text-paper"
-    >
-      {plugin.name.slice(0, 2)}
-    </div>
+    {
+      plugin.icon ? (
+        <img
+          src={plugin.icon}
+          alt=""
+          loading="lazy"
+          class="size-10 shrink-0 border border-rule object-cover"
+        />
+      ) : (
+        <div class="flex size-10 shrink-0 items-center justify-center bg-ink font-mono text-sm font-semibold text-paper">
+          {plugin.name.slice(0, 2)}
+        </div>
+      )
+    }
     <span
       class:list={[
         'border px-2 py-1 font-mono text-[9.5px] font-semibold uppercase tracking-[0.08em]',

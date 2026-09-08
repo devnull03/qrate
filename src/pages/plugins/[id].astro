@@ -26,7 +26,18 @@ const published = new Intl.DateTimeFormat('en', { dateStyle: 'long' }).format(
     <a href="/plugins" class="mb-5 inline-block font-mono text-[11px] text-dim">← All plugins</a>
     <div class="grid gap-6 md:grid-cols-[1fr_auto] md:items-end">
       <div>
-        <div class="eyebrow mb-3">Official catalog · {plugin.publisher}</div>
+        <div class="mb-4 flex items-center gap-4">
+          {
+            plugin.icon && (
+              <img
+                src={plugin.icon}
+                alt=""
+                class="size-14 shrink-0 border border-rule object-cover md:size-16"
+              />
+            )
+          }
+          <div class="eyebrow">Official catalog · {plugin.publisher}</div>
+        </div>
         <h1 class="m-0 mb-3 text-[36px] font-semibold leading-none tracking-[-0.04em] md:text-[52px]">
           {plugin.name}
         </h1>
@@ -57,11 +68,35 @@ const published = new Intl.DateTimeFormat('en', { dateStyle: 'long' }).format(
       <h2 class="mb-3 mt-9 text-2xl font-semibold">Permissions</h2>
       <PluginPermissionList permissions={plugin.current.permissions} />
 
+      {
+        plugin.screenshots.length > 0 && (
+          <>
+            <h2 class="mb-3 mt-9 text-2xl font-semibold">Screenshots</h2>
+            <div class="grid gap-4 sm:grid-cols-2">
+              {plugin.screenshots.map((screenshot) => (
+                <a href={screenshot}>
+                  <img
+                    src={screenshot}
+                    alt={`${plugin.name} screenshot`}
+                    loading="lazy"
+                    class="w-full border border-rule"
+                  />
+                </a>
+              ))}
+            </div>
+          </>
+        )
+      }
+
       <div class="mt-9 border border-rule p-4">
         <h2 class="m-0 mb-2 text-lg font-semibold">Before installation</h2>
         <p class="m-0 text-[13.5px] leading-[1.65] text-body">
           qrate opens a review screen before it installs anything. New plugins stay disabled until
           you enable them. qrate asks separately before it grants optional permissions.
+        </p>
+        <p class="m-0 mt-2 text-[13.5px] leading-[1.65] text-body">
+          The qrate installer registers the Open in qrate link. A source build does not register it.
+          For a source build, use Settings ▸ Plugins ▸ Install from GitHub.
         </p>
       </div>
     </article>
