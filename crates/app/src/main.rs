@@ -459,9 +459,17 @@ fn main() {
     // First, so failures in GPUI platform construction and startup still reach the log file.
     logging::init();
     let app = gpui_platform::application().with_assets(assets::Assets);
+    let initial_link = std::env::args().find(|argument| argument.starts_with("qrate://"));
+    let (url_sender, url_receiver) = async_channel::unbounded();
+    app.on_open_urls(move |urls| {
+        for url in urls {
+            let _ = url_sender.try_send(url);
+        }
+    });
 
     app.run(move |cx| {
         gpui_component::init(cx);
+        cx.register_url_scheme("qrate").detach();
 
         // Settings ------------------------------------
         let settings = load_app_settings().unwrap_or_default();
@@ -570,6 +578,13 @@ fn main() {
             cx.quit();
         });
 
+        cx.spawn(async move |cx| {
+            while let Ok(link) = url_receiver.recv().await {
+                cx.update(|cx| open_install_link(&link, cx));
+            }
+        })
+        .detach();
+
         // Flush before exit: writers debounce 450ms, and dock toggles/resizes never emit `LayoutChanged`.
         cx.on_app_quit(|cx| {
             flush_all_state(cx);
@@ -577,7 +592,23 @@ fn main() {
         })
         .detach();
 
-        // The launcher is the real startup window; it opens the main window or the wizard itself.
-        project_wizard::open_launcher_window(cx);
+        match initial_link {
+            Some(link) if open_install_link(&link, cx) => {}
+            // The launcher is the normal startup window; it opens the main window or the wizard.
+            _ => project_wizard::open_launcher_window(cx),
+        }
     });
+}
+
+fn open_install_link(link: &str, cx: &mut gpui::App) -> bool {
+    match plugin_package::parse_install_link(link) {
+        Ok(target) => {
+            plugin_marketplace::open_install_target(target, cx);
+            true
+        }
+        Err(error) => {
+            log::warn!("ignored invalid plugin install link: {error:#}");
+            false
+        }
+    }
 }

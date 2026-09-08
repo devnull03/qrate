@@ -22,6 +22,20 @@ pub const MAX_CATALOG_BYTES: usize = 5 * 1024 * 1024;
 pub const MAX_PACKAGE_BYTES: u64 = 100 * 1024 * 1024;
 pub const MAX_EXPANDED_BYTES: u64 = 500 * 1024 * 1024;
 pub const MAX_PACKAGE_FILES: usize = 10_000;
+pub const SUPPORTED_API_VERSION: u64 = 1;
+pub const ACCEPTED_LICENSES: &[&str] = &[
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC-BY-4.0",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "LGPL-3.0-only",
+    "LGPL-3.0-or-later",
+    "MIT",
+    "Unlicense",
+    "Zlib",
+];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PackageManifest {
@@ -138,6 +152,72 @@ pub enum InstallSource {
     DirectGithub,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InstallTarget {
+    Registry(String),
+    Github(String),
+}
+
+pub fn parse_install_link(value: &str) -> Result<InstallTarget> {
+    let url = reqwest::Url::parse(value).context("invalid qrate install link")?;
+    ensure!(
+        url.scheme() == "qrate"
+            && url.host_str() == Some("plugin")
+            && url.path() == "/install"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none(),
+        "unsupported qrate install link"
+    );
+    let pairs: Vec<_> = url.query_pairs().collect();
+    let one = |name: &str| -> Result<Option<String>> {
+        let values: Vec<_> = pairs
+            .iter()
+            .filter(|(key, _)| key == name)
+            .map(|(_, value)| value.to_string())
+            .collect();
+        ensure!(values.len() <= 1, "duplicate {name} parameter");
+        Ok(values.into_iter().next())
+    };
+    let source = one("source")?.context("install link has no source")?;
+    let allowed: &[&str] = match source.as_str() {
+        "registry" => &["source", "id"],
+        "github" => &["source", "repo"],
+        "url" => &["source", "release"],
+        _ => bail!("unsupported install source"),
+    };
+    ensure!(
+        pairs.iter().all(|(key, _)| allowed.contains(&key.as_ref())),
+        "install link has an unknown parameter"
+    );
+    match source.as_str() {
+        "registry" => {
+            let id = one("id")?.context("registry install link has no plugin ID")?;
+            validate_id(&id)?;
+            Ok(InstallTarget::Registry(id))
+        }
+        "github" => {
+            let repo = one("repo")?.context("GitHub install link has no repository")?;
+            let mut parts = repo.split('/');
+            let owner = parts.next().unwrap_or_default();
+            let repository = parts.next().unwrap_or_default();
+            ensure!(
+                !owner.is_empty() && !repository.is_empty() && parts.next().is_none(),
+                "GitHub repository must be owner/name"
+            );
+            let source = format!("https://github.com/{owner}/{repository}");
+            validate_github_url(&source)?;
+            Ok(InstallTarget::Github(source))
+        }
+        "url" => {
+            let release = one("release")?.context("GitHub install link has no release URL")?;
+            validate_github_url(&release)?;
+            Ok(InstallTarget::Github(release))
+        }
+        _ => unreachable!(),
+    }
+}
+
 pub fn public_key(base64url: &str) -> Result<VerifyingKey> {
     let bytes: [u8; 32] = URL_SAFE_NO_PAD
         .decode(base64url)
@@ -186,6 +266,34 @@ pub fn verify_catalog(bytes: &[u8], signature_bytes: &[u8], key: &VerifyingKey) 
 }
 
 pub fn fetch_catalog(url: &str, key: &VerifyingKey) -> Result<Catalog> {
+    let (bytes, signature) = fetch_catalog_files(url)?;
+    verify_catalog(&bytes, &signature, key)
+}
+
+pub fn fetch_catalog_cached(url: &str, key: &VerifyingKey, cache_root: &Path) -> Result<Catalog> {
+    let catalog_path = cache_root.join("catalog.json");
+    let signature_path = cache_root.join("catalog.json.sig");
+    match fetch_catalog_files(url).and_then(|(catalog, signature)| {
+        let verified = verify_catalog(&catalog, &signature, key)?;
+        fs::create_dir_all(cache_root)?;
+        write_bytes_atomic(&catalog_path, &catalog)?;
+        write_bytes_atomic(&signature_path, &signature)?;
+        Ok(verified)
+    }) {
+        Ok(catalog) => Ok(catalog),
+        Err(download_error) => {
+            let catalog = fs::read(&catalog_path)
+                .context("catalog refresh failed and no cached catalog is available")?;
+            let signature = fs::read(&signature_path)
+                .context("catalog refresh failed and no cached signature is available")?;
+            verify_catalog(&catalog, &signature, key).with_context(|| {
+                format!("catalog refresh failed ({download_error:#}) and cached catalog is invalid")
+            })
+        }
+    }
+}
+
+fn fetch_catalog_files(url: &str) -> Result<(Vec<u8>, Vec<u8>)> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()?;
@@ -193,7 +301,7 @@ pub fn fetch_catalog(url: &str, key: &VerifyingKey) -> Result<Catalog> {
         .context("could not download plugin catalog")?;
     let signature = bounded_response(client.get(format!("{url}.sig")).send()?, 64 * 1024)
         .context("could not download plugin catalog signature")?;
-    verify_catalog(&bytes, &signature, key)
+    Ok((bytes, signature))
 }
 
 fn bounded_response(response: reqwest::blocking::Response, limit: u64) -> Result<Vec<u8>> {
@@ -224,34 +332,15 @@ pub fn download_package(url: &str, output: &Path) -> Result<(String, u64)> {
 }
 
 pub fn resolve_github_release(source: &str) -> Result<DirectRelease> {
-    let url = reqwest::Url::parse(source).context("invalid GitHub URL")?;
-    ensure!(
-        url.scheme() == "https" && url.host_str() == Some("github.com"),
-        "only public HTTPS GitHub repositories are supported"
-    );
-    ensure!(
-        url.username().is_empty() && url.password().is_none(),
-        "GitHub URL must not contain credentials"
-    );
+    let url = validate_github_url(source)?;
     let parts: Vec<_> = url
         .path_segments()
         .into_iter()
         .flatten()
         .filter(|part| !part.is_empty())
         .collect();
-    ensure!(
-        parts.len() >= 2,
-        "GitHub URL must name an owner and repository"
-    );
     let owner = parts[0];
     let repository = parts[1].trim_end_matches(".git");
-    ensure!(
-        owner
-            .bytes()
-            .chain(repository.bytes())
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)),
-        "GitHub owner or repository is invalid"
-    );
 
     let endpoint = if parts.get(2..4) == Some(&["releases", "tag"]) && parts.len() == 5 {
         format!(
@@ -308,6 +397,42 @@ pub fn resolve_github_release(source: &str) -> Result<DirectRelease> {
     })
 }
 
+fn validate_github_url(source: &str) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(source).context("invalid GitHub URL")?;
+    ensure!(
+        url.scheme() == "https" && url.host_str() == Some("github.com"),
+        "only public HTTPS GitHub repositories are supported"
+    );
+    ensure!(
+        url.username().is_empty() && url.password().is_none(),
+        "GitHub URL must not contain credentials"
+    );
+    let parts: Vec<_> = url
+        .path_segments()
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty())
+        .collect();
+    ensure!(
+        parts.len() >= 2,
+        "GitHub URL must name an owner and repository"
+    );
+    let owner = parts[0];
+    let repository = parts[1].trim_end_matches(".git");
+    ensure!(
+        owner
+            .bytes()
+            .chain(repository.bytes())
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)),
+        "GitHub owner or repository is invalid"
+    );
+    ensure!(
+        parts.len() == 2 || (parts.get(2..4) == Some(&["releases", "tag"]) && parts.len() == 5),
+        "unsupported GitHub release URL"
+    );
+    Ok(url)
+}
+
 pub fn inspect_archive(archive: &Path) -> Result<PackageInspection> {
     let (sha256, bytes) = sha256_file(archive)?;
     ensure!(bytes <= MAX_PACKAGE_BYTES, "plugin package is too large");
@@ -332,6 +457,33 @@ pub fn install_archive(
     receipts_root: &Path,
     source: InstallSource,
     expected: Option<(&CatalogPlugin, &CatalogRelease)>,
+) -> Result<InstallReceipt> {
+    install_archive_inner(archive, plugins_root, receipts_root, source, expected, None)
+}
+
+pub fn install_direct_archive(
+    archive: &Path,
+    plugins_root: &Path,
+    receipts_root: &Path,
+    release: &DirectRelease,
+) -> Result<InstallReceipt> {
+    install_archive_inner(
+        archive,
+        plugins_root,
+        receipts_root,
+        InstallSource::DirectGithub,
+        None,
+        Some(release),
+    )
+}
+
+fn install_archive_inner(
+    archive: &Path,
+    plugins_root: &Path,
+    receipts_root: &Path,
+    source: InstallSource,
+    expected: Option<(&CatalogPlugin, &CatalogRelease)>,
+    direct: Option<&DirectRelease>,
 ) -> Result<InstallReceipt> {
     let (sha256, bytes) = sha256_file(archive)?;
     ensure!(bytes <= MAX_PACKAGE_BYTES, "plugin package is too large");
@@ -396,6 +548,24 @@ pub fn install_archive(
         !target.exists() || receipt_path.exists(),
         "an unmanaged plugin already uses this package ID"
     );
+    if let Some(installed) = read_receipt(receipts_root, &manifest.id)? {
+        ensure!(
+            installed.source == source,
+            "installed plugin comes from a different source"
+        );
+        if let Some((plugin, _)) = expected {
+            ensure!(
+                installed.repository == plugin.repository,
+                "installed plugin belongs to a different repository"
+            );
+        }
+        if let Some(release) = direct {
+            ensure!(
+                installed.repository == release.repository,
+                "installed plugin belongs to a different repository"
+            );
+        }
+    }
     let rollback = plugins_root.join(format!(".{}.rollback", manifest.id));
     if rollback.exists() {
         fs::remove_dir_all(&rollback)?;
@@ -418,11 +588,18 @@ pub fn install_archive(
         version: manifest.version,
         source,
         repository: expected.map_or_else(
-            || manifest.homepage.clone(),
+            || {
+                direct.map_or_else(
+                    || manifest.homepage.clone(),
+                    |release| release.repository.clone(),
+                )
+            },
             |(plugin, _)| plugin.repository.clone(),
         ),
-        artifact_url: expected
-            .map_or_else(String::new, |(_, release)| release.artifact_url.clone()),
+        artifact_url: expected.map_or_else(
+            || direct.map_or_else(String::new, |release| release.artifact_url.clone()),
+            |(_, release)| release.artifact_url.clone(),
+        ),
         sha256,
         bytes,
     };
@@ -474,7 +651,32 @@ fn validate_catalog(catalog: &Catalog) -> Result<()> {
     for plugin in &catalog.plugins {
         validate_id(&plugin.id)?;
         ensure!(ids.insert(&plugin.id), "duplicate plugin ID {}", plugin.id);
+        ensure!(!plugin.name.trim().is_empty(), "plugin name is empty");
+        ensure!(
+            ACCEPTED_LICENSES.contains(&plugin.license.as_str()),
+            "plugin {} uses an unsupported license",
+            plugin.id
+        );
+        ensure!(
+            plugin.current.api_version > 0 && plugin.current.api_version <= SUPPORTED_API_VERSION,
+            "plugin {} needs an unsupported API version",
+            plugin.id
+        );
+        ensure!(
+            plugin.current.bytes <= MAX_PACKAGE_BYTES,
+            "plugin {} package is too large",
+            plugin.id
+        );
         validate_sha256(&plugin.current.sha256)?;
+        validate_https_url(&plugin.repository)?;
+        validate_https_url(&plugin.current.release_url)?;
+        validate_https_url(&plugin.current.artifact_url)?;
+        ensure!(
+            plugin.current.status == ReleaseStatus::Revoked
+                || plugin.current.revocation_reason.is_none(),
+            "active plugin {} has a revocation reason",
+            plugin.id
+        );
         ensure!(
             plugin
                 .current
@@ -495,9 +697,14 @@ fn validate_manifest(manifest: &PackageManifest, root: &Path) -> Result<()> {
     validate_id(&manifest.id)?;
     ensure!(!manifest.name.trim().is_empty(), "package name is empty");
     ensure!(
-        manifest.api_version > 0,
-        "package API version must be positive"
+        manifest.api_version > 0 && manifest.api_version <= SUPPORTED_API_VERSION,
+        "package needs an unsupported API version"
     );
+    ensure!(
+        ACCEPTED_LICENSES.contains(&manifest.license.as_str()),
+        "package uses an unsupported license"
+    );
+    validate_https_url(&manifest.homepage)?;
     let mut entry = Path::new(&manifest.entry).components();
     ensure!(
         matches!(entry.next(), Some(Component::Normal(_))) && entry.next().is_none(),
@@ -551,6 +758,18 @@ fn validate_sha256(value: &str) -> Result<()> {
     ensure!(
         value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "invalid SHA-256"
+    );
+    Ok(())
+}
+
+fn validate_https_url(value: &str) -> Result<()> {
+    let url = reqwest::Url::parse(value).context("invalid HTTPS URL")?;
+    ensure!(
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none(),
+        "URL must be public HTTPS without credentials"
     );
     Ok(())
 }
@@ -617,6 +836,15 @@ fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    fs::create_dir_all(path.parent().context("cache file has no parent")?)?;
+    let mut temp = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+    temp.write_all(bytes)?;
+    temp.as_file_mut().sync_all()?;
+    temp.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -630,8 +858,8 @@ mod tests {
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     use super::{
-        CATALOG_KEY_ID, InstallSource, install_archive, read_receipt, remove_managed,
-        verify_catalog,
+        CATALOG_KEY_ID, InstallSource, InstallTarget, install_archive, parse_install_link,
+        read_receipt, remove_managed, verify_catalog,
     };
 
     fn package(path: &std::path::Path, id: &str, extra: Option<(&str, &[u8])>) {
@@ -690,6 +918,29 @@ mod tests {
                 b"{}",
                 &serde_json::to_vec(&signature).unwrap(),
                 &key.verifying_key()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn install_links_accept_only_reviewable_sources() {
+        assert_eq!(
+            parse_install_link("qrate://plugin/install?source=registry&id=org.example.plugin")
+                .unwrap(),
+            InstallTarget::Registry("org.example.plugin".into())
+        );
+        assert_eq!(
+            parse_install_link("qrate://plugin/install?source=github&repo=owner/plugin").unwrap(),
+            InstallTarget::Github("https://github.com/owner/plugin".into())
+        );
+        assert!(
+            parse_install_link("qrate://plugin/install?source=url&release=file:///tmp/plugin.zip")
+                .is_err()
+        );
+        assert!(
+            parse_install_link(
+                "qrate://plugin/install?source=registry&id=org.example.plugin&extra=yes"
             )
             .is_err()
         );

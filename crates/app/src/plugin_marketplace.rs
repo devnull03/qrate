@@ -13,7 +13,7 @@ use gpui_component::{
     label::Label, v_flex,
 };
 use plugin_package::{
-    CatalogPlugin, DirectRelease, InstallSource, PackageInspection, ReleaseStatus,
+    CatalogPlugin, DirectRelease, InstallSource, InstallTarget, PackageInspection, ReleaseStatus,
 };
 use window_wrapper::WindowRegistry;
 
@@ -42,21 +42,37 @@ pub struct MarketplaceWindow {
     direct: DirectState,
     input: Entity<InputState>,
     status: Option<Arc<str>>,
+    requested_id: Option<String>,
+    direct_source: Option<String>,
 }
 
 impl MarketplaceWindow {
-    fn new(direct: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        direct: bool,
+        target: Option<InstallTarget>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         window.set_window_title("qrate plugins");
         let input =
             cx.new(|cx| InputState::new(window, cx).placeholder("https://github.com/owner/plugin"));
+        let (requested_id, direct_source) = match target {
+            Some(InstallTarget::Registry(id)) => (Some(id), None),
+            Some(InstallTarget::Github(source)) => (None, Some(source)),
+            None => (None, None),
+        };
         let mut this = Self {
             catalog: CatalogState::Loading,
             direct: DirectState::Idle,
             input,
-            status: None,
+            status: requested_id
+                .as_ref()
+                .map(|id| format!("Reviewing official catalog entry {id}").into()),
+            requested_id,
+            direct_source,
         };
         this.refresh(cx);
-        if direct {
+        if direct && this.direct_source.is_none() {
             this.input.focus_handle(cx).focus(window, cx);
         }
         this
@@ -74,7 +90,16 @@ impl MarketplaceWindow {
                         anyhow::anyhow!("this build has no plugin catalog public key")
                     })?;
                     let key = plugin_package::public_key(&key)?;
-                    plugin_package::fetch_catalog(plugin_package::CATALOG_URL, &key)
+                    let plugins = plugin_host::plugins_dir()
+                        .ok_or_else(|| anyhow::anyhow!("qrate application data is unavailable"))?;
+                    let data = plugins
+                        .parent()
+                        .ok_or_else(|| anyhow::anyhow!("plugin folder has no parent"))?;
+                    plugin_package::fetch_catalog_cached(
+                        plugin_package::CATALOG_URL,
+                        &key,
+                        &data.join("plugin-catalog"),
+                    )
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -90,7 +115,10 @@ impl MarketplaceWindow {
     }
 
     fn resolve_direct(&mut self, cx: &mut Context<Self>) {
-        let source = self.input.read(cx).value().to_string();
+        let source = self
+            .direct_source
+            .clone()
+            .unwrap_or_else(|| self.input.read(cx).value().to_string());
         if source.trim().is_empty() {
             self.direct =
                 DirectState::Error("Paste a public GitHub repository or release URL".into());
@@ -140,6 +168,14 @@ impl MarketplaceWindow {
             cx.notify();
             return;
         }
+        let already_managed = plugin_host::plugins_dir().is_some_and(|plugins| {
+            plugins.parent().is_some_and(|data| {
+                plugin_package::read_receipt(&plugin_package::receipts_dir(data), &plugin.id)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            })
+        });
         let permissions = if plugin.current.permissions.is_empty() {
             "No optional permissions".to_string()
         } else {
@@ -189,12 +225,16 @@ impl MarketplaceWindow {
             this.update(cx, |this, cx| {
                 match result {
                     Ok(receipt) => {
-                        settings::plugins::set_enabled(&receipt.id, false, cx);
+                        if !already_managed {
+                            settings::plugins::set_enabled(&receipt.id, false, cx);
+                        }
                         plugin_host::reload(cx);
                         this.status = Some(
                             format!(
-                                "{} {} installed disabled. Enable it in Settings.",
-                                receipt.id, receipt.version
+                                "{} {} installed{}. Manage it in Settings.",
+                                receipt.id,
+                                receipt.version,
+                                if already_managed { "" } else { " disabled" }
                             )
                             .into(),
                         );
@@ -250,26 +290,28 @@ impl MarketplaceWindow {
                         .parent()
                         .ok_or_else(|| anyhow::anyhow!("plugin folder has no parent"))?;
                     let receipts = plugin_package::receipts_dir(data);
-                    let result = plugin_package::install_archive(
-                        &archive,
-                        &plugins,
-                        &receipts,
-                        InstallSource::DirectGithub,
-                        None,
+                    let already_managed =
+                        plugin_package::read_receipt(&receipts, &inspection.manifest.id)?.is_some();
+                    let result = plugin_package::install_direct_archive(
+                        &archive, &plugins, &receipts, &release,
                     );
                     let _ = std::fs::remove_file(archive);
-                    result
+                    result.map(|receipt| (receipt, already_managed))
                 })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
-                    Ok(receipt) => {
-                        settings::plugins::set_enabled(&receipt.id, false, cx);
+                    Ok((receipt, already_managed)) => {
+                        if !already_managed {
+                            settings::plugins::set_enabled(&receipt.id, false, cx);
+                        }
                         plugin_host::reload(cx);
                         this.status = Some(
                             format!(
-                                "{} {} installed disabled. Enable it in Settings.",
-                                receipt.id, receipt.version
+                                "{} {} installed{}. Manage it in Settings.",
+                                receipt.id,
+                                receipt.version,
+                                if already_managed { "" } else { " disabled" }
                             )
                             .into(),
                         );
@@ -314,42 +356,54 @@ impl Render for MarketplaceWindow {
             }
             CatalogState::Ready(plugins) => v_flex()
                 .gap_2()
-                .children(plugins.iter().cloned().map(|plugin| {
-                    let button_plugin = plugin.clone();
-                    h_flex()
-                        .justify_between()
-                        .gap_3()
-                        .p_3()
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .child(
-                            v_flex()
-                                .child(Label::new(plugin.name).font_semibold())
+                .children(
+                    plugins
+                        .iter()
+                        .filter(|plugin| {
+                            self.requested_id.as_ref().is_none_or(|id| id == &plugin.id)
+                        })
+                        .cloned()
+                        .map(|plugin| {
+                            let button_plugin = plugin.clone();
+                            h_flex()
+                                .justify_between()
+                                .gap_3()
+                                .p_3()
+                                .border_1()
+                                .border_color(cx.theme().border)
                                 .child(
-                                    Label::new(format!(
-                                        "{} · {} · API {}",
-                                        plugin.summary,
-                                        plugin.current.version,
-                                        plugin.current.api_version
-                                    ))
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground),
-                                ),
-                        )
-                        .child(
-                            Button::new(format!("install-{}", plugin.id))
-                                .label(if plugin.current.status == ReleaseStatus::Revoked {
-                                    "Revoked"
-                                } else {
-                                    "Install"
-                                })
-                                .small()
-                                .disabled(plugin.current.status == ReleaseStatus::Revoked)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.install_official(button_plugin.clone(), window, cx);
-                                })),
-                        )
-                }))
+                                    v_flex()
+                                        .child(Label::new(plugin.name).font_semibold())
+                                        .child(
+                                            Label::new(format!(
+                                                "{} · {} · API {}",
+                                                plugin.summary,
+                                                plugin.current.version,
+                                                plugin.current.api_version
+                                            ))
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground),
+                                        ),
+                                )
+                                .child(
+                                    Button::new(format!("install-{}", plugin.id))
+                                        .label(if plugin.current.status == ReleaseStatus::Revoked {
+                                            "Revoked"
+                                        } else {
+                                            "Install"
+                                        })
+                                        .small()
+                                        .disabled(plugin.current.status == ReleaseStatus::Revoked)
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.install_official(
+                                                button_plugin.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        })),
+                                )
+                        }),
+                )
                 .into_any_element(),
         };
 
@@ -413,6 +467,13 @@ impl Render for MarketplaceWindow {
                     .child(Label::new("Official catalog").text_lg().font_semibold())
                     .child(catalog)
                     .child(Label::new("Install from GitHub").text_lg().font_semibold())
+                    .when_some(self.direct_source.clone(), |view, source| {
+                        view.child(
+                            Label::new(format!("Requested source: {source}"))
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                    })
                     .child(
                         h_flex()
                             .gap_2()
@@ -438,6 +499,14 @@ impl Render for MarketplaceWindow {
 }
 
 pub fn open_marketplace_window(direct: bool, cx: &mut gpui::App) {
+    open_marketplace(direct, None, cx);
+}
+
+pub fn open_install_target(target: InstallTarget, cx: &mut gpui::App) {
+    open_marketplace(matches!(target, InstallTarget::Github(_)), Some(target), cx);
+}
+
+fn open_marketplace(direct: bool, target: Option<InstallTarget>, cx: &mut gpui::App) {
     if WindowRegistry::focus_or_clear(MARKETPLACE_WINDOW_KIND, cx).is_some() {
         return;
     }
@@ -449,7 +518,7 @@ pub fn open_marketplace_window(direct: bool, cx: &mut gpui::App) {
         ..Default::default()
     };
     if let Ok(handle) = cx.open_window(options, |window, cx| {
-        let view = cx.new(|cx| MarketplaceWindow::new(direct, window, cx));
+        let view = cx.new(|cx| MarketplaceWindow::new(direct, target, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     }) {
         WindowRegistry::register(MARKETPLACE_WINDOW_KIND, handle.into(), cx);
