@@ -120,8 +120,12 @@ fn candidate_pairs(values: &[Value]) -> BTreeSet<(usize, usize)> {
 }
 
 pub fn compare<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<Pair> {
+    compare_indexed(values.into_iter().enumerate())
+}
+
+pub fn compare_indexed<'a>(values: impl IntoIterator<Item = (usize, &'a str)>) -> Vec<Pair> {
     let mut grouped: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (row, value) in values.into_iter().enumerate() {
+    for (row, value) in values {
         if !value.trim().is_empty() {
             grouped.entry(value.to_owned()).or_default().push(row);
         }

@@ -15,7 +15,9 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use diagnostics::{ColumnInfo, ColumnValidator, Fix, Location, Misspelling, Severity};
+use diagnostics::{
+    ColumnInfo, ColumnValidator, ColumnValues, Fix, Location, Misspelling, Severity,
+};
 use gpui::{App, Global, SharedString};
 use settings::columns::ColumnType;
 use spellbook::Dictionary;
@@ -508,7 +510,7 @@ impl SpellCheck {
     fn findings(
         &self,
         column: &ColumnInfo,
-        values: &[SharedString],
+        values: ColumnValues<'_>,
         kind: FindingKind,
     ) -> Vec<diagnostics::ColumnFinding> {
         if !column.settings.spellcheck || !ColumnType::from_declared(column.data_type).is_prose() {
@@ -519,40 +521,45 @@ impl SpellCheck {
         };
         values
             .iter()
-            .enumerate()
-            .flat_map(|(row, value)| {
+            .flat_map(|cell| {
                 let mut found = Vec::new();
-                let Some(loaded) = dictionaries.for_text(value) else {
-                    return found;
-                };
                 let mut seen = std::collections::BTreeSet::new();
-                for word in words(value, false) {
-                    if !seen.insert(word) {
+                for value in cell.parts() {
+                    let Some(loaded) = dictionaries.for_text(value) else {
                         continue;
-                    }
-                    let outcome = classify_word(&loaded.dictionary, word, self.ignore_capitalized);
-                    let (severity, message, target) = match (kind, outcome) {
-                        (FindingKind::Spelling, WordOutcome::Misspelled) => (
-                            Severity::Warning,
-                            format!("misspelled: {word}"),
-                            String::new(),
-                        ),
-                        (FindingKind::Capitalization, WordOutcome::Capitalization(canonical)) => (
-                            Severity::Note,
-                            format!("capitalization: “{word}” should be “{canonical}”"),
-                            canonical,
-                        ),
-                        _ => continue,
                     };
-                    found.push(diagnostics::ColumnFinding {
-                        row: Some(row),
-                        severity,
-                        group: Some(diagnostics::DiagnosticGroup {
-                            key: format!("{:?}", (&loaded.code, word, target)).into(),
-                            summary: message.clone().into(),
-                        }),
-                        message: message.into(),
-                    });
+                    for word in words(value, false) {
+                        if !seen.insert(word) {
+                            continue;
+                        }
+                        let outcome =
+                            classify_word(&loaded.dictionary, word, self.ignore_capitalized);
+                        let (severity, message, target) = match (kind, outcome) {
+                            (FindingKind::Spelling, WordOutcome::Misspelled) => (
+                                Severity::Warning,
+                                format!("misspelled: {word}"),
+                                String::new(),
+                            ),
+                            (
+                                FindingKind::Capitalization,
+                                WordOutcome::Capitalization(canonical),
+                            ) => (
+                                Severity::Warning,
+                                format!("capitalization: “{word}” should be “{canonical}”"),
+                                canonical,
+                            ),
+                            _ => continue,
+                        };
+                        found.push(diagnostics::ColumnFinding {
+                            row: Some(cell.row),
+                            severity,
+                            group: Some(diagnostics::DiagnosticGroup {
+                                key: format!("{:?}", (&loaded.code, word, target)).into(),
+                                summary: message.clone().into(),
+                            }),
+                            message: message.into(),
+                        });
+                    }
                 }
                 found
             })
@@ -568,7 +575,7 @@ impl ColumnValidator for SpellCheck {
     fn validate(
         &self,
         column: &ColumnInfo,
-        values: &[SharedString],
+        values: ColumnValues<'_>,
     ) -> Vec<diagnostics::ColumnFinding> {
         self.findings(column, values, FindingKind::Spelling)
     }
@@ -584,7 +591,7 @@ impl ColumnValidator for CapitalizationCheck {
     fn validate(
         &self,
         column: &ColumnInfo,
-        values: &[SharedString],
+        values: ColumnValues<'_>,
     ) -> Vec<diagnostics::ColumnFinding> {
         self.0.findings(column, values, FindingKind::Capitalization)
     }
@@ -634,7 +641,7 @@ mod tests {
                 data_type,
                 settings,
             },
-            &values,
+            diagnostics::ColumnValues::new(&values, ""),
         )
     }
 
@@ -672,10 +679,10 @@ mod tests {
                 data_type: "Text",
                 settings: &defaults,
             },
-            &["alice visited Canada".into()],
+            diagnostics::ColumnValues::new(&["alice visited Canada".into()], ""),
         );
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].severity, Severity::Note);
+        assert_eq!(found[0].severity, Severity::Warning);
         assert_eq!(
             found[0].message,
             "capitalization: “alice” should be “Alice”"
@@ -877,5 +884,21 @@ mod tests {
         );
         assert_eq!(found.len(), 100);
         assert!(found.iter().all(|finding| finding.group == found[0].group));
+    }
+
+    #[test]
+    fn subdelimited_names_are_checked_as_separate_values() {
+        let spell = dictionary();
+        let values = ["receive the reel|recieve the film".into()];
+        let found = spell.validate(
+            &ColumnInfo {
+                name: "Title",
+                data_type: "Text",
+                settings: &ColumnSettings::default(),
+            },
+            diagnostics::ColumnValues::new(&values, "|"),
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].message, "misspelled: recieve");
     }
 }

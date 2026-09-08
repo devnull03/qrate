@@ -12,8 +12,8 @@ mod validator;
 pub use fixes::{Fix, FixProviders};
 pub use panel::ProblemsPanel;
 pub use validator::{
-    AsyncValidators, ColumnFinding, ColumnInfo, ColumnSnapshot, ColumnValidator, Misspelling,
-    SpellActions, Validators, address,
+    AsyncValidators, CellValue, ColumnFinding, ColumnInfo, ColumnSnapshot, ColumnValidator,
+    ColumnValues, Misspelling, SpellActions, Validators, address,
 };
 
 use std::collections::HashMap;
@@ -149,8 +149,15 @@ impl Source {
     /// What the panel shows in a diagnostic's source column.
     pub fn label(&self) -> SharedString {
         match self {
-            Source::Note => SOURCE_NOTE.into(),
-            Source::Validator(name) => name.clone(),
+            Source::Note => "User notes".into(),
+            Source::Validator(name) => match name.as_ref() {
+                "spell" => "Spelling".into(),
+                "capitalization" => "Capitalization".into(),
+                "files" => "Missing files".into(),
+                "date" => "Date format".into(),
+                "value variants" => "Value variants".into(),
+                _ => name.clone(),
+            },
         }
     }
 }
