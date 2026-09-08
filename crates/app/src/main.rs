@@ -336,6 +336,15 @@ fn register_spell_checker(cx: &mut gpui::App) {
         };
         cx.update(|cx| {
             diagnostics::Validators::register(Box::new(spell.clone()), cx);
+            diagnostics::Validators::register(
+                Box::new(spellcheck::CapitalizationCheck(spell.clone())),
+                cx,
+            );
+            diagnostics::FixProviders::register(
+                spellcheck::CAPITALIZATION_VALIDATOR_NAME,
+                spellcheck::capitalization_fixes,
+                cx,
+            );
             cx.set_global(spell);
             cx.set_global(diagnostics::SpellActions {
                 suggest: spellcheck::misspellings,
@@ -350,6 +359,18 @@ fn register_spell_checker(cx: &mut gpui::App) {
         });
     })
     .detach();
+}
+
+fn register_variant_checker(cx: &mut gpui::App) {
+    let variants = spellcheck::ValueVariants::default();
+    diagnostics::Validators::register(Box::new(variants.clone()), cx);
+    diagnostics::FixProviders::register(
+        spellcheck::VALUE_VARIANTS_NAME,
+        spellcheck::variant_fixes,
+        cx,
+    );
+    cx.set_global(variants);
+    table::revalidate_now(cx);
 }
 
 /// Select and scroll to whatever a problem points at. Three index spaces meet here: the
@@ -495,6 +516,7 @@ fn main() {
         // triggers the runs without naming any of them.
         plugin_host::on_command_finished(table::revalidate_now);
         plugin_host::reload(cx);
+        register_variant_checker(cx);
         register_spell_checker(cx);
         update_check::init(cx);
         diagnostics::AsyncValidators::register(

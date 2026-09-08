@@ -5,7 +5,14 @@ the right dock. A finding on a cell also shows as a small marker on that cell in
 
 ## What qrate checks
 
-- **Spelling**, in over 60 languages.
+- **Spelling**, in over 60 languages. Downloaded dictionaries participate in automatic
+  per-value language selection; short or ambiguous values are left alone instead of being
+  checked as the wrong language.
+- **Capitalization**, when a dictionary knows the word but requires a different case.
+- **Value variants**, for columns where you opt into reviewing inconsistent displayed forms.
+  This catches punctuation, diacritic, word-order, and close-spelling differences in names,
+  organizations, places, subjects, titles, and other labels. Similarity is a review hint, not
+  a claim that two values identify the same entity.
 - **Date formats**, so a malformed or ambiguous date is caught before export.
 - **File links**, so a row whose linked file cannot be found is reported instead of
   silently showing a blank preview. See [Files and photos](files-and-photos.md).
@@ -28,6 +35,9 @@ jump to the cell it is about.
 Some findings offer a suggested correction. Right-click the cell, or open its **Fixes**
 menu, and pick a suggestion to apply it. Applying a fix replaces the cell's whole value, so
 you always know exactly what you are accepting.
+
+Value-variant fixes offer forms that already occur in the same column. qrate never chooses a
+canonical form, merges records, or changes every matching row automatically.
 
 A fix offered against one version of a cell's text does not apply once that text has
 changed. This stops a stale suggestion from silently overwriting a newer edit.
