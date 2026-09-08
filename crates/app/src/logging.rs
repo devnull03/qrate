@@ -79,7 +79,7 @@ fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// Removes GPUI's unactionable focus-node notice and demotes window-teardown errors to debug.
+/// Removes GPUI's unactionable focus notice and demotes expected platform errors to debug.
 ///
 /// GPUI reports the missing focus node at info level every time focus reaches an internal element
 /// without an accessibility role, and narrates every accessibility tree update — one line per
@@ -117,6 +117,14 @@ fn is_window_teardown(record: &Record) -> bool {
     message == "window not found" || message.starts_with("Invalid window handle")
 }
 
+fn is_missing_dxgi_debug_layer(record: &Record) -> bool {
+    record.level() == Level::Error
+        && logged_by_gpui(record.target())
+        && record.args().to_string().starts_with(
+            "The application requested an operation that depends on an SDK component that is missing or mismatched.",
+        )
+}
+
 impl Log for QuietGpuiNoise {
     fn enabled(&self, metadata: &Metadata) -> bool {
         self.0.enabled(metadata)
@@ -130,7 +138,7 @@ impl Log for QuietGpuiNoise {
         if is_accessibility_focus_noise(record) {
             return;
         }
-        if is_window_teardown(record) {
+        if is_window_teardown(record) || is_missing_dxgi_debug_layer(record) {
             self.0.log(
                 &Record::builder()
                     .level(Level::Debug)
@@ -324,6 +332,41 @@ mod tests {
             "gpui::window",
             log::Level::Warn,
             "window not found"
+        ));
+    }
+
+    #[test]
+    fn only_the_optional_dxgi_debug_layer_error_is_demoted() {
+        let dxgi = |target: &str, level: log::Level, message: &str| {
+            super::is_missing_dxgi_debug_layer(
+                &log::Record::builder()
+                    .level(level)
+                    .target(target)
+                    .args(format_args!("{message}"))
+                    .build(),
+            )
+        };
+        let error = log::Level::Error;
+
+        assert!(dxgi(
+            "",
+            error,
+            "The application requested an operation that depends on an SDK component that is missing or mismatched. (0x887A002D)"
+        ));
+        assert!(!dxgi(
+            "gpui_windows::directx_devices",
+            error,
+            "Failed to create Direct3D device"
+        ));
+        assert!(!dxgi(
+            "app::logging",
+            error,
+            "The application requested an operation that depends on an SDK component that is missing or mismatched. (0x887A002D)"
+        ));
+        assert!(!dxgi(
+            "",
+            log::Level::Warn,
+            "The application requested an operation that depends on an SDK component that is missing or mismatched. (0x887A002D)"
         ));
     }
 
