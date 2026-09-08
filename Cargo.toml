@@ -9,6 +9,7 @@ members = [
   "crates/diagnostics",
   "crates/plugin-api",
   "crates/plugin-host",
+  "crates/plugin-package",
   "crates/preview",
   "crates/project-wizard",
   "crates/settings",
