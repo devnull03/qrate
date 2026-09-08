@@ -47,6 +47,9 @@ fn column_settings(
         if let Some(on) = entry.spellcheck {
             settings.spellcheck = on;
         }
+        if let Some(on) = entry.variant_review {
+            settings.variant_review = on;
+        }
         // Severity is per producer: the authority names its own, and each plugin's rides in the
         // `<id>::Severity` column beside its mapping.
         if let (Some(authority), Some(severity)) =

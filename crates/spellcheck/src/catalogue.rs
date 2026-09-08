@@ -396,10 +396,16 @@ mod round_trip {
         assert!(is_installed("fr"), "both files landed");
 
         let spell = SpellCheck::load("fr", false).expect("the downloaded dictionary parses");
-        let dictionary = spell.dictionary.read().unwrap();
+        let dictionaries = spell.dictionaries.read().unwrap();
+        let dictionary = &dictionaries
+            .loaded
+            .iter()
+            .find(|loaded| loaded.code == "fr")
+            .expect("French was loaded")
+            .dictionary;
         assert!(dictionary.check("bonjour"), "French words pass");
         assert!(!dictionary.check("bonjoure"), "and French typos do not");
-        drop(dictionary);
+        drop(dictionaries);
 
         remove("fr").expect("removable");
         assert!(!is_installed("fr"));
