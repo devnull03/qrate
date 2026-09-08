@@ -7,7 +7,7 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Axis, Entity, Global, IntoElement, ParentElement as _,
-    SharedString, Styled as _, Subscription, Window, div, px,
+    PromptLevel, SharedString, Styled as _, Subscription, Window, div, px,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _,
@@ -149,6 +149,12 @@ fn plugins_page(cx: &App) -> SettingPage {
 
     for plugin in listing {
         let id = plugin.id.clone();
+        let receipt = plugin_host::plugins_dir().and_then(|plugins| {
+            let data = plugins.parent()?;
+            plugin_package::read_receipt(&plugin_package::receipts_dir(data), &id)
+                .ok()
+                .flatten()
+        });
         let mut group = SettingGroup::new().title(plugin.id.clone()).item({
             let switched = id.clone();
             let item = SettingItem::new(
@@ -171,7 +177,24 @@ fn plugins_page(cx: &App) -> SettingPage {
             // a settings row that text of that length fits.
             match (&plugin.load_error, &plugin.description) {
                 (Some(err), _) => item.description(SharedString::from(format!("✗ {err}"))),
-                (None, Some(description)) => item.description(description.clone()),
+                (None, Some(description)) => {
+                    let description = receipt.as_ref().map_or_else(
+                        || description.to_string(),
+                        |receipt| {
+                            format!(
+                                "{description} Installed {} from {} (SHA-256 {}).",
+                                receipt.version,
+                                match receipt.source {
+                                    plugin_package::InstallSource::OfficialCatalog =>
+                                        "the official catalog",
+                                    plugin_package::InstallSource::DirectGithub => "GitHub",
+                                },
+                                receipt.sha256
+                            )
+                        },
+                    );
+                    item.description(SharedString::from(description))
+                }
                 (None, None) => item,
             }
         });
@@ -204,6 +227,75 @@ fn plugins_page(cx: &App) -> SettingPage {
                          stops it contacting any address once you agree.",
                     permission_owner = plugin.id
                 ))),
+            );
+        }
+
+        if let Some(receipt) = receipt {
+            let remove_id = receipt.id.clone();
+            group = group.item(
+                SettingItem::new(
+                    "Managed installation",
+                    SettingField::element(move |_opts: &_, _window: &mut Window, _cx: &mut App| {
+                        let id = remove_id.clone();
+                        Button::new(format!("remove-managed-{id}"))
+                            .small()
+                            .label("Remove package…")
+                            .on_click(move |_, window, cx| {
+                                let answer = window.prompt(
+                                    PromptLevel::Warning,
+                                    &format!("Remove {id}?"),
+                                    Some(
+                                        "qrate will delete this managed package. Plugin settings are retained.",
+                                    ),
+                                    &["Remove", "Cancel"],
+                                    cx,
+                                );
+                                let id = id.clone();
+                                cx.spawn(async move |cx| {
+                                    if answer.await.unwrap_or(1) != 0 {
+                                        return;
+                                    }
+                                    cx.update(|cx| {
+                                        let result = plugin_host::plugins_dir()
+                                            .and_then(|plugins| {
+                                                let data = plugins.parent()?;
+                                                Some(plugin_package::remove_managed(
+                                                    &id,
+                                                    &plugins,
+                                                    &plugin_package::receipts_dir(data),
+                                                ))
+                                            })
+                                            .unwrap_or_else(|| {
+                                                Err(anyhow::anyhow!(
+                                                    "qrate application data is unavailable"
+                                                ))
+                                            });
+                                        match result {
+                                            Ok(()) => {
+                                                settings::plugins::set_enabled(&id, false, cx);
+                                                plugin_host::reload(cx);
+                                            }
+                                            Err(error) => {
+                                                log::error!(
+                                                    "could not remove managed plugin {id}: {error:#}"
+                                                );
+                                            }
+                                        }
+                                    });
+                                })
+                                .detach();
+                            })
+                            .into_any_element()
+                    }),
+                )
+                .description(format!(
+                    "Version {}. Source: {}. Integrity: recorded SHA-256 and package size.",
+                    receipt.version,
+                    match receipt.source {
+                        plugin_package::InstallSource::OfficialCatalog => "Official catalog",
+                        plugin_package::InstallSource::DirectGithub => "Direct GitHub install",
+                    }
+                )),
             );
         }
 

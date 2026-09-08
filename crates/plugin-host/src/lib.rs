@@ -697,12 +697,12 @@ fn modules(dir: &Path) -> Vec<(String, String)> {
 }
 
 fn search_paths() -> Vec<PathBuf> {
-    // The working directory comes second so the repo's own plugins load from `cargo run` without a
-    // copy step. Drop it once there is an installer.
-    plugins_dir()
-        .into_iter()
-        .chain([PathBuf::from("plugins")])
-        .collect()
+    let mut paths: Vec<_> = plugins_dir().into_iter().collect();
+    // Keep repository plugins convenient during development without making the process working
+    // directory part of the installed application's trust boundary.
+    #[cfg(debug_assertions)]
+    paths.push(PathBuf::from("plugins"));
+    paths
 }
 
 #[cfg(test)]
