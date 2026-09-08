@@ -12,8 +12,8 @@ mod validator;
 pub use fixes::{Fix, FixProviders};
 pub use panel::ProblemsPanel;
 pub use validator::{
-    AsyncValidators, ColumnInfo, ColumnSnapshot, ColumnValidator, Misspelling, SpellActions,
-    Validators, address,
+    AsyncValidators, ColumnFinding, ColumnInfo, ColumnSnapshot, ColumnValidator, Misspelling,
+    SpellActions, Validators, address,
 };
 
 use std::collections::HashMap;
@@ -39,6 +39,65 @@ pub struct Location {
     /// Stable `dataset_main._row_id`, used only when an authored note reaches disk.
     pub row_id: Option<settings::project::RowId>,
     pub column: Option<SharedString>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope<'a> {
+    Dataset,
+    Column(&'a str),
+    Row(usize),
+    Cell { row: usize, column: &'a str },
+}
+
+impl Location {
+    pub fn scope(&self) -> Scope<'_> {
+        match (self.row, self.column.as_deref()) {
+            (None, None) => Scope::Dataset,
+            (None, Some(column)) => Scope::Column(column),
+            (Some(row), None) => Scope::Row(row),
+            (Some(row), Some(column)) => Scope::Cell { row, column },
+        }
+    }
+
+    pub fn dataset(dataset: impl Into<SharedString>) -> Self {
+        Self {
+            dataset: dataset.into(),
+            row: None,
+            row_id: None,
+            column: None,
+        }
+    }
+
+    pub fn column(dataset: impl Into<SharedString>, column: impl Into<SharedString>) -> Self {
+        Self {
+            column: Some(column.into()),
+            ..Self::dataset(dataset)
+        }
+    }
+
+    pub fn row(
+        dataset: impl Into<SharedString>,
+        row: usize,
+        row_id: Option<settings::project::RowId>,
+    ) -> Self {
+        Self {
+            row: Some(row),
+            row_id,
+            ..Self::dataset(dataset)
+        }
+    }
+
+    pub fn cell(
+        dataset: impl Into<SharedString>,
+        row: usize,
+        row_id: Option<settings::project::RowId>,
+        column: impl Into<SharedString>,
+    ) -> Self {
+        Self {
+            column: Some(column.into()),
+            ..Self::row(dataset, row, row_id)
+        }
+    }
 }
 
 /// How loud a problem is. Closed set — a hand-authored mark is just a [`Severity::Note`] from
@@ -102,9 +161,17 @@ pub struct Diagnostic {
     pub severity: Severity,
     pub source: Source,
     pub message: SharedString,
+    pub group: Option<DiagnosticGroup>,
     /// Who filed this and when, for authored notes. Always `None` on a computed finding — a
     /// validator's output is recomputed on open, so it has no history to carry.
     pub filed: Option<Filed>,
+}
+
+/// Producer-owned identity; summaries are presentation, never grouping keys.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DiagnosticGroup {
+    pub key: SharedString,
+    pub summary: SharedString,
 }
 
 /// A note's provenance. Free text rather than a parsed date: a catalogue inherits notes from
@@ -303,6 +370,7 @@ impl Diagnostics {
             severity: Severity::Note,
             source: Source::Note,
             message,
+            group: None,
             filed,
         });
         this.reindex();
@@ -352,6 +420,7 @@ impl Diagnostics {
                 severity: Severity::Note,
                 source: Source::Note,
                 message,
+                group: None,
                 filed,
             });
         }
@@ -475,6 +544,7 @@ fn load_project_notes(cx: &mut App) {
             severity: Severity::from_key(&n.severity),
             source: Source::Note,
             message: n.message.clone().into(),
+            group: None,
             filed: match (&n.created_at, &n.author) {
                 (None, None) => None,
                 (date, author) => Some(Filed {
@@ -596,6 +666,7 @@ mod tests {
             severity,
             source,
             message: msg.into(),
+            group: None,
             filed: None,
         }
     }
@@ -809,6 +880,7 @@ mod tests {
                     severity: Severity::Error,
                     source: v.clone(),
                     message: "typo".into(),
+                    group: None,
                     filed: None,
                 }],
                 cx,

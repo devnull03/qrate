@@ -70,7 +70,16 @@ pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
 
     let items: Vec<_> = named
         .iter()
-        .flat_map(|column| address_findings(SOURCE.into(), column, missing(index, &column.values)))
+        .flat_map(|column| {
+            address_findings(
+                SOURCE.into(),
+                column,
+                missing(index, &column.values)
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+            )
+        })
         .collect();
     Diagnostics::set(&source(), DATASET_MAIN, items, cx);
 }

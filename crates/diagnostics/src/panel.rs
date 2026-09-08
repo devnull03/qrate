@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
@@ -8,7 +9,9 @@ use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, Po
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 
-use crate::{DiagnosticHooks, Diagnostics, Location, Severity, severity_color};
+use crate::{
+    Diagnostic, DiagnosticHooks, Diagnostics, Location, Scope, Severity, Source, severity_color,
+};
 
 /// Which severities the active tab admits. `Info` folds in with `Note`: two quiet buckets is a
 /// distinction without a difference for someone cataloguing a collection.
@@ -55,6 +58,111 @@ struct Row {
     message: SharedString,
     source: SharedString,
     location: Location,
+    group: Option<String>,
+    child: bool,
+}
+
+fn group_id(d: &Diagnostic) -> Option<String> {
+    if d.source == Source::Note {
+        return None;
+    }
+    d.group.as_ref().map(|group| {
+        format!(
+            "{:?}",
+            (&d.location.dataset, &d.source, d.severity, &group.key)
+        )
+    })
+}
+
+/// Atomic findings stay in the store; only this flat, virtualized view collapses them.
+fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row> {
+    items.sort_by(|a, b| {
+        (
+            a.severity,
+            &a.location.dataset,
+            a.location.row,
+            &a.location.column,
+        )
+            .cmp(&(
+                b.severity,
+                &b.location.dataset,
+                b.location.row,
+                &b.location.column,
+            ))
+    });
+    let mut groups: BTreeMap<String, Vec<&Diagnostic>> = BTreeMap::new();
+    for d in &items {
+        if let Some(id) = group_id(d) {
+            groups.entry(id).or_default().push(d);
+        }
+    }
+    let mut emitted = BTreeSet::new();
+    items.retain(|d| group_id(d).is_none_or(|id| emitted.insert(id)));
+    items.sort_by_cached_key(|d| {
+        (
+            d.severity,
+            if group_id(d).is_some() {
+                d.group.as_ref().expect("group metadata").summary.clone()
+            } else {
+                d.message.clone()
+            },
+            group_id(d),
+        )
+    });
+    let occurrence = |d: &Diagnostic, child| {
+        let (scope, wide) = match d.location.scope() {
+            Scope::Cell { row, column } => (format!("Row {} · {column}", row + 1).into(), false),
+            Scope::Row(row) => (format!("Row {}", row + 1).into(), true),
+            Scope::Column(column) => (column.to_owned().into(), true),
+            Scope::Dataset => (d.location.dataset.clone(), true),
+        };
+        Row {
+            icon: match d.severity {
+                Severity::Error => IconName::CircleX,
+                Severity::Warning => IconName::TriangleAlert,
+                Severity::Note => IconName::Info,
+            },
+            severity: d.severity,
+            scope,
+            wide,
+            message: d.message.clone(),
+            source: d.source.label(),
+            location: d.location.clone(),
+            group: None,
+            child,
+        }
+    };
+    let mut rows = Vec::new();
+    for d in items {
+        let Some(id) = group_id(d) else {
+            rows.push(occurrence(d, false));
+            continue;
+        };
+        let Some(members) = groups.remove(&id) else {
+            continue;
+        };
+        let mut header = occurrence(d, false);
+        let open = expanded.contains(&id);
+        header.scope = format!(
+            "{} · {} occurrences",
+            if open { "▾" } else { "▸" },
+            members.len()
+        )
+        .into();
+        header.message = d
+            .group
+            .as_ref()
+            .expect("group identity requires metadata")
+            .summary
+            .clone();
+        header.wide = true;
+        header.group = Some(id);
+        rows.push(header);
+        if open {
+            rows.extend(members.into_iter().map(|member| occurrence(member, true)));
+        }
+    }
+    rows
 }
 
 /// Bottom dock: every open problem, filtered by severity and source, click to jump to it.
@@ -75,6 +183,7 @@ pub struct ProblemsPanel {
     rows: Rc<Vec<Row>>,
     /// Per-tab totals, which count every severity regardless of the active filter.
     counts: [usize; 4],
+    expanded: BTreeSet<String>,
     /// Refreshes on any store change. One `observe_global` and no re-binding — unlike
     /// `TableStateHandle`, the `Diagnostics` global is plain data that is never rebuilt.
     _sub: Subscription,
@@ -89,6 +198,7 @@ impl ProblemsPanel {
             sources: Rc::default(),
             rows: Rc::default(),
             counts: [0; 4],
+            expanded: BTreeSet::new(),
             _sub: cx.observe_global::<Diagnostics>(|this, cx| {
                 this.refresh(cx);
                 cx.notify();
@@ -167,41 +277,13 @@ impl ProblemsPanel {
                 .count()
         });
 
-        let mut rows: Vec<Row> = Diagnostics::all(cx)
+        let live: BTreeSet<_> = Diagnostics::all(cx).iter().filter_map(group_id).collect();
+        self.expanded.retain(|id| live.contains(id));
+        let items = Diagnostics::all(cx)
             .iter()
             .filter(|d| self.filter.admits(d.severity) && self.admits_source(d))
-            .map(|d| {
-                let (scope, wide) = match (d.location.row, d.location.column.as_ref()) {
-                    (Some(r), Some(c)) => (format!("Row {} · {c}", r + 1).into(), false),
-                    (Some(r), None) => (format!("Row {}", r + 1).into(), true),
-                    (None, Some(c)) => (c.clone(), true),
-                    (None, None) => (d.location.dataset.clone(), true),
-                };
-                Row {
-                    severity: d.severity,
-                    icon: match d.severity {
-                        Severity::Error => IconName::CircleX,
-                        Severity::Warning => IconName::TriangleAlert,
-                        Severity::Note => IconName::Info,
-                    },
-                    scope,
-                    wide,
-                    message: d.message.clone(),
-                    source: d.source.label(),
-                    location: d.location.clone(),
-                }
-            })
             .collect();
-        // Errors first, then reading order down the table. A whole-row/column note sorts ahead
-        // of the cells it covers because `None` orders before `Some`.
-        rows.sort_by(|a, b| {
-            (a.severity, &a.location.row, &a.location.column).cmp(&(
-                b.severity,
-                &b.location.row,
-                &b.location.column,
-            ))
-        });
-        self.rows = Rc::new(rows);
+        self.rows = Rc::new(project(items, &self.expanded));
     }
 }
 
@@ -237,10 +319,13 @@ impl Panel for ProblemsPanel {
 impl Render for ProblemsPanel {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.rows.clone();
+        let panel_handle = cx.entity();
+        let expanded = self.expanded.clone();
         let muted = cx.theme().muted_foreground;
 
         v_flex()
             .size_full()
+            .tab_group()
             // The dock focuses this panel's handle when its tab is clicked. Without an element
             // tracking it, focus lands nowhere: the dispatch path collapses to the window root and
             // the window-wide shortcuts stop reaching their handlers.
@@ -294,12 +379,20 @@ impl Render for ProblemsPanel {
                             .zip(range)
                             .map(|(r, ix)| {
                                 let location = r.location.clone();
+                                let group = r.group.clone();
+                                let is_group = group.is_some();
+                                let is_expanded =
+                                    group.as_ref().is_some_and(|id| expanded.contains(id));
+                                let panel_handle = panel_handle.clone();
                                 h_flex()
                                     .id(ix)
                                     .w_full()
+                                    .h_8()
+                                    .items_center()
                                     .gap_2()
                                     .px_2()
                                     .py_1()
+                                    .when(r.child, |row| row.pl_6())
                                     .cursor_pointer()
                                     .hover(|row| row.bg(hover_bg))
                                     .child(
@@ -315,7 +408,40 @@ impl Render for ProblemsPanel {
                                             .text_sm()
                                             .text_color(muted)
                                             .when(r.wide, |s| s.px_1().rounded_sm().bg(chip_bg))
-                                            .child(r.scope.clone()),
+                                            .when(!is_group, |scope| scope.child(r.scope.clone()))
+                                            .when_some(r.group.clone(), |scope, id| {
+                                                let panel_handle = panel_handle.clone();
+                                                scope.child(
+                                                    Button::new(("expand-problem", ix))
+                                                        .ghost()
+                                                        .small()
+                                                        .label(r.scope.clone())
+                                                        .accessibility_label(format!(
+                                                            "{} {}",
+                                                            if is_expanded {
+                                                                "Collapse"
+                                                            } else {
+                                                                "Expand"
+                                                            },
+                                                            r.message
+                                                        ))
+                                                        .tooltip(format!(
+                                                            "Expand or collapse: {}",
+                                                            r.message
+                                                        ))
+                                                        .on_click(move |_, _, cx| {
+                                                            cx.stop_propagation();
+                                                            panel_handle.update(cx, |this, cx| {
+                                                                if !this.expanded.remove(&id) {
+                                                                    this.expanded
+                                                                        .insert(id.clone());
+                                                                }
+                                                                this.refresh(cx);
+                                                                cx.notify();
+                                                            });
+                                                        }),
+                                                )
+                                            }),
                                     )
                                     .child(
                                         div()
@@ -336,6 +462,16 @@ impl Render for ProblemsPanel {
                                     .on_click({
                                         let location = location.clone();
                                         move |_, _, cx| {
+                                            if let Some(id) = &group {
+                                                panel_handle.update(cx, |this, cx| {
+                                                    if !this.expanded.remove(id) {
+                                                        this.expanded.insert(id.clone());
+                                                    }
+                                                    this.refresh(cx);
+                                                    cx.notify();
+                                                });
+                                                return;
+                                            }
                                             if let Some(hooks) =
                                                 cx.try_global::<DiagnosticHooks>().copied()
                                             {
@@ -347,6 +483,11 @@ impl Render for ProblemsPanel {
                                     // row is built from a diagnostic and the cell may have been
                                     // edited since the one that produced it was published.
                                     .context_menu(move |menu, window, cx| {
+                                        if is_group
+                                            || !matches!(location.scope(), Scope::Cell { .. })
+                                        {
+                                            return menu;
+                                        }
                                         let Some(hooks) =
                                             cx.try_global::<DiagnosticHooks>().copied()
                                         else {
@@ -394,6 +535,163 @@ mod tests {
     use crate::{DATASET_MAIN, Diagnostic, Diagnostics, Location, ProblemsPanel, Severity, Source};
     use gpui::TestAppContext;
 
+    fn repeated() -> Vec<Diagnostic> {
+        (0..100)
+            .map(|row| Diagnostic {
+                location: Location::cell(DATASET_MAIN, row, None, "Title"),
+                severity: Severity::Warning,
+                source: Source::Validator("spell".into()),
+                message: "misspelled: recieve".into(),
+                group: Some(crate::DiagnosticGroup {
+                    key: "en:recieve".into(),
+                    summary: "misspelled: recieve".into(),
+                }),
+                filed: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn groups_are_explicit_scoped_and_expand_to_exact_locations() {
+        let mut items = repeated();
+        let closed = super::project(items.iter().collect(), &Default::default());
+        assert_eq!(closed.len(), 1);
+        assert!(closed[0].scope.contains("100 occurrences"));
+        let expanded = [closed[0].group.clone().unwrap()].into_iter().collect();
+        let open = super::project(items.iter().collect(), &expanded);
+        assert_eq!(open.len(), 101);
+        for (row, occurrence) in open[1..].iter().enumerate() {
+            assert_eq!(occurrence.location.row, Some(row));
+            assert!(occurrence.child);
+            assert!(occurrence.group.is_none());
+        }
+        items[0].severity = Severity::Error;
+        items[1].source = Source::Validator("other".into());
+        items[2].location.dataset = "other".into();
+        items[3].group = None;
+        items[4].source = Source::Note;
+        assert_eq!(
+            super::project(items.iter().collect(), &Default::default()).len(),
+            6
+        );
+    }
+
+    #[gpui::test]
+    fn clicking_a_group_expands_without_navigation(cx: &mut TestAppContext) {
+        #[derive(Default)]
+        struct Revealed(Vec<Location>);
+        impl gpui::Global for Revealed {}
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(Revealed::default());
+            cx.set_global(crate::DiagnosticHooks {
+                reveal: |location, cx| {
+                    use gpui::BorrowAppContext as _;
+                    cx.update_global::<Revealed, _>(|seen, _| seen.0.push(location.clone()));
+                },
+                text_at: |_, _| None,
+                set_text: |_, _, _| panic!("navigation must not edit"),
+            });
+            Diagnostics::set(
+                &Source::Validator("spell".into()),
+                DATASET_MAIN,
+                repeated(),
+                cx,
+            );
+        });
+        let (panel, cx) = cx.add_window_view(ProblemsPanel::new);
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            _ = window.draw(cx);
+        });
+        cx.simulate_click(
+            gpui::point(gpui::px(400.), gpui::px(48.)),
+            Default::default(),
+        );
+        cx.run_until_parked();
+        panel.read_with(cx, |panel, cx| {
+            assert_eq!(panel.rows.len(), 101);
+            assert!(cx.global::<Revealed>().0.is_empty());
+        });
+        cx.update(|window, cx| {
+            _ = window.draw(cx);
+        });
+        cx.simulate_click(
+            gpui::point(gpui::px(400.), gpui::px(80.)),
+            Default::default(),
+        );
+        cx.run_until_parked();
+        panel.read_with(cx, |_, cx| {
+            assert_eq!(
+                cx.global::<Revealed>().0,
+                [Location::cell(DATASET_MAIN, 0, None, "Title")]
+            );
+        });
+        cx.simulate_click(
+            gpui::point(gpui::px(100.), gpui::px(48.)),
+            Default::default(),
+        );
+        cx.run_until_parked();
+        panel.read_with(cx, |panel, _| assert_eq!(panel.rows.len(), 1));
+        let focus = panel.read_with(cx, |panel, _| panel.focus_handle.clone());
+        cx.update(|window, cx| {
+            _ = window.draw(cx);
+            window.focus(&focus, cx);
+            window.focus_prev(cx);
+            _ = window.draw(cx);
+        });
+        let keystroke = gpui::Keystroke::parse("enter").unwrap();
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        cx.run_until_parked();
+        panel.read_with(cx, |panel, cx| {
+            assert_eq!(
+                panel.rows.len(),
+                101,
+                "the focused expansion button supports Enter"
+            );
+            assert_eq!(cx.global::<Revealed>().0.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn group_refresh_preserves_counts_and_prunes_expansion(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            Diagnostics::set(
+                &Source::Validator("spell".into()),
+                DATASET_MAIN,
+                repeated(),
+                cx,
+            );
+        });
+        let (panel, cx) = cx.add_window_view(ProblemsPanel::new);
+        panel.update(cx, |this, cx| {
+            assert_eq!(this.counts, [100, 0, 100, 0]);
+            assert_eq!(this.rows.len(), 1);
+            this.expanded.insert(this.rows[0].group.clone().unwrap());
+            this.refresh(cx);
+            assert_eq!(this.rows.len(), 101);
+            this.filter = Filter::Errors;
+            this.refresh(cx);
+            assert!(this.rows.is_empty());
+            assert_eq!(this.counts[2], 100);
+            assert_eq!(this.expanded.len(), 1);
+            Diagnostics::set(
+                &Source::Validator("spell".into()),
+                DATASET_MAIN,
+                Vec::new(),
+                cx,
+            );
+            this.refresh(cx);
+            assert!(this.expanded.is_empty());
+        });
+    }
+
     #[gpui::test]
     fn renders_the_empty_state_without_a_store(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
@@ -429,6 +727,7 @@ mod tests {
                     severity,
                     source: Source::Note,
                     message: "m".into(),
+                    group: None,
                     filed: None,
                 })
                 .collect(),
@@ -473,6 +772,7 @@ mod tests {
                             severity: Severity::Error,
                             source: Source::Validator(source.into()),
                             message: "m".into(),
+                            group: None,
                             filed: None,
                         })
                         .collect(),
