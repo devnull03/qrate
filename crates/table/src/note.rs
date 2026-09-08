@@ -447,6 +447,7 @@ pub fn menu(
                 )
             };
             let stored = settings::columns::get(&key, cx).plugins;
+            let variant_review = settings::columns::get(&key, cx).variant_review;
             let (freeze_table, rename_table) = (table.clone(), table.clone());
             let menu = structural_items(menu, None, Some(col))
                 .item(
@@ -504,6 +505,19 @@ pub fn menu(
                     )
                 })
             });
+            let review_key = key.clone();
+            let menu = menu.separator().item(
+                PopupMenuItem::new("Review value variants")
+                    .checked(variant_review)
+                    .on_click(move |_, _, cx| {
+                        settings::columns::update(
+                            &review_key,
+                            |settings| settings.variant_review = !variant_review,
+                            cx,
+                        );
+                        crate::revalidate_now(cx);
+                    }),
+            );
             let menu = mapping_submenus(&key, menu, window, cx);
             MenuContributions::for_target(MenuTarget::Column, cx)
                 .into_iter()
