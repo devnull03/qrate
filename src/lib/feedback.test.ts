@@ -13,7 +13,7 @@ const env = {
   LINEAR_API_KEY: 'test-only', TURNSTILE_SECRET_KEY: 'test-only',
   FEEDBACK_LIMITER: { limit: async () => ({ success: true }) },
 };
-const request = (data = form()) => new Request('https://qrate.dvnl.work/api/feedback', {
+const request = (data = form(), url = 'https://qrate.dvnl.work/api/feedback') => new Request(url, {
   method: 'POST', headers: { Origin: 'https://qrate.dvnl.work' }, body: data,
 });
 
@@ -61,6 +61,23 @@ test('create issue with exact routing and triage labels', async () => {
 
 test('Turnstile wrong hostname fails before Linear', async () => {
   const mocked = async () => Response.json({ success: true, hostname: 'attacker.example', action: 'feedback' });
+  expect((await submit(request(), env, mocked as any)).status).toBe(403);
+});
+
+test('Cloudflare test keys work only on a local form', async () => {
+  const mocked = async (_url: string, options: any) => {
+    if (options.body instanceof URLSearchParams) {
+      return Response.json({
+        success: true,
+        hostname: 'example.com',
+        metadata: { result_with_testing_key: true },
+      });
+    }
+    return Response.json({ data: { issues: { nodes: [{ id: 'existing' }] } } });
+  };
+  const local = request(form(), 'http://localhost:4321/api/feedback');
+  local.headers.set('Origin', 'http://localhost:4321');
+  expect((await submit(local, env, mocked as any)).status).toBe(200);
   expect((await submit(request(), env, mocked as any)).status).toBe(403);
 });
 
