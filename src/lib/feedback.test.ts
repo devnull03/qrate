@@ -34,6 +34,8 @@ test('reject executable and oversized attachments', () => {
   expect(() => validate(data)).toThrow();
   data.set('files', new File([new Uint8Array(5 * 1024 * 1024 + 1)], 'large.log'));
   expect(() => validate(data)).toThrow();
+  data.set('files', 'not a file');
+  expect(() => validate(data)).toThrow('Invalid files');
 });
 
 test('automatic compressed log does not consume a user attachment slot', () => {
