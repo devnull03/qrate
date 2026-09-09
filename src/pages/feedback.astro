@@ -1,6 +1,9 @@
 ---
 import '../styles/global.css';
-const sitekey = import.meta.env.PUBLIC_TURNSTILE_SITE_KEY;
+import { env } from 'cloudflare:workers';
+
+export const prerender = false;
+const sitekey = env.TURNSTILE_SITE_KEY;
 ---
 <!doctype html>
 <html lang="en">

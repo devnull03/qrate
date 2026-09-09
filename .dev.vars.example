@@ -1,0 +1,5 @@
+# Copy this file to .dev.vars. Wrangler reads it during local development.
+# Do not commit .dev.vars.
+LINEAR_API_KEY=
+TURNSTILE_SITE_KEY=
+TURNSTILE_SECRET_KEY=
