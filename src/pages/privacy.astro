@@ -10,28 +10,28 @@ const CONTACT = 'qrate@dvnl.work';
   eyebrow="Privacy"
   updated="16 August 2026"
   description="qrate is a desktop app with no accounts and no telemetry. Your collection stays on your own disk. What it touches, and what it never sends."
-  lede="qrate is a desktop application. Your catalogue stays on your own disk, and the project operates no servers that hold your data."
+  lede="qrate is a desktop application. Your catalogue stays on your own disk. Optional feedback reports go privately to the qrate team."
 >
   <h2>The short version</h2>
   <p>
     The application has no accounts, no telemetry and no analytics. It does not phone home. Every
     record, field, note and linked file stays in the <code>.qrate</code> file on your own disk. The
     only time qrate talks to anyone else is when you ask it to: exporting to Google Sheets,
-    downloading a dictionary, or checking for a release. This website counts page views, without
+    downloading a dictionary, checking for a release, or submitting feedback. This website counts page views, without
     cookies and without identifying you, which is the one difference between the two.
   </p>
 
   <h2>What qrate collects</h2>
   <p>
-    Nothing. The application does not send your catalogue, your file paths, your settings or any
-    usage data to us or to anyone else. There is no crash reporting service and no usage counter.
+    The application does not automatically send your catalogue, file paths, settings or usage
+    data to us. There is no automatic crash reporting service and no usage counter.
     qrate writes a session log on your own machine to help you diagnose problems. That log stays
     there unless you attach it to a bug report yourself.
   </p>
 
   <h2>This website</h2>
   <p>
-    This site is static: pages and images, no accounts and no tracking cookies. Cloudflare serves
+    This site serves pages, images, and an optional feedback form, without accounts. Cloudflare serves
     it, and records standard request information for delivery and abuse prevention. That
     information includes your IP address, your user agent and the page you asked for. We do not use
     it to build profiles, and we run no advertising scripts. GitHub serves the application
@@ -45,8 +45,8 @@ const CONTACT = 'qrate@dvnl.work';
     that would follow you between sessions or to any other site. It reports the page you viewed,
     the referrer, and coarse details such as country, browser and device type. It has no access to
     your catalogue, and it runs only on this website. Cloudflare discards the IP address at the
-    edge rather than storing it with the measurement. The application itself still reports nothing,
-    as described above. To opt out, block <code>static.cloudflareinsights.com</code>; any content
+    edge rather than storing it with the measurement. The feedback page does not load this analytics script.
+    To opt out, block <code>static.cloudflareinsights.com</code>; any content
     blocker will do it, and the site works exactly the same without the script.
   </p>
   <p>
@@ -54,6 +54,27 @@ const CONTACT = 'qrate@dvnl.work';
     Google API credentials, so we can rotate them without shipping a new release. It carries no
     personal data in either direction. Your Google sign-in never passes through it. That happens
     between your browser, Google, and your own computer.
+  </p>
+
+  <h2>Optional feedback reports</h2>
+  <p>
+    The Feedback button opens a browser form with app version, commit, operating system,
+    architecture, project dimensions, and plugin counts. This summary contains no cell values,
+    project paths, plugin names, or logs. The URL fragment holds the summary locally in your
+    browser. The page removes the fragment and lets you edit or exclude the summary.
+  </p>
+  <p>
+    Only submitting the form sends its contents to us. Reports can include your description,
+    optional contact email, diagnostic summary, and files you explicitly attach.
+    Inspect logs and screenshots for private information before attaching them.
+    Cloudflare processes the submission and uses Turnstile and request information to prevent abuse.
+    Linear stores reports and attachments for the qrate team. Reports are not public GitHub issues.
+  </p>
+  <p>
+    We use reports to investigate issues, improve qrate, and reply if you provide an email.
+    Reports remain in Linear while needed for investigation and follow-up.
+    To request deletion, email <a href={`mailto:${CONTACT}`}>{CONTACT}</a> with your report ID.
+    Provider backup and security retention policies may apply after deletion.
   </p>
 
   <h2>Google user data</h2>
