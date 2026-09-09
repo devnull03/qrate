@@ -116,7 +116,7 @@ const sitekey = env.TURNSTILE_SITE_KEY;
         <span class="field-label">Additional logs or screenshots <span class="normal-case text-faint">(optional)</span></span>
         <input name="files" type="file" multiple accept=".txt,.log,.png,.jpg,.jpeg" />
         <span class="mt-2 block text-xs leading-5 text-dim">
-          Up to three attachments in total, 2 MiB each. The automatic log counts as one.
+          Up to three attachments, 5 MiB each. The automatic session log does not count toward this limit.
         </span>
       </label>
 
@@ -224,20 +224,33 @@ const sitekey = env.TURNSTILE_SITE_KEY;
       event.preventDefault();
       if (submitting) return;
       submitting = true;
-      const data = new FormData(form);
-      data.set('id', id);
-      if (!include.checked) data.delete('diagnostics');
-      if (includeLogs.checked && recentLogs.value) {
-        if ((files.files?.length ?? 0) >= 3) {
-          submitting = false;
-          showResult('Too many attachments', 'Remove one attachment to include the automatic application log.');
-          return;
-        }
-        data.append('files', new File([recentLogs.value], 'qrate.log', { type: 'text/plain' }));
-      }
       button.disabled = true;
       status.textContent = 'Sending…';
       try {
+        const data = new FormData(form);
+        data.set('id', id);
+        if (!include.checked) data.delete('diagnostics');
+        if ((files.files?.length ?? 0) > 3) {
+          throw new Error('Choose no more than three attachments.');
+        }
+        if (includeLogs.checked && recentLogs.value) {
+          if ('CompressionStream' in window) {
+            const compressed = new Blob([recentLogs.value])
+              .stream()
+              .pipeThrough(new CompressionStream('gzip'));
+            data.append(
+              'files',
+              new File([await new Response(compressed).blob()], 'qrate-session.log.gz', {
+                type: 'application/gzip',
+              }),
+            );
+          } else {
+            data.append(
+              'files',
+              new File([recentLogs.value], 'qrate-session.log', { type: 'text/plain' }),
+            );
+          }
+        }
         const response = await fetch('/api/feedback', { method: 'POST', body: data });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'Unable to send.');
