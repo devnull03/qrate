@@ -216,12 +216,17 @@ impl MarketplaceWindow {
         } else {
             format!("Requests: {}", plugin.current.permissions.join(", "))
         };
+        let installation_note = if already_managed {
+            ""
+        } else {
+            " New installations stay disabled until you enable them in Settings."
+        };
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!("Install {} {}?", plugin.name, plugin.current.version),
             Some(&format!(
-                "Official catalog · {} · {permissions}. The plugin will be disabled after installation.",
-                plugin.publisher
+                "Official catalog · {} · {permissions}.{installation_note}",
+                plugin.publisher,
             )),
             &["Install", "Cancel"],
             cx,
@@ -304,6 +309,12 @@ impl MarketplaceWindow {
         } else {
             format!("Requests: {}", inspection.manifest.permissions.join(", "))
         };
+        let already_managed = installed_receipt(&inspection.manifest.id).is_some();
+        let installation_note = if already_managed {
+            ""
+        } else {
+            " New installations stay disabled until you enable them in Settings."
+        };
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!(
@@ -311,8 +322,8 @@ impl MarketplaceWindow {
                 inspection.manifest.name, inspection.manifest.version
             ),
             Some(&format!(
-                "{} · SHA-256 {} · {permissions}. qrate has not reviewed this source.",
-                release.repository, inspection.sha256
+                "{} · SHA-256 {} · {permissions}. qrate has not reviewed this source.{installation_note}",
+                release.repository, inspection.sha256,
             )),
             &["Install", "Cancel"],
             cx,
@@ -329,8 +340,6 @@ impl MarketplaceWindow {
                         .parent()
                         .ok_or_else(|| anyhow::anyhow!("plugin folder has no parent"))?;
                     let receipts = plugin_package::receipts_dir(data);
-                    let already_managed =
-                        plugin_package::read_receipt(&receipts, &inspection.manifest.id)?.is_some();
                     let result = plugin_package::install_direct_archive_checked(
                         &archive,
                         &plugins,
