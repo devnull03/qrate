@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { categories, submit, validate } from './feedback';
+import { categories, platforms, submit, validate } from './feedback';
 
 function form() {
   const data = new FormData();
@@ -62,6 +62,7 @@ test('no provider calls for invalid input or unconfigured service', async () => 
 test('create issue with exact routing and triage labels', async () => {
   let input: any;
   const data = form();
+  data.set('platform', 'windows');
   data.set('logs', '15:00 [ERROR] example');
   const mocked = async (url: string, options: any) => {
     if (url.includes('siteverify')) return Response.json({ success: true, hostname: 'qrate.dvnl.work', action: 'feedback' });
@@ -78,7 +79,11 @@ test('create issue with exact routing and triage labels', async () => {
   });
   expect(input.stateId).toBe('4b7df4af-a498-4656-8d0a-c87e1c1d28aa');
   expect(input.projectMilestoneId).toBe('7cdb86ec-c9a9-4d58-b46b-2e382566f1f5');
-  expect(input.labelIds).toContain('88dcf4fa-6ccd-4d48-b427-d6d190745e05');
+  expect(input.labelIds).toEqual([
+    categories.bug,
+    platforms.windows,
+    '0429eef3-39f3-4f67-a303-a9f985122a61',
+  ]);
   expect(input.labelIds).toContain('0429eef3-39f3-4f67-a303-a9f985122a61');
   expect(input.description).toContain('    15:00 [ERROR] example');
 });

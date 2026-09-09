@@ -6,10 +6,15 @@ export const categories: Record<string, string> = {
   performance: '154aeee1-f247-4bc6-b797-3b06051f1a7b',
   improvement: '486d0f47-7520-42d5-88a5-c1fde5dcf769',
 };
+export const platforms: Record<string, string> = {
+  windows: '951df0ef-4d13-4eaa-97cc-b7621702126c',
+  macos: '6ad3615e-c1ad-4be6-91bf-9ce6a9d6b093',
+  linux: '2dae9fe2-a98c-43bd-90d5-3a786923d8af',
+};
 export const MAX_BYTES = 17 * 1024 * 1024;
 
 export function validate(form: FormData) {
-  const allowed = ['id', 'category', 'summary', 'description', 'email', 'diagnostics', 'logs', 'consent', 'cf-turnstile-response', 'files'];
+  const allowed = ['id', 'category', 'platform', 'summary', 'description', 'email', 'diagnostics', 'logs', 'consent', 'cf-turnstile-response', 'files'];
   for (const key of form.keys()) {
     if (!allowed.includes(key) || (key !== 'files' && form.getAll(key).length !== 1)) throw new Error('Invalid fields');
   }
@@ -22,6 +27,8 @@ export function validate(form: FormData) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) throw new Error('Invalid ID');
   const category = text('category', 20, true);
   if (!Object.hasOwn(categories, category)) throw new Error('Invalid category');
+  const platform = text('platform', 20);
+  if (platform && !Object.hasOwn(platforms, platform)) throw new Error('Invalid platform');
   if (text('consent', 3) !== 'yes') throw new Error('Review required');
   const email = text('email', 254);
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Invalid email');
@@ -43,7 +50,7 @@ export function validate(form: FormData) {
     }
   }
   return {
-    id, category, email, files,
+    id, category, platform, email, files,
     summary: text('summary', 160, true),
     description: text('description', 10000, true),
     diagnostics: text('diagnostics', 8000),
@@ -129,9 +136,8 @@ export async function submit(request: Request, env: any, fetcher: typeof fetch =
       logs ||= isLog;
     }
     const labelIds = [
-      '9caf21d4-082c-4a89-955e-981e850b6405', '88dcf4fa-6ccd-4d48-b427-d6d190745e05',
-      '26451746-50ca-453e-840e-e8ed9c5a6fb7', 'a47da0e4-5ef6-4a40-98ec-2ee8dcdcea20',
       categories[report.category],
+      ...(report.platform ? [platforms[report.platform]] : []),
       ...(logs ? ['0429eef3-39f3-4f67-a303-a9f985122a61'] : []),
     ];
     const created = await graphql('mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier } } }', {
