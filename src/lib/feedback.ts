@@ -25,8 +25,9 @@ export function validate(form: FormData) {
   if (text('consent', 3) !== 'yes') throw new Error('Review required');
   const email = text('email', 254);
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Invalid email');
-  if (form.getAll('files').some(file => !(file instanceof File))) throw new Error('Invalid files');
-  const files = form.getAll('files').filter((file): file is File => file instanceof File && file.size > 0);
+  const fileValues = form.getAll('files');
+  if (fileValues.some(file => typeof file === 'string')) throw new Error('Invalid files');
+  const files = fileValues.filter((file): file is File => typeof file !== 'string' && file.size > 0);
   const automaticLogs = files.filter(file => /^qrate-session\.log(?:\.gz)?$/i.test(file.name));
   const attachments = files.filter(file => !automaticLogs.includes(file));
   if (automaticLogs.length > 1) throw new Error('Only one automatic session log is allowed.');
