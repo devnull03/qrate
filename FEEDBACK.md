@@ -45,7 +45,8 @@ Cloudflare test keys work on local loopback addresses only. Production requires 
 
 Five attempts per minute per Cloudflare location/IP. Workplace users may share an IP.
 Three user attachments, up to 5 MiB each. PNG/JPEG screenshots and TXT/LOG logs only.
-The optional automatic session log is gzip-compressed in the browser and has a separate 512 KiB limit.
+The optional automatic session log is shown inline in Linear up to 64 KiB. Larger logs become
+gzip attachments in browsers that support compression and have a separate 512 KiB limit.
 No automatic crash uploads, session recording, screenshot capture, or full project upload.
 The report UUID also serves as Linear issue UUID for retry deduplication. Retries require a new Turnstile token.
 Uploads that succeed before a later provider failure can leave orphaned Linear assets.
