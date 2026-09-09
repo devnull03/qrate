@@ -10,6 +10,8 @@ The seven implementation phases are complete. The full cluster-review workspace 
 - Spelling emits one finding per distinct observed word per cell, rather than one combined sentence per cell.
 - The new `clustering` crate separates pure matching from diagnostics and fixes.
 - Value-variant fixes verify the expected cell text. Each validation run clears the previous candidate snapshot.
+- Group menus can fix all spelling or capitalization occurrences in one undo step.
+- Value-variant groups can use either displayed form or save an exact distinct-pair decision.
 - Documentation describes scopes, counts, grouping keys, and OpenRefine credit.
 
 Implementation details that refine the original proposal:
@@ -481,8 +483,8 @@ Track this outside the current implementation:
 - sample row and thumbnail context;
 - match evidence and strategy controls;
 - skip and reject judgments;
-- persistent decisions;
-- one-step bulk replacement;
+- richer decision management and export;
+- bulk replacement across a user-edited cluster;
 - re-cluster after an accepted change;
 - value-frequency facets;
 - authority reconciliation candidates;
@@ -500,7 +502,6 @@ independent implementation.
 - Do not replace atomic diagnostics with aggregate records.
 - Do not change stored note schema.
 - Do not change the plugin API.
-- Do not add group-wide fixes yet.
 
 ## Definition of done
 
@@ -508,6 +509,8 @@ independent implementation.
 - Each group shows its occurrence count.
 - A user can expand a group and jump to every exact location.
 - Existing one-cell fixes work from expanded occurrences.
+- Group fixes use one table edit, one validation pass, and one undo step.
+- A user can save an exact value pair as distinct for one column.
 - Dataset, column, row, and cell scopes have clear labels.
 - Source and severity filters produce correct groups and counts.
 - Spelling and capitalization emit stable group metadata.

@@ -115,6 +115,9 @@ pub struct ColumnSettings {
     /// Whether this column should report near-duplicate displayed values for human review.
     #[serde(default)]
     pub variant_review: bool,
+    /// Exact value pairs the cataloguer confirmed are distinct, in canonical lexical order.
+    #[serde(default)]
+    pub distinct_variants: std::collections::BTreeSet<(String, String)>,
     /// Which authority file this column's values must exist in, by name (`"LCSH"`), or `None` to
     /// check nothing. Separate from the column's [`ColumnType`] because the two answer different
     /// questions: the type is the shape a value has, this is the list it has to appear on.
@@ -143,6 +146,7 @@ impl Default for ColumnSettings {
             filter_enabled: false,
             spellcheck: true,
             variant_review: false,
+            distinct_variants: Default::default(),
             authority: None,
             plugins: BTreeMap::new(),
             severity: BTreeMap::new(),

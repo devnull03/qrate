@@ -1121,6 +1121,7 @@ dependencies = [
  "caseless",
  "diagnostics",
  "gpui-pre",
+ "log",
  "settings",
  "strsim",
  "unicode-normalization",
