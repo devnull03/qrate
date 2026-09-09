@@ -6,7 +6,7 @@ export const categories: Record<string, string> = {
   performance: '154aeee1-f247-4bc6-b797-3b06051f1a7b',
   improvement: '486d0f47-7520-42d5-88a5-c1fde5dcf769',
 };
-export const MAX_BYTES = 7 * 1024 * 1024;
+export const MAX_BYTES = 17 * 1024 * 1024;
 
 export function validate(form: FormData) {
   const allowed = ['id', 'category', 'summary', 'description', 'email', 'diagnostics', 'consent', 'cf-turnstile-response', 'files'];
@@ -27,9 +27,18 @@ export function validate(form: FormData) {
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Invalid email');
   if (form.getAll('files').some(file => !(file instanceof File))) throw new Error('Invalid files');
   const files = form.getAll('files').filter((file): file is File => file instanceof File && file.size > 0);
-  if (files.length > 3) throw new Error('Maximum three files');
+  const automaticLogs = files.filter(file => /^qrate-session\.log(?:\.gz)?$/i.test(file.name));
+  const attachments = files.filter(file => !automaticLogs.includes(file));
+  if (automaticLogs.length > 1) throw new Error('Only one automatic session log is allowed.');
+  if (attachments.length > 3) throw new Error('Choose no more than three attachments.');
   for (const file of files) {
-    if (file.size > 2 * 1024 * 1024 || !/\.(png|jpg|jpeg|txt|log)$/i.test(file.name)) throw new Error('Use PNG, JPEG, TXT or LOG files up to 2 MiB');
+    const automatic = automaticLogs.includes(file);
+    const sizeLimit = automatic ? 512 * 1024 : 5 * 1024 * 1024;
+    if (file.size > sizeLimit || !/\.(png|jpg|jpeg|txt|log|log\.gz)$/i.test(file.name)) {
+      throw new Error(automatic
+        ? 'The automatic session log is too large.'
+        : 'Use PNG, JPEG, TXT or LOG attachments up to 5 MiB each.');
+    }
   }
   return {
     id, category, email, files,
@@ -61,9 +70,13 @@ export async function submit(request: Request, env: any, fetcher: typeof fetch =
       chunks.push(value);
     }
     const form = await new Response(new Blob(chunks), { headers: { 'content-type': request.headers.get('content-type')! } }).formData();
-    report = validate(form);
+    try {
+      report = validate(form);
+    } catch (error) {
+      return reply(400, { error: error instanceof Error ? error.message : 'Check the report fields.' });
+    }
   } catch {
-    return reply(400, { error: 'Check required fields and attachments (three PNG/JPEG/TXT/LOG files, up to 2 MiB each).' });
+    return reply(400, { error: 'The report could not be read. Please retry.' });
   }
   try {
     const verification = await fetcher('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
@@ -96,8 +109,8 @@ export async function submit(request: Request, env: any, fetcher: typeof fetch =
     let logs = false;
     for (const [index, file] of report.files.entries()) {
       const extension = file.name.split('.').pop()!.toLowerCase();
-      const isLog = ['txt', 'log'].includes(extension);
-      const type = isLog ? 'text/plain' : extension === 'png' ? 'image/png' : 'image/jpeg';
+      const isLog = ['txt', 'log', 'gz'].includes(extension);
+      const type = extension === 'gz' ? 'application/gzip' : isLog ? 'text/plain' : extension === 'png' ? 'image/png' : 'image/jpeg';
       const filename = `${isLog ? 'log' : 'screenshot'}-${index + 1}.${extension}`;
       const upload = await graphql(
         'mutation($type: String!, $name: String!, $size: Int!) { fileUpload(contentType: $type, filename: $name, size: $size) { success uploadFile { uploadUrl assetUrl headers { key value } } } }',

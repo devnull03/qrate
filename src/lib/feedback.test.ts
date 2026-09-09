@@ -32,8 +32,17 @@ test('reject executable and oversized attachments', () => {
   const data = form();
   data.append('files', new File(['x'], 'secret.exe'));
   expect(() => validate(data)).toThrow();
-  data.set('files', new File([new Uint8Array(2 * 1024 * 1024 + 1)], 'large.log'));
+  data.set('files', new File([new Uint8Array(5 * 1024 * 1024 + 1)], 'large.log'));
   expect(() => validate(data)).toThrow();
+});
+
+test('automatic compressed log does not consume a user attachment slot', () => {
+  const data = form();
+  for (let index = 0; index < 3; index++) {
+    data.append('files', new File(['image'], `screenshot-${index}.png`));
+  }
+  data.append('files', new File(['gzip'], 'qrate-session.log.gz'));
+  expect(validate(data).files).toHaveLength(4);
 });
 
 test('no provider calls for invalid input or unconfigured service', async () => {
