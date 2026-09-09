@@ -512,7 +512,7 @@ pub fn menu(
                     .on_click(move |_, _, cx| {
                         settings::columns::update(
                             &review_key,
-                            |settings| settings.variant_review = !variant_review,
+                            |settings| settings.variant_review = !settings.variant_review,
                             cx,
                         );
                         crate::revalidate_now(cx);
