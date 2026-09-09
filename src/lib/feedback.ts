@@ -9,7 +9,7 @@ export const categories: Record<string, string> = {
 export const MAX_BYTES = 17 * 1024 * 1024;
 
 export function validate(form: FormData) {
-  const allowed = ['id', 'category', 'summary', 'description', 'email', 'diagnostics', 'consent', 'cf-turnstile-response', 'files'];
+  const allowed = ['id', 'category', 'summary', 'description', 'email', 'diagnostics', 'logs', 'consent', 'cf-turnstile-response', 'files'];
   for (const key of form.keys()) {
     if (!allowed.includes(key) || (key !== 'files' && form.getAll(key).length !== 1)) throw new Error('Invalid fields');
   }
@@ -47,6 +47,7 @@ export function validate(form: FormData) {
     summary: text('summary', 160, true),
     description: text('description', 10000, true),
     diagnostics: text('diagnostics', 8000),
+    logs: text('logs', 64 * 1024),
     token: text('cf-turnstile-response', 2048, true),
   };
 }
@@ -108,7 +109,7 @@ export async function submit(request: Request, env: any, fetcher: typeof fetch =
     const existing = await graphql('query($id: ID!) { issues(filter: { id: { eq: $id }, project: { id: { eq: "aa8cfc24-95f6-461e-aac4-46437d89459e" } } }) { nodes { id identifier } } }', { id: report.id });
     if (existing.issues.nodes.length) return reply(200, { receipt: report.id, ticket: existing.issues.nodes[0].identifier });
     const attachments: string[] = [];
-    let logs = false;
+    let logs = Boolean(report.logs);
     for (const [index, file] of report.files.entries()) {
       const extension = file.name.split('.').pop()!.toLowerCase();
       const isLog = ['txt', 'log', 'gz'].includes(extension);
@@ -144,6 +145,9 @@ export async function submit(request: Request, env: any, fetcher: typeof fetch =
           report.description, `Category: ${report.category}`,
           report.email ? `Reply to: ${report.email}` : '',
           report.diagnostics ? `## User-reviewed diagnostics\n\n${report.diagnostics}` : '',
+          report.logs
+            ? `## User-reviewed application log\n\n${report.logs.split('\n').map(line => `    ${line}`).join('\n')}`
+            : '',
           ...attachments,
         ].filter(Boolean).join('\n\n'),
       },

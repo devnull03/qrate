@@ -61,6 +61,8 @@ test('no provider calls for invalid input or unconfigured service', async () => 
 
 test('create issue with exact routing and triage labels', async () => {
   let input: any;
+  const data = form();
+  data.set('logs', '15:00 [ERROR] example');
   const mocked = async (url: string, options: any) => {
     if (url.includes('siteverify')) return Response.json({ success: true, hostname: 'qrate.dvnl.work', action: 'feedback' });
     const body = JSON.parse(options.body);
@@ -68,7 +70,7 @@ test('create issue with exact routing and triage labels', async () => {
     input = body.variables.input;
     return Response.json({ data: { issueCreate: { success: true, issue: { id: input.id, identifier: 'TSGB-42' } } } });
   };
-  const response = await submit(request(), env, mocked as any);
+  const response = await submit(request(data), env, mocked as any);
   expect(response.status).toBe(200);
   expect(await response.json()).toEqual({
     receipt: 'd721d1ca-6213-4bda-8928-21ca37671d96',
@@ -77,7 +79,8 @@ test('create issue with exact routing and triage labels', async () => {
   expect(input.stateId).toBe('4b7df4af-a498-4656-8d0a-c87e1c1d28aa');
   expect(input.projectMilestoneId).toBe('7cdb86ec-c9a9-4d58-b46b-2e382566f1f5');
   expect(input.labelIds).toContain('88dcf4fa-6ccd-4d48-b427-d6d190745e05');
-  expect(input.labelIds).not.toContain('0429eef3-39f3-4f67-a303-a9f985122a61');
+  expect(input.labelIds).toContain('0429eef3-39f3-4f67-a303-a9f985122a61');
+  expect(input.description).toContain('    15:00 [ERROR] example');
 });
 
 test('Turnstile wrong hostname fails before Linear', async () => {

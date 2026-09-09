@@ -94,7 +94,7 @@ const sitekey = env.TURNSTILE_SITE_KEY;
           <input id="include-logs" type="checkbox" />
           <span>
             <strong class="font-medium text-ink">Include recent application logs</strong>
-            <span class="block text-xs text-dim">A short tail with home-directory paths redacted. Off until you choose it.</span>
+            <span class="block text-xs text-dim">A short tail with home-directory paths redacted. Small logs appear directly in the ticket.</span>
           </span>
         </label>
         <details>
@@ -234,7 +234,10 @@ const sitekey = env.TURNSTILE_SITE_KEY;
           throw new Error('Choose no more than three attachments.');
         }
         if (includeLogs.checked && recentLogs.value) {
-          if ('CompressionStream' in window) {
+          const log = new Blob([recentLogs.value], { type: 'text/plain' });
+          if (log.size <= 64 * 1024) {
+            data.set('logs', recentLogs.value);
+          } else if ('CompressionStream' in window) {
             const compressed = new Blob([recentLogs.value])
               .stream()
               .pipeThrough(new CompressionStream('gzip'));
@@ -247,7 +250,7 @@ const sitekey = env.TURNSTILE_SITE_KEY;
           } else {
             data.append(
               'files',
-              new File([recentLogs.value], 'qrate-session.log', { type: 'text/plain' }),
+              new File([log], 'qrate-session.log', { type: 'text/plain' }),
             );
           }
         }
