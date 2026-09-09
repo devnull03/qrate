@@ -6,13 +6,26 @@ Deploy the website before releasing the desktop buttons.
 ## Configure
 
 1. Create a Cloudflare Turnstile widget for `qrate.dvnl.work`.
-2. Set build variable `PUBLIC_TURNSTILE_SITE_KEY` to its public site key.
+2. Set Worker variable `TURNSTILE_SITE_KEY` to its public site key.
 3. Run `bunx wrangler secret put TURNSTILE_SECRET_KEY`.
 4. Run `bunx wrangler secret put LINEAR_API_KEY`.
 
 The Linear key needs read access, issue creation and file upload access for Grass Labs.
 Never put either secret in source files, command arguments, or the browser.
 Routing IDs live in `src/lib/feedback.ts`. New issues go to qrate / Beta Intake & Stabilization / Backlog.
+
+## Test locally
+
+1. Copy `.dev.vars.example` to `.dev.vars`.
+2. Put the Linear key and a Turnstile widget's site and secret keys in `.dev.vars`.
+3. Allow `localhost` in that Turnstile widget.
+4. Run `bun install`.
+5. Run `bun run dev`.
+6. Open `http://localhost:4321/feedback`.
+7. In another checkout on `feat/in-app-feedback`, run `cargo run`.
+
+Debug qrate builds open the local form. Release builds open `https://qrate.dvnl.work/feedback`.
+The repository ignores `.dev.vars`. Stop the local server before switching site branches.
 
 ## Verify before deployment
 
