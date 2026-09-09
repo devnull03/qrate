@@ -89,11 +89,34 @@ const sitekey = env.TURNSTILE_SITE_KEY;
         </details>
       </div>
 
+      <div id="app-logs" class="hidden border border-rule bg-ground/40">
+        <label class="check border-b border-rule-soft px-4 py-3">
+          <input id="include-logs" type="checkbox" />
+          <span>
+            <strong class="font-medium text-ink">Include recent application logs</strong>
+            <span class="block text-xs text-dim">A short tail with home-directory paths redacted. Off until you choose it.</span>
+          </span>
+        </label>
+        <details>
+          <summary class="cursor-pointer px-4 py-3 font-mono text-xs text-nav">
+            Review or edit recent logs
+          </summary>
+          <div class="border-t border-rule-soft p-4">
+            <textarea
+              id="recent-logs"
+              maxlength="2000"
+              rows="9"
+              aria-label="Recent application logs"
+              class="font-mono text-xs"></textarea>
+          </div>
+        </details>
+      </div>
+
       <label>
-        <span class="field-label">Logs or screenshots <span class="normal-case text-faint">(optional)</span></span>
+        <span class="field-label">Additional logs or screenshots <span class="normal-case text-faint">(optional)</span></span>
         <input name="files" type="file" multiple accept=".txt,.log,.png,.jpg,.jpeg" />
         <span class="mt-2 block text-xs leading-5 text-dim">
-          Up to three files, 2 MiB each. Use Help → Open Logs Folder in qrate.
+          Up to three attachments in total, 2 MiB each. The automatic log counts as one.
         </span>
       </label>
 
@@ -144,22 +167,55 @@ const sitekey = env.TURNSTILE_SITE_KEY;
     </aside>
   </section>
 
+  <dialog id="result-dialog" class="m-auto w-[min(30rem,calc(100%-2rem))] border border-rule bg-paper p-0 text-ink shadow-2xl">
+    <div class="border-t-4 border-accent px-6 py-6">
+      <div class="eyebrow mb-3">Feedback report</div>
+      <h2 id="result-title" class="m-0 text-2xl font-semibold">Thank you</h2>
+      <p id="result-message" class="mb-0 mt-3 text-sm leading-6 text-body"></p>
+      <p id="result-ticket" class="mt-4 hidden border border-rule bg-ground px-3 py-2 font-mono text-sm"></p>
+      <form method="dialog" class="mt-6">
+        <button class="cursor-pointer bg-ink px-5 py-2.5 text-sm font-medium text-paper">Close</button>
+      </form>
+    </div>
+  </dialog>
+
   <script>
     const form = document.querySelector('form')!;
     const category = form.elements.namedItem('category') as HTMLSelectElement;
     const diagnostics = form.elements.namedItem('diagnostics') as HTMLTextAreaElement;
     const include = document.querySelector<HTMLInputElement>('#include')!;
+    const appLogs = document.querySelector<HTMLElement>('#app-logs')!;
+    const includeLogs = document.querySelector<HTMLInputElement>('#include-logs')!;
+    const recentLogs = document.querySelector<HTMLTextAreaElement>('#recent-logs')!;
+    const files = form.elements.namedItem('files') as HTMLInputElement;
     const status = document.querySelector('#status')!;
     const button = form.querySelector('button[type="submit"]') as HTMLButtonElement;
+    const dialog = document.querySelector<HTMLDialogElement>('#result-dialog')!;
+    const resultTitle = document.querySelector('#result-title')!;
+    const resultMessage = document.querySelector('#result-message')!;
+    const resultTicket = document.querySelector('#result-ticket')!;
+    const showResult = (title: string, message: string, ticket = '') => {
+      resultTitle.textContent = title;
+      resultMessage.textContent = message;
+      resultTicket.textContent = ticket ? `Ticket: ${ticket}` : '';
+      resultTicket.classList.toggle('hidden', !ticket);
+      dialog.showModal();
+    };
     const selected = new URLSearchParams(location.search).get('type');
     if ([...category.options].some(option => option.value === selected)) category.value = selected!;
     include.checked = !['feature', 'improvement'].includes(category.value);
     const fragment = (window as any).qrateFeedbackFragment;
     delete (window as any).qrateFeedbackFragment;
     try {
-      const raw = new URLSearchParams(fragment?.slice(1)).get('diagnostics');
+      const values = new URLSearchParams(fragment?.slice(1));
+      const raw = values.get('diagnostics');
       if (raw && raw.length <= 8000) {
         diagnostics.value = JSON.stringify(JSON.parse(raw), null, 2);
+      }
+      const logs = values.get('logs');
+      if (logs && logs.length <= 2000) {
+        recentLogs.value = logs;
+        appLogs.classList.remove('hidden');
       }
     } catch { status.textContent = 'The diagnostic summary could not be read. You can report without it.'; }
     const id = crypto.randomUUID();
@@ -171,19 +227,34 @@ const sitekey = env.TURNSTILE_SITE_KEY;
       const data = new FormData(form);
       data.set('id', id);
       if (!include.checked) data.delete('diagnostics');
+      if (includeLogs.checked && recentLogs.value) {
+        if ((files.files?.length ?? 0) >= 3) {
+          submitting = false;
+          showResult('Too many attachments', 'Remove one attachment to include the automatic application log.');
+          return;
+        }
+        data.append('files', new File([recentLogs.value], 'qrate.log', { type: 'text/plain' }));
+      }
       button.disabled = true;
       status.textContent = 'Sending…';
       try {
         const response = await fetch('/api/feedback', { method: 'POST', body: data });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'Unable to send.');
-        status.textContent = `Thank you. Report received: ${result.receipt}`;
+        status.textContent = 'Feedback sent.';
         button.textContent = 'Sent';
+        showResult(
+          'Thank you',
+          'Your report reached the qrate feedback queue. Keep the ticket reference if you need to follow up.',
+          result.ticket || result.receipt,
+        );
       } catch (error) {
         submitting = false;
-        status.textContent = error instanceof Error ? error.message : 'Unable to send. Please retry.';
+        const message = error instanceof Error ? error.message : 'Unable to send. Please retry.';
+        status.textContent = message;
         button.disabled = false;
         (window as any).turnstile?.reset();
+        showResult('Feedback was not sent', `${message} Your form is unchanged, so you can retry.`);
       }
     });
   </script>
@@ -245,5 +316,9 @@ const sitekey = env.TURNSTILE_SITE_KEY;
   .check input {
     margin-top: 0.2rem;
     accent-color: var(--accent);
+  }
+
+  dialog::backdrop {
+    background: rgb(23 20 15 / 45%);
   }
 </style>

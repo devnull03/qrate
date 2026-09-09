@@ -90,8 +90,8 @@ export async function submit(request: Request, env: any, fetcher: typeof fetch =
       return result.data;
     };
     // A stable issue UUID makes retries safe without a second database.
-    const existing = await graphql('query($id: ID!) { issues(filter: { id: { eq: $id }, project: { id: { eq: "aa8cfc24-95f6-461e-aac4-46437d89459e" } } }) { nodes { id } } }', { id: report.id });
-    if (existing.issues.nodes.length) return reply(200, { receipt: report.id });
+    const existing = await graphql('query($id: ID!) { issues(filter: { id: { eq: $id }, project: { id: { eq: "aa8cfc24-95f6-461e-aac4-46437d89459e" } } }) { nodes { id identifier } } }', { id: report.id });
+    if (existing.issues.nodes.length) return reply(200, { receipt: report.id, ticket: existing.issues.nodes[0].identifier });
     const attachments: string[] = [];
     let logs = false;
     for (const [index, file] of report.files.entries()) {
@@ -118,7 +118,7 @@ export async function submit(request: Request, env: any, fetcher: typeof fetch =
       categories[report.category],
       ...(logs ? ['0429eef3-39f3-4f67-a303-a9f985122a61'] : []),
     ];
-    const created = await graphql('mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id } } }', {
+    const created = await graphql('mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier } } }', {
       input: {
         id: report.id, teamId: 'd14f1e07-93ce-4cfe-968c-c6372c6f58a6',
         projectId: 'aa8cfc24-95f6-461e-aac4-46437d89459e',
@@ -134,7 +134,7 @@ export async function submit(request: Request, env: any, fetcher: typeof fetch =
       },
     });
     if (!created.issueCreate.success || !created.issueCreate.issue) throw new Error('Create failed');
-    return reply(200, { receipt: report.id });
+    return reply(200, { receipt: report.id, ticket: created.issueCreate.issue.identifier });
   } catch {
     return reply(502, { error: 'Delivery could not be confirmed. Your form is unchanged. Retry with the same report ID.' });
   }
