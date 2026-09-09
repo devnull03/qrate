@@ -10,6 +10,10 @@ single undo step for each accepted operation.
 1. Preview selected rows and columns before and after an operation.
 2. Support whitespace cleanup, Unicode normalization, case normalization, delimiter splitting or
    joining, regex replacement, and duplicate detection/removal.
+   - Use NFC for canonical Unicode normalization.
+   - Offer NFKC as a separate compatibility-normalization operation because it can change meaning.
+   - Use Unicode default casing for lower-, upper-, and title-case operations. Do not use the host
+     locale.
 3. Report skipped and failed cells without silently changing them.
 4. Apply an accepted transformation as one complete undoable batch.
 
@@ -21,9 +25,9 @@ single undo step for each accepted operation.
 
 ## Dependencies and merge notes
 
-Do not implement the preview/confirmation UI until `gpui-kit-migration` has landed. That branch
-changes the table panel and delegate surfaces this work would otherwise conflict with. The
-transformation semantics and fixtures may be designed before then.
+Do not implement the preview/confirmation UI until PR #118 has landed. That PR changes the table
+panel and delegate surfaces this work would otherwise conflict with. The transformation semantics
+and fixtures may be designed before then.
 
 ## Definition of done
 
