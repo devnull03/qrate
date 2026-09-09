@@ -50,9 +50,14 @@ test('create issue with exact routing and triage labels', async () => {
     const body = JSON.parse(options.body);
     if (body.query.startsWith('query')) return Response.json({ data: { issues: { nodes: [] } } });
     input = body.variables.input;
-    return Response.json({ data: { issueCreate: { success: true, issue: { id: input.id } } } });
+    return Response.json({ data: { issueCreate: { success: true, issue: { id: input.id, identifier: 'TSGB-42' } } } });
   };
-  expect((await submit(request(), env, mocked as any)).status).toBe(200);
+  const response = await submit(request(), env, mocked as any);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({
+    receipt: 'd721d1ca-6213-4bda-8928-21ca37671d96',
+    ticket: 'TSGB-42',
+  });
   expect(input.stateId).toBe('4b7df4af-a498-4656-8d0a-c87e1c1d28aa');
   expect(input.projectMilestoneId).toBe('7cdb86ec-c9a9-4d58-b46b-2e382566f1f5');
   expect(input.labelIds).toContain('88dcf4fa-6ccd-4d48-b427-d6d190745e05');
