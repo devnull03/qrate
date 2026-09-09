@@ -1108,6 +1108,17 @@ fn columns_page(cx: &App) -> SettingPage {
 
     let headers = column_items(project);
 
+    let values = SettingGroup::new().title("Multi-value cells").item(
+        Setting::Text {
+            key: settings::FILTER_SUBDELIMITER_KEY,
+            label: "Value separator",
+            description: "Separate multiple values in one cell, e.g. \"|\" for \"Film|Video\". \
+                          Filters and validators treat each part as one logical value. Leave empty \
+                          to treat the complete cell as one value.",
+        }
+        .into_item(cx),
+    );
+
     let mut group = SettingGroup::new().title("Filters").item(
         SettingItem::new(
             "Enable column filters",
@@ -1120,16 +1131,6 @@ fn columns_page(cx: &App) -> SettingPage {
     );
 
     if columns::filters_master_enabled(cx) {
-        group = group.item(
-            Setting::Text {
-                key: settings::FILTER_SUBDELIMITER_KEY,
-                label: "Sub-delimiter",
-                description: "Split cells that hold several values, e.g. \";\" for \"Film; Video\", \
-                              so the dropdown lists each value on its own. Leave empty to filter \
-                              whole cells.",
-            }
-            .into_item(cx),
-        );
         let picked = headers.clone();
         group = group.item(
             SettingItem::new(
@@ -1196,6 +1197,7 @@ fn columns_page(cx: &App) -> SettingPage {
     );
 
     SettingPage::new("Columns")
+        .group(values)
         .group(group)
         .group(spelling)
         .group(variants)

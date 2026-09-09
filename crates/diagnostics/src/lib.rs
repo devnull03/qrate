@@ -239,8 +239,14 @@ impl Global for Diagnostics {}
 impl Diagnostics {
     /// Publish `source`'s complete diagnostics for `dataset`, replacing whatever it published
     /// before (LSP `publishDiagnostics`). A re-run that finds nothing clears its own stale
-    /// entries, so resolving a problem is just republishing without it.
-    pub fn set(source: &Source, dataset: &str, items: Vec<Diagnostic>, cx: &mut App) {
+    /// entries, so resolving a problem is just republishing without it. Computed notes become
+    /// warnings because the Notes tab belongs to authored notes.
+    pub fn set(source: &Source, dataset: &str, mut items: Vec<Diagnostic>, cx: &mut App) {
+        for diagnostic in &mut items {
+            if diagnostic.source != Source::Note && diagnostic.severity == Severity::Note {
+                diagnostic.severity = Severity::Warning;
+            }
+        }
         let this = cx.default_global::<Self>();
         this.items
             .retain(|d| &d.source != source || d.location.dataset != dataset);
@@ -1011,6 +1017,25 @@ mod tests {
             );
             assert_eq!(Diagnostics::all(cx).len(), 3);
             assert_eq!(Diagnostics::counts(cx), (1, 1));
+        });
+    }
+
+    #[gpui::test]
+    fn computed_notes_are_warnings_so_the_notes_tab_stays_user_owned(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let source = Source::Validator("plugin".into());
+            Diagnostics::set(
+                &source,
+                DATASET_MAIN,
+                vec![diag(
+                    Severity::Note,
+                    source.clone(),
+                    DATASET_MAIN,
+                    "review this",
+                )],
+                cx,
+            );
+            assert_eq!(Diagnostics::all(cx)[0].severity, Severity::Warning);
         });
     }
 }
