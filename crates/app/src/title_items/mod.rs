@@ -3,9 +3,9 @@ mod update_notice;
 
 use gpui::*;
 use gpui_component::{
-    Sizable as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme,
     dock::{DockArea, DockPlacement},
+    h_flex,
     menu::AppMenuBar,
 };
 use plugin_api::{Bar, Side};
@@ -19,12 +19,18 @@ use workspace::DockToggleButton;
 struct FeedbackButton;
 
 impl Render for FeedbackButton {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        Button::new("feedback")
-            .small()
-            .compact()
-            .primary()
-            .label("Feedback")
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .id("feedback")
+            .px(px(6.))
+            .py(px(2.))
+            .rounded_md()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .cursor_pointer()
+            .hover(|this| this.bg(cx.theme().secondary_hover))
+            .occlude()
+            .child("Feedback")
             .on_click(|_, _, cx| cx.open_url(&crate::logging::feedback_url(cx, None)))
     }
 }
