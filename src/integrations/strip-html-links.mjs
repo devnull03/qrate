@@ -1,5 +1,6 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Drop the trailing slash from the URLs in the MCP corpus.
@@ -53,7 +54,7 @@ export default function stripHtmlLinks() {
     name: 'qrate:strip-html-links',
     hooks: {
       'astro:build:done': async ({ dir, logger }) => {
-        const root = new URL(dir).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+        const root = fileURLToPath(dir);
 
         const walk = async (p) => {
           const out = [];
