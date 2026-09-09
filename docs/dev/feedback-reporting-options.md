@@ -18,10 +18,10 @@ Do not send diagnostics inside a `qrate://` link. Operating systems can expose p
 
 - Keep one hosted form and one Worker submission endpoint.
 - Store reports and attachments in Linear. Do not add Notion synchronization or a separate upload bucket.
-- Keep only a structured, versioned summary in the URL fragment. Exclude raw logs, plugin error strings, and file paths.
+- Keep a structured summary and a bounded current-session log tail in the URL fragment.
 - Treat the fragment as visible to browser extensions and page scripts, not as encrypted storage.
 - Remove the fragment immediately. Do not load analytics on the feedback page.
-- Let users review and edit diagnostics before submission. Logs and screenshots require explicit file selection.
+- Let users review and edit diagnostics and logs before submission. Require an explicit choice to include logs.
 - Use `ui_ux` consistently in desktop links, the form, and the Worker.
 - Keep Turnstile, bounded input, rate limiting, and duplicate-submit protection. Do not require a spoofable client header.
 - Use one description field with category-specific guidance, rather than six separate forms.
@@ -87,9 +87,9 @@ https://qrate.dvnl.work/feedback#qrate=<base64url-json>
 
 Browsers do not send a URL fragment in the HTTP request. Page JavaScript can read the payload locally and then call `history.replaceState` to remove it.
 
-Keep the payload small. Include only a structured diagnostic summary. Do not include logs in a URL.
+Keep the payload small. Include a structured diagnostic summary and a bounded, home-path-redacted log tail.
 
-The form can accept a full log through a normal file picker. This action requires a separate user choice.
+The form shows the exact log tail and does not include it until the user selects the log option.
 
 The future `qrate://` handler works in the other direction. This is not a beta dependency:
 
@@ -168,9 +168,9 @@ The complete workflow is:
 - **Canceled**: invalid, obsolete, or rejected reports.
 - **Duplicate**: redundant reports.
 
-Every report gets the **Feedback**, **Needs Triage**, **Platform / OS**, and **App Version** labels. Add exactly one category label.
+Every report gets one category label. Reports opened from qrate also get **Windows**, **macOS**, or **Linux**.
 
-Add **Logs Attached** only after the Worker uploads a log through Linear private storage.
+Add **Logs Attached** when the report includes an inline log or an uploaded log.
 
 Do not add **Reproducible** during intake. A reviewer adds it after a successful reproduction.
 
@@ -194,8 +194,6 @@ These IDs are public configuration values. Keep only the Linear API key in a Wor
 | Done state | `ebed7fcf-e471-42c4-8d68-00c93ac41c4a` |
 | Canceled state | `671784d6-b381-4624-9cc6-71dc96fecc73` |
 | Duplicate state | `f0973e0d-201f-4904-bc49-bcb1cb0204dc` |
-| Feedback label | `9caf21d4-082c-4a89-955e-981e850b6405` |
-| Needs Triage label | `88dcf4fa-6ccd-4d48-b427-d6d190745e05` |
 | Reproducible label | `d721d1ca-6213-4bda-8928-21ca37671d96` |
 | Bug label | `9c1c54ef-3835-4b07-b7fe-c02952216f74` |
 | UI / UX label | `8ac21715-4a1e-4a00-a4bb-06276a4ff7ca` |
@@ -203,8 +201,9 @@ These IDs are public configuration values. Keep only the Linear API key in a Wor
 | Performance label | `154aeee1-f247-4bc6-b797-3b06051f1a7b` |
 | Improvement label | `486d0f47-7520-42d5-88a5-c1fde5dcf769` |
 | Logs Attached label | `0429eef3-39f3-4f67-a303-a9f985122a61` |
-| Platform / OS label | `26451746-50ca-453e-840e-e8ed9c5a6fb7` |
-| App Version label | `a47da0e4-5ef6-4a40-98ec-2ee8dcdcea20` |
+| Windows label | `951df0ef-4d13-4eaa-97cc-b7621702126c` |
+| macOS label | `6ad3615e-c1ad-4be6-91bf-9ce6a9d6b093` |
+| Linux label | `2dae9fe2-a98c-43bd-90d5-3a786923d8af` |
 | Feature Request label | `bf455f57-e866-46ae-8a73-5dcdd4f1cb23` |
 
 Configure these values as Worker variables. Configure `LINEAR_API_KEY` with `wrangler secret put LINEAR_API_KEY`.
@@ -231,8 +230,6 @@ Linear does not let the Worker create a saved custom view. Create **Feedback Das
 - Project is **qrate**.
 - Milestone is **Beta Intake & Stabilization**.
 - State is **Backlog**, **Todo**, **In Progress**, or **In Review**.
-- Label is **Feedback** or **Needs Triage**.
-
 This view shows active intake and accepted work. It excludes shipped, canceled, and duplicate reports.
 
 Update the website privacy policy before release. It currently states that qrate sends no reports and operates no data server.
