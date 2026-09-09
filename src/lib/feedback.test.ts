@@ -85,7 +85,9 @@ test('create issue with exact routing and triage labels', async () => {
     '0429eef3-39f3-4f67-a303-a9f985122a61',
   ]);
   expect(input.labelIds).toContain('0429eef3-39f3-4f67-a303-a9f985122a61');
-  expect(input.description).toContain('    15:00 [ERROR] example');
+  expect(input.description).toContain('\n\n---\n\n');
+  expect(input.description).toContain('```text\n15:00 [ERROR] example\n```');
+  expect(input.description).not.toContain('Category:');
 });
 
 test('Turnstile wrong hostname fails before Linear', async () => {

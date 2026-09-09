@@ -148,11 +148,14 @@ export async function submit(request: Request, env: any, fetcher: typeof fetch =
         stateId: '4b7df4af-a498-4656-8d0a-c87e1c1d28aa', labelIds,
         title: report.summary,
         description: [
-          report.description, `Category: ${report.category}`,
+          report.description,
           report.email ? `Reply to: ${report.email}` : '',
-          report.diagnostics ? `## User-reviewed diagnostics\n\n${report.diagnostics}` : '',
+          report.diagnostics || report.logs || attachments.length ? '---' : '',
+          report.diagnostics
+            ? `## User-reviewed diagnostics\n\n\`\`\`json\n${report.diagnostics}\n\`\`\``
+            : '',
           report.logs
-            ? `## User-reviewed application log\n\n${report.logs.split('\n').map(line => `    ${line}`).join('\n')}`
+            ? `## User-reviewed application log\n\n\`\`\`text\n${report.logs}\n\`\`\``
             : '',
           ...attachments,
         ].filter(Boolean).join('\n\n'),
