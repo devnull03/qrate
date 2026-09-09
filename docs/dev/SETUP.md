@@ -50,8 +50,16 @@ client id. Never commit the JSON; `.gitignore` covers `client_secret_*.json`, an
 themselves belong in the environment or in the credential endpoint (`site-oauth-handoff.md`),
 never in source.
 
-**Plugin links on Windows:** an installer registers `qrate://` with Windows, but `cargo run` does
-not. After the debug executable exists, register it for the current user:
+**Plugins in local builds:** the official catalog public key is a GitHub repository variable. Put
+that public value in the process environment so a source build can verify the production catalog:
+
+```powershell
+$env:QRATE_PLUGIN_CATALOG_PUBLIC_KEY = gh variable get QRATE_PLUGIN_CATALOG_PUBLIC_KEY
+cargo run
+```
+
+An installer registers `qrate://` with Windows, but `cargo run` does not. After the debug executable
+exists, register it for the current user:
 
 ```powershell
 .\scripts\register-dev-protocol.ps1
