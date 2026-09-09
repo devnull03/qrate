@@ -1,5 +1,8 @@
 # Agent tools and Islandora Workbench
 
+This pull request defines the implementation plan. It does not add the plugin tools or Workbench
+runtime.
+
 ## Purpose
 
 Extend qrate plugins with approved, structured agent-callable tools and prove the contract through
