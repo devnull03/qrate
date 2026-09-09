@@ -1,4 +1,4 @@
-//! The session log, the panic hook, and the debug-info dump behind Help ▸ Copy Debug Info.
+//! The session log, panic hook, and reports behind Help ▸ Copy Debug Info and Send Feedback.
 //!
 //! Everything here shares one thing — the path to the current session's log file — which is why
 //! the logger, the panic hook, the log tail, and the dump that embeds it live in one module.
@@ -21,6 +21,12 @@ use log::{Level, Log, Metadata, Record};
 use simplelog::{
     ColorChoice, CombinedLogger, ConfigBuilder, LevelFilter, TermLogger, TerminalMode, WriteLogger,
 };
+
+pub enum FeedbackKind {
+    Bug,
+    Feature,
+    Ux,
+}
 
 /// Where the current session writes. `None` only if the OS has no local data dir, in which case
 /// there is nowhere to log and the terminal sink is all there is.
@@ -195,8 +201,7 @@ pub fn debug_info(cx: &App, log_lines: usize) -> String {
         Some(project) => {
             let _ = writeln!(
                 out,
-                "\nProject: {} ({} rows x {} columns)",
-                project.file.display(),
+                "\nProject: open ({} rows x {} columns)",
                 project.data.rows.len(),
                 project.data.headers.len()
             );
@@ -268,6 +273,41 @@ pub fn urlencode(text: &str) -> String {
     })
 }
 
+/// Open the hosted form with diagnostics in the fragment, which is not sent in the page request.
+///
+/// The page removes the fragment after reading it and shows the exact text before submission.
+pub fn feedback_url(cx: &App, kind: Option<FeedbackKind>) -> String {
+    let kind = match kind {
+        Some(FeedbackKind::Bug) => "?type=bug",
+        Some(FeedbackKind::Feature) => "?type=feature",
+        Some(FeedbackKind::Ux) => "?type=ui_ux",
+        None => "",
+    };
+    let plugins = plugin_host::status(cx);
+    let project = cx
+        .try_global::<settings::project::CurrentProject>()
+        .map(|project| {
+            serde_json::json!({
+                "rows": project.data.rows.len(),
+                "columns": project.data.headers.len(),
+            })
+        });
+    let diagnostics = serde_json::json!({
+        "schema": 1,
+        "version": version(),
+        "commit": env!("QRATE_GIT_SHA"),
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "project": project,
+        "plugins": plugins.len(),
+        "plugin_failures": plugins.iter().filter(|(_, error)| error.is_some()).count(),
+    });
+    format!(
+        "https://qrate.dvnl.work/feedback{kind}#diagnostics={}",
+        urlencode(&diagnostics.to_string())
+    )
+}
+
 /// The path Help ▸ Open Logs Folder reveals, or the folder itself if this session never opened a
 /// file to reveal.
 pub fn reveal_target() -> Option<PathBuf> {
@@ -292,6 +332,27 @@ mod tests {
     fn urlencodes_what_a_url_cannot_carry() {
         assert_eq!(super::urlencode("a b&c"), "a%20b%26c");
         assert_eq!(super::urlencode("qrate-0.1_x.y~z"), "qrate-0.1_x.y~z");
+    }
+
+    #[gpui::test]
+    fn feedback_links_select_the_form_and_keep_diagnostics_in_the_fragment(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (bug, feature, ux) = cx.update(|cx| {
+            (
+                super::feedback_url(cx, Some(super::FeedbackKind::Bug)),
+                super::feedback_url(cx, Some(super::FeedbackKind::Feature)),
+                super::feedback_url(cx, Some(super::FeedbackKind::Ux)),
+            )
+        });
+
+        assert!(bug.starts_with("https://qrate.dvnl.work/feedback?type=bug#diagnostics="));
+        assert!(feature.contains("?type=feature#diagnostics="));
+        assert!(ux.contains("?type=ui_ux#diagnostics="));
+        assert!(bug.contains("%22schema%22%3A1"));
+        assert!(!bug.contains("log%20"));
+        assert!(!bug.contains("CPU"));
+        assert!(bug.len() < 7_000);
     }
 
     /// The demotion has to be narrow: it must catch gpui's two teardown messages and nothing else,
