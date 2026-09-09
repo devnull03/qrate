@@ -62,7 +62,7 @@ impl Render for LauncherBar {
                                 menu.menu("Plugins Folder", Box::new(OpenPluginsFolder))
                                     .menu("Reload Plugins", Box::new(ReloadPlugins))
                             })
-                            .submenu("Help", window, cx, |menu, _, _| {
+                            .submenu("Help", window, cx, |menu, window, cx| {
                                 menu.menu(
                                     "Repository",
                                     Box::new(OpenBrowser {
