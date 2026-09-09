@@ -50,16 +50,16 @@ client id. Never commit the JSON; `.gitignore` covers `client_secret_*.json`, an
 themselves belong in the environment or in the credential endpoint (`site-oauth-handoff.md`),
 never in source.
 
-**Plugins in local builds:** the official catalog public key is a GitHub repository variable. Put
-that public value in the process environment so a source build can verify the production catalog:
+**Plugins in local Windows builds:** use the development runner to read the public catalog key,
+build qrate, register the debug executable for `qrate://`, run it, and remove that temporary
+registration when qrate exits:
 
 ```powershell
-$env:QRATE_PLUGIN_CATALOG_PUBLIC_KEY = gh variable get QRATE_PLUGIN_CATALOG_PUBLIC_KEY
-cargo run
+.\scripts\run-dev.ps1
 ```
 
-An installer registers `qrate://` with Windows, but `cargo run` does not. After the debug executable
-exists, register it for the current user:
+This requires an authenticated GitHub CLI. To register an already-built debug executable without
+running it, use:
 
 ```powershell
 .\scripts\register-dev-protocol.ps1
