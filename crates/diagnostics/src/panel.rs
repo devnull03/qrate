@@ -38,12 +38,16 @@ impl Filter {
         }
     }
 
-    fn admits(self, severity: Severity) -> bool {
+    fn admits(self, diagnostic: &Diagnostic) -> bool {
         match self {
-            Filter::All => true,
-            Filter::Errors => severity == Severity::Error,
-            Filter::Warnings => severity == Severity::Warning,
-            Filter::Notes => severity == Severity::Note,
+            Filter::All => diagnostic.source != Source::Note,
+            Filter::Errors => {
+                diagnostic.source != Source::Note && diagnostic.severity == Severity::Error
+            }
+            Filter::Warnings => {
+                diagnostic.source != Source::Note && diagnostic.severity == Severity::Warning
+            }
+            Filter::Notes => diagnostic.source == Source::Note,
         }
     }
 }
@@ -119,6 +123,12 @@ impl SearchableListItem for SourceItem {
 
 struct SourceFilterSub(#[allow(dead_code)] Subscription);
 
+#[derive(Clone)]
+struct RowMember {
+    location: Location,
+    message: SharedString,
+}
+
 /// One list entry, resolved out of the store once per change rather than once per frame. Colours
 /// are not cached here because they come from the theme, which can change without the store doing.
 struct Row {
@@ -130,8 +140,10 @@ struct Row {
     wide: bool,
     message: SharedString,
     source: SharedString,
+    source_key: SharedString,
     location: Location,
     group: Option<String>,
+    members: Vec<RowMember>,
     child: bool,
 }
 
@@ -203,8 +215,10 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
                 Source::Note => SharedString::default(),
                 _ => d.source.label(),
             },
+            source_key: d.source.key(),
             location: d.location.clone(),
             group: None,
+            members: Vec::new(),
             child,
         }
     };
@@ -214,9 +228,16 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
             rows.push(occurrence(d, false));
             continue;
         };
-        let Some(members) = groups.remove(&id) else {
+        let Some(mut members) = groups.remove(&id) else {
             continue;
         };
+        members.sort_by(|a, b| {
+            (&a.message, a.location.row, &a.location.column).cmp(&(
+                &b.message,
+                b.location.row,
+                &b.location.column,
+            ))
+        });
         let mut header = occurrence(d, false);
         let open = expanded.contains(&id);
         header.scope = format!(
@@ -233,6 +254,13 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
             .clone();
         header.wide = true;
         header.group = Some(id);
+        header.members = members
+            .iter()
+            .map(|member| RowMember {
+                location: member.location.clone(),
+                message: member.message.clone(),
+            })
+            .collect();
         rows.push(header);
         if open {
             rows.extend(members.into_iter().map(|member| occurrence(member, true)));
@@ -366,7 +394,7 @@ impl ProblemsPanel {
         self.counts = Filter::ALL.map(|f| {
             Diagnostics::all(cx)
                 .iter()
-                .filter(|d| f.admits(d.severity) && self.admits_source(d))
+                .filter(|d| f.admits(d) && self.admits_source(d))
                 .count()
         });
 
@@ -374,7 +402,7 @@ impl ProblemsPanel {
         self.expanded.retain(|id| live.contains(id));
         let items = Diagnostics::all(cx)
             .iter()
-            .filter(|d| self.filter.admits(d.severity) && self.admits_source(d))
+            .filter(|d| self.filter.admits(d) && self.admits_source(d))
             .collect();
         self.rows = Rc::new(project(items, &self.expanded));
     }
@@ -453,7 +481,9 @@ impl Render for ProblemsPanel {
                                 cx.notify();
                             })),
                     )
-                    .child(self.source_menu(window, cx)),
+                    .when(self.filter != Filter::Notes, |bar| {
+                        bar.child(self.source_menu(window, cx))
+                    }),
             )
             .when(rows.is_empty(), |panel| {
                 panel.child(div().p_3().text_color(muted).child("No problems"))
@@ -473,6 +503,8 @@ impl Render for ProblemsPanel {
                             .map(|(r, ix)| {
                                 let location = r.location.clone();
                                 let group = r.group.clone();
+                                let group_members = r.members.clone();
+                                let source_key = r.source_key.clone();
                                 let is_group = group.is_some();
                                 let is_expanded =
                                     group.as_ref().is_some_and(|id| expanded.contains(id));
@@ -576,16 +608,36 @@ impl Render for ProblemsPanel {
                                     // row is built from a diagnostic and the cell may have been
                                     // edited since the one that produced it was published.
                                     .context_menu(move |menu, window, cx| {
-                                        if is_group
-                                            || !matches!(location.scope(), Scope::Cell { .. })
-                                        {
-                                            return menu;
-                                        }
                                         let Some(hooks) =
                                             cx.try_global::<DiagnosticHooks>().copied()
                                         else {
                                             return menu;
                                         };
+                                        if is_group {
+                                            let members = group_members
+                                                .iter()
+                                                .filter_map(|member| {
+                                                    Some(crate::GroupMember {
+                                                        location: member.location.clone(),
+                                                        text: (hooks.text_at)(
+                                                            &member.location,
+                                                            cx,
+                                                        )?,
+                                                        message: member.message.clone(),
+                                                    })
+                                                })
+                                                .collect::<Vec<_>>();
+                                            return crate::fixes::group_menu(
+                                                &source_key,
+                                                &members,
+                                                menu,
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                        if !matches!(location.scope(), Scope::Cell { .. }) {
+                                            return menu;
+                                        }
                                         let Some(text) = (hooks.text_at)(&location, cx) else {
                                             return menu;
                                         };
@@ -669,6 +721,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn expanded_variants_show_and_group_the_observed_forms() {
+        let mut items = repeated();
+        items.truncate(4);
+        for (row, item) in items.iter_mut().enumerate() {
+            item.message = if row % 2 == 0 {
+                "Akbar, Mohamed".into()
+            } else {
+                "Akbar, Mohammed".into()
+            };
+        }
+        let closed = super::project(items.iter().collect(), &Default::default());
+        assert_eq!(closed[0].members.len(), 4);
+        let expanded = [closed[0].group.clone().unwrap()].into_iter().collect();
+        let open = super::project(items.iter().collect(), &expanded);
+        assert_eq!(
+            open[1..]
+                .iter()
+                .map(|row| (row.message.as_ref(), row.location.row))
+                .collect::<Vec<_>>(),
+            [
+                ("Akbar, Mohamed", Some(0)),
+                ("Akbar, Mohamed", Some(2)),
+                ("Akbar, Mohammed", Some(1)),
+                ("Akbar, Mohammed", Some(3)),
+            ]
+        );
+    }
+
     #[gpui::test]
     fn clicking_a_group_expands_without_navigation(cx: &mut TestAppContext) {
         #[derive(Default)]
@@ -684,6 +765,8 @@ mod tests {
                 },
                 text_at: |_, _| None,
                 set_text: |_, _, _| panic!("navigation must not edit"),
+                set_texts: |_, _| panic!("navigation must not edit"),
+                revalidate: |_| panic!("navigation must not revalidate"),
             });
             Diagnostics::set(
                 &Source::Validator("spell".into()),
@@ -831,15 +914,25 @@ mod tests {
     }
 
     #[test]
-    fn tabs_partition_every_severity() {
+    fn notes_are_separate_from_computed_diagnostics() {
         for severity in [Severity::Error, Severity::Warning, Severity::Note] {
-            let admitting: Vec<_> = Filter::ALL
-                .iter()
-                .filter(|f| f.admits(severity))
-                .map(|f| f.label())
-                .collect();
-            // Always "All" plus exactly one specific tab — nothing is unreachable or double-listed.
-            assert_eq!(admitting.len(), 2, "{severity:?} lands in {admitting:?}");
+            let computed = Diagnostic {
+                location: Location::dataset(DATASET_MAIN),
+                severity,
+                source: Source::Validator("test".into()),
+                message: "computed".into(),
+                group: None,
+                filed: None,
+            };
+            assert!(Filter::All.admits(&computed));
+            assert!(!Filter::Notes.admits(&computed));
+
+            let note = Diagnostic {
+                source: Source::Note,
+                ..computed
+            };
+            assert!(!Filter::All.admits(&note));
+            assert!(Filter::Notes.admits(&note));
         }
     }
 
@@ -852,8 +945,11 @@ mod tests {
             ("date", "Date format"),
             ("value variants", "Value variants"),
         ] {
-            assert_eq!(Source::Validator(key.into()).label(), label);
+            let source = Source::Validator(key.into());
+            assert_eq!(source.key(), key);
+            assert_eq!(source.label(), label);
         }
+        assert_eq!(Source::Note.key(), "note");
         assert_eq!(Source::Note.label(), "User notes");
     }
 
@@ -904,21 +1000,19 @@ mod tests {
         let (panel, cx) = cx.add_window_view(ProblemsPanel::new);
         panel.update(cx, |this, cx| {
             assert_eq!(this.sources.len(), 2, "both producers are offered");
-            assert_eq!(this.rows.len(), 4);
-            assert_eq!(this.counts[0], 4, "the All tab counts everything");
+            assert_eq!(this.rows.len(), 3);
+            assert_eq!(this.counts[0], 3, "the All tab excludes user notes");
+            assert_eq!(this.counts[3], 1, "the Notes tab counts user notes");
 
             this.excluded_sources.insert("Spelling".into());
             this.refresh(cx);
-            assert_eq!(
-                this.rows.len(),
-                2,
-                "the files finding and user note survive"
-            );
-            assert_eq!(this.counts[0], 2, "and the tab count agrees");
+            assert_eq!(this.rows.len(), 1, "the files finding survives");
+            assert_eq!(this.counts[0], 1, "and the tab count agrees");
+            assert_eq!(this.counts[3], 1, "source filters do not hide user notes");
 
             this.excluded_sources.clear();
             this.refresh(cx);
-            assert_eq!(this.rows.len(), 4, "clearing the filter brings them back");
+            assert_eq!(this.rows.len(), 3, "clearing the filter brings them back");
         });
     }
 }

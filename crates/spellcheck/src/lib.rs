@@ -16,7 +16,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use diagnostics::{
-    ColumnInfo, ColumnValidator, ColumnValues, Fix, Location, Misspelling, Severity,
+    ColumnInfo, ColumnValidator, ColumnValues, Fix, GroupFix, GroupMember, Location, Misspelling,
+    Severity,
 };
 use gpui::{App, Global, SharedString};
 use settings::columns::ColumnType;
@@ -43,7 +44,7 @@ static EN_AFF: &str = include_str!("../dictionaries/en.aff");
 static EN_DIC: &str = include_str!("../dictionaries/en.dic");
 
 /// The name the Problems panel shows, and the key this validator's output is replaced by.
-const VALIDATOR_NAME: &str = "spell";
+pub const SPELLING_VALIDATOR_NAME: &str = "spell";
 
 /// Capitalization is separate from spelling: known words in the wrong case are quieter and offer a
 /// direct replacement instead of "Add to dictionary".
@@ -445,6 +446,63 @@ pub fn capitalization_fixes(_: &Location, text: &str, cx: &App) -> Vec<Fix> {
         .collect()
 }
 
+pub fn spelling_group_fixes(members: &[GroupMember], cx: &App) -> Vec<GroupFix> {
+    let Some(first) = members.first() else {
+        return Vec::new();
+    };
+    misspellings(&first.text, cx)
+        .into_iter()
+        .flat_map(|(word, suggestions)| {
+            suggestions.into_iter().filter_map(move |suggestion| {
+                let replacements = members
+                    .iter()
+                    .map(|member| {
+                        let matching =
+                            words(&member.text, false).any(|candidate| candidate == word.as_ref());
+                        matching.then(|| {
+                            (
+                                member.location.clone(),
+                                member
+                                    .text
+                                    .replace(word.as_ref(), suggestion.as_ref())
+                                    .into(),
+                            )
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(GroupFix::replacements(
+                    format!("Change all “{word}” to “{suggestion}”"),
+                    replacements,
+                ))
+            })
+        })
+        .collect()
+}
+
+pub fn capitalization_group_fixes(members: &[GroupMember], cx: &App) -> Vec<GroupFix> {
+    let Some(first) = members.first() else {
+        return Vec::new();
+    };
+    capitalization_fixes(&first.location, &first.text, cx)
+        .into_iter()
+        .filter_map(|candidate| {
+            let replacements = members
+                .iter()
+                .map(|member| {
+                    capitalization_fixes(&member.location, &member.text, cx)
+                        .into_iter()
+                        .find(|fix| fix.label == candidate.label)
+                        .map(|fix| (member.location.clone(), fix.replacement))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(GroupFix::replacements(
+                format!("{} everywhere", candidate.label),
+                replacements,
+            ))
+        })
+        .collect()
+}
+
 /// Split `text` into the tokens worth checking. Straight and typographic apostrophes stay inside
 /// words, so contractions survive as one token regardless of how they were entered.
 fn words(text: &str, ignore_capitalized: bool) -> impl Iterator<Item = &str> {
@@ -571,7 +629,7 @@ impl SpellCheck {
 
 impl ColumnValidator for SpellCheck {
     fn name(&self) -> SharedString {
-        VALIDATOR_NAME.into()
+        SPELLING_VALIDATOR_NAME.into()
     }
 
     fn validate(
@@ -605,10 +663,10 @@ mod tests {
     // `#[test]` its own expansion emits. See the note in `table`'s `note.rs` test module.
     use crate::{
         CapitalizationCheck, DictionarySet, EN_CA_AFF, EN_CA_DIC, LoadedDictionary, SpellCheck,
-        checkable, words,
+        capitalization_group_fixes, checkable, spelling_group_fixes, words,
     };
-    use diagnostics::{ColumnInfo, ColumnValidator, Severity};
-    use gpui::SharedString;
+    use diagnostics::{ColumnInfo, ColumnValidator, DATASET_MAIN, GroupMember, Location, Severity};
+    use gpui::{SharedString, TestAppContext};
     use settings::columns::ColumnSettings;
     use spellbook::Dictionary;
 
@@ -846,6 +904,33 @@ mod tests {
         );
         assert!(checkable("recieve", true));
         assert!(!checkable("Recieve", true));
+    }
+
+    #[gpui::test]
+    fn grouped_words_offer_one_resolution_for_every_cell(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(dictionary());
+            let members = |text: &str, message: &str| {
+                [0, 1].map(|row| GroupMember {
+                    location: Location::cell(DATASET_MAIN, row, None, "Title"),
+                    text: text.into(),
+                    message: message.into(),
+                })
+            };
+            assert!(
+                spelling_group_fixes(&members("recieve it", "misspelled: recieve"), cx)
+                    .iter()
+                    .any(|fix| fix.label == "Change all “recieve” to “receive”")
+            );
+            assert_eq!(
+                capitalization_group_fixes(
+                    &members("alice visited Canada", "capitalization: alice"),
+                    cx,
+                )[0]
+                .label,
+                "Use “Alice” everywhere"
+            );
+        });
     }
 
     #[test]
