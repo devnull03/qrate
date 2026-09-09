@@ -2,11 +2,13 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::button::Button;
-use gpui_component::input::{Input, InputState};
+use gpui_component::collapsible::Collapsible;
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Root, Sizable as _, StyledExt as _, TitleBar, h_flex,
@@ -48,25 +50,37 @@ impl Drop for DirectReview {
     }
 }
 
-pub struct MarketplaceWindow {
+pub(crate) struct MarketplaceWindow {
     catalog: CatalogState,
     direct: DirectState,
     input: Entity<InputState>,
     status: Option<Arc<str>>,
     requested_id: Option<String>,
-    direct_source: Option<String>,
+    direct_expanded: bool,
+    direct_request: u64,
+    embedded: bool,
+    _input_subscription: Subscription,
 }
 
 impl MarketplaceWindow {
     fn new(
         direct: bool,
         target: Option<InstallTarget>,
+        embedded: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        window.set_window_title("qrate plugins");
+        if !embedded {
+            window.set_window_title("qrate plugins");
+        }
         let input =
             cx.new(|cx| InputState::new(window, cx).placeholder("https://github.com/owner/plugin"));
+        let input_subscription = cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.status = None;
+                this.resolve_direct(input.read(cx).value().to_string(), cx);
+            }
+        });
         let (requested_id, direct_source) = match target {
             Some(InstallTarget::Registry(id)) => (Some(id), None),
             Some(InstallTarget::Github(source)) => (None, Some(source)),
@@ -80,12 +94,19 @@ impl MarketplaceWindow {
                 .as_ref()
                 .map(|id| format!("Reviewing official catalog entry {id}").into()),
             requested_id,
-            direct_source,
+            direct_expanded: direct || direct_source.is_some(),
+            direct_request: 0,
+            embedded,
+            _input_subscription: input_subscription,
         };
         if this.requested_id.is_some() {
             this.refresh(cx);
         }
-        if direct && this.direct_source.is_none() {
+        if let Some(source) = direct_source {
+            this.input
+                .update(cx, |input, cx| input.set_value(source.clone(), window, cx));
+            this.resolve_direct(source, cx);
+        } else if direct {
             this.input.focus_handle(cx).focus(window, cx);
         }
         this
@@ -96,16 +117,16 @@ impl MarketplaceWindow {
         match target {
             InstallTarget::Registry(id) => {
                 self.requested_id = Some(id.clone());
-                self.direct_source = None;
                 self.status = Some(format!("Reviewing official catalog entry {id}").into());
                 self.refresh(cx);
             }
             InstallTarget::Github(source) => {
                 self.requested_id = None;
-                self.direct_source = Some(source.clone());
+                self.direct_expanded = true;
                 self.direct = DirectState::Idle;
                 self.input
-                    .update(cx, |input, cx| input.set_value(source, window, cx));
+                    .update(cx, |input, cx| input.set_value(source.clone(), window, cx));
+                self.resolve_direct(source, cx);
             }
         }
         cx.notify();
@@ -147,20 +168,32 @@ impl MarketplaceWindow {
         .detach();
     }
 
-    fn resolve_direct(&mut self, cx: &mut Context<Self>) {
-        let source = self
-            .direct_source
-            .clone()
-            .unwrap_or_else(|| self.input.read(cx).value().to_string());
+    fn resolve_direct(&mut self, source: String, cx: &mut Context<Self>) {
+        self.direct_request = self.direct_request.wrapping_add(1);
+        let request = self.direct_request;
+        let source = source.trim().to_string();
         if source.trim().is_empty() {
-            self.direct =
-                DirectState::Error("Paste a public GitHub repository or release URL".into());
+            self.direct = DirectState::Idle;
+            cx.notify();
+            return;
+        }
+        if let Err(error) = plugin_package::validate_github_source(&source) {
+            self.direct = DirectState::Error(format!("{error:#}").into());
             cx.notify();
             return;
         }
         self.direct = DirectState::Loading;
         cx.notify();
         cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(300))
+                .await;
+            if !this
+                .update(cx, |this, _| this.direct_request == request)
+                .unwrap_or(false)
+            {
+                return;
+            }
             let result = cx
                 .background_spawn(async move {
                     let release = plugin_package::resolve_github_release(&source)?;
@@ -171,18 +204,19 @@ impl MarketplaceWindow {
                     plugin_package::download_package(&release.artifact_url, temp.path())?;
                     let inspection = plugin_package::inspect_archive(temp.path())?;
                     let archive = temp.into_temp_path().keep()?;
-                    anyhow::Ok((release, inspection, archive))
+                    anyhow::Ok(DirectReview {
+                        release,
+                        inspection,
+                        archive,
+                    })
                 })
                 .await;
             this.update(cx, |this, cx| {
+                if this.direct_request != request {
+                    return;
+                }
                 this.direct = match result {
-                    Ok((release, inspection, archive)) => {
-                        DirectState::Review(Box::new(DirectReview {
-                            release,
-                            inspection,
-                            archive,
-                        }))
-                    }
+                    Ok(review) => DirectState::Review(Box::new(review)),
                     Err(error) => DirectState::Error(format!("{error:#}").into()),
                 };
                 cx.notify();
@@ -496,7 +530,7 @@ impl Render for MarketplaceWindow {
 
         let direct = match &self.direct {
             DirectState::Idle => Label::new(
-                "Direct installs are unlisted. qrate downloads the package before it shows the final review.",
+                "Paste a public GitHub repository or release URL. qrate checks valid links automatically.",
             )
             .text_sm()
             .text_color(cx.theme().muted_foreground)
@@ -542,6 +576,53 @@ impl Render for MarketplaceWindow {
             }
         };
 
+        let direct_installer = Collapsible::new()
+            .open(self.direct_expanded)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("browse-plugin-catalog")
+                            .small()
+                            .label("Browse catalog")
+                            .on_click(|_, _, cx| cx.open_url(SITE_URL)),
+                    )
+                    .child(
+                        Button::new("toggle-github-installer")
+                            .small()
+                            .label(if self.direct_expanded {
+                                "Hide GitHub installer"
+                            } else {
+                                "Install from GitHub…"
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.direct_expanded = !this.direct_expanded;
+                                if this.direct_expanded {
+                                    this.input.focus_handle(cx).focus(window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .content(
+                v_flex()
+                    .gap_2()
+                    .mt_2()
+                    .child(Input::new(&self.input).w_full())
+                    .child(direct)
+                    .when_some(self.status.clone(), |view, status| {
+                        view.child(
+                            Label::new(status)
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                    }),
+            );
+
+        if self.embedded {
+            return direct_installer.into_any_element();
+        }
+
         v_flex()
             .size_full()
             .child(
@@ -564,35 +645,11 @@ impl Render for MarketplaceWindow {
                         )
                         .child(catalog)
                     })
-                    .child(Label::new("Install from GitHub").text_lg().font_semibold())
-                    .when_some(self.direct_source.clone(), |view, source| {
-                        view.child(
-                            Label::new(format!("Requested source: {source}"))
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground),
-                        )
-                    })
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(div().flex_1().child(Input::new(&self.input)))
-                            .child(
-                                Button::new("review-direct")
-                                    .label("Review package")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.resolve_direct(cx);
-                                    })),
-                            ),
-                    )
-                    .child(direct)
-                    .when_some(self.status.clone(), |view, status| {
-                        view.child(
-                            Label::new(status)
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground),
-                        )
+                    .when(self.requested_id.is_none(), |view| {
+                        view.child(direct_installer)
                     }),
             )
+            .into_any_element()
     }
 }
 
@@ -609,8 +666,8 @@ pub fn open_catalog(cx: &mut gpui::App) {
     cx.open_url(SITE_URL);
 }
 
-pub fn open_marketplace_window(direct: bool, cx: &mut gpui::App) {
-    open_marketplace(direct, None, cx);
+pub(crate) fn inline_installer(window: &mut Window, cx: &mut App) -> Entity<MarketplaceWindow> {
+    cx.new(|cx| MarketplaceWindow::new(false, None, true, window, cx))
 }
 
 pub fn open_install_target(target: InstallTarget, cx: &mut gpui::App) {
@@ -643,7 +700,7 @@ fn open_marketplace(direct: bool, target: Option<InstallTarget>, cx: &mut gpui::
         ..Default::default()
     };
     if let Ok(handle) = cx.open_window(options, |window, cx| {
-        let view = cx.new(|cx| MarketplaceWindow::new(direct, target, window, cx));
+        let view = cx.new(|cx| MarketplaceWindow::new(direct, target, false, window, cx));
         cx.set_global(MarketplaceHandle(view.downgrade()));
         cx.new(|cx| Root::new(view, window, cx))
     }) {

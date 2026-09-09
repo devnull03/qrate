@@ -424,6 +424,10 @@ pub fn resolve_github_release(source: &str) -> Result<DirectRelease> {
     })
 }
 
+pub fn validate_github_source(source: &str) -> Result<()> {
+    validate_github_url(source).map(drop)
+}
+
 fn validate_github_url(source: &str) -> Result<reqwest::Url> {
     let url = reqwest::Url::parse(source).context("invalid GitHub URL")?;
     ensure!(
@@ -958,7 +962,8 @@ mod tests {
 
     use super::{
         CATALOG_KEY_ID, InstallSource, InstallTarget, PackageManifest, install_archive,
-        install_archive_checked, parse_install_link, read_receipt, remove_managed, verify_catalog,
+        install_archive_checked, parse_install_link, read_receipt, remove_managed,
+        validate_github_source, verify_catalog,
     };
 
     fn package(path: &std::path::Path, id: &str, extra: Option<(&str, &[u8])>) {
@@ -1065,6 +1070,26 @@ mod tests {
                 parse_install_link(&format!("qrate://plugin/install?source=registry&id={id}"))
                     .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn direct_install_matcher_accepts_only_supported_github_links() {
+        for source in [
+            "https://github.com/owner/plugin",
+            "https://github.com/owner/plugin.git",
+            "https://github.com/owner/plugin/releases/tag/v1.0.0",
+        ] {
+            validate_github_source(source).unwrap();
+        }
+        for source in [
+            "git://github.com/owner/plugin.git",
+            "https://gitlab.com/owner/plugin",
+            "https://github.com/owner",
+            "https://github.com/owner/plugin/issues",
+            "https://user:password@github.com/owner/plugin",
+        ] {
+            assert!(validate_github_source(source).is_err(), "{source}");
         }
     }
 

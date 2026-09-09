@@ -655,7 +655,7 @@ fn build(id: &str, source: &str, env: &Env, shared: &Shared) -> mlua::Result<Loa
     if declared < 2 && (export.is_some() || !exports.is_empty()) {
         return Err(mlua::Error::runtime("plugin exports require API version 2"));
     }
-    if export.is_some() != !exports.is_empty() {
+    if export.is_some() == exports.is_empty() {
         return Err(mlua::Error::runtime(
             "`export` and at least one `exports` item must be declared together",
         ));
