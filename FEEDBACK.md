@@ -17,8 +17,8 @@ Routing IDs live in `src/lib/feedback.ts`. New issues go to qrate / Beta Intake 
 ## Test locally
 
 1. Copy `.dev.vars.example` to `.dev.vars`.
-2. Put the Linear key and a Turnstile widget's site and secret keys in `.dev.vars`.
-3. Allow `localhost` in that Turnstile widget.
+2. Put the Linear key in `.dev.vars`.
+3. Keep Cloudflare's public test Turnstile keys from the example file.
 4. Run `bun install`.
 5. Run `bun run dev`.
 6. Open `http://localhost:4321/feedback`.
@@ -26,6 +26,7 @@ Routing IDs live in `src/lib/feedback.ts`. New issues go to qrate / Beta Intake 
 
 Debug qrate builds open the local form. Release builds open `https://qrate.dvnl.work/feedback`.
 The repository ignores `.dev.vars`. Stop the local server before switching site branches.
+Cloudflare test keys work on local loopback addresses only. Production requires a real Turnstile widget.
 
 ## Verify before deployment
 

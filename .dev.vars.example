@@ -1,5 +1,6 @@
 # Copy this file to .dev.vars. Wrangler reads it during local development.
 # Do not commit .dev.vars.
 LINEAR_API_KEY=
-TURNSTILE_SITE_KEY=
-TURNSTILE_SECRET_KEY=
+# Cloudflare's public test keys always pass and work only for local testing.
+TURNSTILE_SITE_KEY=1x00000000000000000000AA
+TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA

@@ -71,7 +71,11 @@ export async function submit(request: Request, env: any, fetcher: typeof fetch =
       signal: AbortSignal.timeout(15000),
     });
     const challenge = await verification.json() as any;
-    if (!verification.ok || !challenge.success || challenge.hostname !== new URL(request.url).hostname || challenge.action !== 'feedback') {
+    const requestHost = new URL(request.url).hostname;
+    const localTest = ['localhost', '127.0.0.1'].includes(requestHost)
+      && challenge.metadata?.result_with_testing_key === true;
+    const production = challenge.hostname === requestHost && challenge.action === 'feedback';
+    if (!verification.ok || !challenge.success || (!localTest && !production)) {
       return reply(403, { error: 'Verification expired. Please try again.' });
     }
     const graphql = async (query: string, variables: object) => {
