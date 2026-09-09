@@ -1,0 +1,108 @@
+---
+import '../styles/global.css';
+const sitekey = import.meta.env.PUBLIC_TURNSTILE_SITE_KEY;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Send feedback — qrate</title>
+    <script is:inline>
+      window.qrateFeedbackFragment = location.hash;
+      history.replaceState(null, '', location.pathname + location.search);
+    </script>
+  </head>
+  <body>
+    <main>
+      <a href="/">qrate</a>
+      <h1>Send feedback</h1>
+      <p>Reports go privately to the qrate team through Cloudflare and Linear. No account required.</p>
+      <form>
+        <label>Category
+          <select name="category" required>
+            <option value="bug">Bug</option><option value="ui_ux">UI / UX</option>
+            <option value="feature">Feature Request</option><option value="crash">Crash</option>
+            <option value="performance">Performance</option><option value="improvement">Improvement</option>
+          </select>
+        </label>
+        <label>Summary <input name="summary" maxlength="160" required /></label>
+        <label>Description
+          <textarea name="description" maxlength="10000" rows="6" required placeholder="What were you trying to do? What happened, and what did you expect? Include reproduction steps if possible."></textarea>
+        </label>
+        <label>Email (optional, for follow-up) <input name="email" type="email" maxlength="254" /></label>
+        <label class="check"><input id="include" type="checkbox" checked /> Include diagnostic summary</label>
+        <details>
+          <summary>Review or edit diagnostics</summary>
+          <textarea name="diagnostics" maxlength="8000" rows="9" aria-label="Diagnostic summary"></textarea>
+        </details>
+        <label>Logs or screenshots (optional)
+          <input name="files" type="file" multiple accept=".txt,.log,.png,.jpg,.jpeg" />
+        </label>
+        <p>Up to three files, 2 MiB each. Use Help → Open Logs Folder in qrate. Logs can contain secrets and collection data. Inspect and redact files before attaching them.</p>
+        <label class="check"><input name="consent" type="checkbox" value="yes" required /> I reviewed this report and its attachments and agree to send them under the <a href="/privacy">privacy policy</a>.</label>
+        {sitekey ? <div class="cf-turnstile" data-sitekey={sitekey} data-action="feedback"></div> : <p>Feedback submission is not configured yet. You can still prepare your report.</p>}
+        <button type="submit" disabled={!sitekey}>Send feedback</button>
+        <p id="status" role="status" aria-live="polite"></p>
+      </form>
+    </main>
+    <script>
+      const form = document.querySelector('form')!;
+      const category = form.elements.namedItem('category') as HTMLSelectElement;
+      const diagnostics = form.elements.namedItem('diagnostics') as HTMLTextAreaElement;
+      const include = document.querySelector<HTMLInputElement>('#include')!;
+      const status = document.querySelector('#status')!;
+      const button = form.querySelector('button')!;
+      const selected = new URLSearchParams(location.search).get('type');
+      if ([...category.options].some(option => option.value === selected)) category.value = selected!;
+      include.checked = !['feature', 'improvement'].includes(category.value);
+      const fragment = (window as any).qrateFeedbackFragment;
+      delete (window as any).qrateFeedbackFragment;
+      try {
+        const raw = new URLSearchParams(fragment?.slice(1)).get('diagnostics');
+        if (raw && raw.length <= 8000) {
+          diagnostics.value = JSON.stringify(JSON.parse(raw), null, 2);
+        }
+      } catch { status.textContent = 'The diagnostic summary could not be read. You can report without it.'; }
+      const id = crypto.randomUUID();
+      let submitting = false;
+      form.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (submitting) return;
+        submitting = true;
+        const data = new FormData(form);
+        data.set('id', id);
+        if (!include.checked) data.delete('diagnostics');
+        button.disabled = true;
+        status.textContent = 'Sending…';
+        try {
+          const response = await fetch('/api/feedback', { method: 'POST', body: data });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || 'Unable to send.');
+          status.textContent = `Thank you. Report received: ${result.receipt}`;
+          button.textContent = 'Sent';
+        } catch (error) {
+          submitting = false;
+          status.textContent = error instanceof Error ? error.message : 'Unable to send. Please retry.';
+          button.disabled = false;
+          (window as any).turnstile?.reset();
+        }
+      });
+    </script>
+    <script is:inline src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  </body>
+</html>
+<style>
+  main { max-width: 48rem; margin: 3rem auto; padding: 1.5rem; }
+  h1 { font-size: 2rem; margin: 1rem 0; }
+  form { display: grid; gap: 1.25rem; margin-top: 2rem; }
+  label { display: grid; gap: .5rem; }
+  input, textarea, select, button { border: 1px solid currentColor; padding: .65rem; border-radius: .25rem; font: inherit; }
+  textarea, select, input:not([type=checkbox]) { width: 100%; }
+  .check { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; }
+  button { cursor: pointer; font-weight: bold; }
+  button:disabled { cursor: default; opacity: .6; }
+  a { text-decoration: underline; }
+</style>

@@ -1,0 +1,137 @@
+export const categories: Record<string, string> = {
+  bug: '9c1c54ef-3835-4b07-b7fe-c02952216f74',
+  ui_ux: '8ac21715-4a1e-4a00-a4bb-06276a4ff7ca',
+  feature: 'bf455f57-e866-46ae-8a73-5dcdd4f1cb23',
+  crash: 'ed742751-05de-42db-a428-e52864a8a907',
+  performance: '154aeee1-f247-4bc6-b797-3b06051f1a7b',
+  improvement: '486d0f47-7520-42d5-88a5-c1fde5dcf769',
+};
+export const MAX_BYTES = 7 * 1024 * 1024;
+
+export function validate(form: FormData) {
+  const allowed = ['id', 'category', 'summary', 'description', 'email', 'diagnostics', 'consent', 'cf-turnstile-response', 'files'];
+  for (const key of form.keys()) {
+    if (!allowed.includes(key) || (key !== 'files' && form.getAll(key).length !== 1)) throw new Error('Invalid fields');
+  }
+  const text = (key: string, max: number, required = false) => {
+    const value = form.get(key) ?? '';
+    if (typeof value !== 'string' || value.length > max || (required && !value.trim())) throw new Error(`Invalid ${key}`);
+    return value.trim();
+  };
+  const id = text('id', 36, true);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) throw new Error('Invalid ID');
+  const category = text('category', 20, true);
+  if (!Object.hasOwn(categories, category)) throw new Error('Invalid category');
+  if (text('consent', 3) !== 'yes') throw new Error('Review required');
+  const email = text('email', 254);
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Invalid email');
+  if (form.getAll('files').some(file => !(file instanceof File))) throw new Error('Invalid files');
+  const files = form.getAll('files').filter((file): file is File => file instanceof File && file.size > 0);
+  if (files.length > 3) throw new Error('Maximum three files');
+  for (const file of files) {
+    if (file.size > 2 * 1024 * 1024 || !/\.(png|jpg|jpeg|txt|log)$/i.test(file.name)) throw new Error('Use PNG, JPEG, TXT or LOG files up to 2 MiB');
+  }
+  return {
+    id, category, email, files,
+    summary: text('summary', 160, true),
+    description: text('description', 10000, true),
+    diagnostics: text('diagnostics', 8000),
+    token: text('cf-turnstile-response', 2048, true),
+  };
+}
+
+export async function submit(request: Request, env: any, fetcher: typeof fetch = fetch): Promise<Response> {
+  const reply = (status: number, body: object) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
+  if (!env.LINEAR_API_KEY || !env.TURNSTILE_SECRET_KEY || !env.FEEDBACK_LIMITER) return reply(503, { error: 'Feedback is not configured yet.' });
+  if (request.headers.get('origin') !== new URL(request.url).origin) return reply(403, { error: 'Open the qrate feedback form to submit.' });
+  const { success } = await env.FEEDBACK_LIMITER.limit({ key: request.headers.get('cf-connecting-ip') || 'unknown' });
+  if (!success) return reply(429, { error: 'Too many requests. Please try again later.' });
+  let report: ReturnType<typeof validate>;
+  try {
+    if (!request.headers.get('content-type')?.startsWith('multipart/form-data')) throw new Error('Expected form');
+    const reader = request.body?.getReader();
+    if (!reader) throw new Error('Missing body');
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > MAX_BYTES) { await reader.cancel(); return reply(413, { error: 'Report is too large.' }); }
+      chunks.push(value);
+    }
+    const form = await new Response(new Blob(chunks), { headers: { 'content-type': request.headers.get('content-type')! } }).formData();
+    report = validate(form);
+  } catch {
+    return reply(400, { error: 'Check required fields and attachments (three PNG/JPEG/TXT/LOG files, up to 2 MiB each).' });
+  }
+  try {
+    const verification = await fetcher('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST', body: new URLSearchParams({ secret: env.TURNSTILE_SECRET_KEY, response: report.token }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const challenge = await verification.json() as any;
+    if (!verification.ok || !challenge.success || challenge.hostname !== new URL(request.url).hostname || challenge.action !== 'feedback') {
+      return reply(403, { error: 'Verification expired. Please try again.' });
+    }
+    const graphql = async (query: string, variables: object) => {
+      const response = await fetcher('https://api.linear.app/graphql', {
+        method: 'POST',
+        headers: { Authorization: env.LINEAR_API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, variables }),
+        signal: AbortSignal.timeout(20000),
+      });
+      const result = await response.json() as any;
+      if (!response.ok || result.errors?.length || !result.data) throw new Error('Linear failed');
+      return result.data;
+    };
+    // A stable issue UUID makes retries safe without a second database.
+    const existing = await graphql('query($id: ID!) { issues(filter: { id: { eq: $id }, project: { id: { eq: "aa8cfc24-95f6-461e-aac4-46437d89459e" } } }) { nodes { id } } }', { id: report.id });
+    if (existing.issues.nodes.length) return reply(200, { receipt: report.id });
+    const attachments: string[] = [];
+    let logs = false;
+    for (const [index, file] of report.files.entries()) {
+      const extension = file.name.split('.').pop()!.toLowerCase();
+      const isLog = ['txt', 'log'].includes(extension);
+      const type = isLog ? 'text/plain' : extension === 'png' ? 'image/png' : 'image/jpeg';
+      const filename = `${isLog ? 'log' : 'screenshot'}-${index + 1}.${extension}`;
+      const upload = await graphql(
+        'mutation($type: String!, $name: String!, $size: Int!) { fileUpload(contentType: $type, filename: $name, size: $size) { success uploadFile { uploadUrl assetUrl headers { key value } } } }',
+        { type, name: filename, size: file.size },
+      );
+      if (!upload.fileUpload.success || !upload.fileUpload.uploadFile) throw new Error('Upload failed');
+      const target = upload.fileUpload.uploadFile;
+      const headers = new Headers({ 'Content-Type': type });
+      for (const { key, value } of target.headers) headers.set(key, value);
+      const stored = await fetcher(target.uploadUrl, { method: 'PUT', headers, body: file, signal: AbortSignal.timeout(30000) });
+      if (!stored.ok) throw new Error('Upload failed');
+      attachments.push(`[${filename}](${target.assetUrl})`);
+      logs ||= isLog;
+    }
+    const labelIds = [
+      '9caf21d4-082c-4a89-955e-981e850b6405', '88dcf4fa-6ccd-4d48-b427-d6d190745e05',
+      '26451746-50ca-453e-840e-e8ed9c5a6fb7', 'a47da0e4-5ef6-4a40-98ec-2ee8dcdcea20',
+      categories[report.category],
+      ...(logs ? ['0429eef3-39f3-4f67-a303-a9f985122a61'] : []),
+    ];
+    const created = await graphql('mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id } } }', {
+      input: {
+        id: report.id, teamId: 'd14f1e07-93ce-4cfe-968c-c6372c6f58a6',
+        projectId: 'aa8cfc24-95f6-461e-aac4-46437d89459e',
+        projectMilestoneId: '7cdb86ec-c9a9-4d58-b46b-2e382566f1f5',
+        stateId: '4b7df4af-a498-4656-8d0a-c87e1c1d28aa', labelIds,
+        title: report.summary,
+        description: [
+          report.description, `Category: ${report.category}`,
+          report.email ? `Reply to: ${report.email}` : '',
+          report.diagnostics ? `## User-reviewed diagnostics\n\n${report.diagnostics}` : '',
+          ...attachments,
+        ].filter(Boolean).join('\n\n'),
+      },
+    });
+    if (!created.issueCreate.success || !created.issueCreate.issue) throw new Error('Create failed');
+    return reply(200, { receipt: report.id });
+  } catch {
+    return reply(502, { error: 'Delivery could not be confirmed. Your form is unchanged. Retry with the same report ID.' });
+  }
+}
