@@ -36,10 +36,15 @@ test('reject executable and oversized attachments', () => {
   expect(() => validate(data)).toThrow();
   data.set('files', 'not a file');
   expect(() => validate(data)).toThrow('Invalid files');
+  data.set('files', new File([], 'empty.exe'));
+  expect(() => validate(data)).toThrow();
+  data.set('files', new File([], 'empty.log'));
+  expect(validate(data).files).toHaveLength(1);
 });
 
 test('automatic compressed log does not consume a user attachment slot', () => {
   const data = form();
+  data.append('files', '');
   for (let index = 0; index < 3; index++) {
     data.append('files', new File(['image'], `screenshot-${index}.png`));
   }
