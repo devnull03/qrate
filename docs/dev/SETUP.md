@@ -50,6 +50,21 @@ client id. Never commit the JSON; `.gitignore` covers `client_secret_*.json`, an
 themselves belong in the environment or in the credential endpoint (`site-oauth-handoff.md`),
 never in source.
 
+**Plugin links on Windows:** an installer registers `qrate://` with Windows, but `cargo run` does
+not. After the debug executable exists, register it for the current user:
+
+```powershell
+.\scripts\register-dev-protocol.ps1
+```
+
+Browser links then launch `target\debug\app.exe`; if that development instance is already running,
+the new process hands the link to it and exits. Remove the development override before testing an
+installed build:
+
+```powershell
+.\scripts\register-dev-protocol.ps1 -Unregister
+```
+
 ---
 
 ## 3. One-time GitHub setup (do this before the first release)

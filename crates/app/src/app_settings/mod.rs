@@ -1,5 +1,6 @@
 mod config;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -134,6 +135,7 @@ fn notes_group(cx: &App) -> SettingGroup {
 /// no descriptor and switching a broken one off has to work.
 fn plugins_page(cx: &App) -> SettingPage {
     let listing = plugin_host::listing(cx);
+    let installer = Rc::new(RefCell::new(None));
     let install = SettingGroup::new()
         .title("Find and install")
         .description(
@@ -141,23 +143,11 @@ fn plugins_page(cx: &App) -> SettingPage {
         )
         .item(SettingItem::new(
             "Plugins",
-            SettingField::element(move |_opts: &_, _window: &mut Window, _cx: &mut App| {
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("browse-plugin-catalog")
-                            .small()
-                            .label("Browse catalog")
-                            .on_click(|_, _, cx| crate::plugin_marketplace::open_catalog(cx)),
-                    )
-                    .child(
-                        Button::new("install-plugin-from-github")
-                            .small()
-                            .label("Install from GitHub…")
-                            .on_click(|_, _, cx| {
-                                crate::plugin_marketplace::open_marketplace_window(true, cx);
-                            }),
-                    )
+            SettingField::element(move |_opts: &_, window: &mut Window, cx: &mut App| {
+                installer
+                    .borrow_mut()
+                    .get_or_insert_with(|| crate::plugin_marketplace::inline_installer(window, cx))
+                    .clone()
                     .into_any_element()
             }),
         ));
