@@ -209,6 +209,7 @@ const sitekey = env.TURNSTILE_SITE_KEY;
   input:not([type='checkbox']),
   textarea,
   select {
+    box-sizing: border-box;
     width: 100%;
     border: 1px solid var(--rule);
     background: var(--paper);
@@ -216,6 +217,11 @@ const sitekey = env.TURNSTILE_SITE_KEY;
     color: var(--ink);
     font: inherit;
     outline: none;
+  }
+
+  input:not([type='checkbox']):not([type='file']),
+  select {
+    height: 3.25rem;
   }
 
   input:not([type='checkbox']):focus,
