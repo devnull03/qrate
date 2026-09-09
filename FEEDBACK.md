@@ -12,7 +12,8 @@ Deploy the website before releasing the desktop buttons.
 
 The Linear key needs read access, issue creation and file upload access for Grass Labs.
 Never put either secret in source files, command arguments, or the browser.
-Routing IDs live in `src/lib/feedback.ts`. New issues go to qrate / Beta Intake & Stabilization / Backlog.
+Routing IDs live in `src/lib/feedback.ts`. New issues go to qrate / Beta Intake & Stabilization / Backlog
+with one category label, the concrete desktop platform when available, and Logs Attached when applicable.
 
 ## Test locally
 

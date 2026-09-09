@@ -206,11 +206,14 @@ const sitekey = env.TURNSTILE_SITE_KEY;
     include.checked = !['feature', 'improvement'].includes(category.value);
     const fragment = (window as any).qrateFeedbackFragment;
     delete (window as any).qrateFeedbackFragment;
+    let platform = '';
     try {
       const values = new URLSearchParams(fragment?.slice(1));
       const raw = values.get('diagnostics');
       if (raw && raw.length <= 8000) {
-        diagnostics.value = JSON.stringify(JSON.parse(raw), null, 2);
+        const parsed = JSON.parse(raw);
+        diagnostics.value = JSON.stringify(parsed, null, 2);
+        if (['windows', 'macos', 'linux'].includes(parsed.os)) platform = parsed.os;
       }
       const logs = values.get('logs');
       if (logs && logs.length <= 2000) {
@@ -229,6 +232,7 @@ const sitekey = env.TURNSTILE_SITE_KEY;
       try {
         const data = new FormData(form);
         data.set('id', id);
+        if (platform) data.set('platform', platform);
         if (!include.checked) data.delete('diagnostics');
         if ((files.files?.length ?? 0) > 3) {
           throw new Error('Choose no more than three attachments.');
