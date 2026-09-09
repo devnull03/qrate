@@ -470,8 +470,8 @@ fn checkable(token: &str, ignore_capitalized: bool) -> bool {
     !ignore_capitalized || !starts_uppercase(token)
 }
 
-fn starts_uppercase(word: &str) -> bool {
-    word.chars().next().is_some_and(char::is_uppercase)
+fn starts_uppercase(value: &str) -> bool {
+    value.chars().next().is_some_and(char::is_uppercase)
 }
 
 fn titlecase(word: &str) -> String {
