@@ -13,7 +13,7 @@
 //! an `Arc` and run on the background executor — see `validate_async` in the parent module.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -201,7 +201,12 @@ impl LuaPlugin {
                         .permissions
                         .iter()
                         .map(SharedString::as_ref)
-                        .ne(package.permissions.iter().map(String::as_str)) =>
+                        .collect::<HashSet<_>>()
+                        != package
+                            .permissions
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<HashSet<_>>() =>
             {
                 plugin.state =
                     Err("runtime descriptor does not match qrate-plugin.json".to_string());

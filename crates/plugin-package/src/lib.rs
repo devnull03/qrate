@@ -48,7 +48,6 @@ pub struct PackageManifest {
     pub description: String,
     pub homepage: String,
     pub license: String,
-    #[serde(default)]
     pub permissions: Vec<String>,
 }
 
@@ -322,15 +321,41 @@ fn bounded_response(response: reqwest::blocking::Response, limit: u64) -> Result
 }
 
 pub fn download_package(url: &str, output: &Path) -> Result<(String, u64)> {
-    let response = reqwest::blocking::Client::builder()
+    let mut response = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(60))
         .build()?
         .get(url)
         .send()?;
-    let bytes = bounded_response(response, MAX_PACKAGE_BYTES)?;
-    let sha256 = format!("{:x}", Sha256::digest(&bytes));
-    fs::write(output, &bytes)?;
-    Ok((sha256, bytes.len() as u64))
+    ensure!(
+        response.status().is_success(),
+        "server returned HTTP {}",
+        response.status()
+    );
+    if let Some(length) = response.content_length() {
+        ensure!(length <= MAX_PACKAGE_BYTES, "download is too large");
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(output)?;
+    let mut hasher = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = response.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(read as u64)
+            .ok_or_else(|| anyhow::anyhow!("download is too large"))?;
+        ensure!(total <= MAX_PACKAGE_BYTES, "download is too large");
+        hasher.update(&buffer[..read]);
+        file.write_all(&buffer[..read])?;
+    }
+    file.flush()?;
+    Ok((format!("{:x}", hasher.finalize()), total))
 }
 
 pub fn resolve_github_release(source: &str) -> Result<DirectRelease> {
@@ -577,7 +602,8 @@ fn install_archive_inner(
             "package license does not match catalog"
         );
         ensure!(
-            manifest.permissions == release.permissions,
+            manifest.permissions.iter().collect::<HashSet<_>>()
+                == release.permissions.iter().collect::<HashSet<_>>(),
             "package permissions do not match catalog"
         );
     }
@@ -931,8 +957,8 @@ mod tests {
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     use super::{
-        CATALOG_KEY_ID, InstallSource, InstallTarget, install_archive, install_archive_checked,
-        parse_install_link, read_receipt, remove_managed, verify_catalog,
+        CATALOG_KEY_ID, InstallSource, InstallTarget, PackageManifest, install_archive,
+        install_archive_checked, parse_install_link, read_receipt, remove_managed, verify_catalog,
     };
 
     fn package(path: &std::path::Path, id: &str, extra: Option<(&str, &[u8])>) {
@@ -967,6 +993,23 @@ mod tests {
             zip.write_all(body).unwrap();
         }
         zip.finish().unwrap();
+    }
+
+    #[test]
+    fn package_manifest_requires_an_explicit_permission_list() {
+        let manifest = json!({
+            "schema": 1,
+            "id": "org.example.plugin",
+            "name": "Example",
+            "version": "1.0.0",
+            "api_version": 1,
+            "entry": "init.lua",
+            "description": "Example",
+            "homepage": "https://example.org/plugin",
+            "license": "MIT"
+        });
+
+        assert!(serde_json::from_value::<PackageManifest>(manifest).is_err());
     }
 
     #[test]
