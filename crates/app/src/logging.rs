@@ -7,9 +7,9 @@
 //! `qrate.old.log` is the one before it. That is the whole retention policy, and it is what makes
 //! "reproduce it, then send me the log" work — the reproduction is always the current file.
 //!
-//! Nothing is uploaded. `qrate.dvnl.work` is a static site and cannot receive a report, so the
-//! dump travels by clipboard or by a prefilled GitHub issue URL, both of which put the user in
-//! front of the text before it leaves the machine.
+//! Reports open on the qrate site with diagnostics and a short, redacted log tail in the fragment.
+//! The fragment is not sent in the page request, and the user reviews what to include before the
+//! site uploads anything.
 
 use std::fmt::Write as _;
 use std::fs::{self, File};
@@ -250,6 +250,18 @@ fn log_tail(lines: usize) -> String {
     all[all.len().saturating_sub(lines)..].join("\n")
 }
 
+fn feedback_log_tail() -> String {
+    let log = redact(&log_tail(30));
+    if log.chars().count() <= 1_500 {
+        return log;
+    }
+    let tail: String = log.chars().rev().take(1_500).collect();
+    format!(
+        "(earlier lines omitted)\n{}",
+        tail.chars().rev().collect::<String>()
+    )
+}
+
 /// Replace the user's home directory with `~` throughout.
 ///
 /// The dump carries project paths and plugin file names, which on a real machine means a real
@@ -278,9 +290,9 @@ pub fn urlencode(text: &str) -> String {
     })
 }
 
-/// Open the hosted form with diagnostics in the fragment, which is not sent in the page request.
+/// Open the hosted form with diagnostics and a bounded log tail in the fragment.
 ///
-/// The page removes the fragment after reading it and shows the exact text before submission.
+/// The page removes the fragment after reading it and shows both values before submission.
 pub fn feedback_url(cx: &App, kind: Option<FeedbackKind>) -> String {
     let kind = match kind {
         Some(FeedbackKind::Bug) => "?type=bug",
@@ -308,8 +320,9 @@ pub fn feedback_url(cx: &App, kind: Option<FeedbackKind>) -> String {
         "plugin_failures": plugins.iter().filter(|(_, error)| error.is_some()).count(),
     });
     format!(
-        "{FEEDBACK_URL}{kind}#diagnostics={}",
-        urlencode(&diagnostics.to_string())
+        "{FEEDBACK_URL}{kind}#diagnostics={}&logs={}",
+        urlencode(&diagnostics.to_string()),
+        urlencode(&feedback_log_tail())
     )
 }
 
@@ -355,7 +368,7 @@ mod tests {
         assert!(feature.contains("?type=feature#diagnostics="));
         assert!(ux.contains("?type=ui_ux#diagnostics="));
         assert!(bug.contains("%22schema%22%3A1"));
-        assert!(!bug.contains("log%20"));
+        assert!(bug.contains("&logs="));
         assert!(!bug.contains("CPU"));
         assert!(bug.len() < 7_000);
     }
