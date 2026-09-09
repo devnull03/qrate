@@ -137,11 +137,15 @@ impl MarketplaceWindow {
         let key = option_env!("QRATE_PLUGIN_CATALOG_PUBLIC_KEY")
             .map(str::to_owned)
             .or_else(|| std::env::var("QRATE_PLUGIN_CATALOG_PUBLIC_KEY").ok());
+        log::info!("fetching signed plugin catalog");
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
                     let key = key.ok_or_else(|| {
-                        anyhow::anyhow!("this build has no plugin catalog public key")
+                        anyhow::anyhow!(
+                            "this build has no plugin catalog public key; set \
+                             QRATE_PLUGIN_CATALOG_PUBLIC_KEY for local development"
+                        )
                     })?;
                     let key = plugin_package::public_key(&key)?;
                     let plugins = plugin_host::plugins_dir()
@@ -158,8 +162,17 @@ impl MarketplaceWindow {
                 .await;
             this.update(cx, |this, cx| {
                 this.catalog = match result {
-                    Ok(catalog) => CatalogState::Ready(catalog.plugins),
-                    Err(error) => CatalogState::Error(format!("{error:#}").into()),
+                    Ok(catalog) => {
+                        log::info!(
+                            "signed plugin catalog loaded with {} listings",
+                            catalog.plugins.len()
+                        );
+                        CatalogState::Ready(catalog.plugins)
+                    }
+                    Err(error) => {
+                        log::warn!("signed plugin catalog is unavailable: {error:#}");
+                        CatalogState::Error(format!("{error:#}").into())
+                    }
                 };
                 cx.notify();
             })
@@ -178,10 +191,12 @@ impl MarketplaceWindow {
             return;
         }
         if let Err(error) = plugin_package::validate_github_source(&source) {
+            log::debug!("direct plugin source is not reviewable: {error:#}");
             self.direct = DirectState::Error(format!("{error:#}").into());
             cx.notify();
             return;
         }
+        log::info!("checking direct plugin release from {source}");
         self.direct = DirectState::Loading;
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -216,8 +231,20 @@ impl MarketplaceWindow {
                     return;
                 }
                 this.direct = match result {
-                    Ok(review) => DirectState::Review(Box::new(review)),
-                    Err(error) => DirectState::Error(format!("{error:#}").into()),
+                    Ok(review) => {
+                        log::info!(
+                            "direct plugin package checked: {} {} ({} bytes, SHA-256 {})",
+                            review.inspection.manifest.id,
+                            review.inspection.manifest.version,
+                            review.inspection.bytes,
+                            review.inspection.sha256
+                        );
+                        DirectState::Review(Box::new(review))
+                    }
+                    Err(error) => {
+                        log::warn!("direct plugin package check failed: {error:#}");
+                        DirectState::Error(format!("{error:#}").into())
+                    }
                 };
                 cx.notify();
             })
@@ -233,6 +260,7 @@ impl MarketplaceWindow {
         cx: &mut Context<Self>,
     ) {
         if plugin.current.status == ReleaseStatus::Revoked {
+            log::warn!("refused to install revoked plugin release {}", plugin.id);
             self.status = Some("This release is revoked and cannot be installed".into());
             cx.notify();
             return;
@@ -276,6 +304,11 @@ impl MarketplaceWindow {
             .ok();
             let result = cx
                 .background_spawn(async move {
+                    log::info!(
+                        "installing official plugin {} {}",
+                        plugin.id,
+                        plugin.current.version
+                    );
                     let temp = tempfile::Builder::new()
                         .prefix("qrate-plugin-download-")
                         .suffix(".zip")
@@ -303,6 +336,12 @@ impl MarketplaceWindow {
             this.update(cx, |this, cx| {
                 match result {
                     Ok(receipt) => {
+                        log::info!(
+                            "official plugin installed: {} {} (SHA-256 {})",
+                            receipt.id,
+                            receipt.version,
+                            receipt.sha256
+                        );
                         if !already_managed {
                             settings::plugins::set_enabled(&receipt.id, false, cx);
                         }
@@ -318,6 +357,7 @@ impl MarketplaceWindow {
                         );
                     }
                     Err(error) => {
+                        log::error!("official plugin installation failed: {error:#}");
                         this.status = Some(format!("Installation failed: {error:#}").into())
                     }
                 }
@@ -368,6 +408,12 @@ impl MarketplaceWindow {
             }
             let result = cx
                 .background_spawn(async move {
+                    log::info!(
+                        "installing direct plugin {} {} from {}",
+                        inspection.manifest.id,
+                        inspection.manifest.version,
+                        release.repository
+                    );
                     let plugins = plugin_host::plugins_dir()
                         .ok_or_else(|| anyhow::anyhow!("qrate application data is unavailable"))?;
                     let data = plugins
@@ -391,6 +437,12 @@ impl MarketplaceWindow {
             this.update(cx, |this, cx| {
                 match result {
                     Ok((receipt, already_managed)) => {
+                        log::info!(
+                            "direct plugin installed: {} {} (SHA-256 {})",
+                            receipt.id,
+                            receipt.version,
+                            receipt.sha256
+                        );
                         if !already_managed {
                             settings::plugins::set_enabled(&receipt.id, false, cx);
                         }
@@ -407,6 +459,7 @@ impl MarketplaceWindow {
                         this.direct = DirectState::Idle;
                     }
                     Err(error) => {
+                        log::error!("direct plugin installation failed: {error:#}");
                         this.status = Some(format!("Installation failed: {error:#}").into())
                     }
                 }
@@ -585,7 +638,10 @@ impl Render for MarketplaceWindow {
                         Button::new("browse-plugin-catalog")
                             .small()
                             .label("Browse catalog")
-                            .on_click(|_, _, cx| cx.open_url(SITE_URL)),
+                            .on_click(|_, _, cx| {
+                                log::info!("opening plugin catalog in the default browser");
+                                cx.open_url(SITE_URL);
+                            }),
                     )
                     .child(
                         Button::new("toggle-github-installer")
@@ -597,6 +653,10 @@ impl Render for MarketplaceWindow {
                             })
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.direct_expanded = !this.direct_expanded;
+                                log::info!(
+                                    "GitHub plugin installer expanded: {}",
+                                    this.direct_expanded
+                                );
                                 if this.direct_expanded {
                                     this.input.focus_handle(cx).focus(window, cx);
                                 }
@@ -663,6 +723,7 @@ fn installed_receipt(id: &str) -> Option<plugin_package::InstallReceipt> {
 }
 
 pub fn open_catalog(cx: &mut gpui::App) {
+    log::info!("opening plugin catalog in the default browser");
     cx.open_url(SITE_URL);
 }
 

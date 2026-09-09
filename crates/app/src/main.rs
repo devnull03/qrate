@@ -471,6 +471,9 @@ fn main() {
                 .inspect_err(|error| log::warn!("ignored invalid plugin install link: {error:#}"))
                 .is_ok()
         });
+    if initial_link.is_some() {
+        log::info!("received plugin install link at startup");
+    }
     let (url_sender, url_receiver) = async_channel::unbounded();
     if !instance_handoff::start(initial_link.as_deref(), url_sender.clone()) {
         return;
@@ -478,6 +481,7 @@ fn main() {
     let app = gpui_platform::application().with_assets(assets::Assets);
     app.on_open_urls(move |urls| {
         for url in urls {
+            log::info!("received plugin install link from the operating system");
             let _ = url_sender.try_send(url);
         }
     });
@@ -614,6 +618,7 @@ fn main() {
 fn open_install_link(link: &str, cx: &mut gpui::App) -> bool {
     match plugin_package::parse_install_link(link) {
         Ok(target) => {
+            log::info!("opening plugin installation target: {target:?}");
             plugin_marketplace::open_install_target(target, cx);
             true
         }

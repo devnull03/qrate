@@ -14,6 +14,7 @@ pub fn start(link: Option<&str>, sender: async_channel::Sender<String>) -> bool 
     };
     if !instance.is_single() {
         if let Some(link) = link {
+            log::info!("handing plugin install link to the running qrate instance");
             if let Err(error) = send(link) {
                 log::error!("could not hand plugin link to the running qrate process: {error}");
             }
@@ -28,7 +29,8 @@ pub fn start(link: Option<&str>, sender: async_channel::Sender<String>) -> bool 
     std::thread::Builder::new()
         .name("plugin-link-handoff".to_string())
         .spawn(move || watch(inbox, sender, instance))
-        .ok();
+        .map(|_| log::debug!("plugin install link handoff is listening"))
+        .unwrap_or_else(|error| log::warn!("could not start plugin link handoff: {error}"));
     true
 }
 
@@ -74,6 +76,7 @@ fn watch(
                     .filter(|link| link.len() <= 4096);
                 let _ = fs::remove_file(path);
                 if let Some(link) = link {
+                    log::info!("received plugin install link from a second qrate process");
                     let _ = sender.send_blocking(link);
                 }
             }

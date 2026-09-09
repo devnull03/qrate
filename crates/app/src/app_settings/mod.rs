@@ -141,16 +141,16 @@ fn plugins_page(cx: &App) -> SettingPage {
         .description(
             "Browse the official catalog on qrate.dvnl.work, or review a public GitHub release.",
         )
-        .item(SettingItem::new(
-            "Plugins",
-            SettingField::element(move |_opts: &_, window: &mut Window, cx: &mut App| {
+        .item(
+            SettingItem::render(move |_opts: &_, window: &mut Window, cx: &mut App| {
                 installer
                     .borrow_mut()
                     .get_or_insert_with(|| crate::plugin_marketplace::inline_installer(window, cx))
                     .clone()
                     .into_any_element()
-            }),
-        ));
+            })
+            .keywords(["plugins", "catalog", "GitHub", "install"]),
+        );
     let mut page = SettingPage::new("Plugins")
         .description(
             "Installed plugins run in a sandbox and reach the network only when you grant access.",
@@ -289,6 +289,7 @@ fn plugins_page(cx: &App) -> SettingPage {
                                             });
                                         match result {
                                             Ok(()) => {
+                                                log::info!("managed plugin removed: {id}");
                                                 settings::plugins::set_enabled(&id, false, cx);
                                                 plugin_host::reload(cx);
                                             }
