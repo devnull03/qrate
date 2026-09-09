@@ -99,7 +99,7 @@ impl DictionarySet {
     fn for_text(&self, text: &str) -> Option<&LoadedDictionary> {
         let tokens: Vec<&str> = words(text, false)
             .filter(|word| {
-                !word.starts_with(char::is_uppercase)
+                !starts_uppercase(word)
                     || self
                         .loaded
                         .iter()
@@ -467,7 +467,11 @@ fn checkable(token: &str, ignore_capitalized: bool) -> bool {
     if len <= ACRONYM_LEN && token.chars().all(char::is_uppercase) {
         return false;
     }
-    !ignore_capitalized || !token.starts_with(char::is_uppercase)
+    !ignore_capitalized || !starts_uppercase(token)
+}
+
+fn starts_uppercase(word: &str) -> bool {
+    word.chars().next().is_some_and(char::is_uppercase)
 }
 
 fn titlecase(word: &str) -> String {
@@ -499,9 +503,7 @@ fn classify_word(dictionary: &Dictionary, word: &str, ignore_capitalized: bool) 
     match known_in_any_case(dictionary, word) {
         Some(canonical) if canonical == word => WordOutcome::Clean,
         Some(canonical) => WordOutcome::Capitalization(canonical),
-        None if ignore_capitalized && word.starts_with(char::is_uppercase) => {
-            WordOutcome::ProperNoun
-        }
+        None if ignore_capitalized && starts_uppercase(word) => WordOutcome::ProperNoun,
         None => WordOutcome::Misspelled,
     }
 }
