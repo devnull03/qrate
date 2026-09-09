@@ -11,6 +11,8 @@ const {
   current = '',
   version = '',
   noindex = false,
+  noReferrer = false,
+  analytics = true,
 } = Astro.props;
 
 // Absolute URLs: scrapers do not resolve relative ones. `build.format: 'file'`
@@ -25,7 +27,7 @@ const ogImage = new URL('/og.png', Astro.site);
 // Cloudflare Web Analytics: cookieless, no cross-site identifier, and it only
 // exists when CF_BEACON_TOKEN is set at build time. The docs pages get the same
 // tag from astro.config.mjs, because Starlight does not render this layout.
-const beacon = import.meta.env.CF_BEACON_TOKEN;
+const beacon = analytics ? import.meta.env.CF_BEACON_TOKEN : undefined;
 ---
 
 <!doctype html>
@@ -39,6 +41,7 @@ const beacon = import.meta.env.CF_BEACON_TOKEN;
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
     {noindex && <meta name="robots" content="noindex" />}
+    {noReferrer && <meta name="referrer" content="no-referrer" />}
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="qrate" />

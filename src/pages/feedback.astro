@@ -1,111 +1,243 @@
 ---
-import '../styles/global.css';
 import { env } from 'cloudflare:workers';
+import Base from '../layouts/Base.astro';
 
 export const prerender = false;
 const sitekey = env.TURNSTILE_SITE_KEY;
 ---
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="robots" content="noindex" />
-    <meta name="referrer" content="no-referrer" />
-    <title>Send feedback — qrate</title>
-    <script is:inline>
-      window.qrateFeedbackFragment = location.hash;
-      history.replaceState(null, '', location.pathname + location.search);
-    </script>
-  </head>
-  <body>
-    <main>
-      <a href="/">qrate</a>
-      <h1>Send feedback</h1>
-      <p>Reports go privately to the qrate team through Cloudflare and Linear. No account required.</p>
-      <form>
-        <label>Category
+
+<Base
+  title="Send feedback · qrate"
+  description="Send a bug report, feature request, or other feedback to the qrate team."
+  noindex
+  noReferrer
+  analytics={false}
+>
+  <script is:inline>
+    window.qrateFeedbackFragment = location.hash;
+    history.replaceState(null, '', location.pathname + location.search);
+  </script>
+
+  <header class="gut border-b border-rule-nav py-10 md:py-14">
+    <div class="eyebrow mb-4 flex items-center gap-[9px]">
+      <span class="h-px w-5 bg-accent"></span>Beta feedback
+    </div>
+    <h1 class="m-0 max-w-3xl text-[36px] font-semibold leading-[1.05] md:text-[48px]">
+      Help shape qrate.
+    </h1>
+    <p class="mt-4 max-w-2xl text-[15px] leading-7 text-body md:text-base">
+      Report a bug, suggest an improvement, or tell us where the interface gets in your way.
+      No account is required.
+    </p>
+  </header>
+
+  <section class="gut grid grid-cols-1 border-b border-rule-nav md:grid-cols-[minmax(0,1fr)_260px]">
+    <form class="grid gap-6 py-8 md:border-r md:border-rule-nav md:py-10 md:pr-10">
+      <div class="grid gap-5 sm:grid-cols-2">
+        <label>
+          <span class="field-label">Category</span>
           <select name="category" required>
-            <option value="bug">Bug</option><option value="ui_ux">UI / UX</option>
-            <option value="feature">Feature Request</option><option value="crash">Crash</option>
-            <option value="performance">Performance</option><option value="improvement">Improvement</option>
+            <option value="bug">Bug</option>
+            <option value="ui_ux">UI / UX</option>
+            <option value="feature">Feature request</option>
+            <option value="crash">Crash</option>
+            <option value="performance">Performance</option>
+            <option value="improvement">Improvement</option>
           </select>
         </label>
-        <label>Summary <input name="summary" maxlength="160" required /></label>
-        <label>Description
-          <textarea name="description" maxlength="10000" rows="6" required placeholder="What were you trying to do? What happened, and what did you expect? Include reproduction steps if possible."></textarea>
+        <label>
+          <span class="field-label">Email <span class="normal-case text-faint">(optional)</span></span>
+          <input name="email" type="email" maxlength="254" placeholder="For follow-up only" />
         </label>
-        <label>Email (optional, for follow-up) <input name="email" type="email" maxlength="254" /></label>
-        <label class="check"><input id="include" type="checkbox" checked /> Include diagnostic summary</label>
+      </div>
+
+      <label>
+        <span class="field-label">Summary</span>
+        <input name="summary" maxlength="160" required placeholder="A short description of the issue" />
+      </label>
+
+      <label>
+        <span class="field-label">What happened?</span>
+        <textarea
+          name="description"
+          maxlength="10000"
+          rows="7"
+          required
+          placeholder="What were you trying to do? What happened, and what did you expect? Include reproduction steps if possible."></textarea>
+      </label>
+
+      <div class="border border-rule bg-ground/40">
+        <label class="check border-b border-rule-soft px-4 py-3">
+          <input id="include" type="checkbox" checked />
+          <span>
+            <strong class="font-medium text-ink">Include diagnostic summary</strong>
+            <span class="block text-xs text-dim">App version, operating system, and non-sensitive project counts.</span>
+          </span>
+        </label>
         <details>
-          <summary>Review or edit diagnostics</summary>
-          <textarea name="diagnostics" maxlength="8000" rows="9" aria-label="Diagnostic summary"></textarea>
+          <summary class="cursor-pointer px-4 py-3 font-mono text-xs text-nav">
+            Review or edit diagnostics
+          </summary>
+          <div class="border-t border-rule-soft p-4">
+            <textarea
+              name="diagnostics"
+              maxlength="8000"
+              rows="9"
+              aria-label="Diagnostic summary"
+              class="font-mono text-xs"></textarea>
+          </div>
         </details>
-        <label>Logs or screenshots (optional)
-          <input name="files" type="file" multiple accept=".txt,.log,.png,.jpg,.jpeg" />
-        </label>
-        <p>Up to three files, 2 MiB each. Use Help → Open Logs Folder in qrate. Logs can contain secrets and collection data. Inspect and redact files before attaching them.</p>
-        <label class="check"><input name="consent" type="checkbox" value="yes" required /> I reviewed this report and its attachments and agree to send them under the <a href="/privacy">privacy policy</a>.</label>
-        {sitekey ? <div class="cf-turnstile" data-sitekey={sitekey} data-action="feedback"></div> : <p>Feedback submission is not configured yet. You can still prepare your report.</p>}
-        <button type="submit" disabled={!sitekey}>Send feedback</button>
-        <p id="status" role="status" aria-live="polite"></p>
-      </form>
-    </main>
-    <script>
-      const form = document.querySelector('form')!;
-      const category = form.elements.namedItem('category') as HTMLSelectElement;
-      const diagnostics = form.elements.namedItem('diagnostics') as HTMLTextAreaElement;
-      const include = document.querySelector<HTMLInputElement>('#include')!;
-      const status = document.querySelector('#status')!;
-      const button = form.querySelector('button')!;
-      const selected = new URLSearchParams(location.search).get('type');
-      if ([...category.options].some(option => option.value === selected)) category.value = selected!;
-      include.checked = !['feature', 'improvement'].includes(category.value);
-      const fragment = (window as any).qrateFeedbackFragment;
-      delete (window as any).qrateFeedbackFragment;
+      </div>
+
+      <label>
+        <span class="field-label">Logs or screenshots <span class="normal-case text-faint">(optional)</span></span>
+        <input name="files" type="file" multiple accept=".txt,.log,.png,.jpg,.jpeg" />
+        <span class="mt-2 block text-xs leading-5 text-dim">
+          Up to three files, 2 MiB each. Use Help → Open Logs Folder in qrate.
+        </span>
+      </label>
+
+      <div class="border-l-2 border-rust bg-ground/50 px-4 py-3 text-[13px] leading-5 text-body">
+        Logs can contain secrets and collection data. Inspect and redact every file before attaching it.
+      </div>
+
+      <label class="check text-[13px] leading-5 text-body">
+        <input name="consent" type="checkbox" value="yes" required />
+        <span>
+          I reviewed this report and its attachments and agree to send them under the
+          <a href="/privacy" class="font-medium text-ink underline">privacy policy</a>.
+        </span>
+      </label>
+
+      {
+        sitekey ? (
+          <div class="cf-turnstile" data-sitekey={sitekey} data-action="feedback" />
+        ) : (
+          <p class="border border-rule bg-ground px-4 py-3 text-sm text-body">
+            Feedback submission is not configured yet. You can still prepare your report.
+          </p>
+        )
+      }
+
+      <div class="flex flex-col items-start gap-3 border-t border-rule-nav pt-6 sm:flex-row sm:items-center">
+        <button
+          type="submit"
+          disabled={!sitekey}
+          class="cursor-pointer bg-accent px-5 py-3 text-sm font-semibold text-on-accent disabled:cursor-default disabled:opacity-50"
+        >
+          Send feedback
+        </button>
+        <p id="status" class="m-0 text-sm text-body" role="status" aria-live="polite"></p>
+      </div>
+    </form>
+
+    <aside class="border-t border-rule-nav py-8 md:border-t-0 md:py-10 md:pl-8">
+      <div class="eyebrow mb-4 text-dim">What gets sent</div>
+      <ul class="grid gap-3 text-[13px] leading-5 text-body">
+        <li class="border-t border-rule-soft pt-3"><strong class="text-ink">Your report</strong><br />The text and files you choose.</li>
+        <li class="border-t border-rule-soft pt-3"><strong class="text-ink">Diagnostics</strong><br />Visible and editable before sending.</li>
+        <li class="border-t border-rule-soft pt-3"><strong class="text-ink">Private intake</strong><br />Cloudflare forwards the report to the qrate team in Linear.</li>
+      </ul>
+      <p class="mt-6 font-mono text-[11px] leading-5 text-dim">
+        No analytics run on this page. Diagnostic data arrives in the URL fragment and is not sent until you submit.
+      </p>
+    </aside>
+  </section>
+
+  <script>
+    const form = document.querySelector('form')!;
+    const category = form.elements.namedItem('category') as HTMLSelectElement;
+    const diagnostics = form.elements.namedItem('diagnostics') as HTMLTextAreaElement;
+    const include = document.querySelector<HTMLInputElement>('#include')!;
+    const status = document.querySelector('#status')!;
+    const button = form.querySelector('button[type="submit"]') as HTMLButtonElement;
+    const selected = new URLSearchParams(location.search).get('type');
+    if ([...category.options].some(option => option.value === selected)) category.value = selected!;
+    include.checked = !['feature', 'improvement'].includes(category.value);
+    const fragment = (window as any).qrateFeedbackFragment;
+    delete (window as any).qrateFeedbackFragment;
+    try {
+      const raw = new URLSearchParams(fragment?.slice(1)).get('diagnostics');
+      if (raw && raw.length <= 8000) {
+        diagnostics.value = JSON.stringify(JSON.parse(raw), null, 2);
+      }
+    } catch { status.textContent = 'The diagnostic summary could not be read. You can report without it.'; }
+    const id = crypto.randomUUID();
+    let submitting = false;
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (submitting) return;
+      submitting = true;
+      const data = new FormData(form);
+      data.set('id', id);
+      if (!include.checked) data.delete('diagnostics');
+      button.disabled = true;
+      status.textContent = 'Sending…';
       try {
-        const raw = new URLSearchParams(fragment?.slice(1)).get('diagnostics');
-        if (raw && raw.length <= 8000) {
-          diagnostics.value = JSON.stringify(JSON.parse(raw), null, 2);
-        }
-      } catch { status.textContent = 'The diagnostic summary could not be read. You can report without it.'; }
-      const id = crypto.randomUUID();
-      let submitting = false;
-      form.addEventListener('submit', async event => {
-        event.preventDefault();
-        if (submitting) return;
-        submitting = true;
-        const data = new FormData(form);
-        data.set('id', id);
-        if (!include.checked) data.delete('diagnostics');
-        button.disabled = true;
-        status.textContent = 'Sending…';
-        try {
-          const response = await fetch('/api/feedback', { method: 'POST', body: data });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || 'Unable to send.');
-          status.textContent = `Thank you. Report received: ${result.receipt}`;
-          button.textContent = 'Sent';
-        } catch (error) {
-          submitting = false;
-          status.textContent = error instanceof Error ? error.message : 'Unable to send. Please retry.';
-          button.disabled = false;
-          (window as any).turnstile?.reset();
-        }
-      });
-    </script>
-    <script is:inline src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
-  </body>
-</html>
+        const response = await fetch('/api/feedback', { method: 'POST', body: data });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Unable to send.');
+        status.textContent = `Thank you. Report received: ${result.receipt}`;
+        button.textContent = 'Sent';
+      } catch (error) {
+        submitting = false;
+        status.textContent = error instanceof Error ? error.message : 'Unable to send. Please retry.';
+        button.disabled = false;
+        (window as any).turnstile?.reset();
+      }
+    });
+  </script>
+  <script is:inline src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+</Base>
+
 <style>
-  main { max-width: 48rem; margin: 3rem auto; padding: 1.5rem; }
-  h1 { font-size: 2rem; margin: 1rem 0; }
-  form { display: grid; gap: 1.25rem; margin-top: 2rem; }
-  label { display: grid; gap: .5rem; }
-  input, textarea, select, button { border: 1px solid currentColor; padding: .65rem; border-radius: .25rem; font: inherit; }
-  textarea, select, input:not([type=checkbox]) { width: 100%; }
-  .check { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; }
-  button { cursor: pointer; font-weight: bold; }
-  button:disabled { cursor: default; opacity: .6; }
-  a { text-decoration: underline; }
+  label:not(.check) {
+    display: block;
+  }
+
+  .field-label {
+    display: block;
+    margin-bottom: 0.45rem;
+    color: var(--nav-fg);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  input:not([type='checkbox']),
+  textarea,
+  select {
+    width: 100%;
+    border: 1px solid var(--rule);
+    background: var(--paper);
+    padding: 0.7rem 0.8rem;
+    color: var(--ink);
+    font: inherit;
+    outline: none;
+  }
+
+  input:not([type='checkbox']):focus,
+  textarea:focus,
+  select:focus {
+    border-color: var(--accent);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  input[type='file'] {
+    color: var(--body);
+    font-size: 0.8rem;
+  }
+
+  .check {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+  }
+
+  .check input {
+    margin-top: 0.2rem;
+    accent-color: var(--accent);
+  }
 </style>
