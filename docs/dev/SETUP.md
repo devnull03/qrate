@@ -93,16 +93,24 @@ produce nothing visible.
 
 ## 4. CI/CD pipelines
 
-Four workflows, two on `main`, one on `site`, and CI on `dev`/PRs.
+Five workflows cover CI, build caches, releases, and site deployment.
 
-### `ci.yml` — quality gate (on `main`)
+### `ci.yml` — quality gate
 - **Triggers:** push to `dev`; PRs targeting `dev` or `main`.
-- **Does:** on Windows + macOS, runs `cargo fmt --check`, `cargo clippy … -D warnings`,
-  `cargo test`, `cargo build`. Cancels superseded runs to save minutes.
+- **Does:** on Windows, macOS, and Linux, runs `cargo fmt --check`,
+  `cargo clippy … -D warnings`, and `cargo nextest`. Cancels superseded runs to save minutes.
+- **Cache:** restores dependency artifacts that `warm-ci-cache.yml` saved on `main`. It does not save
+  PR-local caches because GitHub confines those caches to one PR and they consume the shared quota.
 - **Heads-up:** it does **not** run on direct pushes to `main`. With the
   feature-branch-straight-to-`main` flow, run `cargo fmt`/`clippy`/`test` locally
   first, or open a PR (which does trigger it). To gate direct pushes, add
   `push: [main]` to the triggers.
+
+### `warm-ci-cache.yml` — reusable CI dependency cache
+- **Trigger:** a dependency manifest, lockfile, Rust toolchain, or CI cache configuration changes on
+  `main`; it can also be run manually.
+- **Does:** builds the same clippy dependency variants as CI on all three operating systems and saves
+  them on the default branch, where every subsequent PR can restore them.
 
 ### `release.yml` — build & publish artifacts (on `main`)
 - **Trigger:** pushing a tag matching `v*`. Merging to `main` alone does nothing.

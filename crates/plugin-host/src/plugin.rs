@@ -918,6 +918,64 @@ mod tests {
         )
     }
 
+    fn iiif(file: &str) -> String {
+        let root = std::env::var_os("QRATE_IIIF_PLUGIN_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../qrate-iiif-plugin")
+            });
+        let path = root.join(file);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("{} is not checked out here: {err}", path.display()))
+    }
+
+    fn iiif_plugin(storage: Json, net: bool) -> LuaPlugin {
+        let modules = ["fields", "validation", "image_info"]
+            .map(|name| (name.to_string(), iiif(&format!("{name}.lua"))))
+            .to_vec();
+        LuaPlugin::load(
+            "iiif-workbench",
+            &iiif("init.lua"),
+            Env {
+                modules,
+                granted: net
+                    .then(|| PERMISSION_NET.to_string())
+                    .into_iter()
+                    .collect(),
+                storage,
+            },
+        )
+    }
+
+    fn check_iiif(field: &str, values: &[&str]) -> Vec<(usize, Severity, SharedString)> {
+        let plugin = iiif_plugin(Json::Null, false);
+        assert_eq!(plugin.load_error(), None);
+        let mut settings = ColumnSettings::default();
+        settings
+            .plugins
+            .insert("IIIF workbench".into(), json!({ "iiif_field": field }));
+        let column = ColumnInfo {
+            name: "IIIF value",
+            data_type: "Text",
+            settings: &settings,
+        };
+        let values = values
+            .iter()
+            .map(|value| (*value).into())
+            .collect::<Vec<_>>();
+        plugin
+            .validate(&column, ColumnValues::new(&values, ""))
+            .into_iter()
+            .map(|finding| {
+                (
+                    finding.row.expect("IIIF findings address cells"),
+                    finding.severity,
+                    finding.message,
+                )
+            })
+            .collect()
+    }
+
     fn check(source: &str, values: &[&str]) -> Vec<(usize, Severity, SharedString)> {
         check_with(plugin(source), Json::Null, values)
     }
@@ -1425,6 +1483,128 @@ mod tests {
         assert_eq!(found[0].0, 1);
         assert_eq!(found[0].1, Severity::Warning);
         assert!(found[0].2.contains("over 5"), "{}", found[0].2);
+    }
+
+    #[test]
+    #[ignore = "needs qrate-iiif-plugin checked out beside qrate"]
+    fn the_iiif_plugin_rejects_hostile_and_unsupported_values() {
+        let valid = [
+            ("resource_id", "HTTPS://example.org:443/iiif/a%20b"),
+            ("rights", "http://rightsstatements.org/vocab/InC/1.0/"),
+            ("viewing_direction", "right-to-left"),
+            ("behavior", "paged"),
+            ("motivation", "painting"),
+            ("language_tag", "zh-Hant"),
+            ("media_type", "image/jpeg"),
+            ("image_info", "https://images.example.org/iiif/1/info.json"),
+        ];
+        for (field, value) in valid {
+            assert!(check_iiif(field, &[value]).is_empty(), "{field}: {value}");
+        }
+
+        let invalid = [
+            ("resource_id", "http://example.org/id"),
+            ("resource_id", "https://user:pass@example.org/id"),
+            ("resource_id", "https://example.org/id#part"),
+            ("resource_id", "https://example.org/%zz"),
+            ("resource_id", "https://example.org:99999/id"),
+            ("rights", "https://example.org/custom-rights"),
+            ("viewing_direction", "sideways"),
+            ("behavior", "execute-code"),
+            ("motivation", "delete"),
+            ("language_tag", "en--US"),
+            ("media_type", "image/jpeg; charset=utf-8"),
+            ("image_info", "https://images.example.org/iiif/1"),
+        ];
+        for (field, value) in invalid {
+            assert!(!check_iiif(field, &[value]).is_empty(), "{field}: {value}");
+        }
+
+        let hostile = "x".repeat(70_000);
+        assert!(!check_iiif("resource_id", &[&hostile]).is_empty());
+    }
+
+    #[test]
+    #[ignore = "needs qrate-iiif-plugin checked out beside qrate"]
+    fn the_iiif_plugin_checks_language_maps_and_offers_controlled_suggestions() {
+        assert!(
+            check_iiif(
+                "language_map",
+                &[r#"{"en":["Map"],"fr-CA":["Carte"],"none":["Unlabeled"]}"#],
+            )
+            .is_empty()
+        );
+        for value in [
+            r#"{"en":"Map"}"#,
+            r#"{"bad_tag":["Map"]}"#,
+            r#"{"en":[1]}"#,
+            "[]",
+            "not json",
+        ] {
+            assert!(!check_iiif("language_map", &[value]).is_empty(), "{value}");
+        }
+
+        let plugin = iiif_plugin(Json::Null, false);
+        let ctx = CommandContext {
+            column_settings: json!({ "iiif_field": "viewing_direction" }),
+            argument: Some("right".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            plugin.suggest(&ctx).unwrap(),
+            vec![SharedString::from("right-to-left")]
+        );
+
+        let writes = plugin
+            .command(&"load_mapping_options".into(), &CommandContext::default())
+            .unwrap();
+        assert!(
+            writes.project.unwrap()["mapping_options"]
+                .as_array()
+                .is_some_and(|options| options.len() == 10)
+        );
+    }
+
+    #[test]
+    #[ignore = "needs qrate-iiif-plugin checked out beside qrate"]
+    fn the_iiif_plugin_reports_an_ungranted_image_api_request() {
+        let plugin = iiif_plugin(Json::Null, false);
+        let url = "https://images.example.org/iiif/1/info.json";
+        let ctx = CommandContext {
+            column: Some("Image service".into()),
+            column_settings: json!({ "iiif_field": "image_info" }),
+            row: Some(0),
+            values: vec![url.into()],
+            ..Default::default()
+        };
+        let writes = plugin.command(&"check_image_info".into(), &ctx).unwrap();
+        assert_eq!(writes.column, Some(json!({ "iiif_field": "image_info" })));
+        let storage = plugin.take_storage().unwrap();
+        assert!(
+            storage["image_info_results"]["results"][url]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("Settings ▸ Plugins"))
+        );
+
+        let reloaded = iiif_plugin(storage, false);
+        let mut settings = ColumnSettings::default();
+        settings.plugins.insert(
+            "IIIF workbench".into(),
+            json!({ "iiif_field": "image_info" }),
+        );
+        let column = ColumnInfo {
+            name: "Image service",
+            data_type: "Text",
+            settings: &settings,
+        };
+        let values = [url.into()];
+        let found = reloaded.validate(&column, ColumnValues::new(&values, ""));
+        assert!(
+            found
+                .iter()
+                .any(|finding| finding.message.contains("Settings ▸ Plugins")),
+            "{found:?}"
+        );
     }
 
     #[test]

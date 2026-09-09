@@ -1,0 +1,72 @@
+name: Warm CI cache
+
+# GitHub scopes a cache saved by a pull request to refs/pull/<number>/merge. Other pull requests
+# cannot restore it, even when they use the same key. Build dependency artifacts on the default
+# branch instead, where every PR targeting main can read them.
+#
+# rust-cache removes workspace artifacts before saving, so source-only changes do not make this
+# cache stale. Rebuild it only when inputs that can change the dependency artifacts move.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/warm-ci-cache.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: warm-ci-cache
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # rust-cache hashes RUST* variables; keep this identical to ci.yml or the keys diverge.
+  RUST_BACKTRACE: 1
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  warm:
+    name: warm (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev libfontconfig-dev libwayland-dev \
+            libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libasound2-dev mold
+          echo 'RUSTFLAGS=-C link-arg=-fuse-ld=mold' >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Configure Windows linker
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          'RUSTFLAGS=-C linker=rust-lld' >> $env:GITHUB_ENV
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Must match ci.yml. The shared key replaces rust-cache's job-name key, which differs
+          # between this `warm` job and CI's `check` job.
+          shared-key: ci
+
+      # Match CI's most expensive compile. This builds all dependency variants CI needs; rust-cache
+      # deliberately discards qrate's own artifacts before it saves the resulting target tree.
+      - name: Build CI dependencies
+        run: cargo clippy --workspace --all-targets -- -D warnings -A dead_code
