@@ -3,4 +3,4 @@ import { catalogArtifactResponse } from '../../lib/catalog-response';
 
 export const prerender = false;
 
-export const GET: APIRoute = () => catalogArtifactResponse('json');
+export const GET: APIRoute = ({ request }) => catalogArtifactResponse('json', request);

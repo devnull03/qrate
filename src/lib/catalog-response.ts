@@ -9,9 +9,26 @@ const artifactTypes: Record<CatalogArtifact, string> = {
   status: 'application/json; charset=utf-8',
 };
 
-export async function catalogArtifactResponse(artifact: CatalogArtifact): Promise<Response> {
+export async function catalogArtifactResponse(
+  artifact: CatalogArtifact,
+  request: Request,
+): Promise<Response> {
   const version = await env.PLUGIN_CATALOG.get('current');
   if (!version) return unavailable();
+  const etag = `"${version}"`;
+  const requestedEtags = request.headers
+    .get('if-none-match')
+    ?.split(',')
+    .map((value) => value.trim());
+  if (requestedEtags?.includes(etag) || requestedEtags?.includes('*')) {
+    return new Response(null, {
+      status: 304,
+      headers: {
+        'cache-control': 'public, max-age=300',
+        etag,
+      },
+    });
+  }
 
   const body = await env.PLUGIN_CATALOG.get(`catalog:${version}:${artifact}`);
   if (!body) return unavailable();
@@ -20,7 +37,7 @@ export async function catalogArtifactResponse(artifact: CatalogArtifact): Promis
     headers: {
       'cache-control': 'public, max-age=300',
       'content-type': artifactTypes[artifact],
-      etag: `"${version}"`,
+      etag,
     },
   });
 }

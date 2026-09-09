@@ -22,7 +22,8 @@
   "kv_namespaces": [
     {
       "binding": "PLUGIN_CATALOG",
-      "id": "7c353c741f4d4c4f8dbf6e93b069128b"
+      "id": "7c353c741f4d4c4f8dbf6e93b069128b",
+      "preview_id": "8a696f36ba384cb890f013f161e12282"
     }
   ],
 

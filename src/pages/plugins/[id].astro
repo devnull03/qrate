@@ -74,7 +74,7 @@ const published = new Intl.DateTimeFormat('en', { dateStyle: 'long' }).format(
             <h2 class="mb-3 mt-9 text-2xl font-semibold">Screenshots</h2>
             <div class="grid gap-4 sm:grid-cols-2">
               {plugin.screenshots.map((screenshot) => (
-                <a href={screenshot}>
+                <a href={screenshot} rel="noopener">
                   <img
                     src={screenshot}
                     alt={`${plugin.name} screenshot`}
@@ -125,10 +125,10 @@ const published = new Intl.DateTimeFormat('en', { dateStyle: 'long' }).format(
         </div>
       </dl>
       <div class="space-y-2 border-t border-rule p-3 text-[12.5px]">
-        <a href={plugin.repository} class="block text-accent">Source repository ↗</a>
-        <a href={plugin.current.release_url} class="block text-accent">Release notes ↗</a>
-        {plugin.support && <a href={plugin.support} class="block text-accent">Support ↗</a>}
-        {plugin.homepage && <a href={plugin.homepage} class="block text-accent">Author website ↗</a>}
+        <a href={plugin.repository} rel="noopener" class="block text-accent">Source repository ↗</a>
+        <a href={plugin.current.release_url} rel="noopener" class="block text-accent">Release notes ↗</a>
+        {plugin.support && <a href={plugin.support} rel="noopener" class="block text-accent">Support ↗</a>}
+        {plugin.homepage && <a href={plugin.homepage} rel="noopener" class="block text-accent">Author website ↗</a>}
       </div>
     </aside>
   </div>
