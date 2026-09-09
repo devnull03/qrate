@@ -24,7 +24,9 @@ actions!(
         ReloadPlugins,
         Quit,
         CopyDebugInfo,
-        ReportIssue,
+        ReportBug,
+        RequestFeature,
+        ReportUxIssue,
         OpenLogsFolder,
         OpenAbout,
         /// What every greyed-out menu item below dispatches. Deliberately unhandled: the label is
@@ -225,7 +227,15 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
                 // Unit actions, not `OpenBrowser { url }`: this runs once at startup, while the
                 // debug info those items carry changes with every project opened and plugin loaded.
                 MenuItem::action("Copy Debug Info", CopyDebugInfo),
-                MenuItem::action("Report an Issue", ReportIssue),
+                MenuItem::submenu(Menu {
+                    name: "Send Feedback".into(),
+                    disabled: false,
+                    items: vec![
+                        MenuItem::action("Report a Bug…", ReportBug),
+                        MenuItem::action("Request a Feature…", RequestFeature),
+                        MenuItem::action("Report a UI/UX Issue…", ReportUxIssue),
+                    ],
+                }),
                 MenuItem::action("Open Logs Folder", OpenLogsFolder),
                 MenuItem::Separator,
                 MenuItem::action(format!("Version {}", env!("CARGO_PKG_VERSION")), OpenAbout),

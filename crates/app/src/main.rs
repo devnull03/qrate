@@ -40,7 +40,7 @@ use crate::{
     actions::{NewProject, ToggleBottomDock, ToggleLeftDock, ToggleRightDock},
     app_menus::{
         CopyDebugInfo, OpenAbout, OpenColumnSettings, OpenLogsFolder, OpenPluginsFolder,
-        OpenProjects, OpenSettings, Quit, REPO_URL, ReloadPlugins, ReportIssue,
+        OpenProjects, OpenSettings, Quit, ReloadPlugins, ReportBug, ReportUxIssue, RequestFeature,
     },
     status_items::build_status_bar_registry,
     title_items::build_title_bar_registry,
@@ -515,11 +515,17 @@ fn main() {
         cx.on_action(|_: &CopyDebugInfo, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(logging::debug_info(cx, 200)));
         });
-        cx.on_action(|_: &ReportIssue, cx| {
-            // A shorter tail than the clipboard gets: GitHub stops honouring `?body=` somewhere
-            // past 8 KB, and a silently truncated report is worse than a short one.
-            let body = logging::urlencode(&logging::debug_info(cx, 30));
-            cx.open_url(&format!("{REPO_URL}/issues/new?body={body}"));
+        cx.on_action(|_: &ReportBug, cx| {
+            cx.open_url(&logging::feedback_url(cx, Some(logging::FeedbackKind::Bug)));
+        });
+        cx.on_action(|_: &RequestFeature, cx| {
+            cx.open_url(&logging::feedback_url(
+                cx,
+                Some(logging::FeedbackKind::Feature),
+            ));
+        });
+        cx.on_action(|_: &ReportUxIssue, cx| {
+            cx.open_url(&logging::feedback_url(cx, Some(logging::FeedbackKind::Ux)));
         });
         cx.on_action(|_: &OpenLogsFolder, _| match logging::reveal_target() {
             Some(target) => {

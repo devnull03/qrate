@@ -3,6 +3,8 @@ mod update_notice;
 
 use gpui::*;
 use gpui_component::{
+    Sizable as _,
+    button::{Button, ButtonVariants as _},
     dock::{DockArea, DockPlacement},
     menu::AppMenuBar,
 };
@@ -13,6 +15,19 @@ use crate::status_items::PluginBar;
 use update_notice::UpdateNotice;
 use window_wrapper::{BarRegistry, title_bar::TitleBarRegistry};
 use workspace::DockToggleButton;
+
+struct FeedbackButton;
+
+impl Render for FeedbackButton {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        Button::new("feedback")
+            .small()
+            .compact()
+            .primary()
+            .label("Feedback")
+            .on_click(|_, _, cx| cx.open_url(&crate::logging::feedback_url(cx, None)))
+    }
+}
 
 /// Populate the title bar registry. The app menus are the one always-present item, so they
 /// are registered on the left by default. Right: generic open/close buttons for each dock.
@@ -29,6 +44,8 @@ pub fn build_title_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> Tit
     // Before the dock buttons, so plugin text sits inboard of them.
     let plugins = cx.new(|cx| PluginBar::new(Bar::Title, Side::Right, cx));
     registry.items_mut().add_right(plugins);
+
+    registry.items_mut().add_right(cx.new(|_| FeedbackButton));
 
     // Download progress and the explicit restart action from the signed updater.
     // Text before buttons, on the same reasoning as the plugin bar above.

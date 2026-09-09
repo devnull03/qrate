@@ -15,7 +15,7 @@ use window_wrapper::OpenBrowser;
 use crate::actions::NewProject;
 use crate::app_menus::{
     CopyDebugInfo, OpenAbout, OpenLogsFolder, OpenPluginsFolder, OpenSettings, REPO_URL,
-    ReloadPlugins, ReportIssue,
+    ReloadPlugins, ReportBug, ReportUxIssue, RequestFeature,
 };
 use crate::title_items::update_notice::UpdateNotice;
 
@@ -77,7 +77,11 @@ impl Render for LauncherBar {
                                 )
                                 .separator()
                                 .menu("Copy Debug Info", Box::new(CopyDebugInfo))
-                                .menu("Report an Issue", Box::new(ReportIssue))
+                                .submenu("Send Feedback", window, cx, |menu, _, _| {
+                                    menu.menu("Report a Bug…", Box::new(ReportBug))
+                                        .menu("Request a Feature…", Box::new(RequestFeature))
+                                        .menu("Report a UI/UX Issue…", Box::new(ReportUxIssue))
+                                })
                                 .menu("Open Logs Folder", Box::new(OpenLogsFolder))
                             })
                             .separator()
@@ -91,6 +95,20 @@ impl Render for LauncherBar {
                             )
                     }),
             )
-            .child(self.update.clone())
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("launcher-feedback")
+                            .small()
+                            .compact()
+                            .primary()
+                            .label("Feedback")
+                            .on_click(|_, _, cx| {
+                                cx.open_url(&crate::logging::feedback_url(cx, None))
+                            }),
+                    )
+                    .child(self.update.clone()),
+            )
     }
 }
