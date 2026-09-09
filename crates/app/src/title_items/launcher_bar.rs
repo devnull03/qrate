@@ -102,8 +102,9 @@ impl Render for LauncherBar {
                         Button::new("launcher-feedback")
                             .small()
                             .compact()
-                            .primary()
+                            .ghost()
                             .label("Feedback")
+                            .occlude()
                             .on_click(|_, _, cx| {
                                 cx.open_url(&crate::logging::feedback_url(cx, None))
                             }),
