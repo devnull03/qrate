@@ -36,6 +36,12 @@ pub struct Pair {
     pub key: String,
 }
 
+pub struct Comparison {
+    pub pairs: Vec<Pair>,
+    pub distinct_values: usize,
+    pub candidate_pairs: usize,
+}
+
 fn tokens(text: &str, strip_marks: bool) -> Vec<String> {
     let normalized: String = text.nfkc().collect();
     let folded = default_case_fold_str(&normalized);
@@ -120,10 +126,11 @@ fn candidate_pairs(values: &[Value]) -> BTreeSet<(usize, usize)> {
 }
 
 pub fn compare<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<Pair> {
-    compare_indexed(values.into_iter().enumerate())
+    let comparison = compare_indexed(values.into_iter().enumerate());
+    comparison.pairs
 }
 
-pub fn compare_indexed<'a>(values: impl IntoIterator<Item = (usize, &'a str)>) -> Vec<Pair> {
+pub fn compare_indexed<'a>(values: impl IntoIterator<Item = (usize, &'a str)>) -> Comparison {
     let mut grouped: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (row, value) in values {
         if !value.trim().is_empty() {
@@ -134,7 +141,9 @@ pub fn compare_indexed<'a>(values: impl IntoIterator<Item = (usize, &'a str)>) -
         .into_iter()
         .map(|(text, rows)| Value::new(text, rows))
         .collect();
-    candidate_pairs(&distinct)
+    let candidates = candidate_pairs(&distinct);
+    let candidate_count = candidates.len();
+    let pairs = candidates
         .into_iter()
         .filter_map(|(left, right)| {
             let (left, right) = (&distinct[left], &distinct[right]);
@@ -145,7 +154,12 @@ pub fn compare_indexed<'a>(values: impl IntoIterator<Item = (usize, &'a str)>) -
                 right: right.clone(),
             })
         })
-        .collect()
+        .collect();
+    Comparison {
+        pairs,
+        distinct_values: distinct.len(),
+        candidate_pairs: candidate_count,
+    }
 }
 
 #[cfg(test)]

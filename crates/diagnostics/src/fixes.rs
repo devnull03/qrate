@@ -6,15 +6,16 @@
 //! producer registers a function here and is asked when a menu opens, against the cell's text
 //! *now* rather than the text that produced the finding.
 //!
-//! Keyed by the same string [`Source::label`] returns, so a producer's findings and its fixes
-//! meet without either side holding a handle to the other.
+//! Keyed by the stable producer identity in [`Source::key`], so display-name changes cannot
+//! disconnect a producer's findings from its fixes.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use gpui::{App, Context, Global, SharedString, Window};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 
-use crate::{Diagnostics, Location};
+use crate::{DiagnosticHooks, Diagnostics, Location};
 
 /// One offered correction: what to call it, and what the cell becomes if it is taken.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -28,6 +29,48 @@ pub struct Fix {
 /// What a producer is asked when a menu opens: where the finding is, and what the cell says now.
 pub type OfferFixes = fn(&Location, &str, &App) -> Vec<Fix>;
 
+#[derive(Clone)]
+pub struct GroupMember {
+    pub location: Location,
+    pub text: SharedString,
+    pub message: SharedString,
+}
+
+#[derive(Clone)]
+pub struct GroupFix {
+    pub label: SharedString,
+    apply: Rc<dyn Fn(&mut App)>,
+}
+
+impl GroupFix {
+    pub fn replacements(
+        label: impl Into<SharedString>,
+        replacements: Vec<(Location, SharedString)>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            apply: Rc::new(move |cx| {
+                if let Some(hooks) = cx.try_global::<DiagnosticHooks>().copied() {
+                    (hooks.set_texts)(replacements.clone(), cx);
+                }
+            }),
+        }
+    }
+
+    pub fn action(label: impl Into<SharedString>, apply: impl Fn(&mut App) + 'static) -> Self {
+        Self {
+            label: label.into(),
+            apply: Rc::new(apply),
+        }
+    }
+
+    pub fn apply(&self, cx: &mut App) {
+        (self.apply)(cx);
+    }
+}
+
+pub type OfferGroupFixes = fn(&[GroupMember], &App) -> Vec<GroupFix>;
+
 /// Which producers can offer corrections, by source name.
 #[derive(Default)]
 pub struct FixProviders(BTreeMap<SharedString, OfferFixes>);
@@ -38,6 +81,17 @@ impl FixProviders {
     /// Offer corrections for `source`'s findings. Registering again under the same name replaces,
     /// which is what lets a producer that reloads avoid stacking duplicate menus.
     pub fn register(source: &str, offer: OfferFixes, cx: &mut App) {
+        cx.default_global::<Self>().0.insert(source.into(), offer);
+    }
+}
+
+#[derive(Default)]
+pub struct GroupFixProviders(BTreeMap<SharedString, OfferGroupFixes>);
+
+impl Global for GroupFixProviders {}
+
+impl GroupFixProviders {
+    pub fn register(source: &str, offer: OfferGroupFixes, cx: &mut App) {
         cx.default_global::<Self>().0.insert(source.into(), offer);
     }
 }
@@ -55,7 +109,7 @@ pub fn at(location: &Location, text: &str, cx: &App) -> Vec<Fix> {
         location.column.as_deref(),
         cx,
     )
-    .map(|d| d.source.label())
+    .map(|d| d.source.key())
     .collect();
     // One finding per source is enough to ask it; a column flagged twice by the same rule must
     // not offer its corrections twice.
@@ -67,6 +121,32 @@ pub fn at(location: &Location, text: &str, cx: &App) -> Vec<Fix> {
         .filter_map(|source| providers.0.get(source))
         .flat_map(|offer| offer(location, text, cx))
         .collect()
+}
+
+pub fn group_menu(
+    source: &SharedString,
+    members: &[GroupMember],
+    menu: PopupMenu,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let Some(offer) = cx
+        .try_global::<GroupFixProviders>()
+        .and_then(|providers| providers.0.get(source))
+        .copied()
+    else {
+        return menu;
+    };
+    let fixes = offer(members, cx);
+    if fixes.is_empty() {
+        return menu;
+    }
+    menu.submenu("Resolve group", window, cx, move |sub, _window, _cx| {
+        fixes.iter().fold(sub, |sub, fix| {
+            let fix = fix.clone();
+            sub.item(PopupMenuItem::new(fix.label.clone()).on_click(move |_, _, cx| fix.apply(cx)))
+        })
+    })
 }
 
 /// Add a `Fixes` submenu for the findings at `location`, or return `menu` untouched when nothing
@@ -101,8 +181,10 @@ pub fn menu(
 #[cfg(test)]
 mod tests {
     // Never `use super::*` here — see the note in `lib.rs`'s test module.
-    use crate::fixes::{Fix, FixProviders, at};
-    use crate::{DATASET_MAIN, Diagnostic, Diagnostics, Location, Severity, Source};
+    use crate::fixes::{Fix, FixProviders, GroupFix, at};
+    use crate::{
+        DATASET_MAIN, Diagnostic, DiagnosticHooks, Diagnostics, Location, Severity, Source,
+    };
     use gpui::{App, SharedString, TestAppContext};
 
     fn location(column: &str) -> Location {
@@ -148,6 +230,48 @@ mod tests {
             let found = at(&location("Subject"), "Photograph", cx);
             assert_eq!(found.len(), 1);
             assert_eq!(found[0].replacement, SharedString::from("Photographs"));
+        });
+    }
+
+    #[gpui::test]
+    fn display_names_do_not_disconnect_fix_providers(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            publish("capitalization", "Title", cx);
+            FixProviders::register("capitalization", offer, cx);
+
+            let found = at(&location("Title"), "alice", cx);
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].replacement, SharedString::from("alices"));
+        });
+    }
+
+    #[gpui::test]
+    fn a_group_replacement_uses_the_bulk_edit_hook(cx: &mut TestAppContext) {
+        #[derive(Default)]
+        struct Applied(Vec<(Location, SharedString)>);
+        impl gpui::Global for Applied {}
+
+        cx.update(|cx| {
+            cx.set_global(Applied::default());
+            cx.set_global(DiagnosticHooks {
+                reveal: |_, _| {},
+                text_at: |_, _| None,
+                set_text: |_, _, _| {},
+                set_texts: |replacements, cx| {
+                    use gpui::BorrowAppContext as _;
+                    cx.update_global::<Applied, _>(|applied, _| applied.0 = replacements);
+                },
+                revalidate: |_| {},
+            });
+            let replacements = vec![
+                (location("Title"), "Alice".into()),
+                (
+                    Location::cell(DATASET_MAIN, 1, None, "Title"),
+                    "Alice".into(),
+                ),
+            ];
+            GroupFix::replacements("Use Alice", replacements.clone()).apply(cx);
+            assert_eq!(cx.global::<Applied>().0, replacements);
         });
     }
 

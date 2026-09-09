@@ -345,6 +345,16 @@ fn register_spell_checker(cx: &mut gpui::App) {
                 spellcheck::capitalization_fixes,
                 cx,
             );
+            diagnostics::GroupFixProviders::register(
+                spellcheck::SPELLING_VALIDATOR_NAME,
+                spellcheck::spelling_group_fixes,
+                cx,
+            );
+            diagnostics::GroupFixProviders::register(
+                spellcheck::CAPITALIZATION_VALIDATOR_NAME,
+                spellcheck::capitalization_group_fixes,
+                cx,
+            );
             cx.set_global(spell);
             cx.set_global(diagnostics::SpellActions {
                 suggest: spellcheck::misspellings,
@@ -367,6 +377,11 @@ fn register_variant_checker(cx: &mut gpui::App) {
     diagnostics::FixProviders::register(
         clustering::VALUE_VARIANTS_NAME,
         clustering::variant_fixes,
+        cx,
+    );
+    diagnostics::GroupFixProviders::register(
+        clustering::VALUE_VARIANTS_NAME,
+        clustering::variant_group_fixes,
         cx,
     );
     cx.set_global(variants);
@@ -509,6 +524,8 @@ fn main() {
             reveal: reveal_in_table,
             text_at: table::cell_text,
             set_text: table::set_cell_text,
+            set_texts: table::set_cell_texts,
+            revalidate: table::revalidate_now,
         });
         diagnostics::init(cx);
 

@@ -32,8 +32,9 @@ findings each time it runs, and that set replaces what it reported last time.
 
 Repeated spelling, capitalization, and value-variant findings appear in collapsed groups.
 Each group shows an occurrence count. Expand the group to see its locations.
+Expanded value-variant groups show the value at each location instead of repeating the summary.
 The expansion button supports keyboard activation. Click an occurrence to select its cell, row, or column.
-A group header does not select a location or apply a fix.
+A group header does not select an arbitrary location. Its context menu can resolve all occurrences.
 
 Findings can describe four scopes:
 
@@ -52,6 +53,7 @@ A cell can also belong to more than one value-variant pair.
 The source filter changes both the visible findings and the tab counts.
 It is a multi-select filter. Uncheck one or more diagnostic sources to hide them.
 User notes do not appear as a source because the Notes tab already selects them.
+The All, Errors, and Warnings tabs show computed findings only. The Notes tab shows user notes only.
 The severity filter changes the visible findings, but each tab keeps its own total.
 Notes and validators without group metadata remain separate entries.
 
@@ -78,6 +80,13 @@ you always know exactly what you are accepting.
 
 Value-variant fixes offer forms that already occur in the same column. qrate never chooses a
 canonical form, merges records, or changes every matching row automatically.
+
+Right-click a spelling or capitalization group to apply one correction to all its occurrences.
+The group resolver applies the changes as one undo step.
+
+Right-click a value-variant group to replace all occurrences with either displayed form.
+You can also mark the exact pair as distinct for that column. qrate saves this choice with the project.
+Variant groups stay pair-based. Similarity between two pairs does not create a transitive entity cluster.
 
 qrate uses the configured subdelimiter to read multiple logical values in one cell.
 Validators borrow these values as text slices, so splitting does not allocate a list for each cell.

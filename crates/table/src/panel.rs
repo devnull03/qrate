@@ -1398,6 +1398,44 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn grouped_fixes_write_every_cell_in_one_undo_step(cx: &mut TestAppContext) {
+        project_with_notes(cx);
+        cx.update(|cx| {
+            use gpui::BorrowAppContext as _;
+            cx.update_global::<settings::project::CurrentProject, _>(|project, _| {
+                project.data.values.insert(
+                    settings::AUTOSAVE_KEY.into(),
+                    settings::Val::Text("off".into()),
+                );
+            });
+        });
+        let (panel, cx) = cx.add_window_view(super::TablePanel::new);
+        panel.update(cx, |panel, cx| {
+            crate::set_cell_texts(
+                vec![
+                    (
+                        Location::cell(DATASET_MAIN, 0, None, "Title"),
+                        "fixed".into(),
+                    ),
+                    (
+                        Location::cell(DATASET_MAIN, 1, None, "Title"),
+                        "fixed".into(),
+                    ),
+                ],
+                cx,
+            );
+            assert_eq!(panel.state.read(cx).delegate().cell(0, 0).unwrap(), "fixed");
+            assert_eq!(panel.state.read(cx).delegate().cell(1, 0).unwrap(), "fixed");
+            panel.state.update(cx, |state, _| {
+                assert_eq!(state.delegate_mut().undo(), Some(false));
+                assert_eq!(state.delegate_mut().undo(), None);
+                assert_eq!(state.delegate().cell(0, 0).unwrap(), "one");
+                assert_eq!(state.delegate().cell(1, 0).unwrap(), "two");
+            });
+        });
+    }
+
     /// Escape must clear the note's target before returning focus to the grid. That focus move
     /// inevitably blurs the input; if the target survived, the blur subscription would overwrite
     /// the existing note or create the new draft.

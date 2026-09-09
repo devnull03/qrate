@@ -411,6 +411,30 @@ pub fn set_cell_text(location: &diagnostics::Location, text: SharedString, cx: &
     }
 }
 
+/// Resolve several diagnostic locations through one table edit.
+pub fn set_cell_texts(replacements: Vec<(diagnostics::Location, SharedString)>, cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+    let cells = {
+        let state = state.read(cx);
+        let delegate = state.delegate();
+        replacements
+            .into_iter()
+            .filter_map(|(location, text)| {
+                delegate
+                    .data_col(location.column.as_ref()?)
+                    .zip(location.row)
+                    .map(|(col, row)| (row, col, text))
+            })
+            .collect()
+    };
+    write_cells(cells, cx);
+}
+
 /// What a command invoked from outside the table acts on: the selected column, or nothing at all.
 ///
 /// A bar item has no column under it the way a right-click menu does, so the selection is the only

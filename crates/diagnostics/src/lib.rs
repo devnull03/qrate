@@ -9,7 +9,7 @@ pub mod fixes;
 mod panel;
 pub mod spelling;
 mod validator;
-pub use fixes::{Fix, FixProviders};
+pub use fixes::{Fix, FixProviders, GroupFix, GroupFixProviders, GroupMember};
 pub use panel::ProblemsPanel;
 pub use validator::{
     AsyncValidators, CellValue, ColumnFinding, ColumnInfo, ColumnSnapshot, ColumnValidator,
@@ -136,7 +136,7 @@ pub enum Source {
     /// A note attached to the data, whether typed here or carried in from the imported
     /// spreadsheet. Persists, and carries whatever provenance it arrived with — see [`Filed`].
     Note,
-    /// A named rule, validator, plugin, or language server — the string is what the panel shows.
+    /// A named rule, validator, plugin, or language server — the string is its stable identity.
     /// Never persisted: computed output is recomputed on open, and stored copies go stale.
     Validator(SharedString),
 }
@@ -146,6 +146,14 @@ pub enum Source {
 pub const SOURCE_NOTE: &str = "note";
 
 impl Source {
+    /// Stable producer identity used for invalidation, settings, and fix-provider lookup.
+    pub fn key(&self) -> SharedString {
+        match self {
+            Source::Note => SOURCE_NOTE.into(),
+            Source::Validator(name) => name.clone(),
+        }
+    }
+
     /// What the panel shows in a diagnostic's source column.
     pub fn label(&self) -> SharedString {
         match self {
@@ -582,6 +590,10 @@ pub struct DiagnosticHooks {
     /// Write text back to a location and revalidate. The other half of [`Self::text_at`], and the
     /// reason a panel row can offer the same corrections a cell does.
     pub set_text: fn(&Location, SharedString, &mut App),
+    /// Apply a group resolution as one undoable edit and one validation pass.
+    pub set_texts: fn(Vec<(Location, SharedString)>, &mut App),
+    /// Re-run validation after a resolution changes validator settings instead of cell text.
+    pub revalidate: fn(&mut App),
 }
 
 impl Global for DiagnosticHooks {}
