@@ -11,6 +11,7 @@ mod google;
 mod instance_handoff;
 mod logging;
 mod plugin_marketplace;
+mod site;
 mod status_items;
 mod theming;
 mod title_items;
@@ -464,6 +465,7 @@ pub(crate) fn restart_for_update(_: &ClickEvent, window: &mut Window, cx: &mut g
 fn main() {
     // First, so failures in GPUI platform construction and startup still reach the log file.
     logging::init();
+    log::info!("site origin: {}", site::url("/"));
     let initial_link = std::env::args()
         .find(|argument| argument.starts_with("qrate://"))
         .filter(|link| {

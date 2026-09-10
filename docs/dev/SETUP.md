@@ -58,6 +58,10 @@ registration when qrate exits:
 .\scripts\run-dev.ps1
 ```
 
+Debug builds use `http://localhost:4321` for every qrate site route, including plugin discovery,
+catalog verification, feedback, Google configuration and Picker, release pages, and update feeds.
+Release builds use `https://qrate.dvnl.work`.
+
 This requires an authenticated GitHub CLI. To register an already-built debug executable without
 running it, use:
 
