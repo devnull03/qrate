@@ -20,6 +20,10 @@ bun run build    # dist/client (static tree) + dist/server (the Worker)
 bun run preview  # build, then serve via wrangler exactly as production does
 ```
 
+Astro's MDX development renderer cannot load dependencies from a Windows Delta worktree whose path
+ends in `~`. Commit or stash changes, then run `bun run dev:windows`. It serves the same branch from
+a temporary safe-path worktree and removes that worktree when the server exits.
+
 ## Deploy
 
 `.github/workflows/deploy-site.yml` builds and publishes to Pages on every push
