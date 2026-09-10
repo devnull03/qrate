@@ -25,8 +25,9 @@ const CONTACT = 'qrate@dvnl.work';
   <p>
     The application does not automatically send your catalogue, file paths, settings or usage
     data to us. There is no automatic crash reporting service and no usage counter.
-    qrate writes a session log on your own machine to help you diagnose problems. That log stays
-    there unless you attach it to a bug report yourself.
+    qrate writes a session log on your own machine to help you diagnose problems. When you open the
+    feedback form from qrate, the app gives your browser a short log preview. The form does not send
+    that preview to us unless you choose to include it.
   </p>
 
   <h2>This website</h2>
@@ -59,9 +60,11 @@ const CONTACT = 'qrate@dvnl.work';
   <h2>Optional feedback reports</h2>
   <p>
     The Feedback button opens a browser form with app version, commit, operating system,
-    architecture, project dimensions, and plugin counts. This summary contains no cell values,
-    project paths, plugin names, or logs. The URL fragment holds the summary locally in your
-    browser. The page removes the fragment and lets you edit or exclude the summary.
+    architecture, project dimensions, plugin counts, and a short current-session log preview.
+    qrate removes your home-directory path from the log preview. The URL fragment holds this data
+    locally in your browser, where browser extensions can access it. The page removes the fragment
+    before it loads third-party scripts. It lets you edit or exclude the summary and does not show
+    the log preview until you choose to include it.
   </p>
   <p>
     Only submitting the form sends its contents to us. Reports can include your description,
