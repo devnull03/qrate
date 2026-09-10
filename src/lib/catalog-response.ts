@@ -14,13 +14,17 @@ export async function catalogArtifactResponse(
   request: Request,
 ): Promise<Response> {
   const version = await env.PLUGIN_CATALOG.get('current');
-  if (!version) return unavailable();
+  if (!version) {
+    console.warn(`[plugins] catalog ${artifact} unavailable: local KV has no current version`);
+    return unavailable();
+  }
   const etag = `"${version}"`;
   const requestedEtags = request.headers
     .get('if-none-match')
     ?.split(',')
     .map((value) => value.trim());
   if (requestedEtags?.includes(etag) || requestedEtags?.includes('*')) {
+    console.info(`[plugins] catalog ${artifact} unchanged at ${version}`);
     return new Response(null, {
       status: 304,
       headers: {
@@ -31,7 +35,11 @@ export async function catalogArtifactResponse(
   }
 
   const body = await env.PLUGIN_CATALOG.get(`catalog:${version}:${artifact}`);
-  if (!body) return unavailable();
+  if (!body) {
+    console.warn(`[plugins] catalog ${artifact} unavailable at ${version}: local KV has no artifact`);
+    return unavailable();
+  }
+  console.info(`[plugins] serving catalog ${artifact} at ${version}`);
 
   return new Response(body, {
     headers: {

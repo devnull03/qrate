@@ -35,9 +35,16 @@ try {
     }
     $version = $version.Trim()
     $catalogFile = Join-Path $safe "catalog.json"
-    foreach ($artifact in @("json", "signature")) {
-        $file = if ($artifact -eq "json") { $catalogFile } else { "$catalogFile.sig" }
-        $key = "catalog:${version}:$artifact"
+    $seed = [ordered]@{
+        "catalog:${version}:json"      = $catalogFile
+        "catalog:${version}:signature" = "$catalogFile.sig"
+        "catalog:${version}:status"    = Join-Path $safe "catalog-status.json"
+        "schema:catalog"               = Join-Path $safe "catalog.schema.json"
+        "schema:listing"               = Join-Path $safe "listing.schema.json"
+        "schema:package"               = Join-Path $safe "package.schema.json"
+    }
+    foreach ($key in $seed.Keys) {
+        $file = $seed[$key]
         cmd.exe /d /c "bunx wrangler kv key get `"$key`" --binding PLUGIN_CATALOG --preview false --remote > `"$file`""
         if ($LASTEXITCODE -ne 0) {
             throw "Could not read $key from Cloudflare KV."
@@ -47,6 +54,7 @@ try {
             throw "Could not seed local Cloudflare KV with $key."
         }
     }
+
     bunx wrangler kv key put current $version --binding PLUGIN_CATALOG --preview false --local
     if ($LASTEXITCODE -ne 0) {
         throw "Could not seed local Cloudflare KV with the current catalog version."
