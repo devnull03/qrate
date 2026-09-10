@@ -4,6 +4,9 @@ $safe = Join-Path $env:LOCALAPPDATA "qrate-site-dev-$PID"
 
 Push-Location $root
 try {
+    if (Get-NetTCPConnection -LocalPort 4321 -State Listen -ErrorAction SilentlyContinue) {
+        throw "Port 4321 is already in use. Stop the previous site server before starting this one."
+    }
     $changes = git status --porcelain
     if ($LASTEXITCODE -ne 0 -or $changes) {
         throw "Commit or stash site changes before starting the Windows dev server."
