@@ -26,14 +26,6 @@ const SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 /// confidential anyway (see the module docs on the client secret).
 const CONFIG_TOKEN: Option<&str> = option_env!("QRATE_GOOGLE_CONFIG_TOKEN");
 
-/// Where [`fetch_config`] looks unless the user points it somewhere else. Anyone can run the same
-/// contract on their own infrastructure — see `docs/dev/site-oauth-handoff.md`.
-pub const DEFAULT_CONFIG_ENDPOINT: &str = "https://qrate.dvnl.work/oauth/config";
-
-/// Where the Google Picker page lives. `drive.file` reaches only files the app created or the user
-/// picked *through the Picker*, so this page is the sole route to an already-owned spreadsheet.
-pub const DEFAULT_PICKER_PAGE: &str = "https://qrate.dvnl.work/picker";
-
 #[derive(Debug, Error)]
 pub enum GoogleError {
     #[error("This build of qrate has no Google client ID, so it can't sign in to Google")]

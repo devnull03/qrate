@@ -6,7 +6,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use data_exchange::google::{ClientCreds, DEFAULT_CONFIG_ENDPOINT};
+use data_exchange::google::ClientCreds;
 use gpui::App;
 use settings::{AppSettings, GOOGLE_CONFIG_ENDPOINT_KEY};
 
@@ -57,7 +57,7 @@ pub fn stored(cx: &App) -> Stored {
             client_secret: text(CLIENT_SECRET_KEY),
         }),
         endpoint: text(GOOGLE_CONFIG_ENDPOINT_KEY)
-            .unwrap_or_else(|| DEFAULT_CONFIG_ENDPOINT.to_string()),
+            .unwrap_or_else(|| crate::site::url("/oauth/config")),
         etag: text(ETAG_KEY),
         stale: now().saturating_sub(checked_at) > CHECK_INTERVAL,
     }

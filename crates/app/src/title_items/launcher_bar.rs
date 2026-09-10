@@ -75,7 +75,7 @@ impl Render for LauncherBar {
                                 .menu(
                                     "Releases",
                                     Box::new(OpenBrowser {
-                                        url: "https://qrate.dvnl.work/releases".into(),
+                                        url: crate::site::url("/releases"),
                                     }),
                                 )
                                 .separator()

@@ -573,10 +573,7 @@ async fn resolve_token(
 /// answer cannot arrive before we are listening.
 async fn choose_sheet(access_token: &str, cx: &mut gpui::AsyncApp) -> Option<String> {
     log::info!("opening the Google spreadsheet chooser");
-    let picker = data_exchange::google::begin_picker(
-        data_exchange::google::DEFAULT_PICKER_PAGE,
-        access_token,
-    );
+    let picker = data_exchange::google::begin_picker(&crate::site::url("/picker"), access_token);
     let picker = match picker {
         Ok(picker) => picker,
         Err(err) => {

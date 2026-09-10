@@ -20,8 +20,6 @@ use plugin_package::{
 use window_wrapper::WindowRegistry;
 
 const MARKETPLACE_WINDOW_KIND: &str = "plugin-marketplace";
-const SITE_URL: &str = "https://qrate.dvnl.work/plugins";
-
 struct MarketplaceHandle(WeakEntity<MarketplaceWindow>);
 impl Global for MarketplaceHandle {}
 
@@ -154,7 +152,7 @@ impl MarketplaceWindow {
                         .parent()
                         .ok_or_else(|| anyhow::anyhow!("plugin folder has no parent"))?;
                     plugin_package::fetch_catalog_cached(
-                        plugin_package::CATALOG_URL,
+                        &crate::site::url("/plugins/catalog.json"),
                         &key,
                         &data.join("plugin-catalog"),
                     )
@@ -489,7 +487,7 @@ impl Render for MarketplaceWindow {
                     Button::new("catalog-site")
                         .label("Browse website")
                         .small()
-                        .on_click(|_, _, cx| cx.open_url(SITE_URL)),
+                        .on_click(|_, _, cx| cx.open_url(&crate::site::url("/plugins"))),
                 )
                 .into_any_element(),
             CatalogState::Ready(plugins) if plugins.is_empty() => {
@@ -640,7 +638,7 @@ impl Render for MarketplaceWindow {
                             .label("Browse catalog")
                             .on_click(|_, _, cx| {
                                 log::info!("opening plugin catalog in the default browser");
-                                cx.open_url(SITE_URL);
+                                cx.open_url(&crate::site::url("/plugins"));
                             }),
                     )
                     .child(
@@ -724,7 +722,7 @@ fn installed_receipt(id: &str) -> Option<plugin_package::InstallReceipt> {
 
 pub fn open_catalog(cx: &mut gpui::App) {
     log::info!("opening plugin catalog in the default browser");
-    cx.open_url(SITE_URL);
+    cx.open_url(&crate::site::url("/plugins"));
 }
 
 pub(crate) fn inline_installer(window: &mut Window, cx: &mut App) -> Entity<MarketplaceWindow> {

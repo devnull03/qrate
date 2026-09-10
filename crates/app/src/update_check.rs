@@ -8,8 +8,6 @@ use semver::Version;
 use settings::AppSettings;
 use updater::{InstallKind, Installation, JOB_NAME, ReleaseChannel, StagedUpdate, UpdateJob};
 
-const BETA_FEED: &str = "https://qrate.dvnl.work/updates/beta.json";
-const STABLE_FEED: &str = "https://qrate.dvnl.work/updates/stable.json";
 const POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 pub fn automatic_updates(cx: &App) -> bool {
@@ -179,13 +177,13 @@ impl AutoUpdater {
 
         let current = Version::parse(env!("CARGO_PKG_VERSION")).expect("package version is SemVer");
         let feed = match ReleaseChannel::for_version(&current) {
-            ReleaseChannel::Beta => BETA_FEED,
-            ReleaseChannel::Stable => STABLE_FEED,
+            ReleaseChannel::Beta => crate::site::url("/updates/beta.json"),
+            ReleaseChannel::Stable => crate::site::url("/updates/stable.json"),
         };
         let (tx, rx) = async_channel::unbounded();
         cx.background_spawn(async move {
             let result = updater::fetch_and_stage(
-                feed,
+                &feed,
                 &installation,
                 &current,
                 |version| {

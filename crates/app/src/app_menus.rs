@@ -248,7 +248,7 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
                 MenuItem::action(
                     "Releases",
                     OpenBrowser {
-                        url: "https://qrate.dvnl.work/releases".into(),
+                        url: crate::site::url("/releases"),
                     },
                 ),
                 MenuItem::Separator,
