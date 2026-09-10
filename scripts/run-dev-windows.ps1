@@ -25,6 +25,31 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Site dependency installation failed."
     }
+
+    $version = bunx wrangler kv key get current --binding PLUGIN_CATALOG --remote --text
+    if ($LASTEXITCODE -ne 0 -or $version -notmatch "^[a-f0-9]{64}$") {
+        throw "Could not read the current signed catalog version from Cloudflare KV."
+    }
+    $version = $version.Trim()
+    foreach ($artifact in @("json", "signature")) {
+        $file = Join-Path $safe "catalog-$artifact"
+        $key = "catalog:${version}:$artifact"
+        cmd.exe /d /c "bunx wrangler kv key get `"$key`" --binding PLUGIN_CATALOG --remote > `"$file`""
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not read $key from Cloudflare KV."
+        }
+        bunx wrangler kv key put $key --path $file --binding PLUGIN_CATALOG --local
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not seed local Cloudflare KV with $key."
+        }
+        Remove-Item $file
+    }
+    bunx wrangler kv key put current $version --binding PLUGIN_CATALOG --local
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not seed local Cloudflare KV with the current catalog version."
+    }
+
+    $env:QRATE_PLUGIN_CATALOG_URL = "http://localhost:4321/plugins/catalog.json"
     bun run dev
     if ($LASTEXITCODE -ne 0) {
         throw "Site development server exited with an error."
