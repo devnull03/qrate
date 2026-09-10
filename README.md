@@ -97,6 +97,10 @@ The site source pins the trusted catalog public key. Set
 `QRATE_PLUGIN_CATALOG_PUBLIC_KEY` in the build environment only to test a
 planned key rotation.
 
+`QRATE_PLUGIN_CATALOG_FILE` points local development at an exact signed catalog file; its signature
+must be beside it with a `.sig` suffix. The Windows development runner sets this automatically so
+page rendering never makes a recursive request to its own development server.
+
 `QRATE_PLUGIN_CATALOG_URL` is optional. It defaults to
 `https://qrate.dvnl.work/plugins/catalog.json`.
 
