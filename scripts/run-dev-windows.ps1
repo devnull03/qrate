@@ -34,8 +34,9 @@ try {
         throw "Could not read the current signed catalog version from Cloudflare KV."
     }
     $version = $version.Trim()
+    $catalogFile = Join-Path $safe "catalog.json"
     foreach ($artifact in @("json", "signature")) {
-        $file = Join-Path $safe "catalog-$artifact"
+        $file = if ($artifact -eq "json") { $catalogFile } else { "$catalogFile.sig" }
         $key = "catalog:${version}:$artifact"
         cmd.exe /d /c "bunx wrangler kv key get `"$key`" --binding PLUGIN_CATALOG --preview false --remote > `"$file`""
         if ($LASTEXITCODE -ne 0) {
@@ -45,14 +46,13 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "Could not seed local Cloudflare KV with $key."
         }
-        Remove-Item $file
     }
     bunx wrangler kv key put current $version --binding PLUGIN_CATALOG --preview false --local
     if ($LASTEXITCODE -ne 0) {
         throw "Could not seed local Cloudflare KV with the current catalog version."
     }
 
-    $env:QRATE_PLUGIN_CATALOG_URL = "http://localhost:4321/plugins/catalog.json"
+    $env:QRATE_PLUGIN_CATALOG_FILE = $catalogFile
     bun run dev
     if ($LASTEXITCODE -ne 0) {
         throw "Site development server exited with an error."

@@ -1,4 +1,5 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 
 export const REGISTRY_REPO = 'devnull03/qrate-plugin-registry';
 export const TEMPLATE_REPO = 'devnull03/qrate-plugin-template';
@@ -159,22 +160,34 @@ const parsePlugin = (value: unknown): Plugin => {
 };
 
 async function loadCatalog(): Promise<PluginCatalog> {
-  const url =
-    process.env.QRATE_PLUGIN_CATALOG_URL ?? 'https://qrate.dvnl.work/plugins/catalog.json';
   const publicKey = process.env.QRATE_PLUGIN_CATALOG_PUBLIC_KEY ?? CATALOG_PUBLIC_KEY;
-
-  const [catalogResponse, signatureResponse] = await Promise.all([
-    fetch(url, { signal: AbortSignal.timeout(15_000) }),
-    fetch(`${url}.sig`, { signal: AbortSignal.timeout(15_000) }),
-  ]);
-  if (!catalogResponse.ok) throw new Error(`Plugin catalog returned HTTP ${catalogResponse.status}`);
-  if (!signatureResponse.ok) {
-    throw new Error(`Plugin catalog signature returned HTTP ${signatureResponse.status}`);
+  const file = process.env.QRATE_PLUGIN_CATALOG_FILE;
+  let bytes: Buffer;
+  let signature: Signature;
+  if (file) {
+    console.info(`[plugins] loading the signed development catalog from ${file}`);
+    [bytes, signature] = await Promise.all([
+      readFile(file),
+      readFile(`${file}.sig`, 'utf8').then((raw) => JSON.parse(raw) as Signature),
+    ]);
+  } else {
+    const url =
+      process.env.QRATE_PLUGIN_CATALOG_URL ?? 'https://qrate.dvnl.work/plugins/catalog.json';
+    console.info(`[plugins] fetching the signed catalog from ${url}`);
+    const [catalogResponse, signatureResponse] = await Promise.all([
+      fetch(url, { signal: AbortSignal.timeout(15_000) }),
+      fetch(`${url}.sig`, { signal: AbortSignal.timeout(15_000) }),
+    ]);
+    if (!catalogResponse.ok) {
+      throw new Error(`Plugin catalog returned HTTP ${catalogResponse.status}`);
+    }
+    if (!signatureResponse.ok) {
+      throw new Error(`Plugin catalog signature returned HTTP ${signatureResponse.status}`);
+    }
+    bytes = Buffer.from(await catalogResponse.arrayBuffer());
+    signature = (await signatureResponse.json()) as Signature;
   }
-
-  const bytes = Buffer.from(await catalogResponse.arrayBuffer());
   if (bytes.byteLength > MAX_CATALOG_BYTES) throw new Error('Plugin catalog is too large');
-  const signature = (await signatureResponse.json()) as Signature;
   if (
     signature.schema !== 1 ||
     signature.key_id !== 'qrate-plugin-catalog-1' ||
@@ -205,6 +218,9 @@ async function loadCatalog(): Promise<PluginCatalog> {
     if (ids.has(plugin.id)) throw new Error(`Plugin catalog repeats ${plugin.id}`);
     ids.add(plugin.id);
   }
+  console.info(
+    `[plugins] verified catalog ${signature.sha256} with ${plugins.length} plugin${plugins.length === 1 ? '' : 's'}`,
+  );
 
   return {
     configured: true,
