@@ -1,7 +1,7 @@
 # Feedback deployment
 
-Desktop branch: `feat/in-app-feedback`. Website branch: `feat/feedback-site`.
-Deploy the website before releasing the desktop buttons.
+Desktop feedback code lives on `main`. Website feedback code lives on `site`.
+Deploy `site` before releasing a `main` build with the desktop buttons.
 
 ## Configure
 
@@ -23,7 +23,7 @@ with one category label, the concrete desktop platform when available, and Logs 
 4. Run `bun install`.
 5. Run `bun run dev`.
 6. Open `http://localhost:4321/feedback`.
-7. In another checkout on `feat/in-app-feedback`, run `cargo run`.
+7. In another checkout on `main`, run `cargo run`.
 
 Debug qrate builds open the local form. Release builds open `https://qrate.dvnl.work/feedback`.
 The repository ignores `.dev.vars`. Stop the local server before switching site branches.

@@ -63,8 +63,6 @@ export async function submit(request: Request, env: any, fetcher: typeof fetch =
   const reply = (status: number, body: object) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
   if (!env.LINEAR_API_KEY || !env.TURNSTILE_SECRET_KEY || !env.FEEDBACK_LIMITER) return reply(503, { error: 'Feedback is not configured yet.' });
   if (request.headers.get('origin') !== new URL(request.url).origin) return reply(403, { error: 'Open the qrate feedback form to submit.' });
-  const { success } = await env.FEEDBACK_LIMITER.limit({ key: request.headers.get('cf-connecting-ip') || 'unknown' });
-  if (!success) return reply(429, { error: 'Too many requests. Please try again later.' });
   let report: ReturnType<typeof validate>;
   try {
     if (!request.headers.get('content-type')?.startsWith('multipart/form-data')) throw new Error('Expected form');
@@ -101,6 +99,8 @@ export async function submit(request: Request, env: any, fetcher: typeof fetch =
     if (!verification.ok || !challenge.success || (!localTest && !production)) {
       return reply(403, { error: 'Verification expired. Please try again.' });
     }
+    const { success } = await env.FEEDBACK_LIMITER.limit({ key: request.headers.get('cf-connecting-ip') || 'unknown' });
+    if (!success) return reply(429, { error: 'Too many requests. Please try again later.' });
     const graphql = async (query: string, variables: object) => {
       const response = await fetcher('https://api.linear.app/graphql', {
         method: 'POST',

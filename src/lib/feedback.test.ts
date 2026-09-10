@@ -55,8 +55,12 @@ test('automatic compressed log does not consume a user attachment slot', () => {
 test('no provider calls for invalid input or unconfigured service', async () => {
   const never = async () => { throw new Error('Unexpected network call'); };
   expect((await submit(request(), {}, never as any)).status).toBe(503);
+  let limits = 0;
   const data = form(); data.delete('consent');
-  expect((await submit(request(data), env, never as any)).status).toBe(400);
+  expect((await submit(request(data), {
+    ...env, FEEDBACK_LIMITER: { limit: async () => { limits++; return { success: true }; } },
+  }, never as any)).status).toBe(400);
+  expect(limits).toBe(0);
 });
 
 test('create issue with exact routing and triage labels', async () => {
@@ -157,9 +161,15 @@ test('log upload uses generic filename and labels only the successful issue', as
   expect(input.description).not.toContain('private-collection');
 });
 
-test('rate limit stops all provider work', async () => {
+test('rate limit runs after Turnstile and stops Linear work', async () => {
+  let calls = 0;
+  const mocked = async () => {
+    calls++;
+    return Response.json({ success: true, hostname: 'qrate.dvnl.work', action: 'feedback' });
+  };
   const response = await submit(request(), {
     ...env, FEEDBACK_LIMITER: { limit: async () => ({ success: false }) },
-  }, (() => { throw new Error('Unexpected fetch'); }) as any);
+  }, mocked as any);
   expect(response.status).toBe(429);
+  expect(calls).toBe(1);
 });

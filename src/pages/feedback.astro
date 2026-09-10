@@ -14,8 +14,48 @@ const sitekey = env.TURNSTILE_SITE_KEY;
   analytics={false}
 >
   <script is:inline>
-    window.qrateFeedbackFragment = location.hash;
-    history.replaceState(null, '', location.pathname + location.search);
+    (() => {
+      const fragment = location.hash;
+      history.replaceState(null, '', location.pathname + location.search);
+      let diagnostics = '';
+      let logs = '';
+      let platform = '';
+      let error = '';
+      try {
+        const values = new URLSearchParams(fragment.slice(1));
+        const raw = values.get('diagnostics');
+        if (raw && raw.length <= 8000) {
+          const parsed = JSON.parse(raw);
+          diagnostics = JSON.stringify(parsed, null, 2);
+          if (['windows', 'macos', 'linux'].includes(parsed.os)) platform = parsed.os;
+        }
+        const rawLogs = values.get('logs');
+        if (rawLogs && rawLogs.length <= 2000) logs = rawLogs;
+      } catch {
+        error = 'The diagnostic summary could not be read. You can report without it.';
+      }
+      document.addEventListener('DOMContentLoaded', () => {
+        document.querySelector('[name="diagnostics"]').value = diagnostics;
+        document.querySelector('[name="platform"]').value = platform;
+        if (error) document.querySelector('#status').textContent = error;
+        if (!logs) return;
+        document.querySelector('#app-logs').classList.remove('hidden');
+        const include = document.querySelector('#include-logs');
+        const details = document.querySelector('#log-details');
+        const preview = document.querySelector('#recent-logs');
+        let reviewed = logs;
+        include.addEventListener('change', () => {
+          if (include.checked) {
+            preview.value = reviewed;
+            details.classList.remove('hidden');
+          } else {
+            reviewed = preview.value;
+            preview.value = '';
+            details.classList.add('hidden');
+          }
+        });
+      }, { once: true });
+    })();
   </script>
 
   <header class="gut border-b border-rule-nav py-10 md:py-14">
@@ -33,6 +73,7 @@ const sitekey = env.TURNSTILE_SITE_KEY;
 
   <section class="gut grid grid-cols-1 border-b border-rule-nav md:grid-cols-[minmax(0,1fr)_260px]">
     <form class="grid gap-6 py-8 md:border-r md:border-rule-nav md:py-10 md:pr-10">
+      <input name="platform" type="hidden" />
       <div class="grid gap-5 sm:grid-cols-2">
         <label>
           <span class="field-label">Category</span>
@@ -97,7 +138,7 @@ const sitekey = env.TURNSTILE_SITE_KEY;
             <span class="block text-xs text-dim">A short tail with home-directory paths redacted. Small logs appear directly in the ticket.</span>
           </span>
         </label>
-        <details>
+        <details id="log-details" class="hidden">
           <summary class="cursor-pointer px-4 py-3 font-mono text-xs text-nav">
             Review or edit recent logs
           </summary>
@@ -182,9 +223,7 @@ const sitekey = env.TURNSTILE_SITE_KEY;
   <script>
     const form = document.querySelector('form')!;
     const category = form.elements.namedItem('category') as HTMLSelectElement;
-    const diagnostics = form.elements.namedItem('diagnostics') as HTMLTextAreaElement;
     const include = document.querySelector<HTMLInputElement>('#include')!;
-    const appLogs = document.querySelector<HTMLElement>('#app-logs')!;
     const includeLogs = document.querySelector<HTMLInputElement>('#include-logs')!;
     const recentLogs = document.querySelector<HTMLTextAreaElement>('#recent-logs')!;
     const files = form.elements.namedItem('files') as HTMLInputElement;
@@ -204,23 +243,6 @@ const sitekey = env.TURNSTILE_SITE_KEY;
     const selected = new URLSearchParams(location.search).get('type');
     if ([...category.options].some(option => option.value === selected)) category.value = selected!;
     include.checked = !['feature', 'improvement'].includes(category.value);
-    const fragment = (window as any).qrateFeedbackFragment;
-    delete (window as any).qrateFeedbackFragment;
-    let platform = '';
-    try {
-      const values = new URLSearchParams(fragment?.slice(1));
-      const raw = values.get('diagnostics');
-      if (raw && raw.length <= 8000) {
-        const parsed = JSON.parse(raw);
-        diagnostics.value = JSON.stringify(parsed, null, 2);
-        if (['windows', 'macos', 'linux'].includes(parsed.os)) platform = parsed.os;
-      }
-      const logs = values.get('logs');
-      if (logs && logs.length <= 2000) {
-        recentLogs.value = logs;
-        appLogs.classList.remove('hidden');
-      }
-    } catch { status.textContent = 'The diagnostic summary could not be read. You can report without it.'; }
     const id = crypto.randomUUID();
     let submitting = false;
     form.addEventListener('submit', async event => {
@@ -232,7 +254,6 @@ const sitekey = env.TURNSTILE_SITE_KEY;
       try {
         const data = new FormData(form);
         data.set('id', id);
-        if (platform) data.set('platform', platform);
         if (!include.checked) data.delete('diagnostics');
         if ((files.files?.length ?? 0) > 3) {
           throw new Error('Choose no more than three attachments.');
