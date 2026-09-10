@@ -22,7 +22,8 @@ bun run preview  # build, then serve via wrangler exactly as production does
 
 Astro's MDX development renderer cannot load dependencies from a Windows Delta worktree whose path
 ends in `~`. Commit or stash changes, then run `bun run dev:windows`. It serves the same branch from
-a temporary safe-path worktree and removes that worktree when the server exits.
+a temporary safe-path worktree, seeds its local KV from the signed production catalog, and removes
+that worktree when the server exits. The initial seed requires an authenticated Wrangler CLI.
 
 ## Deploy
 
