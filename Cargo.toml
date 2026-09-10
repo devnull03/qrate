@@ -34,6 +34,17 @@ debug = "line-tables-only"
 opt-level = 3
 debug = false
 
+# Match development dependency codegen so `cargo test` reuses the GPUI, media, PDF, and platform
+# artifacts that `cargo run` already built. Workspace test crates still compile with light
+# optimization and line tables; only their `cfg(test)` units need separate artifacts.
+[profile.test]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.test.package."*"]
+opt-level = 3
+debug = false
+
 [workspace.dependencies]
 alacritty_terminal = "0.26.0"
 anyhow = "1"
@@ -47,6 +58,7 @@ csv = "1.3"
 # makes every remaining compile error genuine API drift.
 gpui = { package = "gpui-pre", version = "0.3" }
 gpui_platform = { package = "gpui-pre-platform", version = "0.3", features = ["font-kit", "wayland", "x11"] }
+gpui-base = { version = "0.6" }
 gpui-component = { version = "0.6" }
 gpui-component-assets = { package = "gpui-kit-assets", version = "0.6" }
 dirs = "6"

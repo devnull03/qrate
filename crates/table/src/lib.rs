@@ -11,6 +11,7 @@ mod agent;
 mod cell;
 mod delegate;
 mod editing;
+pub mod editor;
 pub mod file_links;
 mod filter;
 pub mod floating;
@@ -22,13 +23,14 @@ mod row_index;
 
 pub use agent::{AGENT_SOURCE, respond_to_agent, respond_to_agent_async};
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
+pub use editor::editor_box;
 /// The grid's right-click menu, so a gallery card can raise the same one a row does rather than
 /// growing a second, quietly diverging copy.
 pub use note::{Target as MenuTarget, menu as context_menu};
 pub use panel::{
     Clear, Copy, Cut, DeleteColumn, DeleteRow, Deselect, DuplicateRow, EditCell, GRID_CONTEXT,
     InsertColumnLeft, InsertColumnRight, InsertNote, InsertRowAbove, InsertRowBelow, Paste, Redo,
-    RenameColumn, Replace, Search, TablePanel, Undo, UnfreezeColumns, editor_box,
+    RenameColumn, Replace, Search, TablePanel, Undo, UnfreezeColumns,
 };
 
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
@@ -46,10 +48,12 @@ use settings::columns::ColumnType;
 pub struct TableStateHandle(pub WeakEntity<TableState<QrateTableDelegate>>);
 impl Global for TableStateHandle {}
 
-/// The table area's window-space rectangle, measured each frame (see `panel.rs`). It's both the
+/// The table area's window-space rectangle, checked each frame and published when it changes (see
+/// `panel.rs`). It's both the
 /// origin the floating cell editor is positioned against and the limit it grows to, so a long
 /// value wraps within the panel instead of spilling over a side panel. The note editor clamps to
 /// it too, via `clamped_float`.
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct TableViewportBounds(pub Bounds<Pixels>);
 impl Global for TableViewportBounds {}
 

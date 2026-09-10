@@ -135,9 +135,7 @@ impl PanelRegistry {
         if !area.is_dock_open(placement) {
             return false;
         }
-        let mut front = Vec::new();
-        frontmost(area, placement, cx, &mut front);
-        front.contains(&name)
+        is_frontmost(area, placement, name, cx)
     }
 
     /// Rebuild from what the dock area actually holds. Called after every layout construction:
@@ -178,6 +176,13 @@ impl PanelRegistry {
     /// gpui-kit exposes only a whole-layout drag lock. qrate keeps dragging enabled, then folds a
     /// split drop back into tabs and returns a centre drop to the panel's previous edge.
     pub fn enforce_edge_tabs(dock_area: &Entity<DockArea>, window: &mut Window, cx: &mut App) {
+        // LayoutChanged is also emitted for valid tab switches, dock toggles and resize completion.
+        // Keep those common paths allocation-free; normalization is needed only after a tool panel
+        // reaches the centre or an edge dock has actually become a split.
+        if !needs_edge_tab_normalization(dock_area.read(cx), cx) {
+            return;
+        }
+
         let previous: HashMap<&str, DockPlacement> = Self::entries(cx)
             .iter()
             .map(|entry| (entry.meta.name, entry.placement))
@@ -416,22 +421,47 @@ impl PanelRegistry {
     }
 }
 
-/// The panels a dock is actually showing — one per tab group, since a split shows several at once.
-fn frontmost(area: &DockArea, placement: DockPlacement, cx: &App, out: &mut Vec<&'static str>) {
+fn needs_edge_tab_normalization(area: &DockArea, cx: &App) -> bool {
+    let centre_has_tool = area.layout(DockPlacement::Center).is_some_and(|tree| {
+        tree.panels().any(|id| {
+            area.panel(id).is_some_and(|panel| {
+                let name = panel.panel_name(cx);
+                PANELS.iter().any(|meta| meta.name == name)
+            })
+        })
+    });
+    centre_has_tool
+        || [
+            DockPlacement::Left,
+            DockPlacement::Right,
+            DockPlacement::Bottom,
+        ]
+        .into_iter()
+        .filter_map(|placement| area.layout(placement))
+        .any(|tree| !matches!(tree.root().kind(), PaneRef::Tabs { .. }))
+}
+
+/// Whether `name` is showing in one of a dock's tab groups. This is called by status buttons on
+/// every render, so answer during the pane-tree walk rather than allocating a list of every
+/// frontmost panel first.
+fn is_frontmost(area: &DockArea, placement: DockPlacement, name: &str, cx: &App) -> bool {
     let Some(tree) = area.layout(placement) else {
-        return;
+        return false;
     };
+    let mut found = false;
     tree.root().walk(&mut |node| {
+        if found {
+            return;
+        }
         let PaneRef::Tabs { panels, active_ix } = node.kind() else {
             return;
         };
-        out.extend(
-            panels
-                .get(active_ix)
-                .and_then(|id| area.panel(*id))
-                .map(|panel| panel.panel_name(cx)),
-        );
+        found = panels
+            .get(active_ix)
+            .and_then(|id| area.panel(*id))
+            .is_some_and(|panel| panel.panel_name(cx) == name);
     });
+    found
 }
 
 fn frontmost_panel(area: &DockArea, placement: DockPlacement) -> Option<Arc<dyn BasePanelView>> {

@@ -6,7 +6,7 @@ use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Escape, Input, InputEvent, InputState, Textarea, TextareaState},
+    input::{Escape, Input, InputEvent, InputState, TextareaState},
     table::{DataTable, TableEvent, TableState},
     v_flex,
 };
@@ -14,7 +14,7 @@ use gpui_component::{
 use plugin_api::{CommandContext, PluginHooks, Suggestions};
 
 use crate::{
-    TableStateHandle, cell,
+    TableStateHandle,
     delegate::{
         ColumnLayout, QrateTableDelegate, SearchOpts, Selection, TableChanged, compile_search,
     },
@@ -111,6 +111,7 @@ impl TablePanel {
                 .submit_on_enter(true)
                 .placeholder("Note")
         });
+        crate::editor::configure(&editor, cx);
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in table"));
         let replace_input = cx.new(|cx| InputState::new(window, cx).placeholder("Replace with"));
         let mut delegate = QrateTableDelegate::new(editor.clone(), note_editor.clone());
@@ -743,7 +744,8 @@ impl TablePanel {
             .unwrap_or_default();
 
         let value = editor.read(cx).value();
-        let (box_el, box_size) = editor_box(&editor, cell, table, window, cx);
+        let (box_el, box_size) =
+            crate::editor::editor_box(&editor, label.clone().into(), cell, table, window, cx);
 
         let scrolled = scroll != spawn_scroll;
         let accent = cx.theme().primary;
@@ -1138,7 +1140,16 @@ impl Render for TablePanel {
                     // stay clamped inside it (never over a side panel).
                     .child(
                         canvas(
-                            |bounds, _, cx| cx.set_global(crate::TableViewportBounds(bounds)),
+                            |bounds, _, cx| {
+                                let measured = crate::TableViewportBounds(bounds);
+                                // gpui-kit 0.6 can repaint the virtual table without changing its
+                                // viewport. Replacing a global on every prepaint is needless work
+                                // on that hot path; only editor placement needs a new value.
+                                if cx.try_global::<crate::TableViewportBounds>() != Some(&measured)
+                                {
+                                    cx.set_global(measured);
+                                }
+                            },
                             |_, _, _, _| {},
                         )
                         .absolute()
@@ -1197,108 +1208,6 @@ pub(crate) fn paste_cells(
     cells
 }
 
-/// The app's one floating-editor box: an `Input` with no chrome of its own inside a bordered,
-/// shadowed card sized Google-Sheets style to `anchor` within `within`. The grid and the Details
-/// panel share it so an edit looks and grows the same wherever it opens.
-///
-/// The size comes back with it because a caller hanging anything below the box (the grid's
-/// suggestion list) needs a height it can't compute itself. Place the result with
-/// `deferred(float_at(anchor.origin, within, box))`.
-pub fn editor_box(
-    editor: &Entity<TextareaState>,
-    anchor: Bounds<Pixels>,
-    within: Bounds<Pixels>,
-    window: &mut Window,
-    cx: &App,
-) -> (Div, Size<Pixels>) {
-    let style = window.text_style();
-    let font_size = style.font_size.to_pixels(window.rem_size());
-    // What `Input` actually lays its lines out at (its own `LINE_HEIGHT: Rems(1.25)`), not the
-    // window's text style — the two differ and only this one predicts the wrapped height.
-    let line_height = window.rem_size() * 1.25;
-    let value = editor.read(cx).value();
-    // `shape_line` panics on newlines, so hard-wrapped lines are measured one at a time; the
-    // widest is what the box would need to show the value unwrapped.
-    let natural_w = value.split('\n').fold(px(0.), |widest, line| {
-        let w = window
-            .text_system()
-            .shape_line(
-                SharedString::from(line.to_string()),
-                font_size,
-                &[style.to_run(line.len())],
-                None,
-            )
-            .width;
-        if w > widest { w } else { widest }
-    });
-    let size = editor_size(anchor, within, natural_w, line_height, |wrap_w| {
-        window
-            .text_system()
-            .shape_text(
-                value.clone(),
-                font_size,
-                &[style.to_run(value.len())],
-                Some(wrap_w),
-                None,
-            )
-            .map(|lines| lines.iter().map(|l| 1 + l.wrap_boundaries.len()).sum())
-            .unwrap_or(1)
-    });
-
-    let box_el = div()
-        .relative()
-        .w(size.width)
-        .h(size.height)
-        .occlude()
-        .bg(cx.theme().background)
-        .border_1()
-        .border_color(cx.theme().primary)
-        .rounded(cx.theme().radius)
-        .shadow_lg()
-        .child(
-            Textarea::new(editor)
-                .appearance(false)
-                .h_full()
-                .px(px(cell::CELL_PAD_X))
-                .py(px(cell::CELL_PAD_Y))
-                .text_size(font_size),
-        );
-    (box_el, size)
-}
-
-/// Google-Sheets box sizing. Text that fits gets a cell-sized box; text that overflows keeps the
-/// row height and grows rightward to the table's edge; text that still overflows there grows
-/// downward to its wrapped height. Never leaves the table rect, so no clamping is needed after.
-/// `wrapped_lines` counts display lines at a given wrap width.
-fn editor_size(
-    cell: Bounds<Pixels>,
-    table: Bounds<Pixels>,
-    natural_w: Pixels,
-    line_height: Pixels,
-    wrapped_lines: impl FnOnce(Pixels) -> usize,
-) -> Size<Pixels> {
-    let avail_w = table.right() - cell.origin.x;
-    let avail_h = table.bottom() - cell.origin.y;
-    let w = (natural_w + px(PAD_X)).clamp(cell.size.width.min(avail_w), avail_w);
-    // Counted at the final width even when the text fits, because a value with hard newlines needs
-    // more than one line at any width — assuming otherwise is what put a scrollbar in the box.
-    let lines = wrapped_lines(w - px(PAD_X)).max(1);
-    let h = (line_height * lines as f32 + px(PAD_Y))
-        .max(cell.size.height)
-        .min(avail_h);
-    size(w, h)
-}
-
-/// The editor's own padding — the cell's, so the text sits exactly where it did unedited — plus the
-/// 1px border on each side, plus the `RIGHT_MARGIN` a soft-wrapping `Input` subtracts from its own
-/// bounds before shaping. Leave that last term out and the box is 10px wider than the width the
-/// text was measured at, so the final word wraps into a second line the box has no room for.
-const PAD_X: f32 = cell::CELL_PAD_X * 2. + 2. + INPUT_RIGHT_MARGIN;
-
-/// `gpui_component::input::element::RIGHT_MARGIN`, which is private.
-const INPUT_RIGHT_MARGIN: f32 = 10.;
-const PAD_Y: f32 = cell::CELL_PAD_Y * 2. + 2.;
-
 const TAB_H: f32 = 16.;
 
 const REVALIDATE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
@@ -1310,7 +1219,7 @@ const SUGGEST_H: f32 = 180.;
 mod tests {
     // Never `use super::*` here — the parent's `use gpui::*` would shadow `#[test]`.
     use diagnostics::{DATASET_MAIN, Diagnostic, Diagnostics, Location, Severity, Source};
-    use gpui::{Bounds, Pixels, SharedString, TestAppContext, point, px, size};
+    use gpui::{SharedString, TestAppContext};
 
     fn wrote(cells: &[(usize, usize, SharedString)]) -> Vec<(usize, usize, &str)> {
         cells.iter().map(|(r, c, v)| (*r, *c, v.as_ref())).collect()
@@ -1540,46 +1449,5 @@ mod tests {
         let block = super::parse_tsv("a\nb");
         let cells = super::paste_cells(&block, &[2], 0..=0, &[2, 9]);
         assert_eq!(wrote(&cells), vec![(2, 0, "a"), (9, 0, "b")]);
-    }
-
-    fn cell_and_table() -> (Bounds<Pixels>, Bounds<Pixels>) {
-        let cell = Bounds::new(point(px(300.), px(50.)), size(px(120.), px(32.)));
-        let table = Bounds::new(point(px(0.), px(0.)), size(px(500.), px(150.)));
-        (cell, table)
-    }
-
-    #[test]
-    fn text_that_fits_gets_a_cell_sized_box() {
-        let (cell, table) = cell_and_table();
-        let got = super::editor_size(cell, table, px(40.), px(20.), |_| 1);
-        assert_eq!(got, cell.size);
-    }
-
-    #[test]
-    fn overflowing_text_grows_right_at_the_row_height() {
-        let (cell, table) = cell_and_table();
-        let got = super::editor_size(cell, table, px(150.), px(20.), |_| 1);
-        assert_eq!(got, size(px(150. + super::PAD_X), px(32.)));
-    }
-
-    #[test]
-    fn hard_newlines_grow_the_box_down_even_when_the_text_fits() {
-        let (cell, table) = cell_and_table();
-        let got = super::editor_size(cell, table, px(40.), px(20.), |_| 3);
-        assert_eq!(got, size(px(120.), px(60. + super::PAD_Y)));
-    }
-
-    #[test]
-    fn text_past_the_table_edge_wraps_and_grows_down() {
-        let (cell, table) = cell_and_table();
-        let got = super::editor_size(cell, table, px(900.), px(20.), |_| 3);
-        assert_eq!(got, size(px(200.), px(60. + super::PAD_Y)));
-    }
-
-    #[test]
-    fn height_never_passes_the_tables_bottom() {
-        let (cell, table) = cell_and_table();
-        let got = super::editor_size(cell, table, px(900.), px(20.), |_| 40);
-        assert_eq!(got.height, px(100.));
     }
 }

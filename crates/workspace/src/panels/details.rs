@@ -2,6 +2,7 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -25,6 +26,9 @@ use crate::viewer::transport::{self, Transport};
 
 /// Project-scoped height of the details panel's image pane, in pixels.
 const IMAGE_PANE_HEIGHT_KEY: &str = "details_image_height";
+/// A resize emits on every pointer move. Persist only after the gesture pauses so dragging does not
+/// repeatedly replace `CurrentProject` and wake every observer of it.
+const IMAGE_PANE_PERSIST_DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// Height of the Notes sub-panel's header bar, which is the whole of it while collapsed.
 const NOTES_HEADER_H: f32 = 28.;
@@ -68,7 +72,7 @@ pub struct DetailsPanel {
     /// `(source_rows, data_col)` of the field being edited, in the grid's own coordinates so a
     /// filter change between opening and committing can't redirect the write. Several rows when
     /// the field belongs to a bundle: one edit box writing the same value down the selection.
-    editing: Option<(Vec<usize>, usize)>,
+    editing: Option<(Vec<usize>, usize, SharedString)>,
     /// Which of the selected items the preview stack is showing, and whether the pointer is over
     /// it — the step arrows only exist while it is, so they never cover the photo at rest.
     stack: usize,
@@ -78,6 +82,9 @@ pub struct DetailsPanel {
     notes_open: bool,
     /// Commits the open field on Enter or when the editor loses focus.
     _editor_sub: Subscription,
+    /// Pending image-pane height write. Replacing the task cancels its timer, coalescing an entire
+    /// resize gesture into one project-setting update.
+    _image_height_task: Option<Task<()>>,
     /// Window-space rect of the field row being edited, and of the scrolling field list the
     /// editor is confined to. Written from `canvas` prepaint, which only gets an `&mut App` —
     /// a shared cell is how the measurement reaches the next render without a global.
@@ -105,6 +112,7 @@ impl DetailsPanel {
         // *wrapped* height, and a single-line input runs the text off the right edge instead.
         // `submit_on_enter` keeps Enter committing the field (Shift+Enter inserts a newline).
         let editor = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true));
+        table::editor::configure(&editor, cx);
         let _editor_sub = cx.subscribe_in(
             &editor,
             window,
@@ -131,6 +139,7 @@ impl DetailsPanel {
             stack_hover: false,
             notes_open: true,
             _editor_sub,
+            _image_height_task: None,
             anchor: Rc::default(),
             viewport: Rc::new(Cell::new(Bounds::default())),
             transport: None,
@@ -139,6 +148,32 @@ impl DetailsPanel {
         };
         this.bind(cx);
         this
+    }
+
+    fn schedule_image_height_persist(&mut self, height: Pixels, cx: &mut Context<Self>) {
+        let Some(project) = cx
+            .try_global::<settings::project::CurrentProject>()
+            .map(|project| project.file.clone())
+        else {
+            return;
+        };
+        self._image_height_task = Some(cx.spawn(async move |_this, cx| {
+            cx.background_executor()
+                .timer(IMAGE_PANE_PERSIST_DEBOUNCE)
+                .await;
+            cx.update(|cx| {
+                if cx
+                    .try_global::<settings::project::CurrentProject>()
+                    .is_some_and(|current| current.file == project)
+                {
+                    settings::project::CurrentProject::set_text(
+                        IMAGE_PANE_HEIGHT_KEY,
+                        format!("{}", f32::from(height)).into(),
+                        cx,
+                    );
+                }
+            });
+        }));
     }
 
     /// The selected items as source rows in view order — what the whole panel is about, and the
@@ -214,7 +249,7 @@ impl DetailsPanel {
         };
         // The rows are captured here, not read back at commit: the write must land on the items
         // the archivist was looking at when they started typing, whatever the grid does meanwhile.
-        let at = (rows, col);
+        let at = (rows, col, header.clone());
         self.editing = Some(at);
         // Re-measured for the new field; the box renders on the frame after the capture.
         self.anchor.set(None);
@@ -388,7 +423,7 @@ impl DetailsPanel {
     /// validation and undo stay single-sourced. Clearing `editing` first keeps the `TableChanged`
     /// this provokes from re-entering as a second commit.
     fn commit(&mut self, cx: &mut Context<Self>) {
-        let Some((rows, col)) = self.editing.take() else {
+        let Some((rows, col, _)) = self.editing.take() else {
             return;
         };
         let value = self.editor.read(cx).value().clone();
@@ -415,10 +450,11 @@ impl DetailsPanel {
     /// clamped to the field list. `None` until the field has measured itself, one frame after the
     /// click.
     fn field_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.editing.as_ref()?;
+        let (_, _, field) = self.editing.as_ref()?;
         let anchor = self.anchor.get()?;
         let within = self.editor_area(window);
-        let (box_el, _) = table::editor_box(&self.editor, anchor, within, window, cx);
+        let (box_el, _) =
+            table::editor_box(&self.editor, field.clone(), anchor, within, window, cx);
         Some(deferred(table::floating::float_at(anchor.origin, within, box_el)).into_any_element())
     }
 
@@ -774,7 +810,7 @@ impl Render for DetailsPanel {
         // Hand-built attribute list, not `DescriptionList`/`DataTable`: the fields are fixed pairs,
         // and it reads as a list rather than a second grid — alternating rows carry the structure,
         // no borders.
-        let editing_col = self.editing.as_ref().map(|(_, col)| *col);
+        let editing_col = self.editing.as_ref().map(|(_, col, _)| *col);
         let rows = fields.into_iter().enumerate().map(|(ix, (k, v, mixed))| {
             // Guarded on `editing_col`: `data_col` is a linear scan of every column, and this runs
             // per row on every render — including the scroll ticks that dirty the whole panel.
@@ -905,15 +941,17 @@ impl Render for DetailsPanel {
             .child(
                 div().size_full().min_h_0().child(
                     v_resizable("details-split")
-                        .on_resize(|state, _, cx| {
-                            if cx.has_global::<settings::project::CurrentProject>()
-                                && let Some(height) = state.read(cx).sizes().first().copied()
-                            {
-                                settings::project::CurrentProject::set_text(
-                                    IMAGE_PANE_HEIGHT_KEY,
-                                    format!("{}", f32::from(height)).into(),
-                                    cx,
-                                );
+                        .on_resize({
+                            let panel = cx.entity().downgrade();
+                            move |state, _, cx| {
+                                let Some(height) = state.read(cx).sizes().first().copied() else {
+                                    return;
+                                };
+                                if let Some(panel) = panel.upgrade() {
+                                    panel.update(cx, |panel, cx| {
+                                        panel.schedule_image_height_persist(height, cx)
+                                    });
+                                }
                             }
                         })
                         // Dropped entirely in the gallery: the cards are already showing this photo,
@@ -1262,7 +1300,7 @@ mod tests {
             panel.edit_field(&"Title".into(), &"".into(), window, cx);
             assert_eq!(
                 panel.editing,
-                Some((vec![0, 2], 1)),
+                Some((vec![0, 2], 1, "Title".into())),
                 "the write is aimed at both selected items"
             );
             panel
@@ -1302,14 +1340,22 @@ mod tests {
 
         panel.update_in(cx, |panel, window, cx| {
             panel.edit_field(&"Title".into(), &"two".into(), window, cx);
-            assert_eq!(panel.editing, Some((vec![1], 1)), "Title is data column 1");
+            assert_eq!(
+                panel.editing,
+                Some((vec![1], 1, "Title".into())),
+                "Title is data column 1"
+            );
             panel.editor.update(cx, |editor, cx| {
                 editor.set_value("two, revised", window, cx)
             });
             panel.commit(cx);
 
             panel.edit_field(&"Medium".into(), &"Video".into(), window, cx);
-            assert_eq!(panel.editing, Some((vec![1], 0)), "Medium is data column 0");
+            assert_eq!(
+                panel.editing,
+                Some((vec![1], 0, "Medium".into())),
+                "Medium is data column 0"
+            );
             panel.editing = None;
         });
 

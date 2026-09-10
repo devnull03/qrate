@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 log.workspace = true
 gpui.workspace = true
+gpui-base.workspace = true
 gpui-component.workspace = true
 regex = "1"
 serde.workspace = true

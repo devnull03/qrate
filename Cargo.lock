@@ -7989,6 +7989,7 @@ dependencies = [
  "ai",
  "base64",
  "diagnostics",
+ "gpui-base",
  "gpui-component",
  "gpui-pre",
  "log",

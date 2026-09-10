@@ -56,7 +56,8 @@ const BOTTOM_DOCK_STRIP_PX: f32 = 29.;
 /// last 29px of real content with it. The center is unaffected (the strip occupied that space
 /// anyway), which is why only the side panels compensate.
 ///
-/// shouldn't have in their signatures; dies with `BOTTOM_DOCK_STRIP_PX`.
+/// gpui-base 0.6 exposes no way to remove that structural strip. Recheck this workaround when the
+/// dock dependency changes; it should disappear if upstream makes a closed bottom dock truly zero.
 #[derive(Copy, Clone, Default, PartialEq)]
 pub struct BottomDockCrop(pub Pixels);
 
