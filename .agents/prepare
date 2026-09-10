@@ -1,0 +1,68 @@
+#!/bin/sh
+set -eu
+
+project_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+checkout_parent=${project_root%/*}
+
+if [ -f Cargo.toml ]; then
+    case "$project_root" in
+        */.delta/worktrees/*)
+            target_dir=../../../target
+            ;;
+        */managed-repositories/*/worktrees/*)
+            project_name=${project_root##*/}
+            project_name=$(printf '%s' "$project_name" | tr -c 'A-Za-z0-9_-' '_')
+            target_dir=../../target/"$project_name"
+            ;;
+        *)
+            target_dir=
+            ;;
+    esac
+
+    if [ -n "$target_dir" ]; then
+        # Cargo merges this machine-local parent config with the tracked config.
+        config_dir=$checkout_parent/.cargo
+        config_file=$config_dir/config.toml
+        mkdir -p "$config_dir"
+
+        if [ ! -e "$config_file" ]; then
+            cat >"$config_file" <<EOF
+[build]
+target-dir = "$target_dir"
+EOF
+        elif ! grep -Eq '^[[:space:]]*target-dir[[:space:]]*=' "$config_file"; then
+            if grep -Eq '^[[:space:]]*\[build\][[:space:]]*$' "$config_file"; then
+                temp_file=$config_file.tmp.$$
+                awk -v target_dir="$target_dir" '
+                    !inserted && /^[[:space:]]*\[build\][[:space:]]*$/ {
+                        print
+                        print "target-dir = \"" target_dir "\""
+                        inserted = 1
+                        next
+                    }
+                    { print }
+                ' "$config_file" >"$temp_file"
+                mv "$temp_file" "$config_file"
+            else
+                cat >>"$config_file" <<EOF
+
+[build]
+target-dir = "$target_dir"
+EOF
+            fi
+        fi
+    fi
+fi
+
+# Lockfiles select the package manager without generating or changing one.
+if [ -f package.json ]; then
+    if [ -f bun.lock ] || [ -f bun.lockb ]; then
+        bun install --frozen-lockfile
+    elif [ -f pnpm-lock.yaml ]; then
+        pnpm install --frozen-lockfile
+    elif [ -f yarn.lock ]; then
+        yarn install --frozen-lockfile
+    elif [ -f package-lock.json ]; then
+        npm ci --no-audit --no-fund
+    fi
+fi
