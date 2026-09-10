@@ -39,14 +39,14 @@ qrate already has these local support features:
 - **Copy Debug Info**, **Open Logs Folder**, and **Report an Issue** actions.
 - A GitHub issue link that lets the user review the report before submission.
 
-The current workflow has four limits:
+The former public GitHub workflow had four limits:
 
 1. GitHub requires an account.
 2. Issues in the public qrate repository are public.
 3. One generic form handles all report types.
 4. The app has no persistent feedback button or hosted report form.
 
-The work on `feat/in-app-feedback` adds bug, feature, and UI/UX shortcuts to the complete hosted form. It also removes the project filename from the diagnostic summary.
+The implementation on `main` adds bug, feature, and UI/UX shortcuts to the hosted form. It excludes the project filename from the diagnostic summary.
 
 ## Recommended beta design
 
@@ -176,7 +176,7 @@ Do not add **Reproducible** during intake. A reviewer adds it after a successful
 
 The Worker can upload screenshots to Linear private storage. Linear provides a `fileUpload` mutation and a server-side upload flow.
 
-After triage, remove Needs Triage and move accepted reports to Todo in the same project. Add Reproducible only after verification.
+After triage, move accepted reports to Todo in the same project. Add Reproducible only after verification.
 
 ### Linear configuration
 
@@ -206,7 +206,7 @@ These IDs are public configuration values. Keep only the Linear API key in a Wor
 | Linux label | `2dae9fe2-a98c-43bd-90d5-3a786923d8af` |
 | Feature Request label | `bf455f57-e866-46ae-8a73-5dcdd4f1cb23` |
 
-Configure these values as Worker variables. Configure `LINEAR_API_KEY` with `wrangler secret put LINEAR_API_KEY`.
+Keep these public routing IDs as source-controlled constants. Configure `LINEAR_API_KEY` with `wrangler secret put LINEAR_API_KEY`.
 
 The issue creation mutation must set `teamId`, `projectId`, `projectMilestoneId`, `stateId`, and `labelIds`. The Worker should reject a successful HTTP response that contains GraphQL errors.
 
