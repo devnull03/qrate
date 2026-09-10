@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
+    "dev:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-dev-windows.ps1",
     "build": "astro build",
     "preview": "astro build && wrangler dev",
     "astro": "astro",

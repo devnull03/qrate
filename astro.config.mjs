@@ -154,5 +154,10 @@ export default defineConfig({
 
   vite: {
     plugins: [tailwindcss()],
+    optimizeDeps: {
+      // Astro's dev worker starts a second Vite runner. Optimizing its renderers can invalidate
+      // deps_ssr while that runner is loading them, especially under Bun on Windows.
+      exclude: ['astro/jsx-runtime', '@astrojs/mdx'],
+    },
   },
 });
