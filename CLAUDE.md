@@ -75,6 +75,7 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | `onboarding` | Getting started — the workspace guide card, its one-time tips, the export tip. Plugs in as a `workspace::WorkspaceExtension`; its per-project keys live in `settings::onboarding` so `project-wizard` can switch it on without depending on it |
 | `window-wrapper` | shared window chrome: title bar, status bar, the window registry |
 | `settings` | `AppSettings` (user-wide) and `.qrate` (per project), column config, plugin settings |
+| `cli` | the public `qrate` command; launches the private desktop binary and controls open projects without linking GPUI |
 | `project-wizard` | new/open project flow, recent projects, the launcher |
 | `data-exchange` | spreadsheet and Google Sheets imports, desktop Google Sheets integration, preview |
 | `file-ingest` | filesystem inventory and duplicate resolution for folder-backed projects and live imports. Only lists paths and decides duplicates; never maps columns or touches a project |
