@@ -46,7 +46,7 @@ which the next edit starts.
 
 ## Install the plugin
 
-1. Open **Extensions ▸ Plugins Folder**.
+1. Open **Plugins ▸ Plugins Folder**.
 2. Put the plugin folder there. To clone it, run
    `git clone https://github.com/devnull03/qrate-islandora-plugin islandora`.
 3. Name the folder `islandora`. qrate keys the plugin's stored settings by the folder name.

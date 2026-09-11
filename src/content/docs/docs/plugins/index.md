@@ -34,7 +34,7 @@ no `package`.
 
 ## How qrate loads a plugin
 
-qrate reads the plugins directory at startup. Open it with **Extensions ▸ Plugins Folder**.
+qrate reads the plugins directory at startup. Open it with **Plugins ▸ Plugins Folder**.
 
 qrate accepts two shapes:
 
@@ -125,13 +125,13 @@ Three things in that example apply to every plugin:
 
 ### 4. Load it
 
-1. Copy or clone the folder into the plugins directory (**Extensions ▸ Plugins Folder**).
-2. Restart qrate, or click **Extensions ▸ Reload Plugins**.
+1. Copy or clone the folder into the plugins directory (**Plugins ▸ Plugins Folder**).
+2. Restart qrate, or click **Plugins ▸ Reload Plugins**.
 3. Open **Settings ▸ Plugins** and confirm your plugin is listed and enabled.
 
 ### 5. Iterate
 
-Edit the file, then click **Extensions ▸ Reload Plugins**. qrate rebuilds every plugin's virtual
+Edit the file, then click **Plugins ▸ Reload Plugins**. qrate rebuilds every plugin's virtual
 machine and replaces every contribution. You do not have to restart the app.
 
 qrate reports a plugin problem in two places, and the difference matters:
