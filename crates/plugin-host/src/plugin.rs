@@ -1249,7 +1249,17 @@ mod tests {
             .iter()
             .map(|value| (*value).into())
             .collect::<Vec<_>>();
-        plugin.validate(&column, &values)
+        plugin
+            .validate(&column, ColumnValues::new(&values, ""))
+            .into_iter()
+            .map(|finding| {
+                (
+                    finding.row.expect("IIIF findings address cells"),
+                    finding.severity,
+                    finding.message,
+                )
+            })
+            .collect()
     }
 
     fn check(source: &str, values: &[&str]) -> Vec<(usize, Severity, SharedString)> {
@@ -1873,11 +1883,12 @@ mod tests {
             data_type: "Text",
             settings: &settings,
         };
-        let found = reloaded.validate(&column, &[url.into()]);
+        let values = [url.into()];
+        let found = reloaded.validate(&column, ColumnValues::new(&values, ""));
         assert!(
             found
                 .iter()
-                .any(|(_, _, message)| message.contains("Settings ▸ Plugins")),
+                .any(|finding| finding.message.contains("Settings ▸ Plugins")),
             "{found:?}"
         );
     }
