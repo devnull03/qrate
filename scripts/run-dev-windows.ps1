@@ -1,3 +1,7 @@
+param(
+    [switch]$RefreshCatalog
+)
+
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $safe = Join-Path $env:LOCALAPPDATA "qrate-site-dev-$PID"
@@ -29,27 +33,46 @@ try {
         throw "Site dependency installation failed."
     }
 
-    $version = bunx wrangler kv key get current --binding PLUGIN_CATALOG --preview false --remote --text
-    if ($LASTEXITCODE -ne 0 -or $version -notmatch "^[a-f0-9]{64}$") {
-        throw "Could not read the current signed catalog version from Cloudflare KV."
+    $fixture = Join-Path $safe "fixtures\plugin-catalog"
+    $catalogFile = Join-Path $fixture "catalog.json"
+    $version = (Get-Content "$catalogFile.sig" -Raw | ConvertFrom-Json).sha256
+    if ($version -notmatch "^[a-f0-9]{64}$") {
+        throw "The development catalog fixture has an invalid version."
     }
-    $version = $version.Trim()
-    $catalogFile = Join-Path $safe "catalog.json"
     $seed = [ordered]@{
         "catalog:${version}:json"      = $catalogFile
         "catalog:${version}:signature" = "$catalogFile.sig"
-        "catalog:${version}:status"    = Join-Path $safe "catalog-status.json"
-        "schema:catalog"               = Join-Path $safe "catalog.schema.json"
-        "schema:listing"               = Join-Path $safe "listing.schema.json"
-        "schema:package"               = Join-Path $safe "package.schema.json"
+        "catalog:${version}:status"    = Join-Path $fixture "status.json"
+        "schema:catalog"               = Join-Path $fixture "catalog.schema.json"
+        "schema:listing"               = Join-Path $fixture "listing.schema.json"
+        "schema:package"               = Join-Path $fixture "package.schema.json"
     }
+    if ($RefreshCatalog) {
+        $version = bunx wrangler kv key get current --binding PLUGIN_CATALOG --preview false --remote --text
+        if ($LASTEXITCODE -ne 0 -or $version -notmatch "^[a-f0-9]{64}$") {
+            throw "Could not read the current signed catalog version from Cloudflare KV."
+        }
+        $version = $version.Trim()
+        $seed = [ordered]@{
+            "catalog:${version}:json"      = $catalogFile
+            "catalog:${version}:signature" = "$catalogFile.sig"
+            "catalog:${version}:status"    = Join-Path $fixture "status.json"
+            "schema:catalog"               = Join-Path $fixture "catalog.schema.json"
+            "schema:listing"               = Join-Path $fixture "listing.schema.json"
+            "schema:package"               = Join-Path $fixture "package.schema.json"
+        }
+        foreach ($key in $seed.Keys) {
+            $file = $seed[$key]
+            cmd.exe /d /c "bunx wrangler kv key get `"$key`" --binding PLUGIN_CATALOG --preview false --remote > `"$file`""
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not read $key from Cloudflare KV."
+            }
+        }
+    }
+
     # astro dev reads the preview namespace, so local seeding targets preview_id.
     foreach ($key in $seed.Keys) {
         $file = $seed[$key]
-        cmd.exe /d /c "bunx wrangler kv key get `"$key`" --binding PLUGIN_CATALOG --preview false --remote > `"$file`""
-        if ($LASTEXITCODE -ne 0) {
-            throw "Could not read $key from Cloudflare KV."
-        }
         bunx wrangler kv key put $key --path $file --binding PLUGIN_CATALOG --preview --local
         if ($LASTEXITCODE -ne 0) {
             throw "Could not seed local Cloudflare KV with $key."

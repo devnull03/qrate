@@ -23,7 +23,9 @@ bun run preview  # build, then serve via wrangler exactly as production does
 Astro's MDX development renderer cannot load dependencies from a Windows Delta worktree whose path
 ends in `~`. Commit or stash changes, then run `bun run dev:windows`. It serves the same branch from
 a temporary safe-path worktree, seeds its local KV from the signed production catalog, and removes
-that worktree when the server exits. The initial seed requires an authenticated Wrangler CLI.
+that worktree when the server exits. It uses a checked-in signed fixture and does not require
+Cloudflare credentials. Use `bun run dev:windows:refresh` to test the latest production catalog with
+an authenticated Wrangler CLI.
 
 ## Deploy
 
@@ -70,14 +72,11 @@ The site source pins the trusted catalog public key. Set
 `QRATE_PLUGIN_CATALOG_PUBLIC_KEY` in the build environment only to test a
 planned key rotation.
 
-`QRATE_PLUGIN_CATALOG_FILE` points local development at an exact signed catalog file; its signature
-must be beside it with a `.sig` suffix. The Windows development runner sets this automatically so
-page rendering never makes a recursive request to its own development server.
-
-Every build must set either `QRATE_PLUGIN_CATALOG_FILE` or `QRATE_PLUGIN_CATALOG_URL`. A self-hosted
-deployment can therefore build from its own signed file or catalog service without contacting
-qrate's deployment. Set `SITE_URL` to the deployment's public origin for canonical URLs, sitemap
-entries, and structured metadata.
+Builds use the checked-in signed fixture by default. `QRATE_PLUGIN_CATALOG_FILE` can select another
+exact signed catalog file; its signature must be beside it with a `.sig` suffix.
+`QRATE_PLUGIN_CATALOG_URL` instead selects a catalog service. A self-hosted deployment can therefore
+build without contacting qrate's deployment or point at its own registry. Set `SITE_URL` to the
+deployment's public origin for canonical URLs, sitemap entries, and structured metadata.
 
 The build fetches `catalog.json.sig` beside the catalog. It verifies the SHA-256,
 key ID, and signature before it parses any records. A bad catalog fails the

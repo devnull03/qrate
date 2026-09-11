@@ -7,6 +7,8 @@ import { getPluginCatalog } from '../lib/plugins';
 const releases = await getReleases();
 const rel = latest(releases);
 const pluginCatalog = await getPluginCatalog();
+const siteOrigin = Astro.site?.origin;
+const downloadUrl = Astro.site && new URL('/docs/install', Astro.site).href;
 
 // One installer per platform, for the hero button the client picks by OS.
 // The order is also the server-rendered fallback order, for no-JS and for
@@ -438,8 +440,8 @@ const mess = [
       applicationCategory: 'BusinessApplication',
       operatingSystem: 'macOS, Windows, Linux',
       softwareVersion: rel?.tag_name,
-      url: Astro.site?.origin,
-      downloadUrl: Astro.site && new URL('/docs/install', Astro.site).href,
+      url: siteOrigin,
+      downloadUrl,
       codeRepository: `https://github.com/${REPO}`,
       license: 'https://www.gnu.org/licenses/agpl-3.0.html',
       isAccessibleForFree: true,
