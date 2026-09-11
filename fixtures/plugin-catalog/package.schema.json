@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qrate.dvnl.work/plugins/schemas/package.schema.json",
+  "title": "qrate plugin package manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "name",
+    "version",
+    "api_version",
+    "entry",
+    "description",
+    "homepage",
+    "license",
+    "permissions"
+  ],
+  "properties": {
+    "schema": { "const": 1 },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)+$",
+      "maxLength": 128
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "api_version": { "type": "integer", "minimum": 1, "maximum": 2 },
+    "entry": {
+      "type": "string",
+      "pattern": "^[^/\\\\.][^/\\\\]*\\.lua$",
+      "maxLength": 128
+    },
+    "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "homepage": { "type": "string", "pattern": "^https://" },
+    "license": {
+      "enum": [
+        "Apache-2.0",
+        "BSD-2-Clause",
+        "BSD-3-Clause",
+        "CC-BY-4.0",
+        "GPL-3.0-only",
+        "GPL-3.0-or-later",
+        "LGPL-3.0-only",
+        "LGPL-3.0-or-later",
+        "MIT",
+        "Unlicense",
+        "Zlib"
+      ]
+    },
+    "permissions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["net"] }
+    }
+  }
+}

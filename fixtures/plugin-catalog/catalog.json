@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "generated_at": "2026-09-11T05:39:27.359Z",
+  "source_commit": "6dca1875ca5f13cc93e3d4e9ef88a8f3b7abb58a",
+  "plugins": [
+    {
+      "id": "org.islandora.vocabularies",
+      "name": "Islandora controlled vocabularies",
+      "summary": "Checks spreadsheet values against controlled vocabularies published by an Islandora site.",
+      "description": "Connects qrate columns to Islandora taxonomy vocabularies. It validates existing values in bounded batches and suggests matching terms while you type. Network access is optional and requires the user's permission.",
+      "categories": [
+        "islandora",
+        "metadata",
+        "validation"
+      ],
+      "license": "MIT",
+      "publisher": "devnull03",
+      "repository": "https://github.com/devnull03/qrate-islandora-plugin",
+      "homepage": "https://github.com/devnull03/qrate-islandora-plugin",
+      "support": "https://github.com/devnull03/qrate-islandora-plugin/issues",
+      "screenshots": [],
+      "featured": true,
+      "current": {
+        "version": "0.1.0",
+        "api_version": 1,
+        "permissions": [
+          "net"
+        ],
+        "published_at": "2026-09-08T21:30:41Z",
+        "release_url": "https://github.com/devnull03/qrate-islandora-plugin/releases/tag/v0.1.0",
+        "artifact_url": "https://github.com/devnull03/qrate-islandora-plugin/releases/download/v0.1.0/org.islandora.vocabularies-0.1.0.zip",
+        "sha256": "062207fa5a7a093fa5b46aa8ebcd313b12e0215b39707e45c6e16cca4a64a433",
+        "bytes": 16292,
+        "status": "active"
+      }
+    }
+  ]
+}

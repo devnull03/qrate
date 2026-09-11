@@ -1,5 +1,6 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
 export const REGISTRY_REPO = 'devnull03/qrate-plugin-registry';
 export const TEMPLATE_REPO = 'devnull03/qrate-plugin-template';
@@ -161,7 +162,12 @@ const parsePlugin = (value: unknown): Plugin => {
 
 async function loadCatalog(): Promise<PluginCatalog> {
   const publicKey = process.env.QRATE_PLUGIN_CATALOG_PUBLIC_KEY ?? CATALOG_PUBLIC_KEY;
-  const file = process.env.QRATE_PLUGIN_CATALOG_FILE;
+  const configuredUrl = process.env.QRATE_PLUGIN_CATALOG_URL;
+  const file =
+    process.env.QRATE_PLUGIN_CATALOG_FILE ??
+    (!configuredUrl
+      ? resolve('fixtures/plugin-catalog/catalog.json')
+      : undefined);
   let bytes: Buffer;
   let signature: Signature;
   if (file) {
@@ -171,12 +177,7 @@ async function loadCatalog(): Promise<PluginCatalog> {
       readFile(`${file}.sig`, 'utf8').then((raw) => JSON.parse(raw) as Signature),
     ]);
   } else {
-    const url = process.env.QRATE_PLUGIN_CATALOG_URL;
-    if (!url) {
-      throw new Error(
-        'Set QRATE_PLUGIN_CATALOG_FILE or QRATE_PLUGIN_CATALOG_URL to a signed plugin catalog',
-      );
-    }
+    const url = configuredUrl as string;
     console.info(`[plugins] fetching the signed catalog from ${url}`);
     const [catalogResponse, signatureResponse] = await Promise.all([
       fetch(url, { signal: AbortSignal.timeout(15_000) }),

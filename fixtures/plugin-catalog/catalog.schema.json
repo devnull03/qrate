@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qrate.dvnl.work/plugins/schemas/catalog.schema.json",
+  "title": "qrate signed plugin catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "generated_at", "source_commit", "plugins"],
+  "properties": {
+    "schema": { "const": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "source_commit": { "type": "string", "minLength": 1 },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "summary",
+          "description",
+          "categories",
+          "license",
+          "publisher",
+          "repository",
+          "screenshots",
+          "featured",
+          "current"
+        ],
+        "properties": {
+          "id": { "$ref": "package.schema.json#/properties/id" },
+          "name": { "$ref": "package.schema.json#/properties/name" },
+          "summary": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "description": { "type": "string", "minLength": 1, "maxLength": 5000 },
+          "categories": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^[a-z0-9-]+$", "maxLength": 40 }
+          },
+          "license": { "$ref": "package.schema.json#/properties/license" },
+          "publisher": { "type": "string", "minLength": 1 },
+          "repository": { "type": "string", "pattern": "^https://github\\.com/[^/]+/[^/]+/?$" },
+          "homepage": { "type": "string", "pattern": "^https://" },
+          "support": { "type": "string", "pattern": "^https://" },
+          "icon": { "type": "string", "pattern": "^https://" },
+          "screenshots": {
+            "type": "array",
+            "maxItems": 4,
+            "items": { "type": "string", "pattern": "^https://" }
+          },
+          "featured": { "type": "boolean" },
+          "current": { "$ref": "listing.schema.json#/$defs/release" }
+        }
+      }
+    }
+  }
+}
