@@ -50,6 +50,34 @@ client id. Never commit the JSON; `.gitignore` covers `client_secret_*.json`, an
 themselves belong in the environment or in the credential endpoint (`site-oauth-handoff.md`),
 never in source.
 
+**Plugins in local Windows builds:** use the development runner to read the public catalog key,
+build qrate, register the debug executable for `qrate://`, run it, and remove that temporary
+registration when qrate exits:
+
+```powershell
+.\scripts\run-dev.ps1
+```
+
+Debug builds use `http://localhost:4321` for every qrate site route, including plugin discovery,
+catalog verification, feedback, Google configuration and Picker, release pages, and update feeds.
+Release builds use `https://qrate.dvnl.work`. A self-hosted build can set `QRATE_SITE_ORIGIN` at
+compile time to use its own site for all of those routes.
+
+This requires an authenticated GitHub CLI. To register an already-built debug executable without
+running it, use:
+
+```powershell
+.\scripts\register-dev-protocol.ps1
+```
+
+Browser links then launch `target\debug\app.exe`; if that development instance is already running,
+the new process hands the link to it and exits. Remove the development override before testing an
+installed build:
+
+```powershell
+.\scripts\register-dev-protocol.ps1 -Unregister
+```
+
 ---
 
 ## 3. One-time GitHub setup (do this before the first release)

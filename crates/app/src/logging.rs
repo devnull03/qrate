@@ -28,11 +28,6 @@ pub enum FeedbackKind {
     Ux,
 }
 
-#[cfg(debug_assertions)]
-const FEEDBACK_URL: &str = "http://localhost:4321/feedback";
-#[cfg(not(debug_assertions))]
-const FEEDBACK_URL: &str = "https://qrate.dvnl.work/feedback";
-
 /// Where the current session writes. `None` only if the OS has no local data dir, in which case
 /// there is nowhere to log and the terminal sink is all there is.
 pub fn log_path() -> Option<PathBuf> {
@@ -319,8 +314,9 @@ pub fn feedback_url(cx: &App, kind: Option<FeedbackKind>) -> String {
         "plugins": plugins.len(),
         "plugin_failures": plugins.iter().filter(|(_, error)| error.is_some()).count(),
     });
+    let feedback_url = crate::site::url("/feedback");
     format!(
-        "{FEEDBACK_URL}{kind}#diagnostics={}&logs={}",
+        "{feedback_url}{kind}#diagnostics={}&logs={}",
         urlencode(&diagnostics.to_string()),
         urlencode(&feedback_log_tail())
     )
@@ -364,7 +360,10 @@ mod tests {
             )
         });
 
-        assert!(bug.starts_with(&format!("{}?type=bug#diagnostics=", super::FEEDBACK_URL)));
+        assert!(bug.starts_with(&format!(
+            "{}?type=bug#diagnostics=",
+            crate::site::url("/feedback")
+        )));
         assert!(feature.contains("?type=feature#diagnostics="));
         assert!(ux.contains("?type=ui_ux#diagnostics="));
         assert!(bug.contains("%22schema%22%3A1"));

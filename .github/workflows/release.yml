@@ -23,6 +23,9 @@ env:
   # and nothing more — see docs/dev/site-oauth-handoff.md. Absent: the endpoint answers 401 and the
   # app carries on with the pair above.
   QRATE_GOOGLE_CONFIG_TOKEN: ${{ secrets.QRATE_GOOGLE_CONFIG_TOKEN }}
+  # Public Ed25519 key for the independently signed plugin catalog. Release builds embed it; local
+  # builds can set the same variable at compile time or use it at runtime for development.
+  QRATE_PLUGIN_CATALOG_PUBLIC_KEY: ${{ vars.QRATE_PLUGIN_CATALOG_PUBLIC_KEY }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -312,7 +315,8 @@ jobs:
           chmod +x scripts/fetch-agent-runtime.sh
           ./scripts/fetch-agent-runtime.sh "$stage" linux-x64
           printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=qrate' \
-            'Exec=qrate' 'Icon=qrate' 'Categories=Office;Database;' \
+            'Exec=qrate %u' 'Icon=qrate' 'Terminal=false' \
+            'Categories=Office;Database;' 'MimeType=x-scheme-handler/qrate;' \
             > "$stage/qrate.desktop"
           mkdir -p dist
           tar -czf "dist/$stage.tar.gz" "$stage"

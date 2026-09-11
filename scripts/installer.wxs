@@ -73,6 +73,18 @@
         <File Id="QrateInstallMarker" Source="$(var.SrcDir)\qrate-install-msi.json"
               Name="qrate-install.json" KeyPath="yes" />
       </Component>
+      <Component Id="QrateProtocol" Guid="*">
+        <RegistryKey Root="HKLM" Key="Software\Classes\qrate" ForceDeleteOnUninstall="yes">
+          <RegistryValue Type="string" Value="URL:qrate Protocol" KeyPath="yes" />
+          <RegistryValue Name="URL Protocol" Type="string" Value="" />
+          <RegistryKey Key="DefaultIcon">
+            <RegistryValue Type="string" Value="[#QrateExe],0" />
+          </RegistryKey>
+          <RegistryKey Key="shell\open\command">
+            <RegistryValue Type="string" Value="&quot;[#QrateExe]&quot; &quot;%1&quot;" />
+          </RegistryKey>
+        </RegistryKey>
+      </Component>
 
       <!-- Preview sidecars — see scripts/fetch-binaries.sh. Both are optional at runtime (the
            preview tiers fall back to a type icon without them); HasPdfium/HasFfmpeg only guard

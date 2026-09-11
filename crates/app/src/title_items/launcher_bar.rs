@@ -14,8 +14,8 @@ use window_wrapper::OpenBrowser;
 
 use crate::actions::NewProject;
 use crate::app_menus::{
-    CopyDebugInfo, OpenAbout, OpenLogsFolder, OpenPluginsFolder, OpenSettings, REPO_URL,
-    ReloadPlugins, ReportBug, ReportUxIssue, RequestFeature,
+    CopyDebugInfo, DiscoverPlugins, ManagePlugins, OpenAbout, OpenLogsFolder, OpenPluginsFolder,
+    OpenSettings, REPO_URL, ReloadPlugins, ReportBug, ReportUxIssue, RequestFeature,
 };
 use crate::title_items::update_notice::UpdateNotice;
 
@@ -58,8 +58,11 @@ impl Render for LauncherBar {
                         menu.menu("New Project…", Box::new(NewProject))
                             .menu("Settings…", Box::new(OpenSettings))
                             .separator()
-                            .submenu("Extensions", window, cx, |menu, _, _| {
-                                menu.menu("Plugins Folder", Box::new(OpenPluginsFolder))
+                            .submenu("Plugins", window, cx, |menu, _, _| {
+                                menu.menu("Discover Plugins…", Box::new(DiscoverPlugins))
+                                    .menu("Manage Plugins…", Box::new(ManagePlugins))
+                                    .separator()
+                                    .menu("Plugins Folder", Box::new(OpenPluginsFolder))
                                     .menu("Reload Plugins", Box::new(ReloadPlugins))
                             })
                             .submenu("Help", window, cx, |menu, window, cx| {
@@ -72,7 +75,7 @@ impl Render for LauncherBar {
                                 .menu(
                                     "Releases",
                                     Box::new(OpenBrowser {
-                                        url: "https://qrate.dvnl.work/releases".into(),
+                                        url: crate::site::url("/releases"),
                                     }),
                                 )
                                 .separator()

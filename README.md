@@ -70,7 +70,7 @@ qrate works without an account. Google Sheets integration is off until you enabl
 - [Columns](docs/columns.md) — types, authority lists, and project settings
 - [Export and Google Sheets](docs/export-and-sync.md) — move data in and out
 - [Agent panel](docs/agent-panel.md) — review data with an optional local agent
-- [Plugins](docs/plugins/index.md) — extend qrate locally
+- [Plugins](docs/plugins/index.md) — discover, install, or write extensions
 
 ## Contributing
 

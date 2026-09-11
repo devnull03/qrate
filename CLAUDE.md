@@ -152,7 +152,7 @@ executable, optionally — a package built without them installs a working, degr
 - Only `crates/app` initializes logging (`crates/app/src/logging.rs`, called first in `main`). It writes `%LOCALAPPDATA%\qrate\logs\qrate.log` (previous run rotated to `qrate.old.log`) and installs the panic hook.
 - That file is also what Help ▸ Copy Debug Info / Report an Issue paste. Anything logged at `error`/`warn` will end up in a user's bug report, so write the message for the person reading the report — name what failed, not just the error value.
 
-## Plugin API — it lives in three repos, change all of them
+## Plugin contracts — keep all repositories synchronized
 
 The Lua plugin surface (`crates/plugin-host`, `crates/plugin-api`) is published outside this repo,
 and Luau has no package manager — a plugin is a folder somebody drops in by hand, so the type
@@ -163,7 +163,8 @@ everyone's editor completion, and nothing in CI would say so.
 |---|---|---|
 | [`qrate-plugin-template`](https://github.com/devnull03/qrate-plugin-template) | `../qrate-plugin-template` | `types/qrate.lua` — the canonical copy — and the example plugin |
 | [`qrate-islandora-plugin`](https://github.com/devnull03/qrate-islandora-plugin) | `plugins/islandora` (gitignored here) | its own copy of `types/qrate.lua` |
-| `qrate-site` | `../qrate-site` — the `site` branch of *this* repo, checked out separately | nothing about plugins yet — include it once it documents them |
+| [`qrate-plugin-registry`](https://github.com/devnull03/qrate-plugin-registry) | `../qrate-plugin-registry` | package and listing schemas, reviewed records, and the signed catalog |
+| `qrate-site` | `../qrate-site` — the `site` branch of *this* repo, checked out separately | catalog-backed marketplace and submission documentation |
 
 **When you add, rename, or remove anything a plugin can see** — a host function, a descriptor field,
 a `SettingKind`, a hook's arguments, what a scope contains:
@@ -179,9 +180,11 @@ a `SettingKind`, a hook's arguments, what a scope contains:
    from disk, so they are the check that the copies still work. They are ignored, so nothing else
    will catch it.
 
-The two plugin repos have their own git history and their own commit. Do not add them as
-submodules — qrate neither pins nor carries them. `qrate-site` is a branch here, so its commit
-lands on this remote.
+The plugin repositories have their own git history and commits. Do not add them as submodules —
+qrate neither pins nor carries them. A package-manifest change must also update the registry's
+`package.schema.json` and template checks. A catalog contract change must update the registry,
+`plugin-package`, and the site's catalog loader. `qrate-site` is a branch here, so its commit lands
+on this remote.
 
 ## gpui test modules
 

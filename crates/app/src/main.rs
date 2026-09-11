@@ -8,7 +8,10 @@ mod app_settings;
 mod assets;
 mod export;
 mod google;
+mod instance_handoff;
 mod logging;
+mod plugin_marketplace;
+mod site;
 mod status_items;
 mod theming;
 mod title_items;
@@ -285,6 +288,11 @@ impl Render for App {
             .on_action(cx.listener(|_, action: &export::Export, window, cx| {
                 export::run(action.format, window, cx)
             }))
+            .on_action(
+                cx.listener(|_, action: &export::PluginExport, _, cx| {
+                    export::run_plugin(action, cx)
+                }),
+            )
             .child(
                 v_flex()
                     .size_full()
@@ -457,10 +465,32 @@ pub(crate) fn restart_for_update(_: &ClickEvent, window: &mut Window, cx: &mut g
 fn main() {
     // First, so failures in GPUI platform construction and startup still reach the log file.
     logging::init();
+    log::info!("site origin: {}", site::url("/"));
+    let initial_link = std::env::args()
+        .find(|argument| argument.starts_with("qrate://"))
+        .filter(|link| {
+            plugin_package::parse_install_link(link)
+                .inspect_err(|error| log::warn!("ignored invalid plugin install link: {error:#}"))
+                .is_ok()
+        });
+    if initial_link.is_some() {
+        log::info!("received plugin install link at startup");
+    }
+    let (url_sender, url_receiver) = async_channel::unbounded();
+    if !instance_handoff::start(initial_link.as_deref(), url_sender.clone()) {
+        return;
+    }
     let app = gpui_platform::application().with_assets(assets::Assets);
+    app.on_open_urls(move |urls| {
+        for url in urls {
+            log::info!("received plugin install link from the operating system");
+            let _ = url_sender.try_send(url);
+        }
+    });
 
     app.run(move |cx| {
         gpui_component::init(cx);
+        cx.register_url_scheme("qrate").detach();
 
         // Settings ------------------------------------
         let settings = load_app_settings().unwrap_or_default();
@@ -508,9 +538,14 @@ fn main() {
 
         cx.on_action(|_: &ReloadPlugins, cx| {
             plugin_host::reload(cx);
+            app_menus::install(cx);
             table::revalidate_now(cx);
         });
         cx.on_action(|_: &OpenPluginsFolder, _| plugin_host::open_plugins_folder());
+        cx.on_action(|_: &app_menus::DiscoverPlugins, cx| plugin_marketplace::open_catalog(cx));
+        cx.on_action(|_: &app_menus::ManagePlugins, cx| {
+            open_settings_window(Some(app_settings::PLUGINS_PAGE), cx)
+        });
 
         cx.on_action(|_: &CopyDebugInfo, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(logging::debug_info(cx, 200)));
@@ -560,6 +595,13 @@ fn main() {
             cx.quit();
         });
 
+        cx.spawn(async move |cx| {
+            while let Ok(link) = url_receiver.recv().await {
+                cx.update(|cx| open_install_link(&link, cx));
+            }
+        })
+        .detach();
+
         // Flush before exit: writers debounce 450ms, and dock toggles/resizes never emit `LayoutChanged`.
         cx.on_app_quit(|cx| {
             flush_all_state(cx);
@@ -567,7 +609,24 @@ fn main() {
         })
         .detach();
 
-        // The launcher is the real startup window; it opens the main window or the wizard itself.
-        project_wizard::open_launcher_window(cx);
+        match initial_link {
+            Some(link) if open_install_link(&link, cx) => {}
+            // The launcher is the normal startup window; it opens the main window or the wizard.
+            _ => project_wizard::open_launcher_window(cx),
+        }
     });
+}
+
+fn open_install_link(link: &str, cx: &mut gpui::App) -> bool {
+    match plugin_package::parse_install_link(link) {
+        Ok(target) => {
+            log::info!("opening plugin installation target: {target:?}");
+            plugin_marketplace::open_install_target(target, cx);
+            true
+        }
+        Err(error) => {
+            log::warn!("ignored invalid plugin install link: {error:#}");
+            false
+        }
+    }
 }
