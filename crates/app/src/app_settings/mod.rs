@@ -654,8 +654,9 @@ fn spelling_group(cx: &App) -> SettingGroup {
                 }),
             )
             .description(
-                "Canadian and American English are built in. Any other language downloads on \
-                 first use and is kept beside your logs. Takes effect on restart.",
+                "Canadian and American English are built in. Downloaded languages participate in \
+                 automatic detection; this choice sets the preferred regional spelling. Takes \
+                 effect on restart.",
             ),
         );
     }
@@ -1107,6 +1108,17 @@ fn columns_page(cx: &App) -> SettingPage {
 
     let headers = column_items(project);
 
+    let values = SettingGroup::new().title("Multi-value cells").item(
+        Setting::Text {
+            key: settings::FILTER_SUBDELIMITER_KEY,
+            label: "Value separator",
+            description: "Separate multiple values in one cell, e.g. \"|\" for \"Film|Video\". \
+                          Filters and validators treat each part as one logical value. Leave empty \
+                          to treat the complete cell as one value.",
+        }
+        .into_item(cx),
+    );
+
     let mut group = SettingGroup::new().title("Filters").item(
         SettingItem::new(
             "Enable column filters",
@@ -1119,16 +1131,6 @@ fn columns_page(cx: &App) -> SettingPage {
     );
 
     if columns::filters_master_enabled(cx) {
-        group = group.item(
-            Setting::Text {
-                key: settings::FILTER_SUBDELIMITER_KEY,
-                label: "Sub-delimiter",
-                description: "Split cells that hold several values, e.g. \";\" for \"Film; Video\", \
-                              so the dropdown lists each value on its own. Leave empty to filter \
-                              whole cells.",
-            }
-            .into_item(cx),
-        );
         let picked = headers.clone();
         group = group.item(
             SettingItem::new(
@@ -1170,9 +1172,35 @@ fn columns_page(cx: &App) -> SettingPage {
         .description("Columns whose text is spell-checked. New columns start checked."),
     );
 
+    let variant_columns = headers.clone();
+    let variants = SettingGroup::new().title("Value variants").item(
+        SettingItem::new(
+            "Reviewed columns",
+            SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
+                column_picker(
+                    "variant-reviewed-columns",
+                    variant_columns.clone(),
+                    Rc::new(|c: &ColumnItem, cx: &App| columns::get(&c.key, cx).variant_review),
+                    Rc::new(|c: &ColumnItem, on: bool, cx: &mut App| {
+                        columns::update(&c.key, |s| s.variant_review = on, cx);
+                        table::revalidate_now(cx);
+                    }),
+                    window,
+                    cx,
+                )
+            }),
+        )
+        .description(
+            "Columns checked for inconsistent displayed forms. Similar values are suggestions for \
+             review, not automatic merges.",
+        ),
+    );
+
     SettingPage::new("Columns")
+        .group(values)
         .group(group)
         .group(spelling)
+        .group(variants)
         .group(descriptions_group(project, &headers, cx))
         .group(data_types_group(headers))
         .group(authority_accounts_group(cx))

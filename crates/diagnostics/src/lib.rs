@@ -9,11 +9,11 @@ pub mod fixes;
 mod panel;
 pub mod spelling;
 mod validator;
-pub use fixes::{Fix, FixProviders};
+pub use fixes::{Fix, FixProviders, FixTarget, GroupFix, GroupFixProviders, GroupMember};
 pub use panel::ProblemsPanel;
 pub use validator::{
-    AsyncValidators, ColumnInfo, ColumnSnapshot, ColumnValidator, Misspelling, SpellActions,
-    Validators, address,
+    AsyncValidators, CellValue, ColumnFinding, ColumnInfo, ColumnSnapshot, ColumnValidator,
+    ColumnValues, Misspelling, SpellActions, Validators, address,
 };
 
 use std::collections::HashMap;
@@ -39,6 +39,65 @@ pub struct Location {
     /// Stable `dataset_main._row_id`, used only when an authored note reaches disk.
     pub row_id: Option<settings::project::RowId>,
     pub column: Option<SharedString>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope<'a> {
+    Dataset,
+    Column(&'a str),
+    Row(usize),
+    Cell { row: usize, column: &'a str },
+}
+
+impl Location {
+    pub fn scope(&self) -> Scope<'_> {
+        match (self.row, self.column.as_deref()) {
+            (None, None) => Scope::Dataset,
+            (None, Some(column)) => Scope::Column(column),
+            (Some(row), None) => Scope::Row(row),
+            (Some(row), Some(column)) => Scope::Cell { row, column },
+        }
+    }
+
+    pub fn dataset(dataset: impl Into<SharedString>) -> Self {
+        Self {
+            dataset: dataset.into(),
+            row: None,
+            row_id: None,
+            column: None,
+        }
+    }
+
+    pub fn column(dataset: impl Into<SharedString>, column: impl Into<SharedString>) -> Self {
+        Self {
+            column: Some(column.into()),
+            ..Self::dataset(dataset)
+        }
+    }
+
+    pub fn row(
+        dataset: impl Into<SharedString>,
+        row: usize,
+        row_id: Option<settings::project::RowId>,
+    ) -> Self {
+        Self {
+            row: Some(row),
+            row_id,
+            ..Self::dataset(dataset)
+        }
+    }
+
+    pub fn cell(
+        dataset: impl Into<SharedString>,
+        row: usize,
+        row_id: Option<settings::project::RowId>,
+        column: impl Into<SharedString>,
+    ) -> Self {
+        Self {
+            column: Some(column.into()),
+            ..Self::row(dataset, row, row_id)
+        }
+    }
 }
 
 /// How loud a problem is. Closed set — a hand-authored mark is just a [`Severity::Note`] from
@@ -77,7 +136,7 @@ pub enum Source {
     /// A note attached to the data, whether typed here or carried in from the imported
     /// spreadsheet. Persists, and carries whatever provenance it arrived with — see [`Filed`].
     Note,
-    /// A named rule, validator, plugin, or language server — the string is what the panel shows.
+    /// A named rule, validator, plugin, or language server — the string is its stable identity.
     /// Never persisted: computed output is recomputed on open, and stored copies go stale.
     Validator(SharedString),
 }
@@ -87,11 +146,26 @@ pub enum Source {
 pub const SOURCE_NOTE: &str = "note";
 
 impl Source {
-    /// What the panel shows in a diagnostic's source column.
-    pub fn label(&self) -> SharedString {
+    /// Stable producer identity used for invalidation, settings, and fix-provider lookup.
+    pub fn key(&self) -> SharedString {
         match self {
             Source::Note => SOURCE_NOTE.into(),
             Source::Validator(name) => name.clone(),
+        }
+    }
+
+    /// What the panel shows in a diagnostic's source column.
+    pub fn label(&self) -> SharedString {
+        match self {
+            Source::Note => "User notes".into(),
+            Source::Validator(name) => match name.as_ref() {
+                "spell" => "Spelling".into(),
+                "capitalization" => "Capitalization".into(),
+                "files" => "Missing files".into(),
+                "date" => "Date format".into(),
+                "value variants" => "Value variants".into(),
+                _ => name.clone(),
+            },
         }
     }
 }
@@ -102,9 +176,20 @@ pub struct Diagnostic {
     pub severity: Severity,
     pub source: Source,
     pub message: SharedString,
+    pub group: Option<DiagnosticGroup>,
     /// Who filed this and when, for authored notes. Always `None` on a computed finding — a
     /// validator's output is recomputed on open, so it has no history to carry.
     pub filed: Option<Filed>,
+}
+
+/// Producer-owned identity; summaries are presentation, never grouping keys.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DiagnosticGroup {
+    pub key: SharedString,
+    pub summary: SharedString,
+    /// The exact value this occurrence concerns, for fix menus that must not inspect other values
+    /// in the same cell. It does not participate in group identity.
+    pub subject: Option<SharedString>,
 }
 
 /// A note's provenance. Free text rather than a parsed date: a catalogue inherits notes from
@@ -165,8 +250,14 @@ impl Global for Diagnostics {}
 impl Diagnostics {
     /// Publish `source`'s complete diagnostics for `dataset`, replacing whatever it published
     /// before (LSP `publishDiagnostics`). A re-run that finds nothing clears its own stale
-    /// entries, so resolving a problem is just republishing without it.
-    pub fn set(source: &Source, dataset: &str, items: Vec<Diagnostic>, cx: &mut App) {
+    /// entries, so resolving a problem is just republishing without it. Computed notes become
+    /// warnings because the Notes tab belongs to authored notes.
+    pub fn set(source: &Source, dataset: &str, mut items: Vec<Diagnostic>, cx: &mut App) {
+        for diagnostic in &mut items {
+            if diagnostic.source != Source::Note && diagnostic.severity == Severity::Note {
+                diagnostic.severity = Severity::Warning;
+            }
+        }
         let this = cx.default_global::<Self>();
         this.items
             .retain(|d| &d.source != source || d.location.dataset != dataset);
@@ -303,6 +394,7 @@ impl Diagnostics {
             severity: Severity::Note,
             source: Source::Note,
             message,
+            group: None,
             filed,
         });
         this.reindex();
@@ -352,6 +444,7 @@ impl Diagnostics {
                 severity: Severity::Note,
                 source: Source::Note,
                 message,
+                group: None,
                 filed,
             });
         }
@@ -475,6 +568,7 @@ fn load_project_notes(cx: &mut App) {
             severity: Severity::from_key(&n.severity),
             source: Source::Note,
             message: n.message.clone().into(),
+            group: None,
             filed: match (&n.created_at, &n.author) {
                 (None, None) => None,
                 (date, author) => Some(Filed {
@@ -499,6 +593,10 @@ pub struct DiagnosticHooks {
     /// Write text back to a location and revalidate. The other half of [`Self::text_at`], and the
     /// reason a panel row can offer the same corrections a cell does.
     pub set_text: fn(&Location, SharedString, &mut App),
+    /// Apply a group resolution as one undoable edit and one validation pass.
+    pub set_texts: fn(Vec<(Location, SharedString)>, &mut App),
+    /// Re-run validation after a resolution changes validator settings instead of cell text.
+    pub revalidate: fn(&mut App),
 }
 
 impl Global for DiagnosticHooks {}
@@ -596,6 +694,7 @@ mod tests {
             severity,
             source,
             message: msg.into(),
+            group: None,
             filed: None,
         }
     }
@@ -809,6 +908,7 @@ mod tests {
                     severity: Severity::Error,
                     source: v.clone(),
                     message: "typo".into(),
+                    group: None,
                     filed: None,
                 }],
                 cx,
@@ -932,6 +1032,25 @@ mod tests {
             );
             assert_eq!(Diagnostics::all(cx).len(), 3);
             assert_eq!(Diagnostics::counts(cx), (1, 1));
+        });
+    }
+
+    #[gpui::test]
+    fn computed_notes_are_warnings_so_the_notes_tab_stays_user_owned(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let source = Source::Validator("plugin".into());
+            Diagnostics::set(
+                &source,
+                DATASET_MAIN,
+                vec![diag(
+                    Severity::Note,
+                    source.clone(),
+                    DATASET_MAIN,
+                    "review this",
+                )],
+                cx,
+            );
+            assert_eq!(Diagnostics::all(cx)[0].severity, Severity::Warning);
         });
     }
 }

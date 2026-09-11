@@ -112,6 +112,12 @@ pub struct ColumnSettings {
     /// can't derive `Default`.
     #[serde(default = "yes")]
     pub spellcheck: bool,
+    /// Whether this column should report near-duplicate displayed values for human review.
+    #[serde(default)]
+    pub variant_review: bool,
+    /// Exact value pairs the cataloguer confirmed are distinct, in canonical lexical order.
+    #[serde(default)]
+    pub distinct_variants: std::collections::BTreeSet<(String, String)>,
     /// Which authority file this column's values must exist in, by name (`"LCSH"`), or `None` to
     /// check nothing. Separate from the column's [`ColumnType`] because the two answer different
     /// questions: the type is the shape a value has, this is the list it has to appear on.
@@ -139,6 +145,8 @@ impl Default for ColumnSettings {
         Self {
             filter_enabled: false,
             spellcheck: true,
+            variant_review: false,
+            distinct_variants: Default::default(),
             authority: None,
             plugins: BTreeMap::new(),
             severity: BTreeMap::new(),
@@ -312,6 +320,7 @@ mod tests {
             ColumnSettings::default()
         );
         assert!(!ColumnSettings::default().filter_enabled);
+        assert!(!ColumnSettings::default().variant_review);
     }
 
     /// The reason this is a map and not `ColumnLayout`'s positional vec: a column disappearing
@@ -344,6 +353,7 @@ mod tests {
     fn a_blob_without_a_plugin_bucket_reads_as_empty() {
         let parsed = parse(Some(r#"{"c2":{"filter_enabled":true}}"#));
         assert!(parsed["c2"].plugins.is_empty());
+        assert!(!parsed["c2"].variant_review);
     }
 
     /// One column can override two producers differently — the map is keyed by producer for

@@ -447,6 +447,7 @@ pub fn menu(
                 )
             };
             let stored = settings::columns::get(&key, cx).plugins;
+            let variant_review = settings::columns::get(&key, cx).variant_review;
             let (freeze_table, rename_table) = (table.clone(), table.clone());
             let menu = structural_items(menu, None, Some(col))
                 .item(
@@ -504,6 +505,19 @@ pub fn menu(
                     )
                 })
             });
+            let review_key = key.clone();
+            let menu = menu.separator().item(
+                PopupMenuItem::new("Review value variants")
+                    .checked(variant_review)
+                    .on_click(move |_, _, cx| {
+                        settings::columns::update(
+                            &review_key,
+                            |settings| settings.variant_review = !settings.variant_review,
+                            cx,
+                        );
+                        crate::revalidate_now(cx);
+                    }),
+            );
             let menu = mapping_submenus(&key, menu, window, cx);
             MenuContributions::for_target(MenuTarget::Column, cx)
                 .into_iter()
@@ -542,13 +556,20 @@ pub fn menu(
 
     let menu = match target {
         Target::Cell { row, col } => {
-            let menu =
-                diagnostics::spelling::menu(&spell_text, menu, window, cx, move |fixed, cx| {
+            let menu = diagnostics::spelling::menu(
+                &spell_text,
+                None,
+                menu,
+                window,
+                cx,
+                move |fixed, cx| {
                     crate::write_cell(row, col, fixed, cx);
-                });
+                },
+            );
             diagnostics::fixes::menu(
                 &location,
                 &spell_text,
+                None,
                 menu,
                 window,
                 cx,
@@ -789,6 +810,7 @@ mod tests {
                 severity: Severity::Note,
                 source: Source::Note,
                 message: "look at this".into(),
+                group: None,
                 filed: None,
             };
             // A cell note, a whole-row note, and a whole-column note — one per marker site.
@@ -813,6 +835,7 @@ mod tests {
                     severity: Severity::Error,
                     source: v.clone(),
                     message: "bad".into(),
+                    group: None,
                     filed: None,
                 }],
                 cx,

@@ -336,6 +336,25 @@ fn register_spell_checker(cx: &mut gpui::App) {
         };
         cx.update(|cx| {
             diagnostics::Validators::register(Box::new(spell.clone()), cx);
+            diagnostics::Validators::register(
+                Box::new(spellcheck::CapitalizationCheck(spell.clone())),
+                cx,
+            );
+            diagnostics::FixProviders::register(
+                spellcheck::CAPITALIZATION_VALIDATOR_NAME,
+                spellcheck::capitalization_fixes,
+                cx,
+            );
+            diagnostics::GroupFixProviders::register(
+                spellcheck::SPELLING_VALIDATOR_NAME,
+                spellcheck::spelling_group_fixes,
+                cx,
+            );
+            diagnostics::GroupFixProviders::register(
+                spellcheck::CAPITALIZATION_VALIDATOR_NAME,
+                spellcheck::capitalization_group_fixes,
+                cx,
+            );
             cx.set_global(spell);
             cx.set_global(diagnostics::SpellActions {
                 suggest: spellcheck::misspellings,
@@ -350,6 +369,23 @@ fn register_spell_checker(cx: &mut gpui::App) {
         });
     })
     .detach();
+}
+
+fn register_variant_checker(cx: &mut gpui::App) {
+    let variants = clustering::ValueVariants::default();
+    diagnostics::Validators::register(Box::new(variants.clone()), cx);
+    diagnostics::FixProviders::register(
+        clustering::VALUE_VARIANTS_NAME,
+        clustering::variant_fixes,
+        cx,
+    );
+    diagnostics::GroupFixProviders::register(
+        clustering::VALUE_VARIANTS_NAME,
+        clustering::variant_group_fixes,
+        cx,
+    );
+    cx.set_global(variants);
+    table::revalidate_now(cx);
 }
 
 /// Select and scroll to whatever a problem points at. Three index spaces meet here: the
@@ -488,6 +524,8 @@ fn main() {
             reveal: reveal_in_table,
             text_at: table::cell_text,
             set_text: table::set_cell_text,
+            set_texts: table::set_cell_texts,
+            revalidate: table::revalidate_now,
         });
         diagnostics::init(cx);
 
@@ -495,6 +533,7 @@ fn main() {
         // triggers the runs without naming any of them.
         plugin_host::on_command_finished(table::revalidate_now);
         plugin_host::reload(cx);
+        register_variant_checker(cx);
         register_spell_checker(cx);
         update_check::init(cx);
         diagnostics::AsyncValidators::register(

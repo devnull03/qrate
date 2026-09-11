@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use diagnostics::{ColumnInfo, ColumnValidator, Severity};
+use diagnostics::{ColumnInfo, ColumnValidator, ColumnValues, Severity};
 use gpui::SharedString;
 use mlua::{Function, Lua, LuaOptions, LuaSerdeExt as _, SerializeOptions, StdLib, Table, VmState};
 use plugin_api::{
@@ -381,8 +381,8 @@ impl ColumnValidator for LuaPlugin {
     fn validate(
         &self,
         column: &ColumnInfo,
-        values: &[SharedString],
-    ) -> Vec<(usize, Severity, SharedString)> {
+        values: ColumnValues<'_>,
+    ) -> Vec<diagnostics::ColumnFinding> {
         // A plugin that never loaded reports nothing here; `reload` logged that failure once
         // instead of once per column.
         let Ok(loaded) = self.state.as_ref() else {
@@ -392,8 +392,8 @@ impl ColumnValidator for LuaPlugin {
             return Vec::new();
         };
 
-        match self.call_validate(loaded, validate, column, values) {
-            Ok(found) => found,
+        match self.call_validate(loaded, validate, column, values.raw()) {
+            Ok(found) => found.into_iter().map(Into::into).collect(),
             // Logged, not returned: a plugin that throws is broken code, and this list is what is
             // wrong with the archivist's data. Reporting it here also had to invent a row.
             Err(err) => {
@@ -871,7 +871,7 @@ fn setting_spec(item: Table) -> mlua::Result<SettingSpec> {
 mod tests {
     use crate::plugin::HTTP_BUDGET;
     use crate::{Env, LuaPlugin, PERMISSION_NET, Writes};
-    use diagnostics::{ColumnInfo, ColumnValidator, Severity};
+    use diagnostics::{ColumnInfo, ColumnValidator, ColumnValues, Severity};
     use gpui::SharedString;
     use plugin_api::{Bar, BarAction, CommandContext, MenuTarget, SettingKind, SettingScope, Side};
     use serde_json::{Value as Json, json};
@@ -963,7 +963,17 @@ mod tests {
             .iter()
             .map(|value| (*value).into())
             .collect::<Vec<_>>();
-        plugin.validate(&column, &values)
+        plugin
+            .validate(&column, ColumnValues::new(&values, ""))
+            .into_iter()
+            .map(|finding| {
+                (
+                    finding.row.expect("IIIF findings address cells"),
+                    finding.severity,
+                    finding.message,
+                )
+            })
+            .collect()
     }
 
     fn check(source: &str, values: &[&str]) -> Vec<(usize, Severity, SharedString)> {
@@ -985,7 +995,17 @@ mod tests {
             settings: &settings,
         };
         let values: Vec<SharedString> = values.iter().map(|v| SharedString::from(*v)).collect();
-        plugin.validate(&column, &values)
+        plugin
+            .validate(&column, ColumnValues::new(&values, ""))
+            .into_iter()
+            .map(|f| {
+                (
+                    f.row.expect("script findings address cells"),
+                    f.severity,
+                    f.message,
+                )
+            })
+            .collect()
     }
 
     const FLAG_BAD: &str = r#"
@@ -1102,9 +1122,10 @@ mod tests {
             data_type: "Text",
             settings: &settings,
         };
-        let found = plugin(ECHO_SETTINGS).validate(&column, &["x".into()]);
+        let values = ["x".into()];
+        let found = plugin(ECHO_SETTINGS).validate(&column, ColumnValues::new(&values, ""));
         assert_eq!(
-            found[0].2, "/nil/nil",
+            found[0].message, "/nil/nil",
             "another plugin's object is invisible"
         );
     }
@@ -1268,8 +1289,9 @@ mod tests {
             data_type: "Text",
             settings: &settings,
         };
-        let found = plugin.validate(&column, &["x".into()]);
-        assert_eq!(found[0].2, "Film");
+        let values = ["x".into()];
+        let found = plugin.validate(&column, ColumnValues::new(&values, ""));
+        assert_eq!(found[0].message, "Film");
     }
 
     #[test]
@@ -1575,11 +1597,12 @@ mod tests {
             data_type: "Text",
             settings: &settings,
         };
-        let found = reloaded.validate(&column, &[url.into()]);
+        let values = [url.into()];
+        let found = reloaded.validate(&column, ColumnValues::new(&values, ""));
         assert!(
             found
                 .iter()
-                .any(|(_, _, message)| message.contains("Settings ▸ Plugins")),
+                .any(|finding| finding.message.contains("Settings ▸ Plugins")),
             "{found:?}"
         );
     }
@@ -1665,7 +1688,12 @@ mod tests {
             data_type: "Text",
             settings: &settings,
         };
-        let run = |plugin: &LuaPlugin| plugin.validate(&column, &["x".into()])[0].2.clone();
+        let values = ["x".into()];
+        let run = |plugin: &LuaPlugin| {
+            plugin.validate(&column, ColumnValues::new(&values, ""))[0]
+                .message
+                .clone()
+        };
 
         let plugin = plugin(source);
         assert!(
@@ -1732,15 +1760,20 @@ mod tests {
                 settings: &settings,
             };
             let values = ["Film; Pottery", "Film", ""];
-            plugin.validate(&column, &values.map(SharedString::from))
+            let values = values.map(SharedString::from);
+            plugin.validate(&column, ColumnValues::new(&values, ""))
         };
 
         let one = checked(json!(["subject"]));
         assert_eq!(one.len(), 1, "{one:?}");
-        assert_eq!(one[0].0, 0, "a sub-delimited cell is checked term by term");
-        assert_eq!(one[0].1, Severity::Error);
         assert_eq!(
-            one[0].2,
+            one[0].row,
+            Some(0),
+            "a sub-delimited cell is checked term by term"
+        );
+        assert_eq!(one[0].severity, Severity::Error);
+        assert_eq!(
+            one[0].message,
             r#""Pottery" is not a term in the Islandora subject vocabulary"#
         );
 
@@ -1784,10 +1817,15 @@ mod tests {
             settings: &settings,
         };
         let values = ["Text", "Nonsense Value", "Still Image"];
-        let found = plugin.validate(&column, &values.map(SharedString::from));
+        let values = values.map(SharedString::from);
+        let found = plugin.validate(&column, ColumnValues::new(&values, ""));
 
         assert_eq!(found.len(), 1, "only the invented term is wrong: {found:?}");
-        assert!(found[0].2.contains("Nonsense Value"), "{}", found[0].2);
+        assert!(
+            found[0].message.contains("Nonsense Value"),
+            "{}",
+            found[0].message
+        );
         assert!(
             plugin.take_storage().is_some(),
             "the verdicts were cached, or every edit would re-ask the server"

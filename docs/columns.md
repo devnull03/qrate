@@ -22,8 +22,15 @@ the column header, for anyone else who opens the project.
 
 ## Spell check
 
-Turn spell check on or off per column, and choose its dictionary language from the more
-than 60 available.
+Turn spell check on or off per column. Downloaded dictionaries participate in automatic
+language selection; the application-wide language setting chooses the preferred regional
+spelling when variants exist.
+
+## Value variants
+
+Turn on value-variant review for columns where inconsistent displayed forms matter, such as
+people, organizations, places, subjects, collection titles, and controlled labels. qrate
+suggests similar values already present in that column but never merges them automatically.
 
 ## Authority lists
 

@@ -6,7 +6,7 @@
 //! whatever it published before. Neither offers "add one diagnostic", and neither does
 //! [`Validators::run`] — a re-run is the only invalidation there is.
 //!
-//! A validator never builds a [`Location`] or a [`Source`]. It reports `(row, severity, message)`
+//! A column validator never builds a [`Location`] or a [`Source`]. It reports [`ColumnFinding`] values
 //! against one column and the registry addresses it, the same split as an LSP server reporting
 //! ranges while the client owns the URI. That is what lets a validator live in its own crate
 //! knowing nothing about datasets, projects, or the table.
@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use gpui::{App, BorrowAppContext as _, Global, SharedString};
 use settings::columns::ColumnSettings;
 
-use crate::{DATASET_MAIN, Diagnostic, Diagnostics, Location, Severity, Source};
+use crate::{DATASET_MAIN, Diagnostic, DiagnosticGroup, Diagnostics, Location, Severity, Source};
 
 /// One column's whole input, owned. A validator that runs later — off the UI thread, after this
 /// run's borrows are gone — needs the data to outlive the call, which [`ColumnInfo`] cannot do.
@@ -26,6 +26,7 @@ pub struct ColumnSnapshot {
     pub data_type: SharedString,
     pub settings: ColumnSettings,
     pub values: Vec<SharedString>,
+    pub subdelimiter: SharedString,
 }
 
 impl ColumnSnapshot {
@@ -49,6 +50,119 @@ pub struct ColumnInfo<'a> {
     pub settings: &'a ColumnSettings,
 }
 
+#[derive(Clone, Copy)]
+pub struct ColumnValues<'a> {
+    raw: &'a [SharedString],
+    subdelimiter: &'a str,
+}
+
+impl<'a> ColumnValues<'a> {
+    pub fn new(raw: &'a [SharedString], subdelimiter: &'a str) -> Self {
+        Self { raw, subdelimiter }
+    }
+
+    pub fn raw(self) -> &'a [SharedString] {
+        self.raw
+    }
+
+    pub fn iter(self) -> impl Iterator<Item = CellValue<'a>> {
+        self.raw
+            .iter()
+            .enumerate()
+            .map(move |(row, raw)| CellValue {
+                row,
+                raw,
+                subdelimiter: self.subdelimiter,
+            })
+    }
+
+    pub fn replace_part(
+        self,
+        row: usize,
+        observed: &str,
+        replacement: &str,
+    ) -> Option<SharedString> {
+        let raw = self.raw.get(row)?.as_ref();
+        for (offset, _) in raw.match_indices(observed) {
+            let end = offset + observed.len();
+            let bounded = if self.subdelimiter.is_empty() {
+                raw.trim() == observed
+            } else {
+                (raw[..offset].trim_end().ends_with(self.subdelimiter)
+                    || raw[..offset].trim().is_empty())
+                    && (raw[end..].trim_start().starts_with(self.subdelimiter)
+                        || raw[end..].trim().is_empty())
+            };
+            if bounded {
+                let mut result = raw.to_owned();
+                result.replace_range(offset..end, replacement);
+                return Some(result.into());
+            }
+        }
+        None
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct CellValue<'a> {
+    pub row: usize,
+    pub raw: &'a str,
+    subdelimiter: &'a str,
+}
+
+impl<'a> CellValue<'a> {
+    pub fn parts(self) -> ValueParts<'a> {
+        if self.subdelimiter.is_empty() {
+            ValueParts::Whole(
+                (!self.raw.trim().is_empty())
+                    .then_some(self.raw.trim())
+                    .into_iter(),
+            )
+        } else {
+            ValueParts::Split(self.raw.split(self.subdelimiter))
+        }
+    }
+}
+
+pub enum ValueParts<'a> {
+    Whole(std::option::IntoIter<&'a str>),
+    Split(std::str::Split<'a, &'a str>),
+}
+
+impl<'a> Iterator for ValueParts<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            ValueParts::Whole(values) => values.next(),
+            ValueParts::Split(values) => values.find_map(|value| {
+                let value = value.trim();
+                (!value.is_empty()).then_some(value)
+            }),
+        }
+    }
+}
+
+/// `None` addresses the whole column; `Some` addresses a source-row cell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ColumnFinding {
+    pub row: Option<usize>,
+    pub severity: Severity,
+    pub message: SharedString,
+    pub group: Option<DiagnosticGroup>,
+}
+
+impl From<(usize, Severity, SharedString)> for ColumnFinding {
+    fn from((row, severity, message): (usize, Severity, SharedString)) -> Self {
+        Self {
+            row: Some(row),
+            severity,
+            message,
+            group: None,
+        }
+    }
+}
+
 /// One column-wise check. A `dyn` trait rather than an enum so a validator's dependencies — a
 /// dictionary, a pattern set, an embedded Lua VM — stay out of every other crate's graph. The
 /// plugin host implements it once, per loaded script, which is how a Lua file becomes a producer
@@ -58,14 +172,13 @@ pub trait ColumnValidator: 'static {
     /// Must be stable across runs and unique across validators.
     fn name(&self) -> SharedString;
 
+    /// Clear snapshot-bound state, including columns removed since the previous run.
+    fn begin_run(&self) {}
+
     /// Check one column top to bottom. `values` is every row's text for this column, in source-row
     /// order, so the returned index *is* the row. Returning nothing means the column is clean —
     /// which is also how a validator that does not apply here opts out.
-    fn validate(
-        &self,
-        column: &ColumnInfo,
-        values: &[SharedString],
-    ) -> Vec<(usize, Severity, SharedString)>;
+    fn validate(&self, column: &ColumnInfo, values: ColumnValues<'_>) -> Vec<ColumnFinding>;
 }
 
 /// Producers that cannot answer while the run is on the stack — the plugin host running its VMs,
@@ -154,6 +267,11 @@ impl Validators {
         }
 
         let settings = settings::columns::load(cx);
+        let subdelimiter = if cx.has_global::<settings::AppSettings>() {
+            settings::effective_text(settings::FILTER_SUBDELIMITER_KEY, cx)
+        } else {
+            SharedString::default()
+        };
         let project = cx.try_global::<settings::project::CurrentProject>();
         let blank = ColumnSettings::default();
         // Transposed once, not once per validator: every validator wants the same column-major
@@ -171,19 +289,24 @@ impl Validators {
                     .iter()
                     .map(|r| r.get(ix).cloned().unwrap_or_default())
                     .collect(),
+                subdelimiter: subdelimiter.clone(),
             })
             .collect();
 
         if sync {
             cx.update_global::<Self, _>(|this, cx| {
                 for validator in &this.0 {
+                    validator.begin_run();
                     let items = snapshot
                         .iter()
                         .flat_map(|column| {
                             address(
                                 validator.name(),
                                 column,
-                                validator.validate(&column.info(), &column.values),
+                                validator.validate(
+                                    &column.info(),
+                                    ColumnValues::new(&column.values, &column.subdelimiter),
+                                ),
                             )
                         })
                         .collect();
@@ -202,7 +325,7 @@ impl Validators {
     }
 }
 
-/// Turn one validator's `(row, severity, message)` reports into addressed diagnostics. A validator
+/// Turn one validator's cell or column reports into addressed diagnostics. A validator
 /// never builds a [`Location`] or a [`Source`]; this is where that split is honoured, and it is
 /// public so a deferred producer addresses its findings identically.
 ///
@@ -212,7 +335,7 @@ impl Validators {
 pub fn address(
     validator: SharedString,
     column: &ColumnSnapshot,
-    found: Vec<(usize, Severity, SharedString)>,
+    found: Vec<ColumnFinding>,
 ) -> Vec<Diagnostic> {
     let override_to = column
         .settings
@@ -221,16 +344,17 @@ pub fn address(
         .map(|key| Severity::from_key(key));
     found
         .into_iter()
-        .map(|(row, severity, message)| Diagnostic {
+        .map(|finding| Diagnostic {
             location: Location {
                 dataset: DATASET_MAIN.into(),
-                row: Some(row),
+                row: finding.row,
                 row_id: None,
                 column: Some(column.name.clone()),
             },
-            severity: override_to.unwrap_or(severity),
+            severity: override_to.unwrap_or(finding.severity),
             source: Source::Validator(validator.clone()),
-            message,
+            message: finding.message,
+            group: finding.group,
             filed: None,
         })
         .collect()
@@ -244,6 +368,28 @@ mod tests {
     };
     use gpui::{SharedString, TestAppContext};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn column_values_borrow_raw_cells_and_split_without_per_cell_storage() {
+        let raw = [
+            SharedString::from("Busson, Carl W.| Dhillon, Baltej Singh "),
+            SharedString::from(""),
+        ];
+        let values = crate::ColumnValues::new(&raw, "|");
+        let cells: Vec<_> = values.iter().collect();
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[0].row, 0);
+        assert_eq!(
+            cells[0].parts().collect::<Vec<_>>(),
+            ["Busson, Carl W.", "Dhillon, Baltej Singh"]
+        );
+        assert!(cells[1].parts().next().is_none());
+        assert_eq!(
+            values.replace_part(0, "Busson, Carl W.", "Carl W. Busson"),
+            Some("Carl W. Busson| Dhillon, Baltej Singh ".into())
+        );
+        assert!(values.replace_part(0, "Carl", "wrong boundary").is_none());
+    }
 
     /// Flags any cell equal to `bad`, so a test can steer exactly how many items a run produces.
     struct Flag {
@@ -259,18 +405,18 @@ mod tests {
         fn validate(
             &self,
             column: &ColumnInfo,
-            values: &[SharedString],
-        ) -> Vec<(usize, Severity, SharedString)> {
+            values: crate::ColumnValues<'_>,
+        ) -> Vec<super::ColumnFinding> {
             values
                 .iter()
-                .enumerate()
-                .filter(|(_, v)| v.as_ref() == self.bad)
-                .map(|(row, _)| {
+                .filter(|value| value.raw == self.bad)
+                .map(|value| {
                     (
-                        row,
+                        value.row,
                         Severity::Error,
                         format!("{} in {}", self.bad, column.name).into(),
                     )
+                        .into()
                 })
                 .collect()
         }
@@ -427,6 +573,7 @@ mod tests {
             data_type: "Text".into(),
             settings,
             values: vec!["Aderman, Ray".into()],
+            subdelimiter: SharedString::default(),
         }
     }
 
@@ -434,16 +581,55 @@ mod tests {
     /// the column's setting is what decides how loud that lands.
     #[test]
     fn a_columns_override_replaces_the_severity_the_check_reported() {
-        let found = vec![(0, Severity::Error, SharedString::from("not in LCSH"))];
+        let found = vec![(0, Severity::Error, SharedString::from("not in LCSH")).into()];
         let addressed = crate::address("LCSH".into(), &snapshot(&[("LCSH", "warning")]), found);
         assert_eq!(addressed[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn column_findings_preserve_scope_and_group_under_overrides() {
+        let group = crate::DiagnosticGroup {
+            key: "missing".into(),
+            summary: "Missing values".into(),
+            subject: None,
+        };
+        let found = vec![super::ColumnFinding {
+            row: None,
+            severity: Severity::Error,
+            message: "Column is empty".into(),
+            group: Some(group.clone()),
+        }];
+        let addressed = crate::address(
+            "required".into(),
+            &snapshot(&[("required", "warning")]),
+            found,
+        );
+        assert_eq!(
+            addressed[0].location.scope(),
+            crate::Scope::Column("Photographer")
+        );
+        assert_eq!(addressed[0].severity, Severity::Warning);
+        assert_eq!(addressed[0].group, Some(group));
+        assert_eq!(crate::Location::dataset("d").scope(), crate::Scope::Dataset);
+        assert_eq!(
+            crate::Location::row("d", 4, None).scope(),
+            crate::Scope::Row(4)
+        );
+        assert_eq!(
+            crate::Location::cell("d", 4, None, "c").scope(),
+            crate::Scope::Cell {
+                row: 4,
+                column: "c"
+            }
+        );
     }
 
     /// An override names one producer, so it must not quiet the others checking the same column.
     #[test]
     fn an_override_for_one_producer_leaves_the_rest_alone() {
         let column = snapshot(&[("LCSH", "warning")]);
-        let found = vec![(0, Severity::Error, SharedString::from("no such file"))];
+        let found: Vec<super::ColumnFinding> =
+            vec![(0, Severity::Error, SharedString::from("no such file")).into()];
         let addressed = crate::address("files".into(), &column, found.clone());
         assert_eq!(addressed[0].severity, Severity::Error);
         // And a column with nothing overridden is untouched either way.

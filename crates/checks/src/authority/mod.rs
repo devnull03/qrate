@@ -325,7 +325,11 @@ fn publish(jobs: &[Job], subdelimiter: &str, cx: &mut App) {
                         })
                     })
                     .collect();
-                diagnostics::address(name.into(), column, found)
+                diagnostics::address(
+                    name.into(),
+                    column,
+                    found.into_iter().map(Into::into).collect(),
+                )
             })
             .collect();
         Diagnostics::set(&Source::Validator(name.into()), DATASET_MAIN, items, cx);
@@ -416,7 +420,7 @@ fn take_token() -> bool {
 ///
 /// Reads the cache only — a menu opens on a click and cannot wait for a round trip. A term whose
 /// verdict has not arrived offers nothing, and the menu simply doesn't appear.
-fn offer(_: &Location, text: &str, cx: &App) -> Vec<Fix> {
+fn offer(_: &Location, text: &str, _: Option<&str>, cx: &App) -> Vec<Fix> {
     let Some(cache) = cx.try_global::<Cache>() else {
         return Vec::new();
     };

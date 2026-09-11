@@ -1,0 +1,16 @@
+[package]
+name = "clustering"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+diagnostics = { path = "../diagnostics" }
+settings = { path = "../settings" }
+gpui.workspace = true
+log.workspace = true
+unicode-normalization = "0.1"
+caseless = "0.2"
+strsim = "0.11"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

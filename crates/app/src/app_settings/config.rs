@@ -51,6 +51,7 @@ fn headers(cx: &App) -> Vec<String> {
         "Description",
         "Authority",
         "Spellcheck",
+        "Variant Review",
         AUTHORITY_SEVERITY,
     ];
     fixed
@@ -98,6 +99,12 @@ fn rows(cx: &App) -> Vec<Row> {
                     .and_then(|s| s.authority.clone())
                     .unwrap_or_default(),
                 if settings.is_none_or(|s| s.spellcheck) {
+                    "yes"
+                } else {
+                    "no"
+                }
+                .to_string(),
+                if settings.is_some_and(|s| s.variant_review) {
                     "yes"
                 } else {
                     "no"
@@ -159,6 +166,7 @@ mod tests {
                     "Description",
                     "Authority",
                     "Spellcheck",
+                    "Variant Review",
                     "Authority Severity",
                     "islandora::Vocabularies",
                     "islandora::Severity",
@@ -173,6 +181,6 @@ mod tests {
     /// somebody hand-writes.
     #[gpui::test]
     fn without_plugins_only_the_fixed_columns_are_written(cx: &mut TestAppContext) {
-        cx.update(|cx| assert_eq!(super::headers(cx).len(), 6));
+        cx.update(|cx| assert_eq!(super::headers(cx).len(), 7));
     }
 }

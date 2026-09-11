@@ -322,7 +322,13 @@ fn validate_async(columns: &[ColumnSnapshot], cx: &mut App) {
                         let items = columns
                             .iter()
                             .flat_map(|column| {
-                                let found = plugin.validate(&column.info(), &column.values);
+                                let found = plugin.validate(
+                                    &column.info(),
+                                    diagnostics::ColumnValues::new(
+                                        &column.values,
+                                        &column.subdelimiter,
+                                    ),
+                                );
                                 diagnostics::address(name.clone(), column, found)
                             })
                             .collect();
