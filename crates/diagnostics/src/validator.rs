@@ -591,6 +591,7 @@ mod tests {
         let group = crate::DiagnosticGroup {
             key: "missing".into(),
             summary: "Missing values".into(),
+            subject: None,
         };
         let found = vec![super::ColumnFinding {
             row: None,

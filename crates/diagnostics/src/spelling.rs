@@ -18,6 +18,7 @@ use crate::SpellActions;
 /// a menu item carries no offset.
 pub fn menu(
     text: &SharedString,
+    subject: Option<&str>,
     menu: PopupMenu,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
@@ -26,7 +27,10 @@ pub fn menu(
     let Some(actions) = cx.try_global::<SpellActions>().copied() else {
         return menu;
     };
-    let found = (actions.suggest)(text, cx);
+    let mut found = (actions.suggest)(text, cx);
+    if let Some(subject) = subject {
+        found.retain(|(word, _)| word.as_ref() == subject);
+    }
     if found.is_empty() {
         return menu;
     }
