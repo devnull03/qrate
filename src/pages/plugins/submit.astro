@@ -1,0 +1,63 @@
+---
+import Base from '../../layouts/Base.astro';
+import { REGISTRY_REPO, TEMPLATE_REPO } from '../../lib/plugins';
+
+const registry = `https://github.com/${REGISTRY_REPO}`;
+const template = `https://github.com/${TEMPLATE_REPO}`;
+---
+
+<Base
+  title="Publish a qrate plugin"
+  description="Package a qrate plugin and submit it to the official catalog."
+  current="plugins"
+>
+  <header class="gut border-b border-rule py-10 md:py-16">
+    <div class="eyebrow mb-4">For plugin authors</div>
+    <h1 class="m-0 mb-4 text-[36px] font-semibold leading-none tracking-[-0.04em] md:text-[54px]">
+      Publish a plugin.
+    </h1>
+    <p class="m-0 max-w-[680px] text-[15px] leading-[1.65] text-body">
+      Keep the plugin in your own public repository. Publish a versioned package, then submit its
+      exact release and hash to the qrate catalog.
+    </p>
+  </header>
+
+  <div class="gut grid gap-8 py-8 md:grid-cols-[minmax(0,1fr)_280px] md:py-12">
+    <article class="max-w-[720px]">
+      <h2 class="m-0 mb-4 text-2xl font-semibold">Release path</h2>
+      <ol class="m-0 space-y-4 pl-6 text-[14px] leading-[1.65] text-body">
+        <li>Create a repository from the qrate plugin template.</li>
+        <li>Choose a stable distribution ID and complete <code>qrate-plugin.json</code>.</li>
+        <li>Develop and test the plugin as an unmanaged folder in qrate.</li>
+        <li>Run the template package check.</li>
+        <li>Tag a version that matches the package manifest.</li>
+        <li>Check the ZIP and checksum attached to the GitHub Release.</li>
+        <li>Open a registry pull request for that exact release.</li>
+      </ol>
+
+      <h2 class="mb-3 mt-9 text-2xl font-semibold">What review checks</h2>
+      <p class="m-0 text-[14px] leading-[1.7] text-body">
+        Registry checks validate the package layout, manifest, API version, permissions, byte size,
+        and SHA-256. Maintainers also review the source, license, publisher identity, and release
+        notes. A listing identifies reviewed release bytes. It does not certify all plugin behavior.
+      </p>
+
+      <h2 class="mb-3 mt-9 text-2xl font-semibold">Issues and pull requests</h2>
+      <p class="m-0 text-[14px] leading-[1.7] text-body">
+        Open a listing-request issue if you need packaging help. Open a pull request when the release
+        is ready. Only a merged pull request can add a package to the catalog.
+      </p>
+    </article>
+
+    <aside class="h-fit border border-rule p-4 text-[13px] leading-[1.8]">
+      <div class="mb-2 font-mono text-[10px] uppercase text-dim">Start here</div>
+      <a href={template} rel="noopener" class="block text-accent">Plugin template ↗</a>
+      <a href="/docs/plugins" class="block text-accent">Plugin guide →</a>
+      <a href="/docs/plugins/api-reference" class="block text-accent">API reference →</a>
+      <a href={`${registry}/issues/new/choose`} rel="noopener" class="block text-accent">Request help ↗</a>
+      <a href={`${registry}/blob/main/CONTRIBUTING.md`} rel="noopener" class="block text-accent">
+        Submission rules ↗
+      </a>
+    </aside>
+  </div>
+</Base>

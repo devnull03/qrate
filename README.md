@@ -3,7 +3,7 @@
 The public site for [`devnull03/qrate`](https://github.com/devnull03/qrate) —
 home, get started, changelog, licence, privacy and terms — built with
 [Astro](https://astro.build) and Tailwind, deployed to
-[qrate.dvnl.work](https://qrate.dvnl.work) on GitHub Pages.
+[qrate.dvnl.work](https://qrate.dvnl.work) on Cloudflare Workers.
 
 This is the **`site` branch** — it contains only the Astro project, no Rust app
 code. The release list is fetched from the GitHub API **at build time** (in CI,
@@ -20,42 +20,22 @@ bun run build    # dist/client (static tree) + dist/server (the Worker)
 bun run preview  # build, then serve via wrangler exactly as production does
 ```
 
+Astro's MDX development renderer cannot load dependencies from a Windows Delta worktree whose path
+ends in `~`. Commit or stash changes, then run `bun run dev:windows`. It serves the same branch from
+a temporary safe-path worktree, seeds its local KV from the signed production catalog, and removes
+that worktree when the server exits. It uses a checked-in signed fixture and does not require
+Cloudflare credentials. Use `bun run dev:windows:refresh` to test the latest production catalog with
+an authenticated Wrangler CLI.
+
 ## Deploy
 
-`.github/workflows/deploy-site.yml` builds and publishes to Pages on every push
-to `site` (and via `workflow_dispatch`). Publishing a release on `main` triggers
-`redeploy-site-on-release.yml`, which dispatches this workflow so the
-release-driven pages refresh.
+Cloudflare builds the `site` branch and deploys the `qrate` Worker. GitHub release and catalog
+workflows request rebuilds through the configured Cloudflare deploy hook. `bun run deploy` builds
+and pushes from an authenticated local Wrangler CLI.
 
-The custom domain lives in the repository's Pages settings, not in a `CNAME`
-file, and the site is served from the **root** of `qrate.dvnl.work` — hence no
-`base` in `astro.config.mjs`.
-
-### Moving to Cloudflare Workers
-
-GitHub Pages can serve the six pages but not `/oauth/config`, so the move stops
-being optional once Google sync ships. Everything in this repo is ready; what
-is left is dashboard work:
-
-1. Workers & Pages → create a Worker from this repo, branch `site`, build
-   command `bun run build`, deploy command `bunx wrangler deploy`.
-2. Add `GH_TOKEN` as a **build** secret. Without it the build fetches the
-   release list unauthenticated at 60 requests/hour from a shared build IP, and
-   `getReleases()` throws on a non-OK response in production rather than
-   shipping an empty changelog — so a rate-limited build fails the deploy.
-3. Add the runtime secrets the Worker reads:
-   `wrangler secret put GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
-   `QRATE_GOOGLE_CONFIG_TOKEN`. Never in `wrangler.jsonc`. The last one must be
-   the same string qrate is built with (`option_env!("QRATE_GOOGLE_CONFIG_TOKEN")`
-   in `crates/data-exchange/src/google.rs`) — same name on both sides so it is
-   obvious they are one value.
-4. Point `qrate.dvnl.work` at the Worker and remove the Pages custom domain.
-5. Keep `deploy-site.yml` — it is what a published release dispatches — but swap
-   its deploy job for a POST to a Cloudflare **Deploy Hook**.
-
-`bun run deploy` builds and pushes straight from your machine after
-`wrangler login`. Both `bun run dev` and `bun run preview` read the secrets from
-an untracked `.dev.vars`, so the endpoint works locally.
+Set `SITE_URL` when hosting under another origin. Add runtime credentials with Wrangler or the
+Cloudflare dashboard; never put them in `wrangler.jsonc`. Local Worker secrets belong in the
+untracked `.dev.vars` file.
 
 ## Serving qrate itself
 
@@ -75,8 +55,35 @@ and point qrate at them under **Settings ▸ Google ▸ Credential endpoint**.
   chooser, so `drive.file` can reach a spreadsheet the user already owns.
   Needs a browser API key in `PICKER_API_KEY`, referrer-restricted to this site.
 
-The Worker only runs for `/oauth/config`; static assets are matched first, so
-every page is still served from the edge with no invocation.
+The Worker runs for `/oauth/config` and the plugin catalog endpoints. Static
+assets are matched first, so every page is still served from the edge.
+
+## Plugin catalog
+
+The `/plugins` pages are static pages built from qrate's signed plugin catalog.
+The Worker serves the catalog from Cloudflare KV at these paths:
+
+- `/plugins/catalog.json`
+- `/plugins/catalog.json.sig`
+- `/plugins/catalog-status.json`
+- `/plugins/schemas/<name>.json`
+
+The site source pins the trusted catalog public key. Set
+`QRATE_PLUGIN_CATALOG_PUBLIC_KEY` in the build environment only to test a
+planned key rotation.
+
+Builds use the checked-in signed fixture by default. `QRATE_PLUGIN_CATALOG_FILE` can select another
+exact signed catalog file; its signature must be beside it with a `.sig` suffix.
+`QRATE_PLUGIN_CATALOG_URL` instead selects a catalog service. A self-hosted deployment can therefore
+build without contacting qrate's deployment or point at its own registry. Set `SITE_URL` to the
+deployment's public origin for canonical URLs, sitemap entries, and structured metadata.
+
+The build fetches `catalog.json.sig` beside the catalog. It verifies the SHA-256,
+key ID, and signature before it parses any records. A bad catalog fails the
+build, so Cloudflare keeps the last successful deployment online.
+
+The site build fails if the configured catalog cannot pass signature and schema
+checks. Cloudflare then keeps the last successful deployment online.
 
 ## Theming
 

@@ -1,0 +1,49 @@
+---
+import type { Plugin } from '../lib/plugins';
+
+const { plugin } = Astro.props as { plugin: Plugin };
+const revoked = plugin.current.status === 'revoked';
+---
+
+<article
+  class="plugin-card flex h-full flex-col bg-paper p-5"
+  data-name={`${plugin.name} ${plugin.summary} ${plugin.publisher}`.toLowerCase()}
+  data-category={plugin.categories.map((category) => category.toLowerCase()).join('|')}
+  data-permission={plugin.current.permissions.length ? plugin.current.permissions.join(' ') : 'none'}
+>
+  <div class="mb-4 flex items-start justify-between gap-4">
+    {
+      plugin.icon ? (
+        <img
+          src={plugin.icon}
+          alt=""
+          loading="lazy"
+          class="size-10 shrink-0 border border-rule object-cover"
+        />
+      ) : (
+        <div class="flex size-10 shrink-0 items-center justify-center bg-ink font-mono text-sm font-semibold text-paper">
+          {plugin.name.slice(0, 2)}
+        </div>
+      )
+    }
+    <span
+      class:list={[
+        'border px-2 py-1 font-mono text-[9.5px] font-semibold uppercase tracking-[0.08em]',
+        revoked ? 'border-rust text-rust' : 'border-rule-nav text-accent',
+      ]}
+    >
+      {revoked ? 'revoked' : `v${plugin.current.version}`}
+    </span>
+  </div>
+
+  <h2 class="m-0 mb-2 text-xl font-semibold tracking-[-0.025em]">
+    <a href={`/plugins/${plugin.id}`}>{plugin.name}</a>
+  </h2>
+  <p class="m-0 mb-4 text-[13.5px] leading-[1.6] text-body">{plugin.summary}</p>
+
+  <div class="mt-auto border-t border-rule-nav pt-3 font-mono text-[11px] leading-[1.8] text-dim">
+    <div>{plugin.publisher}</div>
+    <div>{plugin.license} · API {plugin.current.api_version}</div>
+    <a href={`/plugins/${plugin.id}`} class="mt-1 block text-accent">View plugin →</a>
+  </div>
+</article>

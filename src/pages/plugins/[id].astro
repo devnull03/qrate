@@ -1,0 +1,143 @@
+---
+import type { GetStaticPaths } from 'astro';
+import Base from '../../layouts/Base.astro';
+import PluginInstallButton from '../../components/PluginInstallButton.astro';
+import PluginPermissionList from '../../components/PluginPermissionList.astro';
+import { getPluginCatalog, type Plugin } from '../../lib/plugins';
+
+export const getStaticPaths = (async () => {
+  const catalog = await getPluginCatalog();
+  return catalog.plugins.map((plugin) => ({ params: { id: plugin.id }, props: { plugin } }));
+}) satisfies GetStaticPaths;
+
+const { plugin } = Astro.props as { plugin: Plugin };
+const revoked = plugin.current.status === 'revoked';
+const published = new Intl.DateTimeFormat('en', { dateStyle: 'long' }).format(
+  new Date(plugin.current.published_at),
+);
+---
+
+<Base
+  title={`qrate plugins · ${plugin.name}`}
+  description={plugin.summary}
+  current="plugins"
+>
+  <header class="gut border-b border-rule py-10 md:py-14">
+    <a href="/plugins" class="mb-5 inline-block font-mono text-[11px] text-dim">← All plugins</a>
+    <div class="grid gap-6 md:grid-cols-[1fr_auto] md:items-end">
+      <div>
+        <div class="mb-4 flex items-center gap-4">
+          {
+            plugin.icon && (
+              <img
+                src={plugin.icon}
+                alt=""
+                class="size-14 shrink-0 border border-rule object-cover md:size-16"
+              />
+            )
+          }
+          <div class="eyebrow">Official catalog · {plugin.publisher}</div>
+        </div>
+        <h1 class="m-0 mb-3 text-[36px] font-semibold leading-none tracking-[-0.04em] md:text-[52px]">
+          {plugin.name}
+        </h1>
+        <p class="m-0 max-w-[680px] text-[15px] leading-[1.65] text-body">{plugin.summary}</p>
+      </div>
+      <PluginInstallButton id={plugin.id} revoked={revoked} />
+    </div>
+  </header>
+
+  {
+    revoked && (
+      <aside class="gut border-b border-rust bg-wash py-5" aria-label="Revocation warning">
+        <div class="font-mono text-[11px] font-semibold uppercase text-rust">Release revoked</div>
+        <p class="m-0 mt-2 text-[14px] text-body">
+          {plugin.current.revocation_reason ?? 'The registry no longer offers this release.'}
+        </p>
+      </aside>
+    )
+  }
+
+  <div class="gut grid gap-8 py-8 md:grid-cols-[minmax(0,1fr)_280px] md:py-12">
+    <article>
+      <h2 class="m-0 mb-3 text-2xl font-semibold">About this plugin</h2>
+      <p class="m-0 whitespace-pre-line text-[14.5px] leading-[1.75] text-body">
+        {plugin.description}
+      </p>
+
+      <h2 class="mb-3 mt-9 text-2xl font-semibold">Permissions</h2>
+      <PluginPermissionList permissions={plugin.current.permissions} />
+
+      {
+        plugin.screenshots.length > 0 && (
+          <>
+            <h2 class="mb-3 mt-9 text-2xl font-semibold">Screenshots</h2>
+            <div class="grid gap-4 sm:grid-cols-2">
+              {plugin.screenshots.map((screenshot) => (
+                <a href={screenshot} rel="noopener">
+                  <img
+                    src={screenshot}
+                    alt={`${plugin.name} screenshot`}
+                    loading="lazy"
+                    class="w-full border border-rule"
+                  />
+                </a>
+              ))}
+            </div>
+          </>
+        )
+      }
+
+      <div class="mt-9 border border-rule p-4">
+        <h2 class="m-0 mb-2 text-lg font-semibold">Before installation</h2>
+        <p class="m-0 text-[13.5px] leading-[1.65] text-body">
+          qrate opens a review screen before it installs anything. A new plugin is enabled when it
+          installs, and you can switch it off in Settings. Optional permissions stay off until you
+          grant them.
+        </p>
+        <p class="m-0 mt-2 text-[13.5px] leading-[1.65] text-body">
+          The qrate installer registers the Open in qrate link. A source build does not register it.
+          For a source build, use Settings ▸ Plugins ▸ Install from GitHub.
+        </p>
+      </div>
+    </article>
+
+    <aside class="h-fit border border-rule">
+      <dl class="m-0 divide-y divide-rule-soft text-[12.5px]">
+        <div class="p-3">
+          <dt class="font-mono text-[10px] uppercase text-dim">Version</dt>
+          <dd class="m-0 mt-1">{plugin.current.version}</dd>
+        </div>
+        <div class="p-3">
+          <dt class="font-mono text-[10px] uppercase text-dim">Plugin API</dt>
+          <dd class="m-0 mt-1">{plugin.current.api_version}</dd>
+        </div>
+        <div class="p-3">
+          <dt class="font-mono text-[10px] uppercase text-dim">License</dt>
+          <dd class="m-0 mt-1">{plugin.license}</dd>
+        </div>
+        <div class="p-3">
+          <dt class="font-mono text-[10px] uppercase text-dim">Published</dt>
+          <dd class="m-0 mt-1">{published}</dd>
+        </div>
+        <div class="p-3">
+          <dt class="font-mono text-[10px] uppercase text-dim">Categories</dt>
+          <dd class="m-0 mt-1">{plugin.categories.join(' · ') || 'Uncategorized'}</dd>
+        </div>
+      </dl>
+      <div class="space-y-2 border-t border-rule p-3 text-[12.5px]">
+        <a href={plugin.repository} rel="noopener" class="block text-accent">Source repository ↗</a>
+        <a href={plugin.current.release_url} rel="noopener" class="block text-accent">Release notes ↗</a>
+        {plugin.support && <a href={plugin.support} rel="noopener" class="block text-accent">Support ↗</a>}
+        {plugin.homepage && <a href={plugin.homepage} rel="noopener" class="block text-accent">Author website ↗</a>}
+      </div>
+    </aside>
+  </div>
+
+  <section class="gut border-t border-rule py-6">
+    <p class="m-0 max-w-[720px] text-[12.5px] leading-[1.65] text-dim">
+      Official catalog means that qrate maintainers reviewed this release's metadata and package
+      hash. Plugins are third-party code. Review the source and requested permissions before use.
+    </p>
+  </section>
+</Base>

@@ -1,0 +1,115 @@
+---
+import Base from '../../layouts/Base.astro';
+import PluginCard from '../../components/PluginCard.astro';
+import { getPluginCatalog } from '../../lib/plugins';
+
+const catalog = await getPluginCatalog();
+const categories = [...new Set(catalog.plugins.flatMap((plugin) => plugin.categories))].sort();
+---
+
+<Base
+  title="qrate · plugins"
+  description="Browse plugins listed in the official qrate catalog."
+  current="plugins"
+>
+  <header class="gut border-b border-rule py-10 md:py-16">
+    <div class="eyebrow mb-4">Plugins</div>
+    <h1 class="m-0 mb-4 text-[36px] font-semibold leading-none tracking-[-0.04em] md:text-[54px]">
+      Plugins for qrate.
+    </h1>
+    <p class="m-0 max-w-[680px] text-[15px] leading-[1.65] text-body">
+      These plugins appear in qrate's signed catalog. A listing means that maintainers reviewed the
+      release metadata and package hash. It does not guarantee that third-party code is safe.
+    </p>
+  </header>
+
+  <section class="gut border-b border-rule py-6">
+    <form id="plugin-filters" class="grid gap-3 md:grid-cols-[1fr_220px_180px]" role="search">
+      <label class="flex flex-col gap-1.5 text-[12px] font-medium">
+        Search
+        <input
+          id="plugin-search"
+          type="search"
+          placeholder="Name, publisher, or description"
+          class="border border-rule-nav bg-paper px-3 py-2.5 text-[14px]"
+        />
+      </label>
+      <label class="flex flex-col gap-1.5 text-[12px] font-medium">
+        Category
+        <select id="plugin-category" class="border border-rule-nav bg-paper px-3 py-2.5 text-[14px]">
+          <option value="">All categories</option>
+          {categories.map((category) => <option value={category.toLowerCase()}>{category}</option>)}
+        </select>
+      </label>
+      <label class="flex flex-col gap-1.5 text-[12px] font-medium">
+        Permissions
+        <select id="plugin-permission" class="border border-rule-nav bg-paper px-3 py-2.5 text-[14px]">
+          <option value="">Any permission</option>
+          <option value="none">No optional permissions</option>
+          <option value="net">Network access</option>
+        </select>
+      </label>
+    </form>
+  </section>
+
+  <section class="gut py-8 md:py-12">
+    {
+      catalog.plugins.length ? (
+        <>
+          <p id="plugin-count" class="mb-4 font-mono text-[11px] text-dim" aria-live="polite">
+            {catalog.plugins.length} {catalog.plugins.length === 1 ? 'plugin' : 'plugins'}
+          </p>
+          <div id="plugin-grid" class="grid gap-px border border-rule bg-rule md:grid-cols-2 lg:grid-cols-3">
+            {catalog.plugins.map((plugin) => <PluginCard plugin={plugin} />)}
+          </div>
+          <p id="plugin-empty" class="hidden border border-rule p-5 text-[14px] text-body">
+            No plugins match these filters.
+          </p>
+        </>
+      ) : (
+        <div class="border border-rule p-6">
+          <h2 class="m-0 mb-2 text-xl font-semibold">The catalog is not published yet.</h2>
+          <p class="m-0 max-w-[620px] text-[14px] leading-[1.6] text-body">
+            Plugin authors can prepare a release now. The catalog will appear here after the first
+            reviewed packages are published.
+          </p>
+          <a href="/plugins/submit" class="mt-4 inline-block text-[13px] font-medium text-accent">
+            Read the publishing guide →
+          </a>
+        </div>
+      )
+    }
+  </section>
+</Base>
+
+<script>
+  const search = document.querySelector<HTMLInputElement>('#plugin-search');
+  const category = document.querySelector<HTMLSelectElement>('#plugin-category');
+  const permission = document.querySelector<HTMLSelectElement>('#plugin-permission');
+  const cards = [...document.querySelectorAll<HTMLElement>('.plugin-card')];
+  const count = document.querySelector<HTMLElement>('#plugin-count');
+  const empty = document.querySelector<HTMLElement>('#plugin-empty');
+
+  const filter = () => {
+    const query = search?.value.trim().toLowerCase() ?? '';
+    const wantedCategory = category?.value ?? '';
+    const wantedPermission = permission?.value ?? '';
+    let visible = 0;
+
+    for (const card of cards) {
+      const show =
+        (!query || card.dataset.name?.includes(query)) &&
+        (!wantedCategory || card.dataset.category?.split('|').includes(wantedCategory)) &&
+        (!wantedPermission || card.dataset.permission?.split(' ').includes(wantedPermission));
+      card.hidden = !show;
+      if (show) visible += 1;
+    }
+
+    if (count) count.textContent = `${visible} ${visible === 1 ? 'plugin' : 'plugins'}`;
+    empty?.classList.toggle('hidden', visible !== 0);
+  };
+
+  search?.addEventListener('input', filter);
+  category?.addEventListener('change', filter);
+  permission?.addEventListener('change', filter);
+</script>

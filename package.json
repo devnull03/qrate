@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
+    "dev:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-dev-windows.ps1",
+    "dev:windows:refresh": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-dev-windows.ps1 -RefreshCatalog",
     "build": "astro build",
     "preview": "astro build && wrangler dev",
     "astro": "astro",

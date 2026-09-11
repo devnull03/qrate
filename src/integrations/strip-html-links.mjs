@@ -54,6 +54,8 @@ export default function stripHtmlLinks() {
     name: 'qrate:strip-html-links',
     hooks: {
       'astro:build:done': async ({ dir, logger }) => {
+        // URL.pathname leaves percent escapes intact. Delta worktrees can contain
+        // `~`, which arrives here as `%7E` and names a directory that does not exist.
         const root = fileURLToPath(dir);
 
         const walk = async (p) => {
