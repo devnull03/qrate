@@ -27,7 +27,7 @@ const handler = createMcpHandler({
   toolDescriptions: config.toolDescriptions,
   loadIndex: () =>
     (corpus ??= env.ASSETS.fetch(
-      new URL(`${config.path}/docs-index.json`, 'https://qrate.dvnl.work')
+      new URL(`${config.path}/docs-index.json`, 'http://assets.internal')
     ).then((res) => {
       if (!res.ok) {
         corpus = null; // do not cache a failure for the isolate's whole life

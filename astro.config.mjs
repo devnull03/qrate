@@ -14,6 +14,7 @@ import stripHtmlLinks from './src/integrations/strip-html-links.mjs';
 // src/layouts/Base.astro carries the same tag for the pages Starlight does not
 // render; both have to exist for the funnel to span / -> /docs/install -> /thanks.
 const beacon = process.env.CF_BEACON_TOKEN;
+const site = process.env.SITE_URL ?? 'https://qrate.dvnl.work';
 
 // Served from the root of its own domain, so no `base` and no BASE_URL juggling:
 // every internal link is a plain absolute path.
@@ -30,7 +31,7 @@ const beacon = process.env.CF_BEACON_TOKEN;
 // from the GitHub API — prerendering defaults to workerd, and the build-time
 // data layer is written for Node.
 export default defineConfig({
-  site: 'https://qrate.dvnl.work',
+  site,
   adapter: cloudflare({ prerenderEnvironment: 'node' }),
   trailingSlash: 'ignore',
   build: { format: 'file' },
