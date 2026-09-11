@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::button::Button;
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::collapsible::Collapsible;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
@@ -61,7 +61,7 @@ pub(crate) struct MarketplaceWindow {
 }
 
 impl MarketplaceWindow {
-    fn new(
+    pub(crate) fn new(
         direct: bool,
         target: Option<InstallTarget>,
         embedded: bool,
@@ -88,9 +88,7 @@ impl MarketplaceWindow {
             catalog: CatalogState::Loading,
             direct: DirectState::Idle,
             input,
-            status: requested_id
-                .as_ref()
-                .map(|id| format!("Reviewing official catalog entry {id}").into()),
+            status: None,
             requested_id,
             direct_expanded: direct || direct_source.is_some(),
             direct_request: 0,
@@ -114,8 +112,7 @@ impl MarketplaceWindow {
         self.status = None;
         match target {
             InstallTarget::Registry(id) => {
-                self.requested_id = Some(id.clone());
-                self.status = Some(format!("Reviewing official catalog entry {id}").into());
+                self.requested_id = Some(id);
                 self.refresh(cx);
             }
             InstallTarget::Github(source) => {
@@ -276,22 +273,18 @@ impl MarketplaceWindow {
         } else {
             format!("Requests: {}", plugin.current.permissions.join(", "))
         };
-        let installation_note = if already_managed {
-            ""
-        } else {
-            " New installations stay disabled until you enable them in Settings."
-        };
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!("Install {} {}?", plugin.name, plugin.current.version),
             Some(&format!(
-                "Official catalog · {} · {permissions}.{installation_note}",
+                "Official catalog · {} · {permissions}.",
                 plugin.publisher,
             )),
             &["Install", "Cancel"],
             cx,
         );
-        cx.spawn(async move |this, cx| {
+        let name = plugin.name.clone();
+        cx.spawn_in(window, async move |this, cx| {
             if answer.await.unwrap_or(1) != 0 {
                 return;
             }
@@ -331,7 +324,7 @@ impl MarketplaceWindow {
                     )
                 })
                 .await;
-            this.update(cx, |this, cx| {
+            this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(receipt) => {
                         log::info!(
@@ -340,19 +333,7 @@ impl MarketplaceWindow {
                             receipt.version,
                             receipt.sha256
                         );
-                        if !already_managed {
-                            settings::plugins::set_enabled(&receipt.id, false, cx);
-                        }
-                        plugin_host::reload(cx);
-                        this.status = Some(
-                            format!(
-                                "{} {} installed{}. Manage it in Settings.",
-                                receipt.id,
-                                receipt.version,
-                                if already_managed { "" } else { " disabled" }
-                            )
-                            .into(),
-                        );
+                        this.installed(&receipt, &name, already_managed, window, cx);
                     }
                     Err(error) => {
                         log::error!("official plugin installation failed: {error:#}");
@@ -382,11 +363,7 @@ impl MarketplaceWindow {
             format!("Requests: {}", inspection.manifest.permissions.join(", "))
         };
         let already_managed = installed_receipt(&inspection.manifest.id).is_some();
-        let installation_note = if already_managed {
-            ""
-        } else {
-            " New installations stay disabled until you enable them in Settings."
-        };
+        let name = inspection.manifest.name.clone();
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!(
@@ -394,13 +371,13 @@ impl MarketplaceWindow {
                 inspection.manifest.name, inspection.manifest.version
             ),
             Some(&format!(
-                "{} · SHA-256 {} · {permissions}. qrate has not reviewed this source.{installation_note}",
+                "{} · SHA-256 {} · {permissions}. qrate has not reviewed this source.",
                 release.repository, inspection.sha256,
             )),
             &["Install", "Cancel"],
             cx,
         );
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             if answer.await.unwrap_or(1) != 0 {
                 return;
             }
@@ -429,32 +406,20 @@ impl MarketplaceWindow {
                         },
                     );
                     let _ = std::fs::remove_file(archive);
-                    result.map(|receipt| (receipt, already_managed))
+                    result
                 })
                 .await;
-            this.update(cx, |this, cx| {
+            this.update_in(cx, |this, window, cx| {
                 match result {
-                    Ok((receipt, already_managed)) => {
+                    Ok(receipt) => {
                         log::info!(
                             "direct plugin installed: {} {} (SHA-256 {})",
                             receipt.id,
                             receipt.version,
                             receipt.sha256
                         );
-                        if !already_managed {
-                            settings::plugins::set_enabled(&receipt.id, false, cx);
-                        }
-                        plugin_host::reload(cx);
-                        this.status = Some(
-                            format!(
-                                "{} {} installed{}. Manage it in Settings.",
-                                receipt.id,
-                                receipt.version,
-                                if already_managed { "" } else { " disabled" }
-                            )
-                            .into(),
-                        );
                         this.direct = DirectState::Idle;
+                        this.installed(&receipt, &name, already_managed, window, cx);
                     }
                     Err(error) => {
                         log::error!("direct plugin installation failed: {error:#}");
@@ -467,116 +432,85 @@ impl MarketplaceWindow {
         })
         .detach();
     }
+
+    fn installed(
+        &mut self,
+        receipt: &plugin_package::InstallReceipt,
+        name: &str,
+        already_managed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Removing a package switches it off, so a reinstall has to switch it back on.
+        if !already_managed {
+            settings::plugins::set_enabled(&receipt.id, true, cx);
+        }
+        plugin_host::reload(cx);
+        if self.embedded {
+            self.status = Some(format!("{name} {} installed and enabled.", receipt.version).into());
+        } else {
+            window.remove_window();
+        }
+    }
 }
 
 impl Render for MarketplaceWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let catalog = match &self.catalog {
-            _ if self.requested_id.is_none() => div().into_any_element(),
-            CatalogState::Loading => Label::new("Loading the signed catalog…")
+        let muted = cx.theme().muted_foreground;
+        let permissions = |permissions: &[String]| {
+            if permissions.is_empty() {
+                "No optional permissions".to_string()
+            } else {
+                format!("Requests {}", permissions.join(", "))
+            }
+        };
+        let requested = match &self.catalog {
+            CatalogState::Ready(plugins) => self
+                .requested_id
+                .as_ref()
+                .and_then(|id| plugins.iter().find(|plugin| &plugin.id == id))
+                .cloned(),
+            _ => None,
+        };
+
+        let catalog = match (&self.catalog, &requested) {
+            (_, Some(plugin)) => v_flex()
+                .gap_1()
+                .child(
+                    Label::new(format!("{} {}", plugin.name, plugin.current.version))
+                        .font_semibold(),
+                )
+                .child(Label::new(plugin.summary.clone()).text_sm())
+                .child(
+                    Label::new(format!(
+                        "{} · {} · API {} · {}",
+                        plugin.publisher,
+                        plugin.license,
+                        plugin.current.api_version,
+                        permissions(&plugin.current.permissions)
+                    ))
+                    .text_sm()
+                    .text_color(muted),
+                )
+                .child(
+                    Label::new(plugin.repository.clone())
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .into_any_element(),
+            (CatalogState::Loading, _) => Label::new("Loading the signed catalog…")
                 .text_sm()
                 .into_any_element(),
-            CatalogState::Error(error) => h_flex()
-                .gap_2()
-                .child(
-                    Label::new(format!("Catalog unavailable: {error}"))
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground),
-                )
-                .child(
-                    Button::new("catalog-site")
-                        .label("Browse website")
-                        .small()
-                        .on_click(|_, _, cx| cx.open_url(&crate::site::url("/plugins"))),
-                )
+            (CatalogState::Error(error), _) => Label::new(format!("Catalog unavailable: {error}"))
+                .text_sm()
+                .text_color(muted)
                 .into_any_element(),
-            CatalogState::Ready(plugins) if plugins.is_empty() => {
-                Label::new("The official catalog has no plugins yet.")
-                    .text_sm()
-                    .into_any_element()
-            }
-            CatalogState::Ready(plugins)
-                if self
-                    .requested_id
-                    .as_ref()
-                    .is_some_and(|id| !plugins.iter().any(|plugin| &plugin.id == id)) =>
-            {
+            (CatalogState::Ready(_), None) => {
                 Label::new("That plugin is not in the current signed catalog.")
                     .text_sm()
-                    .text_color(cx.theme().muted_foreground)
+                    .text_color(muted)
                     .into_any_element()
             }
-            CatalogState::Ready(plugins) => v_flex()
-                .gap_2()
-                .children(
-                    plugins
-                        .iter()
-                        .filter(|plugin| self.requested_id.as_ref() == Some(&plugin.id))
-                        .cloned()
-                        .map(|plugin| {
-                            let button_plugin = plugin.clone();
-                            let installed = installed_receipt(&plugin.id);
-                            let current = installed
-                                .as_ref()
-                                .is_some_and(|receipt| receipt.version >= plugin.current.version);
-                            let action = if plugin.current.status == ReleaseStatus::Revoked {
-                                "Revoked"
-                            } else if current {
-                                "Installed"
-                            } else if installed.is_some() {
-                                "Update"
-                            } else {
-                                "Install"
-                            };
-                            h_flex()
-                                .justify_between()
-                                .gap_3()
-                                .p_3()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .child(
-                                    v_flex()
-                                        .child(Label::new(plugin.name).font_semibold())
-                                        .child(
-                                            Label::new(format!(
-                                                "{} · {} · API {} · {} · {} · {}",
-                                                plugin.summary,
-                                                plugin.current.version,
-                                                plugin.current.api_version,
-                                                plugin.publisher,
-                                                plugin.license,
-                                                if plugin.current.permissions.is_empty() {
-                                                    "No optional permissions".to_string()
-                                                } else {
-                                                    format!(
-                                                        "Requests {}",
-                                                        plugin.current.permissions.join(", ")
-                                                    )
-                                                }
-                                            ))
-                                            .text_sm()
-                                            .text_color(cx.theme().muted_foreground),
-                                        ),
-                                )
-                                .child(
-                                    Button::new(format!("install-{}", plugin.id))
-                                        .label(action)
-                                        .small()
-                                        .disabled(
-                                            plugin.current.status == ReleaseStatus::Revoked
-                                                || current,
-                                        )
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.install_official(
-                                                button_plugin.clone(),
-                                                window,
-                                                cx,
-                                            );
-                                        })),
-                                )
-                        }),
-                )
-                .into_any_element(),
         };
 
         let direct = match &self.direct {
@@ -584,7 +518,7 @@ impl Render for MarketplaceWindow {
                 "Paste a public GitHub repository or release URL. qrate checks valid links automatically.",
             )
             .text_sm()
-            .text_color(cx.theme().muted_foreground)
+            .text_color(muted)
             .into_any_element(),
             DirectState::Loading => Label::new("Resolving and checking release…")
                 .text_sm()
@@ -594,38 +528,90 @@ impl Render for MarketplaceWindow {
                 .text_color(cx.theme().danger_foreground)
                 .into_any_element(),
             DirectState::Review(review) => {
-                let DirectReview {
-                release,
-                inspection,
-                ..
-                } = review.as_ref();
-                h_flex()
-                .justify_between()
-                .gap_3()
-                .child(
-                    Label::new(format!(
-                        "{} {} · API {} · {} · {} bytes · SHA-256 {} · {}",
-                        inspection.manifest.name,
-                        inspection.manifest.version,
-                        inspection.manifest.api_version,
-                        inspection.manifest.license,
-                        inspection.bytes,
-                        inspection.sha256,
-                        release.repository
-                    ))
-                    .text_sm(),
-                )
-                .child(
-                    Button::new("install-direct")
-                        .label("Install unlisted plugin")
-                        .small()
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.install_direct(window, cx);
-                        })),
-                )
-                .into_any_element()
+                let manifest = &review.inspection.manifest;
+                v_flex()
+                    .gap_1()
+                    .child(
+                        Label::new(format!("{} {}", manifest.name, manifest.version))
+                            .font_semibold(),
+                    )
+                    .child(
+                        Label::new(format!(
+                            "API {} · {} · {} bytes · {}",
+                            manifest.api_version,
+                            manifest.license,
+                            review.inspection.bytes,
+                            permissions(&manifest.permissions)
+                        ))
+                        .text_sm()
+                        .text_color(muted),
+                    )
+                    .child(
+                        Label::new(review.release.repository.clone())
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                    .child(
+                        Label::new(format!("SHA-256 {}", review.inspection.sha256))
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                    .into_any_element()
             }
         };
+
+        let action = if self.requested_id.is_some() {
+            match (&self.catalog, requested) {
+                (_, Some(plugin)) => {
+                    let installed = installed_receipt(&plugin.id);
+                    let revoked = plugin.current.status == ReleaseStatus::Revoked;
+                    let current = installed
+                        .as_ref()
+                        .is_some_and(|receipt| receipt.version >= plugin.current.version);
+                    Some(
+                        Button::new("install-official")
+                            .primary()
+                            .label(if revoked {
+                                "Revoked"
+                            } else if current {
+                                "Installed"
+                            } else if installed.is_some() {
+                                "Update"
+                            } else {
+                                "Install"
+                            })
+                            .disabled(revoked || current)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.install_official(plugin.clone(), window, cx);
+                            })),
+                    )
+                }
+                (CatalogState::Error(_), None) => Some(
+                    Button::new("catalog-site")
+                        .label("Browse website")
+                        .on_click(|_, _, cx| open_catalog(cx)),
+                ),
+                _ => None,
+            }
+        } else if matches!(self.direct, DirectState::Review(_)) {
+            Some(
+                Button::new("install-direct")
+                    .primary()
+                    .label("Install unlisted plugin")
+                    .on_click(cx.listener(|this, _, window, cx| this.install_direct(window, cx))),
+            )
+        } else {
+            None
+        };
+        let (inline_action, footer_action) = if self.embedded {
+            (action, None)
+        } else {
+            (None, action)
+        };
+        let status = self
+            .status
+            .clone()
+            .map(|status| Label::new(status).text_sm().text_color(muted));
 
         let direct_installer = Collapsible::new()
             .open(self.direct_expanded)
@@ -636,10 +622,7 @@ impl Render for MarketplaceWindow {
                         Button::new("browse-plugin-catalog")
                             .small()
                             .label("Browse catalog")
-                            .on_click(|_, _, cx| {
-                                log::info!("opening plugin catalog in the default browser");
-                                cx.open_url(&crate::site::url("/plugins"));
-                            }),
+                            .on_click(|_, _, cx| open_catalog(cx)),
                     )
                     .child(
                         Button::new("toggle-github-installer")
@@ -651,10 +634,6 @@ impl Render for MarketplaceWindow {
                             })
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.direct_expanded = !this.direct_expanded;
-                                log::info!(
-                                    "GitHub plugin installer expanded: {}",
-                                    this.direct_expanded
-                                );
                                 if this.direct_expanded {
                                     this.input.focus_handle(cx).focus(window, cx);
                                 }
@@ -668,17 +647,15 @@ impl Render for MarketplaceWindow {
                     .mt_2()
                     .child(Input::new(&self.input).w_full())
                     .child(direct)
-                    .when_some(self.status.clone(), |view, status| {
-                        view.child(
-                            Label::new(status)
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground),
-                        )
-                    }),
+                    .children(inline_action.map(|action| h_flex().child(action.small()))),
             );
 
         if self.embedded {
-            return direct_installer.into_any_element();
+            return v_flex()
+                .gap_2()
+                .child(direct_installer)
+                .children(status)
+                .into_any_element();
         }
 
         v_flex()
@@ -692,21 +669,30 @@ impl Render for MarketplaceWindow {
             .child(
                 v_flex()
                     .flex_1()
+                    .min_h_0()
                     .overflow_y_scrollbar()
                     .p_4()
-                    .gap_4()
-                    .when(self.requested_id.is_some(), |view| {
-                        view.child(
-                            Label::new("Official plugin review")
-                                .text_lg()
-                                .font_semibold(),
-                        )
-                        .child(catalog)
+                    .gap_3()
+                    .map(|body| {
+                        if self.requested_id.is_some() {
+                            body.child(catalog)
+                        } else {
+                            body.child(direct_installer)
+                        }
                     })
-                    .when(self.requested_id.is_none(), |view| {
-                        view.child(direct_installer)
-                    }),
+                    .children(status),
             )
+            .when_some(footer_action, |view, action| {
+                view.child(
+                    h_flex()
+                        .justify_end()
+                        .px_4()
+                        .py_3()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .child(action),
+                )
+            })
             .into_any_element()
     }
 }
@@ -723,10 +709,6 @@ fn installed_receipt(id: &str) -> Option<plugin_package::InstallReceipt> {
 pub fn open_catalog(cx: &mut gpui::App) {
     log::info!("opening plugin catalog in the default browser");
     cx.open_url(&crate::site::url("/plugins"));
-}
-
-pub(crate) fn inline_installer(window: &mut Window, cx: &mut App) -> Entity<MarketplaceWindow> {
-    cx.new(|cx| MarketplaceWindow::new(false, None, true, window, cx))
 }
 
 pub fn open_install_target(target: InstallTarget, cx: &mut gpui::App) {
@@ -751,11 +733,11 @@ fn open_marketplace(direct: bool, target: Option<InstallTarget>, cx: &mut gpui::
         }
         return;
     }
-    let win_size = size(px(760.0), px(620.0));
+    let win_size = size(px(460.0), px(380.0));
     let options = WindowOptions {
         titlebar: Some(TitleBar::title_bar_options()),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, win_size, cx))),
-        window_min_size: Some(size(px(560.0), px(420.0))),
+        window_min_size: Some(size(px(400.0), px(300.0))),
         ..Default::default()
     };
     if let Ok(handle) = cx.open_window(options, |window, cx| {

@@ -252,6 +252,8 @@ pub struct Listing {
     /// descriptor's `name`: a plugin that fails to load has no descriptor, and switching a broken
     /// plugin off has to work.
     pub id: SharedString,
+    /// The descriptor's `name`, or `id` when there is no descriptor to read it from.
+    pub name: SharedString,
     pub description: Option<SharedString>,
     pub load_error: Option<String>,
     /// What it asked to be allowed to do. Whether the user agreed is read live from
@@ -269,12 +271,14 @@ pub fn listing(cx: &App) -> Vec<Listing> {
         .iter()
         .map(|plugin| Listing {
             id: plugin.id(),
+            name: plugin.name(),
             description: plugin.description(),
             load_error: plugin.load_error().map(str::to_string),
             permissions: plugin.permissions().to_vec(),
         })
         .chain(plugins.off.iter().map(|id| Listing {
             id: id.clone(),
+            name: id.clone(),
             description: None,
             load_error: None,
             // Unknown until it loads — nothing has read its descriptor. Turning it back on is the

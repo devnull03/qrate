@@ -44,7 +44,7 @@ refuses it.
 | `permissions` | What the plugin asks to be allowed to do. `net` is the only one. |
 
 qrate reads the descriptor once, when it loads the plugin. To change a declaration, edit the file
-and click **Extensions ▸ Reload Plugins**.
+and click **Plugins ▸ Reload Plugins**.
 
 ### Identity
 
