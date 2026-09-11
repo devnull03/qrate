@@ -127,6 +127,7 @@ struct SourceFilterSub(#[allow(dead_code)] Subscription);
 struct RowMember {
     location: Location,
     message: SharedString,
+    subject: Option<SharedString>,
 }
 
 /// One list entry, resolved out of the store once per change rather than once per frame. Colours
@@ -141,6 +142,7 @@ struct Row {
     message: SharedString,
     source: SharedString,
     source_key: SharedString,
+    subject: Option<SharedString>,
     location: Location,
     group: Option<String>,
     members: Vec<RowMember>,
@@ -216,6 +218,7 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
                 _ => d.source.label(),
             },
             source_key: d.source.key(),
+            subject: d.group.as_ref().and_then(|group| group.subject.clone()),
             location: d.location.clone(),
             group: None,
             members: Vec::new(),
@@ -231,6 +234,10 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
         let Some(mut members) = groups.remove(&id) else {
             continue;
         };
+        if members.len() == 1 {
+            rows.push(occurrence(members[0], false));
+            continue;
+        }
         members.sort_by(|a, b| {
             (&a.message, a.location.row, &a.location.column).cmp(&(
                 &b.message,
@@ -259,6 +266,10 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
             .map(|member| RowMember {
                 location: member.location.clone(),
                 message: member.message.clone(),
+                subject: member
+                    .group
+                    .as_ref()
+                    .and_then(|group| group.subject.clone()),
             })
             .collect();
         rows.push(header);
@@ -505,6 +516,7 @@ impl Render for ProblemsPanel {
                                 let group = r.group.clone();
                                 let group_members = r.members.clone();
                                 let source_key = r.source_key.clone();
+                                let subject = r.subject.clone();
                                 let is_group = group.is_some();
                                 let is_expanded =
                                     group.as_ref().is_some_and(|id| expanded.contains(id));
@@ -624,6 +636,7 @@ impl Render for ProblemsPanel {
                                                             cx,
                                                         )?,
                                                         message: member.message.clone(),
+                                                        subject: member.subject.clone(),
                                                     })
                                                 })
                                                 .collect::<Vec<_>>();
@@ -641,10 +654,11 @@ impl Render for ProblemsPanel {
                                         let Some(text) = (hooks.text_at)(&location, cx) else {
                                             return menu;
                                         };
-                                        let menu = {
+                                        let menu = if source_key == "spell" {
                                             let location = location.clone();
                                             crate::spelling::menu(
                                                 &text,
+                                                subject.as_deref(),
                                                 menu,
                                                 window,
                                                 cx,
@@ -652,11 +666,17 @@ impl Render for ProblemsPanel {
                                                     (hooks.set_text)(&location, fixed, cx)
                                                 },
                                             )
+                                        } else {
+                                            menu
                                         };
                                         let applied = location.clone();
                                         crate::fixes::menu(
                                             &location,
                                             &text,
+                                            Some(crate::FixTarget {
+                                                source: &source_key,
+                                                subject: subject.as_deref(),
+                                            }),
                                             menu,
                                             window,
                                             cx,
@@ -690,6 +710,7 @@ mod tests {
                 group: Some(crate::DiagnosticGroup {
                     key: "en:recieve".into(),
                     summary: "misspelled: recieve".into(),
+                    subject: Some("recieve".into()),
                 }),
                 filed: None,
             })
@@ -719,6 +740,15 @@ mod tests {
             super::project(items.iter().collect(), &Default::default()).len(),
             6
         );
+    }
+
+    #[test]
+    fn one_occurrence_is_a_plain_finding() {
+        let items = repeated();
+        let rows = super::project(vec![&items[0]], &Default::default());
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].group.is_none());
+        assert_eq!(rows[0].scope, "Row 1 · Title");
     }
 
     #[test]

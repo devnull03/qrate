@@ -7,7 +7,8 @@ the right dock. A finding on a cell also shows as a small marker on that cell in
 
 - **Spelling**, in over 60 languages. Downloaded dictionaries participate in automatic
   per-value language selection; short or ambiguous values are left alone instead of being
-  checked as the wrong language.
+  checked as the wrong language. If only English dictionaries are installed, qrate also skips
+  reliably identified non-English text and common non-English apostrophe elisions.
 - **Capitalization**, when a dictionary knows the word but requires a different case.
   Capitalization findings are warnings. The Notes tab is reserved for user notes.
 - **Value variants**, for columns where you opt into reviewing inconsistent displayed forms.

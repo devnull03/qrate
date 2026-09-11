@@ -9,7 +9,7 @@ pub mod fixes;
 mod panel;
 pub mod spelling;
 mod validator;
-pub use fixes::{Fix, FixProviders, GroupFix, GroupFixProviders, GroupMember};
+pub use fixes::{Fix, FixProviders, FixTarget, GroupFix, GroupFixProviders, GroupMember};
 pub use panel::ProblemsPanel;
 pub use validator::{
     AsyncValidators, CellValue, ColumnFinding, ColumnInfo, ColumnSnapshot, ColumnValidator,
@@ -187,6 +187,9 @@ pub struct Diagnostic {
 pub struct DiagnosticGroup {
     pub key: SharedString,
     pub summary: SharedString,
+    /// The exact value this occurrence concerns, for fix menus that must not inspect other values
+    /// in the same cell. It does not participate in group identity.
+    pub subject: Option<SharedString>,
 }
 
 /// A note's provenance. Free text rather than a parsed date: a catalogue inherits notes from

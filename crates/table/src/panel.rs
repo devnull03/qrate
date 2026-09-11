@@ -1373,7 +1373,7 @@ mod tests {
             assert_eq!(Diagnostics::all(cx).len(), 2);
             let group = Diagnostics::all(cx)[0].group.clone();
             let location = Location::cell(DATASET_MAIN, 0, None, "Title");
-            let fix = clustering::variant_fixes(&location, "Agnès Varda", cx).remove(0);
+            let fix = clustering::variant_fixes(&location, "Agnès Varda", None, cx).remove(0);
             crate::write_cell(0, 0, fix.replacement, cx);
             assert!(Diagnostics::all(cx).is_empty());
             assert_eq!(

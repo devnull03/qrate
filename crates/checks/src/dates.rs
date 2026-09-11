@@ -121,7 +121,7 @@ fn rewrites(value: &str) -> Vec<String> {
     offered
 }
 
-fn offer(_: &Location, text: &str, _: &App) -> Vec<Fix> {
+fn offer(_: &Location, text: &str, _: Option<&str>, _: &App) -> Vec<Fix> {
     if valid(text.trim()) {
         return Vec::new();
     }

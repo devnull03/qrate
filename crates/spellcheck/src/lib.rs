@@ -98,6 +98,20 @@ impl DictionarySet {
 
     /// Pick one installed base language only when the dictionaries provide enough evidence.
     fn for_text(&self, text: &str) -> Option<&LoadedDictionary> {
+        let english_only = self
+            .loaded
+            .iter()
+            .all(|loaded| Self::base(&loaded.code) == "en");
+        let enough_text = text.chars().filter(|c| c.is_alphabetic()).count() >= 20;
+        if english_only
+            && enough_text
+            && whatlang::detect(text).is_some_and(|info| {
+                info.lang() != whatlang::Lang::Eng
+                    && (info.is_reliable() || info.confidence() >= 0.45)
+            })
+        {
+            return None;
+        }
         let tokens: Vec<&str> = words(text, false)
             .filter(|word| {
                 !starts_uppercase(word)
@@ -392,6 +406,9 @@ pub fn misspellings(text: &str, cx: &App) -> Vec<Misspelling> {
     let dictionary = &loaded.dictionary;
     let mut found: Vec<(SharedString, Vec<SharedString>)> = Vec::new();
     for word in words(text, false) {
+        if DictionarySet::base(&loaded.code) == "en" && non_english_elision(word) {
+            continue;
+        }
         if found.len() == MAX_SUGGESTED_WORDS {
             break;
         }
@@ -402,28 +419,27 @@ pub fn misspellings(text: &str, cx: &App) -> Vec<Misspelling> {
         {
             continue;
         }
-        // Measured on the shipped dictionary: ngram suggestion costs 25-40ms a word against well under
-        // one, and only earns its keep on a word too mangled for the edit-distance pass to reach
-        // ("documentaire" → "documentary"). So it runs as a fallback, not as the first answer.
-        let mut suggestions = Vec::new();
-        dictionary
-            .suggester()
-            .with_ngram_suggestions(false)
-            .suggest(word, &mut suggestions);
-        if suggestions.is_empty() {
-            dictionary.suggest(word, &mut suggestions);
-        }
-        suggestions.truncate(MAX_SUGGESTIONS);
-        found.push((
-            word.into(),
-            suggestions.into_iter().map(SharedString::from).collect(),
-        ));
+        found.push((word.into(), suggestions(dictionary, word)));
     }
     found
 }
 
+fn suggestions(dictionary: &Dictionary, word: &str) -> Vec<SharedString> {
+    // N-gram suggestions cost 25-40ms per word, so use them only when edit distance finds nothing.
+    let mut suggestions = Vec::new();
+    dictionary
+        .suggester()
+        .with_ngram_suggestions(false)
+        .suggest(word, &mut suggestions);
+    if suggestions.is_empty() {
+        dictionary.suggest(word, &mut suggestions);
+    }
+    suggestions.truncate(MAX_SUGGESTIONS);
+    suggestions.into_iter().map(SharedString::from).collect()
+}
+
 /// Capitalization corrections for the general fix-provider registry.
-pub fn capitalization_fixes(_: &Location, text: &str, cx: &App) -> Vec<Fix> {
+pub fn capitalization_fixes(_: &Location, text: &str, subject: Option<&str>, cx: &App) -> Vec<Fix> {
     let Some(this) = cx.try_global::<SpellCheck>() else {
         return Vec::new();
     };
@@ -433,7 +449,11 @@ pub fn capitalization_fixes(_: &Location, text: &str, cx: &App) -> Vec<Fix> {
     let Some(loaded) = dictionaries.for_text(text) else {
         return Vec::new();
     };
+    let mut seen = std::collections::BTreeSet::new();
     words(text, false)
+        .filter(|word| DictionarySet::base(&loaded.code) != "en" || !non_english_elision(word))
+        .filter(|word| subject.is_none_or(|subject| *word == subject))
+        .filter(|word| seen.insert(*word))
         .filter_map(
             |word| match classify_word(&loaded.dictionary, word, false) {
                 WordOutcome::Capitalization(canonical) => Some(Fix {
@@ -450,31 +470,42 @@ pub fn spelling_group_fixes(members: &[GroupMember], cx: &App) -> Vec<GroupFix> 
     let Some(first) = members.first() else {
         return Vec::new();
     };
-    misspellings(&first.text, cx)
+    let Some(word) = first.subject.as_deref() else {
+        return Vec::new();
+    };
+    let Some(this) = cx.try_global::<SpellCheck>() else {
+        return Vec::new();
+    };
+    let Ok(dictionaries) = this.dictionaries.read() else {
+        return Vec::new();
+    };
+    let Some(loaded) = dictionaries.for_text(&first.text) else {
+        return Vec::new();
+    };
+    if !matches!(
+        classify_word(&loaded.dictionary, word, this.ignore_capitalized),
+        WordOutcome::Misspelled
+    ) {
+        return Vec::new();
+    }
+    suggestions(&loaded.dictionary, word)
         .into_iter()
-        .flat_map(|(word, suggestions)| {
-            suggestions.into_iter().filter_map(move |suggestion| {
-                let replacements = members
-                    .iter()
-                    .map(|member| {
-                        let matching =
-                            words(&member.text, false).any(|candidate| candidate == word.as_ref());
-                        matching.then(|| {
-                            (
-                                member.location.clone(),
-                                member
-                                    .text
-                                    .replace(word.as_ref(), suggestion.as_ref())
-                                    .into(),
-                            )
-                        })
+        .filter_map(|suggestion| {
+            let replacements = members
+                .iter()
+                .map(|member| {
+                    (member.subject.as_deref() == Some(word)).then(|| {
+                        (
+                            member.location.clone(),
+                            member.text.replace(word, suggestion.as_ref()).into(),
+                        )
                     })
-                    .collect::<Option<Vec<_>>>()?;
-                Some(GroupFix::replacements(
-                    format!("Change all “{word}” to “{suggestion}”"),
-                    replacements,
-                ))
-            })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(GroupFix::replacements(
+                format!("Change all “{word}” to “{suggestion}”"),
+                replacements,
+            ))
         })
         .collect()
 }
@@ -483,24 +514,41 @@ pub fn capitalization_group_fixes(members: &[GroupMember], cx: &App) -> Vec<Grou
     let Some(first) = members.first() else {
         return Vec::new();
     };
-    capitalization_fixes(&first.location, &first.text, cx)
-        .into_iter()
-        .filter_map(|candidate| {
-            let replacements = members
-                .iter()
-                .map(|member| {
-                    capitalization_fixes(&member.location, &member.text, cx)
-                        .into_iter()
-                        .find(|fix| fix.label == candidate.label)
-                        .map(|fix| (member.location.clone(), fix.replacement))
-                })
-                .collect::<Option<Vec<_>>>()?;
-            Some(GroupFix::replacements(
-                format!("{} everywhere", candidate.label),
-                replacements,
-            ))
+    let Some(observed) = first.subject.as_deref() else {
+        return Vec::new();
+    };
+    let Some(this) = cx.try_global::<SpellCheck>() else {
+        return Vec::new();
+    };
+    let Ok(dictionaries) = this.dictionaries.read() else {
+        return Vec::new();
+    };
+    let Some(loaded) = dictionaries.for_text(&first.text) else {
+        return Vec::new();
+    };
+    let WordOutcome::Capitalization(canonical) = classify_word(&loaded.dictionary, observed, false)
+    else {
+        return Vec::new();
+    };
+    let replacements = members
+        .iter()
+        .map(|member| {
+            (member.subject.as_deref() == Some(observed)).then(|| {
+                (
+                    member.location.clone(),
+                    member.text.replace(observed, &canonical).into(),
+                )
+            })
         })
-        .collect()
+        .collect::<Option<Vec<_>>>();
+    replacements
+        .map(|replacements| {
+            vec![GroupFix::replacements(
+                format!("Use “{canonical}” everywhere"),
+                replacements,
+            )]
+        })
+        .unwrap_or_default()
 }
 
 /// Split `text` into the tokens worth checking. Straight and typographic apostrophes stay inside
@@ -526,6 +574,16 @@ fn checkable(token: &str, ignore_capitalized: bool) -> bool {
         return false;
     }
     !ignore_capitalized || !starts_uppercase(token)
+}
+
+fn non_english_elision(word: &str) -> bool {
+    let Some(split) = word.find(['\'', '’']) else {
+        return false;
+    };
+    matches!(
+        word[..split].to_lowercase().as_str(),
+        "c" | "d" | "j" | "l" | "m" | "n" | "qu" | "s" | "t"
+    )
 }
 
 fn starts_uppercase(value: &str) -> bool {
@@ -589,6 +647,9 @@ impl SpellCheck {
                         continue;
                     };
                     for word in words(value, false) {
+                        if DictionarySet::base(&loaded.code) == "en" && non_english_elision(word) {
+                            continue;
+                        }
                         if !seen.insert(word) {
                             continue;
                         }
@@ -616,6 +677,7 @@ impl SpellCheck {
                             group: Some(diagnostics::DiagnosticGroup {
                                 key: format!("{:?}", (&loaded.code, word, target)).into(),
                                 summary: message.clone().into(),
+                                subject: Some(word.into()),
                             }),
                             message: message.into(),
                         });
@@ -663,7 +725,7 @@ mod tests {
     // `#[test]` its own expansion emits. See the note in `table`'s `note.rs` test module.
     use crate::{
         CapitalizationCheck, DictionarySet, EN_CA_AFF, EN_CA_DIC, LoadedDictionary, SpellCheck,
-        capitalization_group_fixes, checkable, spelling_group_fixes, words,
+        capitalization_fixes, capitalization_group_fixes, checkable, spelling_group_fixes, words,
     };
     use diagnostics::{ColumnInfo, ColumnValidator, DATASET_MAIN, GroupMember, Location, Severity};
     use gpui::{SharedString, TestAppContext};
@@ -775,6 +837,22 @@ mod tests {
         );
         assert!(dictionaries.for_text("film").is_none());
         assert!(dictionaries.for_text("unknown tokens").is_none());
+    }
+
+    #[test]
+    fn unsupported_non_english_text_is_not_checked_as_english() {
+        let spell = dictionary();
+        let defaults = ColumnSettings::default();
+        let french = "bonjour, je suis heureux de vous rencontrer";
+        assert!(
+            findings(&spell, "", &defaults, &["l’enfant"]).is_empty(),
+            "a common non-English elision is not an English misspelling"
+        );
+        assert!(
+            findings(&spell, "", &defaults, &[french]).is_empty(),
+            "reliably identified French text is not checked with an English dictionary: {:?}",
+            whatlang::detect(french)
+        );
     }
 
     /// Which variant ships is a real choice, not a default: SCOWL size 60 carries one spelling per
@@ -910,11 +988,16 @@ mod tests {
     fn grouped_words_offer_one_resolution_for_every_cell(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_global(dictionary());
+            let location = Location::cell(DATASET_MAIN, 0, None, "Title");
+            let fixes = capitalization_fixes(&location, "alice visited canada", Some("alice"), cx);
+            assert_eq!(fixes.len(), 1);
+            assert_eq!(fixes[0].label, "Use “Alice”");
             let members = |text: &str, message: &str| {
                 [0, 1].map(|row| GroupMember {
                     location: Location::cell(DATASET_MAIN, row, None, "Title"),
                     text: text.into(),
                     message: message.into(),
+                    subject: Some(message.split_whitespace().last().unwrap_or_default().into()),
                 })
             };
             assert!(

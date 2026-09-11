@@ -878,7 +878,12 @@ fn stage_findings(
 
 /// What the Fixes menu offers for a staged finding — but only while the cell still says what the
 /// agent judged, because a cell edited since staging is a cell nobody reviewed.
-fn offer_staged(location: &Location, text: &str, cx: &App) -> Vec<diagnostics::Fix> {
+fn offer_staged(
+    location: &Location,
+    text: &str,
+    _: Option<&str>,
+    cx: &App,
+) -> Vec<diagnostics::Fix> {
     let (Some(row), Some(column)) = (location.row, location.column.clone()) else {
         return Vec::new();
     };

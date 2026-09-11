@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 pub const VALUE_VARIANTS_NAME: &str = "value variants";
 const SLOW_CLUSTERING: Duration = Duration::from_millis(250);
-type Candidates = BTreeMap<(String, usize), (SharedString, Vec<SharedString>)>;
+type Candidates = BTreeMap<(String, usize), (SharedString, Vec<(SharedString, SharedString)>)>;
 
 #[derive(Clone, Default)]
 pub struct ValueVariants {
@@ -63,6 +63,7 @@ impl ColumnValidator for ValueVariants {
                     pair.left.displayed, pair.right.displayed, pair.reason
                 )
                 .into(),
+                subject: None,
             };
             for (value, alternative) in [(&pair.left, &pair.right), (&pair.right, &pair.left)] {
                 for &row in &value.rows {
@@ -75,12 +76,15 @@ impl ColumnValidator for ValueVariants {
                         .entry((column.name.to_owned(), row))
                         .or_insert_with(|| (values.raw()[row].clone(), Vec::new()))
                         .1
-                        .push(replacement);
+                        .push((value.displayed.clone().into(), replacement));
                     findings.push(ColumnFinding {
                         row: Some(row),
                         severity: Severity::Warning,
                         message: value.displayed.clone().into(),
-                        group: Some(group.clone()),
+                        group: Some(DiagnosticGroup {
+                            subject: Some(value.displayed.clone().into()),
+                            ..group.clone()
+                        }),
                     });
                 }
             }
@@ -116,7 +120,7 @@ fn ordered_pair(left: &str, right: &str) -> (String, String) {
     }
 }
 
-pub fn variant_fixes(location: &Location, text: &str, cx: &App) -> Vec<Fix> {
+pub fn variant_fixes(location: &Location, text: &str, subject: Option<&str>, cx: &App) -> Vec<Fix> {
     let (Some(row), Some(column), Some(variants)) = (
         location.row,
         location.column.as_deref(),
@@ -138,10 +142,11 @@ pub fn variant_fixes(location: &Location, text: &str, cx: &App) -> Vec<Fix> {
     }
     alternatives
         .iter()
-        .filter(|candidate| candidate.as_ref() != text)
-        .map(|candidate| Fix {
-            label: format!("Use “{candidate}”").into(),
-            replacement: candidate.clone(),
+        .filter(|(observed, _)| subject.is_none_or(|subject| observed == subject))
+        .filter(|(_, replacement)| replacement.as_ref() != text)
+        .map(|(_, replacement)| Fix {
+            label: format!("Use “{replacement}”").into(),
+            replacement: replacement.clone(),
         })
         .collect()
 }
@@ -241,7 +246,12 @@ mod tests {
             ColumnValues::new(&values, ""),
         );
         assert_eq!(found.len(), 3);
-        assert!(found.iter().all(|f| f.group == found[0].group));
+        let first_group = found[0].group.as_ref().unwrap();
+        assert!(found.iter().all(|finding| {
+            finding.group.as_ref().is_some_and(|group| {
+                group.key == first_group.key && group.summary == first_group.summary
+            })
+        }));
         assert_eq!(
             found
                 .iter()
@@ -253,12 +263,12 @@ mod tests {
             cx.set_global(variants);
             let location = Location::cell(DATASET_MAIN, 0, None, "Creator");
             assert_eq!(
-                variant_fixes(&location, "Agnès Varda", cx)[0].replacement,
+                variant_fixes(&location, "Agnès Varda", None, cx)[0].replacement,
                 "Varda, Agnès"
             );
-            assert!(variant_fixes(&location, "changed", cx).is_empty());
+            assert!(variant_fixes(&location, "changed", None, cx).is_empty());
             cx.global::<ValueVariants>().begin_run();
-            assert!(variant_fixes(&location, "Agnès Varda", cx).is_empty());
+            assert!(variant_fixes(&location, "Agnès Varda", None, cx).is_empty());
         });
     }
 
@@ -288,8 +298,16 @@ mod tests {
         let candidates = variants.candidates.read().unwrap();
         let (expected, replacements) = &candidates[&("Creator".to_owned(), 0)];
         assert_eq!(expected, "Busson, Carl W.|Dhillon, Baltej Singh");
-        assert!(replacements.contains(&"Carl W. Busson|Dhillon, Baltej Singh".into()));
-        assert!(replacements.contains(&"Busson, Carl W.|Baltej Singh Dhillon".into()));
+        assert!(
+            replacements
+                .iter()
+                .any(|(_, replacement)| replacement == "Carl W. Busson|Dhillon, Baltej Singh")
+        );
+        assert!(
+            replacements
+                .iter()
+                .any(|(_, replacement)| replacement == "Busson, Carl W.|Baltej Singh Dhillon")
+        );
     }
 
     #[test]
@@ -364,11 +382,13 @@ mod tests {
                     location: Location::cell(DATASET_MAIN, 0, None, "Creator"),
                     text: "Agnès Varda|Director".into(),
                     message: "Agnès Varda".into(),
+                    subject: Some("Agnès Varda".into()),
                 },
                 GroupMember {
                     location: Location::cell(DATASET_MAIN, 1, None, "Creator"),
                     text: "Agnes Varda|Producer".into(),
                     message: "Agnes Varda".into(),
+                    subject: Some("Agnes Varda".into()),
                 },
             ];
             let fixes = variant_group_fixes(&members, cx);

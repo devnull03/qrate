@@ -428,8 +428,11 @@ pub fn set_cell_texts(replacements: Vec<(diagnostics::Location, SharedString)>, 
                 delegate
                     .data_col(location.column.as_ref()?)
                     .zip(location.row)
-                    .map(|(col, row)| (row, col, text))
+                    .map(|(col, row)| ((row, col), text))
             })
+            .collect::<std::collections::BTreeMap<_, _>>()
+            .into_iter()
+            .map(|((row, col), text)| (row, col, text))
             .collect()
     };
     write_cells(cells, cx);
