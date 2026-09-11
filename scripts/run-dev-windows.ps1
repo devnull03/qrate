@@ -43,19 +43,20 @@ try {
         "schema:listing"               = Join-Path $safe "listing.schema.json"
         "schema:package"               = Join-Path $safe "package.schema.json"
     }
+    # astro dev reads the preview namespace, so local seeding targets preview_id.
     foreach ($key in $seed.Keys) {
         $file = $seed[$key]
         cmd.exe /d /c "bunx wrangler kv key get `"$key`" --binding PLUGIN_CATALOG --preview false --remote > `"$file`""
         if ($LASTEXITCODE -ne 0) {
             throw "Could not read $key from Cloudflare KV."
         }
-        bunx wrangler kv key put $key --path $file --binding PLUGIN_CATALOG --preview false --local
+        bunx wrangler kv key put $key --path $file --binding PLUGIN_CATALOG --preview --local
         if ($LASTEXITCODE -ne 0) {
             throw "Could not seed local Cloudflare KV with $key."
         }
     }
 
-    bunx wrangler kv key put current $version --binding PLUGIN_CATALOG --preview false --local
+    bunx wrangler kv key put current $version --binding PLUGIN_CATALOG --preview --local
     if ($LASTEXITCODE -ne 0) {
         throw "Could not seed local Cloudflare KV with the current catalog version."
     }

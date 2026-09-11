@@ -171,8 +171,12 @@ async function loadCatalog(): Promise<PluginCatalog> {
       readFile(`${file}.sig`, 'utf8').then((raw) => JSON.parse(raw) as Signature),
     ]);
   } else {
-    const url =
-      process.env.QRATE_PLUGIN_CATALOG_URL ?? 'https://qrate.dvnl.work/plugins/catalog.json';
+    const url = process.env.QRATE_PLUGIN_CATALOG_URL;
+    if (!url) {
+      throw new Error(
+        'Set QRATE_PLUGIN_CATALOG_FILE or QRATE_PLUGIN_CATALOG_URL to a signed plugin catalog',
+      );
+    }
     console.info(`[plugins] fetching the signed catalog from ${url}`);
     const [catalogResponse, signatureResponse] = await Promise.all([
       fetch(url, { signal: AbortSignal.timeout(15_000) }),

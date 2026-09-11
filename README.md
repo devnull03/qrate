@@ -3,7 +3,7 @@
 The public site for [`devnull03/qrate`](https://github.com/devnull03/qrate) —
 home, get started, changelog, licence, privacy and terms — built with
 [Astro](https://astro.build) and Tailwind, deployed to
-[qrate.dvnl.work](https://qrate.dvnl.work) on GitHub Pages.
+[qrate.dvnl.work](https://qrate.dvnl.work) on Cloudflare Workers.
 
 This is the **`site` branch** — it contains only the Astro project, no Rust app
 code. The release list is fetched from the GitHub API **at build time** (in CI,
@@ -27,40 +27,13 @@ that worktree when the server exits. The initial seed requires an authenticated 
 
 ## Deploy
 
-`.github/workflows/deploy-site.yml` builds and publishes to Pages on every push
-to `site` (and via `workflow_dispatch`). Publishing a release on `main` triggers
-`redeploy-site-on-release.yml`, which dispatches this workflow so the
-release-driven pages refresh.
+Cloudflare builds the `site` branch and deploys the `qrate` Worker. GitHub release and catalog
+workflows request rebuilds through the configured Cloudflare deploy hook. `bun run deploy` builds
+and pushes from an authenticated local Wrangler CLI.
 
-The custom domain lives in the repository's Pages settings, not in a `CNAME`
-file, and the site is served from the **root** of `qrate.dvnl.work` — hence no
-`base` in `astro.config.mjs`.
-
-### Moving to Cloudflare Workers
-
-GitHub Pages can serve the six pages but not `/oauth/config`, so the move stops
-being optional once Google sync ships. Everything in this repo is ready; what
-is left is dashboard work:
-
-1. Workers & Pages → create a Worker from this repo, branch `site`, build
-   command `bun run build`, deploy command `bunx wrangler deploy`.
-2. Add `GH_TOKEN` as a **build** secret. Without it the build fetches the
-   release list unauthenticated at 60 requests/hour from a shared build IP, and
-   `getReleases()` throws on a non-OK response in production rather than
-   shipping an empty changelog — so a rate-limited build fails the deploy.
-3. Add the runtime secrets the Worker reads:
-   `wrangler secret put GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
-   `QRATE_GOOGLE_CONFIG_TOKEN`. Never in `wrangler.jsonc`. The last one must be
-   the same string qrate is built with (`option_env!("QRATE_GOOGLE_CONFIG_TOKEN")`
-   in `crates/data-exchange/src/google.rs`) — same name on both sides so it is
-   obvious they are one value.
-4. Point `qrate.dvnl.work` at the Worker and remove the Pages custom domain.
-5. Keep `deploy-site.yml` — it is what a published release dispatches — but swap
-   its deploy job for a POST to a Cloudflare **Deploy Hook**.
-
-`bun run deploy` builds and pushes straight from your machine after
-`wrangler login`. Both `bun run dev` and `bun run preview` read the secrets from
-an untracked `.dev.vars`, so the endpoint works locally.
+Set `SITE_URL` when hosting under another origin. Add runtime credentials with Wrangler or the
+Cloudflare dashboard; never put them in `wrangler.jsonc`. Local Worker secrets belong in the
+untracked `.dev.vars` file.
 
 ## Serving qrate itself
 
@@ -101,8 +74,10 @@ planned key rotation.
 must be beside it with a `.sig` suffix. The Windows development runner sets this automatically so
 page rendering never makes a recursive request to its own development server.
 
-`QRATE_PLUGIN_CATALOG_URL` is optional. It defaults to
-`https://qrate.dvnl.work/plugins/catalog.json`.
+Every build must set either `QRATE_PLUGIN_CATALOG_FILE` or `QRATE_PLUGIN_CATALOG_URL`. A self-hosted
+deployment can therefore build from its own signed file or catalog service without contacting
+qrate's deployment. Set `SITE_URL` to the deployment's public origin for canonical URLs, sitemap
+entries, and structured metadata.
 
 The build fetches `catalog.json.sig` beside the catalog. It verifies the SHA-256,
 key ID, and signature before it parses any records. A bad catalog fails the
