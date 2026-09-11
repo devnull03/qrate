@@ -27,13 +27,19 @@ pub struct Fix {
 }
 
 /// What a producer is asked when a menu opens: where the finding is, and what the cell says now.
-pub type OfferFixes = fn(&Location, &str, &App) -> Vec<Fix>;
+pub type OfferFixes = fn(&Location, &str, Option<&str>, &App) -> Vec<Fix>;
+
+pub struct FixTarget<'a> {
+    pub source: &'a str,
+    pub subject: Option<&'a str>,
+}
 
 #[derive(Clone)]
 pub struct GroupMember {
     pub location: Location,
     pub text: SharedString,
     pub message: SharedString,
+    pub subject: Option<SharedString>,
 }
 
 #[derive(Clone)]
@@ -100,6 +106,16 @@ impl GroupFixProviders {
 ///
 /// Public because the cell renderer wants to know whether *any* exist without building a menu.
 pub fn at(location: &Location, text: &str, cx: &App) -> Vec<Fix> {
+    at_subject(location, text, None, None, cx)
+}
+
+fn at_subject(
+    location: &Location,
+    text: &str,
+    source: Option<&str>,
+    subject: Option<&str>,
+    cx: &App,
+) -> Vec<Fix> {
     let Some(providers) = cx.try_global::<FixProviders>() else {
         return Vec::new();
     };
@@ -110,17 +126,21 @@ pub fn at(location: &Location, text: &str, cx: &App) -> Vec<Fix> {
         cx,
     )
     .map(|d| d.source.key())
+    .filter(|candidate| source.is_none_or(|source| candidate == source))
     .collect();
     // One finding per source is enough to ask it; a column flagged twice by the same rule must
     // not offer its corrections twice.
     sources.sort();
     sources.dedup();
 
-    sources
+    let mut fixes: Vec<_> = sources
         .iter()
         .filter_map(|source| providers.0.get(source))
-        .flat_map(|offer| offer(location, text, cx))
-        .collect()
+        .flat_map(|offer| offer(location, text, subject, cx))
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    fixes.retain(|fix| seen.insert((fix.label.clone(), fix.replacement.clone())));
+    fixes
 }
 
 pub fn group_menu(
@@ -137,7 +157,9 @@ pub fn group_menu(
     else {
         return menu;
     };
-    let fixes = offer(members, cx);
+    let mut fixes = offer(members, cx);
+    let mut seen = std::collections::BTreeSet::new();
+    fixes.retain(|fix| seen.insert(fix.label.clone()));
     if fixes.is_empty() {
         return menu;
     }
@@ -157,12 +179,19 @@ pub fn group_menu(
 pub fn menu(
     location: &Location,
     text: &SharedString,
+    target: Option<FixTarget<'_>>,
     menu: PopupMenu,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
     apply: impl Fn(SharedString, &mut App) + Clone + 'static,
 ) -> PopupMenu {
-    let found = at(location, text, cx);
+    let found = at_subject(
+        location,
+        text,
+        target.as_ref().map(|target| target.source),
+        target.and_then(|target| target.subject),
+        cx,
+    );
     if found.is_empty() {
         return menu;
     }
@@ -181,7 +210,7 @@ pub fn menu(
 #[cfg(test)]
 mod tests {
     // Never `use super::*` here — see the note in `lib.rs`'s test module.
-    use crate::fixes::{Fix, FixProviders, GroupFix, at};
+    use crate::fixes::{Fix, FixProviders, GroupFix, at, at_subject};
     use crate::{
         DATASET_MAIN, Diagnostic, DiagnosticHooks, Diagnostics, Location, Severity, Source,
     };
@@ -212,7 +241,7 @@ mod tests {
         );
     }
 
-    fn offer(_: &Location, text: &str, _: &App) -> Vec<Fix> {
+    fn offer(_: &Location, text: &str, _: Option<&str>, _: &App) -> Vec<Fix> {
         vec![Fix {
             label: format!("Use “{text}s”").into(),
             replacement: format!("{text}s").into(),
@@ -237,11 +266,25 @@ mod tests {
     fn display_names_do_not_disconnect_fix_providers(cx: &mut TestAppContext) {
         cx.update(|cx| {
             publish("capitalization", "Title", cx);
+            publish("LCSH", "Title", cx);
             FixProviders::register("capitalization", offer, cx);
+            FixProviders::register("LCSH", offer, cx);
 
             let found = at(&location("Title"), "alice", cx);
-            assert_eq!(found.len(), 1);
+            assert_eq!(found.len(), 1, "identical fixes are deduplicated");
             assert_eq!(found[0].replacement, SharedString::from("alices"));
+            assert_eq!(
+                at_subject(
+                    &location("Title"),
+                    "alice",
+                    Some("capitalization"),
+                    Some("alice"),
+                    cx,
+                )
+                .len(),
+                1,
+                "a diagnostic row asks only its own producer"
+            );
         });
     }
 

@@ -556,13 +556,20 @@ pub fn menu(
 
     let menu = match target {
         Target::Cell { row, col } => {
-            let menu =
-                diagnostics::spelling::menu(&spell_text, menu, window, cx, move |fixed, cx| {
+            let menu = diagnostics::spelling::menu(
+                &spell_text,
+                None,
+                menu,
+                window,
+                cx,
+                move |fixed, cx| {
                     crate::write_cell(row, col, fixed, cx);
-                });
+                },
+            );
             diagnostics::fixes::menu(
                 &location,
                 &spell_text,
+                None,
                 menu,
                 window,
                 cx,
