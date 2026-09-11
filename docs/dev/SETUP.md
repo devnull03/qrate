@@ -60,7 +60,8 @@ registration when qrate exits:
 
 Debug builds use `http://localhost:4321` for every qrate site route, including plugin discovery,
 catalog verification, feedback, Google configuration and Picker, release pages, and update feeds.
-Release builds use `https://qrate.dvnl.work`.
+Release builds use `https://qrate.dvnl.work`. A self-hosted build can set `QRATE_SITE_ORIGIN` at
+compile time to use its own site for all of those routes.
 
 This requires an authenticated GitHub CLI. To register an already-built debug executable without
 running it, use:
