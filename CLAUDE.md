@@ -74,6 +74,7 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | `workspace` | panel hosting — the panel registry, dock buttons, image viewer |
 | `window-wrapper` | shared window chrome: title bar, status bar, the window registry |
 | `settings` | `AppSettings` (user-wide) and `.qrate` (per project), column config, plugin settings |
+| `cli` | the public `qrate` command; launches the private desktop binary and controls open projects without linking GPUI |
 | `project-wizard` | new/open project flow, recent projects, the launcher |
 | `data-exchange` | import/export — CSV/JSON-LD/CSL-JSON/ZIP, Google Sheets, preview |
 | `diagnostics` | the validator, spelling checks, fixes, and the problems panel |

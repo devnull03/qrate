@@ -5,6 +5,7 @@ members = [
   "crates/app",
   "crates/ai",
   "crates/checks",
+  "crates/cli",
   "crates/clustering",
   "crates/data-exchange",
   "crates/diagnostics",
@@ -50,6 +51,9 @@ debug = false
 [workspace.dependencies]
 alacritty_terminal = "0.26.0"
 anyhow = "1"
+# clap 4.6 moves its derive macro to syn 3 while the workspace uses syn 2. Stay on the last 4.5
+# release so this small binary does not compile a second parser stack.
+clap = { version = "=4.5.53", features = ["derive"] }
 # Reads xlsx/xlsm/xlsb/xls/ods through one API, so the wizard gains every desktop
 # spreadsheet format for the price of one extension match.
 calamine = { version = "0.31", features = ["dates"] }
