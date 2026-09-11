@@ -1,6 +1,5 @@
 mod config;
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -135,18 +134,19 @@ fn notes_group(cx: &App) -> SettingGroup {
 /// no descriptor and switching a broken one off has to work.
 fn plugins_page(cx: &App) -> SettingPage {
     let listing = plugin_host::listing(cx);
-    let installer = Rc::new(RefCell::new(None));
     let install = SettingGroup::new()
         .title("Find and install")
         .description(
             "Browse the official catalog on qrate.dvnl.work, or review a public GitHub release.",
         )
         .item(
-            SettingItem::render(move |_opts: &_, window: &mut Window, cx: &mut App| {
-                installer
-                    .borrow_mut()
-                    .get_or_insert_with(|| crate::plugin_marketplace::inline_installer(window, cx))
-                    .clone()
+            SettingItem::render(|_opts: &_, window: &mut Window, cx: &mut App| {
+                window
+                    .use_keyed_state("plugin-installer", cx, |window, cx| {
+                        crate::plugin_marketplace::MarketplaceWindow::new(
+                            false, None, true, window, cx,
+                        )
+                    })
                     .into_any_element()
             })
             .keywords(["plugins", "catalog", "GitHub", "install"]),
@@ -160,7 +160,7 @@ fn plugins_page(cx: &App) -> SettingPage {
         return page.group(
             SettingGroup::new()
                 .title("Installed")
-                .description("No plugins found. Extensions ▸ Plugins Folder is where they go."),
+                .description("No plugins found. Plugins ▸ Plugins Folder is where they go."),
         );
     }
 
@@ -172,7 +172,7 @@ fn plugins_page(cx: &App) -> SettingPage {
                 .ok()
                 .flatten()
         });
-        let mut group = SettingGroup::new().title(plugin.id.clone()).item({
+        let mut group = SettingGroup::new().title(plugin.name.clone()).item({
             let switched = id.clone();
             let item = SettingItem::new(
                 "Enabled",
@@ -242,7 +242,7 @@ fn plugins_page(cx: &App) -> SettingPage {
                 .description(SharedString::from(format!(
                     "Let {permission_owner} reach the internet. It asked for this; nothing \
                          stops it contacting any address once you agree.",
-                    permission_owner = plugin.id
+                    permission_owner = plugin.name
                 ))),
             );
         }

@@ -204,7 +204,7 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
             ],
         },
         Menu {
-            name: "Extensions".into(),
+            name: "Plugins".into(),
             disabled: false,
             items: vec![
                 MenuItem::action("Discover Plugins…", DiscoverPlugins),

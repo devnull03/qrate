@@ -58,7 +58,7 @@ impl Render for LauncherBar {
                         menu.menu("New Project…", Box::new(NewProject))
                             .menu("Settings…", Box::new(OpenSettings))
                             .separator()
-                            .submenu("Extensions", window, cx, |menu, _, _| {
+                            .submenu("Plugins", window, cx, |menu, _, _| {
                                 menu.menu("Discover Plugins…", Box::new(DiscoverPlugins))
                                     .menu("Manage Plugins…", Box::new(ManagePlugins))
                                     .separator()

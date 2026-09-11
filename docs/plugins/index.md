@@ -10,19 +10,19 @@ For the full list of hooks and host functions, see the [API reference](api-refer
 
 ## Install a plugin
 
-Open **Extensions ▸ Discover Plugins…** for releases in qrate's signed official catalog. qrate checks
+Open **Plugins ▸ Discover Plugins…** for releases in qrate's signed official catalog. qrate checks
 the catalog signature and the package hash before installation. An official listing means that the
 published metadata and exact release bytes were reviewed. It is not a guarantee that third-party
 code is harmless.
 
-Use **Extensions ▸ Install Plugin from Link…** for an unlisted public GitHub repository or release.
+Use **Plugins ▸ Install Plugin from Link…** for an unlisted public GitHub repository or release.
 qrate downloads the release ZIP, checks its static package manifest, and shows its source,
 permissions, size, and SHA-256 before it asks for confirmation.
 
 New package installs are disabled. Open **Settings ▸ Plugins** to enable one and separately grant
 network access. The same page shows whether qrate manages the package and can safely remove it.
 
-For local development or an offline installation, open **Extensions ▸ Plugins Folder** and copy a
+For local development or an offline installation, open **Plugins ▸ Plugins Folder** and copy a
 single `.lua` file or a plugin folder there. Manual plugins are unmanaged: qrate does not update or
 remove them.
 
@@ -47,7 +47,7 @@ no `package`.
 
 ## How qrate loads a plugin
 
-qrate reads the plugins directory at startup. Open it with **Extensions ▸ Plugins Folder**.
+qrate reads the plugins directory at startup. Open it with **Plugins ▸ Plugins Folder**.
 
 qrate accepts two shapes:
 
@@ -141,8 +141,8 @@ Three things in that example apply to every plugin:
 ### 4. Check and load it
 
 1. Run `npm run check` to validate the package metadata and archive contents.
-2. Copy or clone the folder into the plugins directory (**Extensions ▸ Plugins Folder**).
-3. Restart qrate, or click **Extensions ▸ Reload Plugins**.
+2. Copy or clone the folder into the plugins directory (**Plugins ▸ Plugins Folder**).
+3. Restart qrate, or click **Plugins ▸ Reload Plugins**.
 4. Open **Settings ▸ Plugins** and confirm your plugin is listed and enabled.
 
 Tagging a version in a repository created from the template builds the versioned ZIP and checksum
@@ -151,7 +151,7 @@ to propose that release for the official catalog.
 
 ### 5. Iterate
 
-Edit the file, then click **Extensions ▸ Reload Plugins**. qrate rebuilds every plugin's virtual
+Edit the file, then click **Plugins ▸ Reload Plugins**. qrate rebuilds every plugin's virtual
 machine and replaces every contribution. You do not have to restart the app.
 
 qrate reports a plugin problem in two places, and the difference matters:
