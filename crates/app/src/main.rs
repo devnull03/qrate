@@ -107,6 +107,7 @@ fn set_main_window_title(window: &mut Window, cx: &gpui::App) {
 }
 
 pub(crate) fn open_main_window(cx: &mut gpui::App) {
+    let started = std::time::Instant::now();
     // Window already exists (a project switch); reload its layout instead of keeping the old one's.
     if let Some(handle) = WindowRegistry::focus_or_clear(MAIN_WINDOW_KIND, cx) {
         handle
@@ -146,6 +147,7 @@ pub(crate) fn open_main_window(cx: &mut gpui::App) {
         cx.new(|cx| Root::new(view, window, cx))
     }) {
         WindowRegistry::register(MAIN_WINDOW_KIND, window_handle.into(), cx);
+        log::info!("opened the main window in {:?}", started.elapsed());
     }
 }
 
@@ -335,9 +337,12 @@ fn register_spell_checker(cx: &mut gpui::App) {
     }
     let language = spellcheck::language(cx);
     let ignore_capitalized = spellcheck::ignore_capitalized(cx);
-    let load = cx
-        .background_executor()
-        .spawn(async move { spellcheck::SpellCheck::load(&language, ignore_capitalized) });
+    let load = cx.background_executor().spawn(async move {
+        let started = std::time::Instant::now();
+        let spell = spellcheck::SpellCheck::load(&language, ignore_capitalized);
+        log::info!("loaded dictionaries in {:?}", started.elapsed());
+        spell
+    });
     cx.spawn(async move |cx| {
         let Some(spell) = load.await else {
             return;
@@ -525,6 +530,7 @@ fn main() {
     });
 
     app.run(move |cx| {
+        let started = std::time::Instant::now();
         gpui_component::init(cx);
         cx.register_url_scheme("qrate").detach();
 
@@ -558,11 +564,16 @@ fn main() {
             revalidate: table::revalidate_now,
         });
         diagnostics::init(cx);
+        log::debug!(
+            "startup: settings and theme ready at {:?}",
+            started.elapsed()
+        );
 
         // The composition root is the only place that knows where validators come from; `table`
         // triggers the runs without naming any of them.
         plugin_host::on_command_finished(table::revalidate_now);
         plugin_host::reload(cx);
+        log::debug!("startup: plugins loaded at {:?}", started.elapsed());
         register_variant_checker(cx);
         register_spell_checker(cx);
         update_check::init(cx);
@@ -574,6 +585,10 @@ fn main() {
         checks::init(cx);
         agent_bridge::init(cx);
         agent_runtime::init(cx);
+        log::debug!(
+            "startup: validators and bridges registered at {:?}",
+            started.elapsed()
+        );
 
         cx.on_action(|_: &ReloadPlugins, cx| {
             plugin_host::reload(cx);

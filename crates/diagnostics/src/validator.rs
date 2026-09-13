@@ -12,6 +12,7 @@
 //! knowing nothing about datasets, projects, or the table.
 
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use gpui::{App, BorrowAppContext as _, Global, SharedString};
 use settings::columns::ColumnSettings;
@@ -222,6 +223,8 @@ pub struct SpellActions {
 
 impl Global for SpellActions {}
 
+const SLOW_RUN: Duration = Duration::from_millis(100);
+
 /// Every registered validator. Filled by `app` at startup, which is the only place that knows
 /// where validators come from.
 #[derive(Default)]
@@ -266,12 +269,13 @@ impl Validators {
         // Copied out because running one hands `cx` back mutably, and a fn pointer is cheap.
         let deferred: Vec<_> = cx
             .try_global::<AsyncValidators>()
-            .map(|v| v.0.values().copied().collect())
+            .map(|v| v.0.iter().map(|(name, run)| (name.clone(), *run)).collect())
             .unwrap_or_default();
         if !sync && deferred.is_empty() {
             return;
         }
 
+        let started = Instant::now();
         let settings = settings::columns::load(cx);
         let subdelimiter = if cx.has_global::<settings::AppSettings>() {
             settings::effective_text(settings::FILTER_SUBDELIMITER_KEY, cx)
@@ -299,11 +303,19 @@ impl Validators {
             })
             .collect();
 
+        log::debug!(
+            "validation snapshot: {} columns × {} rows in {:?}",
+            columns.len(),
+            rows.len(),
+            started.elapsed()
+        );
+
         if sync {
             cx.update_global::<Self, _>(|this, cx| {
                 for validator in &this.0 {
+                    let step = Instant::now();
                     validator.begin_run();
-                    let items = snapshot
+                    let items: Vec<_> = snapshot
                         .iter()
                         .flat_map(|column| {
                             address(
@@ -316,17 +328,39 @@ impl Validators {
                             )
                         })
                         .collect();
+                    let checked = step.elapsed();
+                    let found = items.len();
                     Diagnostics::set(
                         &Source::Validator(validator.name()),
                         DATASET_MAIN,
                         items,
                         cx,
                     );
+                    log::debug!(
+                        "validator {:?}: {found} findings, checked in {checked:?}, published in {:?}",
+                        validator.name(),
+                        step.elapsed() - checked
+                    );
                 }
             });
         }
-        for run in deferred {
+        for (name, run) in deferred {
+            let step = Instant::now();
             run(&snapshot, cx);
+            log::debug!(
+                "deferred validator {name:?} started in {:?}",
+                step.elapsed()
+            );
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= SLOW_RUN {
+            log::warn!(
+                "validation blocked the UI thread for {elapsed:?} ({} columns × {} rows)",
+                columns.len(),
+                rows.len()
+            );
+        } else {
+            log::debug!("validation run in {elapsed:?}");
         }
     }
 }
