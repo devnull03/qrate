@@ -64,5 +64,5 @@ jobs:
       # rather than a debug tree it cannot.
       - name: Build
         run: |
-          cargo build --release -p app ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+          cargo build --release -p app -p qrate-cli ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
           cargo build --release -p updater --bin qrate-update-helper ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
