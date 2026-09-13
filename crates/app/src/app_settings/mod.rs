@@ -1308,7 +1308,7 @@ fn columns_page(cx: &App) -> SettingPage {
     );
 
     let variant_columns = headers.clone();
-    let variants = SettingGroup::new().title("Value variants").item(
+    let variants = divided_group(cx).title("Value variants").item(
         SettingItem::new(
             "Reviewed columns",
             SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
@@ -1331,7 +1331,7 @@ fn columns_page(cx: &App) -> SettingPage {
         ),
     );
 
-    let ignored = SettingGroup::new()
+    let ignored = divided_group(cx)
         .title("Ignored problems")
         .description("Findings you chose to ignore. Remove one to see it in Problems again.")
         .item(
