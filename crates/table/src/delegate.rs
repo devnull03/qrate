@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
@@ -73,6 +73,9 @@ pub struct QrateTableDelegate {
     pub(crate) note_editor: Entity<TextareaState>,
     /// Each row's resolved image path, parallel to `rows`. `None` until `TablePanel` resolves it.
     image_paths: Vec<Option<PathBuf>>,
+    /// The text inside linked documents, by path. Filled by `TablePanel` the first time a search
+    /// includes linked files; a file with no text layer holds an empty string so it is not re-read.
+    document_text: HashMap<PathBuf, String>,
     /// View→source row mapping: `visible_rows[view] == source`. The library only ever sees this
     /// narrowed set, so filtering composes with the virtualized render for free.
     visible_rows: Vec<usize>,
@@ -112,6 +115,7 @@ impl QrateTableDelegate {
             note_edit: None,
             note_editor,
             image_paths: Vec::new(),
+            document_text: HashMap::new(),
             visible_rows: Vec::new(),
             filters: Vec::new(),
             filters_enabled: Vec::new(),
@@ -321,13 +325,44 @@ impl QrateTableDelegate {
     /// Cells in the *visible* set matching `needle` under `opts`, as `(view_row, data_col)` in view
     /// order — ready for `set_selected_cell`/`scroll_to_row` after the pinned `+1` on the column.
     pub(crate) fn search_matches(&self, needle: &str, opts: SearchOpts) -> Vec<(usize, usize)> {
-        find_matches(
+        let mut hits = find_matches(
             &self.rows,
             &self.visible_rows,
             self.columns.len(),
             needle,
             opts,
-        )
+        );
+        if opts.files {
+            hits.extend(find_file_matches(
+                &self.rows,
+                &self.visible_rows,
+                &self.image_paths,
+                &self.document_text,
+                needle,
+                opts,
+            ));
+            hits.sort_unstable();
+            hits.dedup();
+        }
+        hits
+    }
+
+    /// Linked documents whose text has not been read yet, each once.
+    pub(crate) fn unread_documents(&self) -> Vec<PathBuf> {
+        let mut unread: Vec<PathBuf> = self
+            .image_paths
+            .iter()
+            .flatten()
+            .filter(|path| preview::has_text(path) && !self.document_text.contains_key(*path))
+            .cloned()
+            .collect();
+        unread.sort_unstable();
+        unread.dedup();
+        unread
+    }
+
+    pub(crate) fn add_document_text(&mut self, texts: Vec<(PathBuf, String)>) {
+        self.document_text.extend(texts);
     }
 
     /// The cell writes replacing `needle` with `replacement` produces, in *source* coordinates and
@@ -1070,6 +1105,8 @@ pub(crate) struct SearchOpts {
     pub case: bool,
     pub word: bool,
     pub regex: bool,
+    /// Also match the text inside each row's linked document.
+    pub files: bool,
 }
 
 /// Compile the query into a matcher honoring the toggles. `None` means "match nothing": a blank
@@ -1119,6 +1156,41 @@ fn find_matches(
         }
     }
     hits
+}
+
+/// Rows whose linked document contains `needle`, addressed at the cell that names the file so
+/// stepping to the hit lands where the archivist would look for it.
+fn find_file_matches(
+    rows: &[Vec<SharedString>],
+    visible: &[usize],
+    image_paths: &[Option<PathBuf>],
+    document_text: &HashMap<PathBuf, String>,
+    needle: &str,
+    opts: SearchOpts,
+) -> Vec<(usize, usize)> {
+    let Some(re) = compile_search(needle, opts) else {
+        return Vec::new();
+    };
+    visible
+        .iter()
+        .enumerate()
+        .filter_map(|(view, &source)| {
+            let path = image_paths.get(source)?.as_ref()?;
+            if !re.is_match(document_text.get(path)?) {
+                return None;
+            }
+            let names = path
+                .file_name()
+                .map(|name| settings::filenames::keys(&name.to_string_lossy()))
+                .unwrap_or_default();
+            let col = rows.get(source)?.iter().position(|cell| {
+                settings::filenames::lookup_keys(cell)
+                    .iter()
+                    .any(|key| names.contains(key))
+            });
+            Some((view, col.unwrap_or(0)))
+        })
+        .collect()
 }
 
 /// Rewrite matches in place: `Regex::replace_all` substitutes only the matched spans, so the rest
@@ -1379,6 +1451,41 @@ mod tests {
         assert_eq!(find_matches(&data, &visible, 2, "ap", opts), vec![(0, 0)]);
     }
 
+    /// A hit inside a linked PDF lands on the cell naming the file; a row whose document lacks the
+    /// query, or that has no document at all, is not reported.
+    #[test]
+    fn find_reaches_into_linked_documents() {
+        let data = rows(&[
+            &["Letter to council", "1920_letter.pdf"],
+            &["Portrait", "1921_portrait.jpg"],
+            &["Minutes", "1922_minutes.pdf"],
+        ]);
+        let paths = vec![
+            Some(PathBuf::from("files/1920_letter.pdf")),
+            Some(PathBuf::from("files/1921_portrait.jpg")),
+            Some(PathBuf::from("files/1922_minutes.pdf")),
+        ];
+        let text = HashMap::from([
+            (
+                PathBuf::from("files/1920_letter.pdf"),
+                "the sawmill on Kitsilano beach".to_string(),
+            ),
+            (
+                PathBuf::from("files/1922_minutes.pdf"),
+                "motion carried".to_string(),
+            ),
+        ]);
+        let opts = SearchOpts {
+            files: true,
+            ..SearchOpts::default()
+        };
+        assert_eq!(
+            find_file_matches(&data, &[0, 1, 2], &paths, &text, "SAWMILL", opts),
+            vec![(0, 1)]
+        );
+        assert!(find_file_matches(&data, &[1, 2], &paths, &text, "sawmill", opts).is_empty());
+    }
+
     #[test]
     fn blank_query_matches_nothing() {
         let data = rows(&[&["a"]]);
@@ -1389,7 +1496,12 @@ mod tests {
     fn search_toggles_case_word_and_regex() {
         let data = rows(&[&["Apple pie"], &["pineapple"]]);
         let all = &[0, 1][..];
-        let opt = |case, word, regex| SearchOpts { case, word, regex };
+        let opt = |case, word, regex| SearchOpts {
+            case,
+            word,
+            regex,
+            files: false,
+        };
 
         // Match case: "apple" no longer hits the capitalized "Apple pie".
         assert_eq!(
@@ -1463,9 +1575,8 @@ mod tests {
     fn replace_expands_captures_only_in_regex_mode() {
         let data = rows(&[&["Smith, Jane"]]);
         let regex = SearchOpts {
-            case: false,
-            word: false,
             regex: true,
+            ..SearchOpts::default()
         };
         assert_eq!(
             replace_edits(&data, &[0], 1, r"(\w+), (\w+)", "$2 $1", regex, None),
