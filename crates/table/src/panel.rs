@@ -1288,12 +1288,16 @@ mod tests {
             cx.set_global(variants);
         });
         let (panel, cx) = cx.add_window_view(super::TablePanel::new);
-        panel.update(cx, |panel, cx| {
+        cx.run_until_parked();
+        let group = panel.update(cx, |_, cx| {
             assert_eq!(Diagnostics::all(cx).len(), 2);
-            let group = Diagnostics::all(cx)[0].group.clone();
             let location = Location::cell(DATASET_MAIN, 0, None, "Title");
             let fix = clustering::variant_fixes(&location, "Agnès Varda", None, cx).remove(0);
             crate::write_cell(0, 0, fix.replacement, cx);
+            Diagnostics::all(cx)[0].group.clone()
+        });
+        cx.run_until_parked();
+        panel.update(cx, |panel, cx| {
             assert!(Diagnostics::all(cx).is_empty());
             assert_eq!(
                 panel.state.read(cx).delegate().cell(1, 0).unwrap(),
@@ -1308,6 +1312,9 @@ mod tests {
                 );
             });
             crate::revalidate_now(cx);
+        });
+        cx.run_until_parked();
+        panel.update(cx, |panel, cx| {
             assert_eq!(Diagnostics::all(cx).len(), 2);
             assert_eq!(Diagnostics::all(cx)[0].group, group);
             assert_eq!(
