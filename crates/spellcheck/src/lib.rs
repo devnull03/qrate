@@ -235,13 +235,23 @@ pub fn ignore_capitalized(cx: &App) -> bool {
 /// a click that did nothing. A download takes seconds and there is no progress to report from a
 /// blocking request, so "in flight or not" is the whole state there is.
 #[derive(Default)]
-pub struct Downloading(pub std::collections::HashSet<String>);
+pub struct Downloading {
+    active: std::collections::HashSet<String>,
+    wanted: std::collections::HashSet<String>,
+}
 
 impl Global for Downloading {}
 
 pub fn is_downloading(code: &str, cx: &App) -> bool {
     cx.try_global::<Downloading>()
-        .is_some_and(|d| d.0.contains(code))
+        .is_some_and(|d| d.active.contains(code))
+}
+
+pub fn retain_wanted_downloads(selected: &[SharedString], cx: &mut App) {
+    let downloading = cx.default_global::<Downloading>();
+    downloading
+        .wanted
+        .retain(|code| selected.iter().any(|selected| selected == code));
 }
 
 /// Fetch `code` in the background and add it to the checked languages once it lands, the way
@@ -252,9 +262,9 @@ pub fn start_download(code: SharedString, then: fn(&mut App), cx: &mut App) {
     if is_downloading(&code, cx) {
         return;
     }
-    cx.default_global::<Downloading>()
-        .0
-        .insert(code.to_string());
+    let downloading = cx.default_global::<Downloading>();
+    downloading.active.insert(code.to_string());
+    downloading.wanted.insert(code.to_string());
     let fetching = code.clone();
     let fetch = cx
         .background_executor()
@@ -262,15 +272,21 @@ pub fn start_download(code: SharedString, then: fn(&mut App), cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = fetch.await;
         cx.update(|cx| {
-            cx.default_global::<Downloading>().0.remove(code.as_ref());
+            let downloading = cx.default_global::<Downloading>();
+            downloading.active.remove(code.as_ref());
+            let wanted = downloading.wanted.remove(code.as_ref());
             match result {
-                Ok(()) => {
+                Ok(()) if wanted => {
                     log::info!("downloaded the {} dictionary", catalogue::name_of(&code));
                     let mut codes = languages(cx);
                     codes.push(code.to_string());
                     set_languages(&codes, cx);
                     then(cx);
                 }
+                Ok(()) => log::info!(
+                    "downloaded the {} dictionary without selecting it",
+                    catalogue::name_of(&code)
+                ),
                 Err(err) => log::error!(
                     "could not download the {} dictionary, so it was not installed: {err}",
                     catalogue::name_of(&code)
@@ -773,8 +789,9 @@ mod tests {
     // Never `use super::*` here — the chained glob would let gpui's `test` macro shadow the
     // `#[test]` its own expansion emits. See the note in `table`'s `note.rs` test module.
     use crate::{
-        CapitalizationCheck, DictionarySet, EN_CA_AFF, EN_CA_DIC, LoadedDictionary, SpellCheck,
-        capitalization_fixes, capitalization_group_fixes, checkable, spelling_group_fixes, words,
+        CapitalizationCheck, DictionarySet, Downloading, EN_CA_AFF, EN_CA_DIC, LoadedDictionary,
+        SpellCheck, capitalization_fixes, capitalization_group_fixes, checkable,
+        retain_wanted_downloads, spelling_group_fixes, words,
     };
     use diagnostics::{ColumnInfo, ColumnValidator, DATASET_MAIN, GroupMember, Location, Severity};
     use gpui::{SharedString, TestAppContext};
@@ -798,6 +815,20 @@ mod tests {
 
     fn dictionary() -> SpellCheck {
         dictionary_with_names_ignored(false)
+    }
+
+    #[gpui::test]
+    fn deselecting_an_in_flight_download_keeps_it_unselected(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let mut downloading = Downloading::default();
+            downloading.active.insert("fr".into());
+            downloading.wanted.insert("fr".into());
+            cx.set_global(downloading);
+            retain_wanted_downloads(&[], cx);
+            let downloading = cx.global::<Downloading>();
+            assert!(downloading.active.contains("fr"));
+            assert!(!downloading.wanted.contains("fr"));
+        });
     }
 
     fn findings(

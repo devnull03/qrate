@@ -8,6 +8,7 @@ diagnostics = { path = "../diagnostics" }
 settings = { path = "../settings" }
 gpui.workspace = true
 log.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 # Blocking like `spellcheck`'s download and `plugin-host`'s http.get, and for the same reason:
 # gpui's executor is not a tokio reactor, so these run on the background executor.

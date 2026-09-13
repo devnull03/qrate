@@ -31,6 +31,16 @@ pub trait AuthoritySource: Send + Sync + 'static {
     /// Where to ask about `term`.
     fn lookup_url(&self, term: &str) -> String;
 
+    /// Cache identity for configuration that can change what this source answers.
+    fn cache_scope(&self) -> String {
+        self.name().to_string()
+    }
+
+    /// A source-level refusal that makes more requests in this pass pointless.
+    fn refusal(&self, _body: &str) -> Option<String> {
+        None
+    }
+
     /// The headings the response offers, best first.
     ///
     /// `None` means the answer could not be read at all — a truncated body, an error page, a

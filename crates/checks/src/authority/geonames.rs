@@ -43,19 +43,25 @@ impl AuthoritySource for GeoNames {
         )
     }
 
+    fn cache_scope(&self) -> String {
+        format!("{NAME}:{}", self.username)
+    }
+
+    fn refusal(&self, body: &str) -> Option<String> {
+        serde_json::from_str::<serde_json::Value>(body)
+            .ok()?
+            .get("status")?
+            .get("message")?
+            .as_str()
+            .map(str::to_owned)
+    }
+
     fn labels(&self, body: &str) -> Option<Vec<String>> {
         let parsed = serde_json::from_str::<serde_json::Value>(body).ok()?;
         // Every refusal — bad username, spent daily credits, rate limit — comes back as a `status`
         // object with no `geonames` array. Reading that as "no such place" would redden a whole
         // column over an account problem, so it is not an answer.
-        let Some(hits) = parsed["geonames"].as_array() else {
-            if let Some(message) = parsed["status"]["message"].as_str() {
-                log::warn!(
-                    "GeoNames refused the lookup, so places are not being checked: {message}"
-                );
-            }
-            return None;
-        };
+        let hits = parsed["geonames"].as_array()?;
         Some(
             hits.iter()
                 .filter_map(|hit| hit["name"].as_str().map(str::to_owned))
@@ -116,6 +122,16 @@ mod tests {
         };
         assert!(blank.unavailable().is_some());
         assert!(configured().unavailable().is_none());
+    }
+
+    #[test]
+    fn the_cache_scope_changes_with_the_account() {
+        let first = configured().cache_scope();
+        let second = GeoNames {
+            username: "somebody-else".into(),
+        }
+        .cache_scope();
+        assert_ne!(first, second);
     }
 
     #[test]

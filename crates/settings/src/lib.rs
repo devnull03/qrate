@@ -205,6 +205,12 @@ pub enum Setting {
         label: &'static str,
         description: &'static str,
     },
+    TextWithAction {
+        key: &'static str,
+        label: &'static str,
+        description: &'static str,
+        on_change: fn(&mut App),
+    },
     Switch {
         key: &'static str,
         label: &'static str,
@@ -247,11 +253,33 @@ impl Setting {
                         move |cx: &App| scoped_text(key, cx),
                         move |val: SharedString, cx: &mut App| set_scoped_text(key, val, cx),
                     ),
+                    None,
                 ),
             )
             .description(described(description, key, cx))
             // gpui-component pins horizontal-layout inputs to a fixed `w_64`, which clips inside a
             // narrow settings pane; the stacked layout gives them `w_full` instead.
+            .layout(Axis::Vertical),
+            Setting::TextWithAction {
+                key,
+                label,
+                description,
+                on_change,
+            } => SettingItem::new(
+                label,
+                resettable(
+                    key,
+                    SettingField::input(
+                        move |cx: &App| scoped_text(key, cx),
+                        move |val: SharedString, cx: &mut App| {
+                            set_scoped_text(key, val, cx);
+                            on_change(cx);
+                        },
+                    ),
+                    Some(on_change),
+                ),
+            )
+            .description(described(description, key, cx))
             .layout(Axis::Vertical),
 
             Setting::Switch {
@@ -266,6 +294,7 @@ impl Setting {
                         move |cx: &App| scoped_bool(key, cx),
                         move |val: bool, cx: &mut App| set_scoped_bool(key, val, cx),
                     ),
+                    None,
                 ),
             )
             .description(described(description, key, cx)),
@@ -289,6 +318,7 @@ impl Setting {
                             move |cx: &App| scoped_text(key, cx),
                             move |val: SharedString, cx: &mut App| set_scoped_text(key, val, cx),
                         ),
+                        None,
                     ),
                 )
                 .description(described(description, key, cx))
@@ -347,12 +377,21 @@ fn described(description: &'static str, key: &'static str, cx: &App) -> SharedSt
 /// Wires a dual-scope field to the page's Reset button, which clears the project's own value so the
 /// row inherits the user-wide one again. Nothing to reset in the User scope: that store *is* the
 /// default this returns to.
-fn resettable<T: 'static>(key: &'static str, field: SettingField<T>) -> SettingField<T> {
+fn resettable<T: 'static>(
+    key: &'static str,
+    field: SettingField<T>,
+    on_change: Option<fn(&mut App)>,
+) -> SettingField<T> {
     field.on_reset(
         move |cx: &App| {
             SettingsScope::current(cx) == SettingsScope::Project && has_project_override(key, cx)
         },
-        move |_window: &mut Window, cx: &mut App| clear_project_override(key, cx),
+        move |_window: &mut Window, cx: &mut App| {
+            clear_project_override(key, cx);
+            if let Some(on_change) = on_change {
+                on_change(cx);
+            }
+        },
     )
 }
 

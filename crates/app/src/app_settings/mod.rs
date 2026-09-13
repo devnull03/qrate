@@ -3,12 +3,13 @@ mod config;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use diagnostics::CheckList;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Axis, Entity, Global, IntoElement, ParentElement as _,
-    PromptLevel, SharedString, Styled as _, Subscription, Window, div, px,
+    PromptLevel, SharedString, Styled as _, Subscription, Task, Window, div, px,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _,
@@ -31,6 +32,20 @@ use settings::{Setting, columns, project::CurrentProject};
 /// rather than a title because `SettingPage` does not hand its title back.
 pub const COLUMNS_PAGE: usize = 2;
 pub const PLUGINS_PAGE: usize = 7;
+
+struct AuthorityRevalidation(#[allow(dead_code)] Task<()>);
+
+impl Global for AuthorityRevalidation {}
+
+fn revalidate_authority_setting(cx: &mut App) {
+    let task = cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(Duration::from_millis(500))
+            .await;
+        cx.update(table::revalidate_now);
+    });
+    cx.set_global(AuthorityRevalidation(task));
+}
 
 pub fn build_pages(cx: &App) -> Vec<SettingPage> {
     let mut pages = vec![
@@ -1200,6 +1215,7 @@ fn language_picker(window: &mut Window, cx: &mut App) -> AnyElement {
             searchable: true,
         },
         |values: &[SharedString], cx: &mut App| {
+            spellcheck::retain_wanted_downloads(values, cx);
             let listing = spellcheck::catalogue::listing();
             let state_of = |code: &str| {
                 listing
@@ -1734,12 +1750,13 @@ fn authority_accounts_group(cx: &App) -> SettingGroup {
         .title("Authority accounts")
         .description(SharedString::from(described))
         .item(
-            Setting::Text {
+            Setting::TextWithAction {
                 key: checks::GEONAMES_USERNAME_KEY,
                 label: "GeoNames account",
                 description: "GeoNames refuses anonymous requests, so its check stays off \
                               until this is filled in. A free account at geonames.org is \
                               enough — this is a username, not a password.",
+                on_change: revalidate_authority_setting,
             }
             .into_item(cx),
         )

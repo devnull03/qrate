@@ -28,6 +28,7 @@ pub struct ColumnSnapshot {
     pub settings: ColumnSettings,
     pub values: Vec<SharedString>,
     pub subdelimiter: SharedString,
+    pub row_ids: std::sync::Arc<[settings::project::RowId]>,
 }
 
 impl ColumnSnapshot {
@@ -265,6 +266,7 @@ impl Validators {
         cx: &mut App,
     ) {
         Diagnostics::set_row_ids(row_ids, cx);
+        let row_ids: std::sync::Arc<[_]> = row_ids.into();
         let sync = cx.try_global::<Self>().is_some_and(|v| !v.0.is_empty());
         // Copied out because running one hands `cx` back mutably, and a fn pointer is cheap.
         let deferred: Vec<_> = cx
@@ -300,6 +302,7 @@ impl Validators {
                     .map(|r| r.get(ix).cloned().unwrap_or_default())
                     .collect(),
                 subdelimiter: subdelimiter.clone(),
+                row_ids: row_ids.clone(),
             })
             .collect();
 
@@ -347,10 +350,7 @@ impl Validators {
         for (name, run) in deferred {
             let step = Instant::now();
             run(&snapshot, cx);
-            log::debug!(
-                "deferred validator {name:?} started in {:?}",
-                step.elapsed()
-            );
+            log::debug!("deferred validator {name:?} queued in {:?}", step.elapsed());
         }
         let elapsed = started.elapsed();
         if elapsed >= SLOW_RUN {
@@ -388,7 +388,7 @@ pub fn address(
             location: Location {
                 dataset: DATASET_MAIN.into(),
                 row: finding.row,
-                row_id: None,
+                row_id: finding.row.and_then(|row| column.row_ids.get(row).copied()),
                 column: Some(column.name.clone()),
             },
             severity: override_to.unwrap_or(finding.severity),
@@ -614,6 +614,7 @@ mod tests {
             settings,
             values: vec!["Aderman, Ray".into()],
             subdelimiter: SharedString::default(),
+            row_ids: [1].into(),
         }
     }
 
@@ -662,6 +663,13 @@ mod tests {
                 column: "c"
             }
         );
+    }
+
+    #[test]
+    fn addressed_rows_use_their_snapshot_ids() {
+        let found = vec![(0, Severity::Error, SharedString::from("bad value")).into()];
+        let addressed = crate::address("test".into(), &snapshot(&[]), found);
+        assert_eq!(addressed[0].location.row_id, Some(1));
     }
 
     /// An override names one producer, so it must not quiet the others checking the same column.
