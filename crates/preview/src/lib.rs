@@ -346,6 +346,32 @@ pub fn has_text_layer(path: &Path) -> Option<bool> {
     pdf::has_text_layer(path)
 }
 
+/// The whole text of a document, for searching across a collection rather than inside one file.
+/// Cached on disk beside the thumbnails, so a project's documents are read once, not every launch.
+/// `None` for anything that is not a document, and where PDFium is not installed.
+pub fn document_text(path: &Path) -> Option<String> {
+    if !has_text(path) {
+        return None;
+    }
+    let entry = cache::key(path, FULL, 0).and_then(|key| Some(cache::dir()?.join(key + ".txt")));
+    if let Some(text) = entry
+        .as_ref()
+        .and_then(|entry| std::fs::read_to_string(entry).ok())
+    {
+        return Some(text);
+    }
+    let text = pdf::text(path)?;
+    if let Some(entry) = entry
+        && let Err(err) = std::fs::write(&entry, &text)
+    {
+        log::warn!(
+            "could not cache the text of {}, it will be read again next launch: {err}",
+            path.display()
+        );
+    }
+    Some(text)
+}
+
 /// Every hit for `needle` in this file, in document order. Empty for a blank query, for anything
 /// that is not a document, and where PDFium is not installed.
 pub fn search(path: &Path, needle: &str) -> Vec<Match> {

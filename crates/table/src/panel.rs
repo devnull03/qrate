@@ -93,6 +93,8 @@ pub struct TablePanel {
     search_opts: SearchOpts,
     search_error: bool,
     _search_sub: Subscription,
+    /// Linked documents being read for a search that includes them. `Some` while it runs.
+    reading_documents: Option<Task<()>>,
     replace_input: Entity<InputState>,
     replace_open: bool,
     _replace_sub: Subscription,
@@ -386,9 +388,13 @@ impl TablePanel {
             search_open: false,
             search_matches: Vec::new(),
             search_ix: 0,
-            search_opts: SearchOpts::default(),
+            search_opts: SearchOpts {
+                files: true,
+                ..SearchOpts::default()
+            },
             search_error: false,
             _search_sub,
+            reading_documents: None,
             replace_input,
             replace_open: false,
             _replace_sub,
@@ -441,7 +447,43 @@ impl TablePanel {
             .search_matches(&needle, self.search_opts);
         self.search_ix = 0;
         self.select_current_match(cx);
+        self.read_documents(cx);
         cx.notify();
+    }
+
+    /// Read the text of every linked document the search has not seen yet, off the UI thread, then
+    /// search again so their hits join the results.
+    fn read_documents(&mut self, cx: &mut Context<Self>) {
+        if !self.search_opts.files || self.reading_documents.is_some() {
+            return;
+        }
+        let unread = self.state.read(cx).delegate().unread_documents();
+        if unread.is_empty() {
+            return;
+        }
+        self.reading_documents = Some(cx.spawn(async move |this, cx| {
+            let texts = cx
+                .background_executor()
+                .spawn(async move {
+                    unread
+                        .into_iter()
+                        .map(|path| {
+                            let text = preview::document_text(&path).unwrap_or_default();
+                            (path, text)
+                        })
+                        .collect()
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.reading_documents = None;
+                this.state
+                    .update(cx, |state, _| state.delegate_mut().add_document_text(texts));
+                if this.search_open {
+                    this.refresh_search(cx);
+                }
+            })
+            .ok();
+        }));
     }
 
     fn toggle_opt(&mut self, pick: fn(&mut SearchOpts) -> &mut bool, cx: &mut Context<Self>) {
@@ -890,6 +932,8 @@ impl Render for TablePanel {
             ))
         } else if query.trim().is_empty() {
             SharedString::default()
+        } else if self.reading_documents.is_some() {
+            SharedString::from("Reading files…")
         } else {
             SharedString::from("No results")
         };
@@ -1066,6 +1110,14 @@ impl Render for TablePanel {
                                             "Use regular expression",
                                             opts.regex,
                                             |o| &mut o.regex,
+                                        ))
+                                        .child(toggle(
+                                            "search-files",
+                                            Some(IconName::BookOpen),
+                                            "",
+                                            "Include text inside linked files",
+                                            opts.files,
+                                            |o| &mut o.files,
                                         )),
                                 )
                                 .child(
