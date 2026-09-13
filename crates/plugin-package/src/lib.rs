@@ -960,9 +960,9 @@ mod tests {
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     use super::{
-        CATALOG_KEY_ID, InstallSource, InstallTarget, PackageManifest, install_archive,
-        install_archive_checked, parse_install_link, read_receipt, remove_managed,
-        validate_github_source, verify_catalog,
+        CATALOG_KEY_ID, DirectRelease, InstallSource, InstallTarget, PackageManifest,
+        install_archive, install_archive_checked, install_direct_archive, parse_install_link,
+        read_receipt, remove_managed, validate_github_source, verify_catalog,
     };
 
     fn package(path: &std::path::Path, id: &str, extra: Option<(&str, &[u8])>) {
@@ -1117,6 +1117,32 @@ mod tests {
         );
         remove_managed("org.example.plugin", &plugins, &receipts).unwrap();
         assert!(!plugins.join("org.example.plugin").exists());
+    }
+
+    #[test]
+    fn a_direct_install_receipt_retains_its_update_source() {
+        let root = tempdir().unwrap();
+        let archive = root.path().join("plugin.zip");
+        package(&archive, "org.example.plugin", None);
+        let release = DirectRelease {
+            repository: "https://github.com/owner/plugin".into(),
+            version: "v1.0.0".into(),
+            release_url: "https://github.com/owner/plugin/releases/tag/v1.0.0".into(),
+            artifact_url: "https://github.com/owner/plugin/releases/download/v1.0.0/plugin.zip"
+                .into(),
+            artifact_name: "plugin.zip".into(),
+            bytes: fs::metadata(&archive).unwrap().len(),
+        };
+        let receipt = install_direct_archive(
+            &archive,
+            &root.path().join("plugins"),
+            &root.path().join("receipts"),
+            &release,
+        )
+        .unwrap();
+
+        assert_eq!(receipt.repository, release.repository);
+        assert_eq!(receipt.artifact_url, release.artifact_url);
     }
 
     #[test]

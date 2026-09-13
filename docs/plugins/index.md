@@ -19,8 +19,9 @@ Use **Plugins ▸ Install Plugin from Link…** for an unlisted public GitHub re
 qrate downloads the release ZIP, checks its static package manifest, and shows its source,
 permissions, size, and SHA-256 before it asks for confirmation.
 
-New package installs are disabled. Open **Settings ▸ Plugins** to enable one and separately grant
-network access. The same page shows whether qrate manages the package and can safely remove it.
+New package installs are enabled. Optional permissions such as network access stay off until you
+grant them under **Settings ▸ Plugins**. The same page shows whether qrate manages the package and
+can safely remove it.
 
 For local development or an offline installation, open **Plugins ▸ Plugins Folder** and copy a
 single `.lua` file or a plugin folder there. Manual plugins are unmanaged: qrate does not update or
