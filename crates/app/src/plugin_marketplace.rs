@@ -475,12 +475,15 @@ impl Render for MarketplaceWindow {
 
         let catalog = match (&self.catalog, &requested) {
             (_, Some(plugin)) => v_flex()
+                .w_full()
+                .min_w_0()
                 .gap_1()
                 .child(
                     Label::new(format!("{} {}", plugin.name, plugin.current.version))
+                        .w_full()
                         .font_semibold(),
                 )
-                .child(Label::new(plugin.summary.clone()).text_sm())
+                .child(Label::new(plugin.summary.clone()).w_full().text_sm())
                 .child(
                     Label::new(format!(
                         "{} · {} · API {} · {}",
@@ -489,11 +492,13 @@ impl Render for MarketplaceWindow {
                         plugin.current.api_version,
                         permissions(&plugin.current.permissions)
                     ))
+                    .w_full()
                     .text_sm()
                     .text_color(muted),
                 )
                 .child(
                     Label::new(plugin.repository.clone())
+                        .w_full()
                         .text_xs()
                         .text_color(muted),
                 )
@@ -530,9 +535,12 @@ impl Render for MarketplaceWindow {
             DirectState::Review(review) => {
                 let manifest = &review.inspection.manifest;
                 v_flex()
+                    .w_full()
+                    .min_w_0()
                     .gap_1()
                     .child(
                         Label::new(format!("{} {}", manifest.name, manifest.version))
+                            .w_full()
                             .font_semibold(),
                     )
                     .child(
@@ -543,16 +551,19 @@ impl Render for MarketplaceWindow {
                             review.inspection.bytes,
                             permissions(&manifest.permissions)
                         ))
+                        .w_full()
                         .text_sm()
                         .text_color(muted),
                     )
                     .child(
                         Label::new(review.release.repository.clone())
+                            .w_full()
                             .text_xs()
                             .text_color(muted),
                     )
                     .child(
                         Label::new(format!("SHA-256 {}", review.inspection.sha256))
+                            .w_full()
                             .text_xs()
                             .text_color(muted),
                     )
@@ -634,6 +645,10 @@ impl Render for MarketplaceWindow {
                             })
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.direct_expanded = !this.direct_expanded;
+                                log::info!(
+                                    "GitHub plugin installer expanded: {}",
+                                    this.direct_expanded
+                                );
                                 if this.direct_expanded {
                                     this.input.focus_handle(cx).focus(window, cx);
                                 }
@@ -685,6 +700,8 @@ impl Render for MarketplaceWindow {
             .when_some(footer_action, |view, action| {
                 view.child(
                     h_flex()
+                        .w_full()
+                        .flex_none()
                         .justify_end()
                         .px_4()
                         .py_3()
