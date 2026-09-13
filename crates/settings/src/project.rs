@@ -209,7 +209,7 @@ impl CurrentProject {
 /// rollback journals; NORMAL is only equivalent under WAL — and a busy
 /// timeout so a transient AV/indexer file lock retries instead of surfacing
 /// as SQLITE_BUSY.
-fn open_rw(path: &Path) -> Result<Connection> {
+pub(crate) fn open_rw(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path).with_context(|| format!("Open project at {path:?}"))?;
     conn.busy_timeout(Duration::from_secs(5))
         .context("Set busy timeout")?;

@@ -974,7 +974,7 @@ impl QrateTableDelegate {
         self.row_ids.get(source).copied()
     }
 
-    pub(crate) fn row_ids(&self) -> &[settings::project::RowId] {
+    pub fn row_ids(&self) -> &[settings::project::RowId] {
         &self.row_ids
     }
 

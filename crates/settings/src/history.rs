@@ -42,6 +42,25 @@ pub enum Origin {
     Restore(EntryId),
 }
 
+impl Origin {
+    /// How the History panel names where a change came from.
+    pub fn label(&self) -> String {
+        match self {
+            Origin::Typed => "Typed".into(),
+            Origin::Paste => "Pasted".into(),
+            Origin::Clear => "Cleared".into(),
+            Origin::ReplaceAll => "Replace".into(),
+            Origin::Details => "Details panel".into(),
+            Origin::Spelling => "Spelling fix".into(),
+            Origin::Fix(fix) => format!("Fix: {fix}"),
+            Origin::Structure => "Rows and columns".into(),
+            Origin::Undo => "Undo".into(),
+            Origin::Redo => "Redo".into(),
+            Origin::Restore(id) => format!("Restored to #{id}"),
+        }
+    }
+}
+
 /// One recorded change. Every variant is reversible from what it carries alone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Change {
@@ -260,9 +279,35 @@ pub(crate) fn append(conn: &Connection, entries: &[Entry]) -> Result<()> {
     Ok(())
 }
 
+/// An entry as the History panel lists it: with its name, if it has been given one, and when it was
+/// made in the archivist's own time zone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Listed {
+    pub entry: Entry,
+    pub label: Option<String>,
+    /// `YYYY-MM-DD`, local.
+    pub day: String,
+    /// `HH:MM`, local.
+    pub time: String,
+    /// Whole days between `day` and today, so "Today" and "Yesterday" need no calendar here.
+    pub days_ago: i64,
+}
+
 /// Every entry newer than `after`, oldest first. A file that has never logged anything reads as
 /// an empty history.
 pub fn entries_after(path: &Path, after: EntryId) -> Result<Vec<Entry>> {
+    Ok(select(path, "id > ?1 ORDER BY id", after, -1)?
+        .into_iter()
+        .map(|listed| listed.entry)
+        .collect())
+}
+
+/// Up to `limit` entries older than `before`, newest first — one page of the History panel.
+pub fn page(path: &Path, before: EntryId, limit: i64) -> Result<Vec<Listed>> {
+    select(path, "id < ?1 ORDER BY id DESC", before, limit)
+}
+
+fn select(path: &Path, filter: &str, bound: EntryId, limit: i64) -> Result<Vec<Listed>> {
     let conn = crate::project::open_ro(path)?;
     let exists: i64 = conn.query_row(
         "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '__history'",
@@ -272,41 +317,82 @@ pub fn entries_after(path: &Path, after: EntryId) -> Result<Vec<Entry>> {
     if exists == 0 {
         return Ok(Vec::new());
     }
-    let mut entries = conn
-        .prepare("SELECT id, at, author, origin FROM __history WHERE id > ?1 ORDER BY id")?
-        .query_map([after], |r| {
+    let local = "date(at, 'unixepoch', 'localtime')";
+    let mut listed = conn
+        .prepare(&format!(
+            "SELECT id, at, author, origin, label, {local}, strftime('%H:%M', at, 'unixepoch', 'localtime'),
+                    CAST(julianday(date('now', 'localtime')) - julianday({local}) AS INTEGER)
+             FROM __history WHERE {filter} LIMIT ?2"
+        ))?
+        .query_map(params![bound, limit], |r| {
             Ok((
-                r.get::<_, EntryId>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, String>(3)?,
+                (
+                    r.get::<_, EntryId>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, String>(3)?,
+                ),
+                (
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, i64>(7)?,
+                ),
             ))
         })?
         .map(|row| {
-            let (id, at, author, origin) = row?;
-            Ok(Entry {
-                id,
-                at,
-                author,
-                origin: serde_json::from_str(&origin).context("Read history origin")?,
-                changes: Vec::new(),
+            let ((id, at, author, origin), (label, day, time, days_ago)) = row?;
+            Ok(Listed {
+                entry: Entry {
+                    id,
+                    at,
+                    author,
+                    origin: serde_json::from_str(&origin).context("Read history origin")?,
+                    changes: Vec::new(),
+                },
+                label,
+                day,
+                time,
+                days_ago,
             })
         })
         .collect::<Result<Vec<_>>>()?;
     let mut changes =
         conn.prepare("SELECT change FROM __history_changes WHERE entry_id = ?1 ORDER BY seq")?;
-    for entry in &mut entries {
-        entry.changes = changes
-            .query_map([entry.id], |r| r.get::<_, String>(0))?
+    for listed in &mut listed {
+        listed.entry.changes = changes
+            .query_map([listed.entry.id], |r| r.get::<_, String>(0))?
             .map(|c| serde_json::from_str(&c?).context("Read history change"))
             .collect::<Result<_>>()?;
     }
-    Ok(entries)
+    Ok(listed)
+}
+
+/// Name an entry — "Before Islandora ingest" — or, with `None`, take the name away again.
+pub fn set_label(path: &Path, id: EntryId, label: Option<&str>) -> Result<()> {
+    crate::project::open_rw(path)?
+        .execute(
+            "UPDATE __history SET label = ?2 WHERE id = ?1",
+            params![id, label],
+        )
+        .context("Name history entry")?;
+    Ok(())
+}
+
+/// Forget the whole log. The data it describes is untouched.
+pub fn clear(path: &Path) -> Result<()> {
+    let mut conn = crate::project::open_rw(path)?;
+    let tx = conn.transaction()?;
+    tx.execute_batch(HISTORY_DDL)?;
+    tx.execute_batch("DELETE FROM __history_changes; DELETE FROM __history;")
+        .context("Clear history")?;
+    tx.commit().context("Commit cleared history")?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Change, Entry, Origin, entries_after};
+    use super::{Change, Entry, EntryId, Origin, clear, entries_after, page, set_label};
     use crate::project::{ProjectSpec, create_project_file, save_dataset, write_notes};
 
     fn project(name: &str) -> std::path::PathBuf {
@@ -382,6 +468,49 @@ mod tests {
             vec![typed, fixed, note]
         );
         assert_eq!(entries_after(&path, 2).unwrap().len(), 1);
+    }
+
+    /// The panel pages newest first, a name sticks to its entry until it is taken away, and
+    /// clearing forgets the log without touching the data.
+    #[test]
+    fn pages_run_newest_first_and_names_and_clearing_stick() {
+        let path = project("paging.qrate");
+        let headers = vec!["Title".to_string()];
+        let entries: Vec<Entry> = (0..5)
+            .map(|n| {
+                Entry::new(
+                    Origin::Typed,
+                    vec![edit(&n.to_string(), &(n + 1).to_string())],
+                    None,
+                )
+            })
+            .collect();
+        save_dataset(&path, &headers, &[1], &[vec!["5".into()]], &entries).unwrap();
+
+        let first = page(&path, EntryId::MAX, 2).unwrap();
+        assert_eq!(
+            first.iter().map(|l| l.entry.id).collect::<Vec<_>>(),
+            vec![5, 4]
+        );
+        assert_eq!(first[0].days_ago, 0, "written just now");
+        let older = page(&path, 4, 10).unwrap();
+        assert_eq!(
+            older.iter().map(|l| l.entry.id).collect::<Vec<_>>(),
+            vec![3, 2, 1]
+        );
+
+        set_label(&path, 2, Some("Before ingest")).unwrap();
+        assert_eq!(
+            page(&path, 3, 1).unwrap()[0].label.as_deref(),
+            Some("Before ingest")
+        );
+        set_label(&path, 2, None).unwrap();
+        assert_eq!(page(&path, 3, 1).unwrap()[0].label, None);
+
+        clear(&path).unwrap();
+        assert!(page(&path, EntryId::MAX, 10).unwrap().is_empty());
+        let data = crate::project::load_project_file(&path).unwrap();
+        assert_eq!(data.rows, vec![vec!["5".to_string()]]);
     }
 
     #[test]

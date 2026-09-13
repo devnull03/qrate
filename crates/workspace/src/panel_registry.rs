@@ -20,7 +20,7 @@ use gpui_component::{
 };
 
 use crate::Workspace;
-use crate::panels::{AGENT_META, DETAILS_META};
+use crate::panels::{AGENT_META, DETAILS_META, HISTORY_META};
 
 /// Which status-bar group a panel's button sits in.
 #[derive(Copy, Clone, PartialEq)]
@@ -63,7 +63,7 @@ pub static PROBLEMS_META: PanelMeta = PanelMeta {
 
 /// Every dockable panel, in status-bar order within its group. The centre table isn't one: it has
 /// no button and nowhere to move to.
-pub static PANELS: [&PanelMeta; 3] = [&DETAILS_META, &PROBLEMS_META, &AGENT_META];
+pub static PANELS: [&PanelMeta; 4] = [&DETAILS_META, &PROBLEMS_META, &HISTORY_META, &AGENT_META];
 
 pub struct PanelEntry {
     pub meta: &'static PanelMeta,
