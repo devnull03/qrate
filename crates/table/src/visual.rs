@@ -15,6 +15,9 @@ use visual_search::{Clip, Index, Stamp};
 /// Files embedded per model call. Larger batches barely help on a CPU and delay the progress count.
 const BATCH: usize = 16;
 
+/// Batches between index saves, about a minute of CPU work, so quitting mid-index keeps progress.
+const SAVE_EVERY: usize = 40;
+
 /// How many rows a visual search returns, best first.
 ///
 /// ponytail: a fixed count, not a similarity threshold. CLIP scores cluster tightly, so a cut-off
@@ -183,13 +186,19 @@ pub(crate) fn index(paths: Vec<PathBuf>, cx: &mut App) {
                         Some(clip) => clip,
                         None => Arc::new(Clip::load(&dir).map_err(|err| format!("{err:#}"))?),
                     };
-                    let mut index = index.lock().unwrap_or_else(|err| err.into_inner());
-                    if index.is_empty() {
-                        *index = Index::load(&file, visual_search::MODEL);
-                    }
-                    let stale: Vec<(PathBuf, Stamp)> = fresh
+                    // Stat outside the lock: searches rank rows on the UI thread through this index.
+                    let stamped: Vec<(PathBuf, Stamp)> = fresh
                         .into_iter()
                         .filter_map(|path| Stamp::of(&path).map(|stamp| (path, stamp)))
+                        .collect();
+                    let empty = lock(&index).is_empty();
+                    let loaded = empty.then(|| Index::load(&file, visual_search::MODEL));
+                    let mut index = lock(&index);
+                    if let Some(loaded) = loaded {
+                        *index = loaded;
+                    }
+                    let stale: Vec<(PathBuf, Stamp)> = stamped
+                        .into_iter()
                         .filter(|(path, stamp)| !index.is_current(path, *stamp))
                         .collect();
                     Ok::<_, String>((clip, stale))
@@ -218,22 +227,19 @@ pub(crate) fn index(paths: Vec<PathBuf>, cx: &mut App) {
                     total,
                 }
             });
-            let (clip, index, batch) = (clip.clone(), index.clone(), batch.to_vec());
-            cx.background_executor()
-                .spawn(async move { embed_batch(&clip, &index, batch) })
-                .await;
-        }
-        if total > 0 {
+            let (clip, index, file, batch) =
+                (clip.clone(), index.clone(), file.clone(), batch.to_vec());
+            let last = (at + 1) * BATCH >= total;
             cx.background_executor()
                 .spawn(async move {
-                    let index = index.lock().unwrap_or_else(|err| err.into_inner());
-                    if let Err(err) = index.save(&file) {
-                        log::warn!(
-                            "could not save the visual search index, it will be rebuilt next launch: {err}"
-                        );
+                    embed_batch(&clip, &index, batch);
+                    if last || at % SAVE_EVERY == SAVE_EVERY - 1 {
+                        save(&index, &file);
                     }
                 })
                 .await;
+        }
+        if total > 0 {
             log::info!("visual search indexed {total} files");
         }
         cx.update(|cx| {
@@ -243,6 +249,16 @@ pub(crate) fn index(paths: Vec<PathBuf>, cx: &mut App) {
         });
     });
     state(cx).job = Some(job);
+}
+
+fn lock(index: &Mutex<Index>) -> std::sync::MutexGuard<'_, Index> {
+    index.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+fn save(index: &Mutex<Index>, file: &Path) {
+    if let Err(err) = lock(index).save(file) {
+        log::warn!("could not save the visual search index, it will be rebuilt next launch: {err}");
+    }
 }
 
 fn embed_batch(clip: &Clip, index: &Mutex<Index>, batch: Vec<(PathBuf, Stamp)>) {
@@ -258,7 +274,7 @@ fn embed_batch(clip: &Clip, index: &Mutex<Index>, batch: Vec<(PathBuf, Stamp)>) 
     }
     match clip.embed_images(&images) {
         Ok(vectors) => {
-            let mut index = index.lock().unwrap_or_else(|err| err.into_inner());
+            let mut index = lock(index);
             for ((path, stamp), vector) in files.into_iter().zip(vectors) {
                 index.insert(path, stamp, vector);
             }
@@ -287,14 +303,10 @@ pub(crate) fn scorer(
                 .embed_text(&text)
                 .map_err(|err| log::warn!("could not embed a visual search query: {err:#}"))
                 .ok()?,
-            Query::Like(path) => index
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .vector(&path)?
-                .to_vec(),
+            Query::Like(path) => lock(&index).vector(&path)?.to_vec(),
         };
         Some(move |path: &Path| {
-            let index = index.lock().unwrap_or_else(|err| err.into_inner());
+            let index = lock(&index);
             Some(visual_search::similarity(&vector, index.vector(path)?))
         })
     })
