@@ -95,7 +95,9 @@ pub(crate) fn column_type(delegate: &QrateTableDelegate, col: usize, cx: &App) -
 
 /// Re-run every registered validator against the live table. The other half of reloading plugins:
 /// dropping one clears its findings, but only a run publishes the replacements.
+#[track_caller]
 pub fn revalidate_now(cx: &mut App) {
+    log::debug!("revalidate requested at {}", std::panic::Location::caller());
     let Some(state) = cx
         .try_global::<TableStateHandle>()
         .and_then(|h| h.0.upgrade())
@@ -499,9 +501,13 @@ pub fn save_now(cx: &mut App) {
     else {
         return;
     };
+    let started = std::time::Instant::now();
     let (headers, row_ids, rows) = state.read(cx).delegate().dataset_snapshot();
     match settings::project::save_dataset(&file, &headers, &row_ids, &rows) {
-        Ok(()) => settings::dirty::clear(settings::dirty::PROJECT_DATA, cx),
+        Ok(()) => {
+            log::debug!("saved {} rows in {:?}", rows.len(), started.elapsed());
+            settings::dirty::clear(settings::dirty::PROJECT_DATA, cx)
+        }
         Err(err) => log::error!("failed to save project data: {err}"),
     }
 }
