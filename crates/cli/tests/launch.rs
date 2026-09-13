@@ -21,11 +21,11 @@ fn launches_sibling_with_native_arguments_and_returns_status() {
     std::fs::create_dir_all(&directory.0).unwrap();
     let cli = directory
         .0
-        .join(format!("qrate{}", std::env::consts::EXE_SUFFIX));
+        .join(format!("qrate-cli{}", std::env::consts::EXE_SUFFIX));
     let desktop = directory
         .0
-        .join(format!("qrate-app{}", std::env::consts::EXE_SUFFIX));
-    std::fs::copy(env!("CARGO_BIN_EXE_qrate"), &cli).unwrap();
+        .join(format!("qrate{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(env!("CARGO_BIN_EXE_qrate-cli"), &cli).unwrap();
     assert!(
         Command::new("rustc")
             .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/desktop.rs"))

@@ -1,21 +1,23 @@
 # qrate CLI plan
 
 Status: implementation in progress. The packaged `qrate` launcher, `open`, `--wait`, `version`,
-help, project-path forwarding, and `qrate://` forwarding exist. App-control and direct-file commands
-remain proposed.
+help, project-path forwarding, `qrate://` forwarding, and the read-only app-control foundation exist.
+Implemented app commands are `status`, `path`, and `launch`; `quit`, project-data commands, and
+direct-file commands remain proposed.
 
 ## Decision
 
-Use `qrate` as the public command. Rename the packaged desktop executable to the private
-`qrate-app` name.
+Use `qrate` as the public command name. The desktop executable keeps the platform-standard `qrate`
+filename, and the console crate builds `qrate-cli`. Packaging resolves the Windows filename conflict
+with a dedicated PATH-facing shim.
 
 The desktop binary uses the Windows GUI subsystem in release builds. Windows does not attach that
 binary to a terminal. A separate executable gives scripts reliable standard input, output, and exit
-codes. The desktop shortcut starts `qrate-app`, so it does not show a console window.
+codes. Desktop shortcuts start the GUI `qrate` binary, so they do not show a console window.
 
 The public command has two project modes:
 
-1. **Open-project mode** is the default. The command starts or contacts `qrate-app` and operates on
+1. **Open-project mode** is the default. The command starts or contacts the desktop `qrate` and operates on
    its active project.
 2. **Direct-file mode** uses `--use <PATH>`. It opens that `.qrate` file without the desktop app.
 
@@ -136,7 +138,7 @@ qrate open [PROJECT.qrate|qrate://URL] [--wait] [--new-window]
 - `--new-window` requests a new window instead of focusing an open project.
 - Pass `qrate://` URLs to the app unchanged. The app validates and handles supported routes.
 
-The operating-system URL handler should start `qrate-app` directly. This avoids a console flash on
+The operating-system URL handler should start the GUI `qrate` directly. This avoids a console flash on
 Windows. A terminal invocation such as `qrate qrate://...` uses the launcher and forwards the URL.
 
 `--use` accepts filesystem paths only. It rejects `qrate://` URLs because direct-file mode cannot
@@ -153,7 +155,7 @@ qrate app quit [--force]
 
 - `status` shows whether the app runs and which project is active.
 - `launch` starts the desktop app without opening a project.
-- `path` shows the resolved private `qrate-app` executable.
+- `path` shows the resolved desktop `qrate` executable.
 - `quit` asks the app to close. `--force` is for an unresponsive process and requires confirmation.
 
 #### `project`
@@ -407,16 +409,17 @@ Generate these files from the parser. Do not keep hand-written completion files.
 
 ## Installation and `PATH`
 
-Package the public `qrate` launcher with the private `qrate-app` desktop executable. The launcher
-uses the sibling desktop executable, so it does not depend on an installation registry.
+Package the `qrate-cli` console executable with the desktop `qrate` executable. Platform layouts keep
+the two filenames from colliding.
 
 ### Windows
 
-- Install `qrate.exe` beside `qrate-app.exe`.
-- Point Start Menu and desktop shortcuts to `qrate-app.exe`.
-- Add an installer option named **Add qrate to PATH**.
-- For a per-user install, add the install directory to the user `PATH`.
-- For an all-users NSIS or MSI install, add it to the machine `PATH`.
+- Install GUI `qrate.exe` and `qrate-cli.exe` in the application directory.
+- Install a dedicated forwarding shim as `bin\qrate.exe`.
+- Point Start Menu shortcuts, desktop shortcuts, URL associations, and updater launches to the GUI
+  `qrate.exe`.
+- Add only the `bin` directory to the user `PATH` for per-user NSIS installs.
+- Add only the `bin` directory to the machine `PATH` for all-users NSIS and MSI installs.
 - Remove only the exact installer entry during uninstall.
 - Do not change `PATH` for the portable ZIP.
 
@@ -425,20 +428,22 @@ The default per-user path remains `%LOCALAPPDATA%\qrate`. The all-users path rem
 
 ### macOS
 
-- Put the launcher at `/Applications/qrate.app/Contents/MacOS/qrate`.
-- Put the desktop binary at `/Applications/qrate.app/Contents/MacOS/qrate-app`.
+- Put the desktop binary at `/Applications/qrate.app/Contents/MacOS/qrate`.
+- Put the console binary at `/Applications/qrate.app/Contents/MacOS/qrate-cli`, beside the GUI it
+  launches.
 - The DMG cannot safely change `PATH` during drag-and-drop installation.
-- Add a desktop action that creates a symlink in `/usr/local/bin` after user confirmation.
 - A Homebrew cask can expose the bundled binary with its `binary` stanza.
-- Document the full bundle path as the fallback.
+- Document a user-created `$HOME/.local/bin/qrate` symlink as the no-privilege option.
 
 Do not use `/usr/bin`. System Integrity Protection owns that directory.
 
 ### Linux
 
-- Put `qrate` and `qrate-app` in the release tarball.
-- An install script or package places both files in `/usr/local/bin` or `/usr/bin`.
-- A per-user install uses `$HOME/.local/bin`.
+- Put the GUI and real console program at `lib/qrate/qrate` and `lib/qrate/qrate-cli`. Expose the
+  console program through a relative `bin/qrate-cli` symlink and the GUI through `bin/qrate-gui`.
+- The desktop file launches `qrate-gui`, never a PATH-resolved `qrate`.
+- A system package can expose the CLI as `/usr/bin/qrate`; a per-user install can create
+  `$HOME/.local/bin/qrate` as a symlink to `bin/qrate-cli`.
 - The tarball itself does not change `PATH`.
 
 Flatpak isolates host commands. A Flatpak build should keep live desktop integration separate from a
@@ -450,12 +455,13 @@ host-installed CLI.
 cargo install --path crates/cli
 ```
 
-Cargo installs `qrate` in `$CARGO_HOME/bin`. The user must add that directory to `PATH`.
+Cargo installs `qrate-cli` in `$CARGO_HOME/bin`. Users can invoke that name directly or create a
+`qrate` symlink in a directory they own on `PATH`.
 
 ## Architecture sequence
 
 1. Add the parser crate and approve this command list.
-2. Rename the packaged desktop target to `qrate-app` and implement `qrate open`.
+2. Add the separate console target and implement `qrate open`.
 3. Add the local app-control interface for commands against the active project.
 4. Implement project, row, column, file, and export commands through the open app.
 5. Extract `.qrate` storage into a GUI-free crate for `--use`.

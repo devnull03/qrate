@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "qrate-app"
+name = "qrate"
 path = "src/main.rs"
 
 [dependencies]
