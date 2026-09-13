@@ -21,7 +21,7 @@ use crate::{
     editing::{self, EditState},
     floating::float_at,
     history::Cells,
-    note, photos, row_index,
+    note, photos, row_index, visual,
 };
 
 const COLUMN_LAYOUT_KEY: &str = "table_columns";
@@ -95,6 +95,11 @@ pub struct TablePanel {
     _search_sub: Subscription,
     /// Linked documents being read for a search that includes them. `Some` while it runs.
     reading_documents: Option<Task<()>>,
+    /// The pending visual query. Replacing it cancels the one before, which debounces typing.
+    visual_query: Option<Task<()>>,
+    /// The file a visual search with an empty query ranks against, from "Find similar items".
+    similar: Option<std::path::PathBuf>,
+    _visual_sub: Subscription,
     replace_input: Entity<InputState>,
     replace_open: bool,
     _replace_sub: Subscription,
@@ -369,6 +374,24 @@ impl TablePanel {
                 },
             );
 
+        visual::init(cx);
+        // Picks up a "find similar" request from a menu, and re-runs a visual search as the model
+        // downloads and the index fills in.
+        let _visual_sub = cx.observe_global_in::<visual::Visual>(window, |this, window, cx| {
+            if let Some(path) = cx.global_mut::<visual::Visual>().similar.take() {
+                this.similar = Some(path);
+                this.search_opts.visual = true;
+                this.search_open = true;
+                this.search_input.update(cx, |input, cx| {
+                    input.set_value("", window, cx);
+                    input.focus(window, cx);
+                });
+                this.refresh_search(cx);
+            } else if this.search_open && this.search_opts.visual {
+                this.refresh_search(cx);
+            }
+        });
+
         let _replace_sub = cx.subscribe(&replace_input, |this, _input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.replace(false, cx);
@@ -395,6 +418,9 @@ impl TablePanel {
             search_error: false,
             _search_sub,
             reading_documents: None,
+            visual_query: None,
+            similar: None,
+            _visual_sub,
             replace_input,
             replace_open: false,
             _replace_sub,
@@ -437,6 +463,10 @@ impl TablePanel {
     /// Recompute the find matches from the current query and jump to the first, if any. Called on
     /// every keystroke in the find bar (the scan is sub-millisecond for qrate's grids).
     fn refresh_search(&mut self, cx: &mut Context<Self>) {
+        if self.search_opts.visual {
+            self.search_visual(cx);
+            return;
+        }
         let needle = self.search_input.read(cx).value().to_string();
         self.search_error =
             !needle.trim().is_empty() && compile_search(&needle, self.search_opts).is_none();
@@ -449,6 +479,49 @@ impl TablePanel {
         self.select_current_match(cx);
         self.read_documents(cx);
         cx.notify();
+    }
+
+    /// Rank rows by how well their linked file matches the query, or looks like the file "Find
+    /// similar items" was raised on when the query is empty. Typing waits for a pause first.
+    fn search_visual(&mut self, cx: &mut Context<Self>) {
+        let files = self.state.read(cx).delegate().linked_files();
+        visual::index(files, cx);
+        self.search_error = false;
+        let needle = self.search_input.read(cx).value().trim().to_string();
+        let (query, pause) = match (needle.is_empty(), self.similar.clone()) {
+            (false, _) => (
+                visual::Query::Text(needle),
+                std::time::Duration::from_millis(300),
+            ),
+            (true, Some(path)) => (visual::Query::Like(path), std::time::Duration::ZERO),
+            (true, None) => {
+                self.visual_query = None;
+                self.search_matches.clear();
+                cx.notify();
+                return;
+            }
+        };
+        self.visual_query = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(pause).await;
+            let Ok(score) = this.update(cx, |_, cx| visual::scorer(query, cx)) else {
+                return;
+            };
+            let score = score.await;
+            this.update(cx, |this, cx| {
+                this.search_matches = score
+                    .map(|score| {
+                        this.state
+                            .read(cx)
+                            .delegate()
+                            .ranked_matches(score, visual::RESULTS)
+                    })
+                    .unwrap_or_default();
+                this.search_ix = 0;
+                this.select_current_match(cx);
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// Read the text of every linked document the search has not seen yet, off the UI thread, then
@@ -494,12 +567,15 @@ impl TablePanel {
 
     fn goto_match(&mut self, delta: isize, cx: &mut Context<Self>) {
         // Re-scan first: matches are view indices, and a filter change since last keystroke invalidates them.
-        let needle = self.search_input.read(cx).value().to_string();
-        self.search_matches = self
-            .state
-            .read(cx)
-            .delegate()
-            .search_matches(&needle, self.search_opts);
+        // A visual ranking costs a model call, so it keeps the order it was given.
+        if !self.search_opts.visual {
+            let needle = self.search_input.read(cx).value().to_string();
+            self.search_matches = self
+                .state
+                .read(cx)
+                .delegate()
+                .search_matches(&needle, self.search_opts);
+        }
         let n = self.search_matches.len();
         if n == 0 {
             return;
@@ -523,6 +599,9 @@ impl TablePanel {
     /// whole visible set instead, as a single undo step. Matches are cell-granular, so this
     /// substitutes every occurrence *within* each affected cell and leaves the rest of its text.
     fn replace(&mut self, all: bool, cx: &mut Context<Self>) {
+        if self.search_opts.visual {
+            return;
+        }
         let needle = self.search_input.read(cx).value().to_string();
         let replacement = self.replace_input.read(cx).value().to_string();
         let only = match all {
@@ -922,7 +1001,15 @@ impl Render for TablePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let stripe = settings::effective_bool(crate::TABLE_STRIPES_KEY, cx);
         let query = self.search_input.read(cx).value();
-        let count = if self.search_error {
+        let visual_status = visual::status(cx);
+        let count = if let Some(status) = self
+            .search_opts
+            .visual
+            .then(|| visual::status_label(&visual_status))
+            .flatten()
+        {
+            status
+        } else if self.search_error {
             SharedString::from("Invalid regex")
         } else if !self.search_matches.is_empty() {
             SharedString::from(format!(
@@ -931,7 +1018,10 @@ impl Render for TablePanel {
                 self.search_matches.len()
             ))
         } else if query.trim().is_empty() {
-            SharedString::default()
+            match (&self.similar, self.search_opts.visual) {
+                (Some(_), true) => SharedString::from("No similar items"),
+                _ => SharedString::default(),
+            }
         } else if self.reading_documents.is_some() {
             SharedString::from("Reading files…")
         } else {
@@ -1048,6 +1138,8 @@ impl Render for TablePanel {
                         .ghost()
                         .small()
                         .selected(on)
+                        // Text rules have no meaning for a query about what an image shows.
+                        .disabled(opts.visual && id != "search-visual")
                         .tooltip(tip)
                         .map(|b| match icon {
                             Some(icon) => b.icon(icon),
@@ -1118,6 +1210,14 @@ impl Render for TablePanel {
                                             "Include text inside linked files",
                                             opts.files,
                                             |o| &mut o.files,
+                                        ))
+                                        .child(toggle(
+                                            "search-visual",
+                                            Some(IconName::Frame),
+                                            "",
+                                            "Search by what images show",
+                                            opts.visual,
+                                            |o| &mut o.visual,
                                         )),
                                 )
                                 .child(
@@ -1126,6 +1226,21 @@ impl Render for TablePanel {
                                         .text_xs()
                                         .text_color(muted)
                                         .child(count),
+                                )
+                                .when(
+                                    opts.visual
+                                        && matches!(
+                                            visual_status,
+                                            visual::Status::Missing | visual::Status::Failed(_)
+                                        ),
+                                    |bar| {
+                                        bar.child(
+                                            Button::new("visual-install")
+                                                .small()
+                                                .label(visual::download_label())
+                                                .on_click(|_, _, cx| visual::install(cx)),
+                                        )
+                                    },
                                 )
                                 .child(
                                     Button::new("search-prev")

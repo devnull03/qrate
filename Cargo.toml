@@ -17,6 +17,7 @@ members = [
   "crates/spellcheck",
   "crates/table",
   "crates/updater",
+  "crates/visual-search",
   "crates/window-wrapper",
   "crates/workspace",
 ]

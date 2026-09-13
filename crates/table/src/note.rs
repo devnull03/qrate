@@ -349,13 +349,24 @@ pub fn menu(
             let (rows, files) = {
                 let delegate = table.read(cx).delegate();
                 let rows = target_rows(delegate, row);
-                let files = rows
+                let files: Vec<PathBuf> = rows
                     .iter()
                     .filter_map(|&row| delegate.row_image(row).map(std::path::Path::to_path_buf))
                     .collect();
                 (rows, files)
             };
-            selection_items(menu, &rows, files)
+            match (rows.len(), files.first()) {
+                (1, Some(file)) => {
+                    let file = file.clone();
+                    menu.item(
+                        PopupMenuItem::new("Find similar items").on_click(move |_, _, cx| {
+                            crate::visual::find_similar(file.clone(), cx)
+                        }),
+                    )
+                    .separator()
+                }
+                _ => selection_items(menu, &rows, files),
+            }
         }
         None => menu,
     };

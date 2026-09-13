@@ -1,0 +1,21 @@
+[package]
+name = "visual-search"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+serde_json.workspace = true
+# Pure Rust, so the model runs on every platform CI builds. Held at 0.9: from 0.10 candle-core
+# pulls in `tokenizers` and its C oniguruma build, which nothing here calls.
+candle-core = "0.9.2"
+candle-nn = "0.9.2"
+candle-transformers = "0.9.2"
+image = { version = "0.25", default-features = false }
+regex = "1"
+reqwest = { version = "0.12", features = ["blocking"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+dirs.workspace = true
