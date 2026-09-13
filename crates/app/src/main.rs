@@ -3,6 +3,7 @@
 mod about;
 mod actions;
 mod agent_bridge;
+mod app_control;
 mod app_menus;
 mod app_settings;
 mod assets;
@@ -466,6 +467,7 @@ fn flush_all_state(cx: &mut gpui::App) {
     }
     // Everything above reached disk synchronously, so nothing is outstanding.
     settings::dirty::clear_all(cx);
+    app_control::shutdown();
     agent_bridge::shutdown();
 }
 
@@ -598,6 +600,7 @@ fn main() {
             cx,
         );
         checks::init(cx);
+        app_control::init(cx);
         agent_bridge::init(cx);
         agent_runtime::init(cx);
         log::debug!(
