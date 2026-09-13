@@ -118,6 +118,12 @@ pub struct ColumnSettings {
     /// Exact value pairs the cataloguer confirmed are distinct, in canonical lexical order.
     #[serde(default)]
     pub distinct_variants: std::collections::BTreeSet<(String, String)>,
+    /// Producer and stable finding keys the cataloguer chose to suppress in this column.
+    #[serde(default)]
+    pub ignored_diagnostics: std::collections::BTreeSet<(String, String)>,
+    /// Producer, finding key and stable row id of single occurrences suppressed in this column.
+    #[serde(default)]
+    pub ignored_occurrences: std::collections::BTreeSet<(String, String, crate::project::RowId)>,
     /// Which authority file this column's values must exist in, by name (`"LCSH"`), or `None` to
     /// check nothing. Separate from the column's [`ColumnType`] because the two answer different
     /// questions: the type is the shape a value has, this is the list it has to appear on.
@@ -147,6 +153,8 @@ impl Default for ColumnSettings {
             spellcheck: true,
             variant_review: false,
             distinct_variants: Default::default(),
+            ignored_diagnostics: Default::default(),
+            ignored_occurrences: Default::default(),
             authority: None,
             plugins: BTreeMap::new(),
             severity: BTreeMap::new(),
@@ -224,6 +232,16 @@ fn store(map: &ColumnSettingsMap, cx: &mut App) {
 pub fn update(col_key: &str, f: impl FnOnce(&mut ColumnSettings), cx: &mut App) {
     let mut map = load(cx);
     f(map.entry(col_key.to_string()).or_default());
+    store(&map, cx);
+}
+
+/// Drop every ignore, both column-wide and single-occurrence, in every column.
+pub fn clear_ignored(cx: &mut App) {
+    let mut map = load(cx);
+    for settings in map.values_mut() {
+        settings.ignored_diagnostics.clear();
+        settings.ignored_occurrences.clear();
+    }
     store(&map, cx);
 }
 
@@ -354,6 +372,8 @@ mod tests {
         let parsed = parse(Some(r#"{"c2":{"filter_enabled":true}}"#));
         assert!(parsed["c2"].plugins.is_empty());
         assert!(!parsed["c2"].variant_review);
+        assert!(parsed["c2"].ignored_diagnostics.is_empty());
+        assert!(parsed["c2"].ignored_occurrences.is_empty());
     }
 
     /// One column can override two producers differently — the map is keyed by producer for

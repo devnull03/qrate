@@ -16,9 +16,9 @@ use gpui::{
 use gpui_component::input::Textarea;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::table::TableState;
-use gpui_component::{ActiveTheme as _, h_flex};
+use gpui_component::{ActiveTheme as _, Icon, IconName, h_flex};
 
-use diagnostics::{Diagnostics, Location, Severity, severity_color};
+use diagnostics::{Diagnostics, Location, Severity, Source, severity_color};
 use plugin_api::{
     ColumnMapContributions, CommandContext, MenuContributions, MenuTarget, PluginHooks,
 };
@@ -556,25 +556,57 @@ pub fn menu(
 
     let menu = match target {
         Target::Cell { row, col } => {
-            let menu = diagnostics::spelling::menu(
-                &spell_text,
-                None,
-                menu,
-                window,
+            // ponytail: submenus cannot live in a scrollable menu, so a long list is capped instead.
+            const SHOWN: usize = 8;
+            let mut findings: Vec<_> = Diagnostics::at(
+                &location.dataset,
+                location.row,
+                location.column.as_deref(),
                 cx,
-                move |fixed, cx| {
-                    crate::write_cell(row, col, fixed, cx);
-                },
-            );
-            diagnostics::fixes::menu(
-                &location,
-                &spell_text,
-                None,
-                menu,
-                window,
-                cx,
-                move |fixed, cx| crate::write_cell(row, col, fixed, cx),
             )
+            .filter(|d| d.source != Source::Note)
+            .cloned()
+            .collect();
+            findings.sort_by(|a, b| (a.severity, &a.message).cmp(&(b.severity, &b.message)));
+            menu.when(!findings.is_empty(), |menu| {
+                let label = format!("Problems ({})", findings.len());
+                menu.submenu(label, window, cx, move |sub, window, cx| {
+                    let sub =
+                        findings
+                            .iter()
+                            .take(SHOWN)
+                            .fold(sub.max_w(px(360.)), |sub, finding| {
+                                let icon = Icon::new(match finding.severity {
+                                    Severity::Error => IconName::CircleX,
+                                    Severity::Warning => IconName::TriangleAlert,
+                                    Severity::Note => IconName::Info,
+                                })
+                                .text_color(severity_color(finding.severity, cx));
+                                let (finding, text) = (finding.clone(), spell_text.clone());
+                                sub.submenu_with_icon(
+                                    Some(icon),
+                                    diagnostics::fixes::menu_label(&finding.message),
+                                    window,
+                                    cx,
+                                    move |sub, _, cx| {
+                                        diagnostics::fixes::finding_menu(
+                                            &finding,
+                                            Some(&text),
+                                            sub.max_w(px(360.)),
+                                            cx,
+                                            move |fixed, cx| crate::write_cell(row, col, fixed, cx),
+                                        )
+                                    },
+                                )
+                            });
+                    sub.when(findings.len() > SHOWN, |sub| {
+                        sub.separator().label(format!(
+                            "+{} more in the Problems panel",
+                            findings.len() - SHOWN
+                        ))
+                    })
+                })
+            })
         }
         _ => menu,
     };

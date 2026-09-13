@@ -75,8 +75,10 @@ Pair review does not infer that a third similar value identifies the same entity
 
 ## Applying a fix
 
-Some findings offer a suggested correction. Right-click the cell, or open its **Fixes**
-menu, and pick a suggestion to apply it. Applying a fix replaces the cell's whole value, so
+Some findings offer a suggested correction. Right-click the cell, open **Problems**, choose the
+finding, and pick a suggestion. The same items appear when you right-click the finding in the
+Problems panel. Long labels are shortened, and a cell with more than eight findings lists the
+first eight and points to the Problems panel for the rest. Applying a fix replaces the cell's whole value, so
 you always know exactly what you are accepting.
 
 Value-variant fixes offer forms that already occur in the same column. qrate never chooses a
@@ -99,6 +101,22 @@ changed. This stops a stale suggestion from silently overwriting a newer edit.
 Expanded cell occurrences offer the same spelling and fix menus as the grid.
 Row, column, dataset, and group entries do not offer cell fixes.
 Each accepted fix uses the existing undoable cell edit path. Validation then refreshes the groups.
+
+## Ignoring a finding
+
+Each finding offers two ways to ignore it:
+
+- **Ignore this occurrence** hides it in this one cell. qrate remembers the row, so the ignore
+  follows the row when you insert or delete rows above it.
+- **Ignore in column** hides every finding with the same key in that column. For spelling, the
+  key includes the word, so a different misspelling still shows.
+
+A group row in the Problems panel offers **Ignore ▸ In column** for each column it covers.
+qrate saves ignores with the project. They never hide findings from another check.
+
+Turn on **Show ignored** in the Problems panel to see ignored findings dimmed, and right-click one
+to **Unignore** it. **Settings ▸ Columns ▸ Ignored problems** lists every ignore that still hides
+something. Remove one there, or use **Clear all**.
 
 ## Design credit
 
