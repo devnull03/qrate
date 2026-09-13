@@ -663,6 +663,8 @@ impl Render for SettingsWindow {
                     .gap_4()
                     .px_4()
                     .py_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .child(scope_tab(
                         "scope-user",
                         "User",

@@ -33,26 +33,44 @@ pub const PLUGINS_PAGE: usize = 7;
 
 pub fn build_pages(cx: &App) -> Vec<SettingPage> {
     let mut pages = vec![
-        SettingPage::new("Application").group(
-            SettingGroup::new().title("Updates").item(
-                SettingItem::new(
-                    "Automatic updates",
-                    SettingField::switch(
-                        |cx: &App| crate::update_check::automatic_updates(cx),
-                        |on: bool, cx: &mut App| {
-                            settings::AppSettings::set_bool(updater::AUTO_UPDATE_KEY, on, cx);
+        SettingPage::new("Application")
+            .group(
+                divided_group(cx).title("Appearance").item(SettingItem::new(
+                    "Theme",
+                    SettingField::scrollable_dropdown(
+                        crate::theming::theme_choices(cx)
+                            .into_iter()
+                            .map(|name| (name.clone(), name))
+                            .collect(),
+                        |cx: &App| cx.theme().theme_name().clone(),
+                        |name: SharedString, cx: &mut App| {
+                            cx.dispatch_action(&crate::theming::SwitchTheme {
+                                name: name.to_string(),
+                            });
                         },
                     ),
-                )
-                .description(
-                    "Check for and download signed qrate updates in the background. Installing \
+                )),
+            )
+            .group(
+                divided_group(cx).title("Updates").item(
+                    SettingItem::new(
+                        "Automatic updates",
+                        SettingField::switch(
+                            |cx: &App| crate::update_check::automatic_updates(cx),
+                            |on: bool, cx: &mut App| {
+                                settings::AppSettings::set_bool(updater::AUTO_UPDATE_KEY, on, cx);
+                            },
+                        ),
+                    )
+                    .description(
+                        "Check for and download signed qrate updates in the background. Installing \
                      always waits for you to choose Restart to update.",
+                    ),
                 ),
             ),
-        ),
         SettingPage::new("Table")
             .group(
-                SettingGroup::new().title("Appearance").item(
+                divided_group(cx).title("Appearance").item(
                     Setting::Switch {
                         key: table::TABLE_STRIPES_KEY,
                         label: "Row Stripes",
@@ -63,7 +81,7 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
             )
             .group(saving_group(cx))
             .group(notes_group(cx))
-            .group(previews_group()),
+            .group(previews_group(cx)),
         columns_page(cx),
         project_page(cx),
         SettingPage::new("Agent")
@@ -72,7 +90,7 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                  connection. It cannot change a cell — it can only stage findings you accept.",
             )
             .group(
-                SettingGroup::new().title("Local bridge").item(
+                divided_group(cx).title("Local bridge").item(
                     Setting::Switch {
                         key: crate::agent_bridge::AGENT_BRIDGE_KEY,
                         label: "Allow agents to read this app",
@@ -83,7 +101,7 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                 ),
             )
             .group(
-                SettingGroup::new()
+                divided_group(cx)
                     .title("Terminal")
                     .item(
                         Setting::Text {
@@ -113,10 +131,16 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
     pages
 }
 
+fn divided_group(cx: &App) -> SettingGroup {
+    SettingGroup::new()
+        .border_b_1()
+        .border_color(cx.theme().border)
+}
+
 /// Who a filed note is attributed to. Lives beside the table's own preferences because a note is
 /// filed from the grid, and the name signing it is the archivist's, not the project's.
 fn notes_group(cx: &App) -> SettingGroup {
-    SettingGroup::new().title("Notes").item(
+    divided_group(cx).title("Notes").item(
         Setting::Text {
             key: settings::NOTE_AUTHOR_KEY,
             label: "Attribute notes to",
@@ -134,7 +158,7 @@ fn notes_group(cx: &App) -> SettingGroup {
 /// no descriptor and switching a broken one off has to work.
 fn plugins_page(cx: &App) -> SettingPage {
     let listing = plugin_host::listing(cx);
-    let install = SettingGroup::new()
+    let install = divided_group(cx)
         .title("Find and install")
         .description(
             "Browse the official catalog on qrate.dvnl.work, or review a public GitHub release.",
@@ -158,7 +182,7 @@ fn plugins_page(cx: &App) -> SettingPage {
         .group(install);
     if listing.is_empty() {
         return page.group(
-            SettingGroup::new()
+            divided_group(cx)
                 .title("Installed")
                 .description("No plugins found. Plugins ▸ Plugins Folder is where they go."),
         );
@@ -172,7 +196,7 @@ fn plugins_page(cx: &App) -> SettingPage {
                 .ok()
                 .flatten()
         });
-        let mut group = SettingGroup::new().title(plugin.name.clone()).item({
+        let mut group = divided_group(cx).title(plugin.name.clone()).item({
             let switched = id.clone();
             let item = SettingItem::new(
                 "Enabled",
@@ -346,7 +370,7 @@ fn plugin_pages(cx: &App) -> Vec<SettingPage> {
             }
             if !specs.is_empty() {
                 page = page.group(
-                    SettingGroup::new().title("Options").items(
+                    divided_group(cx).title("Options").items(
                         specs
                             .into_iter()
                             .map(|spec| plugin_item(name.clone(), spec)),
@@ -391,7 +415,7 @@ fn mapping_group(plugin: SharedString, spec: ColumnMapSpec, cx: &App) -> Setting
         None => refresh,
     };
 
-    let mut group = SettingGroup::new().title("Mapping").item(refresh);
+    let mut group = divided_group(cx).title("Mapping").item(refresh);
 
     let Some(project) = cx.try_global::<CurrentProject>() else {
         return group.description("Open a project to map its columns.");
@@ -483,8 +507,8 @@ fn plugin_item(id: SharedString, spec: SettingSpec) -> SettingItem {
 /// The cache looks after itself — entries are keyed by the file's mtime and size, so a stale one
 /// is never served, and it drops its oldest once it passes a couple of gigabytes. The button is
 /// for reclaiming the space now rather than for correctness.
-fn previews_group() -> SettingGroup {
-    SettingGroup::new().title("Previews").item(
+fn previews_group(cx: &App) -> SettingGroup {
+    divided_group(cx).title("Previews").item(
         SettingItem::new(
             "Cached thumbnails",
             SettingField::element(|_opts: &_, _window: &mut _, _cx: &mut _| {
@@ -511,7 +535,7 @@ fn previews_group() -> SettingGroup {
 /// Google Sheets has three deliberately separate states: the app-wide feature switch, the
 /// machine's OAuth grant, and the open project's chosen sync destination.
 fn google_page(cx: &App) -> SettingPage {
-    let mut group = SettingGroup::new().title("Google Sheets").item(
+    let mut group = divided_group(cx).title("Google Sheets").item(
         SettingItem::new(
             "Enable Google Sheets",
             SettingField::render(|_opts: &_, _window: &mut _, cx: &mut App| {
@@ -680,7 +704,7 @@ fn google_page(cx: &App) -> SettingPage {
 }
 
 fn saving_group(cx: &App) -> SettingGroup {
-    let mut group = SettingGroup::new().title("Saving").item(
+    let mut group = divided_group(cx).title("Saving").item(
         SettingItem::new(
             "Autosave",
             SettingField::switch(
@@ -727,7 +751,7 @@ fn saving_group(cx: &App) -> SettingGroup {
 /// the other per-column knobs. Changing either takes effect on the next launch, since the
 /// dictionary is parsed once at startup.
 fn spelling_group(cx: &App) -> SettingGroup {
-    let mut group = SettingGroup::new().title("Spelling").item(
+    let mut group = divided_group(cx).title("Spelling").item(
         SettingItem::new(
             "Check spelling",
             SettingField::switch(
@@ -1209,7 +1233,7 @@ fn columns_page(cx: &App) -> SettingPage {
     let Some(project) = cx.try_global::<CurrentProject>() else {
         return SettingPage::new("Columns")
             .group(
-                SettingGroup::new()
+                divided_group(cx)
                     .title("Filters")
                     .description("Open a project to configure its columns."),
             )
@@ -1218,7 +1242,7 @@ fn columns_page(cx: &App) -> SettingPage {
 
     let headers = column_items(project);
 
-    let mut group = SettingGroup::new().title("Filters").item(
+    let mut group = divided_group(cx).title("Filters").item(
         SettingItem::new(
             "Enable column filters",
             SettingField::switch(
@@ -1262,7 +1286,7 @@ fn columns_page(cx: &App) -> SettingPage {
     }
 
     let picked = headers.clone();
-    let spelling = SettingGroup::new().title("Spelling").item(
+    let spelling = divided_group(cx).title("Spelling").item(
         SettingItem::new(
             "Spell-checked columns",
             SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
@@ -1285,10 +1309,10 @@ fn columns_page(cx: &App) -> SettingPage {
         .group(group)
         .group(spelling)
         .group(descriptions_group(project, &headers, cx))
-        .group(data_types_group(headers))
+        .group(data_types_group(headers, cx))
         .group(authority_accounts_group(cx))
         .group(authority_columns_group(project, cx))
-        .group(config_file_group())
+        .group(config_file_group(cx))
 }
 
 fn descriptions_group(project: &CurrentProject, headers: &[ColumnItem], cx: &App) -> SettingGroup {
@@ -1296,7 +1320,7 @@ fn descriptions_group(project: &CurrentProject, headers: &[ColumnItem], cx: &App
     let session_rows = cx
         .try_global::<Pickers>()
         .map(|pickers| &pickers.description_rows);
-    let mut group = SettingGroup::new().title("Descriptions").description(
+    let mut group = divided_group(cx).title("Descriptions").description(
         "Explain what each column means. Descriptions appear in the grid and agent context.",
     );
     let mut missing = Vec::new();
@@ -1405,8 +1429,8 @@ fn description_picker(options: Vec<OptionItem>, window: &mut Window, cx: &mut Ap
 ///
 /// Unchecking falls back to `Text`, the type that assumes least. It is why `Text`'s own picker
 /// cannot be emptied: a column always has a type, and that is the one it has when nothing is said.
-fn data_types_group(headers: Vec<ColumnItem>) -> SettingGroup {
-    let mut group = SettingGroup::new().title("Data types").description(
+fn data_types_group(headers: Vec<ColumnItem>, cx: &App) -> SettingGroup {
+    let mut group = divided_group(cx).title("Data types").description(
         "What a column holds. Checks key off this: dates are validated as EDTF, filenames are \
          resolved against the files folder, and only text is spell-checked.",
     );
@@ -1447,7 +1471,7 @@ fn declared_type(name: &str, cx: &App) -> columns::ColumnType {
 fn project_page(cx: &App) -> SettingPage {
     let Some(project) = cx.try_global::<CurrentProject>() else {
         return SettingPage::new("Project").group(
-            SettingGroup::new()
+            divided_group(cx)
                 .title("Files")
                 .description("Open a project to see where it looks for files."),
         );
@@ -1460,7 +1484,7 @@ fn project_page(cx: &App) -> SettingPage {
             project.file.display()
         )))
         .group(
-            SettingGroup::new()
+            divided_group(cx)
                 .title("Files")
                 .item(settings::path_picker_item(
                     settings::project::FILES_FOLDER_KEY,
@@ -1487,8 +1511,8 @@ fn project_page(cx: &App) -> SettingPage {
 
 /// Writing everything on this page back out as the `column_config.csv` the wizard reads, so the
 /// next collection starts configured instead of starting again.
-fn config_file_group() -> SettingGroup {
-    SettingGroup::new().title("Config file").item(
+fn config_file_group(cx: &App) -> SettingGroup {
+    divided_group(cx).title("Config file").item(
         SettingItem::new(
             "Export",
             SettingField::element(|_opts: &_, _window: &mut _, _cx: &mut _| {
@@ -1517,7 +1541,7 @@ fn authority_accounts_group(cx: &App) -> SettingGroup {
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    SettingGroup::new()
+    divided_group(cx)
         .title("Authority accounts")
         .description(SharedString::from(described))
         .item(
@@ -1550,7 +1574,7 @@ fn authority_columns_group(project: &CurrentProject, cx: &App) -> SettingGroup {
 
     // Read once for the whole page — see the note in `mapping_group`.
     let stored = columns::load(cx);
-    let mut group = SettingGroup::new().title("Checked against").description(
+    let mut group = divided_group(cx).title("Checked against").description(
         "A column is checked against one list. Values are checked over the network, so a wrong \
          one is flagged once the answer arrives rather than as you type.",
     );
