@@ -405,7 +405,9 @@ fn render(path: &Path, max_edge: u32, page: usize) -> Option<Arc<RenderImage>> {
     Some(Arc::new(RenderImage::new([Frame::new(bgra)])))
 }
 
-fn thumbnail_pixels(path: &Path, max_edge: u32, page: usize) -> Option<image::RgbaImage> {
+/// `path` decoded down the ladder and shrunk to fit `max_edge`, from the disk cache when it has been
+/// drawn before. What a card shows, as pixels rather than something only gpui can draw.
+pub fn thumbnail_pixels(path: &Path, max_edge: u32, page: usize) -> Option<image::RgbaImage> {
     // A full-size rendering is not cached: it would be a second copy of the original file on disk,
     // and it is wanted once, while someone is looking at it.
     let key = (max_edge != FULL)

@@ -17,6 +17,7 @@ plugin-api = { path = "../plugin-api" }
 settings = { path = "../settings" }
 plugin-host = { path = "../plugin-host" }
 preview = { path = "../preview" }
+visual-search = { path = "../visual-search" }
 base64 = "0.22"
 sha2 = "0.10"
 

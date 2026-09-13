@@ -347,6 +347,39 @@ impl QrateTableDelegate {
         hits
     }
 
+    /// The visible rows with a linked file that `score` can rate, best first and at most `limit` of
+    /// them, addressed like search hits.
+    pub(crate) fn ranked_matches(
+        &self,
+        score: impl Fn(&Path) -> Option<f32>,
+        limit: usize,
+    ) -> Vec<(usize, usize)> {
+        let mut scored: Vec<(f32, usize, usize)> = self
+            .visible_rows
+            .iter()
+            .enumerate()
+            .filter_map(|(view, &source)| {
+                let path = self.image_paths.get(source)?.as_ref()?;
+                let col = file_column(self.rows.get(source)?, path);
+                Some((score(path)?, view, col))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+        scored
+            .into_iter()
+            .take(limit)
+            .map(|(_, view, col)| (view, col))
+            .collect()
+    }
+
+    /// Every distinct file the rows link to.
+    pub(crate) fn linked_files(&self) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = self.image_paths.iter().flatten().cloned().collect();
+        files.sort_unstable();
+        files.dedup();
+        files
+    }
+
     /// Linked documents whose text has not been read yet, each once.
     pub(crate) fn unread_documents(&self) -> Vec<PathBuf> {
         let mut unread: Vec<PathBuf> = self
@@ -1107,6 +1140,8 @@ pub(crate) struct SearchOpts {
     pub regex: bool,
     /// Also match the text inside each row's linked document.
     pub files: bool,
+    /// Rank rows by how well their linked file matches a description instead of matching text.
+    pub visual: bool,
 }
 
 /// Compile the query into a matcher honoring the toggles. `None` means "match nothing": a blank
@@ -1179,18 +1214,25 @@ fn find_file_matches(
             if !re.is_match(document_text.get(path)?) {
                 return None;
             }
-            let names = path
-                .file_name()
-                .map(|name| settings::filenames::keys(&name.to_string_lossy()))
-                .unwrap_or_default();
-            let col = rows.get(source)?.iter().position(|cell| {
-                settings::filenames::lookup_keys(cell)
-                    .iter()
-                    .any(|key| names.contains(key))
-            });
-            Some((view, col.unwrap_or(0)))
+            Some((view, file_column(rows.get(source)?, path)))
         })
         .collect()
+}
+
+/// The column of the cell in `row` that names `path`, so a hit about the file lands where the
+/// archivist would look for it. The first column when no cell names it directly.
+fn file_column(row: &[SharedString], path: &Path) -> usize {
+    let names = path
+        .file_name()
+        .map(|name| settings::filenames::keys(&name.to_string_lossy()))
+        .unwrap_or_default();
+    row.iter()
+        .position(|cell| {
+            settings::filenames::lookup_keys(cell)
+                .iter()
+                .any(|key| names.contains(key))
+        })
+        .unwrap_or(0)
 }
 
 /// Rewrite matches in place: `Regex::replace_all` substitutes only the matched spans, so the rest
@@ -1500,7 +1542,7 @@ mod tests {
             case,
             word,
             regex,
-            files: false,
+            ..SearchOpts::default()
         };
 
         // Match case: "apple" no longer hits the capitalized "Apple pie".
@@ -1844,6 +1886,35 @@ mod app_tests {
                 assert_eq!(delegate.row_ids(), &[1, 2, 3, 4]);
                 assert_eq!(delegate.cell(1, 1).map(|c| c.as_ref()), Some("two"));
                 assert_eq!(delegate.row_image(1), Some("1.jpg".as_ref()));
+            });
+        });
+    }
+
+    /// Visual results come best first, skip rows the index cannot rate, and stop at the limit.
+    #[gpui::test]
+    fn ranked_matches_order_by_score_and_respect_the_limit(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.set_image_paths(vec![
+                    Some("0.jpg".into()),
+                    None,
+                    Some("2.jpg".into()),
+                    Some("3.jpg".into()),
+                ]);
+                let score = |path: &std::path::Path| match path.to_str() {
+                    Some("0.jpg") => Some(0.2),
+                    Some("2.jpg") => Some(0.9),
+                    _ => None,
+                };
+                let rows: Vec<usize> = delegate
+                    .ranked_matches(score, 5)
+                    .into_iter()
+                    .map(|(row, _)| row)
+                    .collect();
+                assert_eq!(rows, vec![2, 0]);
+                assert_eq!(delegate.ranked_matches(score, 1).len(), 1);
             });
         });
     }
