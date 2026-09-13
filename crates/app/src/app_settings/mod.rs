@@ -749,8 +749,7 @@ fn saving_group(cx: &App) -> SettingGroup {
 /// The spell-check master switch and, when on, the dictionary language. Both read through their
 /// own closures rather than `Setting::Switch`, because an unset value has to mean *on* — see
 /// `SPELLCHECK_ENABLED_KEY`. Which columns are checked lives on the Columns page instead, next to
-/// the other per-column knobs. Changing either takes effect on the next launch, since the
-/// dictionary is parsed once at startup.
+/// the other per-column knobs. Changing any of them reloads the checker.
 fn spelling_group(cx: &App) -> SettingGroup {
     let mut group = divided_group(cx).title("Spelling").item(
         SettingItem::new(
@@ -759,6 +758,7 @@ fn spelling_group(cx: &App) -> SettingGroup {
                 |cx: &App| spellcheck::enabled(cx),
                 |on: bool, cx: &mut App| {
                     settings::set_scoped_bool(spellcheck::SPELLCHECK_ENABLED_KEY, on, cx);
+                    crate::register_spell_checker(cx);
                 },
             ),
         )
@@ -773,13 +773,14 @@ fn spelling_group(cx: &App) -> SettingGroup {
                     |cx: &App| spellcheck::ignore_capitalized(cx),
                     |on: bool, cx: &mut App| {
                         settings::set_scoped_bool(spellcheck::SPELLCHECK_NAMES_KEY, on, cx);
+                        crate::register_spell_checker(cx);
                     },
                 ),
             )
             .description(
                 "Skip capitalized words. No dictionary holds every person, place, or studio, so \
                  without this a catalogue of names is mostly underlines. Turn it off to catch \
-                 typos that begin with a capital. Takes effect on restart.",
+                 typos that begin with a capital.",
             ),
         );
         group = group.item(
@@ -790,9 +791,9 @@ fn spelling_group(cx: &App) -> SettingGroup {
                 }),
             )
             .description(
-                "Canadian and American English are built in. Downloaded languages participate in \
-                 automatic detection; this choice sets the preferred regional spelling. Takes \
-                 effect on restart.",
+                "Each value is checked in whichever ticked language fits it. Canadian and \
+                 American English are built in; ticking another language downloads it. The first \
+                 one ticked sets the preferred regional spelling.",
             ),
         );
     }
@@ -1181,9 +1182,9 @@ where
 /// The language list, in the shape a phone's language screen uses: everything available, each row
 /// saying whether it is already here or a download away, and one tap doing whichever applies.
 ///
-/// Picking a language that isn't here yet starts its download instead of switching to it. Nothing
-/// undoes the highlight by hand — the selection re-syncs from the setting on the next render, and
-/// the setting did not change.
+/// Ticking a language that isn't here yet starts its download, and it joins the checked languages
+/// once it lands. Nothing undoes the tick by hand — the selection re-syncs from the setting on the
+/// next render. The first language picked is the preferred regional spelling.
 fn language_picker(window: &mut Window, cx: &mut App) -> AnyElement {
     use spellcheck::catalogue::State;
 
@@ -1195,35 +1196,59 @@ fn language_picker(window: &mut Window, cx: &mut App) -> AnyElement {
         LANGUAGE.to_string(),
         rows.clone(),
         PickerKind {
-            multiple: false,
+            multiple: true,
             searchable: true,
         },
         |values: &[SharedString], cx: &mut App| {
-            let Some(code) = values.first().cloned() else {
-                return;
+            let listing = spellcheck::catalogue::listing();
+            let state_of = |code: &str| {
+                listing
+                    .iter()
+                    .find(|((c, _, _), _)| *c == code)
+                    .map(|(_, state)| *state)
             };
-            match spellcheck::catalogue::listing()
+            let mut codes: Vec<String> = spellcheck::languages(cx)
                 .into_iter()
-                .find(|((c, _, _), _)| *c == code.as_ref())
-                .map(|(_, state)| state)
-            {
-                Some(State::Available) => spellcheck::start_download(code, cx),
-                // Built in and installed both mean "here already"; only the reason differs, and
-                // the reason is not the user's problem.
-                Some(_) => settings::set_scoped_text(spellcheck::SPELLCHECK_LANGUAGE_KEY, code, cx),
-                None => {}
+                .filter(|code| values.iter().any(|v| v.as_ref() == code))
+                .collect();
+            for value in values {
+                match state_of(value) {
+                    Some(State::Available) => {
+                        spellcheck::start_download(value.clone(), crate::register_spell_checker, cx)
+                    }
+                    Some(_) if !codes.iter().any(|c| c == value.as_ref()) => {
+                        codes.push(value.to_string())
+                    }
+                    _ => {}
+                }
+            }
+            if codes != spellcheck::languages(cx) {
+                spellcheck::set_languages(&codes, cx);
+                crate::register_spell_checker(cx);
             }
         },
         window,
         cx,
     );
-    sync_selection(&state, &rows, &[spellcheck::language(cx)], window, cx);
+    let chosen: Vec<SharedString> = spellcheck::languages(cx)
+        .into_iter()
+        .map(SharedString::from)
+        .collect();
+    sync_selection(&state, &rows, &chosen, window, cx);
+    let label = picker_label(
+        &chosen
+            .iter()
+            .filter_map(|code| rows.iter().find(|row| &row.code == code))
+            .map(|row| row.name.clone())
+            .collect::<Vec<_>>(),
+    );
 
     Combobox::new(&state)
         .small()
         .menu_width(px(320.))
         .menu_max_h(px(360.))
         .search_placeholder("Search languages…")
+        .render_trigger(move |_ctx, _, _| div().child(label.clone()))
         .into_any_element()
 }
 

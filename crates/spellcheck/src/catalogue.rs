@@ -395,7 +395,8 @@ mod round_trip {
         download("fr").expect("French downloads");
         assert!(is_installed("fr"), "both files landed");
 
-        let spell = SpellCheck::load("fr", false).expect("the downloaded dictionary parses");
+        let spell =
+            SpellCheck::load(&["fr".to_string()], false).expect("the downloaded dictionary parses");
         let dictionaries = spell.dictionaries.read().unwrap();
         let dictionary = &dictionaries
             .loaded

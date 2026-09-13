@@ -22,9 +22,9 @@ the column header, for anyone else who opens the project.
 
 ## Spell check
 
-Turn spell check on or off per column. Downloaded dictionaries participate in automatic
-language selection; the application-wide language setting chooses the preferred regional
-spelling when variants exist.
+Turn spell check on or off per column. The languages ticked in Settings ▸ Spelling take part in
+automatic language selection; the first one ticked chooses the preferred regional spelling when
+variants exist.
 
 ## Value variants
 
