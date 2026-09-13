@@ -114,6 +114,7 @@ Each finding offers two ways to ignore it:
   key includes the word, so a different misspelling still shows.
 
 A group row in the Problems panel offers **Ignore ▸ In column** for each column it covers.
+After you ignore something, a notice with **Undo** appears for a few seconds.
 qrate saves ignores with the project. They never hide findings from another check.
 
 Turn on **Show ignored** in the Problems panel to see ignored findings dimmed, and right-click one

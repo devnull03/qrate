@@ -807,10 +807,11 @@ impl Render for ProblemsPanel {
                                                                 members.len()
                                                             )),
                                                         )
-                                                        .on_click(move |_, _, cx| {
+                                                        .on_click(move |_, window, cx| {
                                                             crate::fixes::ignore(
                                                                 &members[..1],
                                                                 false,
+                                                                window,
                                                                 cx,
                                                             )
                                                         }),

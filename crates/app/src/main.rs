@@ -263,6 +263,7 @@ impl App {
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dialog_layer = Root::render_dialog_layer(window, cx);
+        let notification_layer = Root::render_notification_layer(window, cx);
 
         div()
             .size_full()
@@ -322,6 +323,7 @@ impl Render for App {
                     .child(self.status_bar.clone()),
             )
             .children(dialog_layer)
+            .children(notification_layer)
     }
 }
 
