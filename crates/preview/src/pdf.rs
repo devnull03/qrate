@@ -94,6 +94,23 @@ pub fn page_count(path: &Path) -> Option<usize> {
     usize::try_from(document.pages().len()).ok()
 }
 
+/// The text layer of every page, one page per line break. Empty for a scan that was never OCR'd.
+///
+/// ponytail: holds the PDFium lock for the whole document, so a 500-page PDF stalls gallery
+/// thumbnails until it is read. Per-page locking if that shows up in a real collection.
+pub fn text(path: &Path) -> Option<String> {
+    let pdfium = locked()?;
+    let document = pdfium.load_pdf_from_file(path, None).ok()?;
+    Some(
+        document
+            .pages()
+            .iter()
+            .filter_map(|page| page.text().ok().map(|text| text.all()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
 /// Whether the document carries a text layer at all.
 ///
 /// A scan that was never OCR'd has none, and "no matches" is a misleading answer to every search
@@ -402,6 +419,28 @@ trailer<</Root 1 0 R>>";
 
         let _ = std::fs::remove_file(&scan);
         let _ = std::fs::remove_file(&typed);
+    }
+
+    /// Collection search reads every page, and reads it again from the cache on the next launch.
+    #[test]
+    fn document_text_covers_every_page_and_survives_the_cache() {
+        let path = document_with_text("whole");
+        let Some(text) = crate::document_text(&path) else {
+            eprintln!("skipping the document text check: PDFium is not installed");
+            return;
+        };
+        assert!(text.contains("Aderman family") && text.contains("Kitsilano beach"));
+        assert_eq!(
+            crate::document_text(&path),
+            Some(text),
+            "the cached copy reads back"
+        );
+        assert_eq!(
+            crate::document_text(std::path::Path::new("photo.jpg")),
+            None
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Paging has to actually select a different page, not just re-render the first one. The two
