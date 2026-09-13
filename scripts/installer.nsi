@@ -2,7 +2,7 @@
 ;
 ; Compile with absolute paths supplied by CI, e.g.:
 ;   makensis /DVERSION=1.2.3 ^
-;            /DSRCEXE=C:\path\qrate-app.exe ^
+;            /DSRCEXE=C:\path\qrate.exe ^
 ;            /DICONFILE=C:\path\app-icon.ico ^
 ;            /DOUTFILE=C:\path\qrate-1.2.3-setup.exe ^
 ;            scripts\installer.nsi
@@ -22,7 +22,7 @@ Unicode true
   !define VERSION "0.0.0"
 !endif
 !ifndef SRCEXE
-  !define SRCEXE "..\target\release\qrate-app.exe"
+  !define SRCEXE "..\target\release\qrate.exe"
 !endif
 ; Directory holding the preview sidecars (pdfium.dll, ffmpeg.exe). Normally the same folder as
 ; SRCEXE, since scripts/fetch-binaries.sh puts them beside the executable. Both are optional.
@@ -42,7 +42,7 @@ Unicode true
 !endif
 
 !define APPNAME   "qrate"
-!define EXENAME   "qrate-app.exe"
+!define EXENAME   "qrate.exe"
 !define COMPANY   "devnull03"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
 
@@ -66,6 +66,8 @@ SetCompressor /SOLID lzma
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
 !include "LogicLib.nsh"
+!include "EnvVarUpdate.nsh"
+!include "WinMessages.nsh"
 
 Var UpdateRestart
 
@@ -107,8 +109,11 @@ FunctionEnd
 Section "Install"
   SetOutPath "$INSTDIR"
   File /oname=${EXENAME} "${SRCEXE}"
-  File /oname=qrate.exe "${SRCDIR}\qrate.exe"
+  File /oname=qrate-cli.exe "${SRCDIR}\qrate-cli.exe"
   File /oname=qrate-update-helper.exe "${SRCDIR}\qrate-update-helper.exe"
+  SetOutPath "$INSTDIR\bin"
+  File /oname=qrate.exe "${SRCDIR}\bin\qrate.exe"
+  SetOutPath "$INSTDIR"
 
   FileOpen $0 "$INSTDIR\qrate-install.json" w
   FileWrite $0 '{$\r$\n  "schema": 1,$\r$\n  "kind": "windows-nsis",$\r$\n  "packaged_version": "${VERSION}"$\r$\n}$\r$\n'
@@ -150,6 +155,14 @@ Section "Install"
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoModify" 1
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoRepair" 1
 
+  ; Only the shim directory is PATH-facing, so `qrate` in a terminal cannot resolve to the GUI.
+  ${If} $MultiUser.InstallMode == "AllUsers"
+    ${EnvVarUpdate} $1 "PATH" "A" "HKLM" "$INSTDIR\bin"
+  ${Else}
+    ${EnvVarUpdate} $1 "PATH" "A" "HKCU" "$INSTDIR\bin"
+  ${EndIf}
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment"
+
   ${If} $UpdateRestart == "1"
     Exec '"$INSTDIR\${EXENAME}"'
   ${EndIf}
@@ -164,7 +177,9 @@ SectionEnd
 Section "un.qrate" SEC_UNAPP
   SectionIn RO
   Delete "$INSTDIR\${EXENAME}"
-  Delete "$INSTDIR\qrate.exe"
+  Delete "$INSTDIR\qrate-cli.exe"
+  Delete "$INSTDIR\bin\qrate.exe"
+  RMDir "$INSTDIR\bin"
   Delete "$INSTDIR\pdfium.dll"
   Delete "$INSTDIR\ffmpeg.exe"
   Delete "$INSTDIR\qrate-update-helper.exe"
@@ -177,6 +192,12 @@ Section "un.qrate" SEC_UNAPP
   DeleteRegKey SHCTX "Software\Classes\qrate"
   DeleteRegKey SHCTX "${UNINSTKEY}"
   DeleteRegKey SHCTX "Software\${APPNAME}"
+  ${If} $MultiUser.InstallMode == "AllUsers"
+    ${un.EnvVarUpdate} $1 "PATH" "R" "HKLM" "$INSTDIR\bin"
+  ${Else}
+    ${un.EnvVarUpdate} $1 "PATH" "R" "HKCU" "$INSTDIR\bin"
+  ${EndIf}
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment"
 
   ; Caches and downloaded tooling always go: they are rebuilt or re-fetched on demand, so keeping
   ; them costs ~100 MB and buys nothing once qrate is gone.
