@@ -7,20 +7,20 @@
 //! pushed from the delegate on render and pulled back in the `Change` subscription, so the excluded
 //! set stays the one answer and nothing has to reconcile two.
 
-use diagnostics::Diagnostics;
+use diagnostics::{CheckList, Diagnostics};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    Task, Window, canvas, div, px,
+    Window, canvas, div, px,
 };
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{
-    ActiveTheme, Icon, IconName, IndexPath, Sizable as _, StyledExt as _,
+    ActiveTheme, IconName, IndexPath, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     combobox::{Combobox, ComboboxEvent, ComboboxState},
     h_flex,
-    searchable_list::{SearchableListDelegate, SearchableListItem},
+    searchable_list::SearchableListItem,
     table::TableState,
 };
 
@@ -30,85 +30,6 @@ use crate::{EditSpawn, TableStateHandle, delegate::QrateTableDelegate, editing::
 /// One distinct value in a column's checklist.
 #[derive(Clone, PartialEq)]
 pub(crate) struct FilterValue(SharedString);
-
-/// Searchable values with a filter-specific row layout.
-struct FilterValues {
-    items: Vec<FilterValue>,
-    matched_items: Vec<FilterValue>,
-}
-
-impl FilterValues {
-    fn new(items: Vec<FilterValue>) -> Self {
-        Self {
-            matched_items: items.clone(),
-            items,
-        }
-    }
-}
-
-impl SearchableListDelegate for FilterValues {
-    type Item = FilterValue;
-
-    fn items_count(&self, _: usize) -> usize {
-        self.matched_items.len()
-    }
-
-    fn item(&self, ix: IndexPath) -> Option<&Self::Item> {
-        self.matched_items.get(ix.row)
-    }
-
-    fn position<V>(&self, value: &V) -> Option<IndexPath>
-    where
-        Self::Item: SearchableListItem<Value = V>,
-        V: PartialEq,
-    {
-        self.matched_items
-            .iter()
-            .position(|item| item.value() == value)
-            .map(IndexPath::new)
-    }
-
-    fn perform_search(&mut self, query: &str, _: &mut Window, _: &mut App) -> Task<()> {
-        self.matched_items = self
-            .items
-            .iter()
-            .filter(|item| item.matches(query))
-            .cloned()
-            .collect();
-        Task::ready(())
-    }
-
-    fn render_item(
-        &self,
-        _: IndexPath,
-        item: &Self::Item,
-        checked: bool,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Option<AnyElement> {
-        Some(
-            h_flex()
-                .w_full()
-                .items_start()
-                .gap_1()
-                .child(
-                    Icon::new(IconName::Check)
-                        .xsmall()
-                        .mt(px(2.))
-                        .when(!checked, |icon| icon.invisible()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .h_6()
-                        .overflow_hidden()
-                        .child(item.render(window, cx)),
-                )
-                .into_any_element(),
-        )
-    }
-}
 
 impl SearchableListItem for FilterValue {
     type Value = SharedString;
@@ -232,9 +153,9 @@ fn filter_dropdown(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let state: Entity<ComboboxState<FilterValues>> =
+    let state: Entity<ComboboxState<CheckList<FilterValue>>> =
         window.use_keyed_state(("col-filter", data_col), cx, |window, cx| {
-            ComboboxState::new(FilterValues::new(Vec::new()), vec![], window, cx)
+            ComboboxState::new(CheckList::new(Vec::new()), vec![], window, cx)
                 .multiple(true)
                 .searchable(true)
         });
@@ -271,7 +192,7 @@ fn filter_dropdown(
         .collect();
     if generation.read(cx) != &delegate.values_generation() {
         state.update(cx, |state, cx| {
-            state.set_items(FilterValues::new(values.clone()), window, cx);
+            state.set_items(CheckList::new(values.clone()), window, cx);
         });
         generation.update(cx, |g, _| *g = delegate.values_generation());
     }

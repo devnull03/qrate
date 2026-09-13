@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use diagnostics::CheckList;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Axis, Entity, Global, IntoElement, ParentElement as _,
@@ -15,7 +16,7 @@ use gpui_component::{
     combobox::{Combobox, ComboboxEvent, ComboboxState},
     h_flex,
     input::{Input, InputEvent, InputState},
-    searchable_list::{SearchableListItem, SearchableVec},
+    searchable_list::SearchableListItem,
     setting::{SettingField, SettingGroup, SettingItem, SettingPage},
     switch::Switch,
     tab::{Tab, TabBar},
@@ -830,7 +831,7 @@ struct Picker<I: SearchableListItem + PartialEq + 'static>
 where
     I::Value: PartialEq + Clone,
 {
-    state: Entity<ComboboxState<SearchableVec<I>>>,
+    state: Entity<ComboboxState<CheckList<I>>>,
     /// What the list was last built from. `set_items` replaces the delegate wholesale, which
     /// throws away the active search filter — so it only runs when this actually changed.
     items: Vec<I>,
@@ -1083,7 +1084,7 @@ fn language_rows(cx: &App) -> Vec<LanguageRow> {
 /// which only knows the search-filtered view. The guard keeps this a no-op during interaction, so
 /// the two agree in practice.
 fn sync_selection<I: SearchableListItem<Value = SharedString> + 'static>(
-    state: &Entity<ComboboxState<SearchableVec<I>>>,
+    state: &Entity<ComboboxState<CheckList<I>>>,
     items: &[I],
     want: &[SharedString],
     window: &mut Window,
@@ -1130,7 +1131,7 @@ fn picker<I>(
     on_change: impl Fn(&[SharedString], &mut App) + 'static,
     window: &mut Window,
     cx: &mut App,
-) -> Entity<ComboboxState<SearchableVec<I>>>
+) -> Entity<ComboboxState<CheckList<I>>>
 where
     I: SearchableListItem<Value = SharedString> + PartialEq + Clone + 'static,
 {
@@ -1144,7 +1145,7 @@ where
         Some(state) => state,
         None => {
             let state = cx.new(|cx| {
-                ComboboxState::new(SearchableVec::new(items.clone()), vec![], window, cx)
+                ComboboxState::new(CheckList::new(items.clone()), vec![], window, cx)
                     .multiple(kind.multiple)
                     .searchable(kind.searchable)
             });
@@ -1168,7 +1169,7 @@ where
     // A refresh replaces the list; rebuilding on every render would throw away the search filter.
     if slot(cx.global_mut::<Pickers>())[&id].items != items {
         state.update(cx, |state, cx| {
-            state.set_items(SearchableVec::new(items.clone()), window, cx);
+            state.set_items(CheckList::new(items.clone()), window, cx);
         });
         if let Some(picker) = slot(cx.global_mut::<Pickers>()).get_mut(&id) {
             picker.items = items;
@@ -1318,7 +1319,6 @@ fn columns_page(cx: &App) -> SettingPage {
                     Rc::new(|c: &ColumnItem, cx: &App| columns::get(&c.key, cx).variant_review),
                     Rc::new(|c: &ColumnItem, on: bool, cx: &mut App| {
                         columns::update(&c.key, |s| s.variant_review = on, cx);
-                        table::revalidate_now(cx);
                     }),
                     window,
                     cx,
@@ -1903,6 +1903,7 @@ fn column_picker(
         {
             let on = on.clone();
             move |values: &[SharedString], cx: &mut App| {
+                let started = std::time::Instant::now();
                 // Re-read the columns rather than capturing them: this closure outlives the
                 // project whose headers built it.
                 let Some(current) = cx.try_global::<CurrentProject>().map(column_items) else {
@@ -1917,6 +1918,7 @@ fn column_picker(
                 // A validator reads these settings, so its published findings are stale the
                 // moment one changes — and only a run replaces them.
                 table::revalidate_now(cx);
+                log::debug!("column picker {id:?} applied in {:?}", started.elapsed());
             }
         },
         window,

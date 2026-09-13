@@ -57,17 +57,31 @@ impl Filter {
 #[derive(Clone, PartialEq)]
 struct SourceItem(SharedString);
 
-struct SourceItems(Vec<SourceItem>);
+/// The app's multi-select list — the grid filter, this panel's source filter, and the settings
+/// pickers — searchable, with the check leading each row the way a menu's does.
+pub struct CheckList<I> {
+    items: Vec<I>,
+    matched: Vec<I>,
+}
 
-impl SearchableListDelegate for SourceItems {
-    type Item = SourceItem;
+impl<I: Clone> CheckList<I> {
+    pub fn new(items: Vec<I>) -> Self {
+        Self {
+            matched: items.clone(),
+            items,
+        }
+    }
+}
+
+impl<I: SearchableListItem + Clone + 'static> SearchableListDelegate for CheckList<I> {
+    type Item = I;
 
     fn items_count(&self, _: usize) -> usize {
-        self.0.len()
+        self.matched.len()
     }
 
     fn item(&self, ix: IndexPath) -> Option<&Self::Item> {
-        self.0.get(ix.row)
+        self.matched.get(ix.row)
     }
 
     fn position<V>(&self, value: &V) -> Option<IndexPath>
@@ -75,13 +89,19 @@ impl SearchableListDelegate for SourceItems {
         Self::Item: SearchableListItem<Value = V>,
         V: PartialEq,
     {
-        self.0
+        self.matched
             .iter()
             .position(|item| item.value() == value)
             .map(IndexPath::new)
     }
 
-    fn perform_search(&mut self, _: &str, _: &mut Window, _: &mut App) -> Task<()> {
+    fn perform_search(&mut self, query: &str, _: &mut Window, _: &mut App) -> Task<()> {
+        self.matched = self
+            .items
+            .iter()
+            .filter(|item| item.matches(query))
+            .cloned()
+            .collect();
         Task::ready(())
     }
 
@@ -90,18 +110,28 @@ impl SearchableListDelegate for SourceItems {
         _: IndexPath,
         item: &Self::Item,
         checked: bool,
-        _: &mut Window,
-        _: &mut App,
+        window: &mut Window,
+        cx: &mut App,
     ) -> Option<AnyElement> {
         Some(
             h_flex()
+                .w_full()
+                .items_start()
                 .gap_1()
                 .child(
                     Icon::new(IconName::Check)
                         .xsmall()
+                        .mt(px(2.))
                         .when(!checked, |icon| icon.invisible()),
                 )
-                .child(item.0.clone())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_6()
+                        .overflow_hidden()
+                        .child(item.render(window, cx)),
+                )
                 .into_any_element(),
         )
     }
@@ -340,9 +370,14 @@ impl ProblemsPanel {
         let excluded = self.excluded_sources.clone();
         let panel = cx.entity();
         let state = window.use_keyed_state("problems-source-filter", cx, |window, cx| {
-            ComboboxState::new(SourceItems(Vec::new()), Vec::new(), window, cx)
-                .multiple(true)
-                .searchable(false)
+            ComboboxState::new(
+                CheckList::<SourceItem>::new(Vec::new()),
+                Vec::new(),
+                window,
+                cx,
+            )
+            .multiple(true)
+            .searchable(false)
         });
         window.use_keyed_state("problems-source-sub", cx, |_window, cx| {
             SourceFilterSub(cx.subscribe(&state, move |_, _, event, cx| {
@@ -365,7 +400,7 @@ impl ProblemsPanel {
         if cached.read(cx).as_slice() != sources.as_slice() {
             state.update(cx, |state, cx| {
                 state.set_items(
-                    SourceItems(sources.iter().cloned().map(SourceItem).collect()),
+                    CheckList::new(sources.iter().cloned().map(SourceItem).collect()),
                     window,
                     cx,
                 );
@@ -399,6 +434,7 @@ impl ProblemsPanel {
     }
 
     fn refresh(&mut self, cx: &App) {
+        let started = std::time::Instant::now();
         let mut sources: Vec<SharedString> = Diagnostics::all(cx)
             .iter()
             .filter(|d| d.source != Source::Note)
@@ -439,6 +475,12 @@ impl ProblemsPanel {
                     }),
             );
         }
+        log::debug!(
+            "problems panel: {} rows from {} findings in {:?}",
+            rows.len(),
+            Diagnostics::all(cx).len(),
+            started.elapsed()
+        );
         self.rows = Rc::new(rows);
     }
 }

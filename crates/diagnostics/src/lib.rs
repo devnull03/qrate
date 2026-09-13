@@ -9,7 +9,7 @@ pub mod fixes;
 mod panel;
 mod validator;
 pub use fixes::{Fix, FixProviders, GroupFix, GroupFixProviders, GroupMember};
-pub use panel::ProblemsPanel;
+pub use panel::{CheckList, ProblemsPanel};
 pub use validator::{
     AsyncValidators, CellValue, ColumnFinding, ColumnInfo, ColumnSnapshot, ColumnValidator,
     ColumnValues, Misspelling, SpellActions, Validators, address,
