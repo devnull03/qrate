@@ -50,7 +50,7 @@ Findings can describe four scopes:
 The severity tabs count diagnostic occurrences, not collapsed groups or unique cells.
 Two distinct misspelled words in one cell count as two occurrences.
 Repeated copies of the same word in one cell count once.
-A cell can also belong to more than one value-variant pair.
+A cell can contain more than one member of a value-variant cluster.
 
 The source filter changes both the visible findings and the tab counts.
 It is a multi-select filter. Uncheck one or more diagnostic sources to hide them.
@@ -71,8 +71,9 @@ Existing plugin scripts keep their current row-based output format.
 
 Spelling keys include the selected dictionary and observed token.
 Capitalization keys also include the proposed spelling.
-Value-variant keys include the column and an unordered pair of exact displayed values.
-Pair review does not infer that a third similar value identifies the same entity.
+Value-variant keys include the column and the sorted set of exact displayed cluster members.
+Similarity pairs form links. Connected values appear together for review, but qrate does not
+change them until the user chooses a canonical form.
 Date keys are the exact rejected value. Authority keys are the rejected value, ignoring case.
 
 ## Applying a fix
@@ -89,9 +90,8 @@ canonical form, merges records, or changes every matching row automatically.
 Right-click a spelling or capitalization group to apply one correction to all its occurrences.
 The group resolver applies the changes as one undo step.
 
-Right-click a value-variant group to replace all occurrences with either displayed form.
-You can also mark the exact pair as distinct for that column. qrate saves this choice with the project.
-Variant groups stay pair-based. Similarity between two pairs does not create a transitive entity cluster.
+Right-click a value-variant group to replace all occurrences with any displayed member.
+You can also mark the cluster members as distinct for that column. qrate saves this choice with the project.
 
 qrate uses the configured subdelimiter to read multiple logical values in one cell.
 Validators borrow these values as text slices, so splitting does not allocate a list for each cell.

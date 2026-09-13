@@ -11,19 +11,19 @@ The seven implementation phases are complete. The full cluster-review workspace 
 - The new `clustering` crate separates pure matching from diagnostics and fixes.
 - Value-variant fixes verify the expected cell text. Each validation run clears the previous candidate snapshot.
 - Group menus can fix all spelling or capitalization occurrences in one undo step.
-- Value-variant groups can use either displayed form or save an exact distinct-pair decision.
+- Connected value-variant groups can use any displayed member or save a distinct-cluster decision.
 - Documentation describes scopes, counts, grouping keys, and OpenRefine credit.
 
 Implementation details that refine the original proposal:
 
-- Tab counts mean diagnostic occurrences, not unique affected locations. One cell can contain two words or participate in two pairs.
+- Tab counts mean diagnostic occurrences, not unique affected locations. One cell can contain two words or several cluster members.
 - Spelling keys retain the observed token and dictionary code. This avoids combining distinct displayed spellings or correction targets.
-- Pair keys retain both exact displayed forms and the column. Normalization generates evidence, not displayed-value identity.
+- Cluster keys retain the sorted exact displayed forms and the column. Normalization generates links, not automatic edits.
 - A `begin_run` validator hook clears candidate state for deleted columns and changed projects.
 - The table crate needs adapter and diagnostic-literal updates. Its production edit, navigation, and undo paths do not change.
 
 Validation covers pure grouping, 100 repeated spelling findings, all scopes, source and severity filters,
-expansion persistence, mouse navigation, keyboard expansion, stale fixes, Unicode matching, pair independence,
+expansion persistence, mouse navigation, keyboard expansion, stale fixes, Unicode matching, connected clusters,
 the 2,000-value comparison bound, and a real table fix followed by undo and revalidation.
 UI checks use GPUI test windows, not an interactive review of a user's project.
 
@@ -39,11 +39,11 @@ A spelling mistake can occur in 100 cells. The Problems panel now shows 100 inde
 panel should show one problem group with an occurrence count. The user can expand the group and
 jump to each affected location.
 
-Value variants have the same need. A pair such as `Agnès Varda` and `Varda, Agnès` is one review
-question, not one unrelated note per cell.
+Value variants have the same need. Several linked forms of one name are one review question,
+not unrelated notes or separate pair decisions.
 
-This branch will keep the first review UI simple. A separate future task will cover a full cluster
-review workspace with canonical value selection and bulk merge controls.
+This branch keeps review inline. A separate future task can add custom canonical text, manual
+membership editing, row previews, and reusable mappings.
 
 ## Completed baseline
 
@@ -158,7 +158,7 @@ Examples:
 |---|---|---|
 | `spell` | `en:recieve` | `“recieve” is misspelled` |
 | `capitalization` | `alice→Alice` | `Use “Alice” instead of “alice”` |
-| `value variants` | normalized unordered pair | `“Agnès Varda” and “Varda, Agnès” may be variants` |
+| `value variants` | sorted exact cluster members | `3 values may be variants: formatting differs, accents or diacritics differ` |
 
 The panel groups by `(dataset, source, severity, group.key)`. This prevents an override from hiding
 the severity of some occurrences inside a different tab.
@@ -265,6 +265,7 @@ The crate will own:
 - normalized Damerau-Levenshtein comparison;
 - value frequencies and source rows;
 - pair evidence and stable pair keys;
+- connected review clusters and stable member-set keys;
 - the `value variants` validator;
 - its one-cell fix provider.
 
@@ -294,25 +295,22 @@ name remains `value variants` so existing severity settings continue to work.
 
 ## Value-variant grouping
 
-The first grouped implementation will review candidate pairs. It will not build transitive entity
-clusters.
+The matcher returns evidence pairs. The review adapter treats each pair as a graph link and shows
+each connected component as one cluster.
 
-For each accepted pair, the clustering crate will return:
+For each cluster, the clustering crate returns:
 
-- both displayed values;
+- every exact displayed value;
 - the rows for each value;
-- each value count;
-- the matching reason;
-- a stable unordered pair key.
+- the matching reasons;
+- a stable key from the sorted member set.
 
-All diagnostics for that pair will use the same `DiagnosticGroup`. The collapsed summary will show
-both values and the reason.
+All diagnostics for a cluster use the same `DiagnosticGroup`. The resolver offers every member as
+a canonical choice and applies the result as one undoable edit. The user can instead mark all
+current members as distinct. Similarity never changes data without that explicit choice.
 
-This avoids unsafe single-link chaining. If A matches B and B matches C, qrate will not assume that
-A matches C.
-
-The future cluster-review workspace can use the same core results. It can add canonical selection,
-member selection, row previews, and one-step bulk edits.
+The future cluster-review workspace can add custom canonical text, member editing, row previews,
+and reusable mappings.
 
 ## Files and crates affected
 
@@ -336,7 +334,7 @@ member selection, row previews, and one-step bulk edits.
 
 - Receive the current value-variant implementation and tests.
 - Separate the pure matcher from the diagnostic adapter.
-- Return pair evidence, frequencies, rows, and stable pair keys.
+- Return pair evidence, connected clusters, frequencies, rows, and stable keys.
 - Publish grouped value-variant findings.
 
 ### `crates/checks`
@@ -376,7 +374,7 @@ member selection, row previews, and one-step bulk edits.
 ### 1. Pin current behavior
 
 - Add tests for 100 identical spelling findings.
-- Add tests for a value-variant pair that occurs in many rows.
+- Add tests for connected value variants that occur in many rows.
 - Add tests for dataset, column, row, and cell labels.
 - Confirm that fixes query the current cell value.
 
@@ -420,8 +418,8 @@ member selection, row previews, and one-step bulk edits.
 - Create the `clustering` crate.
 - Move the matcher without changing thresholds.
 - Split pure matching from the GPUI adapter.
-- Publish one group for each accepted value pair.
-- Keep fixes cell-specific.
+- Publish one group for each connected value cluster.
+- Offer every member as a canonical group fix.
 - Run the existing 2,000-value blocking test in the new crate.
 
 ### 7. Document and validate
@@ -477,7 +475,6 @@ Track this outside the current implementation:
 
 - a dedicated cluster review workspace;
 - value frequencies and affected-row counts;
-- canonical value selection;
 - a custom canonical value;
 - member inclusion and exclusion;
 - sample row and thumbnail context;
@@ -510,12 +507,12 @@ independent implementation.
 - A user can expand a group and jump to every exact location.
 - Existing one-cell fixes work from expanded occurrences.
 - Group fixes use one table edit, one validation pass, and one undo step.
-- A user can save an exact value pair as distinct for one column.
+- A user can save all current cluster members as distinct for one column.
 - Dataset, column, row, and cell scopes have clear labels.
 - Source and severity filters produce correct groups and counts.
 - Spelling and capitalization emit stable group metadata.
 - Value clustering lives outside `spellcheck`.
-- Value-variant pairs emit stable group metadata.
+- Value-variant clusters emit stable group metadata.
 - Similarity never causes an automatic data change.
 - Existing spell-check and value-variant behavior stays intact.
 - Tests cover grouping, scopes, filters, fixes, revalidation, and comparison bounds.
