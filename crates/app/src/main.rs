@@ -325,29 +325,47 @@ impl Render for App {
     }
 }
 
-/// Register the spell checker, once its dictionary has parsed off the UI thread — half a
-/// megabyte of affix rules is not something to put in front of first paint.
+/// Which spell-checker load is current, so a slow earlier load cannot land over a newer choice.
+#[derive(Default)]
+struct SpellLoad(u64);
+
+impl gpui::Global for SpellLoad {}
+
+/// (Re)register the spell checker, once its dictionaries have parsed off the UI thread — half a
+/// megabyte of affix rules is not something to put in front of first paint. Called again whenever a
+/// spelling setting changes, so the new choice applies without a restart.
 ///
 /// The only place that links both the checker and the table, which is what lets `spellcheck` know
 /// nothing about grids and `table` nothing about dictionaries.
-fn register_spell_checker(cx: &mut gpui::App) {
+pub(crate) fn register_spell_checker(cx: &mut gpui::App) {
+    let generation = {
+        let load = cx.default_global::<SpellLoad>();
+        load.0 += 1;
+        load.0
+    };
     if !spellcheck::enabled(cx) {
         log::info!("spell checking is turned off in settings");
+        remove_spell_validators(cx);
         return;
     }
-    let language = spellcheck::language(cx);
+    let languages = spellcheck::languages(cx);
     let ignore_capitalized = spellcheck::ignore_capitalized(cx);
     let load = cx.background_executor().spawn(async move {
         let started = std::time::Instant::now();
-        let spell = spellcheck::SpellCheck::load(&language, ignore_capitalized);
+        let spell = spellcheck::SpellCheck::load(&languages, ignore_capitalized);
         log::info!("loaded dictionaries in {:?}", started.elapsed());
         spell
     });
     cx.spawn(async move |cx| {
-        let Some(spell) = load.await else {
-            return;
-        };
+        let spell = load.await;
         cx.update(|cx| {
+            if cx.global::<SpellLoad>().0 != generation {
+                return;
+            }
+            remove_spell_validators(cx);
+            let Some(spell) = spell else {
+                return;
+            };
             diagnostics::Validators::register(Box::new(spell.clone()), cx);
             diagnostics::Validators::register(
                 Box::new(spellcheck::CapitalizationCheck(spell.clone())),
@@ -382,6 +400,15 @@ fn register_spell_checker(cx: &mut gpui::App) {
         });
     })
     .detach();
+}
+
+fn remove_spell_validators(cx: &mut gpui::App) {
+    for name in [
+        spellcheck::SPELLING_VALIDATOR_NAME,
+        spellcheck::CAPITALIZATION_VALIDATOR_NAME,
+    ] {
+        diagnostics::Validators::remove(&name.into(), cx);
+    }
 }
 
 fn register_variant_checker(cx: &mut gpui::App) {

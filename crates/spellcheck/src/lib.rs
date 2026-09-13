@@ -10,10 +10,10 @@
 pub mod catalogue;
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use diagnostics::{
     ColumnInfo, ColumnValidator, ColumnValues, Fix, GroupFix, GroupMember, Location, Misspelling,
@@ -89,11 +89,58 @@ struct LoadedDictionary {
 struct DictionarySet {
     loaded: Vec<LoadedDictionary>,
     preferred: String,
+    /// Each distinct cell value's verdict, shared by the spelling and capitalization validators
+    /// and kept across runs — checking the sheet is seconds, and almost none of it changes between
+    /// runs. Only [`Self::learn`] changes an answer, so only it clears this.
+    checked: Mutex<HashMap<String, Checked>>,
 }
+
+/// The dictionary chosen for one value and its flagged words, or `None` when no language fits.
+type Checked = Option<(String, Vec<(String, WordOutcome)>)>;
+
+/// ponytail: past this many distinct values the cache is dropped wholesale; evict by age if edits
+/// ever churn through it in a session.
+const MAX_CHECKED: usize = 200_000;
 
 impl DictionarySet {
     fn base(code: &str) -> &str {
         code.split('-').next().unwrap_or(code)
+    }
+
+    /// Teach every loaded dictionary `word`. Returns whether any accepted it.
+    fn learn(&mut self, word: &str) -> bool {
+        let mut changed = false;
+        for loaded in &mut self.loaded {
+            match loaded.dictionary.add(word) {
+                Ok(()) => changed = true,
+                Err(err) => log::warn!(
+                    "could not add \"{word}\" to the {} dictionary: {err}",
+                    loaded.code
+                ),
+            }
+        }
+        if changed && let Ok(checked) = self.checked.get_mut() {
+            checked.clear();
+        }
+        changed
+    }
+
+    fn check(&self, value: &str, ignore_capitalized: bool) -> Checked {
+        let loaded = self.for_text(value)?;
+        let english = Self::base(&loaded.code) == "en";
+        let mut seen = std::collections::BTreeSet::new();
+        let flagged = words(value, false)
+            .filter(|word| !(english && non_english_elision(word)) && seen.insert(*word))
+            .filter_map(
+                |word| match classify_word(&loaded.dictionary, word, ignore_capitalized) {
+                    outcome @ (WordOutcome::Misspelled | WordOutcome::Capitalization(_)) => {
+                        Some((word.to_owned(), outcome))
+                    }
+                    WordOutcome::Clean | WordOutcome::ProperNoun => None,
+                },
+            )
+            .collect();
+        Some((loaded.code.clone(), flagged))
     }
 
     /// Pick one installed base language only when the dictionaries provide enough evidence.
@@ -161,6 +208,7 @@ enum FindingKind {
     Capitalization,
 }
 
+#[derive(Clone)]
 enum WordOutcome {
     Clean,
     Capitalization(String),
@@ -196,10 +244,11 @@ pub fn is_downloading(code: &str, cx: &App) -> bool {
         .is_some_and(|d| d.0.contains(code))
 }
 
-/// Fetch `code` in the background and switch to it once it lands, the way tapping an uninstalled
-/// language on a phone both downloads and selects it. Failures are logged rather than surfaced:
-/// the row simply goes back to offering the download.
-pub fn start_download(code: SharedString, cx: &mut App) {
+/// Fetch `code` in the background and add it to the checked languages once it lands, the way
+/// tapping an uninstalled language on a phone both downloads and selects it. `then` runs after the
+/// selection changes, so the caller can reload the checker. Failures are logged rather than
+/// surfaced: the row simply goes back to offering the download.
+pub fn start_download(code: SharedString, then: fn(&mut App), cx: &mut App) {
     if is_downloading(&code, cx) {
         return;
     }
@@ -217,7 +266,10 @@ pub fn start_download(code: SharedString, cx: &mut App) {
             match result {
                 Ok(()) => {
                     log::info!("downloaded the {} dictionary", catalogue::name_of(&code));
-                    settings::set_scoped_text(SPELLCHECK_LANGUAGE_KEY, code, cx);
+                    let mut codes = languages(cx);
+                    codes.push(code.to_string());
+                    set_languages(&codes, cx);
+                    then(cx);
                 }
                 Err(err) => log::error!(
                     "could not download the {} dictionary, so it was not installed: {err}",
@@ -230,34 +282,35 @@ pub fn start_download(code: SharedString, cx: &mut App) {
     .detach();
 }
 
-/// The configured language, or [`DEFAULT_LANGUAGE`] when unset.
-pub fn language(cx: &App) -> SharedString {
-    let configured = settings::effective_text(SPELLCHECK_LANGUAGE_KEY, cx);
-    if configured.is_empty() {
-        DEFAULT_LANGUAGE.into()
-    } else {
-        configured
+/// The languages to check with, in the order they were picked, or [`DEFAULT_LANGUAGE`] when none
+/// are. Stored comma-separated, so a setting written before multi-select still reads as one.
+pub fn languages(cx: &App) -> Vec<String> {
+    let mut codes: Vec<String> = Vec::new();
+    for code in settings::effective_text(SPELLCHECK_LANGUAGE_KEY, cx).split(',') {
+        let code = code.trim();
+        if !code.is_empty() && !codes.iter().any(|c| c == code) {
+            codes.push(code.to_owned());
+        }
     }
+    if codes.is_empty() {
+        codes.push(DEFAULT_LANGUAGE.to_owned());
+    }
+    codes
+}
+
+pub fn set_languages(codes: &[String], cx: &mut App) {
+    settings::set_scoped_text(SPELLCHECK_LANGUAGE_KEY, codes.join(",").into(), cx);
 }
 
 impl SpellCheck {
-    /// Parse every installed dictionary and replay the user's custom words over each. Slow enough
+    /// Parse the chosen dictionaries and replay the user's custom words over each. Slow enough
     /// that the caller must do this off the UI thread.
-    pub fn load(language: &str, ignore_capitalized: bool) -> Option<Self> {
+    pub fn load(languages: &[String], ignore_capitalized: bool) -> Option<Self> {
         let custom = custom_words();
-        let mut codes: Vec<&str> = catalogue::BUILT_IN.to_vec();
-        codes.extend(
-            catalogue::listing()
-                .into_iter()
-                .filter(|(_, state)| *state == catalogue::State::Installed)
-                .map(|(entry, _)| entry.0),
-        );
-        codes.sort_unstable();
-        codes.dedup();
-
         let mut loaded = Vec::new();
-        for code in codes {
+        for code in languages {
             let Some((aff, dic)) = source_exact(code) else {
+                log::warn!("the {code} dictionary is not installed, so it was skipped");
                 continue;
             };
             let mut dictionary = match Dictionary::new(&aff, &dic) {
@@ -273,28 +326,29 @@ impl SpellCheck {
                 }
             }
             loaded.push(LoadedDictionary {
-                code: code.to_string(),
+                code: code.clone(),
                 dictionary,
             });
         }
         if loaded.is_empty() {
-            log::error!("no installed dictionary was readable, so spell checking is off");
+            log::error!("none of the chosen dictionaries was readable, so spell checking is off");
             return None;
         }
-        let preferred = if loaded.iter().any(|d| d.code == language) {
-            language
-        } else {
-            DEFAULT_LANGUAGE
-        };
+        let preferred = loaded[0].code.clone();
         log::info!(
-            "spell checking with {} installed dictionaries, preferring {preferred}, and {} of your own words",
-            loaded.len(),
+            "spell checking with {}, preferring {preferred}, and {} of your own words",
+            loaded
+                .iter()
+                .map(|d| d.code.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
             custom.len()
         );
         Some(Self {
             dictionaries: Arc::new(RwLock::new(DictionarySet {
                 loaded,
                 preferred: preferred.to_string(),
+                checked: Default::default(),
             })),
             ignore_capitalized,
         })
@@ -357,17 +411,7 @@ pub fn add_word(word: &str, cx: &mut App) -> bool {
         log::error!("the dictionary is poisoned, so \"{word}\" was not added");
         return false;
     };
-    let mut changed = false;
-    for loaded in &mut dictionaries.loaded {
-        match loaded.dictionary.add(word) {
-            Ok(()) => changed = true,
-            Err(err) => log::warn!(
-                "could not add \"{word}\" to the {} dictionary: {err}",
-                loaded.code
-            ),
-        }
-    }
-    if !changed {
+    if !dictionaries.learn(word) {
         return false;
     }
     drop(dictionaries);
@@ -637,25 +681,30 @@ impl SpellCheck {
         let Ok(dictionaries) = self.dictionaries.read() else {
             return Vec::new();
         };
+        let Ok(mut checked) = dictionaries.checked.lock() else {
+            return Vec::new();
+        };
+        if checked.len() > MAX_CHECKED {
+            checked.clear();
+        }
         values
             .iter()
             .flat_map(|cell| {
                 let mut found = Vec::new();
                 let mut seen = std::collections::BTreeSet::new();
                 for value in cell.parts() {
-                    let Some(loaded) = dictionaries.for_text(value) else {
+                    if !checked.contains_key(value) {
+                        let verdict = dictionaries.check(value, self.ignore_capitalized);
+                        checked.insert(value.to_owned(), verdict);
+                    }
+                    let Some((code, flagged)) = &checked[value] else {
                         continue;
                     };
-                    for word in words(value, false) {
-                        if DictionarySet::base(&loaded.code) == "en" && non_english_elision(word) {
+                    for (word, outcome) in flagged {
+                        if !seen.insert(word.clone()) {
                             continue;
                         }
-                        if !seen.insert(word) {
-                            continue;
-                        }
-                        let outcome =
-                            classify_word(&loaded.dictionary, word, self.ignore_capitalized);
-                        let (severity, message, target) = match (kind, outcome) {
+                        let (severity, message, target) = match (kind, outcome.clone()) {
                             (FindingKind::Spelling, WordOutcome::Misspelled) => (
                                 Severity::Warning,
                                 format!("misspelled: {word}"),
@@ -675,9 +724,9 @@ impl SpellCheck {
                             row: Some(cell.row),
                             severity,
                             group: Some(diagnostics::DiagnosticGroup {
-                                key: format!("{:?}", (&loaded.code, word, target)).into(),
+                                key: format!("{:?}", (code, word, target)).into(),
                                 summary: message.clone().into(),
-                                subject: Some(word.into()),
+                                subject: Some(word.clone().into()),
                             }),
                             message: message.into(),
                         });
@@ -741,6 +790,7 @@ mod tests {
                         .expect("the embedded en-CA dictionary parses"),
                 }],
                 preferred: "en-CA".to_string(),
+                checked: Default::default(),
             })),
             ignore_capitalized,
         }
@@ -819,6 +869,7 @@ mod tests {
                 small_dictionary("fr", &["film", "histoire", "le"]),
             ],
             preferred: "en-CA".to_string(),
+            checked: Default::default(),
         };
         assert_eq!(
             dictionaries.for_text("the film history").map(|d| &*d.code),
@@ -951,14 +1002,13 @@ mod tests {
             findings(&spell, "", &defaults, &cell)[0].message,
             "misspelled: betacam"
         );
-        let mut dictionaries = spell.dictionaries.write().expect("uncontended");
-        for loaded in &mut dictionaries.loaded {
-            loaded
-                .dictionary
-                .add("betacam")
-                .expect("a bare word is a valid .dic line");
-        }
-        drop(dictionaries);
+        assert!(
+            spell
+                .dictionaries
+                .write()
+                .expect("uncontended")
+                .learn("betacam")
+        );
         assert!(findings(&spell, "", &defaults, &cell).is_empty());
     }
 
