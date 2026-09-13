@@ -125,6 +125,12 @@ pub(crate) fn cancel(delegate: &mut QrateTableDelegate) -> bool {
     !matches!(std::mem::take(&mut delegate.editing), EditState::Idle)
 }
 
+pub(crate) enum Committed {
+    Unchanged,
+    Cell,
+    Rename(usize, SharedString),
+}
+
 /// Write the editor's current text back into whatever is being edited and leave edit mode. No-op
 /// if nothing is (e.g. a stray blur, or an edit [`cancel`] has already dropped).
 ///
@@ -133,16 +139,19 @@ pub(crate) fn cancel(delegate: &mut QrateTableDelegate) -> bool {
 pub(crate) fn commit(
     delegate: &mut QrateTableDelegate,
     cx: &mut Context<TableState<QrateTableDelegate>>,
-) -> Option<(usize, SharedString)> {
+) -> Committed {
     let value = delegate.editor.read(cx).value();
-    let editing = std::mem::take(&mut delegate.editing);
-    match editing {
-        EditState::Idle => return None,
-        EditState::Renaming { col } => return Some((col, value)),
-        EditState::Editing { row, col } => delegate.apply_edit(vec![(row, col, value)]),
+    match std::mem::take(&mut delegate.editing) {
+        EditState::Idle => Committed::Unchanged,
+        EditState::Renaming { col } => Committed::Rename(col, value),
+        EditState::Editing { row, col } => {
+            if !delegate.apply_edit(vec![(row, col, value)]) {
+                return Committed::Unchanged;
+            }
+            settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+            Committed::Cell
+        }
     }
-    settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
-    None
 }
 
 #[cfg(test)]
@@ -203,7 +212,10 @@ mod tests {
                 assert!(editing::cancel(delegate), "there was an edit to abandon");
                 assert_eq!(delegate.editing, EditState::Idle);
 
-                assert!(editing::commit(delegate, cx).is_none());
+                assert!(matches!(
+                    editing::commit(delegate, cx),
+                    editing::Committed::Unchanged
+                ));
                 assert_eq!(
                     delegate
                         .cell(0, 0)
@@ -292,7 +304,10 @@ mod tests {
                 let delegate = state.delegate_mut();
                 delegate.editing = EditState::Editing { row: 0, col: 0 };
 
-                assert!(editing::commit(delegate, cx).is_none());
+                assert!(matches!(
+                    editing::commit(delegate, cx),
+                    editing::Committed::Cell
+                ));
                 assert_eq!(
                     delegate
                         .cell(0, 0)

@@ -519,7 +519,7 @@ impl QrateTableDelegate {
     /// through here — inline commit, diagnostic fix, paste, bulk fill — so none of them carries
     /// undo logic of its own. Cells whose text is unchanged are dropped, so a commit that typed
     /// nothing doesn't consume an undo.
-    pub(crate) fn apply_edit(&mut self, cells: Cells) {
+    pub(crate) fn apply_edit(&mut self, cells: Cells) -> bool {
         let mut edit = Vec::with_capacity(cells.len());
         for (row, col, after) in cells {
             let Some(before) = self.cell(row, col).cloned() else {
@@ -531,7 +531,9 @@ impl QrateTableDelegate {
             self.set_cell(row, col, after.clone());
             edit.push((row, col, before, after));
         }
+        let changed = !edit.is_empty();
         self.history.push(Step::Cells(edit));
+        changed
     }
 
     /// Reverse the last recorded step. The answer says whether it moved rows; `None` means there
