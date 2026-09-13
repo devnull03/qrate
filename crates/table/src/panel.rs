@@ -154,16 +154,24 @@ impl TablePanel {
                     return;
                 }
                 let by_enter = matches!(event, InputEvent::PressEnter { .. });
-                let rename = table_state.update(cx, |state, cx| {
-                    let rename = editing::commit(state.delegate_mut(), cx);
+                let committed = table_state.update(cx, |state, cx| {
+                    let committed = editing::commit(state.delegate_mut(), cx);
                     cx.emit(TableChanged);
                     cx.notify();
-                    rename
+                    committed
                 });
-                if let Some((col, name)) = rename {
-                    crate::structural(crate::Structural::RenameColumn { col, name }, cx);
+                let changed = match committed {
+                    editing::Committed::Unchanged => false,
+                    editing::Committed::Cell => true,
+                    editing::Committed::Rename(col, name) => {
+                        crate::structural(crate::Structural::RenameColumn { col, name }, cx);
+                        true
+                    }
+                };
+                if changed {
+                    this.schedule_revalidate(cx);
+                    this.schedule_autosave(cx);
                 }
-                this.schedule_revalidate(cx);
                 this.forget_suggestions(cx);
                 // Focus was on the editor, which has just gone away. Hand it back to the grid or
                 // the arrow keys and Enter go nowhere — the `DataTable` key context lives on *its*
@@ -171,7 +179,6 @@ impl TablePanel {
                 if by_enter {
                     this.focus_table(window, cx);
                 }
-                this.schedule_autosave(cx);
             },
         );
 
@@ -305,15 +312,18 @@ impl TablePanel {
                 let project = cx.global::<settings::project::CurrentProject>();
                 let file = project.file.clone();
                 if this.loaded_project.as_ref() == Some(&file) {
+                    let started = std::time::Instant::now();
                     this.state.update(cx, |state, cx| {
                         apply_settings(state.delegate_mut(), cx);
                         state.refresh(cx);
                         cx.emit(TableChanged);
                         cx.notify();
                     });
+                    log::debug!("table re-read project settings in {:?}", started.elapsed());
                     cx.notify();
                     return;
                 }
+                log::info!("loading project {}", file.display());
 
                 let (headers, row_ids, rows) = (
                     project.data.headers.clone(),
