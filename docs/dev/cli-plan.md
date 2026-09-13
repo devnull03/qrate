@@ -2,8 +2,8 @@
 
 Status: implementation in progress. The packaged `qrate` launcher, `open`, `--wait`, `version`,
 help, project-path forwarding, `qrate://` forwarding, and the read-only app-control foundation exist.
-Implemented app commands are `status`, `path`, and `launch`; `quit`, project-data commands, and
-direct-file commands remain proposed.
+Implemented app commands are `status`, `path`, and `launch`. `qrate project info` reads the active
+desktop project. `quit`, other project-data commands, and direct-file commands remain proposed.
 
 ## Decision
 
@@ -161,14 +161,15 @@ qrate app quit [--force]
 #### `project`
 
 ```text
-qrate project info [--show-settings]
+qrate project info
 qrate project verify [--quick]
 qrate project backup <OUTPUT> [--overwrite]
 qrate project compact
 qrate project recent [--limit <N>]
 ```
 
-- `info` shows the schema version, project name, source, row count, columns, notes, and file links.
+- `info` currently shows the active project's name, path, source, creation timestamp, link method,
+  files folder, row count, and column count. It exits with code 1 when no desktop project is active.
 - `verify` checks the SQLite header, qrate application ID, schema, foreign keys, and database integrity.
 - `backup` uses the SQLite backup API. It does not copy a live database with a file copy.
 - `compact` runs `VACUUM`. It requires exclusive offline access.

@@ -10,6 +10,7 @@ use std::{
 };
 
 use gpui::App;
+use serde::Serialize;
 use serde_json::json;
 
 const POLL: Duration = Duration::from_millis(250);
@@ -83,19 +84,85 @@ fn serve(mut stream: TcpStream, token: &str, cx: &mut gpui::AsyncApp) {
                     && value.trim() == format!("Bearer {token}")
             })
         });
-    if request != "GET /status HTTP/1.1" || !authenticated {
+    if !authenticated {
         respond(&mut stream, "401 Unauthorized", "{}");
         return;
     }
-    let project = cx.update(|cx| {
-        cx.try_global::<settings::project::CurrentProject>()
-            .map(|project| project.file.to_string_lossy().into_owned())
-    });
-    respond(
-        &mut stream,
-        "200 OK",
-        &json!({ "running": true, "project": project }).to_string(),
-    );
+    match request.as_str() {
+        "GET /status HTTP/1.1" => {
+            let project = cx.update(|cx| {
+                cx.try_global::<settings::project::CurrentProject>()
+                    .map(|project| project.file.to_string_lossy().into_owned())
+            });
+            respond(
+                &mut stream,
+                "200 OK",
+                &json!({ "running": true, "project": project }).to_string(),
+            );
+        }
+        "GET /v1/project/info HTTP/1.1" => {
+            let project = cx.update(|cx| {
+                cx.try_global::<settings::project::CurrentProject>()
+                    .map(project_info)
+            });
+            match project {
+                Some(project) => respond(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::to_string(&ProjectInfoResponse {
+                        app_control_protocol: 1,
+                        project,
+                    })
+                    .expect("project info is serializable"),
+                ),
+                None => respond(
+                    &mut stream,
+                    "409 Conflict",
+                    r#"{"app_control_protocol":1,"error":"no_active_project"}"#,
+                ),
+            }
+        }
+        _ => respond(&mut stream, "404 Not Found", "{}"),
+    }
+}
+
+#[derive(Serialize)]
+struct ProjectInfoResponse {
+    app_control_protocol: u8,
+    project: ProjectInfo,
+}
+
+#[derive(Serialize)]
+struct ProjectInfo {
+    name: String,
+    path: String,
+    source: Option<String>,
+    created_at: Option<String>,
+    link_method: Option<String>,
+    files_folder: Option<String>,
+    row_count: usize,
+    column_count: usize,
+}
+
+fn project_info(project: &settings::project::CurrentProject) -> ProjectInfo {
+    let setting = |key: &str| {
+        project
+            .data
+            .values
+            .get(key)
+            .map(|value| value.text().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    ProjectInfo {
+        name: project.display_name(),
+        path: project.file.to_string_lossy().into_owned(),
+        source: setting("source"),
+        created_at: setting("created_at"),
+        link_method: setting("link_method"),
+        files_folder: setting(settings::project::FILES_FOLDER_KEY),
+        row_count: project.data.rows.len(),
+        column_count: project.data.columns.len(),
+    }
 }
 
 fn respond(stream: &mut TcpStream, status: &str, body: &str) {
@@ -114,7 +181,7 @@ pub fn shutdown() {
 
 #[cfg(test)]
 mod tests {
-    use super::respond;
+    use super::{ProjectInfo, ProjectInfoResponse, respond};
     use std::io::Read;
 
     #[test]
@@ -134,5 +201,28 @@ mod tests {
             client.join().unwrap(),
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
         );
+    }
+
+    #[test]
+    fn project_info_response_has_a_versioned_stable_shape() {
+        let body = serde_json::to_value(ProjectInfoResponse {
+            app_control_protocol: 1,
+            project: ProjectInfo {
+                name: "Archive".into(),
+                path: "/projects/archive.qrate".into(),
+                source: Some("CSV".into()),
+                created_at: Some("1234".into()),
+                link_method: None,
+                files_folder: None,
+                row_count: 12,
+                column_count: 4,
+            },
+        })
+        .unwrap();
+        assert_eq!(body["app_control_protocol"], 1);
+        assert_eq!(body["project"]["name"], "Archive");
+        assert_eq!(body["project"]["row_count"], 12);
+        assert_eq!(body["project"]["column_count"], 4);
+        assert!(body["project"]["link_method"].is_null());
     }
 }

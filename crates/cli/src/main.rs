@@ -36,6 +36,11 @@ enum Command {
         #[command(subcommand)]
         command: AppCommand,
     },
+    /// Inspect the active desktop project.
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
     /// Print the qrate CLI version.
     Version,
 }
@@ -52,6 +57,12 @@ enum AppCommand {
         #[arg(long)]
         wait: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum ProjectCommand {
+    /// Show metadata for the active desktop project.
+    Info,
 }
 
 fn main() {
@@ -74,6 +85,13 @@ fn main() {
             AppCommand::Launch { wait } => launch(&desktop_path(&executable), None, *wait),
         };
         finish(result);
+        return;
+    }
+    if let Some(Command::Project {
+        command: ProjectCommand::Info,
+    }) = &cli.command
+    {
+        finish(project_info());
         return;
     }
     let project = match cli.command {
@@ -123,21 +141,67 @@ struct AppStatus {
     project: Option<String>,
 }
 
-fn app_status() -> Result<Option<ExitStatus>, String> {
-    let Some(path) = dirs::data_local_dir().map(|dir| dir.join("qrate/app-control.json")) else {
-        println!("stopped");
-        return Ok(None);
-    };
-    let descriptor: AppControlDescriptor = match fs::read(&path)
-        .map_err(|error| error.to_string())
-        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
-    {
-        Ok(descriptor) => descriptor,
-        Err(_) => {
-            println!("stopped");
-            return Ok(None);
-        }
-    };
+#[derive(Deserialize)]
+struct ProjectInfoResponse {
+    app_control_protocol: u8,
+    project: ProjectInfo,
+}
+
+#[derive(Deserialize)]
+struct ProjectInfo {
+    name: String,
+    path: String,
+    source: Option<String>,
+    created_at: Option<String>,
+    link_method: Option<String>,
+    files_folder: Option<String>,
+    row_count: usize,
+    column_count: usize,
+}
+
+fn project_info() -> Result<Option<ExitStatus>, String> {
+    let body = app_request("/v1/project/info")?;
+    let info: ProjectInfoResponse = serde_json::from_str(&body)
+        .map_err(|error| format!("invalid qrate project info: {error}"))?;
+    if info.app_control_protocol != 1 {
+        return Err(format!(
+            "unsupported project-info protocol {}",
+            info.app_control_protocol
+        ));
+    }
+    println!("name: {}", info.project.name);
+    println!("path: {}", info.project.path);
+    println!(
+        "source: {}",
+        info.project.source.as_deref().unwrap_or("none")
+    );
+    println!(
+        "created: {}",
+        info.project.created_at.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "link method: {}",
+        info.project.link_method.as_deref().unwrap_or("none")
+    );
+    println!(
+        "files folder: {}",
+        info.project.files_folder.as_deref().unwrap_or("none")
+    );
+    println!("rows: {}", info.project.row_count);
+    println!("columns: {}", info.project.column_count);
+    Ok(None)
+}
+
+fn app_request(route: &str) -> Result<String, String> {
+    let path = dirs::data_local_dir()
+        .map(|dir| dir.join("qrate/app-control.json"))
+        .ok_or_else(|| "cannot locate qrate application data".to_string())?;
+    let descriptor: AppControlDescriptor = fs::read(&path)
+        .map_err(|_| "qrate is not running".to_string())
+        .and_then(|bytes| {
+            serde_json::from_slice(&bytes)
+                .map_err(|error| format!("invalid app-control descriptor: {error}"))
+        })?;
     if descriptor.app_control_protocol != 1 {
         return Err(format!(
             "unsupported app-control protocol {}",
@@ -148,13 +212,8 @@ fn app_status() -> Result<Option<ExitStatus>, String> {
         .url
         .strip_prefix("http://127.0.0.1:")
         .ok_or_else(|| "invalid app-control endpoint".to_string())?;
-    let mut stream = match TcpStream::connect(format!("127.0.0.1:{address}")) {
-        Ok(stream) => stream,
-        Err(_) => {
-            println!("stopped");
-            return Ok(None);
-        }
-    };
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{address}"))
+        .map_err(|_| "qrate is not running".to_string())?;
     let timeout = Some(std::time::Duration::from_secs(1));
     stream
         .set_read_timeout(timeout)
@@ -162,20 +221,41 @@ fn app_status() -> Result<Option<ExitStatus>, String> {
         .map_err(|error| format!("cannot configure qrate connection: {error}"))?;
     write!(
         stream,
-        "GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+        "GET {route} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
         descriptor.token
     )
     .map_err(|error| format!("cannot query qrate: {error}"))?;
     let mut response = String::new();
     stream
         .read_to_string(&mut response)
-        .map_err(|error| format!("cannot read qrate status: {error}"))?;
-    let (_, body) = response
+        .map_err(|error| format!("cannot read qrate response: {error}"))?;
+    parse_app_response(&response)
+}
+
+fn parse_app_response(response: &str) -> Result<String, String> {
+    let (head, body) = response
         .split_once("\r\n\r\n")
-        .filter(|(head, _)| head.starts_with("HTTP/1.1 200 "))
-        .ok_or_else(|| "qrate refused the status request".to_string())?;
+        .ok_or_else(|| "invalid response from qrate".to_string())?;
+    if head.starts_with("HTTP/1.1 200 ") {
+        return Ok(body.to_string());
+    }
+    if head.starts_with("HTTP/1.1 409 ") && body.contains(r#""error":"no_active_project""#) {
+        return Err("no project is active; run `qrate <PROJECT.qrate>`".to_string());
+    }
+    Err("qrate refused the request".to_string())
+}
+
+fn app_status() -> Result<Option<ExitStatus>, String> {
+    let body = match app_request("/status") {
+        Ok(body) => body,
+        Err(error) if error == "qrate is not running" => {
+            println!("stopped");
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
     let status: AppStatus =
-        serde_json::from_str(body).map_err(|error| format!("invalid qrate status: {error}"))?;
+        serde_json::from_str(&body).map_err(|error| format!("invalid qrate status: {error}"))?;
     println!("{}", if status.running { "running" } else { "stopped" });
     if let Some(project) = status.project {
         println!("project: {project}");
@@ -254,7 +334,10 @@ fn exit_code(status: ExitStatus) -> i32 {
 mod tests {
     use clap::Parser as _;
 
-    use super::{AppCommand, Cli, Command, desktop_path, launch, validate_project};
+    use super::{
+        AppCommand, Cli, Command, ProjectCommand, desktop_path, launch, parse_app_response,
+        validate_project,
+    };
     use std::path::Path;
 
     #[test]
@@ -290,6 +373,30 @@ mod tests {
         ));
         assert!(Cli::try_parse_from(["qrate", "app", "status"]).is_ok());
         assert!(Cli::try_parse_from(["qrate", "app", "path"]).is_ok());
+        let cli = Cli::try_parse_from(["qrate", "project", "info"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Project {
+                command: ProjectCommand::Info
+            })
+        ));
+        assert!(Cli::try_parse_from(["qrate", "project"]).is_err());
+        assert!(Cli::try_parse_from(["qrate", "project", "verify"]).is_err());
+    }
+
+    #[test]
+    fn parses_project_info_protocol_responses() {
+        assert_eq!(
+            parse_app_response("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}").unwrap(),
+            "{}"
+        );
+        let error = parse_app_response(
+            "HTTP/1.1 409 Conflict\r\nContent-Length: 54\r\n\r\n{\"app_control_protocol\":1,\"error\":\"no_active_project\"}",
+        )
+        .unwrap_err();
+        assert!(error.contains("no project is active"));
+        assert!(error.contains("qrate <PROJECT.qrate>"));
+        assert!(parse_app_response("HTTP/1.1 401 Unauthorized\r\n\r\n{}").is_err());
     }
 
     #[test]
