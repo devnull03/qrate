@@ -64,7 +64,7 @@ const WINDOW: Duration = Duration::from_secs(60);
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What an authority said about one term.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Verdict {
     /// Whether the authority holds this exact heading.
     pub known: bool,
@@ -79,12 +79,20 @@ pub struct Verdict {
 #[derive(Default)]
 struct Cache {
     terms: HashMap<String, HashMap<String, Verdict>>,
+    scopes: HashMap<String, String>,
+    failures: HashMap<String, String>,
     loaded: bool,
     /// Keeps the in-flight run alive; dropping it cancels, which is what a newer run wants.
     run: Option<Task<()>>,
 }
 
 impl Global for Cache {}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredCache {
+    scope: String,
+    terms: HashMap<String, Verdict>,
+}
 
 fn cache_path(source: &str) -> Option<PathBuf> {
     settings::data_dir().map(|dir| dir.join("authority").join(format!("{source}.json")))
@@ -97,6 +105,7 @@ fn ensure_loaded(cx: &mut App) {
         return;
     }
     let mut terms = HashMap::new();
+    let mut scopes = HashMap::new();
     for name in source::NAMES {
         let Some(path) = cache_path(name) else {
             continue;
@@ -104,32 +113,38 @@ fn ensure_loaded(cx: &mut App) {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        match serde_json::from_str::<HashMap<String, (bool, Vec<String>)>>(&text) {
-            Ok(stored) => {
-                terms.insert(
-                    name.to_string(),
-                    stored
-                        .into_iter()
-                        .map(|(term, (known, suggestions))| (term, Verdict { known, suggestions }))
-                        .collect(),
-                );
-            }
-            Err(err) => log::warn!("discarding the unreadable {name} cache: {err}"),
+        if let Ok(stored) = serde_json::from_str::<StoredCache>(&text) {
+            scopes.insert(name.to_string(), stored.scope);
+            terms.insert(name.to_string(), stored.terms);
+        } else if let Ok(stored) =
+            serde_json::from_str::<HashMap<String, (bool, Vec<String>)>>(&text)
+        {
+            scopes.insert(name.to_string(), name.to_string());
+            terms.insert(
+                name.to_string(),
+                stored
+                    .into_iter()
+                    .map(|(term, (known, suggestions))| (term, Verdict { known, suggestions }))
+                    .collect(),
+            );
+        } else {
+            log::warn!("discarding the unreadable {name} cache");
         }
     }
     let cache = cx.default_global::<Cache>();
     cache.terms = terms;
+    cache.scopes = scopes;
     cache.loaded = true;
 }
 
-fn write_cache(source: &str, verdicts: &HashMap<String, Verdict>) {
+fn write_cache(source: &str, scope: &str, verdicts: &HashMap<String, Verdict>) {
     let Some(path) = cache_path(source) else {
         return;
     };
-    let stored: HashMap<&String, (bool, &Vec<String>)> = verdicts
-        .iter()
-        .map(|(term, v)| (term, (v.known, &v.suggestions)))
-        .collect();
+    let stored = StoredCache {
+        scope: scope.to_owned(),
+        terms: verdicts.clone(),
+    };
     let written = path
         .parent()
         .map_or(Ok(()), std::fs::create_dir_all)
@@ -146,6 +161,7 @@ fn write_cache(source: &str, verdicts: &HashMap<String, Verdict>) {
 /// One source's share of a run.
 struct Job {
     source: Box<dyn AuthoritySource>,
+    scope: String,
     columns: Vec<ColumnSnapshot>,
     /// Terms nothing is cached for, already capped at [`PER_RUN`].
     ask: Vec<String>,
@@ -209,11 +225,15 @@ pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
             continue;
         }
 
-        let cached = cx
-            .default_global::<Cache>()
-            .terms
-            .entry(name.into())
-            .or_default();
+        let scope = source.cache_scope();
+        let cache = cx.default_global::<Cache>();
+        if cache.scopes.get(name) != Some(&scope) {
+            cache.scopes.insert(name.into(), scope.clone());
+            cache.terms.remove(name);
+            cache.failures.remove(name);
+        }
+        let failed = cache.failures.contains_key(name);
+        let cached = cache.terms.entry(name.into()).or_default();
         let mut seen = HashSet::new();
         let ask: Vec<String> = mine
             .iter()
@@ -221,11 +241,13 @@ pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
             .flat_map(|cell| values_in(cell, &subdelimiter))
             .filter(|value| seen.insert(value.to_lowercase()))
             .filter(|value| !cached.contains_key(&value.to_lowercase()))
+            .filter(|_| !failed)
             .take(PER_RUN)
             .collect();
 
         jobs.push(Job {
             source,
+            scope,
             columns: mine,
             ask,
         });
@@ -240,10 +262,16 @@ pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
         // project shows what it knew immediately instead of after a round trip.
         cx.update(|cx| publish(&jobs, &subdelimiter, cx));
 
-        let asked: Vec<(String, Vec<String>)> = jobs
+        let asked: Vec<(String, String, Vec<String>)> = jobs
             .iter()
             .filter(|job| !job.ask.is_empty())
-            .map(|job| (job.source.name().to_string(), job.ask.clone()))
+            .map(|job| {
+                (
+                    job.source.name().to_string(),
+                    job.scope.clone(),
+                    job.ask.clone(),
+                )
+            })
             .collect();
         if asked.is_empty() {
             return;
@@ -255,27 +283,36 @@ pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
                 let sources = source::all(&config);
                 asked
                     .into_iter()
-                    .filter_map(|(name, terms)| {
+                    .filter_map(|(name, scope, terms)| {
                         let source = sources.iter().find(|s| s.name() == name)?;
-                        Some((name.clone(), lookup_all(source.as_ref(), &terms)))
+                        Some((name.clone(), scope, lookup_all(source.as_ref(), &terms)))
                     })
                     .collect::<Vec<_>>()
             })
             .await;
 
         cx.update(|cx| {
-            for (name, verdicts) in fetched {
-                if verdicts.is_empty() {
+            for (name, scope, result) in fetched {
+                let cache = cx.default_global::<Cache>();
+                if cache.scopes.get(&name) != Some(&scope) {
                     continue;
                 }
-                let cache = cx.default_global::<Cache>();
+                if let Some(failure) = result.failure {
+                    log::warn!("{name} checks paused: {failure}");
+                    cache.failures.insert(name.clone(), failure);
+                }
+                let verdicts = result.verdicts;
                 let for_source = cache.terms.entry(name.clone()).or_default();
                 for (term, verdict) in verdicts {
                     for_source.insert(term, verdict);
                 }
+                if for_source.is_empty() {
+                    continue;
+                }
+                let scope = cache.scopes.get(&name).cloned().unwrap_or_default();
                 let snapshot = for_source.clone();
                 cx.background_executor()
-                    .spawn(async move { write_cache(&name, &snapshot) })
+                    .spawn(async move { write_cache(&name, &scope, &snapshot) })
                     .detach();
             }
             publish(&jobs, &subdelimiter, cx);
@@ -290,16 +327,17 @@ fn publish(jobs: &[Job], subdelimiter: &str, cx: &mut App) {
     for job in jobs {
         let name = job.source.name();
         let empty = HashMap::new();
-        let cached = cx
-            .try_global::<Cache>()
-            .and_then(|c| c.terms.get(name))
+        let cache = cx.try_global::<Cache>();
+        let cached = cache
+            .and_then(|cache| cache.terms.get(name))
             .unwrap_or(&empty);
+        let failure = cache.and_then(|cache| cache.failures.get(name));
 
         let items: Vec<_> = job
             .columns
             .iter()
             .flat_map(|column| {
-                let found = column
+                let mut found: Vec<_> = column
                     .values
                     .iter()
                     .enumerate()
@@ -327,6 +365,20 @@ fn publish(jobs: &[Job], subdelimiter: &str, cx: &mut App) {
                             })
                     })
                     .collect();
+                if let Some(failure) = failure {
+                    let message: SharedString =
+                        format!("{name} could not check this column: {failure}").into();
+                    found.push(ColumnFinding {
+                        row: None,
+                        severity: Severity::Warning,
+                        message: message.clone(),
+                        group: Some(DiagnosticGroup {
+                            key: "authority unavailable".into(),
+                            summary: message,
+                            subject: None,
+                        }),
+                    });
+                }
                 diagnostics::address(name.into(), column, found)
             })
             .collect();
@@ -334,48 +386,110 @@ fn publish(jobs: &[Job], subdelimiter: &str, cx: &mut App) {
     }
 }
 
+struct LookupBatch {
+    verdicts: Vec<(String, Verdict)>,
+    failure: Option<String>,
+}
+
+enum Lookup {
+    Verdict(Verdict),
+    Retry,
+    Refused(String),
+}
+
 /// Ask `source` about each term in turn, skipping the rest once the request budget is spent.
-fn lookup_all(source: &dyn AuthoritySource, terms: &[String]) -> Vec<(String, Verdict)> {
-    terms
-        .iter()
-        .map_while(|term| {
-            if !take_token() {
-                log::warn!(
-                    "{}: request budget spent, so the rest of this pass waits for the next one",
-                    source.name()
-                );
-                return None;
+fn lookup_all(source: &dyn AuthoritySource, terms: &[String]) -> LookupBatch {
+    let mut verdicts = Vec::new();
+    for term in terms {
+        if !take_token() {
+            log::warn!(
+                "{}: request budget spent, so the rest of this pass waits for the next one",
+                source.name()
+            );
+            break;
+        }
+        match lookup_result(source, term) {
+            Lookup::Verdict(verdict) => verdicts.push((term.to_lowercase(), verdict)),
+            Lookup::Retry => {}
+            Lookup::Refused(failure) => {
+                return LookupBatch {
+                    verdicts,
+                    failure: Some(failure),
+                };
             }
-            Some(lookup(source, term).map(|verdict| (term.to_lowercase(), verdict)))
-        })
-        .flatten()
-        .collect()
+        }
+    }
+    LookupBatch {
+        verdicts,
+        failure: None,
+    }
 }
 
 /// One term. `None` when the authority could not be reached or did not answer with anything
 /// readable — that must never be cached, and must never become a finding, because "the server is
 /// down" reported as "this heading is wrong" is the one mistake this crate must not make.
-fn lookup(source: &dyn AuthoritySource, term: &str) -> Option<Verdict> {
-    let response = client()
-        .get(source.lookup_url(term))
-        .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(reqwest::blocking::Response::text);
-    let body = match response {
-        Ok(body) => body,
+fn lookup_result(source: &dyn AuthoritySource, term: &str) -> Lookup {
+    let response = match client().get(source.lookup_url(term)).send() {
+        Ok(response) => response,
         Err(err) => {
             log::warn!("{}: could not check “{term}”: {err}", source.name());
-            return None;
+            return Lookup::Retry;
         }
     };
+    let status = response.status();
+    let body = match response.text() {
+        Ok(body) => body,
+        Err(err) => {
+            log::warn!(
+                "{}: could not read the answer for “{term}”: {err}",
+                source.name()
+            );
+            return Lookup::Retry;
+        }
+    };
+    interpret(source, term, status, &body)
+}
+
+#[cfg(test)]
+fn lookup(source: &dyn AuthoritySource, term: &str) -> Option<Verdict> {
+    match lookup_result(source, term) {
+        Lookup::Verdict(verdict) => Some(verdict),
+        Lookup::Retry | Lookup::Refused(_) => None,
+    }
+}
+
+fn interpret(
+    source: &dyn AuthoritySource,
+    term: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> Lookup {
+    let refusal = source.refusal(body);
+    if !status.is_success() {
+        let reason = refusal.unwrap_or_else(|| format!("HTTP {status}"));
+        if matches!(status.as_u16(), 401 | 403) {
+            return Lookup::Refused(reason);
+        }
+        log::warn!(
+            "{}: could not check “{term}”: HTTP {status}: {reason}",
+            source.name()
+        );
+        return Lookup::Retry;
+    }
+    if let Some(reason) = refusal {
+        return Lookup::Refused(reason);
+    }
 
     // An empty list is the authority saying "no such heading" and must be cached as one. Only an
     // answer we could not read at all is dropped.
-    let mut labels = source.labels(&body)?;
+    let Some(mut labels) = source.labels(body) else {
+        return Lookup::Retry;
+    };
     let known = labels.iter().any(|label| label.eq_ignore_ascii_case(term));
     // One heading can appear several times, once per authority record that carries it.
-    labels.dedup();
-    Some(Verdict {
+    let mut seen = HashSet::new();
+    labels.retain(|label| seen.insert(label.to_lowercase()));
+    Lookup::Verdict(Verdict {
         known,
         suggestions: if known { Vec::new() } else { labels },
     })
@@ -418,30 +532,34 @@ fn take_token() -> bool {
 ///
 /// Reads the cache only — a menu opens on a click and cannot wait for a round trip. A term whose
 /// verdict has not arrived offers nothing, and the menu simply doesn't appear.
-fn offer(_: &Location, text: &str, subject: Option<&str>, cx: &App) -> Vec<Fix> {
+fn offer(location: &Location, text: &str, subject: Option<&str>, cx: &App) -> Vec<Fix> {
     let Some(cache) = cx.try_global::<Cache>() else {
+        return Vec::new();
+    };
+    let Some(source) = location
+        .column
+        .as_deref()
+        .and_then(|column| settings::columns::get(column, cx).authority)
+    else {
+        return Vec::new();
+    };
+    let Some(verdicts) = cache.terms.get(&source) else {
         return Vec::new();
     };
     let subdelimiter = settings::effective_text(settings::FILTER_SUBDELIMITER_KEY, cx).to_string();
 
-    cache
-        .terms
-        .values()
-        .flat_map(|verdicts| {
-            values_in(text, &subdelimiter)
-                .into_iter()
-                .filter(|value| subject.is_none_or(|subject| value == subject))
-                .filter_map(|value| Some((value.clone(), verdicts.get(&value.to_lowercase())?)))
-                .filter(|(_, verdict)| !verdict.known)
-                .flat_map(|(value, verdict)| {
-                    verdict.suggestions.iter().map(move |suggestion| Fix {
-                        label: format!("{value} → {suggestion}").into(),
-                        // The whole cell, with just the rejected value swapped, so a multi-valued
-                        // cell keeps the values that were fine.
-                        replacement: text.replace(&value, suggestion).into(),
-                    })
-                })
-                .collect::<Vec<_>>()
+    values_in(text, &subdelimiter)
+        .into_iter()
+        .filter(|value| subject.is_none_or(|subject| value == subject))
+        .filter_map(|value| Some((value.clone(), verdicts.get(&value.to_lowercase())?)))
+        .filter(|(_, verdict)| !verdict.known)
+        .flat_map(|(value, verdict)| {
+            verdict.suggestions.iter().map(move |suggestion| Fix {
+                label: format!("{value} → {suggestion}").into(),
+                // The whole cell, with just the rejected value swapped, so a multi-valued
+                // cell keeps the values that were fine.
+                replacement: text.replace(&value, suggestion).into(),
+            })
         })
         .collect()
 }
@@ -456,7 +574,8 @@ pub fn init(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use crate::authority::{Verdict, values_in};
+    use crate::authority::geonames::GeoNames;
+    use crate::authority::{Lookup, Verdict, interpret, values_in};
 
     #[test]
     fn a_multi_valued_cell_splits_into_its_values() {
@@ -485,6 +604,45 @@ mod tests {
         };
         assert!(!verdict.known);
         assert_eq!(verdict.suggestions.len(), 1);
+    }
+
+    #[test]
+    fn a_geonames_refusal_stops_the_source_and_keeps_its_message() {
+        let source = GeoNames {
+            username: "invalid".into(),
+        };
+        let refused = r#"{"status":{"message":"user does not exist","value":10}}"#;
+        assert!(matches!(
+            interpret(
+                &source,
+                "Vancouver",
+                reqwest::StatusCode::UNAUTHORIZED,
+                refused
+            ),
+            Lookup::Refused(message) if message == "user does not exist"
+        ));
+    }
+
+    #[test]
+    fn suggestions_are_deduplicated_without_changing_rank_order() {
+        let source = GeoNames {
+            username: "valid".into(),
+        };
+        let body = r#"{"geonames":[
+            {"name":"Vancouver Island"},
+            {"name":"Vancouver"},
+            {"name":"Vancouver Island"}
+        ]}"#;
+        let Lookup::Verdict(verdict) =
+            interpret(&source, "Vancouvr", reqwest::StatusCode::OK, body)
+        else {
+            panic!("the response must produce a verdict");
+        };
+        assert_eq!(
+            verdict.suggestions,
+            ["Vancouver Island", "Vancouver"],
+            "the API's best-first order is preserved"
+        );
     }
 
     /// The budget is a backstop against a runaway loop, so what matters is that it stops rather

@@ -156,21 +156,21 @@ impl TablePanel {
                 let by_enter = matches!(event, InputEvent::PressEnter { .. });
                 let committed = table_state.update(cx, |state, cx| {
                     let committed = editing::commit(state.delegate_mut(), cx);
-                    cx.emit(TableChanged);
-                    cx.notify();
+                    if matches!(committed, editing::Committed::Cell) {
+                        cx.emit(TableChanged);
+                        cx.notify();
+                    }
                     committed
                 });
-                let changed = match committed {
-                    editing::Committed::Unchanged => false,
-                    editing::Committed::Cell => true,
+                match committed {
+                    editing::Committed::Unchanged => {}
+                    editing::Committed::Cell => {
+                        this.schedule_revalidate(cx);
+                        this.schedule_autosave(cx);
+                    }
                     editing::Committed::Rename(col, name) => {
                         crate::structural(crate::Structural::RenameColumn { col, name }, cx);
-                        true
                     }
-                };
-                if changed {
-                    this.schedule_revalidate(cx);
-                    this.schedule_autosave(cx);
                 }
                 this.forget_suggestions(cx);
                 // Focus was on the editor, which has just gone away. Hand it back to the grid or

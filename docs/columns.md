@@ -36,3 +36,6 @@ suggests similar values already present in that column but never merges them aut
 
 For a column checked against an authority, such as subject headings, qrate flags a value
 that the authority does not recognize and can suggest the closest match as a fix.
+
+GeoNames needs an activated GeoNames web-services account. If GeoNames rejects the account,
+qrate stops the remaining requests and shows one warning. Change the account in Settings to retry.

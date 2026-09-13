@@ -143,7 +143,13 @@ pub(crate) fn commit(
     let value = delegate.editor.read(cx).value();
     match std::mem::take(&mut delegate.editing) {
         EditState::Idle => Committed::Unchanged,
-        EditState::Renaming { col } => Committed::Rename(col, value),
+        EditState::Renaming { col } => {
+            if delegate.column_name(col) == value {
+                Committed::Unchanged
+            } else {
+                Committed::Rename(col, value)
+            }
+        }
         EditState::Editing { row, col } => {
             if !delegate.apply_edit(vec![(row, col, value)]) {
                 return Committed::Unchanged;
@@ -318,6 +324,26 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[gpui::test]
+    fn committing_the_existing_column_name_is_unchanged(cx: &mut TestAppContext) {
+        let state = panel(cx);
+        let window = cx.windows()[0];
+        cx.update_window(window, |_, window, cx| {
+            state.update(cx, |state, cx| {
+                let delegate = state.delegate_mut();
+                delegate
+                    .editor
+                    .update(cx, |input, cx| input.set_value("Title", window, cx));
+                delegate.editing = EditState::Renaming { col: 0 };
+                assert!(matches!(
+                    editing::commit(delegate, cx),
+                    editing::Committed::Unchanged
+                ));
+            });
+        })
+        .unwrap();
     }
 
     /// Nothing to abandon has to be reported as such: the Escape handler hands the key on when
