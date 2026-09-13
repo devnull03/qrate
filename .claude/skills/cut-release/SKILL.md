@@ -181,7 +181,7 @@ doesn't always round-trip through `--notes-file` the way it looks in a local edi
   dotnet tool install --global wix --version 5.0.2   # once; skip if already installed
   wix extension add -g WixToolset.UI.wixext/5.0.2    # once; skip if already installed
   wix build scripts/installer.wxs -ext WixToolset.UI.wixext \
-    -d Version=0.0.0.0 -d SrcExe=target/release/app.exe -d SrcDir=target/release \
+    -d Version=0.0.0.0 -d SrcExe=target/release/qrate-app.exe -d SrcDir=target/release \
     -d IconFile=assets/icons/app-icon.ico -d HasPdfium=0 -d HasFfmpeg=0 \
     -o /tmp/verify.msi
   ```

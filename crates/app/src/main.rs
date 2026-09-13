@@ -12,6 +12,7 @@ mod instance_handoff;
 mod logging;
 mod plugin_marketplace;
 mod site;
+mod startup;
 mod status_items;
 mod theming;
 mod title_items;
@@ -585,18 +586,21 @@ fn main() {
     // First, so failures in GPUI platform construction and startup still reach the log file.
     logging::init();
     log::info!("site origin: {}", site::url("/"));
-    let onboarding_preview =
-        cfg!(debug_assertions) && std::env::args().any(|argument| argument == "--onboarding");
-    let initial_project = std::env::args_os()
-        .skip(1)
-        .map(std::path::PathBuf::from)
-        .find(|path| {
-            path.extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("qrate"))
-        });
-    let initial_link = std::env::args()
-        .find(|argument| argument.starts_with("qrate://"))
+    let launch_args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let onboarding_preview = cfg!(debug_assertions)
+        && launch_args.iter().any(|argument| argument == "--onboarding");
+    let initial_target = match startup::launch_argument(launch_args.into_iter().filter(|argument| {
+        argument.as_os_str() != std::ffi::OsStr::new("--onboarding")
+    })) {
+        Ok(target) => target,
+        Err(error) => {
+            log::error!("cannot start qrate: {error}");
+            std::process::exit(2);
+        }
+    };
+    let initial_link = initial_target
+        .as_ref()
+        .and_then(startup::LaunchTarget::as_link)
         .filter(|link| {
             plugin_package::parse_install_link(link)
                 .inspect_err(|error| log::warn!("ignored invalid plugin install link: {error:#}"))
@@ -606,7 +610,7 @@ fn main() {
         log::info!("received plugin install link at startup");
     }
     let (url_sender, url_receiver) = async_channel::unbounded();
-    if !instance_handoff::start(initial_link.as_deref(), url_sender.clone()) {
+    if !instance_handoff::start(initial_link, url_sender.clone()) {
         return;
     }
     let app = gpui_platform::application().with_assets(assets::Assets);
@@ -781,10 +785,9 @@ fn main() {
         })
         .detach();
 
-        match initial_link {
-            Some(link) if open_install_link(&link, cx) => {}
-            _ if initial_project.as_ref().is_some_and(
-                |path| match project_wizard::open_project(path, cx) {
+        match initial_target {
+            Some(startup::LaunchTarget::Project(path)) => {
+                match project_wizard::open_project(&path, cx) {
                     Ok(name) => {
                         project_wizard::record_opened(
                             name,
@@ -792,7 +795,6 @@ fn main() {
                             cx,
                         );
                         open_main_window(cx);
-                        true
                     }
                     Err(error) => {
                         log::error!("could not open project {}: {error:#}", path.display());
@@ -800,10 +802,10 @@ fn main() {
                             format!("Couldn't open {} — {error:#}", path.display()).into(),
                             cx,
                         );
-                        true
                     }
-                },
-            ) => {}
+                }
+            }
+            Some(startup::LaunchTarget::Link(link)) if open_install_link(&link, cx) => {}
             // The launcher is the normal startup window; it opens the main window or the wizard.
             _ => project_wizard::open_launcher_window(cx),
         }

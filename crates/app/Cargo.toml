@@ -3,6 +3,10 @@ name = "app"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "qrate-app"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 gpui.workspace = true
