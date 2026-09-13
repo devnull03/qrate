@@ -109,6 +109,7 @@ pub struct Env {
 }
 
 pub struct PackageDescriptor {
+    pub name: String,
     pub api_version: u64,
     pub permissions: Vec<String>,
 }
@@ -193,25 +194,30 @@ impl LuaPlugin {
         package: Result<Option<PackageDescriptor>, String>,
     ) -> Self {
         let mut plugin = Self::load(id, source, env);
-        match (package, plugin.state.as_ref()) {
-            (Err(error), _) => plugin.state = Err(error),
-            (Ok(Some(package)), Ok(loaded))
-                if loaded.api_version != package.api_version
-                    || loaded
-                        .permissions
-                        .iter()
-                        .map(SharedString::as_ref)
-                        .collect::<HashSet<_>>()
-                        != package
+        match package {
+            Err(error) => plugin.state = Err(error),
+            Ok(Some(package)) => {
+                let mismatch = plugin.state.as_ref().is_ok_and(|loaded| {
+                    loaded.api_version != package.api_version
+                        || loaded
                             .permissions
                             .iter()
-                            .map(String::as_str)
-                            .collect::<HashSet<_>>() =>
-            {
-                plugin.state =
-                    Err("runtime descriptor does not match qrate-plugin.json".to_string());
+                            .map(SharedString::as_ref)
+                            .collect::<HashSet<_>>()
+                            != package
+                                .permissions
+                                .iter()
+                                .map(String::as_str)
+                                .collect::<HashSet<_>>()
+                });
+                if mismatch {
+                    plugin.state =
+                        Err("runtime descriptor does not match qrate-plugin.json".to_string());
+                } else if let Ok(loaded) = plugin.state.as_mut() {
+                    loaded.name = Some(package.name.into());
+                }
             }
-            _ => {}
+            Ok(None) => {}
         }
         plugin
     }
@@ -1139,17 +1145,20 @@ mod tests {
             source,
             Env::default(),
             Ok(Some(PackageDescriptor {
+                name: "Example plugin".to_string(),
                 api_version: 1,
                 permissions: vec!["net".to_string()],
             })),
         );
         assert_eq!(matching.load_error(), None);
+        assert_eq!(matching.name(), "Example plugin");
 
         let mismatch = LuaPlugin::load_packaged(
             "org.example.plugin",
             source,
             Env::default(),
             Ok(Some(PackageDescriptor {
+                name: "Example plugin".to_string(),
                 api_version: 1,
                 permissions: Vec::new(),
             })),

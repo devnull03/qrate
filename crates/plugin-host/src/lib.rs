@@ -51,7 +51,7 @@ struct Plugins {
     /// whole staleness scheme — the same trick `TablePanel`'s autosave task uses.
     run: Option<Task<()>>,
     /// Found on disk but switched off, so the Settings page can offer them back.
-    off: Vec<SharedString>,
+    off: Vec<(SharedString, SharedString)>,
     /// Re-hands the scoped settings whenever either store changes.
     ///
     /// Without this, a plugin only ever saw the settings that existed when it loaded — and plugins
@@ -157,7 +157,11 @@ pub fn reload(cx: &mut App) {
         // Switched-off plugins are remembered by name and nothing else: the Settings page has to be
         // able to offer one back, and a VM is exactly what must not be built to do that.
         if !state.enabled {
-            off.push(SharedString::from(id));
+            let name = match &package {
+                Ok(Some(package)) => package.name.clone(),
+                _ => id.clone(),
+            };
+            off.push((SharedString::from(id), SharedString::from(name)));
             continue;
         }
         let env = Env {
@@ -240,7 +244,7 @@ pub fn status(cx: &App) -> Vec<(SharedString, Option<String>)> {
                 plugins
                     .off
                     .iter()
-                    .map(|id| (id.clone(), Some("switched off".to_string()))),
+                    .map(|(_, name)| (name.clone(), Some("switched off".to_string()))),
             )
             .collect()
     })
@@ -252,7 +256,7 @@ pub struct Listing {
     /// descriptor's `name`: a plugin that fails to load has no descriptor, and switching a broken
     /// plugin off has to work.
     pub id: SharedString,
-    /// The descriptor's `name`, or `id` when there is no descriptor to read it from.
+    /// The package's `name`, else the descriptor's, else `id`.
     pub name: SharedString,
     pub description: Option<SharedString>,
     pub load_error: Option<String>,
@@ -276,9 +280,9 @@ pub fn listing(cx: &App) -> Vec<Listing> {
             load_error: plugin.load_error().map(str::to_string),
             permissions: plugin.permissions().to_vec(),
         })
-        .chain(plugins.off.iter().map(|id| Listing {
+        .chain(plugins.off.iter().map(|(id, name)| Listing {
             id: id.clone(),
-            name: id.clone(),
+            name: name.clone(),
             description: None,
             load_error: None,
             // Unknown until it loads — nothing has read its descriptor. Turning it back on is the
@@ -766,6 +770,10 @@ fn package_on_disk(root: &Path, folder_id: &str) -> Result<Option<PackageOnDisk>
     if id != folder_id {
         return Err("package ID does not match its installation folder".to_string());
     }
+    let name = manifest
+        .get("name")
+        .and_then(Json::as_str)
+        .ok_or_else(|| "qrate-plugin.json has no name".to_string())?;
     let entry = manifest
         .get("entry")
         .and_then(Json::as_str)
@@ -791,6 +799,7 @@ fn package_on_disk(root: &Path, folder_id: &str) -> Result<Option<PackageOnDisk>
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(PackageOnDisk {
         descriptor: PackageDescriptor {
+            name: name.to_string(),
             api_version,
             permissions,
         },
