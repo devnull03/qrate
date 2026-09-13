@@ -50,33 +50,47 @@ impl ColumnValidator for ValueVariants {
             .flat_map(|cell| cell.parts().map(move |value| (cell.row, value)))
             .inspect(|_| logical_values += 1);
         let comparison = core::compare_indexed(logical);
-        let pair_count = comparison.pairs.len();
-        for pair in comparison.pairs {
-            let distinct = ordered_pair(&pair.left.displayed, &pair.right.displayed);
-            if column.settings.distinct_variants.contains(&distinct) {
-                continue;
-            }
+        let pairs: Vec<_> = comparison
+            .pairs
+            .into_iter()
+            .filter(|pair| {
+                !column
+                    .settings
+                    .distinct_variants
+                    .contains(&ordered_pair(&pair.left.displayed, &pair.right.displayed))
+            })
+            .collect();
+        let pair_count = pairs.len();
+        let clusters = core::clusters(pairs);
+        let cluster_count = clusters.len();
+        for cluster in clusters {
+            let reasons = cluster.reasons.join(", ");
             let group = DiagnosticGroup {
-                key: format!("{:?}", (column.name, &pair.key)).into(),
+                key: format!("{:?}", (column.name, &cluster.key)).into(),
                 summary: format!(
-                    "“{}” and “{}” may be variants: {}",
-                    pair.left.displayed, pair.right.displayed, pair.reason
+                    "{} values may be variants: {reasons}",
+                    cluster.members.len()
                 )
                 .into(),
                 subject: None,
             };
-            for (value, alternative) in [(&pair.left, &pair.right), (&pair.right, &pair.left)] {
+            for value in &cluster.members {
                 for &row in &value.rows {
-                    let Some(replacement) =
-                        values.replace_part(row, &value.displayed, &alternative.displayed)
-                    else {
-                        continue;
-                    };
-                    candidates
-                        .entry((column.name.to_owned(), row))
-                        .or_insert_with(|| (values.raw()[row].clone(), Vec::new()))
-                        .1
-                        .push((value.displayed.clone().into(), replacement));
+                    for alternative in &cluster.members {
+                        if alternative.displayed == value.displayed {
+                            continue;
+                        }
+                        let Some(replacement) =
+                            values.replace_part(row, &value.displayed, &alternative.displayed)
+                        else {
+                            continue;
+                        };
+                        candidates
+                            .entry((column.name.to_owned(), row))
+                            .or_insert_with(|| (values.raw()[row].clone(), Vec::new()))
+                            .1
+                            .push((value.displayed.clone().into(), replacement));
+                    }
                     findings.push(ColumnFinding {
                         row: Some(row),
                         severity: Severity::Warning,
@@ -91,7 +105,7 @@ impl ColumnValidator for ValueVariants {
         }
         let elapsed = started.elapsed();
         log::debug!(
-            "clustered column {:?}: {} rows, {logical_values} logical values, {} distinct values, {} candidate pairs, {pair_count} matches, {} findings in {elapsed:?}",
+            "clustered column {:?}: {} rows, {logical_values} logical values, {} distinct values, {} candidate pairs, {pair_count} matches, {cluster_count} clusters, {} findings in {elapsed:?}",
             column.name,
             values.raw().len(),
             comparison.distinct_values,
@@ -100,7 +114,7 @@ impl ColumnValidator for ValueVariants {
         );
         if elapsed >= SLOW_CLUSTERING {
             log::warn!(
-                "slow value clustering in column {:?}: {} rows, {logical_values} logical values, {} distinct values, {} candidate pairs, {pair_count} matches, {} findings in {elapsed:?}",
+                "slow value clustering in column {:?}: {} rows, {logical_values} logical values, {} distinct values, {} candidate pairs, {pair_count} matches, {cluster_count} clusters, {} findings in {elapsed:?}",
                 column.name,
                 values.raw().len(),
                 comparison.distinct_values,
@@ -158,27 +172,23 @@ pub fn variant_group_fixes(members: &[GroupMember], cx: &App) -> Vec<GroupFix> {
         .collect();
     forms.sort();
     forms.dedup();
-    let [left, right] = forms.as_slice() else {
+    if forms.len() < 2 {
         return Vec::new();
-    };
+    }
     let delimiter = settings::effective_text(settings::FILTER_SUBDELIMITER_KEY, cx);
-    let mut fixes = [left, right]
-        .into_iter()
-        .filter_map(|target| {
-            let replacements = members
-                .iter()
-                .filter(|member| member.message.as_ref() != target.as_str())
-                .map(|member| {
-                    let raw = [member.text.clone()];
-                    ColumnValues::new(&raw, &delimiter)
-                        .replace_part(0, &member.message, target)
-                        .map(|replacement| (member.location.clone(), replacement))
-                })
-                .collect::<Option<Vec<_>>>()?;
-            Some(GroupFix::replacements(
-                format!("Change all to “{target}”"),
-                replacements,
-            ))
+    let mut fixes = forms
+        .iter()
+        .map(|target| {
+            let (target, members, delimiter) =
+                (target.clone(), members.to_vec(), delimiter.clone());
+            GroupFix::action(format!("Change all to “{target}”"), move |cx| {
+                let Some(replacements) = replacements_to(&members, &target, &delimiter) else {
+                    return;
+                };
+                if let Some(hooks) = cx.try_global::<DiagnosticHooks>().copied() {
+                    (hooks.set_texts)(replacements, cx);
+                }
+            })
         })
         .collect::<Vec<_>>();
     let Some(column) = members
@@ -187,14 +197,22 @@ pub fn variant_group_fixes(members: &[GroupMember], cx: &App) -> Vec<GroupFix> {
     else {
         return fixes;
     };
-    let distinct = ordered_pair(left, right);
     fixes.push(GroupFix::action(
-        "These are distinct — ignore this pair",
+        "These are distinct — ignore this cluster",
         move |cx| {
+            let distinct = forms
+                .iter()
+                .enumerate()
+                .flat_map(|(offset, left)| {
+                    forms[offset + 1..]
+                        .iter()
+                        .map(move |right| ordered_pair(left, right))
+                })
+                .collect::<Vec<_>>();
             settings::columns::update(
                 &column,
                 |settings| {
-                    settings.distinct_variants.insert(distinct.clone());
+                    settings.distinct_variants.extend(distinct);
                 },
                 cx,
             );
@@ -206,9 +224,34 @@ pub fn variant_group_fixes(members: &[GroupMember], cx: &App) -> Vec<GroupFix> {
     fixes
 }
 
+fn replacements_to(
+    members: &[GroupMember],
+    target: &str,
+    delimiter: &str,
+) -> Option<Vec<(Location, SharedString)>> {
+    type CellKey = (SharedString, Option<usize>, Option<SharedString>);
+    let mut cells: BTreeMap<CellKey, (Location, SharedString)> = BTreeMap::new();
+    for member in members
+        .iter()
+        .filter(|member| member.message.as_ref() != target)
+    {
+        let key = (
+            member.location.dataset.clone(),
+            member.location.row,
+            member.location.column.clone(),
+        );
+        let (_, text) = cells
+            .entry(key)
+            .or_insert_with(|| (member.location.clone(), member.text.clone()));
+        let raw = [text.clone()];
+        *text = ColumnValues::new(&raw, delimiter).replace_part(0, &member.message, target)?;
+    }
+    Some(cells.into_values().collect())
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{ValueVariants, ordered_pair, variant_fixes, variant_group_fixes};
+    use crate::{ValueVariants, ordered_pair, replacements_to, variant_fixes, variant_group_fixes};
     use diagnostics::{
         ColumnInfo, ColumnValidator, ColumnValues, DATASET_MAIN, GroupMember, Location, Severity,
     };
@@ -335,8 +378,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn connected_matches_share_one_multi_value_group() {
+        let variants = ValueVariants::default();
+        let settings = ColumnSettings {
+            variant_review: true,
+            ..Default::default()
+        };
+        let values = [
+            "Alice abcde".into(),
+            "Alice abcdf".into(),
+            "Alice abccf".into(),
+        ];
+        let found = variants.validate(
+            &ColumnInfo {
+                name: "Creator",
+                data_type: "Text",
+                settings: &settings,
+            },
+            ColumnValues::new(&values, ""),
+        );
+        assert_eq!(found.len(), 3);
+        let group = found[0].group.as_ref().unwrap();
+        assert!(group.summary.starts_with("3 values may be variants"));
+        assert!(found.iter().all(|finding| {
+            finding
+                .group
+                .as_ref()
+                .is_some_and(|candidate| candidate.key == group.key)
+        }));
+    }
+
+    #[test]
+    fn resolving_a_cluster_replaces_every_member_in_one_multi_value_cell() {
+        let location = Location::cell(DATASET_MAIN, 0, None, "Creator");
+        let members = ["Alice abcde", "Alice abcdf"].map(|value| GroupMember {
+            location: location.clone(),
+            text: "Alice abcde|Alice abcdf".into(),
+            message: value.into(),
+            subject: Some(value.into()),
+        });
+        let replacements = replacements_to(&members, "Alice abccf", "|").unwrap();
+        assert_eq!(replacements.len(), 1);
+        assert_eq!(replacements[0].1, "Alice abccf|Alice abccf");
+    }
+
     #[gpui::test]
-    fn group_resolver_offers_both_forms_and_distinct(cx: &mut TestAppContext) {
+    fn group_resolver_offers_every_form_and_distinct(cx: &mut TestAppContext) {
         #[derive(Default)]
         struct Revalidations(usize);
         impl gpui::Global for Revalidations {}
@@ -390,6 +478,12 @@ mod tests {
                     message: "Agnes Varda".into(),
                     subject: Some("Agnes Varda".into()),
                 },
+                GroupMember {
+                    location: Location::cell(DATASET_MAIN, 2, None, "Creator"),
+                    text: "Varda, Agnès|Editor".into(),
+                    message: "Varda, Agnès".into(),
+                    subject: Some("Varda, Agnès".into()),
+                },
             ];
             let fixes = variant_group_fixes(&members, cx);
             assert_eq!(
@@ -400,22 +494,26 @@ mod tests {
                 [
                     "Change all to “Agnes Varda”",
                     "Change all to “Agnès Varda”",
-                    "These are distinct — ignore this pair",
+                    "Change all to “Varda, Agnès”",
+                    "These are distinct — ignore this cluster",
                 ]
             );
             fixes[0].apply(cx);
-            assert_eq!(cx.global::<Applied>().0.len(), 1);
+            assert_eq!(cx.global::<Applied>().0.len(), 2);
             assert_eq!(
                 cx.global::<Applied>().0[0].1,
                 "Agnes Varda|Director",
                 "the other logical value remains unchanged"
             );
-            fixes[2].apply(cx);
-            assert!(
-                settings::columns::get("Creator", cx)
-                    .distinct_variants
-                    .contains(&ordered_pair("Agnès Varda", "Agnes Varda"))
-            );
+            fixes[3].apply(cx);
+            let ignored = &settings::columns::get("Creator", cx).distinct_variants;
+            for pair in [
+                ordered_pair("Agnès Varda", "Agnes Varda"),
+                ordered_pair("Agnès Varda", "Varda, Agnès"),
+                ordered_pair("Agnes Varda", "Varda, Agnès"),
+            ] {
+                assert!(ignored.contains(&pair));
+            }
             assert_eq!(cx.global::<Revalidations>().0, 1);
         });
     }

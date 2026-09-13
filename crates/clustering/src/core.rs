@@ -1,4 +1,4 @@
-//! Pair evidence for review, not transitive entity identity.
+//! Pair evidence joined into review clusters. A cluster is advisory until the user resolves it.
 use caseless::default_case_fold_str;
 use std::collections::{BTreeMap, BTreeSet};
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
@@ -13,7 +13,9 @@ pub struct Value {
 }
 
 impl Value {
-    fn new(displayed: String, rows: Vec<usize>) -> Self {
+    fn new(displayed: String, mut rows: Vec<usize>) -> Self {
+        rows.sort_unstable();
+        rows.dedup();
         let strict = tokens(&displayed, false);
         let mut sorted = strict.clone();
         sorted.sort();
@@ -40,6 +42,13 @@ pub struct Comparison {
     pub pairs: Vec<Pair>,
     pub distinct_values: usize,
     pub candidate_pairs: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct Cluster {
+    pub members: Vec<Value>,
+    pub reasons: Vec<&'static str>,
+    pub key: String,
 }
 
 fn tokens(text: &str, strip_marks: bool) -> Vec<String> {
@@ -162,9 +171,51 @@ pub fn compare_indexed<'a>(values: impl IntoIterator<Item = (usize, &'a str)>) -
     }
 }
 
+pub fn clusters(pairs: Vec<Pair>) -> Vec<Cluster> {
+    let mut values = BTreeMap::new();
+    let mut links: BTreeMap<String, Vec<(String, &'static str)>> = BTreeMap::new();
+    for pair in pairs {
+        let (left, right) = (pair.left.displayed.clone(), pair.right.displayed.clone());
+        values.entry(left.clone()).or_insert(pair.left);
+        values.entry(right.clone()).or_insert(pair.right);
+        links
+            .entry(left.clone())
+            .or_default()
+            .push((right.clone(), pair.reason));
+        links.entry(right).or_default().push((left, pair.reason));
+    }
+
+    let mut unseen: BTreeSet<_> = values.keys().cloned().collect();
+    let mut clusters = Vec::new();
+    while let Some(start) = unseen.pop_first() {
+        let mut names = BTreeSet::from([start.clone()]);
+        let mut reasons = BTreeSet::new();
+        let mut stack = vec![start];
+        while let Some(name) = stack.pop() {
+            for (neighbor, reason) in links.get(&name).into_iter().flatten() {
+                reasons.insert(*reason);
+                if unseen.remove(neighbor) {
+                    names.insert(neighbor.clone());
+                    stack.push(neighbor.clone());
+                }
+            }
+        }
+        let members = names
+            .iter()
+            .filter_map(|name| values.remove(name))
+            .collect();
+        clusters.push(Cluster {
+            key: format!("{names:?}"),
+            members,
+            reasons: reasons.into_iter().collect(),
+        });
+    }
+    clusters
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Value, candidate_pairs, compare};
+    use super::{Value, candidate_pairs, clusters, compare};
     #[test]
     fn evidence_and_frequencies_preserve_exact_text() {
         let pairs = compare([
@@ -214,11 +265,26 @@ mod tests {
     }
 
     #[test]
-    fn pair_evidence_never_closes_a_transitive_chain() {
+    fn pair_evidence_keeps_the_observed_edges() {
         let pairs = compare(["Alice abcde", "Alice abcdf", "Alice abcdg"]);
         assert_eq!(pairs.len(), 3);
         let pairs = compare(["Alice abcde", "Alice abcdf", "Alice abccf"]);
         assert_eq!(pairs.len(), 2);
         assert!(pairs.iter().all(|p| !(p.left.displayed == "Alice abccf" && p.right.displayed == "Alice abcde")));
+    }
+
+    #[test]
+    fn connected_pair_evidence_forms_one_review_cluster() {
+        let clusters = clusters(compare(["Alice abcde", "Alice abcdf", "Alice abccf"]));
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(
+            clusters[0]
+                .members
+                .iter()
+                .map(|member| member.displayed.as_str())
+                .collect::<Vec<_>>(),
+            ["Alice abccf", "Alice abcde", "Alice abcdf"]
+        );
+        assert_eq!(clusters[0].reasons, ["one word has a close spelling"]);
     }
 }
