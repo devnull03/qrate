@@ -108,11 +108,8 @@ Notion is where a task is born. Never create a Notion task from a GitHub issue �
 1. Notion page in the Tasks Tracker.
 2. `gh issue create --title "ASNT-<n>: <task name>"`, body ending `**Notion:** <page url>`. Match the structure existing issues use (Overview / Scope / Task Details / Definition of Done / Estimate / Type).
 3. Write the issue URL back into the Notion `GitHub Link` property.
-4. Linear issue in the `qrate` project, via the Linear MCP (`save_issue`). It supports parent and
-   blocked-by relations natively, so mirror Notion's sub-task nesting and `Blocked by`/`Blocking`
-   rather than describing them in prose. Write the issue URL back into the Notion `Linear Link`
-   property — nothing propagates a link in the other direction. Check `list_issues` before creating
-   so a re-run does not duplicate.
+
+Linear is no longer used — don't create Linear issues or fill the `Linear Link` property.
 
 ## Code Style — no bloat
 
