@@ -223,6 +223,15 @@ impl Entry {
     }
 }
 
+/// Asks the History panel to show one cell's changes and come to the front — set by the grid's
+/// "Show Edit History", which cannot reach the panel itself.
+pub struct ShowCellHistory {
+    pub row: RowId,
+    pub column: String,
+}
+
+impl gpui::Global for ShowCellHistory {}
+
 /// Who the archivist has told qrate they are, shared with notes. `None` when unset — the log
 /// stays unsigned rather than guessing from the OS account.
 pub fn author(cx: &App) -> Option<String> {
@@ -296,18 +305,40 @@ pub struct Listed {
 /// Every entry newer than `after`, oldest first. A file that has never logged anything reads as
 /// an empty history.
 pub fn entries_after(path: &Path, after: EntryId) -> Result<Vec<Entry>> {
-    Ok(select(path, "id > ?1 ORDER BY id", after, -1)?
+    Ok(select(path, "id > ?1 ORDER BY id", &[&after])?
         .into_iter()
         .map(|listed| listed.entry)
         .collect())
 }
 
-/// Up to `limit` entries older than `before`, newest first — one page of the History panel.
-pub fn page(path: &Path, before: EntryId, limit: i64) -> Result<Vec<Listed>> {
-    select(path, "id < ?1 ORDER BY id DESC", before, limit)
+/// Up to `limit` entries older than `before`, newest first — one page of the History panel. With
+/// `row`, only the entries that changed that row or a note on it.
+pub fn page(path: &Path, before: EntryId, limit: i64, row: Option<RowId>) -> Result<Vec<Listed>> {
+    select(
+        path,
+        "id < ?1 AND (?3 IS NULL OR id IN (SELECT entry_id FROM __history_changes WHERE row_id = ?3))
+         ORDER BY id DESC LIMIT ?2",
+        &[&before, &limit, &row],
+    )
 }
 
-fn select(path: &Path, filter: &str, bound: EntryId, limit: i64) -> Result<Vec<Listed>> {
+/// Every name `column` has gone by, newest first and starting with its own — so a cell's history
+/// still finds the edits made before its column was renamed. `renames` is `(before, after)` pairs,
+/// newest first.
+pub fn former_names<'a>(
+    column: &str,
+    renames: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Vec<String> {
+    let mut names = vec![column.to_string()];
+    for (before, after) in renames {
+        if names.last().is_some_and(|name| name == after) {
+            names.push(before.to_string());
+        }
+    }
+    names
+}
+
+fn select(path: &Path, filter: &str, bound: &[&dyn rusqlite::ToSql]) -> Result<Vec<Listed>> {
     let conn = crate::project::open_ro(path)?;
     let exists: i64 = conn.query_row(
         "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '__history'",
@@ -322,9 +353,9 @@ fn select(path: &Path, filter: &str, bound: EntryId, limit: i64) -> Result<Vec<L
         .prepare(&format!(
             "SELECT id, at, author, origin, label, {local}, strftime('%H:%M', at, 'unixepoch', 'localtime'),
                     CAST(julianday(date('now', 'localtime')) - julianday({local}) AS INTEGER)
-             FROM __history WHERE {filter} LIMIT ?2"
+             FROM __history WHERE {filter}"
         ))?
-        .query_map(params![bound, limit], |r| {
+        .query_map(bound, |r| {
             Ok((
                 (
                     r.get::<_, EntryId>(0)?,
@@ -368,6 +399,29 @@ fn select(path: &Path, filter: &str, bound: EntryId, limit: i64) -> Result<Vec<L
     Ok(listed)
 }
 
+/// Every column rename in the log as `(before, after)`, newest first — what [`former_names`] follows.
+pub fn renames(path: &Path) -> Result<Vec<(String, String)>> {
+    let conn = crate::project::open_ro(path)?;
+    let exists: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '__history_changes'",
+        [],
+        |r| r.get(0),
+    )?;
+    if exists == 0 {
+        return Ok(Vec::new());
+    }
+    conn.prepare(
+        "SELECT change FROM __history_changes WHERE row_id IS NULL AND change LIKE '{\"ColumnRenamed\"%'
+         ORDER BY entry_id DESC, seq DESC",
+    )?
+    .query_map([], |r| r.get::<_, String>(0))?
+    .filter_map(|change| match serde_json::from_str(&change.ok()?) {
+        Ok(Change::ColumnRenamed { before, after }) => Some(Ok((before, after))),
+        _ => None,
+    })
+    .collect()
+}
+
 /// Name an entry — "Before Islandora ingest" — or, with `None`, take the name away again.
 pub fn set_label(path: &Path, id: EntryId, label: Option<&str>) -> Result<()> {
     crate::project::open_rw(path)?
@@ -392,7 +446,10 @@ pub fn clear(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Change, Entry, EntryId, Origin, clear, entries_after, page, set_label};
+    use super::{
+        Change, Entry, EntryId, Origin, clear, entries_after, former_names, page, renames,
+        set_label,
+    };
     use crate::project::{ProjectSpec, create_project_file, save_dataset, write_notes};
 
     fn project(name: &str) -> std::path::PathBuf {
@@ -487,13 +544,13 @@ mod tests {
             .collect();
         save_dataset(&path, &headers, &[1], &[vec!["5".into()]], &entries).unwrap();
 
-        let first = page(&path, EntryId::MAX, 2).unwrap();
+        let first = page(&path, EntryId::MAX, 2, None).unwrap();
         assert_eq!(
             first.iter().map(|l| l.entry.id).collect::<Vec<_>>(),
             vec![5, 4]
         );
         assert_eq!(first[0].days_ago, 0, "written just now");
-        let older = page(&path, 4, 10).unwrap();
+        let older = page(&path, 4, 10, None).unwrap();
         assert_eq!(
             older.iter().map(|l| l.entry.id).collect::<Vec<_>>(),
             vec![3, 2, 1]
@@ -501,16 +558,52 @@ mod tests {
 
         set_label(&path, 2, Some("Before ingest")).unwrap();
         assert_eq!(
-            page(&path, 3, 1).unwrap()[0].label.as_deref(),
+            page(&path, 3, 1, None).unwrap()[0].label.as_deref(),
             Some("Before ingest")
         );
         set_label(&path, 2, None).unwrap();
-        assert_eq!(page(&path, 3, 1).unwrap()[0].label, None);
+        assert_eq!(page(&path, 3, 1, None).unwrap()[0].label, None);
 
         clear(&path).unwrap();
-        assert!(page(&path, EntryId::MAX, 10).unwrap().is_empty());
+        assert!(page(&path, EntryId::MAX, 10, None).unwrap().is_empty());
         let data = crate::project::load_project_file(&path).unwrap();
         assert_eq!(data.rows, vec![vec!["5".to_string()]]);
+    }
+
+    /// A row's history is the entries that touched it, and a cell's follows its column back
+    /// through every rename.
+    #[test]
+    fn a_row_page_and_a_renamed_column_find_their_older_edits() {
+        let path = project("row.qrate");
+        let headers = vec!["Title".to_string()];
+        let other = Change::Cell {
+            row: 2,
+            column: "Name".into(),
+            before: String::new(),
+            after: "x".into(),
+        };
+        let entries = vec![
+            Entry::new(Origin::Typed, vec![edit("a", "b")], None),
+            Entry::new(Origin::Typed, vec![other], None),
+            Entry::new(
+                Origin::Structure,
+                vec![Change::ColumnRenamed {
+                    before: "Name".into(),
+                    after: "Title".into(),
+                }],
+                None,
+            ),
+        ];
+        save_dataset(&path, &headers, &[1], &[vec!["b".into()]], &entries).unwrap();
+
+        let row = page(&path, EntryId::MAX, 10, Some(1)).unwrap();
+        assert_eq!(row.iter().map(|l| l.entry.id).collect::<Vec<_>>(), vec![1]);
+
+        let renamed = renames(&path).unwrap();
+        assert_eq!(renamed, vec![("Name".to_string(), "Title".to_string())]);
+        let pairs = renamed.iter().map(|(b, a)| (b.as_str(), a.as_str()));
+        assert_eq!(former_names("Title", pairs), vec!["Title", "Name"]);
+        assert_eq!(former_names("Other", [("Name", "Title")]), vec!["Other"]);
     }
 
     #[test]

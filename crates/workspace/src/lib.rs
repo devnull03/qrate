@@ -87,6 +87,8 @@ pub struct Workspace {
     _layout_sub: Subscription,
     /// Re-renders to mount/unmount the image viewer overlay when it opens or closes.
     _viewer_sub: Subscription,
+    /// Brings the History panel forward when the grid asks it to show a cell's changes.
+    _history_sub: Subscription,
 }
 
 impl Workspace {
@@ -186,11 +188,21 @@ impl Workspace {
         );
 
         let _viewer_sub = cx.observe_global::<viewer::ActiveViewer>(|_this, cx| cx.notify());
+        let _history_sub = cx.observe_global_in::<settings::history::ShowCellHistory>(
+            window,
+            |this, window, cx| {
+                let name = crate::panels::HISTORY_META.name;
+                if !PanelRegistry::visible(name, &this.dock_area, cx) {
+                    PanelRegistry::toggle(name, &this.dock_area, window, cx);
+                }
+            },
+        );
 
         Self {
             dock_area,
             _layout_sub,
             _viewer_sub,
+            _history_sub,
         }
     }
 

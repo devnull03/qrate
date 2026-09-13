@@ -153,15 +153,16 @@ fn divided_group(cx: &App) -> SettingGroup {
         .border_color(cx.theme().border)
 }
 
-/// Who a filed note is attributed to. Lives beside the table's own preferences because a note is
-/// filed from the grid, and the name signing it is the archivist's, not the project's.
+/// Who a filed note and a recorded change are attributed to. Lives beside the table's own
+/// preferences because both are made from the grid, and the name signing them is the archivist's.
 fn notes_group(cx: &App) -> SettingGroup {
     divided_group(cx).title("Notes").item(
         Setting::Text {
             key: settings::NOTE_AUTHOR_KEY,
-            label: "Attribute notes to",
-            description: "Initials or a name, recorded on each note you file. Leave it empty to \
-                          file notes with a date and no author.",
+            label: "Attribute notes and changes to",
+            description: "Initials or a name, recorded on each note you file and each change in \
+                          the project history. Leave it empty to record them with a date and no \
+                          author.",
         }
         .into_item(cx),
     )

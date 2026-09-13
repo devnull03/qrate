@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,7 +14,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
-use settings::history::{Change, Entry, EntryId, Listed, Origin};
+use settings::history::{Change, Entry, EntryId, Listed, Origin, ShowCellHistory};
 use settings::project::{CurrentProject, RowId};
 use table::{TableChanged, TableStateHandle};
 
@@ -94,6 +95,9 @@ pub struct HistoryPanel {
     expanded: HashSet<EntryId>,
     /// The entry being named, and the box the name is typed in.
     naming: Option<(EntryId, Entity<InputState>, Subscription)>,
+    /// One cell to show the changes of, as its row and every name its column has had.
+    cell: Option<(RowId, Vec<String>)>,
+    _cell_sub: Subscription,
     _handle_sub: Subscription,
     _table_sub: Option<Subscription>,
     _notes_sub: Subscription,
@@ -112,6 +116,10 @@ impl HistoryPanel {
             named_only: false,
             expanded: HashSet::new(),
             naming: None,
+            cell: None,
+            _cell_sub: cx.observe_global::<ShowCellHistory>(|this: &mut Self, cx| {
+                this.show_cell(cx);
+            }),
             _handle_sub: cx.observe_global::<TableStateHandle>(|this: &mut Self, cx| {
                 this.bind(cx);
                 cx.notify();
@@ -156,7 +164,8 @@ impl HistoryPanel {
             return;
         }
         let limit = PAGE.max(self.saved.len() as i64);
-        match settings::history::page(&file, EntryId::MAX, limit) {
+        let row = self.cell.as_ref().map(|(row, _)| *row);
+        match settings::history::page(&file, EntryId::MAX, limit, row) {
             Ok(page) => {
                 self.more = page.len() as i64 == limit;
                 self.saved = page;
@@ -167,6 +176,53 @@ impl HistoryPanel {
         cx.notify();
     }
 
+    /// Narrow the list to the cell the grid asked about. Its column's former names come from both
+    /// halves of the log, unsaved renames being the newest.
+    fn show_cell(&mut self, cx: &mut Context<Self>) {
+        let (Some(request), Some(file)) = (
+            cx.try_global::<ShowCellHistory>(),
+            cx.try_global::<CurrentProject>().map(|p| p.file.clone()),
+        ) else {
+            return;
+        };
+        let unsaved: Vec<(String, String)> = cx
+            .try_global::<TableStateHandle>()
+            .and_then(|h| h.0.upgrade())
+            .map(|state| {
+                state
+                    .read(cx)
+                    .delegate()
+                    .unsaved_history()
+                    .iter()
+                    .rev()
+                    .flat_map(|e| e.changes.iter().rev())
+                    .filter_map(|c| match c {
+                        Change::ColumnRenamed { before, after } => {
+                            Some((before.clone(), after.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let saved = settings::history::renames(&file).unwrap_or_else(|err| {
+            log::error!("couldn't read column renames from the project history: {err}");
+            Vec::new()
+        });
+        let names = settings::history::former_names(
+            &request.column,
+            unsaved
+                .iter()
+                .chain(&saved)
+                .map(|(b, a)| (b.as_str(), a.as_str())),
+        );
+        self.cell = Some((request.row, names));
+        self.filter = Filter::All;
+        self.named_only = false;
+        self.saved.clear();
+        self.reload(true, cx);
+    }
+
     fn load_older(&mut self, cx: &mut Context<Self>) {
         let (Some(file), Some(last)) = (
             cx.try_global::<CurrentProject>().map(|p| p.file.clone()),
@@ -174,7 +230,8 @@ impl HistoryPanel {
         ) else {
             return;
         };
-        match settings::history::page(&file, last, PAGE) {
+        let row = self.cell.as_ref().map(|(row, _)| *row);
+        match settings::history::page(&file, last, PAGE, row) {
             Ok(page) => {
                 self.more = page.len() as i64 == PAGE;
                 self.saved.extend(page);
@@ -293,8 +350,36 @@ impl HistoryPanel {
     }
 }
 
+/// `entry` cut down to what it did to one cell — its value, its notes, its row coming or going — or
+/// `None` when it did nothing there. Borrowed untouched when there is no cell to narrow to.
+fn narrowed<'a>(entry: &'a Entry, cell: Option<&(RowId, Vec<String>)>) -> Option<Cow<'a, Entry>> {
+    let Some((row, names)) = cell else {
+        return Some(Cow::Borrowed(entry));
+    };
+    let named = |column: &str| names.iter().any(|name| name == column);
+    let changes: Vec<Change> = entry
+        .changes
+        .iter()
+        .filter(|change| match change {
+            Change::Cell { row: r, column, .. } => r == row && named(column),
+            Change::Note { row: r, column, .. } => {
+                *r == Some(*row) && column.as_deref().is_none_or(named)
+            }
+            Change::RowAdded { row: r, .. } | Change::RowRemoved { row: r, .. } => r == row,
+            _ => false,
+        })
+        .cloned()
+        .collect();
+    (!changes.is_empty()).then(|| {
+        Cow::Owned(Entry {
+            changes,
+            ..entry.clone()
+        })
+    })
+}
+
 /// `Today`, `Yesterday`, or `3 Sep 2026`.
-fn day_label(day: &str, days_ago: i64) -> String {
+pub(crate) fn day_label(day: &str, days_ago: i64) -> String {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
@@ -537,20 +622,32 @@ impl Render for HistoryPanel {
             }
         };
 
+        let cell = self.cell.as_ref();
         let unsaved: Vec<Entry> = unsaved
-            .into_iter()
+            .iter()
             .rev()
+            .filter_map(|e| narrowed(e, cell).map(Cow::into_owned))
             .filter(|e| admits(e, false))
             .collect();
-        let saved: Vec<&Listed> = self
+        let saved: Vec<Cow<Listed>> = self
             .saved
             .iter()
+            .filter_map(|l| match narrowed(&l.entry, cell)? {
+                Cow::Borrowed(_) => Some(Cow::Borrowed(l)),
+                Cow::Owned(entry) => Some(Cow::Owned(Listed { entry, ..l.clone() })),
+            })
             .filter(|l| admits(&l.entry, l.label.is_some()))
             .collect();
+        let cell_label = cell.map(|(row, names)| {
+            let at = rows
+                .get(row)
+                .map_or_else(|| "a deleted row".to_string(), |p| format!("row {}", p + 1));
+            format!("{}, {at}", names[0])
+        });
 
         // Bursts: runs of adjacent, unnamed entries by one person, one means, one day.
         let mut bursts: Vec<Vec<&Listed>> = Vec::new();
-        for listed in saved {
+        for listed in saved.iter().map(|l| &**l) {
             let joins = bursts.last().and_then(|b| b.last()).is_some_and(|prev| {
                 prev.label.is_none()
                     && listed.label.is_none()
@@ -818,6 +915,39 @@ impl Render for HistoryPanel {
             .id("history-panel")
             .role(Role::Group)
             .aria_label("History")
+            .when_some(cell_label, |panel, label| {
+                panel.child(
+                    h_flex()
+                        .flex_none()
+                        .gap_1()
+                        .items_center()
+                        .px_2()
+                        .py_1()
+                        .border_b_1()
+                        .border_color(border)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(format!("Changes to {label}")),
+                        )
+                        .child(
+                            Button::new("history-cell-clear")
+                                .icon(IconName::Close)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Show every change")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.cell = None;
+                                    this.saved.clear();
+                                    this.reload(true, cx);
+                                })),
+                        ),
+                )
+            })
             .child(list)
     }
 }
@@ -825,9 +955,31 @@ impl Render for HistoryPanel {
 #[cfg(test)]
 mod tests {
     // Never `use super::*` here: the parent has `use gpui::*` in scope.
-    use super::{day_label, describe};
+    use super::{day_label, describe, narrowed};
     use settings::history::{Change, Entry, Origin};
     use std::collections::HashMap;
+
+    /// Narrowed to one cell, an entry keeps that cell's edits under any name its column has had,
+    /// its row's notes and its row coming or going — and nothing about the cells beside it.
+    #[test]
+    fn a_cell_keeps_its_own_changes_under_any_former_name() {
+        let cell = |row, column: &str| Change::Cell {
+            row,
+            column: column.into(),
+            before: "a".into(),
+            after: "b".into(),
+        };
+        let entry = Entry::new(
+            Origin::Paste,
+            vec![cell(1, "Name"), cell(1, "Date"), cell(2, "Name")],
+            None,
+        );
+        let names = (1, vec!["Title".to_string(), "Name".to_string()]);
+        let kept = narrowed(&entry, Some(&names)).unwrap();
+        assert_eq!(kept.changes, vec![cell(1, "Name")]);
+        let elsewhere = Entry::new(Origin::Typed, vec![cell(2, "Date")], None);
+        assert!(narrowed(&elsewhere, Some(&names)).is_none());
+    }
 
     #[test]
     fn days_read_as_a_person_would_say_them() {

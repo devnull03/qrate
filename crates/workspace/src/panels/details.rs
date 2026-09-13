@@ -18,6 +18,7 @@ use gpui_component::{
     v_flex,
 };
 use preview::{can_preview, thumb};
+use settings::history::{Change, EntryId, Listed, Origin};
 use table::{QrateTableDelegate, TableChanged, TableStateHandle};
 
 use crate::BottomDockCrop;
@@ -29,6 +30,9 @@ const IMAGE_PANE_HEIGHT_KEY: &str = "details_image_height";
 /// A resize emits on every pointer move. Persist only after the gesture pauses so dragging does not
 /// repeatedly replace `CurrentProject` and wake every observer of it.
 const IMAGE_PANE_PERSIST_DEBOUNCE: Duration = Duration::from_millis(200);
+
+/// How many of an item's most recent changes its History section lists.
+const ROW_HISTORY_LIMIT: i64 = 50;
 
 /// Height of the Notes sub-panel's header bar, which is the whole of it while collapsed.
 const NOTES_HEADER_H: f32 = 28.;
@@ -80,6 +84,11 @@ pub struct DetailsPanel {
     /// Whether the Notes sub-panel is expanded. Collapsed, it leaves the split and becomes a
     /// header strip along the bottom of the panel — the chevron there is what opens it again.
     notes_open: bool,
+    /// Whether the History sub-panel is expanded, the same way `notes_open` works.
+    history_open: bool,
+    /// The front item's saved changes, with the row and file stamp they were read at — `retarget`
+    /// runs on every table change, and a query per keystroke would be paid for nothing.
+    row_history: Option<(settings::project::RowId, std::time::SystemTime, Vec<Listed>)>,
     /// Commits the open field on Enter or when the editor loses focus.
     _editor_sub: Subscription,
     /// Pending image-pane height write. Replacing the task cancels its timer, coalescing an entire
@@ -138,6 +147,8 @@ impl DetailsPanel {
             stack: 0,
             stack_hover: false,
             notes_open: true,
+            history_open: false,
+            row_history: None,
             _editor_sub,
             _image_height_task: None,
             anchor: Rc::default(),
@@ -211,6 +222,7 @@ impl DetailsPanel {
     /// same file — this runs on every table change, and rebuilding would re-probe the file and
     /// throw away the position on every keystroke in the grid.
     fn retarget(&mut self, cx: &mut Context<Self>) {
+        self.load_row_history(cx);
         let path = self.selected_file(cx);
         if self.file == path {
             return;
@@ -223,6 +235,37 @@ impl DetailsPanel {
             preview::playback::stop(cx);
         }
         self.transport = path.and_then(|path| Transport::new(path, cx));
+    }
+
+    /// Re-read the front item's history when the item or the project file has changed since.
+    fn load_row_history(&mut self, cx: &mut Context<Self>) {
+        let row = self.front(cx).and_then(|row| {
+            let state = self.state.as_ref()?.upgrade()?;
+            state.read(cx).delegate().row_ids().get(row).copied()
+        });
+        let file = cx
+            .try_global::<settings::project::CurrentProject>()
+            .map(|p| p.file.clone());
+        let (Some(row), Some(file)) = (row, file) else {
+            self.row_history = None;
+            return;
+        };
+        let stamp = std::fs::metadata(&file)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if self
+            .row_history
+            .as_ref()
+            .is_some_and(|(r, s, _)| *r == row && *s == stamp)
+        {
+            return;
+        }
+        let listed = settings::history::page(&file, EntryId::MAX, ROW_HISTORY_LIMIT, Some(row))
+            .unwrap_or_else(|err| {
+                log::error!("couldn't read the selected row's history: {err}");
+                Vec::new()
+            });
+        self.row_history = Some((row, stamp, listed));
     }
 
     /// Open `header`'s field for editing, seeded with its current text. The column is resolved by
@@ -398,6 +441,218 @@ impl DetailsPanel {
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
                                             .child("No notes on this selection."),
+                                    )
+                                }),
+                        ),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// The History sub-panel: what has happened to the front item, newest first — each field's old
+    /// value beside the new, with a way to put a saved one back. Unsaved changes lead, without that
+    /// button: there is no saved entry yet for a restore to name.
+    ///
+    /// Returns `AnyElement` for the same reason `notes_panel` does.
+    fn history_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some((row_id, _, saved)) = self.row_history.as_ref() else {
+            return div().into_any_element();
+        };
+        let row_id = *row_id;
+        let unsaved: Vec<_> = self
+            .state
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .map(|state| state.read(cx).delegate().unsaved_history().to_vec())
+            .unwrap_or_default();
+        let theme = cx.theme();
+        let (muted, border, background, radius) = (
+            theme.muted_foreground,
+            theme.border,
+            theme.background,
+            theme.radius,
+        );
+
+        // One line per change to this item: `(entry id if saved, what, meta, value to restore)`.
+        type Line = (
+            Option<EntryId>,
+            String,
+            String,
+            Option<(String, SharedString)>,
+        );
+        let quote = |text: &str| match text.is_empty() {
+            true => "(empty)".to_string(),
+            false => format!("“{text}”"),
+        };
+        let lines_of = |entry: &settings::history::Entry, id: Option<EntryId>, when: String| {
+            let meta = [Some(entry.origin.label()), entry.author.clone(), Some(when)]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let dimmed = matches!(entry.origin, Origin::Undo | Origin::Redo);
+            entry
+                .changes
+                .iter()
+                .rev()
+                .filter_map(|change| {
+                    let (what, restore) = match change {
+                        Change::Cell {
+                            row,
+                            column,
+                            before,
+                            after,
+                        } if *row == row_id => (
+                            format!("{column}: {} → {}", quote(before), quote(after)),
+                            Some((column.clone(), SharedString::from(before.clone()))),
+                        ),
+                        Change::Note {
+                            row: Some(row),
+                            column,
+                            before,
+                            after,
+                        } if *row == row_id => {
+                            let verb = match (before, after) {
+                                (None, _) => "added",
+                                (_, None) => "removed",
+                                _ => "edited",
+                            };
+                            let on = column
+                                .as_deref()
+                                .map_or(String::new(), |c| format!(" on {c}"));
+                            (format!("Note{on} {verb}"), None)
+                        }
+                        Change::RowAdded { row, .. } if *row == row_id => {
+                            ("Item added".into(), None)
+                        }
+                        Change::RowRemoved { row, .. } if *row == row_id => {
+                            ("Item deleted".into(), None)
+                        }
+                        _ => return None,
+                    };
+                    let restore = restore.filter(|_| id.is_some() && !dimmed);
+                    Some((id, what, meta.clone(), restore))
+                })
+                .collect::<Vec<Line>>()
+        };
+        let lines: Vec<Line> = unsaved
+            .iter()
+            .rev()
+            .flat_map(|entry| lines_of(entry, None, "not saved yet".into()))
+            .chain(saved.iter().flat_map(|listed| {
+                let when = format!(
+                    "{} {}",
+                    super::history::day_label(&listed.day, listed.days_ago),
+                    listed.time
+                );
+                lines_of(&listed.entry, Some(listed.entry.id), when)
+            }))
+            .collect();
+
+        let (open, none) = (self.history_open, lines.is_empty());
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .border_t_1()
+            .border_color(border)
+            .child(
+                h_flex()
+                    .flex_none()
+                    .h(px(NOTES_HEADER_H))
+                    .items_center()
+                    .gap_1p5()
+                    .px_2()
+                    .py_1()
+                    .bg(background)
+                    .child(
+                        Button::new("details-history-toggle")
+                            .icon(match open {
+                                true => IconName::ChevronDown,
+                                false => IconName::ChevronRight,
+                            })
+                            .ghost()
+                            .xsmall()
+                            .tooltip(match open {
+                                true => "Collapse history",
+                                false => "Expand history",
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.history_open = !this.history_open;
+                                cx.notify();
+                            })),
+                    )
+                    .child(div().text_xs().font_semibold().child("History"))
+                    .child(div().text_xs().text_color(muted).child(match lines.len() {
+                        0 => "none".to_string(),
+                        n if n as i64 >= ROW_HISTORY_LIMIT => format!("{n}+"),
+                        n => n.to_string(),
+                    })),
+            )
+            .when(open, |section| {
+                section.child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scrollbar()
+                        .px_3()
+                        .pb_2()
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .children(lines.into_iter().enumerate().map(
+                                    |(ix, (id, what, meta, restore))| {
+                                        h_flex()
+                                            .gap_1()
+                                            .items_start()
+                                            .p_1p5()
+                                            .rounded(radius)
+                                            .border_1()
+                                            .border_color(border)
+                                            .child(
+                                                v_flex()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .gap_0p5()
+                                                    .child(div().text_xs().child(what))
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(muted)
+                                                            .child(meta),
+                                                    ),
+                                            )
+                                            .when_some(
+                                                id.zip(restore),
+                                                |line, (id, (column, before))| {
+                                                    line.child(
+                                                        Button::new((
+                                                            "details-history-restore",
+                                                            ix,
+                                                        ))
+                                                        .icon(IconName::Undo2)
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .tooltip("Restore this value")
+                                                        .on_click(move |_, _, cx| {
+                                                            table::restore_value(
+                                                                row_id,
+                                                                &column,
+                                                                before.clone(),
+                                                                id,
+                                                                cx,
+                                                            )
+                                                        }),
+                                                    )
+                                                },
+                                            )
+                                    },
+                                ))
+                                .when(none, |list| {
+                                    list.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .child("No changes to this item yet."),
                                     )
                                 }),
                         ),
@@ -796,6 +1051,11 @@ impl Render for DetailsPanel {
         // Built before the field rows below, which borrow `cx` for as long as they stay a lazy
         // iterator — this needs `&mut cx` and cannot wait for them.
         let notes = (gallery && count > 0).then(|| self.notes_panel(&picked, cx));
+        let history = (count == 1).then(|| self.history_panel(cx));
+        let history_range = match self.history_open {
+            true => px(80.)..px(360.),
+            false => px(NOTES_HEADER_H)..px(NOTES_HEADER_H),
+        };
         // Collapsing pins the panel's size range to its header instead of taking it out of the
         // split. Removing it re-syncs the group — every panel's size is rescaled to the container
         // when the count changes — so the fields jumped on the way out and the notes came back at
@@ -1148,6 +1408,14 @@ impl Render for DetailsPanel {
                                     .size(px(180.))
                                     .size_range(notes_range)
                                     .child(notes),
+                            )
+                        })
+                        .when_some(history, |split, history| {
+                            split.child(
+                                resizable_panel()
+                                    .size(px(160.))
+                                    .size_range(history_range)
+                                    .child(history),
                             )
                         }),
                 ),

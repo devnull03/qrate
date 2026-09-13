@@ -421,6 +421,19 @@ pub fn menu(
                         });
                     }),
                 )
+                .when_some(
+                    location.row_id.zip(location.column.clone()),
+                    |menu, (row, column)| {
+                        menu.item(PopupMenuItem::new("Show edit history").on_click(
+                            move |_, _, cx| {
+                                cx.set_global(settings::history::ShowCellHistory {
+                                    row,
+                                    column: column.to_string(),
+                                })
+                            },
+                        ))
+                    },
+                )
                 .separator()
         }
         Target::Row(row) => {
