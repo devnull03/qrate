@@ -13,7 +13,7 @@
     <key>CFBundleIdentifier</key>
     <string>io.github.devnull03.qrate</string>
     <key>CFBundleExecutable</key>
-    <string>qrate</string>
+    <string>qrate-app</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>

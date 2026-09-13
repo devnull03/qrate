@@ -1,6 +1,8 @@
 # qrate CLI plan
 
-Status: proposed command surface for review. Only `qrate version`, `--version`, and help exist.
+Status: implementation in progress. The packaged `qrate` launcher, `open`, `--wait`, `version`,
+help, project-path forwarding, and `qrate://` forwarding exist. App-control and direct-file commands
+remain proposed.
 
 ## Decision
 
@@ -132,14 +134,13 @@ qrate open [PROJECT.qrate|qrate://URL] [--wait] [--new-window]
 - A positional project or URL is shorthand for `qrate open`.
 - `--wait` waits until the desktop process closes.
 - `--new-window` requests a new window instead of focusing an open project.
-- Pass `qrate://` URLs to the app unchanged. Define deeper URL behavior with the URL-handler branch.
+- Pass `qrate://` URLs to the app unchanged. The app validates and handles supported routes.
 
 The operating-system URL handler should start `qrate-app` directly. This avoids a console flash on
 Windows. A terminal invocation such as `qrate qrate://...` uses the launcher and forwards the URL.
 
 `--use` accepts filesystem paths only. It rejects `qrate://` URLs because direct-file mode cannot
-resolve app routes. The CLI can print `qrate://` URLs after the URL-handler branch fixes their stable
-project, row, and action grammar.
+resolve app routes.
 
 #### `app`
 

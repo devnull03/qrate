@@ -82,7 +82,7 @@ jobs:
 
       - name: Build
         run: |
-          cargo build --release -p app --target ${{ matrix.target }}
+          cargo build --release -p app -p qrate-cli --target ${{ matrix.target }}
           cargo build --release -p updater --bin qrate-update-helper --target ${{ matrix.target }}
 
       - name: Upload arch binary
@@ -90,7 +90,8 @@ jobs:
         with:
           name: macos-bin-${{ matrix.target }}
           path: |
-            target/${{ matrix.target }}/release/app
+            target/${{ matrix.target }}/release/qrate-app
+            target/${{ matrix.target }}/release/qrate
             target/${{ matrix.target }}/release/qrate-update-helper
           if-no-files-found: error
 
@@ -111,10 +112,15 @@ jobs:
       - name: Merge into universal binary
         run: |
           lipo -create \
-            macos-bins/macos-bin-x86_64-apple-darwin/app \
-            macos-bins/macos-bin-aarch64-apple-darwin/app \
+            macos-bins/macos-bin-x86_64-apple-darwin/qrate-app \
+            macos-bins/macos-bin-aarch64-apple-darwin/qrate-app \
             -output universal-app
           lipo -info universal-app
+          lipo -create \
+            macos-bins/macos-bin-x86_64-apple-darwin/qrate \
+            macos-bins/macos-bin-aarch64-apple-darwin/qrate \
+            -output qrate
+          lipo -info qrate
           lipo -create \
             macos-bins/macos-bin-x86_64-apple-darwin/qrate-update-helper \
             macos-bins/macos-bin-aarch64-apple-darwin/qrate-update-helper \
@@ -174,7 +180,7 @@ jobs:
 
       - name: Build
         run: |
-          cargo build --release -p app
+          cargo build --release -p app -p qrate-cli
           cargo build --release -p updater --bin qrate-update-helper
 
       - name: Install NSIS
@@ -183,7 +189,7 @@ jobs:
       # The MSI is the enterprise-deployable counterpart to the NSIS installer — see
       # scripts/installer.wxs for why GPO/SCCM/Intune push installs need one. windows-latest ships
       # the .NET SDK, so the WiX CLI installs as a dotnet global tool; no matrix leg for this, since
-      # both installers package the one binary already built above and a second leg would just
+      # both installers package the same binaries already built above and a second leg would just
       # recompile it for nothing.
       #
       # Pinned to 5.0.2: v6 introduced FireGiant's Open Source Maintenance Fee and v7 enforces it by
@@ -216,11 +222,12 @@ jobs:
         run: |
           $ver = "${{ needs.version.outputs.version }}"
           $vi = "${{ needs.version.outputs.vi_version }}"
-          Copy-Item target/release/app.exe dist/portable/qrate.exe
+          Copy-Item target/release/qrate-app.exe dist/portable/qrate-app.exe
+          Copy-Item target/release/qrate.exe dist/portable/qrate.exe
           Copy-Item target/release/qrate-update-helper.exe dist/portable/qrate-update-helper.exe
           @{ schema = 1; kind = "windows-portable"; packaged_version = $ver } |
             ConvertTo-Json | Set-Content -Encoding utf8 dist/portable/qrate-install.json
-          # Zip the staging folder's *contents*, so the sidecars sit beside qrate.exe on extract —
+          # Zip the staging folder's *contents*, so the sidecars sit beside qrate-app.exe on extract —
           # which is exactly where the preview tiers look for them.
           Compress-Archive -Path dist/portable/* `
             -DestinationPath "dist/qrate-$ver-x86_64.zip" -Force
@@ -232,7 +239,7 @@ jobs:
           & $nsis `
             "/DVERSION=$ver" `
             "/DVIVERSION=$vi" `
-            "/DSRCEXE=$PWD\dist\portable\qrate.exe" `
+            "/DSRCEXE=$PWD\dist\portable\qrate-app.exe" `
             "/DSRCDIR=$PWD\dist\portable" `
             "/DICONFILE=$PWD\assets\icons\app-icon.ico" `
             "/DOUTFILE=$PWD\dist\qrate-$ver-setup.exe" `
@@ -245,7 +252,7 @@ jobs:
           wix build scripts\installer.wxs -ext WixToolset.UI.wixext `
             -d "Version=$vi" `
             -d "LicenseRtf=$PWD\dist\license.rtf" `
-            -d "SrcExe=$PWD\dist\portable\qrate.exe" `
+            -d "SrcExe=$PWD\dist\portable\qrate-app.exe" `
             -d "SrcDir=$PWD\dist\portable" `
             -d "IconFile=$PWD\assets\icons\app-icon.ico" `
             -d "HasPdfium=$hasPdfium" `
@@ -293,7 +300,7 @@ jobs:
 
       - name: Build
         run: |
-          cargo build --release -p app
+          cargo build --release -p app -p qrate-cli
           cargo build --release -p updater --bin qrate-update-helper
 
       - name: Package tarball
@@ -302,7 +309,8 @@ jobs:
           ver="${{ needs.version.outputs.version }}"
           stage="qrate-$ver-x86_64-linux"
           mkdir -p "$stage"
-          cp target/release/app "$stage/qrate"
+          cp target/release/qrate-app "$stage/qrate-app"
+          cp target/release/qrate "$stage/qrate"
           cp target/release/qrate-update-helper "$stage/qrate-update-helper"
           chmod +x "$stage/qrate-update-helper"
           printf '{\n  "schema": 1,\n  "kind": "linux-tar",\n  "packaged_version": "%s"\n}\n' \
@@ -392,6 +400,13 @@ jobs:
             - **Linux:** `*-x86_64-linux.tar.gz` (Wayland + X11; needs a Vulkan driver)
 
             Verify your download against `SHA256SUMS.txt`.
+
+            ### Command line
+            Each package includes `qrate` (`qrate.exe` on Windows), the console command.
+            `qrate-app` is the private desktop executable; shortcuts launch it directly.
+            The command is beside the desktop executable, or inside
+            `qrate.app/Contents/MacOS` on macOS. These packages do not add it to `PATH`;
+            run it by its full path.
 
             ### Enterprise (Windows)
             `*-x86_64.msi` installs per-machine and is built for Group Policy Software

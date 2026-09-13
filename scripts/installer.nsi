@@ -2,7 +2,7 @@
 ;
 ; Compile with absolute paths supplied by CI, e.g.:
 ;   makensis /DVERSION=1.2.3 ^
-;            /DSRCEXE=C:\path\qrate.exe ^
+;            /DSRCEXE=C:\path\qrate-app.exe ^
 ;            /DICONFILE=C:\path\app-icon.ico ^
 ;            /DOUTFILE=C:\path\qrate-1.2.3-setup.exe ^
 ;            scripts\installer.nsi
@@ -22,7 +22,7 @@ Unicode true
   !define VERSION "0.0.0"
 !endif
 !ifndef SRCEXE
-  !define SRCEXE "..\target\release\app.exe"
+  !define SRCEXE "..\target\release\qrate-app.exe"
 !endif
 ; Directory holding the preview sidecars (pdfium.dll, ffmpeg.exe). Normally the same folder as
 ; SRCEXE, since scripts/fetch-binaries.sh puts them beside the executable. Both are optional.
@@ -42,7 +42,7 @@ Unicode true
 !endif
 
 !define APPNAME   "qrate"
-!define EXENAME   "qrate.exe"
+!define EXENAME   "qrate-app.exe"
 !define COMPANY   "devnull03"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
 
@@ -107,6 +107,7 @@ FunctionEnd
 Section "Install"
   SetOutPath "$INSTDIR"
   File /oname=${EXENAME} "${SRCEXE}"
+  File /oname=qrate.exe "${SRCDIR}\qrate.exe"
   File /oname=qrate-update-helper.exe "${SRCDIR}\qrate-update-helper.exe"
 
   FileOpen $0 "$INSTDIR\qrate-install.json" w
@@ -163,6 +164,7 @@ SectionEnd
 Section "un.qrate" SEC_UNAPP
   SectionIn RO
   Delete "$INSTDIR\${EXENAME}"
+  Delete "$INSTDIR\qrate.exe"
   Delete "$INSTDIR\pdfium.dll"
   Delete "$INSTDIR\ffmpeg.exe"
   Delete "$INSTDIR\qrate-update-helper.exe"
