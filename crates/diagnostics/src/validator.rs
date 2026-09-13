@@ -12,9 +12,11 @@
 //! knowing nothing about datasets, projects, or the table.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use gpui::{App, BorrowAppContext as _, Global, SharedString};
+use gpui::{App, AppContext as _, Global, SharedString};
 use settings::columns::ColumnSettings;
 
 use crate::{DATASET_MAIN, Diagnostic, DiagnosticGroup, Diagnostics, Location, Severity, Source};
@@ -169,7 +171,7 @@ impl From<(usize, Severity, SharedString)> for ColumnFinding {
 /// dictionary, a pattern set, an embedded Lua VM — stay out of every other crate's graph. The
 /// plugin host implements it once, per loaded script, which is how a Lua file becomes a producer
 /// indistinguishable from a compiled-in one.
-pub trait ColumnValidator: 'static {
+pub trait ColumnValidator: Send + Sync + 'static {
     /// What the Problems panel shows in the source column, and the key its output is replaced by.
     /// Must be stable across runs and unique across validators.
     fn name(&self) -> SharedString;
@@ -224,18 +226,28 @@ pub struct SpellActions {
 
 impl Global for SpellActions {}
 
-const SLOW_RUN: Duration = Duration::from_millis(100);
+const SLOW_PUBLISH: Duration = Duration::from_millis(16);
 
 /// Every registered validator. Filled by `app` at startup, which is the only place that knows
 /// where validators come from.
 #[derive(Default)]
-pub struct Validators(Vec<Box<dyn ColumnValidator>>);
+pub struct Validators {
+    registered: Vec<Arc<dyn ColumnValidator>>,
+    /// Bumped by every run and removal, so a pass that finishes after a newer one started — or
+    /// after its validator was dropped — publishes nothing.
+    generation: Arc<AtomicU64>,
+    /// Held for a whole background pass: validators keep per-run state (`begin_run`), which two
+    /// interleaved passes would mix.
+    running: Arc<Mutex<()>>,
+}
 
 impl Global for Validators {}
 
 impl Validators {
     pub fn register(validator: Box<dyn ColumnValidator>, cx: &mut App) {
-        cx.default_global::<Self>().0.push(validator);
+        cx.default_global::<Self>()
+            .registered
+            .push(Arc::from(validator));
     }
 
     /// Drop a validator and clear what it published. Publishing an empty set is the only
@@ -248,7 +260,9 @@ impl Validators {
             Vec::new(),
             cx,
         );
-        cx.default_global::<Self>().0.retain(|v| &v.name() != name);
+        let this = cx.default_global::<Self>();
+        this.generation.fetch_add(1, Ordering::SeqCst);
+        this.registered.retain(|v| &v.name() != name);
     }
 
     /// Run every validator over every column and publish the results.
@@ -259,6 +273,8 @@ impl Validators {
     /// flagged, so the replace-by-source rule makes the run self-invalidating: a fixed cell
     /// disappears because the next run simply doesn't report it.
     ///
+    /// Only the snapshot is taken on the UI thread. The checking runs on the background executor
+    /// and lands a moment later; a newer run supersedes one that has not landed yet.
     pub fn run(
         columns: &[(SharedString, SharedString)],
         rows: &[Vec<SharedString>],
@@ -266,14 +282,16 @@ impl Validators {
         cx: &mut App,
     ) {
         Diagnostics::set_row_ids(row_ids, cx);
-        let row_ids: std::sync::Arc<[_]> = row_ids.into();
-        let sync = cx.try_global::<Self>().is_some_and(|v| !v.0.is_empty());
+        let row_ids: Arc<[_]> = row_ids.into();
+        let validators = cx
+            .try_global::<Self>()
+            .map_or_else(Vec::new, |v| v.registered.clone());
         // Copied out because running one hands `cx` back mutably, and a fn pointer is cheap.
         let deferred: Vec<_> = cx
             .try_global::<AsyncValidators>()
             .map(|v| v.0.iter().map(|(name, run)| (name.clone(), *run)).collect())
             .unwrap_or_default();
-        if !sync && deferred.is_empty() {
+        if validators.is_empty() && deferred.is_empty() {
             return;
         }
 
@@ -306,62 +324,91 @@ impl Validators {
             })
             .collect();
 
-        log::debug!(
-            "validation snapshot: {} columns × {} rows in {:?}",
-            columns.len(),
-            rows.len(),
-            started.elapsed()
-        );
-
-        if sync {
-            cx.update_global::<Self, _>(|this, cx| {
-                for validator in &this.0 {
-                    let step = Instant::now();
-                    validator.begin_run();
-                    let items: Vec<_> = snapshot
-                        .iter()
-                        .flat_map(|column| {
-                            address(
-                                validator.name(),
-                                column,
-                                validator.validate(
-                                    &column.info(),
-                                    ColumnValues::new(&column.values, &column.subdelimiter),
-                                ),
-                            )
-                        })
-                        .collect();
-                    let checked = step.elapsed();
-                    let found = items.len();
-                    Diagnostics::set(
-                        &Source::Validator(validator.name()),
-                        DATASET_MAIN,
-                        items,
-                        cx,
-                    );
-                    log::debug!(
-                        "validator {:?}: {found} findings, checked in {checked:?}, published in {:?}",
-                        validator.name(),
-                        step.elapsed() - checked
-                    );
-                }
-            });
-        }
         for (name, run) in deferred {
             let step = Instant::now();
             run(&snapshot, cx);
             log::debug!("deferred validator {name:?} queued in {:?}", step.elapsed());
         }
-        let elapsed = started.elapsed();
-        if elapsed >= SLOW_RUN {
-            log::warn!(
-                "validation blocked the UI thread for {elapsed:?} ({} columns × {} rows)",
-                columns.len(),
-                rows.len()
-            );
-        } else {
-            log::debug!("validation run in {elapsed:?}");
+        log::debug!(
+            "validation snapshot: {} columns × {} rows taken in {:?}",
+            columns.len(),
+            rows.len(),
+            started.elapsed()
+        );
+        if validators.is_empty() {
+            return;
         }
+
+        let this = cx.default_global::<Self>();
+        let generation = this.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let latest = this.generation.clone();
+        let running = this.running.clone();
+        let current = move || latest.load(Ordering::SeqCst) == generation;
+        cx.spawn(async move |cx| {
+            let still_current = current.clone();
+            let found = cx
+                .background_spawn(async move {
+                    let _pass = running
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if !still_current() {
+                        return None;
+                    }
+                    let started = Instant::now();
+                    let found: Vec<_> = validators
+                        .iter()
+                        .map(|validator| {
+                            let step = Instant::now();
+                            validator.begin_run();
+                            let items: Vec<_> = snapshot
+                                .iter()
+                                .flat_map(|column| {
+                                    address(
+                                        validator.name(),
+                                        column,
+                                        validator.validate(
+                                            &column.info(),
+                                            ColumnValues::new(&column.values, &column.subdelimiter),
+                                        ),
+                                    )
+                                })
+                                .collect();
+                            log::debug!(
+                                "validator {:?}: {} findings in {:?}",
+                                validator.name(),
+                                items.len(),
+                                step.elapsed()
+                            );
+                            (validator.name(), items)
+                        })
+                        .collect();
+                    log::debug!(
+                        "validation checked off the UI thread in {:?}",
+                        started.elapsed()
+                    );
+                    Some(found)
+                })
+                .await;
+            let Some(found) = found else {
+                return;
+            };
+            cx.update(|cx| {
+                if !current() {
+                    return;
+                }
+                let started = Instant::now();
+                for (name, items) in found {
+                    Diagnostics::set(&Source::Validator(name), DATASET_MAIN, items, cx);
+                }
+                let elapsed = started.elapsed();
+                if elapsed >= SLOW_PUBLISH {
+                    log::warn!("publishing validation blocked the UI thread for {elapsed:?}");
+                } else {
+                    log::debug!("validation published in {elapsed:?}");
+                }
+            });
+        })
+        .detach();
     }
 }
 
@@ -475,19 +522,32 @@ mod tests {
         )
     }
 
+    fn register(cx: &mut TestAppContext, validators: &[(&'static str, &'static str)]) {
+        cx.update(|cx| {
+            for &(name, bad) in validators {
+                Validators::register(Box::new(Flag { name, bad }), cx);
+            }
+        });
+    }
+
+    /// A run only takes the snapshot; the findings land once the background pass is drained.
+    fn run(cx: &mut TestAppContext, rows: &[Vec<SharedString>]) {
+        cx.update(|cx| Validators::run(&grid().0, rows, &[], cx));
+        cx.run_until_parked();
+    }
+
+    fn fixed() -> Vec<Vec<SharedString>> {
+        vec![
+            vec!["ok".into(), "ok".into()],
+            vec!["ok".into(), "ok".into()],
+        ]
+    }
+
     #[gpui::test]
     fn a_run_addresses_and_publishes_what_validators_report(cx: &mut TestAppContext) {
+        register(cx, &[("flag", "bad")]);
+        run(cx, &grid().1);
         cx.update(|cx| {
-            let (columns, rows) = grid();
-            Validators::register(
-                Box::new(Flag {
-                    name: "flag",
-                    bad: "bad",
-                }),
-                cx,
-            );
-            Validators::run(&columns, &rows, &[], cx);
-
             let all = Diagnostics::all(cx);
             assert_eq!(all.len(), 2);
             // The validator returned only a row index; the registry supplied dataset, column, and
@@ -504,32 +564,14 @@ mod tests {
 
     #[gpui::test]
     fn a_re_run_replaces_only_its_own_validators_output(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            let (columns, rows) = grid();
-            Validators::register(
-                Box::new(Flag {
-                    name: "flag",
-                    bad: "bad",
-                }),
-                cx,
-            );
-            Validators::register(
-                Box::new(Flag {
-                    name: "other",
-                    bad: "ok",
-                }),
-                cx,
-            );
-            Validators::run(&columns, &rows, &[], cx);
-            assert_eq!(Diagnostics::all(cx).len(), 4);
+        register(cx, &[("flag", "bad"), ("other", "ok")]);
+        run(cx, &grid().1);
+        cx.update(|cx| assert_eq!(Diagnostics::all(cx).len(), 4));
 
-            // The user fixes both "bad" cells. `flag` now finds nothing, and publishing nothing is
-            // what clears its stale entries; `other` is republished independently.
-            let fixed = vec![
-                vec!["ok".into(), "ok".into()],
-                vec!["ok".into(), "ok".into()],
-            ];
-            Validators::run(&columns, &fixed, &[], cx);
+        // The user fixes both "bad" cells. `flag` now finds nothing, and publishing nothing is
+        // what clears its stale entries; `other` is republished independently.
+        run(cx, &fixed());
+        cx.update(|cx| {
             let all = Diagnostics::all(cx);
             assert_eq!(all.len(), 4, "`other` now matches all four cells");
             assert!(
@@ -542,25 +584,10 @@ mod tests {
 
     #[gpui::test]
     fn removing_a_validator_clears_its_findings_and_leaves_the_rest(cx: &mut TestAppContext) {
+        register(cx, &[("flag", "bad"), ("other", "ok")]);
+        run(cx, &grid().1);
         cx.update(|cx| {
-            let (columns, rows) = grid();
-            Validators::register(
-                Box::new(Flag {
-                    name: "flag",
-                    bad: "bad",
-                }),
-                cx,
-            );
-            Validators::register(
-                Box::new(Flag {
-                    name: "other",
-                    bad: "ok",
-                }),
-                cx,
-            );
-            Validators::run(&columns, &rows, &[], cx);
             assert_eq!(Diagnostics::all(cx).len(), 4);
-
             Validators::remove(&"flag".into(), cx);
             let all = Diagnostics::all(cx);
             assert_eq!(all.len(), 2, "removal clears without waiting for a run");
@@ -568,11 +595,35 @@ mod tests {
                 all.iter()
                     .all(|d| d.source == Source::Validator("other".into()))
             );
-
-            // And it stays gone: the next run has nothing left to republish it.
-            Validators::run(&columns, &rows, &[], cx);
-            assert_eq!(Diagnostics::all(cx).len(), 2);
         });
+
+        // And it stays gone: the next run has nothing left to republish it.
+        run(cx, &grid().1);
+        cx.update(|cx| assert_eq!(Diagnostics::all(cx).len(), 2));
+    }
+
+    /// Two runs queued before either lands: only the newer snapshot may publish, or a slow pass
+    /// over old data would overwrite the answer for the data the user is looking at.
+    #[gpui::test]
+    fn a_superseded_run_publishes_nothing(cx: &mut TestAppContext) {
+        register(cx, &[("flag", "bad")]);
+        cx.update(|cx| {
+            Validators::run(&grid().0, &grid().1, &[], cx);
+            Validators::run(&grid().0, &fixed(), &[], cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| assert!(Diagnostics::all(cx).is_empty()));
+    }
+
+    #[gpui::test]
+    fn a_validator_removed_mid_run_is_not_resurrected(cx: &mut TestAppContext) {
+        register(cx, &[("flag", "bad")]);
+        cx.update(|cx| {
+            Validators::run(&grid().0, &grid().1, &[], cx);
+            Validators::remove(&"flag".into(), cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| assert!(Diagnostics::all(cx).is_empty()));
     }
 
     #[gpui::test]
