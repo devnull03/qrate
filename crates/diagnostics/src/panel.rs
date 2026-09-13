@@ -829,8 +829,8 @@ impl Render for ProblemsPanel {
                                                 text.as_ref(),
                                                 menu,
                                                 cx,
-                                                move |fixed, cx| {
-                                                    (hooks.set_text)(&applied, fixed, cx)
+                                                move |fixed, origin, cx| {
+                                                    (hooks.set_text)(&applied, fixed, origin, cx)
                                                 },
                                             );
                                         }
@@ -1058,8 +1058,8 @@ mod tests {
                     cx.update_global::<Revealed, _>(|seen, _| seen.0.push(location.clone()));
                 },
                 text_at: |_, _| None,
-                set_text: |_, _, _| panic!("navigation must not edit"),
-                set_texts: |_, _| panic!("navigation must not edit"),
+                set_text: |_, _, _, _| panic!("navigation must not edit"),
+                set_texts: |_, _, _| panic!("navigation must not edit"),
                 revalidate: |_| panic!("navigation must not revalidate"),
             });
             Diagnostics::set(

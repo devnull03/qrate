@@ -4,6 +4,7 @@
 pub mod columns;
 pub mod dirty;
 pub mod filenames;
+pub mod history;
 pub mod os_open;
 pub mod path_picker;
 pub mod plugins;

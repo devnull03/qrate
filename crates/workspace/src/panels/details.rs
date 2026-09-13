@@ -431,7 +431,7 @@ impl DetailsPanel {
         // drops the rows whose text this didn't change, so committing an untouched shared field
         // costs nothing.
         let cells = rows.into_iter().map(|row| (row, col, value.clone()));
-        table::write_cells(cells.collect(), cx);
+        table::write_cells(cells.collect(), settings::history::Origin::Details, cx);
         cx.notify();
     }
 
