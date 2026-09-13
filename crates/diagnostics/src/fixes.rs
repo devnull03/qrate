@@ -13,7 +13,10 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use gpui::{App, Context, Global, SharedString, Window};
+use gpui_component::WindowExt as _;
+use gpui_component::button::Button;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::notification::Notification;
 use settings::project::RowId;
 
 use crate::{Diagnostic, DiagnosticHooks, Diagnostics, Location, SpellActions};
@@ -235,10 +238,9 @@ pub fn finding_menu(
     let menu = menu.separator();
     let ignore_item = |menu: PopupMenu, label: SharedString, occurrence: bool| {
         let finding = finding.clone();
-        menu.item(
-            PopupMenuItem::new(label)
-                .on_click(move |_, _, cx| ignore(std::slice::from_ref(&finding), occurrence, cx)),
-        )
+        menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+            ignore(std::slice::from_ref(&finding), occurrence, window, cx)
+        }))
     };
     let menu = if finding.location.row_id.is_some() {
         ignore_item(menu, "Ignore this occurrence".into(), true)
@@ -257,7 +259,7 @@ pub fn finding_menu(
 }
 
 /// Hide `findings` from now on: each one's single occurrence, or its key throughout its column.
-pub fn ignore(findings: &[Diagnostic], occurrence: bool, cx: &mut App) {
+pub fn ignore(findings: &[Diagnostic], occurrence: bool, window: &mut Window, cx: &mut App) {
     edit_ignores(findings, cx, |settings, source, key, row_id| match row_id {
         Some(id) if occurrence => {
             settings.ignored_occurrences.insert((source, key, id));
@@ -267,6 +269,41 @@ pub fn ignore(findings: &[Diagnostic], occurrence: bool, cx: &mut App) {
         }
         _ => {}
     });
+
+    let Some(first) = findings.first() else {
+        return;
+    };
+    let column = first.location.column.clone().unwrap_or_default();
+    let message = if occurrence {
+        "Ignored this occurrence".to_string()
+    } else {
+        let what = first
+            .group
+            .as_ref()
+            .map_or(&first.message, |group| &group.summary);
+        format!("Ignored “{what}” in {column}")
+    };
+    let undo = findings.to_vec();
+    // One toast type, so a newer ignore replaces the older one's Undo instead of stacking them.
+    struct IgnoreToast;
+    window.push_notification(
+        Notification::new()
+            .id::<IgnoreToast>()
+            .message(menu_label(&message))
+            .action(move |_, _, cx| {
+                let undo = undo.clone();
+                let note = cx.entity();
+                Button::new("undo-ignore")
+                    .label("Undo")
+                    .on_click(move |_, window, cx| {
+                        unignore(&undo, cx);
+                        note.update(cx, |note, cx| note.dismiss(window, cx));
+                    })
+            })
+            // `action` switches autohide off; an undo offer should still go away on its own.
+            .autohide(true),
+        cx,
+    );
 }
 
 /// Remove every ignore that hides `findings`, column-wide and single-occurrence alike.
