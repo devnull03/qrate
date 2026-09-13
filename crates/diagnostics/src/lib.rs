@@ -7,9 +7,8 @@
 
 pub mod fixes;
 mod panel;
-pub mod spelling;
 mod validator;
-pub use fixes::{Fix, FixProviders, FixTarget, GroupFix, GroupFixProviders, GroupMember};
+pub use fixes::{Fix, FixProviders, GroupFix, GroupFixProviders, GroupMember};
 pub use panel::ProblemsPanel;
 pub use validator::{
     AsyncValidators, CellValue, ColumnFinding, ColumnInfo, ColumnSnapshot, ColumnValidator,
@@ -182,6 +181,33 @@ pub struct Diagnostic {
     pub filed: Option<Filed>,
 }
 
+impl Diagnostic {
+    /// What an ignore is keyed by: the producer's stable group key, or the message without one.
+    pub fn ignore_key(&self) -> SharedString {
+        self.group
+            .as_ref()
+            .map_or_else(|| self.message.clone(), |group| group.key.clone())
+    }
+
+    /// Whether a column-wide or single-occurrence ignore in `columns` covers this finding.
+    pub fn is_ignored(&self, columns: &settings::columns::ColumnSettingsMap) -> bool {
+        let (Source::Validator(source), Some(column)) =
+            (&self.source, self.location.column.as_deref())
+        else {
+            return false;
+        };
+        let Some(settings) = columns.get(column) else {
+            return false;
+        };
+        let (source, key) = (source.to_string(), self.ignore_key().to_string());
+        self.location.row_id.is_some_and(|id| {
+            settings
+                .ignored_occurrences
+                .contains(&(source.clone(), key.clone(), id))
+        }) || settings.ignored_diagnostics.contains(&(source, key))
+    }
+}
+
 /// Producer-owned identity; summaries are presentation, never grouping keys.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct DiagnosticGroup {
@@ -233,6 +259,10 @@ pub fn severity_color(severity: Severity, cx: &App) -> Hsla {
 #[derive(Default)]
 pub struct Diagnostics {
     items: Vec<Diagnostic>,
+    /// Computed findings an ignore covers. Kept apart so every reader of `items` stays unaware.
+    ignored: Vec<Diagnostic>,
+    /// `dataset_main` stable row ids in source order, from the last validation run.
+    row_ids: Vec<settings::project::RowId>,
     /// `items` indices grouped by row. Publishing happens on an edit; [`Self::at`] runs three
     /// times per rendered cell per frame, so the whole point is to turn that scan into a lookup
     /// over one row's handful of entries. Keyed by row alone because `Option<usize>` is `Copy` —
@@ -253,16 +283,41 @@ impl Diagnostics {
     /// entries, so resolving a problem is just republishing without it. Computed notes become
     /// warnings because the Notes tab belongs to authored notes.
     pub fn set(source: &Source, dataset: &str, mut items: Vec<Diagnostic>, cx: &mut App) {
+        let columns = settings::columns::load(cx);
+        let this = cx.default_global::<Self>();
         for diagnostic in &mut items {
-            if diagnostic.source != Source::Note && diagnostic.severity == Severity::Note {
+            if diagnostic.source == Source::Note {
+                continue;
+            }
+            if diagnostic.severity == Severity::Note {
                 diagnostic.severity = Severity::Warning;
             }
+            if dataset == DATASET_MAIN && diagnostic.location.row_id.is_none() {
+                diagnostic.location.row_id = diagnostic
+                    .location
+                    .row
+                    .and_then(|row| this.row_ids.get(row).copied());
+            }
         }
-        let this = cx.default_global::<Self>();
-        this.items
-            .retain(|d| &d.source != source || d.location.dataset != dataset);
+        let (ignored, items): (Vec<_>, Vec<_>) =
+            items.into_iter().partition(|d| d.is_ignored(&columns));
+        let stale = |d: &Diagnostic| &d.source == source && d.location.dataset == dataset;
+        this.items.retain(|d| !stale(d));
         this.items.extend(items);
+        this.ignored.retain(|d| !stale(d));
+        this.ignored.extend(ignored);
         this.reindex();
+    }
+
+    /// Record the stable row ids a validation run addressed, so its findings can carry them.
+    pub fn set_row_ids(row_ids: &[settings::project::RowId], cx: &mut App) {
+        cx.default_global::<Self>().row_ids = row_ids.to_vec();
+    }
+
+    /// Computed findings currently hidden by an ignore, for the panel's "Show ignored" view.
+    pub fn ignored(cx: &App) -> &[Diagnostic] {
+        cx.try_global::<Self>()
+            .map_or(&[], |d| d.ignored.as_slice())
     }
 
     fn reindex(&mut self) {
@@ -1051,6 +1106,60 @@ mod tests {
                 cx,
             );
             assert_eq!(Diagnostics::all(cx)[0].severity, Severity::Warning);
+        });
+    }
+
+    /// A column ignore hides the key throughout its column, an occurrence ignore only its own row, and
+    /// neither reaches another producer or column.
+    #[test]
+    fn ignores_match_by_producer_key_column_and_row() {
+        let mut finding = diag(
+            Severity::Warning,
+            Source::Validator("spell".into()),
+            DATASET_MAIN,
+            "misspelled: teh",
+        );
+        finding.location.row_id = Some(7);
+        let mut columns = settings::columns::ColumnSettingsMap::new();
+        assert!(!finding.is_ignored(&columns));
+
+        let title = columns.entry("Title".into()).or_default();
+        title
+            .ignored_occurrences
+            .insert(("spell".into(), "misspelled: teh".into(), 8));
+        assert!(!finding.is_ignored(&columns), "another row's occurrence");
+        columns
+            .get_mut("Title")
+            .unwrap()
+            .ignored_occurrences
+            .insert(("spell".into(), "misspelled: teh".into(), 7));
+        assert!(finding.is_ignored(&columns));
+
+        let mut other = finding.clone();
+        other.source = Source::Validator("capitalization".into());
+        assert!(!other.is_ignored(&columns), "another producer");
+        other.location.column = Some("Subject".into());
+        columns
+            .entry("Subject".into())
+            .or_default()
+            .ignored_diagnostics
+            .insert(("capitalization".into(), "misspelled: teh".into()));
+        assert!(other.is_ignored(&columns), "column-wide, any row");
+    }
+
+    #[gpui::test]
+    fn published_findings_carry_the_stable_row_id(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            Diagnostics::set_row_ids(&[40, 41], cx);
+            let source = Source::Validator("v".into());
+            Diagnostics::set(
+                &source,
+                DATASET_MAIN,
+                vec![diag(Severity::Error, source.clone(), DATASET_MAIN, "bad")],
+                cx,
+            );
+            assert_eq!(Diagnostics::all(cx)[0].location.row_id, Some(40));
+            assert!(Diagnostics::ignored(cx).is_empty());
         });
     }
 }

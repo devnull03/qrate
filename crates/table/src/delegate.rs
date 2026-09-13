@@ -433,7 +433,7 @@ impl QrateTableDelegate {
             .iter()
             .map(|c| (c.key.clone(), c.name.clone()))
             .collect();
-        diagnostics::Validators::run(&columns, &self.rows, cx);
+        diagnostics::Validators::run(&columns, &self.rows, &self.row_ids, cx);
     }
 
     /// Every row's text for a data column, in source-row order — the same view a validator gets,

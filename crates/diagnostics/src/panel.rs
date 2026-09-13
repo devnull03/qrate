@@ -6,10 +6,12 @@ use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::combobox::{Combobox, ComboboxEvent, ComboboxState};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent};
-use gpui_component::menu::ContextMenuExt as _;
+use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_component::searchable_list::{SearchableListDelegate, SearchableListItem};
 use gpui_component::tab::{Tab, TabBar};
-use gpui_component::{ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, h_flex, v_flex};
+use gpui_component::{
+    ActiveTheme as _, Icon, IconName, IndexPath, Selectable as _, Sizable as _, h_flex, v_flex,
+};
 
 use crate::{
     Diagnostic, DiagnosticHooks, Diagnostics, Location, Scope, Severity, Source, severity_color,
@@ -142,7 +144,8 @@ struct Row {
     message: SharedString,
     source: SharedString,
     source_key: SharedString,
-    subject: Option<SharedString>,
+    finding: Diagnostic,
+    ignored: bool,
     location: Location,
     group: Option<String>,
     members: Vec<RowMember>,
@@ -218,7 +221,8 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
                 _ => d.source.label(),
             },
             source_key: d.source.key(),
-            subject: d.group.as_ref().and_then(|group| group.subject.clone()),
+            finding: d.clone(),
+            ignored: false,
             location: d.location.clone(),
             group: None,
             members: Vec::new(),
@@ -296,6 +300,8 @@ pub struct ProblemsPanel {
     /// Per-tab totals, which count every severity regardless of the active filter.
     counts: [usize; 4],
     expanded: BTreeSet<String>,
+    show_ignored: bool,
+    ignored_count: usize,
     /// Refreshes on any store change. One `observe_global` and no re-binding — unlike
     /// `TableStateHandle`, the `Diagnostics` global is plain data that is never rebuilt.
     _sub: Subscription,
@@ -311,6 +317,8 @@ impl ProblemsPanel {
             rows: Rc::default(),
             counts: [0; 4],
             expanded: BTreeSet::new(),
+            show_ignored: false,
+            ignored_count: 0,
             _sub: cx.observe_global::<Diagnostics>(|this, cx| {
                 this.refresh(cx);
                 cx.notify();
@@ -409,13 +417,29 @@ impl ProblemsPanel {
                 .count()
         });
 
-        let live: BTreeSet<_> = Diagnostics::all(cx).iter().filter_map(group_id).collect();
-        self.expanded.retain(|id| live.contains(id));
-        let items = Diagnostics::all(cx)
+        let ignored = Diagnostics::ignored(cx);
+        self.ignored_count = ignored.len();
+        self.show_ignored &= self.ignored_count > 0;
+        let live: BTreeSet<_> = Diagnostics::all(cx)
             .iter()
-            .filter(|d| self.filter.admits(d) && self.admits_source(d))
+            .chain(ignored)
+            .filter_map(group_id)
             .collect();
-        self.rows = Rc::new(project(items, &self.expanded));
+        self.expanded.retain(|id| live.contains(id));
+        let admitted = |d: &&Diagnostic| self.filter.admits(d) && self.admits_source(d);
+        let visible = Diagnostics::all(cx).iter().filter(admitted).collect();
+        let mut rows = project(visible, &self.expanded);
+        if self.show_ignored {
+            rows.extend(
+                project(ignored.iter().filter(admitted).collect(), &self.expanded)
+                    .into_iter()
+                    .map(|row| Row {
+                        ignored: true,
+                        ..row
+                    }),
+            );
+        }
+        self.rows = Rc::new(rows);
     }
 }
 
@@ -493,7 +517,26 @@ impl Render for ProblemsPanel {
                             })),
                     )
                     .when(self.filter != Filter::Notes, |bar| {
-                        bar.child(self.source_menu(window, cx))
+                        bar.child(
+                            h_flex()
+                                .items_center()
+                                .gap_1()
+                                .when(self.ignored_count > 0, |bar| {
+                                    bar.child(
+                                        Button::new("problems-show-ignored")
+                                            .ghost()
+                                            .small()
+                                            .selected(self.show_ignored)
+                                            .label(format!("Show ignored ({})", self.ignored_count))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.show_ignored = !this.show_ignored;
+                                                this.refresh(cx);
+                                                cx.notify();
+                                            })),
+                                    )
+                                })
+                                .child(self.source_menu(window, cx)),
+                        )
                     }),
             )
             .when(rows.is_empty(), |panel| {
@@ -516,7 +559,8 @@ impl Render for ProblemsPanel {
                                 let group = r.group.clone();
                                 let group_members = r.members.clone();
                                 let source_key = r.source_key.clone();
-                                let subject = r.subject.clone();
+                                let finding = r.finding.clone();
+                                let ignored = r.ignored;
                                 let is_group = group.is_some();
                                 let is_expanded =
                                     group.as_ref().is_some_and(|id| expanded.contains(id));
@@ -531,6 +575,7 @@ impl Render for ProblemsPanel {
                                     .py_1()
                                     .when(r.child, |row| row.pl_6())
                                     .cursor_pointer()
+                                    .when(ignored, |row| row.opacity(0.6))
                                     .hover(|row| row.bg(hover_bg))
                                     .child(
                                         Icon::new(r.icon.clone())
@@ -589,6 +634,18 @@ impl Render for ProblemsPanel {
                                             .text_ellipsis()
                                             .child(r.message.clone()),
                                     )
+                                    .when(ignored, |row| {
+                                        row.child(
+                                            div()
+                                                .flex_shrink_0()
+                                                .px_1()
+                                                .rounded_sm()
+                                                .bg(chip_bg)
+                                                .text_xs()
+                                                .text_color(muted)
+                                                .child("Ignored"),
+                                        )
+                                    })
                                     .child(
                                         div()
                                             .flex_shrink_0()
@@ -625,7 +682,44 @@ impl Render for ProblemsPanel {
                                         else {
                                             return menu;
                                         };
-                                        if is_group {
+                                        let findings: Vec<Diagnostic> = if is_group {
+                                            group_members
+                                                .iter()
+                                                .map(|member| Diagnostic {
+                                                    location: member.location.clone(),
+                                                    message: member.message.clone(),
+                                                    ..finding.clone()
+                                                })
+                                                .collect()
+                                        } else {
+                                            vec![finding.clone()]
+                                        };
+                                        if ignored {
+                                            return menu.item(
+                                                PopupMenuItem::new("Unignore").on_click(
+                                                    move |_, _, cx| {
+                                                        crate::fixes::unignore(&findings, cx)
+                                                    },
+                                                ),
+                                            );
+                                        }
+                                        if !is_group {
+                                            let text =
+                                                matches!(location.scope(), Scope::Cell { .. })
+                                                    .then(|| (hooks.text_at)(&location, cx))
+                                                    .flatten();
+                                            let applied = location.clone();
+                                            return crate::fixes::finding_menu(
+                                                &finding,
+                                                text.as_ref(),
+                                                menu,
+                                                cx,
+                                                move |fixed, cx| {
+                                                    (hooks.set_text)(&applied, fixed, cx)
+                                                },
+                                            );
+                                        }
+                                        let menu = {
                                             let members = group_members
                                                 .iter()
                                                 .filter_map(|member| {
@@ -640,48 +734,48 @@ impl Render for ProblemsPanel {
                                                     })
                                                 })
                                                 .collect::<Vec<_>>();
-                                            return crate::fixes::group_menu(
+                                            crate::fixes::group_menu(
                                                 &source_key,
                                                 &members,
                                                 menu,
                                                 window,
                                                 cx,
-                                            );
-                                        }
-                                        if !matches!(location.scope(), Scope::Cell { .. }) {
-                                            return menu;
-                                        }
-                                        let Some(text) = (hooks.text_at)(&location, cx) else {
-                                            return menu;
+                                            )
                                         };
-                                        let menu = if source_key == "spell" {
-                                            let location = location.clone();
-                                            crate::spelling::menu(
-                                                &text,
-                                                subject.as_deref(),
-                                                menu,
-                                                window,
-                                                cx,
-                                                move |fixed, cx| {
-                                                    (hooks.set_text)(&location, fixed, cx)
+                                        // Value variants already persist "these are distinct", the precise form of ignore.
+                                        if source_key == "value variants" {
+                                            return menu;
+                                        }
+                                        let mut columns: BTreeMap<SharedString, Vec<Diagnostic>> =
+                                            BTreeMap::new();
+                                        for member in findings {
+                                            if let Some(column) = member.location.column.clone() {
+                                                columns.entry(column).or_default().push(member);
+                                            }
+                                        }
+                                        menu.submenu("Ignore", window, cx, move |sub, _, _| {
+                                            columns.iter().fold(
+                                                sub.max_w(px(360.)),
+                                                |sub, (column, members)| {
+                                                    let members = members.clone();
+                                                    sub.item(
+                                                        PopupMenuItem::new(
+                                                            crate::fixes::menu_label(&format!(
+                                                                "In column “{column}” ({})",
+                                                                members.len()
+                                                            )),
+                                                        )
+                                                        .on_click(move |_, _, cx| {
+                                                            crate::fixes::ignore(
+                                                                &members[..1],
+                                                                false,
+                                                                cx,
+                                                            )
+                                                        }),
+                                                    )
                                                 },
                                             )
-                                        } else {
-                                            menu
-                                        };
-                                        let applied = location.clone();
-                                        crate::fixes::menu(
-                                            &location,
-                                            &text,
-                                            Some(crate::FixTarget {
-                                                source: &source_key,
-                                                subject: subject.as_deref(),
-                                            }),
-                                            menu,
-                                            window,
-                                            cx,
-                                            move |fixed, cx| (hooks.set_text)(&applied, fixed, cx),
-                                        )
+                                        })
                                     })
                             })
                             .collect()

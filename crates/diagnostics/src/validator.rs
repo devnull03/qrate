@@ -255,7 +255,13 @@ impl Validators {
     /// flagged, so the replace-by-source rule makes the run self-invalidating: a fixed cell
     /// disappears because the next run simply doesn't report it.
     ///
-    pub fn run(columns: &[(SharedString, SharedString)], rows: &[Vec<SharedString>], cx: &mut App) {
+    pub fn run(
+        columns: &[(SharedString, SharedString)],
+        rows: &[Vec<SharedString>],
+        row_ids: &[settings::project::RowId],
+        cx: &mut App,
+    ) {
+        Diagnostics::set_row_ids(row_ids, cx);
         let sync = cx.try_global::<Self>().is_some_and(|v| !v.0.is_empty());
         // Copied out because running one hands `cx` back mutably, and a fn pointer is cheap.
         let deferred: Vec<_> = cx
@@ -446,7 +452,7 @@ mod tests {
                 }),
                 cx,
             );
-            Validators::run(&columns, &rows, cx);
+            Validators::run(&columns, &rows, &[], cx);
 
             let all = Diagnostics::all(cx);
             assert_eq!(all.len(), 2);
@@ -480,7 +486,7 @@ mod tests {
                 }),
                 cx,
             );
-            Validators::run(&columns, &rows, cx);
+            Validators::run(&columns, &rows, &[], cx);
             assert_eq!(Diagnostics::all(cx).len(), 4);
 
             // The user fixes both "bad" cells. `flag` now finds nothing, and publishing nothing is
@@ -489,7 +495,7 @@ mod tests {
                 vec!["ok".into(), "ok".into()],
                 vec!["ok".into(), "ok".into()],
             ];
-            Validators::run(&columns, &fixed, cx);
+            Validators::run(&columns, &fixed, &[], cx);
             let all = Diagnostics::all(cx);
             assert_eq!(all.len(), 4, "`other` now matches all four cells");
             assert!(
@@ -518,7 +524,7 @@ mod tests {
                 }),
                 cx,
             );
-            Validators::run(&columns, &rows, cx);
+            Validators::run(&columns, &rows, &[], cx);
             assert_eq!(Diagnostics::all(cx).len(), 4);
 
             Validators::remove(&"flag".into(), cx);
@@ -530,7 +536,7 @@ mod tests {
             );
 
             // And it stays gone: the next run has nothing left to republish it.
-            Validators::run(&columns, &rows, cx);
+            Validators::run(&columns, &rows, &[], cx);
             assert_eq!(Diagnostics::all(cx).len(), 2);
         });
     }
@@ -539,7 +545,7 @@ mod tests {
     fn a_run_without_registered_validators_touches_nothing(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let (columns, rows) = grid();
-            Validators::run(&columns, &rows, cx);
+            Validators::run(&columns, &rows, &[], cx);
             assert!(Diagnostics::all(cx).is_empty());
         });
     }
@@ -556,7 +562,7 @@ mod tests {
         cx.update(|cx| {
             let (columns, rows) = grid();
             crate::AsyncValidators::register("test", record, cx);
-            Validators::run(&columns, &rows, cx);
+            Validators::run(&columns, &rows, &[], cx);
             assert_eq!(SEEN.load(Ordering::SeqCst), 2, "both columns crossed over");
         });
     }
@@ -650,12 +656,12 @@ mod tests {
             let (columns, rows) = grid();
             crate::AsyncValidators::register("plugins", count, cx);
             crate::AsyncValidators::register("plugins", count, cx);
-            Validators::run(&columns, &rows, cx);
+            Validators::run(&columns, &rows, &[], cx);
             assert_eq!(RUNS.load(Ordering::SeqCst), 1, "registered twice, ran once");
 
             // A different name is a different producer and does get its own run.
             crate::AsyncValidators::register("files", count, cx);
-            Validators::run(&columns, &rows, cx);
+            Validators::run(&columns, &rows, &[], cx);
             assert_eq!(RUNS.load(Ordering::SeqCst), 3);
         });
     }

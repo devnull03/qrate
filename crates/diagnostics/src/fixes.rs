@@ -1,6 +1,6 @@
 //! Corrections a diagnostic's producer can offer, and the menu that shows them.
 //!
-//! The generalisation of what [`crate::spelling`] does for one producer. A [`Diagnostic`] still
+//! The generalisation of the spelling menu to every producer. A [`Diagnostic`] still
 //! carries nothing but a sentence — a `fixes` field would make every producer serialise its
 //! corrections into the store on every run, most of which nobody ever right-clicks. Instead a
 //! producer registers a function here and is asked when a menu opens, against the cell's text
@@ -14,8 +14,9 @@ use std::rc::Rc;
 
 use gpui::{App, Context, Global, SharedString, Window};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use settings::project::RowId;
 
-use crate::{DiagnosticHooks, Diagnostics, Location};
+use crate::{Diagnostic, DiagnosticHooks, Diagnostics, Location, SpellActions};
 
 /// One offered correction: what to call it, and what the cell becomes if it is taken.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -28,11 +29,6 @@ pub struct Fix {
 
 /// What a producer is asked when a menu opens: where the finding is, and what the cell says now.
 pub type OfferFixes = fn(&Location, &str, Option<&str>, &App) -> Vec<Fix>;
-
-pub struct FixTarget<'a> {
-    pub source: &'a str,
-    pub subject: Option<&'a str>,
-}
 
 #[derive(Clone)]
 pub struct GroupMember {
@@ -171,40 +167,143 @@ pub fn group_menu(
     })
 }
 
-/// Add a `Fixes` submenu for the findings at `location`, or return `menu` untouched when nothing
-/// here offers one.
+/// Menu text is often a cell value, which a popup menu never ellipsizes on its own.
+pub fn menu_label(text: &str) -> SharedString {
+    const MAX: usize = 48;
+    match text.char_indices().nth(MAX) {
+        Some((cut, _)) => format!("{}…", text[..cut].trim_end()).into(),
+        None => text.to_owned().into(),
+    }
+}
+
+/// Everything one finding offers, appended flat to `menu`: its own corrections, then the ways to
+/// dismiss it. `text` is the cell as it reads now, `None` when there is no cell to correct.
 ///
-/// `apply` takes the whole replacement text, the same contract [`crate::spelling::menu`] uses, so
-/// a caller needs nothing but its own way of storing a string.
-pub fn menu(
-    location: &Location,
-    text: &SharedString,
-    target: Option<FixTarget<'_>>,
+/// `apply` takes the whole replacement text, so a caller needs nothing but its own way of storing
+/// a string.
+pub fn finding_menu(
+    finding: &Diagnostic,
+    text: Option<&SharedString>,
     menu: PopupMenu,
-    window: &mut Window,
     cx: &mut Context<PopupMenu>,
     apply: impl Fn(SharedString, &mut App) + Clone + 'static,
 ) -> PopupMenu {
-    let found = at_subject(
-        location,
-        text,
-        target.as_ref().map(|target| target.source),
-        target.and_then(|target| target.subject),
-        cx,
-    );
-    if found.is_empty() {
-        return menu;
-    }
-
-    menu.submenu("Fixes", window, cx, move |sub, _window, _cx| {
-        found.iter().fold(sub, |sub, fix| {
-            let (apply, replacement) = (apply.clone(), fix.replacement.clone());
-            sub.item(
-                PopupMenuItem::new(fix.label.clone())
+    let source = finding.source.key();
+    let subject = finding.group.as_ref().and_then(|g| g.subject.clone());
+    let mut menu = menu;
+    if let Some(text) = text {
+        let fix = |menu: PopupMenu, label: SharedString, replacement: SharedString| {
+            let apply = apply.clone();
+            menu.item(
+                PopupMenuItem::new(menu_label(&label))
                     .on_click(move |_, _, cx| apply(replacement.clone(), cx)),
             )
-        })
-    })
+        };
+        if source == "spell"
+            && let Some(actions) = cx.try_global::<SpellActions>().copied()
+        {
+            let mut found = (actions.suggest)(text, cx);
+            found.retain(|(word, _)| subject.as_ref().is_none_or(|s| s == word));
+            for (word, suggestions) in &found {
+                for suggestion in suggestions {
+                    let fixed = text.replace(word.as_ref(), suggestion.as_ref());
+                    menu = fix(menu, format!("{word} → {suggestion}").into(), fixed.into());
+                }
+            }
+            menu = menu.separator();
+            for (word, _) in found {
+                menu = menu.item(
+                    PopupMenuItem::new(menu_label(&format!("Add “{word}” to dictionary")))
+                        .on_click(move |_, _, cx| (actions.add_word)(&word, cx)),
+                );
+            }
+        }
+        let offered = at_subject(
+            &finding.location,
+            text,
+            Some(&source),
+            subject.as_deref(),
+            cx,
+        );
+        for found in offered {
+            menu = fix(menu, found.label, found.replacement);
+        }
+    }
+    let Some(column) = finding.location.column.clone() else {
+        return menu;
+    };
+    let menu = menu.separator();
+    let ignore_item = |menu: PopupMenu, label: SharedString, occurrence: bool| {
+        let finding = finding.clone();
+        menu.item(
+            PopupMenuItem::new(label)
+                .on_click(move |_, _, cx| ignore(std::slice::from_ref(&finding), occurrence, cx)),
+        )
+    };
+    let menu = if finding.location.row_id.is_some() {
+        ignore_item(menu, "Ignore this occurrence".into(), true)
+    } else {
+        menu
+    };
+    // Value variants already persist "these are distinct", which is the precise column-wide ignore.
+    if source == "value variants" {
+        return menu;
+    }
+    ignore_item(
+        menu,
+        menu_label(&format!("Ignore in column “{column}”")),
+        false,
+    )
+}
+
+/// Hide `findings` from now on: each one's single occurrence, or its key throughout its column.
+pub fn ignore(findings: &[Diagnostic], occurrence: bool, cx: &mut App) {
+    edit_ignores(findings, cx, |settings, source, key, row_id| match row_id {
+        Some(id) if occurrence => {
+            settings.ignored_occurrences.insert((source, key, id));
+        }
+        _ if !occurrence => {
+            settings.ignored_diagnostics.insert((source, key));
+        }
+        _ => {}
+    });
+}
+
+/// Remove every ignore that hides `findings`, column-wide and single-occurrence alike.
+pub fn unignore(findings: &[Diagnostic], cx: &mut App) {
+    edit_ignores(findings, cx, |settings, source, key, row_id| {
+        if let Some(id) = row_id {
+            settings
+                .ignored_occurrences
+                .remove(&(source.clone(), key.clone(), id));
+        }
+        settings.ignored_diagnostics.remove(&(source, key));
+    });
+}
+
+// ponytail: one settings write per finding; batch into a single map store if big groups feel slow.
+fn edit_ignores(
+    findings: &[Diagnostic],
+    cx: &mut App,
+    edit: impl Fn(&mut settings::columns::ColumnSettings, String, String, Option<RowId>),
+) {
+    for finding in findings {
+        let Some(column) = finding.location.column.as_deref() else {
+            continue;
+        };
+        let (source, key) = (
+            finding.source.key().to_string(),
+            finding.ignore_key().to_string(),
+        );
+        settings::columns::update(
+            column,
+            |settings| edit(settings, source, key, finding.location.row_id),
+            cx,
+        );
+    }
+    if let Some(hooks) = cx.try_global::<DiagnosticHooks>().copied() {
+        (hooks.revalidate)(cx);
+    }
 }
 
 #[cfg(test)]
@@ -367,5 +466,15 @@ mod tests {
             FixProviders::register("LCSH", offer, cx);
             assert_eq!(at(&location("Subject"), "Photograph", cx).len(), 1);
         });
+    }
+
+    #[test]
+    fn menu_labels_cut_long_text_on_a_char_boundary() {
+        use crate::fixes::menu_label;
+        assert_eq!(menu_label("short"), "short");
+        let long = "l’enfant ".repeat(10);
+        let label = menu_label(&long);
+        assert!(label.ends_with('…'));
+        assert_eq!(label.chars().count(), 49, "48 kept plus the ellipsis");
     }
 }

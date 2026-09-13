@@ -9,8 +9,9 @@ qrate publishes `agent-bridge.json` in the platform application-data directory. 
 
 POST one JSON request to `url` with `Authorization: Bearer <token>`, `Content-Type: application/json`, and `X-Agent: codex`. The agent name is a visible label, not authority. Re-read the endpoint after `forbidden` because the token changes each launch.
 
-The bridge never changes a cell. `stage_findings` only replaces that agent's draft findings in the Problems panel and optionally offers whole-cell replacements in the Fixes menu.
+The bridge never changes a cell. `stage_findings` only replaces that agent's draft findings in the Problems panel and optionally offers whole-cell replacements under that finding in the cell's Problems menu.
 Bridge findings remain ungrouped atomic diagnostics. Built-in diagnostic groups do not change protocol 2 query or staging formats.
+Findings the archivist ignored are absent from `overview` counts and `diagnostics` queries, exactly as they are hidden in the Problems panel.
 
 qrate's bundled Pi runs as a contained child process. Stop, Restart, panel teardown, and app exit terminate its process tree; do not rely on an older Pi process surviving a restart.
 The bundled assistant loads its protocol 2 extension and `SYSTEM.md` with all skills disabled. The `skills/` folder in this repo packages the same instructions for an agent running outside qrate — `qrate-live-review` there is for an external Pi or any other runtime, not the built-in session.

@@ -1331,11 +1331,147 @@ fn columns_page(cx: &App) -> SettingPage {
         ),
     );
 
+    let ignored = SettingGroup::new()
+        .title("Ignored problems")
+        .description("Findings you chose to ignore. Remove one to see it in Problems again.")
+        .item(
+            SettingItem::new(
+                "Ignored",
+                SettingField::element(move |_opts: &_, _window: &mut _, cx: &mut App| {
+                    // Only ignores that still hide something are listed; Clear all removes the rest.
+                    let hidden = diagnostics::Diagnostics::ignored(cx);
+                    let mut entries: Vec<(
+                        SharedString,
+                        String,
+                        String,
+                        String,
+                        Option<settings::project::RowId>,
+                    )> = Vec::new();
+                    for (column, settings) in columns::load(cx) {
+                        let matching = |source: &String, key: &String| {
+                            hidden
+                                .iter()
+                                .filter(|d| {
+                                    d.location.column.as_deref() == Some(column.as_str())
+                                        && d.source.key() == *source
+                                        && d.ignore_key() == *key
+                                })
+                                .collect::<Vec<_>>()
+                        };
+                        for (source, key) in &settings.ignored_diagnostics {
+                            let hits = matching(source, key);
+                            let Some(first) = hits.first() else {
+                                continue;
+                            };
+                            let summary = first
+                                .group
+                                .as_ref()
+                                .map_or(&first.message, |group| &group.summary);
+                            let label = format!(
+                                "{column} · {} · {summary} ({})",
+                                first.source.label(),
+                                hits.len()
+                            );
+                            entries.push((
+                                label.into(),
+                                column.clone(),
+                                source.clone(),
+                                key.clone(),
+                                None,
+                            ));
+                        }
+                        for (source, key, id) in &settings.ignored_occurrences {
+                            let Some(first) = matching(source, key)
+                                .into_iter()
+                                .find(|d| d.location.row_id == Some(*id))
+                            else {
+                                continue;
+                            };
+                            let label = format!(
+                                "{column} · Row {} · {}",
+                                first.location.row.map_or(0, |row| row + 1),
+                                first.message
+                            );
+                            entries.push((
+                                label.into(),
+                                column.clone(),
+                                source.clone(),
+                                key.clone(),
+                                Some(*id),
+                            ));
+                        }
+                    }
+                    let muted = cx.theme().muted_foreground;
+                    v_flex()
+                        .w_full()
+                        .gap_1()
+                        .when(entries.is_empty(), |list| {
+                            list.child(div().text_sm().text_color(muted).child("Nothing ignored"))
+                        })
+                        .children(entries.into_iter().enumerate().map(
+                            |(ix, (label, column, source, key, row_id))| {
+                                h_flex()
+                                    .w_full()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .text_sm()
+                                            .child(label),
+                                    )
+                                    .child(
+                                        Button::new(("unignore", ix))
+                                            .xsmall()
+                                            .icon(IconName::Close)
+                                            .tooltip("Stop ignoring")
+                                            .on_click(move |_, _, cx| {
+                                                let entry = (source.clone(), key.clone());
+                                                columns::update(
+                                                    &column,
+                                                    |settings| match row_id {
+                                                        Some(id) => {
+                                                            settings
+                                                                .ignored_occurrences
+                                                                .remove(&(entry.0, entry.1, id));
+                                                        }
+                                                        None => {
+                                                            settings
+                                                                .ignored_diagnostics
+                                                                .remove(&entry);
+                                                        }
+                                                    },
+                                                    cx,
+                                                );
+                                                table::revalidate_now(cx);
+                                            }),
+                                    )
+                            },
+                        ))
+                        .child(
+                            Button::new("clear-ignored-diagnostics")
+                                .small()
+                                .label("Clear all")
+                                .on_click(move |_, _, cx| {
+                                    columns::clear_ignored(cx);
+                                    table::revalidate_now(cx);
+                                }),
+                        )
+                        .into_any_element()
+                }),
+            )
+            .layout(Axis::Vertical),
+        );
+
     SettingPage::new("Columns")
         .group(values)
         .group(group)
         .group(spelling)
         .group(variants)
+        .group(ignored)
         .group(descriptions_group(project, &headers, cx))
         .group(data_types_group(headers, cx))
         .group(authority_accounts_group(cx))
