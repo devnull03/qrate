@@ -39,7 +39,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use diagnostics::{
-    ColumnSnapshot, DATASET_MAIN, Diagnostics, Fix, FixProviders, Location, Severity, Source,
+    ColumnFinding, ColumnSnapshot, DATASET_MAIN, DiagnosticGroup, Diagnostics, Fix, FixProviders,
+    Location, Severity, Source,
 };
 use gpui::{App, AppContext as _, Global, SharedString, Task};
 
@@ -298,38 +299,35 @@ fn publish(jobs: &[Job], subdelimiter: &str, cx: &mut App) {
             .columns
             .iter()
             .flat_map(|column| {
-                let found: Vec<(usize, Severity, SharedString)> = column
+                let found = column
                     .values
                     .iter()
                     .enumerate()
-                    .filter_map(|(row, cell)| {
-                        let rejected: Vec<String> = values_in(cell, subdelimiter)
+                    .flat_map(|(row, cell)| {
+                        let mut seen = HashSet::new();
+                        values_in(cell, subdelimiter)
                             .into_iter()
-                            .filter(|value| {
-                                cached
-                                    .get(&value.to_lowercase())
-                                    .is_some_and(|verdict| !verdict.known)
+                            .filter_map(move |value| {
+                                let key = value.to_lowercase();
+                                if !seen.insert(key.clone()) {
+                                    return None;
+                                }
+                                cached.get(&key).filter(|verdict| !verdict.known)?;
+                                let message: SharedString = job.source.rejection(&value).into();
+                                Some(ColumnFinding {
+                                    row: Some(row),
+                                    severity: Severity::Error,
+                                    message: message.clone(),
+                                    group: Some(DiagnosticGroup {
+                                        key: key.into(),
+                                        summary: message,
+                                        subject: Some(value.into()),
+                                    }),
+                                })
                             })
-                            .collect();
-                        (!rejected.is_empty()).then(|| {
-                            (
-                                row,
-                                Severity::Error,
-                                rejected
-                                    .iter()
-                                    .map(|value| job.source.rejection(value))
-                                    .collect::<Vec<_>>()
-                                    .join("; ")
-                                    .into(),
-                            )
-                        })
                     })
                     .collect();
-                diagnostics::address(
-                    name.into(),
-                    column,
-                    found.into_iter().map(Into::into).collect(),
-                )
+                diagnostics::address(name.into(), column, found)
             })
             .collect();
         Diagnostics::set(&Source::Validator(name.into()), DATASET_MAIN, items, cx);
@@ -420,7 +418,7 @@ fn take_token() -> bool {
 ///
 /// Reads the cache only — a menu opens on a click and cannot wait for a round trip. A term whose
 /// verdict has not arrived offers nothing, and the menu simply doesn't appear.
-fn offer(_: &Location, text: &str, _: Option<&str>, cx: &App) -> Vec<Fix> {
+fn offer(_: &Location, text: &str, subject: Option<&str>, cx: &App) -> Vec<Fix> {
     let Some(cache) = cx.try_global::<Cache>() else {
         return Vec::new();
     };
@@ -432,6 +430,7 @@ fn offer(_: &Location, text: &str, _: Option<&str>, cx: &App) -> Vec<Fix> {
         .flat_map(|verdicts| {
             values_in(text, &subdelimiter)
                 .into_iter()
+                .filter(|value| subject.is_none_or(|subject| value == subject))
                 .filter_map(|value| Some((value.clone(), verdicts.get(&value.to_lowercase())?)))
                 .filter(|(_, verdict)| !verdict.known)
                 .flat_map(|(value, verdict)| {

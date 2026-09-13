@@ -16,3 +16,6 @@ reqwest = { version = "0.12", features = ["blocking"] }
 # compatible with this repo's AGPL-3.0. Hand-parsing that grammar is how you get a validator
 # that is subtly wrong about seasons, intervals, and unspecified digits.
 edtf = "0.2"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

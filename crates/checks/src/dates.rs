@@ -7,7 +7,8 @@
 //! what an ingest would choke on.
 
 use diagnostics::{
-    ColumnInfo, ColumnValidator, ColumnValues, Fix, FixProviders, Location, Severity,
+    ColumnFinding, ColumnInfo, ColumnValidator, ColumnValues, DiagnosticGroup, Fix, FixProviders,
+    Location, Severity,
 };
 use gpui::{App, SharedString};
 use settings::columns::ColumnType;
@@ -75,12 +76,17 @@ impl ColumnValidator for DateCheck {
                 cell.parts()
                     .filter(|value| !valid(value))
                     .map(move |value| {
-                        (
-                            cell.row,
-                            Severity::Error,
-                            format!("“{value}” is not an EDTF date").into(),
-                        )
-                            .into()
+                        let message: SharedString = format!("“{value}” is not an EDTF date").into();
+                        ColumnFinding {
+                            row: Some(cell.row),
+                            severity: Severity::Error,
+                            message: message.clone(),
+                            group: Some(DiagnosticGroup {
+                                key: value.to_owned().into(),
+                                summary: message,
+                                subject: Some(value.to_owned().into()),
+                            }),
+                        }
                     })
             })
             .collect()
@@ -121,15 +127,16 @@ fn rewrites(value: &str) -> Vec<String> {
     offered
 }
 
-fn offer(_: &Location, text: &str, _: Option<&str>, _: &App) -> Vec<Fix> {
-    if valid(text.trim()) {
+fn offer(_: &Location, text: &str, subject: Option<&str>, _: &App) -> Vec<Fix> {
+    let value = subject.unwrap_or(text);
+    if valid(value.trim()) {
         return Vec::new();
     }
-    rewrites(text)
+    rewrites(value)
         .into_iter()
         .map(|fixed| Fix {
             label: format!("Use {fixed}").into(),
-            replacement: fixed.into(),
+            replacement: text.replacen(value, &fixed, 1).into(),
         })
         .collect()
 }
@@ -141,7 +148,35 @@ pub fn init(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use crate::dates::{rewrites, valid};
+    use crate::dates::{DateCheck, offer, rewrites, valid};
+    use diagnostics::{ColumnInfo, ColumnValidator, ColumnValues, DATASET_MAIN, Location};
+    use gpui::SharedString;
+    use settings::columns::ColumnSettings;
+
+    #[gpui::test]
+    fn the_same_bad_date_groups_and_fixes_only_its_own_value(cx: &mut gpui::TestAppContext) {
+        let settings = ColumnSettings::default();
+        let column = ColumnInfo {
+            name: "Date",
+            data_type: "Date",
+            settings: &settings,
+        };
+        let raw: Vec<SharedString> = vec!["circa 1987".into(), "1990 | circa 1987".into()];
+        let found = DateCheck.validate(&column, ColumnValues::new(&raw, "|"));
+        let groups: Vec<_> = found.iter().map(|f| f.group.clone().unwrap()).collect();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0], groups[1]);
+        assert_eq!(groups[0].subject.as_deref(), Some("circa 1987"));
+
+        let location = Location {
+            dataset: DATASET_MAIN.into(),
+            row: Some(1),
+            row_id: None,
+            column: Some("Date".into()),
+        };
+        let fixes = cx.update(|cx| offer(&location, &raw[1], Some("circa 1987"), cx));
+        assert_eq!(fixes[0].replacement.as_ref(), "1990 | 1987~");
+    }
 
     /// The shapes an archive actually needs EDTF for — uncertainty and imprecision — must pass,
     /// or the validator is just a stricter date field nobody wants.

@@ -5,8 +5,8 @@ the right dock. A finding on a cell also shows as a small marker on that cell in
 
 ## What qrate checks
 
-- **Spelling**, in over 60 languages. Downloaded dictionaries participate in automatic
-  per-value language selection; short or ambiguous values are left alone instead of being
+- **Spelling**, in over 60 languages. Tick one or more in Settings ▸ Spelling; each value is
+  checked in whichever ticked language fits it, and changes apply without a restart; short or ambiguous values are left alone instead of being
   checked as the wrong language. If only English dictionaries are installed, qrate also skips
   reliably identified non-English text and common non-English apostrophe elisions.
 - **Capitalization**, when a dictionary knows the word but requires a different case.
@@ -31,7 +31,8 @@ findings each time it runs, and that set replaces what it reported last time.
 
 ## The Problems panel
 
-Repeated spelling, capitalization, and value-variant findings appear in collapsed groups.
+Repeated spelling, capitalization, value-variant, date, and authority findings appear in collapsed
+groups.
 Each group shows an occurrence count. Expand the group to see its locations.
 Expanded value-variant groups show the value at each location instead of repeating the summary.
 The expansion button supports keyboard activation. Click an occurrence to select its cell, row, or column.
@@ -72,6 +73,7 @@ Spelling keys include the selected dictionary and observed token.
 Capitalization keys also include the proposed spelling.
 Value-variant keys include the column and an unordered pair of exact displayed values.
 Pair review does not infer that a third similar value identifies the same entity.
+Date keys are the exact rejected value. Authority keys are the rejected value, ignoring case.
 
 ## Applying a fix
 
