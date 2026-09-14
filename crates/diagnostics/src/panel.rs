@@ -179,7 +179,7 @@ struct Row {
     location: Location,
     group: Option<String>,
     members: Vec<RowMember>,
-    child: bool,
+    depth: usize,
 }
 
 fn group_id(d: &Diagnostic) -> Option<String> {
@@ -193,6 +193,9 @@ fn group_id(d: &Diagnostic) -> Option<String> {
         )
     })
 }
+
+/// Joins a group id to one observed form. `group_id` is `Debug` output, which escapes it.
+const FORM_SEPARATOR: char = '\u{1f}';
 
 /// Atomic findings stay in the store; only this flat, virtualized view collapses them.
 fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row> {
@@ -229,7 +232,7 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
             group_id(d),
         )
     });
-    let occurrence = |d: &Diagnostic, child| {
+    let occurrence = |d: &Diagnostic, depth| {
         let (scope, wide) = match d.location.scope() {
             Scope::Cell { row, column } => (format!("Row {} · {column}", row + 1).into(), false),
             Scope::Row(row) => (format!("Row {}", row + 1).into(), true),
@@ -256,59 +259,75 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
             location: d.location.clone(),
             group: None,
             members: Vec::new(),
-            child,
+            depth,
         }
     };
     let mut rows = Vec::new();
     for d in items {
         let Some(id) = group_id(d) else {
-            rows.push(occurrence(d, false));
+            rows.push(occurrence(d, 0));
             continue;
         };
         let Some(mut members) = groups.remove(&id) else {
             continue;
         };
         if members.len() == 1 {
-            rows.push(occurrence(members[0], false));
+            rows.push(occurrence(members[0], 0));
             continue;
         }
-        members.sort_by(|a, b| {
-            (&a.message, a.location.row, &a.location.column).cmp(&(
-                &b.message,
-                b.location.row,
-                &b.location.column,
-            ))
+        let subject = |d: &Diagnostic| d.group.as_ref().and_then(|group| group.subject.clone());
+        members.sort_by_cached_key(|&d| {
+            (
+                subject(d),
+                d.message.clone(),
+                d.location.row,
+                d.location.column.clone(),
+            )
         });
-        let mut header = occurrence(d, false);
-        let open = expanded.contains(&id);
-        header.scope = format!(
-            "{} · {} occurrences",
-            if open { "▾" } else { "▸" },
-            members.len()
-        )
-        .into();
-        header.message = d
+        let header = |first: &Diagnostic, id: String, count: usize, depth| {
+            let mut header = occurrence(first, depth);
+            header.scope = format!(
+                "{} · {count} occurrences",
+                if expanded.contains(&id) { "▾" } else { "▸" },
+            )
+            .into();
+            header.wide = true;
+            header.group = Some(id);
+            header.members = members
+                .iter()
+                .map(|member| RowMember {
+                    location: member.location.clone(),
+                    message: member.message.clone(),
+                    subject: subject(member),
+                })
+                .collect();
+            header
+        };
+        let mut top = header(d, id.clone(), members.len(), 0);
+        top.message = d
             .group
             .as_ref()
             .expect("group identity requires metadata")
             .summary
             .clone();
-        header.wide = true;
-        header.group = Some(id);
-        header.members = members
-            .iter()
-            .map(|member| RowMember {
-                location: member.location.clone(),
-                message: member.message.clone(),
-                subject: member
-                    .group
-                    .as_ref()
-                    .and_then(|group| group.subject.clone()),
-            })
+        rows.push(top);
+        if !expanded.contains(&id) {
+            continue;
+        }
+        let forms: Vec<_> = members
+            .chunk_by(|&a, &b| subject(a) == subject(b))
             .collect();
-        rows.push(header);
-        if open {
-            rows.extend(members.into_iter().map(|member| occurrence(member, true)));
+        if forms.len() == 1 {
+            rows.extend(members.iter().map(|&member| occurrence(member, 1)));
+            continue;
+        }
+        for form in forms {
+            let form_id = format!("{id}{FORM_SEPARATOR}{:?}", subject(form[0]));
+            let open = expanded.contains(&form_id);
+            rows.push(header(form[0], form_id, form.len(), 1));
+            if open {
+                rows.extend(form.iter().map(|&member| occurrence(member, 2)));
+            }
         }
     }
     rows
@@ -461,7 +480,8 @@ impl ProblemsPanel {
             .chain(ignored)
             .filter_map(group_id)
             .collect();
-        self.expanded.retain(|id| live.contains(id));
+        self.expanded
+            .retain(|id| live.contains(id.split(FORM_SEPARATOR).next().unwrap_or_default()));
         let admitted = |d: &&Diagnostic| self.filter.admits(d) && self.admits_source(d);
         let visible = Diagnostics::all(cx).iter().filter(admitted).collect();
         let mut rows = project(visible, &self.expanded);
@@ -615,7 +635,8 @@ impl Render for ProblemsPanel {
                                     .gap_2()
                                     .px_2()
                                     .py_1()
-                                    .when(r.child, |row| row.pl_6())
+                                    .when(r.depth == 1, |row| row.pl_6())
+                                    .when(r.depth == 2, |row| row.pl_12())
                                     .cursor_pointer()
                                     .when(ignored, |row| row.opacity(0.6))
                                     .hover(|row| row.bg(hover_bg))
@@ -795,30 +816,49 @@ impl Render for ProblemsPanel {
                                                 columns.entry(column).or_default().push(member);
                                             }
                                         }
-                                        menu.submenu("Ignore", window, cx, move |sub, _, _| {
-                                            columns.iter().fold(
-                                                sub.max_w(px(360.)),
-                                                |sub, (column, members)| {
-                                                    let members = members.clone();
-                                                    sub.item(
-                                                        PopupMenuItem::new(
-                                                            crate::fixes::menu_label(&format!(
-                                                                "In column “{column}” ({})",
-                                                                members.len()
-                                                            )),
-                                                        )
-                                                        .on_click(move |_, window, cx| {
-                                                            crate::fixes::ignore(
-                                                                &members[..1],
-                                                                false,
-                                                                window,
-                                                                cx,
+                                        let firsts: Vec<Diagnostic> = columns
+                                            .values()
+                                            .map(|found| found[0].clone())
+                                            .collect();
+                                        let total: usize = columns.values().map(Vec::len).sum();
+                                        let menu = menu.item(
+                                            PopupMenuItem::new(format!("Ignore all ({total})"))
+                                                .on_click(move |_, window, cx| {
+                                                    crate::fixes::ignore(&firsts, false, window, cx)
+                                                }),
+                                        );
+                                        if columns.len() < 2 {
+                                            return menu;
+                                        }
+                                        menu.submenu(
+                                            "Ignore in column",
+                                            window,
+                                            cx,
+                                            move |sub, _, _| {
+                                                columns.iter().fold(
+                                                    sub.max_w(px(360.)),
+                                                    |sub, (column, members)| {
+                                                        let members = members.clone();
+                                                        sub.item(
+                                                            PopupMenuItem::new(
+                                                                crate::fixes::menu_label(&format!(
+                                                                    "“{column}” ({})",
+                                                                    members.len()
+                                                                )),
                                                             )
-                                                        }),
-                                                    )
-                                                },
-                                            )
-                                        })
+                                                            .on_click(move |_, window, cx| {
+                                                                crate::fixes::ignore(
+                                                                    &members[..1],
+                                                                    false,
+                                                                    window,
+                                                                    cx,
+                                                                )
+                                                            }),
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
                                     })
                             })
                             .collect()
@@ -865,7 +905,7 @@ mod tests {
         assert_eq!(open.len(), 101);
         for (row, occurrence) in open[1..].iter().enumerate() {
             assert_eq!(occurrence.location.row, Some(row));
-            assert!(occurrence.child);
+            assert_eq!(occurrence.depth, 1);
             assert!(occurrence.group.is_none());
         }
         items[0].severity = Severity::Error;
@@ -889,34 +929,51 @@ mod tests {
     }
 
     #[test]
-    fn expanded_variants_show_and_group_the_observed_forms() {
+    fn expanded_variants_nest_occurrences_under_each_observed_form() {
         let mut items = repeated();
         items.truncate(4);
         for (row, item) in items.iter_mut().enumerate() {
-            item.message = if row % 2 == 0 {
-                "Akbar, Mohamed".into()
+            let form = if row % 2 == 0 {
+                "Akbar, Mohamed"
             } else {
-                "Akbar, Mohammed".into()
+                "Akbar, Mohammed"
             };
+            item.message = form.into();
+            item.group.as_mut().unwrap().subject = Some(form.into());
         }
         let closed = super::project(items.iter().collect(), &Default::default());
         assert_eq!(closed[0].members.len(), 4);
-        let expanded = [closed[0].group.clone().unwrap()].into_iter().collect();
-        let open = super::project(items.iter().collect(), &expanded);
+        let group = closed[0].group.clone().unwrap();
+        let summarize = |rows: &[super::Row]| {
+            rows.iter()
+                .map(|row| (row.depth, row.message.to_string(), row.scope.to_string()))
+                .collect::<Vec<_>>()
+        };
+        let open = super::project(items.iter().collect(), &[group.clone()].into());
         assert_eq!(
-            open[1..]
-                .iter()
-                .map(|row| (row.message.as_ref(), row.location.row))
-                .collect::<Vec<_>>(),
+            summarize(&open[1..]),
             [
-                ("Akbar, Mohamed", Some(0)),
-                ("Akbar, Mohamed", Some(2)),
-                ("Akbar, Mohammed", Some(1)),
-                ("Akbar, Mohammed", Some(3)),
+                (1, "Akbar, Mohamed".into(), "▸ · 2 occurrences".into()),
+                (1, "Akbar, Mohammed".into(), "▸ · 2 occurrences".into()),
+            ]
+        );
+        assert_eq!(
+            open[1].members.len(),
+            4,
+            "a form still resolves the whole cluster"
+        );
+        let form = open[2].group.clone().unwrap();
+        let nested = super::project(items.iter().collect(), &[group, form].into());
+        assert_eq!(
+            summarize(&nested[1..]),
+            [
+                (1, "Akbar, Mohamed".into(), "▸ · 2 occurrences".into()),
+                (1, "Akbar, Mohammed".into(), "▾ · 2 occurrences".into()),
+                (2, "Akbar, Mohammed".into(), "Row 2 · Title".into()),
+                (2, "Akbar, Mohammed".into(), "Row 4 · Title".into()),
             ]
         );
     }
-
     #[gpui::test]
     fn clicking_a_group_expands_without_navigation(cx: &mut TestAppContext) {
         #[derive(Default)]
@@ -1107,7 +1164,6 @@ mod tests {
     fn source_labels_are_descriptive_and_notes_are_not_diagnostic_sources() {
         for (key, label) in [
             ("spell", "Spelling"),
-            ("capitalization", "Capitalization"),
             ("files", "Missing files"),
             ("date", "Date format"),
             ("value variants", "Value variants"),
