@@ -84,12 +84,30 @@ impl Hierarchy {
         &self.rows
     }
 
+    pub(crate) fn reconcile(&mut self, row_ids: &[RowId], default_level: &str) {
+        let expanded = std::mem::take(&mut self.expanded);
+        let mut next = Self::from_rows(row_ids, &self.rows, default_level);
+        next.expanded = expanded
+            .into_iter()
+            .filter(|row_id| row_ids.contains(row_id))
+            .collect();
+        *self = next;
+    }
+
     pub(crate) fn set_expanded(&mut self, row_id: RowId, expanded: bool) {
         if expanded {
             self.expanded.insert(row_id);
         } else {
             self.expanded.remove(&row_id);
         }
+    }
+
+    pub(crate) fn is_expanded(&self, row_id: RowId) -> bool {
+        self.expanded.contains(&row_id)
+    }
+
+    pub(crate) fn has_children(&self, row_id: RowId) -> bool {
+        self.rows.iter().any(|row| row.parent_id == Some(row_id))
     }
 
     pub(crate) fn expand_all(&mut self) {

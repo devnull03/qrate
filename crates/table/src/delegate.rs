@@ -16,7 +16,7 @@ use diagnostics::{DATASET_MAIN, Location};
 use settings::history::{Change, Entry, EntryId, Origin};
 
 use crate::history::{Cells, Col, History, Row, Step};
-use crate::{cell, editing::EditState, filter, row_index};
+use crate::{cell, editing::EditState, filter, hierarchy::Hierarchy, row_index};
 
 /// Emitted whenever the table's selection, a cell's text, or the column layout changes, so
 /// cross-crate listeners know to re-render.
@@ -85,6 +85,10 @@ pub struct QrateTableDelegate {
     filtered_rows: Vec<usize>,
     /// A visual or linked-file search's hits as source rows, in the order the view shows them.
     search_rows: Option<Vec<usize>>,
+    /// Hierarchy depth parallel to `visible_rows`.
+    visible_depths: Vec<usize>,
+    hierarchy: Hierarchy,
+    default_level: String,
     /// Per-data-column set of *excluded* cell values, parallel to `columns`. Empty = no filter.
     filters: Vec<HashSet<SharedString>>,
     /// Whether each column offers a filter dropdown at all, parallel to `columns`. Off for every
@@ -128,6 +132,9 @@ impl QrateTableDelegate {
             visible_rows: Vec::new(),
             filtered_rows: Vec::new(),
             search_rows: None,
+            visible_depths: Vec::new(),
+            hierarchy: Hierarchy::default(),
+            default_level: "item".into(),
             filters: Vec::new(),
             filters_enabled: Vec::new(),
             subdelimiter: SharedString::default(),
@@ -174,6 +181,41 @@ impl QrateTableDelegate {
         &self.visible_rows
     }
 
+    pub fn row_depth(&self, view: usize) -> usize {
+        self.visible_depths.get(view).copied().unwrap_or_default()
+    }
+
+    pub(crate) fn row_has_children(&self, source: usize) -> bool {
+        self.row_ids
+            .get(source)
+            .is_some_and(|row_id| self.hierarchy.has_children(*row_id))
+    }
+
+    pub(crate) fn row_expanded(&self, source: usize) -> bool {
+        self.row_ids
+            .get(source)
+            .is_some_and(|row_id| self.hierarchy.is_expanded(*row_id))
+    }
+
+    pub(crate) fn toggle_expanded(&mut self, source: usize) {
+        let Some(row_id) = self.row_ids.get(source).copied() else {
+            return;
+        };
+        self.hierarchy
+            .set_expanded(row_id, !self.hierarchy.is_expanded(row_id));
+        self.recompute_visible();
+    }
+
+    pub(crate) fn expand_all(&mut self) {
+        self.hierarchy.expand_all();
+        self.recompute_visible();
+    }
+
+    pub(crate) fn collapse_all(&mut self) {
+        self.hierarchy.collapse_all();
+        self.recompute_visible();
+    }
+
     /// Source→view, the inverse of [`source`](Self::source). `None` when a filter currently hides
     /// the row — a diagnostic can point at a row the user has narrowed away.
     pub fn view_row(&self, source: usize) -> Option<usize> {
@@ -214,16 +256,53 @@ impl QrateTableDelegate {
 
     fn recompute_visible(&mut self) {
         self.filtered_rows = compute_visible_rows(&self.rows, &self.filters, &self.subdelimiter);
-        self.visible_rows = match &self.search_rows {
-            Some(hits) => {
-                let kept: HashSet<usize> = self.filtered_rows.iter().copied().collect();
-                hits.iter()
-                    .copied()
-                    .filter(|row| kept.contains(row))
-                    .collect()
+        if let Some(hits) = &self.search_rows {
+            let kept: HashSet<usize> = self.filtered_rows.iter().copied().collect();
+            let all_ids = self.row_ids.iter().copied().collect();
+            let depths: HashMap<_, _> = self
+                .hierarchy
+                .projection(Some(&all_ids))
+                .into_iter()
+                .collect();
+            self.visible_rows = hits
+                .iter()
+                .copied()
+                .filter(|row| kept.contains(row))
+                .collect();
+            self.visible_depths = self
+                .visible_rows
+                .iter()
+                .map(|source| {
+                    self.row_ids
+                        .get(*source)
+                        .and_then(|row_id| depths.get(row_id))
+                        .copied()
+                        .unwrap_or_default()
+                })
+                .collect();
+        } else {
+            let matching_ids = (self.filtered_rows.len() != self.rows.len()).then(|| {
+                self.filtered_rows
+                    .iter()
+                    .filter_map(|source| self.row_ids.get(*source).copied())
+                    .collect::<HashSet<_>>()
+            });
+            let source_by_id: HashMap<_, _> = self
+                .row_ids
+                .iter()
+                .enumerate()
+                .map(|(source, row_id)| (*row_id, source))
+                .collect();
+            let projection = self.hierarchy.projection(matching_ids.as_ref());
+            self.visible_rows.clear();
+            self.visible_depths.clear();
+            for (row_id, depth) in projection {
+                if let Some(source) = source_by_id.get(&row_id) {
+                    self.visible_rows.push(*source);
+                    self.visible_depths.push(depth);
+                }
             }
-            None => self.filtered_rows.clone(),
-        };
+        }
         // `range` is in view coordinates, which this just redefined.
         self.range = None;
     }
@@ -508,10 +587,26 @@ impl QrateTableDelegate {
         self.filters_enabled = vec![false; self.columns.len()];
         self.search_rows = None;
         self.filtered_rows = (0..self.rows.len()).collect();
-        self.visible_rows = self.filtered_rows.clone();
+        self.visible_rows = (0..self.rows.len()).collect();
+        self.visible_depths = vec![0; self.rows.len()];
+        self.hierarchy = Hierarchy::from_rows(&self.row_ids, &[], &self.default_level);
         // Stale — indexes into the old row set; `TablePanel` re-resolves right after.
         self.image_paths = vec![None; self.rows.len()];
         self.values_generation += 1;
+    }
+
+    pub fn set_structure(
+        &mut self,
+        structure: &[settings::project::RowStructure],
+        default_level: &str,
+    ) {
+        self.default_level = default_level.into();
+        self.hierarchy = Hierarchy::from_rows(&self.row_ids, structure, default_level);
+        self.recompute_visible();
+    }
+
+    pub fn row_structure(&self) -> &[settings::project::RowStructure] {
+        self.hierarchy.rows()
     }
 
     /// Replaces the per-row resolved image paths. A length mismatch (a stale call racing a newer
@@ -1040,6 +1135,7 @@ impl QrateTableDelegate {
     fn rows_changed(&mut self) {
         // Hits are source rows, which an insert or delete just shifted.
         self.search_rows = None;
+        self.hierarchy.reconcile(&self.row_ids, &self.default_level);
         self.recompute_visible();
         self.editing = EditState::Idle;
         self.values_generation += 1;
@@ -1645,7 +1741,7 @@ impl TableDelegate for QrateTableDelegate {
             // it while its row holds the active (edited/selected) cell.
             let highlighted = self.active_cell().is_some_and(|(r, _)| r == source)
                 || self.selected_rows.contains(&source);
-            row_index::render_td(self, source, highlighted, cx)
+            row_index::render_td(self, row_ix, source, highlighted, cx)
         } else {
             // A ⌘-clicked row paints across every column, which is what makes a discontiguous
             // selection read as a set of *items* rather than a column of tinted cells.
@@ -2025,6 +2121,42 @@ mod app_tests {
                 assert_eq!(cols, 0..=1);
                 assert!(delegate.in_range(1, 1));
                 assert!(!delegate.in_range(2, 0), "past the end of the range");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn hierarchy_projection_maps_view_rows_to_sources_and_depths(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.set_structure(
+                    &[
+                        settings::project::RowStructure {
+                            row_id: 1,
+                            parent_id: None,
+                            level_key: "series".into(),
+                            sibling_order: 0,
+                            source_path: None,
+                            source_kind: None,
+                        },
+                        settings::project::RowStructure {
+                            row_id: 2,
+                            parent_id: Some(1),
+                            level_key: "item".into(),
+                            sibling_order: 0,
+                            source_path: None,
+                            source_kind: None,
+                        },
+                    ],
+                    "item",
+                );
+                assert_eq!(delegate.visible(), &[0, 2, 3]);
+                delegate.toggle_expanded(0);
+                assert_eq!(delegate.visible(), &[0, 1, 2, 3]);
+                assert_eq!(delegate.row_depth(1), 1);
+                assert_eq!(delegate.source(1), Some(1));
             });
         });
     }

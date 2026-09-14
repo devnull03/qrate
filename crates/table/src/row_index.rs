@@ -1,7 +1,9 @@
 use std::sync::OnceLock;
 
 use gpui::prelude::FluentBuilder as _;
-use gpui::{Context, FontWeight, IntoElement, SharedString, div, prelude::*, px};
+use gpui::{
+    Context, FontWeight, InteractiveElement as _, IntoElement, SharedString, div, prelude::*, px,
+};
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{
     ActiveTheme,
@@ -15,7 +17,7 @@ use crate::note::{self, Target};
 
 pub(crate) const COL_IX: usize = 0;
 
-const WIDTH: f32 = 48.;
+const WIDTH: f32 = 88.;
 
 pub(crate) fn column() -> Column {
     static COLUMN: OnceLock<Column> = OnceLock::new();
@@ -33,6 +35,7 @@ pub(crate) fn column() -> Column {
 
 pub(crate) fn render_td(
     delegate: &QrateTableDelegate,
+    view_ix: usize,
     row_ix: usize,
     highlighted: bool,
     cx: &mut Context<TableState<QrateTableDelegate>>,
@@ -45,16 +48,35 @@ pub(crate) fn render_td(
     let location = delegate.location(Some(row_ix), None);
     let worst = Diagnostics::worst_at(&location.dataset, Some(row_ix), None, cx);
     let tip = note::tooltip_text(&location, cx);
+    let depth = delegate.row_depth(view_ix);
+    let has_children = delegate.row_has_children(row_ix);
+    let expanded = delegate.row_expanded(row_ix);
 
     div()
         .id(("row-note", row_ix))
         .size_full()
         .flex()
         .items_center()
-        .justify_center()
+        .pl(px(6. + depth.min(4) as f32 * 12.))
+        .gap_1()
         .bg(bg)
         .text_color(fg)
         .when(highlighted, |d| d.font_weight(FontWeight::SEMIBOLD))
+        .child(
+            div()
+                .id(("row-chevron", row_ix))
+                .w(px(14.))
+                .cursor_pointer()
+                .when(has_children, |chevron| {
+                    chevron
+                        .child(if expanded { "▾" } else { "▸" })
+                        .on_click(cx.listener(move |state, _, _, cx| {
+                            state.delegate_mut().toggle_expanded(row_ix);
+                            state.refresh(cx);
+                            cx.notify();
+                        }))
+                }),
+        )
         .child(SharedString::from((row_ix + 1).to_string()))
         .when_some(worst, |d, severity| d.child(note::marker(severity, cx)))
         .when_some(tip, |d, text| {
