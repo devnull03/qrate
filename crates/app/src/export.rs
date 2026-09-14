@@ -209,7 +209,7 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
         });
         return;
     }
-    let (Some(project), Some((headers, rows))) = (cx.try_global::<CurrentProject>(), grid(cx))
+    let (Some(project), Some((headers, mut rows))) = (cx.try_global::<CurrentProject>(), grid(cx))
     else {
         log::warn!("export was asked for with no project open");
         return;
@@ -224,6 +224,26 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
             (row_ids, state.delegate().row_structure().to_vec())
         })
         .unwrap_or_default();
+    let declared: Vec<_> = project
+        .data
+        .columns
+        .iter()
+        .map(|column| {
+            (
+                column.name.clone(),
+                ColumnType::from_declared(&column.data_type),
+            )
+        })
+        .collect();
+    let description = settings::description::DescriptionConfig::from_values(&project.data.values);
+    export::project_structure_columns(
+        &headers,
+        &row_ids,
+        &mut rows,
+        &structure,
+        &declared,
+        &description,
+    );
 
     if is_google(format) {
         // A project that already knows its spreadsheet refills that one; otherwise "Sync" asks
