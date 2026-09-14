@@ -142,6 +142,35 @@ fn at_subject(
     fixes
 }
 
+/// Actions about a producer itself rather than any one finding, such as asking a server again.
+pub type OfferSourceActions = fn(&str, &App) -> Vec<GroupFix>;
+
+#[derive(Default)]
+pub struct SourceActions(BTreeMap<SharedString, OfferSourceActions>);
+
+impl Global for SourceActions {}
+
+impl SourceActions {
+    pub fn register(source: &str, offer: OfferSourceActions, cx: &mut App) {
+        cx.default_global::<Self>().0.insert(source.into(), offer);
+    }
+}
+
+fn with_source_actions(source: &str, menu: PopupMenu, cx: &App) -> PopupMenu {
+    let Some(offer) = cx
+        .try_global::<SourceActions>()
+        .and_then(|actions| actions.0.get(source))
+        .copied()
+    else {
+        return menu;
+    };
+    offer(source, cx).into_iter().fold(menu, |menu, action| {
+        menu.item(
+            PopupMenuItem::new(action.label.clone()).on_click(move |_, _, cx| action.apply(cx)),
+        )
+    })
+}
+
 pub fn group_menu(
     source: &SharedString,
     members: &[GroupMember],
@@ -149,14 +178,12 @@ pub fn group_menu(
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
-    let Some(offer) = cx
+    let menu = with_source_actions(source, menu, cx);
+    let mut fixes = cx
         .try_global::<GroupFixProviders>()
         .and_then(|providers| providers.0.get(source))
-        .copied()
-    else {
-        return menu;
-    };
-    let mut fixes = offer(members, cx);
+        .map(|offer| offer(members, cx))
+        .unwrap_or_default();
     let mut seen = std::collections::BTreeSet::new();
     fixes.retain(|fix| seen.insert(fix.label.clone()));
     if fixes.is_empty() {
@@ -232,6 +259,7 @@ pub fn finding_menu(
             menu = fix(menu, found.label, found.replacement);
         }
     }
+    let menu = with_source_actions(&source, menu, cx);
     let Some(column) = finding.location.column.clone() else {
         return menu;
     };

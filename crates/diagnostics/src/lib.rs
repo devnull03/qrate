@@ -8,7 +8,7 @@
 pub mod fixes;
 mod panel;
 mod validator;
-pub use fixes::{Fix, FixProviders, GroupFix, GroupFixProviders, GroupMember};
+pub use fixes::{Fix, FixProviders, GroupFix, GroupFixProviders, GroupMember, SourceActions};
 pub use panel::{CheckList, ProblemsPanel};
 pub use validator::{
     AsyncValidators, CellValue, ColumnFinding, ColumnInfo, ColumnSnapshot, ColumnValidator,
