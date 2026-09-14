@@ -153,6 +153,13 @@ impl TablePanel {
             let description =
                 settings::description::DescriptionConfig::from_values(&project.data.values);
             delegate.set_structure(&structure, &description.file_level_key);
+            let expanded: Vec<settings::project::RowId> = project
+                .data
+                .values
+                .get(settings::description::HIERARCHY_EXPANDED_KEY)
+                .and_then(|value| serde_json::from_str(&value.text()).ok())
+                .unwrap_or_default();
+            delegate.restore_expanded(&expanded);
             Self::apply_saved_layout(&mut delegate, &project.file);
             delegate.set_image_paths(Self::resolve_images(&project.data));
             loaded_project = Some(project.file.clone());
@@ -378,12 +385,19 @@ impl TablePanel {
                     });
                 let description =
                     settings::description::DescriptionConfig::from_values(&project.data.values);
+                let expanded: Vec<settings::project::RowId> = project
+                    .data
+                    .values
+                    .get(settings::description::HIERARCHY_EXPANDED_KEY)
+                    .and_then(|value| serde_json::from_str(&value.text()).ok())
+                    .unwrap_or_default();
                 this.loaded_project = Some(file.clone());
                 this.state.update(cx, |state, cx| {
                     state.delegate_mut().set_data(&headers, &row_ids, &rows);
                     state
                         .delegate_mut()
                         .set_structure(&structure, &description.file_level_key);
+                    state.delegate_mut().restore_expanded(&expanded);
                     Self::apply_saved_layout(state.delegate_mut(), &file);
                     state.delegate_mut().set_image_paths(image_paths);
                     apply_settings(state.delegate_mut(), cx);
@@ -1378,11 +1392,14 @@ impl Render for TablePanel {
                 crate::set_frozen_columns(&this.state.clone(), 0, cx)
             }))
             .on_action(cx.listener(|this, _: &ExpandAll, _, cx| {
-                this.state.update(cx, |state, cx| {
+                let expanded = this.state.update(cx, |state, cx| {
                     state.delegate_mut().expand_all();
+                    let expanded = state.delegate().expanded_rows();
                     state.refresh(cx);
                     cx.emit(TableChanged);
+                    expanded
                 });
+                crate::persist_expanded(&expanded, cx);
             }))
             .on_action(cx.listener(|this, _: &CollapseAll, _, cx| {
                 this.state.update(cx, |state, cx| {
@@ -1390,6 +1407,7 @@ impl Render for TablePanel {
                     state.refresh(cx);
                     cx.emit(TableChanged);
                 });
+                crate::persist_expanded(&[], cx);
             }))
             .on_action(cx.listener(|this, _: &IndentRow, _, cx| {
                 if let Some((rows, _)) = this.structural_target(cx) {
