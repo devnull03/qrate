@@ -24,6 +24,12 @@ pub enum ExportError {
     Zip(#[from] zip::result::ZipError),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchiveFile {
+    pub path: PathBuf,
+    pub source_path: Option<String>,
+}
+
 /// The grid as CSV: the header row, then every row in table order.
 fn csv_bytes(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, csv::Error> {
     let mut writer = csv::Writer::from_writer(Vec::new());
@@ -191,8 +197,10 @@ pub fn csl_items(headers: &[String], rows: &[Vec<String>], mapping: &CslMapping)
 pub fn write_zip(
     path: &Path,
     headers: &[String],
+    row_ids: &[settings::project::RowId],
     rows: &[Vec<String>],
-    images: &[PathBuf],
+    structure: &[settings::project::RowStructure],
+    images: &[ArchiveFile],
 ) -> Result<(), ExportError> {
     let mut zip = zip::ZipWriter::new(File::create(path)?);
     let text = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -203,42 +211,69 @@ pub fn write_zip(
     zip.write_all(&csv_bytes(headers, rows)?)?;
     zip.start_file("metadata.jsonld", text)?;
     zip.write_all(
-        &serde_json::to_vec_pretty(&jsonld_value(headers, rows)).map_err(std::io::Error::from)?,
+        &serde_json::to_vec_pretty(&jsonld_hierarchy_value(headers, row_ids, rows, structure))
+            .map_err(std::io::Error::from)?,
     )?;
 
     let mut taken: HashSet<String> = HashSet::new();
     for image in images {
-        let Some(name) = image.file_name().and_then(|n| n.to_str()) else {
+        let Some(fallback) = image.path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
+        let relative = image
+            .source_path
+            .as_deref()
+            .and_then(safe_archive_path)
+            .unwrap_or_else(|| fallback.to_string());
         // Two folders can hold the same filename, and a zip entry that repeats one silently wins.
-        let mut name = name.to_string();
+        let mut name = relative;
         for n in 2.. {
             if taken.insert(name.clone()) {
                 break;
             }
             let stem = Path::new(&name).file_stem().unwrap_or_default();
-            name = format!("{}_{n}", stem.to_string_lossy());
-            if let Some(ext) = image.extension().and_then(|e| e.to_str()) {
-                name = format!("{name}.{ext}");
+            let parent = Path::new(&name).parent().unwrap_or_else(|| Path::new(""));
+            let mut renamed = format!("{}_{n}", stem.to_string_lossy());
+            if let Some(ext) = image.path.extension().and_then(|e| e.to_str()) {
+                renamed = format!("{renamed}.{ext}");
             }
+            name = file_ingest::normalized_path(&parent.join(renamed));
         }
-        match std::fs::read(image) {
+        match std::fs::read(&image.path) {
             Ok(bytes) => {
                 zip.start_file(format!("files/{name}"), binary)?;
                 zip.write_all(&bytes)?;
             }
-            Err(err) => log::warn!("left {} out of the export archive: {err}", image.display()),
+            Err(err) => log::warn!(
+                "left {} out of the export archive: {err}",
+                image.path.display()
+            ),
         }
     }
     zip.finish()?;
     Ok(())
 }
 
+fn safe_archive_path(source: &str) -> Option<String> {
+    let path = Path::new(source);
+    if path.is_absolute() || source.trim().is_empty() {
+        return None;
+    }
+    let safe: PathBuf = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part),
+            _ => None,
+        })
+        .collect();
+    (!safe.as_os_str().is_empty()).then(|| file_ingest::normalized_path(&safe))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CslMapping, csl_items, derive_csl_mapping, jsonld_hierarchy_value, jsonld_value, write_zip,
+        ArchiveFile, CslMapping, csl_items, derive_csl_mapping, jsonld_hierarchy_value,
+        jsonld_value, write_zip,
     };
     use settings::columns::ColumnType;
 
@@ -341,20 +376,31 @@ mod tests {
         write_zip(
             &archive,
             &headers,
+            &[10, 11],
             &rows,
-            &[dir.join("a/1.jpg"), dir.join("b/1.jpg")],
+            &[],
+            &[
+                ArchiveFile {
+                    path: dir.join("a/1.jpg"),
+                    source_path: Some("a/1.jpg".into()),
+                },
+                ArchiveFile {
+                    path: dir.join("b/1.jpg"),
+                    source_path: Some("b/1.jpg".into()),
+                },
+            ],
         )
         .unwrap();
 
         let zip = zip::ZipArchive::new(std::fs::File::open(&archive).unwrap()).unwrap();
-        // Two files sharing a name both survive; the second is renamed rather than overwriting.
+        // Two files sharing a name both survive in their source directories.
         assert_eq!(
             zip.file_names().collect::<std::collections::HashSet<_>>(),
             [
                 "data.csv",
                 "metadata.jsonld",
-                "files/1.jpg",
-                "files/1_2.jpg"
+                "files/a/1.jpg",
+                "files/b/1.jpg"
             ]
             .into_iter()
             .collect()
