@@ -49,6 +49,71 @@ pub fn write_json(path: &Path, value: &Value) -> Result<(), ExportError> {
     Ok(serde_json::to_writer_pretty(File::create(path)?, value).map_err(std::io::Error::from)?)
 }
 
+/// Fills user-declared archival projection columns without adding columns to the dataset.
+pub fn project_structure_columns(
+    headers: &[String],
+    row_ids: &[settings::project::RowId],
+    rows: &mut [Vec<String>],
+    structure: &[settings::project::RowStructure],
+    columns: &[(String, ColumnType)],
+    description: &settings::description::DescriptionConfig,
+) {
+    let by_id: std::collections::HashMap<_, _> = structure
+        .iter()
+        .map(|component| (component.row_id, component))
+        .collect();
+    let title_col = columns
+        .iter()
+        .find(|(_, kind)| *kind == ColumnType::Title)
+        .and_then(|(name, _)| headers.iter().position(|header| header == name));
+    let titles: std::collections::HashMap<_, _> = title_col
+        .map(|title| {
+            row_ids
+                .iter()
+                .zip(rows.iter())
+                .filter_map(|(id, row)| row.get(title).map(|value| (*id, value.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let level_labels: std::collections::HashMap<_, _> = description
+        .levels
+        .iter()
+        .map(|level| (level.key.as_str(), level.label.as_str()))
+        .collect();
+    for (source, row) in rows.iter_mut().enumerate() {
+        let Some(component) = row_ids.get(source).and_then(|id| by_id.get(id)) else {
+            continue;
+        };
+        for (name, kind) in columns {
+            let Some(col) = headers.iter().position(|header| header == name) else {
+                continue;
+            };
+            if col >= row.len() {
+                continue;
+            }
+            row[col] = match kind {
+                ColumnType::DescriptionLevel => level_labels
+                    .get(component.level_key.as_str())
+                    .copied()
+                    .unwrap_or(component.level_key.as_str())
+                    .to_string(),
+                ColumnType::ParentComponent => component
+                    .parent_id
+                    .map(|parent_id| {
+                        titles
+                            .get(&parent_id)
+                            .filter(|title| !title.trim().is_empty())
+                            .cloned()
+                            .unwrap_or_else(|| parent_id.to_string())
+                    })
+                    .unwrap_or_default(),
+                ColumnType::SourcePath => component.source_path.clone().unwrap_or_default(),
+                _ => continue,
+            };
+        }
+    }
+}
+
 /// One node per row, keyed by the column headers verbatim. The headers are the vocabulary a
 /// collection already uses, so `@vocab` resolves them rather than a mapping table nobody wrote —
 /// a reader gets terms that match the spreadsheet they came from.
@@ -273,7 +338,7 @@ fn safe_archive_path(source: &str) -> Option<String> {
 mod tests {
     use super::{
         ArchiveFile, CslMapping, csl_items, derive_csl_mapping, jsonld_hierarchy_value,
-        jsonld_value, write_zip,
+        jsonld_value, project_structure_columns, write_zip,
     };
     use settings::columns::ColumnType;
 
@@ -331,6 +396,66 @@ mod tests {
             graph["@graph"][1]["isPartOf"]["@id"],
             "urn:qrate:component:10"
         );
+    }
+
+    #[test]
+    fn declared_structure_columns_are_filled_without_adding_columns() {
+        let headers = vec![
+            "Title".into(),
+            "Level".into(),
+            "Parent".into(),
+            "Path".into(),
+        ];
+        let mut rows = vec![
+            vec![
+                "Photographs".into(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ],
+            vec![
+                "one.jpg".into(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ],
+        ];
+        let structure = [
+            settings::project::RowStructure {
+                row_id: 10,
+                parent_id: None,
+                level_key: "series".into(),
+                sibling_order: 0,
+                source_path: Some("Photographs".into()),
+                source_kind: None,
+            },
+            settings::project::RowStructure {
+                row_id: 11,
+                parent_id: Some(10),
+                level_key: "item".into(),
+                sibling_order: 0,
+                source_path: Some("Photographs/one.jpg".into()),
+                source_kind: None,
+            },
+        ];
+        project_structure_columns(
+            &headers,
+            &[10, 11],
+            &mut rows,
+            &structure,
+            &[
+                ("Title".into(), ColumnType::Title),
+                ("Level".into(), ColumnType::DescriptionLevel),
+                ("Parent".into(), ColumnType::ParentComponent),
+                ("Path".into(), ColumnType::SourcePath),
+            ],
+            &settings::description::DescriptionProfile::Rad.defaults(),
+        );
+        assert_eq!(
+            rows[1],
+            ["one.jpg", "Item", "Photographs", "Photographs/one.jpg"]
+        );
+        assert_eq!(headers.len(), 4);
     }
 
     #[test]
