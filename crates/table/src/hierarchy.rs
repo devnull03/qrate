@@ -38,8 +38,12 @@ impl Hierarchy {
     ) -> Self {
         let stored: HashMap<_, _> = stored.iter().map(|row| (row.row_id, row)).collect();
         let known: HashSet<_> = row_ids.iter().copied().collect();
-        let mut next_root = 0;
-        let mut next_child = HashMap::<RowId, i64>::new();
+        let mut next_root = stored
+            .values()
+            .filter(|row| row.parent_id.is_none())
+            .map(|row| row.sibling_order + 1)
+            .max()
+            .unwrap_or_default();
         let rows = row_ids
             .iter()
             .map(|row_id| match stored.get(row_id) {
@@ -68,14 +72,6 @@ impl Hierarchy {
             rows,
             expanded: HashSet::new(),
         };
-        for row in &hierarchy.rows {
-            if let Some(parent) = row.parent_id {
-                let next = next_child.entry(parent).or_default();
-                *next = (*next).max(row.sibling_order + 1);
-            } else {
-                next_root = next_root.max(row.sibling_order + 1);
-            }
-        }
         hierarchy.normalize();
         hierarchy
     }
@@ -92,6 +88,20 @@ impl Hierarchy {
             .filter(|row_id| row_ids.contains(row_id))
             .collect();
         *self = next;
+    }
+
+    pub(crate) fn replace_rows(&mut self, row_ids: &[RowId], rows: &[RowStructure], default: &str) {
+        let expanded = std::mem::take(&mut self.expanded);
+        let mut next = Self::from_rows(row_ids, rows, default);
+        next.expanded = expanded;
+        *self = next;
+    }
+
+    pub(crate) fn subtree(&self, row_id: RowId) -> Result<Vec<RowId>, Error> {
+        self.row(row_id)?;
+        let mut rows = vec![row_id];
+        rows.extend(self.descendants(row_id));
+        Ok(rows)
     }
 
     pub(crate) fn set_expanded(&mut self, row_id: RowId, expanded: bool) {

@@ -16,7 +16,13 @@ use diagnostics::{DATASET_MAIN, Location};
 use settings::history::{Change, Entry, EntryId, Origin};
 
 use crate::history::{Cells, Col, History, Row, Step};
-use crate::{cell, editing::EditState, filter, hierarchy::Hierarchy, row_index};
+use crate::{
+    cell,
+    editing::EditState,
+    filter,
+    hierarchy::{Hierarchy, Placement},
+    row_index,
+};
 
 /// Emitted whenever the table's selection, a cell's text, or the column layout changes, so
 /// cross-crate listeners know to re-render.
@@ -792,7 +798,7 @@ impl QrateTableDelegate {
                     after: after.to_string(),
                 })
                 .collect(),
-            Step::RowsAdded { at, rows } => rows
+            Step::RowsAdded { at, rows, .. } => rows
                 .iter()
                 .enumerate()
                 .map(|(offset, row)| Change::RowAdded {
@@ -801,7 +807,7 @@ impl QrateTableDelegate {
                     cells: named(&row.cells),
                 })
                 .collect(),
-            Step::RowsRemoved(rows) => rows
+            Step::RowsRemoved { rows, .. } => rows
                 .iter()
                 .map(|(at, row)| Change::RowRemoved {
                     row: row.id,
@@ -829,7 +835,7 @@ impl QrateTableDelegate {
                 to: *to,
             }],
             // A batch's steps are read one by one, each in its own state, as they are replayed.
-            Step::Batch(_) => Vec::new(),
+            Step::Batch(_) | Step::Hierarchy { .. } => Vec::new(),
         }
     }
 
@@ -908,12 +914,26 @@ impl QrateTableDelegate {
                     image: None,
                 }];
                 let at = (*position).min(self.rows.len());
+                let before_structure = self.hierarchy.rows().to_vec();
                 self.splice_rows(at, &rows);
-                Some(Step::RowsAdded { at, rows })
+                let after_structure = self.hierarchy.rows().to_vec();
+                Some(Step::RowsAdded {
+                    at,
+                    rows,
+                    before_structure,
+                    after_structure,
+                })
             }
             Change::RowRemoved { row, .. } => {
                 let at = find(&self.row_ids, *row)?;
-                Some(Step::RowsRemoved(self.cut_rows(&[at])))
+                let before_structure = self.hierarchy.rows().to_vec();
+                let rows = self.cut_rows(&[at]);
+                let after_structure = self.hierarchy.rows().to_vec();
+                Some(Step::RowsRemoved {
+                    rows,
+                    before_structure,
+                    after_structure,
+                })
             }
             Change::ColumnAdded {
                 column,
@@ -994,14 +1014,33 @@ impl QrateTableDelegate {
                     self.set_cell(*row, *col, text.clone());
                 }
             }
-            Step::RowsAdded { at, rows } => {
+            Step::RowsAdded {
+                at,
+                rows,
+                before_structure,
+                after_structure,
+            } => {
                 if forward {
                     self.splice_rows(*at, rows);
                 } else {
                     self.cut_rows(&(*at..at + rows.len()).collect::<Vec<_>>());
                 }
+                self.hierarchy.replace_rows(
+                    &self.row_ids,
+                    if forward {
+                        after_structure
+                    } else {
+                        before_structure
+                    },
+                    &self.default_level,
+                );
+                self.recompute_visible();
             }
-            Step::RowsRemoved(rows) => {
+            Step::RowsRemoved {
+                rows,
+                before_structure,
+                after_structure,
+            } => {
                 if forward {
                     self.cut_rows(&rows.iter().map(|(at, _)| *at).collect::<Vec<_>>());
                 } else {
@@ -1009,6 +1048,16 @@ impl QrateTableDelegate {
                         self.splice_rows(*at, std::slice::from_ref(row));
                     }
                 }
+                self.hierarchy.replace_rows(
+                    &self.row_ids,
+                    if forward {
+                        after_structure
+                    } else {
+                        before_structure
+                    },
+                    &self.default_level,
+                );
+                self.recompute_visible();
             }
             Step::ColumnAdded { at, col } => {
                 if forward {
@@ -1038,6 +1087,14 @@ impl QrateTableDelegate {
                     .rev()
                     .for_each(|s| self.replay(s, false, changes)),
             },
+            Step::Hierarchy { before, after } => {
+                self.hierarchy.replace_rows(
+                    &self.row_ids,
+                    if forward { after } else { before },
+                    &self.default_level,
+                );
+                self.recompute_visible();
+            }
         }
         if forward {
             changes.extend(self.changes(step));
@@ -1173,6 +1230,7 @@ impl QrateTableDelegate {
 
     /// Insert a blank row at `at`, or a copy of `source` when duplicating a row.
     pub(crate) fn insert_rows(&mut self, at: usize, source: Option<usize>) {
+        let before_structure = self.hierarchy.rows().to_vec();
         let cells = match source.and_then(|r| self.rows.get(r)) {
             Some(row) => row.clone(),
             None => vec![SharedString::default(); self.columns.len()],
@@ -1181,13 +1239,31 @@ impl QrateTableDelegate {
         let id = self.fresh_row_id();
         let rows = vec![Row { id, cells, image }];
         self.splice_rows(at, &rows);
-        self.record(Step::RowsAdded { at, rows }, Origin::Structure);
+        let after_structure = self.hierarchy.rows().to_vec();
+        self.record(
+            Step::RowsAdded {
+                at,
+                rows,
+                before_structure,
+                after_structure,
+            },
+            Origin::Structure,
+        );
     }
 
     /// Delete the rows at `ats` as one undo step, carrying their cells and photos on it.
     pub(crate) fn remove_rows(&mut self, ats: &[usize]) {
+        let before_structure = self.hierarchy.rows().to_vec();
         let removed = self.cut_rows(ats);
-        self.record(Step::RowsRemoved(removed), Origin::Structure);
+        let after_structure = self.hierarchy.rows().to_vec();
+        self.record(
+            Step::RowsRemoved {
+                rows: removed,
+                before_structure,
+                after_structure,
+            },
+            Origin::Structure,
+        );
     }
 
     pub(crate) fn row_id(&self, source: usize) -> Option<settings::project::RowId> {
@@ -1196,6 +1272,73 @@ impl QrateTableDelegate {
 
     pub fn row_ids(&self) -> &[settings::project::RowId] {
         &self.row_ids
+    }
+
+    pub(crate) fn indent_row(&mut self, source: usize) -> Result<(), crate::hierarchy::Error> {
+        let row_id = self
+            .row_ids
+            .get(source)
+            .copied()
+            .ok_or(crate::hierarchy::Error::UnknownRow(source as i64))?;
+        self.edit_hierarchy(|hierarchy| hierarchy.indent(row_id))
+    }
+
+    pub(crate) fn outdent_row(&mut self, source: usize) -> Result<(), crate::hierarchy::Error> {
+        let row_id = self
+            .row_ids
+            .get(source)
+            .copied()
+            .ok_or(crate::hierarchy::Error::UnknownRow(source as i64))?;
+        self.edit_hierarchy(|hierarchy| hierarchy.outdent(row_id))
+    }
+
+    pub(crate) fn reparent_row(
+        &mut self,
+        source: usize,
+        parent_source: Option<usize>,
+    ) -> Result<(), crate::hierarchy::Error> {
+        let row_id = self
+            .row_ids
+            .get(source)
+            .copied()
+            .ok_or(crate::hierarchy::Error::UnknownRow(source as i64))?;
+        let placement = match parent_source {
+            Some(parent) => Placement::ChildOf(
+                self.row_ids
+                    .get(parent)
+                    .copied()
+                    .ok_or(crate::hierarchy::Error::UnknownRow(parent as i64))?,
+            ),
+            None => Placement::Root,
+        };
+        self.edit_hierarchy(|hierarchy| hierarchy.move_row(row_id, placement))
+    }
+
+    pub(crate) fn subtree_sources(&self, source: usize) -> Vec<usize> {
+        let Some(row_id) = self.row_ids.get(source).copied() else {
+            return Vec::new();
+        };
+        let Ok(subtree) = self.hierarchy.subtree(row_id) else {
+            return Vec::new();
+        };
+        let subtree: HashSet<_> = subtree.into_iter().collect();
+        self.row_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(source, row_id)| subtree.contains(row_id).then_some(source))
+            .collect()
+    }
+
+    fn edit_hierarchy(
+        &mut self,
+        edit: impl FnOnce(&mut Hierarchy) -> Result<(), crate::hierarchy::Error>,
+    ) -> Result<(), crate::hierarchy::Error> {
+        let before = self.hierarchy.rows().to_vec();
+        edit(&mut self.hierarchy)?;
+        let after = self.hierarchy.rows().to_vec();
+        self.record(Step::Hierarchy { before, after }, Origin::Structure);
+        self.recompute_visible();
+        Ok(())
     }
 
     fn fresh_row_id(&mut self) -> settings::project::RowId {
@@ -2157,6 +2300,52 @@ mod app_tests {
                 assert_eq!(delegate.visible(), &[0, 1, 2, 3]);
                 assert_eq!(delegate.row_depth(1), 1);
                 assert_eq!(delegate.source(1), Some(1));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn hierarchy_edits_and_row_deletion_restore_structure_on_undo(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.set_structure(
+                    &[
+                        settings::project::RowStructure {
+                            row_id: 1,
+                            parent_id: None,
+                            level_key: "series".into(),
+                            sibling_order: 0,
+                            source_path: None,
+                            source_kind: None,
+                        },
+                        settings::project::RowStructure {
+                            row_id: 2,
+                            parent_id: None,
+                            level_key: "item".into(),
+                            sibling_order: 1,
+                            source_path: None,
+                            source_kind: None,
+                        },
+                    ],
+                    "item",
+                );
+                delegate.indent_row(1).unwrap();
+                assert_eq!(delegate.row_structure()[1].parent_id, Some(1));
+                delegate.undo();
+                assert_eq!(delegate.row_structure()[1].parent_id, None);
+
+                delegate.indent_row(1).unwrap();
+                delegate.remove_rows(&[0]);
+                assert_eq!(delegate.row_structure()[0].parent_id, None);
+                delegate.undo();
+                let child = delegate
+                    .row_structure()
+                    .iter()
+                    .find(|row| row.row_id == 2)
+                    .unwrap();
+                assert_eq!(child.parent_id, Some(1));
             });
         });
     }

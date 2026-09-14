@@ -65,7 +65,10 @@ actions!(
         DeleteColumn,
         RenameColumn,
         ExpandAll,
-        CollapseAll
+        CollapseAll,
+        IndentRow,
+        OutdentRow,
+        DeleteSubtree
     ]
 );
 
@@ -1387,6 +1390,21 @@ impl Render for TablePanel {
                     state.refresh(cx);
                     cx.emit(TableChanged);
                 });
+            }))
+            .on_action(cx.listener(|this, _: &IndentRow, _, cx| {
+                if let Some((rows, _)) = this.structural_target(cx) {
+                    crate::arrange(crate::Arrangement::Indent(rows[0]), cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OutdentRow, _, cx| {
+                if let Some((rows, _)) = this.structural_target(cx) {
+                    crate::arrange(crate::Arrangement::Outdent(rows[0]), cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &DeleteSubtree, _, cx| {
+                if let Some((rows, _)) = this.structural_target(cx) {
+                    crate::arrange(crate::Arrangement::DeleteSubtree(rows[0]), cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &InsertRowAbove, _, cx| {
                 this.structural(|rows, _| crate::Structural::InsertRow { at: rows[0] }, cx)
