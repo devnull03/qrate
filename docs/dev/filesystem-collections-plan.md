@@ -373,7 +373,7 @@ changes, and any warning. It contains:
 - default folder and file levels;
 - destination parent;
 - title and filename mapping;
-- duplicate and existing-row matches;
+- duplicate and existing-row matches, resolved by the policy in [`import-duplicates-plan.md`](import-duplicates-plan.md);
 - unreadable and skipped paths;
 - final component and file counts.
 
