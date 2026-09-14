@@ -88,7 +88,8 @@ pub fn project_structure_columns(
             let Some(col) = headers.iter().position(|header| header == name) else {
                 continue;
             };
-            if col >= row.len() {
+            // A value the archivist typed stays theirs; only a blank cell is filled from structure.
+            if row.get(col).is_none_or(|value| !value.trim().is_empty()) {
                 continue;
             }
             row[col] = match kind {
@@ -116,24 +117,8 @@ pub fn project_structure_columns(
 
 /// One node per row, keyed by the column headers verbatim. The headers are the vocabulary a
 /// collection already uses, so `@vocab` resolves them rather than a mapping table nobody wrote —
-/// a reader gets terms that match the spreadsheet they came from.
-pub fn jsonld_value(headers: &[String], rows: &[Vec<String>]) -> Value {
-    let graph: Vec<Value> = rows
-        .iter()
-        .map(|row| {
-            let node: Map<String, Value> = headers
-                .iter()
-                .zip(row)
-                .filter(|(_, cell)| !cell.trim().is_empty())
-                .map(|(header, cell)| (header.clone(), Value::String(cell.clone())))
-                .collect();
-            Value::Object(node)
-        })
-        .collect();
-    json!({ "@context": { "@vocab": "https://schema.org/" }, "@graph": graph })
-}
-
-/// JSON-LD with stable component identities and archival whole-part relationships.
+/// a reader gets terms that match the spreadsheet they came from. Each node also carries a stable
+/// component `@id` and, when it has a parent, an `isPartOf` whole-part link.
 pub fn jsonld_hierarchy_value(
     headers: &[String],
     row_ids: &[settings::project::RowId],
@@ -338,7 +323,7 @@ fn safe_archive_path(source: &str) -> Option<String> {
 mod tests {
     use super::{
         ArchiveFile, CslMapping, csl_items, derive_csl_mapping, jsonld_hierarchy_value,
-        jsonld_value, project_structure_columns, write_zip,
+        project_structure_columns, write_zip,
     };
     use settings::columns::ColumnType;
 
@@ -358,15 +343,15 @@ mod tests {
     #[test]
     fn jsonld_keeps_column_order_and_drops_empty_cells() {
         let (headers, rows) = grid();
-        let doc = jsonld_value(&headers, &rows);
+        let doc = jsonld_hierarchy_value(&headers, &[1, 2], &rows, &[]);
         let graph = doc["@graph"].as_array().unwrap();
         assert_eq!(graph.len(), 2);
         assert_eq!(
             graph[0].as_object().unwrap().keys().collect::<Vec<_>>(),
-            ["Digital ID", "Title", "Taken", "Notes"]
+            ["Digital ID", "Title", "Taken", "Notes", "@id"]
         );
         // The second row's blanks are absent, not empty strings — a null value is a claim.
-        assert_eq!(graph[1].as_object().unwrap().len(), 2);
+        assert_eq!(graph[1].as_object().unwrap().len(), 3);
     }
 
     #[test]
@@ -409,7 +394,7 @@ mod tests {
         let mut rows = vec![
             vec![
                 "Photographs".into(),
-                String::new(),
+                "Fonds".into(),
                 String::new(),
                 String::new(),
             ],
@@ -455,6 +440,7 @@ mod tests {
             rows[1],
             ["one.jpg", "Item", "Photographs", "Photographs/one.jpg"]
         );
+        assert_eq!(rows[0][1], "Fonds", "a typed value is never overwritten");
         assert_eq!(headers.len(), 4);
     }
 
