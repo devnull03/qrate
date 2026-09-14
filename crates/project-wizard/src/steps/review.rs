@@ -1,5 +1,7 @@
 //! Stage 5 · Review & Create — every path converges here.
 
+use std::collections::{BTreeSet, HashMap};
+
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::description_list::DescriptionList;
 use gpui_component::{Sizable, StyledExt, v_flex};
@@ -168,29 +170,31 @@ fn append_folder_components(
     ) else {
         return Vec::new();
     };
-    let claimed: std::collections::HashMap<usize, usize> = rows
+    let mut files_by_key: HashMap<String, BTreeSet<usize>> = HashMap::new();
+    for (index, component) in plan.components.iter().enumerate() {
+        if component.kind == file_ingest::EntryKind::File {
+            let path = file_ingest::normalized_path(&component.source_path);
+            for key in settings::filenames::lookup_keys(&path) {
+                files_by_key.entry(key).or_default().insert(index);
+            }
+        }
+    }
+    let claimed: HashMap<usize, usize> = rows
         .iter()
         .enumerate()
         .filter_map(|(source, row)| {
-            let value = row.get(file_col)?;
-            let keys = settings::filenames::lookup_keys(value);
-            let matches: Vec<_> = plan
-                .components
+            let matches: Vec<usize> = settings::filenames::lookup_keys(row.get(file_col)?)
                 .iter()
-                .enumerate()
-                .filter(|(_, component)| component.kind == file_ingest::EntryKind::File)
-                .filter(|(_, component)| {
-                    settings::filenames::lookup_keys(&file_ingest::normalized_path(
-                        &component.source_path,
-                    ))
-                    .iter()
-                    .any(|key| keys.contains(key))
-                })
-                .map(|(index, _)| index)
+                .filter_map(|key| files_by_key.get(key))
+                .flatten()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
                 .collect();
-            (matches.len() == 1).then_some((matches[0], source))
+            (matches.len() == 1).then(|| (matches[0], source))
         })
         .collect();
+    let mut next_order: HashMap<Option<project::RowId>, i64> = HashMap::new();
     let mut planned_rows = Vec::<usize>::with_capacity(plan.components.len());
     let mut structure: Vec<project::RowStructure> = Vec::with_capacity(plan.components.len());
     for (component_index, component) in plan.components.into_iter().enumerate() {
@@ -208,23 +212,17 @@ fn append_folder_components(
             rows.len() - 1
         });
         planned_rows.push(source);
+        let parent_id = component
+            .parent
+            .and_then(|parent| planned_rows.get(parent))
+            .map(|source| *source as project::RowId + 1);
+        let sibling_order = next_order.entry(parent_id).or_default();
+        *sibling_order += 1;
         structure.push(project::RowStructure {
             row_id: source as project::RowId + 1,
-            parent_id: component
-                .parent
-                .and_then(|parent| planned_rows.get(parent))
-                .map(|source| *source as project::RowId + 1),
+            parent_id,
             level_key: component.level_key,
-            sibling_order: structure
-                .iter()
-                .filter(|row| {
-                    row.parent_id
-                        == component
-                            .parent
-                            .and_then(|parent| planned_rows.get(parent))
-                            .map(|source| *source as project::RowId + 1)
-                })
-                .count() as i64,
+            sibling_order: *sibling_order - 1,
             source_path: Some(source_path),
             source_kind: Some(match component.kind {
                 file_ingest::EntryKind::File => project::SourceKind::File,
