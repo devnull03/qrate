@@ -56,9 +56,15 @@ pub(crate) enum Step {
     RowsAdded {
         at: usize,
         rows: Vec<Row>,
+        before_structure: Vec<settings::project::RowStructure>,
+        after_structure: Vec<settings::project::RowStructure>,
     },
     /// Ascending by index, which is the order they have to go back in.
-    RowsRemoved(Vec<(usize, Row)>),
+    RowsRemoved {
+        rows: Vec<(usize, Row)>,
+        before_structure: Vec<settings::project::RowStructure>,
+        after_structure: Vec<settings::project::RowStructure>,
+    },
     ColumnAdded {
         at: usize,
         col: Col,
@@ -78,6 +84,10 @@ pub(crate) enum Step {
     },
     /// Several steps taken as one, in the order they were made — a restore.
     Batch(Vec<Step>),
+    Hierarchy {
+        before: Vec<settings::project::RowStructure>,
+        after: Vec<settings::project::RowStructure>,
+    },
 }
 
 impl Step {
@@ -86,10 +96,11 @@ impl Step {
         match self {
             Step::Cells(cells) => cells.is_empty(),
             Step::RowsAdded { rows, .. } => rows.is_empty(),
-            Step::RowsRemoved(rows) => rows.is_empty(),
+            Step::RowsRemoved { rows, .. } => rows.is_empty(),
             Step::Renamed { before, after, .. } => before == after,
             Step::ColumnMoved { from, to } => from == to,
             Step::Batch(steps) => steps.iter().all(Step::is_empty),
+            Step::Hierarchy { before, after } => before == after,
             _ => false,
         }
     }
@@ -214,7 +225,11 @@ mod tests {
     fn an_empty_step_is_not_recorded() {
         let mut h = History::default();
         h.push(Step::Cells(Vec::new()));
-        h.push(Step::RowsRemoved(Vec::new()));
+        h.push(Step::RowsRemoved {
+            rows: Vec::new(),
+            before_structure: Vec::new(),
+            after_structure: Vec::new(),
+        });
         h.push(Step::Renamed {
             col: 0,
             before: "A".into(),
@@ -228,20 +243,22 @@ mod tests {
     #[test]
     fn a_structural_step_undoes_and_redoes() {
         let mut h = History::default();
-        let removed = || {
-            Step::RowsRemoved(vec![(
+        let removed = || Step::RowsRemoved {
+            rows: vec![(
                 2,
                 Row {
                     id: 3,
                     cells: vec!["gone".into()],
                     image: None,
                 },
-            )])
+            )],
+            before_structure: Vec::new(),
+            after_structure: Vec::new(),
         };
         h.push(edit(&[(0, 0, "a", "A")]));
         h.push(removed());
 
-        let Some(Step::RowsRemoved(rows)) = h.undo() else {
+        let Some(Step::RowsRemoved { rows, .. }) = h.undo() else {
             panic!("the structural step comes back first");
         };
         assert_eq!(rows[0].0, 2);
@@ -250,6 +267,6 @@ mod tests {
         // ...and the cell edit under it is still there, unshifted.
         assert_eq!(befores(&h.undo().unwrap()), vec![(0, 0, "a".into())]);
         assert!(matches!(h.redo(), Some(Step::Cells(_))));
-        assert!(matches!(h.redo(), Some(Step::RowsRemoved(_))));
+        assert!(matches!(h.redo(), Some(Step::RowsRemoved { .. })));
     }
 }
