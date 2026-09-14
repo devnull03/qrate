@@ -1693,6 +1693,7 @@ dependencies = [
  "base64",
  "calamine 0.26.1",
  "csv",
+ "file-ingest",
  "getrandom 0.3.4",
  "log",
  "quick-xml 0.37.5",
