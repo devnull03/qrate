@@ -142,23 +142,97 @@ fn project_columns(
     columns
 }
 
-fn append_extra_file_rows(
+fn append_folder_components(
     headers: &[String],
     rows: &mut Vec<Vec<String>>,
+    title_column: Option<&str>,
     file_column: Option<&str>,
-    folder_match: Option<&crate::data::FolderMatch>,
-) {
-    let Some((files, file_col)) = folder_match
-        .map(|matched| matched.extra_files.as_slice())
-        .zip(file_column.and_then(|name| headers.iter().position(|header| header == name)))
+    folder: &str,
+    recursive: bool,
+    description: &settings::description::DescriptionConfig,
+) -> Vec<project::RowStructure> {
+    let Some(file_col) =
+        file_column.and_then(|name| headers.iter().position(|header| header == name))
     else {
-        return;
+        return Vec::new();
     };
-    rows.extend(files.iter().map(|file| {
-        let mut row = vec![String::new(); headers.len()];
-        row[file_col] = file.clone();
-        row
-    }));
+    let title_col = title_column.and_then(|name| headers.iter().position(|header| header == name));
+    let Ok(plan) = file_ingest::plan(
+        std::path::Path::new(folder),
+        &file_ingest::PlanOptions {
+            recursive,
+            include_root: true,
+            folder_level_key: &description.folder_level_key,
+            file_level_key: &description.file_level_key,
+        },
+    ) else {
+        return Vec::new();
+    };
+    let claimed: std::collections::HashMap<usize, usize> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(source, row)| {
+            let value = row.get(file_col)?;
+            let keys = settings::filenames::lookup_keys(value);
+            let matches: Vec<_> = plan
+                .components
+                .iter()
+                .enumerate()
+                .filter(|(_, component)| component.kind == file_ingest::EntryKind::File)
+                .filter(|(_, component)| {
+                    settings::filenames::lookup_keys(&file_ingest::normalized_path(
+                        &component.source_path,
+                    ))
+                    .iter()
+                    .any(|key| keys.contains(key))
+                })
+                .map(|(index, _)| index)
+                .collect();
+            (matches.len() == 1).then_some((matches[0], source))
+        })
+        .collect();
+    let mut planned_rows = Vec::<usize>::with_capacity(plan.components.len());
+    let mut structure: Vec<project::RowStructure> = Vec::with_capacity(plan.components.len());
+    for (component_index, component) in plan.components.into_iter().enumerate() {
+        let source_path = file_ingest::normalized_path(&component.source_path);
+        let existing = claimed.get(&component_index).copied();
+        let source = existing.unwrap_or_else(|| {
+            let mut row = vec![String::new(); headers.len()];
+            if let Some(title_col) = title_col {
+                row[title_col] = component.title.clone();
+            }
+            if component.kind == file_ingest::EntryKind::File {
+                row[file_col] = source_path.clone();
+            }
+            rows.push(row);
+            rows.len() - 1
+        });
+        planned_rows.push(source);
+        structure.push(project::RowStructure {
+            row_id: source as project::RowId + 1,
+            parent_id: component
+                .parent
+                .and_then(|parent| planned_rows.get(parent))
+                .map(|source| *source as project::RowId + 1),
+            level_key: component.level_key,
+            sibling_order: structure
+                .iter()
+                .filter(|row| {
+                    row.parent_id
+                        == component
+                            .parent
+                            .and_then(|parent| planned_rows.get(parent))
+                            .map(|source| *source as project::RowId + 1)
+                })
+                .count() as i64,
+            source_path: Some(source_path),
+            source_kind: Some(match component.kind {
+                file_ingest::EntryKind::File => project::SourceKind::File,
+                file_ingest::EntryKind::Directory => project::SourceKind::Directory,
+            }),
+        });
+    }
+    structure
 }
 
 impl ProjectWizard {
@@ -192,14 +266,20 @@ impl ProjectWizard {
         // A file in the folder that no row names is still part of the collection. It arrives as
         // its own row, empty but for the filename, so it can be catalogued in qrate instead of
         // being noticed only when someone counts the folder.
-        if !self.skip_files {
-            append_extra_file_rows(
+        let description = settings::description::DescriptionProfile::Rad.defaults();
+        let structure = if !self.skip_files {
+            append_folder_components(
                 &headers,
                 &mut rows,
+                self.title_column.as_deref(),
                 self.file_column.as_deref(),
-                self.folder_match.as_ref(),
-            );
-        }
+                &self.folder_path,
+                self.recurse_subfolders,
+                &description,
+            )
+        } else {
+            Vec::new()
+        };
         // A project with no rows is a grid with nothing to type into — the first row has to be
         // created before anything else can be, so create it here rather than making the archivist
         // find Insert Row on an empty screen.
@@ -223,6 +303,36 @@ impl ProjectWizard {
             },
         ) {
             Ok(file) => {
+                if !structure.is_empty()
+                    && let Err(error) =
+                        project::write_row_structure(std::path::Path::new(&file), &structure)
+                {
+                    log::error!("couldn't save the imported folder hierarchy — {error}");
+                }
+                for (key, value) in [
+                    (
+                        settings::description::DESCRIPTION_PROFILE_KEY,
+                        description.profile.key().to_string(),
+                    ),
+                    (
+                        settings::description::DESCRIPTION_LEVELS_KEY,
+                        serde_json::to_string(&description.levels).unwrap_or_default(),
+                    ),
+                    (
+                        settings::description::FOLDER_LEVEL_KEY,
+                        description.folder_level_key.clone(),
+                    ),
+                    (
+                        settings::description::FILE_LEVEL_KEY,
+                        description.file_level_key.clone(),
+                    ),
+                ] {
+                    if let Err(error) =
+                        settings::project::write_setting(std::path::Path::new(&file), key, &value)
+                    {
+                        log::error!("couldn't save description profile setting {key} — {error}");
+                    }
+                }
                 // Imported notes become Problems-panel entries. Non-fatal: a lost note must not
                 // fail project creation. `open_project` below wakes the diagnostics loader,
                 // which reads them straight back, so this write is the single source of truth.
@@ -384,9 +494,9 @@ impl ProjectWizard {
 mod tests {
     use settings::columns::ColumnType;
 
-    use crate::data::{ColumnConfigEntry, ColumnConfigPreview, FolderMatch};
+    use crate::data::{ColumnConfigEntry, ColumnConfigPreview};
 
-    use super::{append_extra_file_rows, project_columns};
+    use super::{append_folder_components, project_columns};
 
     fn roles(columns: &[crate::project::ProjectColumn]) -> Vec<(&str, ColumnType)> {
         columns
@@ -447,23 +557,30 @@ mod tests {
     }
 
     #[test]
-    fn blank_folder_files_become_rows_in_the_file_column() {
+    fn blank_folder_tree_becomes_archival_component_rows() {
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::create_dir(folder.path().join("series")).unwrap();
+        std::fs::write(folder.path().join("series").join("one.jpg"), "photo").unwrap();
         let headers = vec!["Title".into(), "File".into()];
         let mut rows = Vec::new();
-        let folder = FolderMatch {
-            matched_rows: 0,
-            total_rows: 0,
-            extra_files: vec!["one.jpg".into(), "two.png".into()],
-        };
+        let description = settings::description::DescriptionProfile::Rad.defaults();
 
-        append_extra_file_rows(&headers, &mut rows, Some("File"), Some(&folder));
-
-        assert_eq!(
-            rows,
-            [
-                vec![String::new(), "one.jpg".into()],
-                vec![String::new(), "two.png".into()],
-            ]
+        let structure = append_folder_components(
+            &headers,
+            &mut rows,
+            Some("Title"),
+            Some("File"),
+            folder.path().to_str().unwrap(),
+            true,
+            &description,
         );
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[1], ["series", ""]);
+        assert_eq!(rows[2], ["one.jpg", "series/one.jpg"]);
+        assert_eq!(structure[1].parent_id, Some(1));
+        assert_eq!(structure[2].parent_id, Some(2));
+        assert_eq!(structure[1].level_key, "series");
+        assert_eq!(structure[2].level_key, "item");
     }
 }

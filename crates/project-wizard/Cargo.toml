@@ -20,3 +20,6 @@ diagnostics = { path = "../diagnostics" }
 plugin-api = { path = "../plugin-api" }
 settings = { path = "../settings" }
 window-wrapper = { path = "../window-wrapper" }
+
+[dev-dependencies]
+tempfile.workspace = true
