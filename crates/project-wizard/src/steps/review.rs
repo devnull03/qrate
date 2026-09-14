@@ -266,7 +266,7 @@ impl ProjectWizard {
         // A file in the folder that no row names is still part of the collection. It arrives as
         // its own row, empty but for the filename, so it can be catalogued in qrate instead of
         // being noticed only when someone counts the folder.
-        let description = settings::description::DescriptionProfile::Rad.defaults();
+        let description = self.description_config(cx);
         let structure = if !self.skip_files {
             append_folder_components(
                 &headers,
