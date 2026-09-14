@@ -16,8 +16,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use diagnostics::{
-    ColumnInfo, ColumnValidator, ColumnValues, Fix, GroupFix, GroupMember, Location, Misspelling,
-    Severity,
+    ColumnInfo, ColumnValidator, ColumnValues, GroupFix, GroupMember, Misspelling, Severity,
 };
 use gpui::{App, Global, SharedString};
 use settings::columns::ColumnType;
@@ -45,10 +44,6 @@ static EN_DIC: &str = include_str!("../dictionaries/en.dic");
 
 /// The name the Problems panel shows, and the key this validator's output is replaced by.
 pub const SPELLING_VALIDATOR_NAME: &str = "spell";
-
-/// Capitalization is separate from spelling: known words in the wrong case are quieter and offer a
-/// direct replacement instead of "Add to dictionary".
-pub const CAPITALIZATION_VALIDATOR_NAME: &str = "capitalization";
 
 /// Shortest token worth checking. Below this the dictionary answers "yes" for almost anything.
 const MIN_WORD_LEN: usize = 3;
@@ -89,9 +84,9 @@ struct LoadedDictionary {
 struct DictionarySet {
     loaded: Vec<LoadedDictionary>,
     preferred: String,
-    /// Each distinct cell value's verdict, shared by the spelling and capitalization validators
-    /// and kept across runs — checking the sheet is seconds, and almost none of it changes between
-    /// runs. Only [`Self::learn`] changes an answer, so only it clears this.
+    /// Each distinct cell value’s verdict, kept across runs — checking the sheet is seconds, and
+    /// almost none of it changes between runs. Only [`Self::learn`] changes an answer, so only it
+    /// clears this.
     checked: Mutex<HashMap<String, Checked>>,
 }
 
@@ -200,12 +195,6 @@ impl DictionarySet {
         let clear_lead = (winner.0 - runner_up) * 5 >= tokens.len();
         (enough_coverage && clear_lead).then(|| &self.loaded[winner.1])
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FindingKind {
-    Spelling,
-    Capitalization,
 }
 
 #[derive(Clone)]
@@ -472,16 +461,28 @@ pub fn misspellings(text: &str, cx: &App) -> Vec<Misspelling> {
         if found.len() == MAX_SUGGESTED_WORDS {
             break;
         }
-        if !matches!(
-            classify_word(dictionary, word, this.ignore_capitalized),
-            WordOutcome::Misspelled
-        ) || found.iter().any(|(seen, _)| seen == word)
-        {
+        if found.iter().any(|(seen, _)| seen == word) {
             continue;
         }
-        found.push((word.into(), suggestions(dictionary, word)));
+        if let Some(corrections) = corrections(dictionary, word, this.ignore_capitalized) {
+            found.push((word.into(), corrections));
+        }
     }
     found
+}
+
+/// What a flagged word could become: the dictionary's casing for a capitalization slip, else
+/// ranked suggestions. `None` for a word nothing flags.
+fn corrections(
+    dictionary: &Dictionary,
+    word: &str,
+    ignore_capitalized: bool,
+) -> Option<Vec<SharedString>> {
+    match classify_word(dictionary, word, ignore_capitalized) {
+        WordOutcome::Misspelled => Some(suggestions(dictionary, word)),
+        WordOutcome::Capitalization(canonical) => Some(vec![canonical.into()]),
+        WordOutcome::Clean | WordOutcome::ProperNoun => None,
+    }
 }
 
 fn suggestions(dictionary: &Dictionary, word: &str) -> Vec<SharedString> {
@@ -496,34 +497,6 @@ fn suggestions(dictionary: &Dictionary, word: &str) -> Vec<SharedString> {
     }
     suggestions.truncate(MAX_SUGGESTIONS);
     suggestions.into_iter().map(SharedString::from).collect()
-}
-
-/// Capitalization corrections for the general fix-provider registry.
-pub fn capitalization_fixes(_: &Location, text: &str, subject: Option<&str>, cx: &App) -> Vec<Fix> {
-    let Some(this) = cx.try_global::<SpellCheck>() else {
-        return Vec::new();
-    };
-    let Ok(dictionaries) = this.dictionaries.read() else {
-        return Vec::new();
-    };
-    let Some(loaded) = dictionaries.for_text(text) else {
-        return Vec::new();
-    };
-    let mut seen = std::collections::BTreeSet::new();
-    words(text, false)
-        .filter(|word| DictionarySet::base(&loaded.code) != "en" || !non_english_elision(word))
-        .filter(|word| subject.is_none_or(|subject| *word == subject))
-        .filter(|word| seen.insert(*word))
-        .filter_map(
-            |word| match classify_word(&loaded.dictionary, word, false) {
-                WordOutcome::Capitalization(canonical) => Some(Fix {
-                    label: format!("Use “{canonical}”").into(),
-                    replacement: text.replace(word, &canonical).into(),
-                }),
-                _ => None,
-            },
-        )
-        .collect()
 }
 
 pub fn spelling_group_fixes(members: &[GroupMember], cx: &App) -> Vec<GroupFix> {
@@ -542,13 +515,18 @@ pub fn spelling_group_fixes(members: &[GroupMember], cx: &App) -> Vec<GroupFix> 
     let Some(loaded) = dictionaries.for_text(&first.text) else {
         return Vec::new();
     };
-    if !matches!(
-        classify_word(&loaded.dictionary, word, this.ignore_capitalized),
-        WordOutcome::Misspelled
-    ) {
+    let Some(corrections) = corrections(&loaded.dictionary, word, this.ignore_capitalized) else {
         return Vec::new();
-    }
-    suggestions(&loaded.dictionary, word)
+    };
+    let learned = word.to_owned();
+    let add = GroupFix::action(format!("Add “{word}” to dictionary"), move |cx| {
+        if add_word(&learned, cx)
+            && let Some(hooks) = cx.try_global::<diagnostics::DiagnosticHooks>().copied()
+        {
+            (hooks.revalidate)(cx);
+        }
+    });
+    corrections
         .into_iter()
         .filter_map(|suggestion| {
             let replacements = members
@@ -567,48 +545,8 @@ pub fn spelling_group_fixes(members: &[GroupMember], cx: &App) -> Vec<GroupFix> 
                 replacements,
             ))
         })
+        .chain([add])
         .collect()
-}
-
-pub fn capitalization_group_fixes(members: &[GroupMember], cx: &App) -> Vec<GroupFix> {
-    let Some(first) = members.first() else {
-        return Vec::new();
-    };
-    let Some(observed) = first.subject.as_deref() else {
-        return Vec::new();
-    };
-    let Some(this) = cx.try_global::<SpellCheck>() else {
-        return Vec::new();
-    };
-    let Ok(dictionaries) = this.dictionaries.read() else {
-        return Vec::new();
-    };
-    let Some(loaded) = dictionaries.for_text(&first.text) else {
-        return Vec::new();
-    };
-    let WordOutcome::Capitalization(canonical) = classify_word(&loaded.dictionary, observed, false)
-    else {
-        return Vec::new();
-    };
-    let replacements = members
-        .iter()
-        .map(|member| {
-            (member.subject.as_deref() == Some(observed)).then(|| {
-                (
-                    member.location.clone(),
-                    member.text.replace(observed, &canonical).into(),
-                )
-            })
-        })
-        .collect::<Option<Vec<_>>>();
-    replacements
-        .map(|replacements| {
-            vec![GroupFix::replacements(
-                format!("Use “{canonical}” everywhere"),
-                replacements,
-            )]
-        })
-        .unwrap_or_default()
 }
 
 /// Split `text` into the tokens worth checking. Straight and typographic apostrophes stay inside
@@ -684,12 +622,15 @@ fn classify_word(dictionary: &Dictionary, word: &str, ignore_capitalized: bool) 
     }
 }
 
-impl SpellCheck {
-    fn findings(
+impl ColumnValidator for SpellCheck {
+    fn name(&self) -> SharedString {
+        SPELLING_VALIDATOR_NAME.into()
+    }
+
+    fn validate(
         &self,
         column: &ColumnInfo,
         values: ColumnValues<'_>,
-        kind: FindingKind,
     ) -> Vec<diagnostics::ColumnFinding> {
         if !column.settings.spellcheck || !ColumnType::from_declared(column.data_type).is_prose() {
             return Vec::new();
@@ -720,25 +661,17 @@ impl SpellCheck {
                         if !seen.insert(word.clone()) {
                             continue;
                         }
-                        let (severity, message, target) = match (kind, outcome.clone()) {
-                            (FindingKind::Spelling, WordOutcome::Misspelled) => (
-                                Severity::Warning,
-                                format!("misspelled: {word}"),
-                                String::new(),
-                            ),
-                            (
-                                FindingKind::Capitalization,
-                                WordOutcome::Capitalization(canonical),
-                            ) => (
-                                Severity::Warning,
+                        let (message, target) = match outcome {
+                            WordOutcome::Misspelled => (format!("misspelled: {word}"), ""),
+                            WordOutcome::Capitalization(canonical) => (
                                 format!("capitalization: “{word}” should be “{canonical}”"),
-                                canonical,
+                                canonical.as_str(),
                             ),
-                            _ => continue,
+                            WordOutcome::Clean | WordOutcome::ProperNoun => continue,
                         };
                         found.push(diagnostics::ColumnFinding {
                             row: Some(cell.row),
-                            severity,
+                            severity: Severity::Warning,
                             group: Some(diagnostics::DiagnosticGroup {
                                 key: format!("{:?}", (code, word, target)).into(),
                                 summary: message.clone().into(),
@@ -754,43 +687,12 @@ impl SpellCheck {
     }
 }
 
-impl ColumnValidator for SpellCheck {
-    fn name(&self) -> SharedString {
-        SPELLING_VALIDATOR_NAME.into()
-    }
-
-    fn validate(
-        &self,
-        column: &ColumnInfo,
-        values: ColumnValues<'_>,
-    ) -> Vec<diagnostics::ColumnFinding> {
-        self.findings(column, values, FindingKind::Spelling)
-    }
-}
-
-pub struct CapitalizationCheck(pub SpellCheck);
-
-impl ColumnValidator for CapitalizationCheck {
-    fn name(&self) -> SharedString {
-        CAPITALIZATION_VALIDATOR_NAME.into()
-    }
-
-    fn validate(
-        &self,
-        column: &ColumnInfo,
-        values: ColumnValues<'_>,
-    ) -> Vec<diagnostics::ColumnFinding> {
-        self.0.findings(column, values, FindingKind::Capitalization)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     // Never `use super::*` here — the chained glob would let gpui's `test` macro shadow the
     // `#[test]` its own expansion emits. See the note in `table`'s `note.rs` test module.
     use crate::{
-        CapitalizationCheck, DictionarySet, Downloading, EN_CA_AFF, EN_CA_DIC, LoadedDictionary,
-        SpellCheck, capitalization_fixes, capitalization_group_fixes, checkable,
+        DictionarySet, Downloading, EN_CA_AFF, EN_CA_DIC, LoadedDictionary, SpellCheck, checkable,
         retain_wanted_downloads, spelling_group_fixes, words,
     };
     use diagnostics::{ColumnInfo, ColumnValidator, DATASET_MAIN, GroupMember, Location, Severity};
@@ -872,17 +774,12 @@ mod tests {
     }
 
     #[test]
-    fn known_words_in_the_wrong_case_are_not_misspellings() {
-        let spell = dictionary();
-        let defaults = ColumnSettings::default();
-        assert!(findings(&spell, "", &defaults, &["alice visited Canada"]).is_empty());
-        let found = CapitalizationCheck(spell).validate(
-            &ColumnInfo {
-                name: "Description",
-                data_type: "Text",
-                settings: &defaults,
-            },
-            diagnostics::ColumnValues::new(&["alice visited Canada".into()], ""),
+    fn known_words_in_the_wrong_case_are_capitalization_not_misspellings() {
+        let found = findings(
+            &dictionary(),
+            "",
+            &ColumnSettings::default(),
+            &["alice visited Canada"],
         );
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].severity, Severity::Warning);
@@ -1069,10 +966,6 @@ mod tests {
     fn grouped_words_offer_one_resolution_for_every_cell(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_global(dictionary());
-            let location = Location::cell(DATASET_MAIN, 0, None, "Title");
-            let fixes = capitalization_fixes(&location, "alice visited canada", Some("alice"), cx);
-            assert_eq!(fixes.len(), 1);
-            assert_eq!(fixes[0].label, "Use “Alice”");
             let members = |text: &str, message: &str| {
                 [0, 1].map(|row| GroupMember {
                     location: Location::cell(DATASET_MAIN, row, None, "Title"),
@@ -1086,13 +979,16 @@ mod tests {
                     .iter()
                     .any(|fix| fix.label == "Change all “recieve” to “receive”")
             );
+            let capitalization = spelling_group_fixes(
+                &members("alice visited Canada", "capitalization: alice"),
+                cx,
+            );
             assert_eq!(
-                capitalization_group_fixes(
-                    &members("alice visited Canada", "capitalization: alice"),
-                    cx,
-                )[0]
-                .label,
-                "Use “Alice” everywhere"
+                capitalization
+                    .iter()
+                    .map(|fix| fix.label.as_ref())
+                    .collect::<Vec<_>>(),
+                ["Change all “alice” to “Alice”", "Add “alice” to dictionary"]
             );
         });
     }
