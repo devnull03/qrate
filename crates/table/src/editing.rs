@@ -6,6 +6,7 @@ use std::path::Path;
 
 use gpui::{Context, PathPromptOptions, SharedString, Window};
 use gpui_component::table::TableState;
+use settings::history::Origin;
 
 use crate::delegate::QrateTableDelegate;
 
@@ -74,7 +75,7 @@ pub(crate) fn start(
                             cx,
                         );
                     }
-                    crate::write_cell(row, col, name, cx);
+                    crate::write_cell(row, col, name, Origin::Typed, cx);
                 });
             }
         })
@@ -151,7 +152,7 @@ pub(crate) fn commit(
             }
         }
         EditState::Editing { row, col } => {
-            if !delegate.apply_edit(vec![(row, col, value)]) {
+            if !delegate.apply_edit(vec![(row, col, value)], Origin::Typed) {
                 return Committed::Unchanged;
             }
             settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);

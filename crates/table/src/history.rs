@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use gpui::SharedString;
 use gpui_component::table::Column;
+use settings::history::Change;
 
 /// A batch of cell writes as `(row, col, text)` — what `apply_edit` takes and what undo hands back.
 pub(crate) type Cells = Vec<(usize, usize, SharedString)>;
@@ -71,6 +72,12 @@ pub(crate) enum Step {
         before: SharedString,
         after: SharedString,
     },
+    ColumnMoved {
+        from: usize,
+        to: usize,
+    },
+    /// Several steps taken as one, in the order they were made — a restore.
+    Batch(Vec<Step>),
 }
 
 impl Step {
@@ -81,9 +88,18 @@ impl Step {
             Step::RowsAdded { rows, .. } => rows.is_empty(),
             Step::RowsRemoved(rows) => rows.is_empty(),
             Step::Renamed { before, after, .. } => before == after,
+            Step::ColumnMoved { from, to } => from == to,
+            Step::Batch(steps) => steps.iter().all(Step::is_empty),
             _ => false,
         }
     }
+}
+
+/// Whether any of `changes` added or removed a row — what notes have to be re-aligned after.
+pub(crate) fn moves_rows(changes: &[Change]) -> bool {
+    changes
+        .iter()
+        .any(|c| matches!(c, Change::RowAdded { .. } | Change::RowRemoved { .. }))
 }
 
 #[derive(Default)]

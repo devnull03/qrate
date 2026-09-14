@@ -209,7 +209,7 @@ impl CurrentProject {
 /// rollback journals; NORMAL is only equivalent under WAL — and a busy
 /// timeout so a transient AV/indexer file lock retries instead of surfacing
 /// as SQLITE_BUSY.
-fn open_rw(path: &Path) -> Result<Connection> {
+pub(crate) fn open_rw(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path).with_context(|| format!("Open project at {path:?}"))?;
     conn.busy_timeout(Duration::from_secs(5))
         .context("Set busy timeout")?;
@@ -221,7 +221,7 @@ fn open_rw(path: &Path) -> Result<Connection> {
 }
 
 /// Read-only open; no journal-mode change (that needs a write handle).
-fn open_ro(path: &Path) -> Result<Connection> {
+pub(crate) fn open_ro(path: &Path) -> Result<Connection> {
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("Open project at {path:?}"))?;
     conn.busy_timeout(Duration::from_secs(5))
@@ -639,7 +639,12 @@ pub fn read_notes(path: &Path) -> Result<Vec<StoredNote>> {
 /// replace-by-source rule the in-memory store uses, so a re-import can't leave orphans behind.
 /// Only authored sources belong here (imported notes, user marks); computed diagnostics are
 /// recomputed on open and would go stale in storage.
-pub fn write_notes(path: &Path, source: &str, notes: &[StoredNote]) -> Result<()> {
+pub fn write_notes(
+    path: &Path,
+    source: &str,
+    notes: &[StoredNote],
+    history: &[crate::history::Entry],
+) -> Result<()> {
     let mut conn = open_rw(path)?;
     let tx = conn.transaction()?;
     tx.execute_batch(NOTES_DDL).context("Create __notes")?;
@@ -665,6 +670,7 @@ pub fn write_notes(path: &Path, source: &str, notes: &[StoredNote]) -> Result<()
             .context("Insert note")?;
         }
     }
+    crate::history::append(&tx, history)?;
     tx.pragma_update(None, "user_version", QRATE_SCHEMA_VERSION)
         .context("Set user_version")?;
     tx.commit().context("Commit notes")?;
@@ -843,6 +849,7 @@ pub fn save_dataset(
     headers: &[String],
     row_ids: &[RowId],
     rows: &[Vec<String>],
+    history: &[crate::history::Entry],
 ) -> Result<()> {
     if headers.is_empty() {
         return Ok(());
@@ -851,6 +858,7 @@ pub fn save_dataset(
     conn.execute_batch("BEGIN; DROP TABLE IF EXISTS dataset_main;")
         .context("Begin dataset rewrite")?;
     create_and_fill_dataset(&conn, headers, Some(row_ids), rows)?;
+    crate::history::append(&conn, history)?;
     conn.execute_batch("COMMIT")
         .context("Commit dataset rewrite")?;
     Ok(())
@@ -965,7 +973,7 @@ mod tests {
         let mut fresh = note(Some(2), Some("Title"), "identified by her daughter");
         fresh.created_at = Some("2026-08-14".into());
         fresh.author = Some("rk".into());
-        write_notes(&path, "import", &[fresh]).unwrap();
+        write_notes(&path, "import", &[fresh], &[]).unwrap();
 
         let after = read_notes(&path).unwrap();
         assert_eq!(after.len(), 1);
@@ -985,12 +993,19 @@ mod tests {
                 note(Some(0), Some("Title"), "cell note"),
                 note(Some(3), None, "whole row"),
             ],
+            &[],
         )
         .unwrap();
         assert_eq!(read_notes(&path).unwrap().len(), 2);
 
         // A different source is additive — it must not disturb `import`'s entries.
-        write_notes(&path, "spell", &[note(None, Some("Title"), "whole column")]).unwrap();
+        write_notes(
+            &path,
+            "spell",
+            &[note(None, Some("Title"), "whole column")],
+            &[],
+        )
+        .unwrap();
         assert_eq!(read_notes(&path).unwrap().len(), 3);
 
         // Optional coordinates survive the NULL round-trip in both directions.
@@ -1004,7 +1019,7 @@ mod tests {
         );
 
         // Republishing an empty set clears only that source — the invalidation rule.
-        write_notes(&path, "import", &[]).unwrap();
+        write_notes(&path, "import", &[], &[]).unwrap();
         let left = read_notes(&path).unwrap();
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].message, "whole column");
@@ -1024,7 +1039,7 @@ mod tests {
         // A v1 `.qrate` is missing the table entirely; that is empty, not an error.
         assert_eq!(read_notes(&path).unwrap(), Vec::new());
         // ...and the first write creates it, which is the whole 1 -> 2 migration.
-        write_notes(&path, "import", &[note(Some(1), Some("A"), "hi")]).unwrap();
+        write_notes(&path, "import", &[note(Some(1), Some("A"), "hi")], &[]).unwrap();
         assert_eq!(read_notes(&path).unwrap().len(), 1);
     }
 
@@ -1177,7 +1192,7 @@ mod tests {
             vec!["1".to_string(), "Edited".to_string()],
             vec!["2".to_string(), "Second".to_string()],
         ];
-        save_dataset(&path, &headers, &[1, 2], &edited).unwrap();
+        save_dataset(&path, &headers, &[1, 2], &edited, &[]).unwrap();
 
         let data = load_project_file(&path).unwrap();
         assert_eq!(data.headers, headers);
@@ -1229,12 +1244,13 @@ mod tests {
                     author: None,
                 },
             ],
+            &[],
         )
         .unwrap();
 
         let mut inserted = vec![vec!["new item".into()]];
         inserted.extend(rows);
-        save_dataset(&path, &headers, &[7, 1, 2, 3, 4, 5, 6], &inserted).unwrap();
+        save_dataset(&path, &headers, &[7, 1, 2, 3, 4, 5, 6], &inserted, &[]).unwrap();
 
         let reopened = load_project_file(&path).unwrap();
         assert_eq!(reopened.row_ids, vec![7, 1, 2, 3, 4, 5, 6]);

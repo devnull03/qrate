@@ -21,7 +21,7 @@ use crate::panel_registry::PanelMeta;
 /// Where Agent starts out and what it puts in the status bar.
 pub static AGENT_META: PanelMeta = PanelMeta {
     name: "AgentPanel",
-    icon: IconName::Star,
+    icon: "icons/star.svg",
     label: "Agent",
     default_placement: DockPlacement::Right,
     badge: false,

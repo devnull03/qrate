@@ -11,16 +11,12 @@
 use std::{collections::HashMap, sync::Arc};
 
 use gpui::*;
-use gpui_component::{
-    IconName,
-    dock::{
-        BasePanelView, DockArea, DockEvent, DockLayout, DockPlacement, InsertTarget, NodeId,
-        PaneRef,
-    },
+use gpui_component::dock::{
+    BasePanelView, DockArea, DockEvent, DockLayout, DockPlacement, InsertTarget, NodeId, PaneRef,
 };
 
 use crate::Workspace;
-use crate::panels::{AGENT_META, DETAILS_META};
+use crate::panels::{AGENT_META, DETAILS_META, HISTORY_META};
 
 /// Which status-bar group a panel's button sits in.
 #[derive(Copy, Clone, PartialEq)]
@@ -44,7 +40,9 @@ pub fn bar_side(placement: DockPlacement) -> BarSide {
 pub struct PanelMeta {
     /// Matches `Panel::panel_name` and the name the panel is registered under for layout restore.
     pub name: &'static str,
-    pub icon: IconName,
+    /// Asset path of the status-bar glyph — a path rather than an `IconName` so a panel can use an
+    /// icon the library doesn't ship.
+    pub icon: &'static str,
     pub label: &'static str,
     pub default_placement: DockPlacement,
     /// Show the live error/warning counts beside the icon instead of the icon alone.
@@ -55,7 +53,7 @@ pub struct PanelMeta {
 /// `PanelMeta` — its declaration sits here instead of beside it.
 pub static PROBLEMS_META: PanelMeta = PanelMeta {
     name: "ProblemsPanel",
-    icon: IconName::TriangleAlert,
+    icon: "icons/triangle-alert.svg",
     label: "Problems",
     default_placement: DockPlacement::Bottom,
     badge: true,
@@ -63,7 +61,7 @@ pub static PROBLEMS_META: PanelMeta = PanelMeta {
 
 /// Every dockable panel, in status-bar order within its group. The centre table isn't one: it has
 /// no button and nowhere to move to.
-pub static PANELS: [&PanelMeta; 3] = [&DETAILS_META, &PROBLEMS_META, &AGENT_META];
+pub static PANELS: [&PanelMeta; 4] = [&DETAILS_META, &PROBLEMS_META, &HISTORY_META, &AGENT_META];
 
 pub struct PanelEntry {
     pub meta: &'static PanelMeta,

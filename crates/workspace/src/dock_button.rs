@@ -30,7 +30,8 @@ pub struct DockToggleButton {
     id: SharedString,
     dock: WeakEntity<DockArea>,
     toggles: Toggles,
-    icon: IconName,
+    /// Asset path of the glyph.
+    icon: SharedString,
     /// Asset path drawn in place of `icon` while the dock is open — Lucide has no filled panel.
     open_icon: Option<SharedString>,
     /// Whether to show the live error/warning count beside the icon.
@@ -49,15 +50,15 @@ impl DockToggleButton {
         placement: DockPlacement,
     ) -> Self {
         let (icon, open_icon) = match placement {
-            DockPlacement::Left => (IconName::PanelLeft, "icons/panel-left-filled.svg"),
-            DockPlacement::Right => (IconName::PanelRight, "icons/panel-right-filled.svg"),
-            _ => (IconName::PanelBottom, "icons/panel-bottom-filled.svg"),
+            DockPlacement::Left => ("icons/panel-left.svg", "icons/panel-left-filled.svg"),
+            DockPlacement::Right => ("icons/panel-right.svg", "icons/panel-right-filled.svg"),
+            _ => ("icons/panel-bottom.svg", "icons/panel-bottom-filled.svg"),
         };
         Self {
             id: id.into(),
             dock,
             toggles: Toggles::Dock(placement),
-            icon,
+            icon: icon.into(),
             open_icon: Some(open_icon.into()),
             count: false,
             hint: None,
@@ -90,7 +91,7 @@ impl DockToggleButton {
             id: meta.name.into(),
             dock,
             toggles: Toggles::Panel(meta),
-            icon: meta.icon.clone(),
+            icon: meta.icon.into(),
             open_icon: None,
             count: meta.badge,
             hint: None,
@@ -157,7 +158,7 @@ impl Render for DockToggleButton {
                 if !self.count {
                     let icon = match (&self.open_icon, lit) {
                         (Some(path), true) => Icon::empty().path(path.clone()),
-                        _ => Icon::new(self.icon.clone()),
+                        _ => Icon::empty().path(self.icon.clone()),
                     };
                     return this.child(icon.small());
                 }

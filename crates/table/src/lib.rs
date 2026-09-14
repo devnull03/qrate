@@ -42,6 +42,7 @@ use gpui::{
 use gpui_component::table::TableState;
 use plugin_api::CommandContext;
 use settings::columns::ColumnType;
+use settings::history::{Change, EntryId, Origin};
 
 /// Global handle to the live table state, so cross-crate status-bar items (the fake-data button
 /// and the selected-cell widget in the `app` crate) can reach the table.
@@ -121,8 +122,8 @@ fn autosave(cx: &mut App) {
 
 /// Commit `text` into a cell, mark the project dirty, and re-run validation — everything a
 /// committed edit does except going through the inline editor. What a fix menu applies through.
-pub fn write_cell(row: usize, col: usize, text: SharedString, cx: &mut App) {
-    write_cells(vec![(row, col, text)], cx);
+pub fn write_cell(row: usize, col: usize, text: SharedString, origin: Origin, cx: &mut App) {
+    write_cells(vec![(row, col, text)], origin, cx);
 }
 
 /// The selection as tab-separated text on the clipboard — what Ctrl+C copies, reachable from
@@ -169,7 +170,7 @@ pub fn clear_selection(cx: &mut App) {
 /// [`write_cell`]'s bulk form: one undo step for the whole batch, one validation pass at the end,
 /// one save. For menu items, which act on an explicitly clicked target; the keyboard and clipboard
 /// paths go through `TablePanel`'s own method of the same name, which debounces both instead.
-pub fn write_cells(cells: Vec<(usize, usize, SharedString)>, cx: &mut App) {
+pub fn write_cells(cells: Vec<(usize, usize, SharedString)>, origin: Origin, cx: &mut App) {
     if cells.is_empty() {
         return;
     }
@@ -181,7 +182,7 @@ pub fn write_cells(cells: Vec<(usize, usize, SharedString)>, cx: &mut App) {
     };
     state.update(cx, |state, cx| {
         let files = names_a_file(state.delegate(), &cells, cx);
-        state.delegate_mut().apply_edit(cells);
+        state.delegate_mut().apply_edit(cells, origin);
         if files {
             photos::refresh(state, cx);
         }
@@ -216,26 +217,154 @@ pub fn history_step(redo: bool, cx: &mut App) {
     else {
         return;
     };
-    let row_ids = state.update(cx, |state, cx| {
-        let rows_changed = match redo {
-            true => state.delegate_mut().redo(),
-            false => state.delegate_mut().undo(),
-        };
-        if rows_changed.is_some() {
-            cx.emit(delegate::TableChanged);
-            cx.notify();
-        }
-        rows_changed.map(|changed| changed.then(|| state.delegate().row_ids().to_vec()))
+    let changes = state.update(cx, |state, _| match redo {
+        true => state.delegate_mut().redo(),
+        false => state.delegate_mut().undo(),
     });
-    let Some(row_ids) = row_ids else {
+    let Some(changes) = changes else {
         return;
     };
-    if let Some(row_ids) = row_ids {
-        diagnostics::Diagnostics::align_note_rows(diagnostics::DATASET_MAIN, &row_ids, cx);
+    let origin = match redo {
+        true => Origin::Redo,
+        false => Origin::Undo,
+    };
+    settle(&state, &changes, origin, cx);
+}
+
+/// Everything that follows the grid changing under the user rather than one cell at a time — an
+/// undo, a redo, a restore: notes follow their rows, stored column settings follow a rename, and
+/// the layout, validation and save catch up.
+fn settle(
+    state: &Entity<TableState<QrateTableDelegate>>,
+    changes: &[Change],
+    origin: Origin,
+    cx: &mut App,
+) {
+    state.update(cx, |state, cx| {
+        // A row put back by a restore carries no photo, and an undone filename names another.
+        photos::refresh(state, cx);
+        // The library caches a `Column` per index, so a changed column set needs this.
+        state.refresh(cx);
+        cx.emit(delegate::TableChanged);
+        cx.notify();
+    });
+    if history::moves_rows(changes) {
+        let row_ids = state.read(cx).delegate().row_ids().to_vec();
+        diagnostics::Diagnostics::align_note_rows(diagnostics::DATASET_MAIN, &row_ids, origin, cx);
     }
+    for change in changes {
+        if let Change::ColumnRenamed { before, after } = change {
+            follow_rename(before, &after.clone().into(), cx);
+        }
+    }
+    TablePanel::persist_columns(state, cx);
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
     revalidate_now(cx);
     autosave(cx);
+}
+
+/// Re-key what is stored under a column's name — its notes, its settings, its `__columns` row —
+/// after the grid's column has been renamed.
+fn follow_rename(before: &str, after: &SharedString, cx: &mut App) {
+    diagnostics::Diagnostics::column_renamed(diagnostics::DATASET_MAIN, before, after, cx);
+    settings::columns::rename(before, after, cx);
+    if let Some(file) = cx
+        .try_global::<settings::project::CurrentProject>()
+        .map(|p| p.file.clone())
+        && let Err(err) = settings::project::rename_column(&file, before, after)
+    {
+        log::error!("failed to rename column {before} to {after}: {err}");
+    }
+}
+
+/// Put the project back the way it was just after entry `to`, by applying the inverse of every
+/// change made since, newest first. Nothing is rewound: the restore is itself logged, and undone
+/// with one Ctrl+Z.
+pub fn restore_to(to: EntryId, cx: &mut App) {
+    let Some(file) = cx
+        .try_global::<settings::project::CurrentProject>()
+        .map(|p| p.file.clone())
+    else {
+        return;
+    };
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+    let saved = match settings::history::entries_after(&file, to) {
+        Ok(saved) => saved,
+        Err(err) => {
+            log::error!("couldn't read the project history to restore it: {err}");
+            return;
+        }
+    };
+    let unsaved = state.read(cx).delegate().unsaved_history().to_vec();
+    let (notes, grid): (Vec<Change>, Vec<Change>) = saved
+        .iter()
+        .chain(&unsaved)
+        .rev()
+        .flat_map(|entry| entry.changes.iter().rev().map(Change::inverse))
+        .partition(|change| matches!(change, Change::Note { .. }));
+
+    let applied = state.update(cx, |state, _| state.delegate_mut().restore(&grid, to));
+    settle(&state, &applied, Origin::Restore(to), cx);
+
+    for note in notes {
+        let Change::Note {
+            row, column, after, ..
+        } = note
+        else {
+            continue;
+        };
+        let position = row.and_then(|id| {
+            let delegate = state.read(cx).delegate();
+            delegate.row_ids().iter().position(|r| *r == id)
+        });
+        if row.is_some() && position.is_none() {
+            continue;
+        }
+        let location = diagnostics::Location {
+            dataset: diagnostics::DATASET_MAIN.into(),
+            row: position,
+            row_id: row,
+            column: column.map(Into::into),
+        };
+        diagnostics::Diagnostics::set_note(
+            location,
+            after.unwrap_or_default().into(),
+            Origin::Restore(to),
+            cx,
+        );
+    }
+}
+
+/// Put one cell back to the value an entry recorded, wherever that row and column now sit.
+pub fn restore_value(
+    row: settings::project::RowId,
+    column: &str,
+    text: SharedString,
+    from: EntryId,
+    cx: &mut App,
+) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+    let target = {
+        let delegate = state.read(cx).delegate();
+        delegate
+            .row_ids()
+            .iter()
+            .position(|id| *id == row)
+            .zip(delegate.data_col(column))
+    };
+    if let Some((row, col)) = target {
+        write_cell(row, col, text, Origin::Restore(from), cx);
+    }
 }
 
 /// A change to the grid's shape rather than its contents. One enum rather than five entry points
@@ -327,18 +456,15 @@ pub fn structural(op: Structural, cx: &mut App) {
         Structural::InsertRow { .. } | Structural::DuplicateRow { .. } | Structural::DeleteRows(_)
     ) {
         let row_ids = state.read(cx).delegate().row_ids().to_vec();
-        diagnostics::Diagnostics::align_note_rows(diagnostics::DATASET_MAIN, &row_ids, cx);
+        diagnostics::Diagnostics::align_note_rows(
+            diagnostics::DATASET_MAIN,
+            &row_ids,
+            Origin::Structure,
+            cx,
+        );
     }
     if let Some((before, after)) = renamed {
-        diagnostics::Diagnostics::column_renamed(diagnostics::DATASET_MAIN, &before, &after, cx);
-        settings::columns::rename(&before, &after, cx);
-        if let Some(file) = cx
-            .try_global::<settings::project::CurrentProject>()
-            .map(|p| p.file.clone())
-            && let Err(err) = settings::project::rename_column(&file, &before, &after)
-        {
-            log::error!("failed to rename column {before} to {after}: {err}");
-        }
+        follow_rename(&before, &after, cx);
     }
 
     // The saved layout is only applied when its keys are a permutation of the live ones, so a
@@ -397,7 +523,12 @@ pub fn cell_text(location: &diagnostics::Location, cx: &App) -> Option<SharedStr
 }
 
 /// [`cell_text`]'s other half: write text back to whatever a diagnostic points at.
-pub fn set_cell_text(location: &diagnostics::Location, text: SharedString, cx: &mut App) {
+pub fn set_cell_text(
+    location: &diagnostics::Location,
+    text: SharedString,
+    origin: Origin,
+    cx: &mut App,
+) {
     let Some(state) = cx
         .try_global::<TableStateHandle>()
         .and_then(|h| h.0.upgrade())
@@ -413,12 +544,16 @@ pub fn set_cell_text(location: &diagnostics::Location, text: SharedString, cx: &
             .zip(location.row)
     };
     if let Some((col, row)) = target {
-        write_cell(row, col, text, cx);
+        write_cell(row, col, text, origin, cx);
     }
 }
 
 /// Resolve several diagnostic locations through one table edit.
-pub fn set_cell_texts(replacements: Vec<(diagnostics::Location, SharedString)>, cx: &mut App) {
+pub fn set_cell_texts(
+    replacements: Vec<(diagnostics::Location, SharedString)>,
+    origin: Origin,
+    cx: &mut App,
+) {
     let Some(state) = cx
         .try_global::<TableStateHandle>()
         .and_then(|h| h.0.upgrade())
@@ -441,7 +576,7 @@ pub fn set_cell_texts(replacements: Vec<(diagnostics::Location, SharedString)>, 
             .map(|((row, col), text)| (row, col, text))
             .collect()
     };
-    write_cells(cells, cx);
+    write_cells(cells, origin, cx);
 }
 
 /// What a command invoked from outside the table acts on: the selected column, or nothing at all.
@@ -503,10 +638,24 @@ pub fn save_now(cx: &mut App) {
     };
     let started = std::time::Instant::now();
     let (headers, row_ids, rows) = state.read(cx).delegate().dataset_snapshot();
-    match settings::project::save_dataset(&file, &headers, &row_ids, &rows) {
+    let author = settings::history::author(cx);
+    let history: Vec<_> = state
+        .read(cx)
+        .delegate()
+        .unsaved_history()
+        .iter()
+        .map(|entry| settings::history::Entry {
+            author: author.clone(),
+            ..entry.clone()
+        })
+        .collect();
+    match settings::project::save_dataset(&file, &headers, &row_ids, &rows, &history) {
         Ok(()) => {
+            state.update(cx, |state, _| {
+                state.delegate_mut().history_saved(history.len())
+            });
             log::debug!("saved {} rows in {:?}", rows.len(), started.elapsed());
-            settings::dirty::clear(settings::dirty::PROJECT_DATA, cx)
+            settings::dirty::clear(settings::dirty::PROJECT_DATA, cx);
         }
         Err(err) => log::error!("failed to save project data: {err}"),
     }

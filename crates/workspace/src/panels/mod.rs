@@ -4,9 +4,11 @@
 
 pub mod agent;
 pub mod details;
+pub mod history;
 
 pub use agent::{
     AGENT_FONT_KEY, AGENT_FONT_SIZE_KEY, AGENT_FONT_SIZES, AGENT_META, AgentCall, AgentPanel,
     Entry as AgentEntry, record,
 };
 pub use details::{DETAILS_META, DetailsPanel};
+pub use history::{HISTORY_META, HistoryPanel};

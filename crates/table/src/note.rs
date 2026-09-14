@@ -22,6 +22,7 @@ use diagnostics::{Diagnostics, Location, Severity, Source, severity_color};
 use plugin_api::{
     ColumnMapContributions, CommandContext, MenuContributions, MenuTarget, PluginHooks,
 };
+use settings::history::Origin;
 
 use crate::TableStateHandle;
 use crate::delegate::{QrateTableDelegate, Selection, TableChanged};
@@ -296,7 +297,7 @@ fn paste_onto(row: usize, col: usize, cx: &mut App) {
     let block = crate::panel::parse_tsv(&text);
     let reach = state.read(cx).delegate().rows_from(row, block.len());
     let cells = crate::panel::paste_cells(&block, &[row], col..=col, &reach);
-    crate::write_cells(cells, cx);
+    crate::write_cells(cells, Origin::Paste, cx);
 }
 
 /// Build the right-click menu for `target`. Live state is read off the table global here rather
@@ -381,7 +382,7 @@ pub fn menu(
                         .action(Box::new(crate::Cut))
                         .on_click(move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(cut.to_string()));
-                            crate::write_cell(row, col, SharedString::default(), cx);
+                            crate::write_cell(row, col, SharedString::default(), Origin::Clear, cx);
                         }),
                 )
                 .item(
@@ -397,7 +398,7 @@ pub fn menu(
                     PopupMenuItem::new("Clear contents")
                         .action(Box::new(crate::Clear))
                         .on_click(move |_, _, cx| {
-                            crate::write_cell(row, col, SharedString::default(), cx)
+                            crate::write_cell(row, col, SharedString::default(), Origin::Clear, cx)
                         }),
                 )
                 .separator()
@@ -420,16 +421,27 @@ pub fn menu(
                         });
                     }),
                 )
+                .when_some(
+                    location.row_id.zip(location.column.clone()),
+                    |menu, (row, column)| {
+                        menu.item(PopupMenuItem::new("Show edit history").on_click(
+                            move |_, _, cx| {
+                                cx.set_global(settings::history::ShowCellHistory {
+                                    row,
+                                    column: column.to_string(),
+                                })
+                            },
+                        ))
+                    },
+                )
                 .separator()
         }
         Target::Row(row) => {
             let rows = target_rows(table.read(cx).delegate(), row);
             structural_items(menu, Some(&rows), None)
-                .item(
-                    PopupMenuItem::new("Clear row").on_click(move |_, _, cx| {
-                        crate::write_cells(crate::blank_row(row, cx), cx)
-                    }),
-                )
+                .item(PopupMenuItem::new("Clear row").on_click(move |_, _, cx| {
+                    crate::write_cells(crate::blank_row(row, cx), Origin::Clear, cx)
+                }))
                 .separator()
         }
         // Built-in column controls come first; plugin entries are appended without running plugin
@@ -594,7 +606,9 @@ pub fn menu(
                                             Some(&text),
                                             sub.max_w(px(360.)),
                                             cx,
-                                            move |fixed, cx| crate::write_cell(row, col, fixed, cx),
+                                            move |fixed, origin, cx| {
+                                                crate::write_cell(row, col, fixed, origin, cx)
+                                            },
                                         )
                                     },
                                 )
@@ -626,10 +640,9 @@ pub fn menu(
         );
         let loc = location.clone();
         sub.when(note.is_some(), |sub| {
-            sub.item(
-                PopupMenuItem::new("Delete note")
-                    .on_click(move |_, _, cx| Diagnostics::set_note(loc.clone(), "".into(), cx)),
-            )
+            sub.item(PopupMenuItem::new("Delete note").on_click(move |_, _, cx| {
+                Diagnostics::set_note(loc.clone(), "".into(), Origin::Clear, cx)
+            }))
         })
     })
 }
