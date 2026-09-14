@@ -52,7 +52,7 @@ The branch already contains these spell-check upgrades:
 - qrate loads all installed dictionaries.
 - Each value selects a dictionary only when the evidence is strong enough.
 - Ambiguous and short unknown values do not default to English.
-- Capitalization uses a separate `capitalization` diagnostic source.
+- Capitalization findings come from the `spell` source, with the same fixes and ignores as misspellings.
 - Candidate proper names do not become ordinary spelling warnings.
 - The opt-in `value variants` validator finds formatting, token order, diacritic, and close-spelling
   differences.

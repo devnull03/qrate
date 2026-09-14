@@ -347,7 +347,7 @@ pub(crate) fn register_spell_checker(cx: &mut gpui::App) {
     };
     if !spellcheck::enabled(cx) {
         log::info!("spell checking is turned off in settings");
-        remove_spell_validators(cx);
+        diagnostics::Validators::remove(&spellcheck::SPELLING_VALIDATOR_NAME.into(), cx);
         return;
     }
     let languages = spellcheck::languages(cx);
@@ -364,28 +364,14 @@ pub(crate) fn register_spell_checker(cx: &mut gpui::App) {
             if cx.global::<SpellLoad>().0 != generation {
                 return;
             }
-            remove_spell_validators(cx);
+            diagnostics::Validators::remove(&spellcheck::SPELLING_VALIDATOR_NAME.into(), cx);
             let Some(spell) = spell else {
                 return;
             };
             diagnostics::Validators::register(Box::new(spell.clone()), cx);
-            diagnostics::Validators::register(
-                Box::new(spellcheck::CapitalizationCheck(spell.clone())),
-                cx,
-            );
-            diagnostics::FixProviders::register(
-                spellcheck::CAPITALIZATION_VALIDATOR_NAME,
-                spellcheck::capitalization_fixes,
-                cx,
-            );
             diagnostics::GroupFixProviders::register(
                 spellcheck::SPELLING_VALIDATOR_NAME,
                 spellcheck::spelling_group_fixes,
-                cx,
-            );
-            diagnostics::GroupFixProviders::register(
-                spellcheck::CAPITALIZATION_VALIDATOR_NAME,
-                spellcheck::capitalization_group_fixes,
                 cx,
             );
             cx.set_global(spell);
@@ -402,15 +388,6 @@ pub(crate) fn register_spell_checker(cx: &mut gpui::App) {
         });
     })
     .detach();
-}
-
-fn remove_spell_validators(cx: &mut gpui::App) {
-    for name in [
-        spellcheck::SPELLING_VALIDATOR_NAME,
-        spellcheck::CAPITALIZATION_VALIDATOR_NAME,
-    ] {
-        diagnostics::Validators::remove(&name.into(), cx);
-    }
 }
 
 fn register_variant_checker(cx: &mut gpui::App) {

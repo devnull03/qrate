@@ -159,7 +159,6 @@ impl Source {
             Source::Note => "User notes".into(),
             Source::Validator(name) => match name.as_ref() {
                 "spell" => "Spelling".into(),
-                "capitalization" => "Capitalization".into(),
                 "files" => "Missing files".into(),
                 "date" => "Date format".into(),
                 "value variants" => "Value variants".into(),
@@ -1136,14 +1135,14 @@ mod tests {
         assert!(finding.is_ignored(&columns));
 
         let mut other = finding.clone();
-        other.source = Source::Validator("capitalization".into());
+        other.source = Source::Validator("files".into());
         assert!(!other.is_ignored(&columns), "another producer");
         other.location.column = Some("Subject".into());
         columns
             .entry("Subject".into())
             .or_default()
             .ignored_diagnostics
-            .insert(("capitalization".into(), "misspelled: teh".into()));
+            .insert(("files".into(), "misspelled: teh".into()));
         assert!(other.is_ignored(&columns), "column-wide, any row");
     }
 

@@ -401,9 +401,9 @@ mod tests {
     #[gpui::test]
     fn display_names_do_not_disconnect_fix_providers(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            publish("capitalization", "Title", cx);
+            publish("spell", "Title", cx);
             publish("LCSH", "Title", cx);
-            FixProviders::register("capitalization", offer, cx);
+            FixProviders::register("spell", offer, cx);
             FixProviders::register("LCSH", offer, cx);
 
             let found = at(&location("Title"), "alice", cx);
@@ -413,7 +413,7 @@ mod tests {
                 at_subject(
                     &location("Title"),
                     "alice",
-                    Some("capitalization"),
+                    Some("spell"),
                     Some("alice"),
                     cx,
                 )
