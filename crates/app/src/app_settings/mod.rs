@@ -1742,7 +1742,7 @@ fn config_file_group(cx: &App) -> SettingGroup {
 fn authority_accounts_group(cx: &App) -> SettingGroup {
     let described = checks::authorities()
         .iter()
-        .map(|(name, describes)| format!("**{name}** — {describes}"))
+        .map(|(name, describes)| format!("{name} — {describes}"))
         .collect::<Vec<_>>()
         .join("\n\n");
 
