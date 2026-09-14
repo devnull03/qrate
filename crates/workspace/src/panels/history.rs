@@ -23,7 +23,7 @@ use crate::panel_registry::PanelMeta;
 
 pub static HISTORY_META: PanelMeta = PanelMeta {
     name: "HistoryPanel",
-    icon: IconName::Undo2,
+    icon: "icons/history.svg",
     label: "History",
     default_placement: DockPlacement::Right,
     badge: false,
@@ -378,25 +378,36 @@ fn narrowed<'a>(entry: &'a Entry, cell: Option<&(RowId, Vec<String>)>) -> Option
     })
 }
 
-/// `Today`, `Yesterday`, or `3 Sep 2026`.
-pub(crate) fn day_label(day: &str, days_ago: i64) -> String {
+/// `3 Sep 2026`, from a `YYYY-MM-DD` day.
+fn date_label(day: &str) -> String {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
+    let mut parts = day.split('-');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(y), Some(m), Some(d)) => {
+            let month = m
+                .parse::<usize>()
+                .ok()
+                .and_then(|m| MONTHS.get(m.checked_sub(1)?));
+            format!("{} {} {y}", d.trim_start_matches('0'), month.unwrap_or(&m))
+        }
+        _ => day.into(),
+    }
+}
+
+/// What a day's header says: `Today`, `Yesterday`, or the date.
+fn day_label(day: &str, days_ago: i64) -> String {
     match days_ago {
         0 => "Today".into(),
         1 => "Yesterday".into(),
-        _ => {
-            let mut parts = day.split('-');
-            match (parts.next(), parts.next(), parts.next()) {
-                (Some(y), Some(m), Some(d)) => {
-                    let month = m.parse::<usize>().ok().and_then(|m| MONTHS.get(m - 1));
-                    format!("{} {} {y}", d.trim_start_matches('0'), month.unwrap_or(&m))
-                }
-                _ => day.into(),
-            }
-        }
+        _ => date_label(day),
     }
+}
+
+/// When one change was made: `3 Sep 2026, 14:02`.
+pub(crate) fn when(day: &str, time: &str) -> String {
+    format!("{}, {time}", date_label(day))
 }
 
 /// One line saying what an entry did, in the grid's current terms: rows by the number the `#`
@@ -610,9 +621,6 @@ impl Render for HistoryPanel {
                 )
             })
             .unwrap_or_default();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64);
         let (filter, named_only) = (self.filter, self.named_only);
         let admits = |entry: &Entry, label: bool| {
             if named_only {
@@ -666,6 +674,17 @@ impl Render for HistoryPanel {
             }
         }
 
+        // ponytail: always offered, since gpui cannot tell us whether the text was cut
+        let clipped = |text: String| {
+            div()
+                .id("text")
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(text.clone())
+                .tooltip(move |window, cx| {
+                    gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
+                })
+        };
         let entry_row = |id: ElementId,
                          entry: &Entry,
                          listed: Option<&Listed>,
@@ -741,13 +760,7 @@ impl Render for HistoryPanel {
                     )
                 })
                 .when_some(naming, |row, input| row.child(Input::new(&input).xsmall()))
-                .child(
-                    div()
-                        .text_sm()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(describe(entry, &rows)),
-                )
+                .child(clipped(describe(entry, &rows)).text_sm())
                 .child(div().text_xs().text_color(muted).child(meta))
                 .map(|row| match actions {
                     Some(actions) => row.context_menu(actions).into_any_element(),
@@ -794,16 +807,21 @@ impl Render for HistoryPanel {
         }
         if !unsaved.is_empty() {
             list = list.child(header("Not saved yet".into()));
+            let ats: Vec<i64> = unsaved.iter().map(|e| e.at).collect();
+            let times = settings::history::local_times(&ats).unwrap_or_else(|err| {
+                log::error!("couldn't read the local time of unsaved changes: {err}");
+                Vec::new()
+            });
             for (ix, entry) in unsaved.iter().enumerate() {
-                let ago = match (now - entry.at) / 60 {
-                    0 => "just now".to_string(),
-                    m => format!("{m} min ago"),
-                };
+                let at = times.get(ix).map_or_else(
+                    || "not saved".to_string(),
+                    |(day, time)| format!("{}, not saved", when(day, time)),
+                );
                 list = list.child(entry_row(
                     ElementId::NamedInteger("history-unsaved".into(), ix as u64),
                     entry,
                     None,
-                    meta(entry, ago),
+                    meta(entry, at),
                     false,
                 ));
             }
@@ -824,7 +842,7 @@ impl Render for HistoryPanel {
                     row_id(head),
                     &head.entry,
                     Some(head),
-                    meta(&head.entry, head.time.clone()),
+                    meta(&head.entry, when(&head.day, &head.time)),
                     false,
                 ));
                 continue;
@@ -874,15 +892,18 @@ impl Render for HistoryPanel {
                         v_flex()
                             .min_w_0()
                             .gap_0p5()
-                            .child(div().text_sm().overflow_hidden().text_ellipsis().child(
-                                format!("{} edits · {}", burst.len(), describe(&summary, &rows)),
-                            ))
                             .child(
-                                div().text_xs().text_color(muted).child(meta(
-                                    &head.entry,
-                                    format!("{}–{}", last.time, head.time),
-                                )),
-                            ),
+                                clipped(format!(
+                                    "{} edits · {}",
+                                    burst.len(),
+                                    describe(&summary, &rows)
+                                ))
+                                .text_sm(),
+                            )
+                            .child(div().text_xs().text_color(muted).child(meta(
+                                &head.entry,
+                                format!("{}, {}–{}", date_label(&head.day), last.time, head.time),
+                            ))),
                     ),
             );
             if open {
@@ -891,7 +912,7 @@ impl Render for HistoryPanel {
                         row_id(listed),
                         &listed.entry,
                         Some(listed),
-                        meta(&listed.entry, listed.time.clone()),
+                        meta(&listed.entry, when(&listed.day, &listed.time)),
                         true,
                     ));
                 }
@@ -926,13 +947,10 @@ impl Render for HistoryPanel {
                         .border_b_1()
                         .border_color(border)
                         .child(
-                            div()
+                            clipped(format!("Changes to {label}"))
                                 .flex_1()
                                 .min_w_0()
-                                .text_xs()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .child(format!("Changes to {label}")),
+                                .text_xs(),
                         )
                         .child(
                             Button::new("history-cell-clear")
@@ -986,6 +1004,7 @@ mod tests {
         assert_eq!(day_label("2026-09-13", 0), "Today");
         assert_eq!(day_label("2026-09-12", 1), "Yesterday");
         assert_eq!(day_label("2026-09-03", 10), "3 Sep 2026");
+        assert_eq!(super::when("2026-09-03", "14:02"), "3 Sep 2026, 14:02");
     }
 
     /// A row is named by the number the grid shows for it now, not by where it was when edited.

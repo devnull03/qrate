@@ -49,7 +49,7 @@ const VALUE_LINE_CLAMP: usize = 4;
 /// starting point — the user can dock it anywhere, and that choice is what gets persisted.
 pub static DETAILS_META: PanelMeta = PanelMeta {
     name: "DetailsPanel",
-    icon: IconName::Info,
+    icon: "icons/info.svg",
     label: "Details",
     default_placement: DockPlacement::Left,
     badge: false,
@@ -535,16 +535,24 @@ impl DetailsPanel {
                 })
                 .collect::<Vec<Line>>()
         };
+        let ats: Vec<i64> = unsaved.iter().map(|entry| entry.at).collect();
+        let times = settings::history::local_times(&ats).unwrap_or_else(|err| {
+            log::error!("couldn't read the local time of unsaved changes: {err}");
+            Vec::new()
+        });
         let lines: Vec<Line> = unsaved
             .iter()
+            .enumerate()
             .rev()
-            .flat_map(|entry| lines_of(entry, None, "not saved yet".into()))
-            .chain(saved.iter().flat_map(|listed| {
-                let when = format!(
-                    "{} {}",
-                    super::history::day_label(&listed.day, listed.days_ago),
-                    listed.time
+            .flat_map(|(ix, entry)| {
+                let when = times.get(ix).map_or_else(
+                    || "not saved yet".to_string(),
+                    |(day, time)| format!("{}, not saved yet", super::history::when(day, time)),
                 );
+                lines_of(entry, None, when)
+            })
+            .chain(saved.iter().flat_map(|listed| {
+                let when = super::history::when(&listed.day, &listed.time);
                 lines_of(&listed.entry, Some(listed.entry.id), when)
             }))
             .collect();

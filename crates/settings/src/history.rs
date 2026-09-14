@@ -311,6 +311,18 @@ pub fn entries_after(path: &Path, after: EntryId) -> Result<Vec<Entry>> {
         .collect())
 }
 
+/// Each of `ats` (unix seconds) as a local `(YYYY-MM-DD, HH:MM)` — the same clock [`page`] reads
+/// saved entries by, for changes that have not reached a file yet.
+pub fn local_times(ats: &[i64]) -> Result<Vec<(String, String)>> {
+    let conn = Connection::open_in_memory()?;
+    let mut stmt = conn.prepare(
+        "SELECT date(?1, 'unixepoch', 'localtime'), strftime('%H:%M', ?1, 'unixepoch', 'localtime')",
+    )?;
+    ats.iter()
+        .map(|at| Ok(stmt.query_row([at], |r| Ok((r.get(0)?, r.get(1)?)))?))
+        .collect()
+}
+
 /// Up to `limit` entries older than `before`, newest first — one page of the History panel. With
 /// `row`, only the entries that changed that row or a note on it.
 pub fn page(path: &Path, before: EntryId, limit: i64, row: Option<RowId>) -> Result<Vec<Listed>> {
@@ -447,8 +459,8 @@ pub fn clear(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Change, Entry, EntryId, Origin, clear, entries_after, former_names, page, renames,
-        set_label,
+        Change, Entry, EntryId, Origin, clear, entries_after, former_names, local_times, page,
+        renames, set_label,
     };
     use crate::project::{ProjectSpec, create_project_file, save_dataset, write_notes};
 
@@ -545,6 +557,11 @@ mod tests {
         save_dataset(&path, &headers, &[1], &[vec!["5".into()]], &entries).unwrap();
 
         let first = page(&path, EntryId::MAX, 2, None).unwrap();
+        let (day, time) = local_times(&[first[0].entry.at]).unwrap().remove(0);
+        assert_eq!(
+            (day.as_str(), time.as_str()),
+            (first[0].day.as_str(), first[0].time.as_str())
+        );
         assert_eq!(
             first.iter().map(|l| l.entry.id).collect::<Vec<_>>(),
             vec![5, 4]
