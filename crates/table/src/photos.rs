@@ -73,10 +73,14 @@ impl PhotoIndex {
         Self { by_key }
     }
 
-    pub(crate) fn resolve_cell(&self, cell: &str) -> Option<&PathBuf> {
+    pub(crate) fn resolve_cell(&self, cell: &str) -> Option<PathBuf> {
+        let direct = PathBuf::from(cell);
+        if direct.is_absolute() && direct.is_file() {
+            return Some(direct);
+        }
         settings::filenames::lookup_keys(cell)
             .iter()
-            .find_map(|key| self.by_key.get(key))
+            .find_map(|key| self.by_key.get(key).cloned())
     }
 
     /// The image path for `row`'s cells, if any cell names a file this index found. Checks the
@@ -104,9 +108,9 @@ impl PhotoIndex {
             .and_then(|ix| row.get(ix))
             .and_then(|c| self.resolve_cell(c))
         {
-            return Some(hit.clone());
+            return Some(hit);
         }
-        row.iter().find_map(|c| self.resolve_cell(c).cloned())
+        row.iter().find_map(|c| self.resolve_cell(c))
     }
 }
 
@@ -229,11 +233,11 @@ mod tests {
         let index = PhotoIndex::build(dir.to_str().unwrap());
         assert_eq!(
             index.resolve_cell("photographs/001.jpg"),
-            Some(&dir.join("photographs").join("001.jpg"))
+            Some(dir.join("photographs").join("001.jpg"))
         );
         assert_eq!(
             index.resolve_cell("documents/001.jpg"),
-            Some(&dir.join("documents").join("001.jpg"))
+            Some(dir.join("documents").join("001.jpg"))
         );
     }
 
@@ -248,7 +252,7 @@ mod tests {
         let index = PhotoIndex::build(dir.to_str().unwrap());
         assert_eq!(
             index.resolve_cell("2020_04_001"),
-            Some(&dir.join("2020_04_001_001.jpg"))
+            Some(dir.join("2020_04_001_001.jpg"))
         );
     }
 
