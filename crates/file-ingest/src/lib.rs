@@ -35,6 +35,43 @@ pub struct Inventory {
     pub warnings: Vec<Warning>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlannedComponent {
+    pub title: String,
+    pub absolute_path: PathBuf,
+    pub source_path: PathBuf,
+    pub kind: EntryKind,
+    pub parent: Option<usize>,
+    pub level_key: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportPlan {
+    pub components: Vec<PlannedComponent>,
+    pub warnings: Vec<Warning>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanOptions<'a> {
+    pub recursive: bool,
+    /// A dropped directory is itself an archival component. A folder merely selected as the
+    /// project's file root can opt out and import only its contents.
+    pub include_root: bool,
+    pub folder_level_key: &'a str,
+    pub file_level_key: &'a str,
+}
+
+impl Default for PlanOptions<'_> {
+    fn default() -> Self {
+        Self {
+            recursive: true,
+            include_root: true,
+            folder_level_key: "series",
+            file_level_key: "item",
+        }
+    }
+}
+
 impl Inventory {
     pub fn files(&self) -> impl Iterator<Item = &Entry> {
         self.entries
@@ -67,6 +104,51 @@ pub fn scan(root: &Path, recursive: bool) -> Result<Inventory, Error> {
         return Err(Error::Empty);
     }
     Ok(inventory)
+}
+
+/// Produces a side-effect-free component tree suitable for an import preview.
+pub fn plan(root: &Path, options: &PlanOptions<'_>) -> Result<ImportPlan, Error> {
+    let inventory = scan(root, options.recursive)?;
+    let root_offset = usize::from(options.include_root);
+    let mut components = Vec::with_capacity(inventory.entries.len() + root_offset);
+    if options.include_root {
+        components.push(PlannedComponent {
+            title: display_name(root),
+            absolute_path: root.to_path_buf(),
+            source_path: PathBuf::new(),
+            kind: EntryKind::Directory,
+            parent: None,
+            level_key: options.folder_level_key.to_string(),
+        });
+    }
+    components.extend(inventory.entries.iter().map(|entry| {
+        PlannedComponent {
+            title: display_name(&entry.path),
+            absolute_path: entry.path.clone(),
+            source_path: entry.relative_path.clone(),
+            kind: entry.kind,
+            parent: entry
+                .parent
+                .map(|parent| parent + root_offset)
+                .or(options.include_root.then_some(0)),
+            level_key: match entry.kind {
+                EntryKind::Directory => options.folder_level_key,
+                EntryKind::File => options.file_level_key,
+            }
+            .to_string(),
+        }
+    }));
+    Ok(ImportPlan {
+        components,
+        warnings: inventory.warnings,
+    })
+}
+
+fn display_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| normalized_path(path))
 }
 
 fn visit(
@@ -154,7 +236,7 @@ pub fn is_ignored(name: &str) -> bool {
 mod tests {
     use std::fs;
 
-    use crate::{EntryKind, Error, normalized_path, scan};
+    use crate::{EntryKind, Error, PlanOptions, normalized_path, plan, scan};
 
     #[test]
     fn recursive_inventory_preserves_directories_parents_and_duplicate_names() {
@@ -221,5 +303,79 @@ mod tests {
             .map(|entry| normalized_path(&entry.relative_path))
             .collect();
         assert_eq!(paths, ["A.jpg", "z.jpg"]);
+    }
+
+    #[test]
+    fn import_plan_includes_a_dropped_root_and_maps_levels() {
+        let root = tempfile::tempdir().unwrap();
+        let collection = root.path().join("Photographs");
+        fs::create_dir_all(collection.join("Events")).unwrap();
+        fs::write(collection.join("Events").join("001.jpg"), "photo").unwrap();
+
+        let plan = plan(
+            &collection,
+            &PlanOptions {
+                folder_level_key: "series",
+                file_level_key: "item",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let components: Vec<_> = plan
+            .components
+            .iter()
+            .map(|component| {
+                (
+                    component.title.as_str(),
+                    component.kind,
+                    component.parent,
+                    component.level_key.as_str(),
+                    normalized_path(&component.source_path),
+                )
+            })
+            .collect();
+        assert_eq!(
+            components,
+            [
+                (
+                    "Photographs",
+                    EntryKind::Directory,
+                    None,
+                    "series",
+                    "".into()
+                ),
+                (
+                    "Events",
+                    EntryKind::Directory,
+                    Some(0),
+                    "series",
+                    "Events".into()
+                ),
+                (
+                    "001.jpg",
+                    EntryKind::File,
+                    Some(1),
+                    "item",
+                    "Events/001.jpg".into(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn selected_file_root_can_exclude_itself() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("one.jpg"), "photo").unwrap();
+        let plan = plan(
+            root.path(),
+            &PlanOptions {
+                include_root: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.components.len(), 1);
+        assert_eq!(plan.components[0].parent, None);
+        assert_eq!(plan.components[0].title, "one.jpg");
     }
 }
