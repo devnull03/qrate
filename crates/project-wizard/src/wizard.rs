@@ -97,6 +97,9 @@ pub struct ProjectWizard {
     pub(crate) folder_error: Option<SharedString>,
     /// "I'll add files later" — skips folder matching and the whole Link step.
     pub(crate) skip_files: bool,
+    pub(crate) description_profile: settings::description::DescriptionProfile,
+    pub(crate) folder_level_input: Entity<InputState>,
+    pub(crate) file_level_input: Entity<InputState>,
 
     // Files step - Sheet
     pub(crate) sheet_link_input: Entity<InputState>,
@@ -157,6 +160,16 @@ impl ProjectWizard {
             .new(|cx| InputState::new(window, cx).placeholder("docs.google.com/spreadsheets/d/…"));
         let link_pattern_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("e.g. {id}_*.jpg"));
+        let folder_level_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Folder level")
+                .default_value("Series")
+        });
+        let file_level_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("File level")
+                .default_value("Item")
+        });
 
         let default_save_dir = dirs::document_dir()
             .map(|d| d.join("qrate"))
@@ -234,6 +247,9 @@ impl ProjectWizard {
             folder_match: None,
             folder_error: None,
             skip_files: false,
+            description_profile: settings::description::DescriptionProfile::Rad,
+            folder_level_input,
+            file_level_input,
             sheet_link_input,
             sheet_check: None,
             sheet_error: None,
@@ -266,6 +282,29 @@ impl ProjectWizard {
 
     pub(crate) fn project_name(&self, cx: &App) -> String {
         self.name_input.read(cx).value().to_string()
+    }
+
+    pub(crate) fn description_config(&self, cx: &App) -> settings::description::DescriptionConfig {
+        let mut config = self.description_profile.defaults();
+        let folder_label = self.folder_level_input.read(cx).value().trim().to_string();
+        let file_label = self.file_level_input.read(cx).value().trim().to_string();
+        if let Some(level) = config
+            .levels
+            .iter_mut()
+            .find(|level| level.key == config.folder_level_key)
+            && !folder_label.is_empty()
+        {
+            level.label = folder_label;
+        }
+        if let Some(level) = config
+            .levels
+            .iter_mut()
+            .find(|level| level.key == config.file_level_key)
+            && !file_label.is_empty()
+        {
+            level.label = file_label;
+        }
+        config
     }
 
     pub(crate) fn spreadsheet_headers(&self) -> Vec<String> {
