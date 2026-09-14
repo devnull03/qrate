@@ -19,6 +19,24 @@ pub(crate) const COL_IX: usize = 0;
 
 const WIDTH: f32 = 88.;
 
+#[derive(Clone)]
+struct RowDrag(usize);
+
+struct RowDragPreview(usize);
+
+impl gpui::Render for RowDragPreview {
+    fn render(&mut self, _: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(cx.theme().background)
+            .border_1()
+            .border_color(cx.theme().primary)
+            .child(format!("Move component {}", self.0 + 1))
+    }
+}
+
 pub(crate) fn column() -> Column {
     static COLUMN: OnceLock<Column> = OnceLock::new();
     COLUMN
@@ -55,10 +73,41 @@ pub(crate) fn render_td(
     div()
         .id(("row-note", row_ix))
         .size_full()
+        .relative()
         .flex()
         .items_center()
         .pl(px(6. + depth.min(4) as f32 * 12.))
         .gap_1()
+        .on_drag(RowDrag(row_ix), move |drag, _, _, cx| {
+            cx.new(|_| RowDragPreview(drag.0))
+        })
+        .child(
+            div().absolute().inset_0().flex().flex_col().children(
+                [
+                    crate::RowPlacement::Before,
+                    crate::RowPlacement::Child,
+                    crate::RowPlacement::After,
+                ]
+                .map(|placement| {
+                    div()
+                        .flex_1()
+                        .drag_over::<RowDrag>(|style, _, _, cx| style.bg(cx.theme().table_active))
+                        .on_drop(move |drag: &RowDrag, window, cx| {
+                            let source = drag.0;
+                            window.defer(cx, move |_, cx| {
+                                crate::arrange(
+                                    crate::Arrangement::Move {
+                                        row: source,
+                                        target: row_ix,
+                                        placement,
+                                    },
+                                    cx,
+                                );
+                            });
+                        })
+                }),
+            ),
+        )
         .bg(bg)
         .text_color(fg)
         .when(highlighted, |d| d.font_weight(FontWeight::SEMIBOLD))
