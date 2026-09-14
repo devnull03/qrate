@@ -27,11 +27,21 @@ the column header, for anyone else who opens the project.
 
 ## Spell check
 
-Turn spell check on or off per column, and choose its dictionary language from the more
-than 60 available.
+Turn spell check on or off per column. The languages ticked in Settings ▸ Spelling take part in
+automatic language selection; the first one ticked chooses the preferred regional spelling when
+variants exist.
+
+## Value variants
+
+Turn on value-variant review for columns where inconsistent displayed forms matter, such as
+people, organizations, places, subjects, collection titles, and controlled labels. qrate
+suggests similar values already present in that column but never merges them automatically.
 
 ## Authority lists
 
 For a column checked against an authority, such as subject headings, qrate flags a value
 that the authority does not recognize and can suggest the closest match as a fix.
+
+GeoNames needs an activated GeoNames web-services account. If GeoNames rejects the account,
+qrate stops the remaining requests and shows one warning. Change the account in Settings to retry.
 
