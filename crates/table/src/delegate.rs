@@ -1260,6 +1260,85 @@ impl QrateTableDelegate {
         );
     }
 
+    pub(crate) fn append_components(
+        &mut self,
+        plan: &file_ingest::ImportPlan,
+        title_col: Option<usize>,
+        file_col: Option<usize>,
+        destination_parent: Option<usize>,
+    ) -> usize {
+        if plan.components.is_empty() {
+            return 0;
+        }
+        let at = self.rows.len();
+        let before_structure = self.hierarchy.rows().to_vec();
+        let destination_parent = destination_parent.and_then(|source| self.row_id(source));
+        let ids: Vec<_> = (0..plan.components.len())
+            .map(|_| self.fresh_row_id())
+            .collect();
+        let rows: Vec<_> = plan
+            .components
+            .iter()
+            .zip(&ids)
+            .map(|(component, id)| {
+                let mut cells = vec![SharedString::default(); self.columns.len()];
+                if let Some(col) = title_col.filter(|col| *col < cells.len()) {
+                    cells[col] = component.title.clone().into();
+                }
+                if component.kind == file_ingest::EntryKind::File
+                    && let Some(col) = file_col.filter(|col| *col < cells.len())
+                {
+                    cells[col] = file_ingest::normalized_path(&component.absolute_path).into();
+                }
+                Row {
+                    id: *id,
+                    cells,
+                    image: (component.kind == file_ingest::EntryKind::File)
+                        .then(|| component.absolute_path.clone()),
+                }
+            })
+            .collect();
+        let mut after_structure = before_structure.clone();
+        after_structure.extend(
+            plan.components
+                .iter()
+                .enumerate()
+                .map(|(index, component)| settings::project::RowStructure {
+                    row_id: ids[index],
+                    parent_id: component
+                        .parent
+                        .and_then(|parent| ids.get(parent).copied())
+                        .or(destination_parent),
+                    level_key: component.level_key.clone(),
+                    sibling_order: index as i64,
+                    source_path: Some(file_ingest::normalized_path(
+                        if component.source_path.as_os_str().is_empty() {
+                            &component.absolute_path
+                        } else {
+                            &component.source_path
+                        },
+                    )),
+                    source_kind: Some(match component.kind {
+                        file_ingest::EntryKind::File => settings::project::SourceKind::File,
+                        file_ingest::EntryKind::Directory => {
+                            settings::project::SourceKind::Directory
+                        }
+                    }),
+                }),
+        );
+        self.splice_rows(at, &rows);
+        self.hierarchy
+            .replace_rows(&self.row_ids, &after_structure, &self.default_level);
+        self.recompute_visible();
+        self.history.push(Step::RowsAdded {
+            at,
+            rows,
+            before_structure,
+            after_structure,
+        });
+        plan.components.len()
+    }
+
     /// Delete the rows at `ats` as one undo step, carrying their cells and photos on it.
     pub(crate) fn remove_rows(&mut self, ats: &[usize]) {
         let before_structure = self.hierarchy.rows().to_vec();
@@ -2309,6 +2388,46 @@ mod app_tests {
                 assert_eq!(delegate.visible(), &[0, 1, 2, 3]);
                 assert_eq!(delegate.row_depth(1), 1);
                 assert_eq!(delegate.source(1), Some(1));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn dropped_components_append_as_one_undoable_hierarchy(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let plan = file_ingest::ImportPlan {
+                    components: vec![
+                        file_ingest::PlannedComponent {
+                            title: "Series".into(),
+                            absolute_path: "C:/archive/Series".into(),
+                            source_path: "Series".into(),
+                            kind: file_ingest::EntryKind::Directory,
+                            parent: None,
+                            level_key: "series".into(),
+                        },
+                        file_ingest::PlannedComponent {
+                            title: "image.jpg".into(),
+                            absolute_path: "C:/archive/Series/image.jpg".into(),
+                            source_path: "Series/image.jpg".into(),
+                            kind: file_ingest::EntryKind::File,
+                            parent: Some(0),
+                            level_key: "item".into(),
+                        },
+                    ],
+                    warnings: Vec::new(),
+                };
+                let delegate = state.delegate_mut();
+                assert_eq!(delegate.append_components(&plan, Some(1), Some(0), None), 2);
+                assert_eq!(delegate.row_count(), 6);
+                let structure = delegate.row_structure();
+                assert_eq!(structure[5].parent_id, Some(structure[4].row_id));
+                assert_eq!(delegate.cell(5, 1).map(AsRef::as_ref), Some("image.jpg"));
+                assert_eq!(delegate.undo(), Some(true));
+                assert_eq!(delegate.row_count(), 4);
+                assert_eq!(delegate.redo(), Some(true));
+                assert_eq!(delegate.row_count(), 6);
             });
         });
     }
