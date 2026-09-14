@@ -1091,7 +1091,8 @@ pub fn save_dataset(
         return Ok(());
     }
     let mut conn = open_rw(path)?;
-    let structure = if table_exists(&conn, "__row_structure")? {
+    let had_structure = table_exists(&conn, "__row_structure")?;
+    let structure = if had_structure {
         read_row_structure_from(&conn)?
     } else {
         Vec::new()
@@ -1101,9 +1102,11 @@ pub fn save_dataset(
     tx.execute_batch("DROP TABLE IF EXISTS __row_structure; DROP TABLE IF EXISTS dataset_main;")
         .context("Begin dataset rewrite")?;
     create_and_fill_dataset(&tx, headers, Some(row_ids), rows)?;
-    tx.execute_batch(ROW_STRUCTURE_DDL)
-        .context("Recreate __row_structure")?;
-    insert_row_structure(&tx, &structure)?;
+    if had_structure {
+        tx.execute_batch(ROW_STRUCTURE_DDL)
+            .context("Recreate __row_structure")?;
+        insert_row_structure(&tx, &structure)?;
+    }
     crate::history::append(&tx, history)?;
     tx.commit().context("Commit dataset rewrite")
 }
@@ -1556,6 +1559,14 @@ mod tests {
         }
 
         assert!(read_row_structure(&path).unwrap().is_empty());
+        save_dataset(
+            &path,
+            &["Title".into()],
+            &[1],
+            &[vec!["Edited".into()]],
+            &[],
+        )
+        .unwrap();
         let conn = open_ro(&path).unwrap();
         assert!(!table_exists(&conn, "__row_structure").unwrap());
         drop(conn);
