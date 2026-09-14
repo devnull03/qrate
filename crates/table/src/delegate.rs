@@ -206,6 +206,15 @@ impl QrateTableDelegate {
         self.recompute_visible();
     }
 
+    pub(crate) fn expanded_rows(&self) -> Vec<settings::project::RowId> {
+        self.hierarchy.expanded_rows()
+    }
+
+    pub(crate) fn restore_expanded(&mut self, row_ids: &[settings::project::RowId]) {
+        self.hierarchy.restore_expanded(row_ids);
+        self.recompute_visible();
+    }
+
     /// Source→view, the inverse of [`source`](Self::source). `None` when a filter currently hides
     /// the row — a diagnostic can point at a row the user has narrowed away.
     pub fn view_row(&self, source: usize) -> Option<usize> {

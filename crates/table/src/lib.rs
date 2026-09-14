@@ -320,6 +320,19 @@ fn persist_structure(state: &Entity<TableState<delegate::QrateTableDelegate>>, c
     }
 }
 
+pub(crate) fn persist_expanded(rows: &[settings::project::RowId], cx: &mut App) {
+    if !cx.has_global::<settings::project::CurrentProject>() {
+        return;
+    }
+    settings::project::CurrentProject::set_text(
+        settings::description::HIERARCHY_EXPANDED_KEY,
+        serde_json::to_string(rows)
+            .unwrap_or_else(|_| "[]".into())
+            .into(),
+        cx,
+    );
+}
+
 /// Apply a shape change to the table and everything keyed off the shape.
 ///
 /// Validation runs *now*, not on `TablePanel`'s debounce: after a row shift the open diagnostics

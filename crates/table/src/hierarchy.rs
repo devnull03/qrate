@@ -116,6 +116,21 @@ impl Hierarchy {
         self.expanded.contains(&row_id)
     }
 
+    pub(crate) fn expanded_rows(&self) -> Vec<RowId> {
+        let mut rows: Vec<_> = self.expanded.iter().copied().collect();
+        rows.sort_unstable();
+        rows
+    }
+
+    pub(crate) fn restore_expanded(&mut self, row_ids: &[RowId]) {
+        let known: HashSet<_> = self.rows.iter().map(|row| row.row_id).collect();
+        self.expanded = row_ids
+            .iter()
+            .copied()
+            .filter(|row_id| known.contains(row_id) && self.has_children(*row_id))
+            .collect();
+    }
+
     pub(crate) fn has_children(&self, row_id: RowId) -> bool {
         self.rows.iter().any(|row| row.parent_id == Some(row_id))
     }
@@ -362,6 +377,17 @@ mod tests {
         );
         hierarchy.collapse_all();
         assert_eq!(hierarchy.projection(None), [(1, 0), (5, 0)]);
+    }
+
+    #[test]
+    fn restored_expansion_ignores_stale_and_leaf_rows() {
+        let mut hierarchy = hierarchy();
+        hierarchy.restore_expanded(&[1, 2, 3, 99]);
+        assert_eq!(hierarchy.expanded_rows(), [1, 3]);
+        assert_eq!(
+            hierarchy.projection(None),
+            [(1, 0), (2, 1), (3, 1), (4, 2), (5, 0)]
+        );
     }
 
     #[test]
