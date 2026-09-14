@@ -78,6 +78,53 @@ fn one_close_token(left: &[String], right: &[String]) -> bool {
         && strsim::normalized_damerau_levenshtein(changed[0].0, changed[0].1) >= 0.8
 }
 
+fn abbreviated_or_extra(left: &[String], right: &[String]) -> Option<&'static str> {
+    let (short, long) = if left.len() <= right.len() {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    // ponytail: one extra word at most, so "New York" never swallows "New York Times Magazine".
+    if short.len() < 2 || long.len() > short.len() + 1 {
+        return None;
+    }
+    let mut rest: Vec<&str> = long.iter().map(String::as_str).collect();
+    let mut unmatched = Vec::new();
+    for token in short {
+        match rest.iter().position(|other| other == token) {
+            Some(ix) => {
+                rest.swap_remove(ix);
+            }
+            None => unmatched.push(token.as_str()),
+        }
+    }
+    if unmatched.len() == short.len() {
+        return None;
+    }
+    let initial = |a: &str, b: &str| {
+        a.chars().count() == 1
+            && a.chars().all(char::is_alphabetic)
+            && b.len() > a.len()
+            && b.starts_with(a)
+    };
+    let abbreviated = !unmatched.is_empty();
+    for token in unmatched {
+        let ix = rest
+            .iter()
+            .position(|other| initial(token, other) || initial(other, token))?;
+        rest.swap_remove(ix);
+    }
+    match rest.as_slice() {
+        [] if abbreviated => Some("a word is abbreviated"),
+        [extra] if extra.chars().all(char::is_alphabetic) => Some(if abbreviated {
+            "a word is abbreviated"
+        } else {
+            "one value has an extra word"
+        }),
+        _ => None,
+    }
+}
+
 fn reason(left: &Value, right: &Value) -> Option<&'static str> {
     if left.strict.is_empty() || right.strict.is_empty() {
         return None;
@@ -99,7 +146,7 @@ fn reason(left: &Value, right: &Value) -> Option<&'static str> {
     {
         return Some("one word has a close spelling");
     }
-    None
+    abbreviated_or_extra(&left.strict, &right.strict)
 }
 
 fn candidate_pairs(values: &[Value]) -> BTreeSet<(usize, usize)> {
@@ -240,6 +287,23 @@ mod tests {
         assert_eq!(pair.right.rows, [0, 2]);
         assert_eq!(pair.key, compare(["Alice", " Alice "])[0].key);
     }
+    #[test]
+    fn abbreviations_and_extra_words_join_one_cluster() {
+        let found = clusters(compare([
+            "Bains, Satwinder",
+            "Satwinder, Bains",
+            "Dr. Satwinder Bains",
+            "Satinder Bains",
+            "Satwinder B.",
+            "Satwinder Singh Bains Kaur",
+            "Satwinder",
+        ]));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].members.len(), 5);
+        assert!(compare(["New York", "New York Times Magazine"]).is_empty());
+        assert!(compare(["Bains", "Dr. Bains"]).is_empty());
+    }
+
     #[test]
     fn blocking_bounds_two_thousand_values() {
         let values: Vec<_> = (0..2000)
