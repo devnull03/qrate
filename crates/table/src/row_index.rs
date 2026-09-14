@@ -72,7 +72,9 @@ pub(crate) fn render_td(
                         .child(if expanded { "▾" } else { "▸" })
                         .on_click(cx.listener(move |state, _, _, cx| {
                             state.delegate_mut().toggle_expanded(row_ix);
+                            let expanded = state.delegate().expanded_rows();
                             state.refresh(cx);
+                            crate::persist_expanded(&expanded, cx);
                             cx.notify();
                         }))
                 }),
