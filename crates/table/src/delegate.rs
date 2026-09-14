@@ -1248,6 +1248,25 @@ impl QrateTableDelegate {
         let id = self.fresh_row_id();
         let rows = vec![Row { id, cells, image }];
         self.splice_rows(at, &rows);
+        // A duplicate follows its original; a blank row takes the place of the row it pushed down.
+        let neighbour = source
+            .map(|row| (row, false))
+            .or_else(|| (at + 1 < self.rows.len()).then_some((at + 1, true)))
+            .or_else(|| at.checked_sub(1).map(|row| (row, false)));
+        if let Some((neighbour, before)) = neighbour
+            && let Some(neighbour_id) = self.row_id(neighbour)
+        {
+            let level = self.hierarchy.level(neighbour_id).map(str::to_owned);
+            let placement = match before {
+                true => Placement::Before(neighbour_id),
+                false => Placement::After(neighbour_id),
+            };
+            let placed = self.hierarchy.move_row(id, placement);
+            if let (Ok(()), Some(level)) = (placed, level) {
+                let _ = self.hierarchy.set_level(id, &level);
+            }
+            self.recompute_visible();
+        }
         let after_structure = self.hierarchy.rows().to_vec();
         self.record(
             Step::RowsAdded {
@@ -1266,6 +1285,7 @@ impl QrateTableDelegate {
         title_col: Option<usize>,
         file_col: Option<usize>,
         destination_parent: Option<usize>,
+        files_root: Option<&Path>,
     ) -> usize {
         if plan.components.is_empty() {
             return 0;
@@ -1273,6 +1293,10 @@ impl QrateTableDelegate {
         let at = self.rows.len();
         let before_structure = self.hierarchy.rows().to_vec();
         let destination_parent = destination_parent.and_then(|source| self.row_id(source));
+        let existing_siblings = before_structure
+            .iter()
+            .filter(|row| row.parent_id == destination_parent)
+            .count();
         let ids: Vec<_> = (0..plan.components.len())
             .map(|_| self.fresh_row_id())
             .collect();
@@ -1310,13 +1334,14 @@ impl QrateTableDelegate {
                         .and_then(|parent| ids.get(parent).copied())
                         .or(destination_parent),
                     level_key: component.level_key.clone(),
-                    sibling_order: index as i64,
+                    // Top-level components queue after the destination's existing children.
+                    sibling_order: (index + component.parent.map_or(existing_siblings, |_| 0))
+                        as i64,
                     source_path: Some(file_ingest::normalized_path(
-                        if component.source_path.as_os_str().is_empty() {
-                            &component.absolute_path
-                        } else {
-                            &component.source_path
-                        },
+                        files_root
+                            .and_then(|root| component.absolute_path.strip_prefix(root).ok())
+                            .filter(|relative| !relative.as_os_str().is_empty())
+                            .unwrap_or(&component.absolute_path),
                     )),
                     source_kind: Some(match component.kind {
                         file_ingest::EntryKind::File => settings::project::SourceKind::File,
@@ -1342,6 +1367,12 @@ impl QrateTableDelegate {
     /// Delete the rows at `ats` as one undo step, carrying their cells and photos on it.
     pub(crate) fn remove_rows(&mut self, ats: &[usize]) {
         let before_structure = self.hierarchy.rows().to_vec();
+        let removed_ids: Vec<_> = ats.iter().filter_map(|at| self.row_id(*at)).collect();
+        for row_id in removed_ids {
+            let _ = self
+                .hierarchy
+                .delete(row_id, crate::hierarchy::DeleteMode::PromoteChildren);
+        }
         let removed = self.cut_rows(ats);
         let after_structure = self.hierarchy.rows().to_vec();
         self.record(
@@ -2439,15 +2470,84 @@ mod app_tests {
                     warnings: Vec::new(),
                 };
                 let delegate = state.delegate_mut();
-                assert_eq!(delegate.append_components(&plan, Some(1), Some(0), None), 2);
+                assert_eq!(
+                    delegate.append_components(
+                        &plan,
+                        Some(1),
+                        Some(0),
+                        None,
+                        Some(std::path::Path::new("C:/archive"))
+                    ),
+                    2
+                );
                 assert_eq!(delegate.row_count(), 6);
+                // The dropped series queues after the existing roots; its collapsed child stays hidden.
+                assert_eq!(delegate.visible(), &[0, 1, 2, 3, 4]);
                 let structure = delegate.row_structure();
                 assert_eq!(structure[5].parent_id, Some(structure[4].row_id));
+                assert_eq!(
+                    structure[5].source_path.as_deref(),
+                    Some("Series/image.jpg")
+                );
                 assert_eq!(delegate.cell(5, 1).map(AsRef::as_ref), Some("image.jpg"));
                 assert_eq!(delegate.undo(), Some(true));
                 assert_eq!(delegate.row_count(), 4);
                 assert_eq!(delegate.redo(), Some(true));
                 assert_eq!(delegate.row_count(), 6);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn inserted_rows_appear_where_they_were_asked_for(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.insert_rows(1, None);
+                assert_eq!(delegate.visible(), &[0, 1, 2, 3, 4]);
+                delegate.insert_rows(3, Some(2));
+                assert_eq!(delegate.visible(), &[0, 1, 2, 3, 4, 5]);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn deleting_a_middle_parent_promotes_children_into_its_place(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let component =
+                    |row_id, parent_id, sibling_order| settings::project::RowStructure {
+                        row_id,
+                        parent_id,
+                        level_key: "item".into(),
+                        sibling_order,
+                        source_path: None,
+                        source_kind: None,
+                    };
+                let delegate = state.delegate_mut();
+                // 1 ─┬─ 2 ── 3
+                //    └─ 4
+                delegate.set_structure(
+                    &[
+                        component(1, None, 0),
+                        component(2, Some(1), 0),
+                        component(3, Some(2), 0),
+                        component(4, Some(1), 1),
+                    ],
+                    "item",
+                );
+                delegate.remove_rows(&[1]);
+                let parent_of = |id| {
+                    delegate
+                        .row_structure()
+                        .iter()
+                        .find(|row| row.row_id == id)
+                        .map(|row| (row.parent_id, row.sibling_order))
+                };
+                assert_eq!(parent_of(3), Some((Some(1), 0)));
+                assert_eq!(parent_of(4), Some((Some(1), 1)));
             });
         });
     }
