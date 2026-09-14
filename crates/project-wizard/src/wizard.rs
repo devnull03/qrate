@@ -608,6 +608,15 @@ impl Render for ProjectWizard {
 }
 
 pub fn open_project_wizard(entry_kind: EntryKind, cx: &mut App) {
+    open_project_wizard_seeded(entry_kind, None, None, cx);
+}
+
+pub(crate) fn open_project_wizard_seeded(
+    entry_kind: EntryKind,
+    spreadsheet: Option<String>,
+    folder: Option<String>,
+    cx: &mut App,
+) {
     let bounds = Bounds::centered(None, size(px(560.0), px(680.0)), cx);
     let window_options = WindowOptions {
         titlebar: Some(TitleBar::title_bar_options()),
@@ -619,7 +628,16 @@ pub fn open_project_wizard(entry_kind: EntryKind, cx: &mut App) {
     // Open synchronously: gpui quits when the window list is empty (non-macOS), so a window
     // spawned from an async task would leave a zero-window gap that kills the app mid-transition.
     if let Ok(window_handle) = cx.open_window(window_options, |window, cx| {
-        let view = cx.new(|cx| ProjectWizard::new(entry_kind, window, cx));
+        let view = cx.new(|cx| {
+            let mut wizard = ProjectWizard::new(entry_kind, window, cx);
+            if let Some(path) = spreadsheet {
+                wizard.set_local_path(path, cx);
+            }
+            if let Some(path) = folder {
+                wizard.set_folder_path(path, cx);
+            }
+            wizard
+        });
         cx.new(|cx| Root::new(view, window, cx))
     }) {
         WindowRegistry::register(WIZARD_WINDOW_KIND, window_handle.into(), cx);
