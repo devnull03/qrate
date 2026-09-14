@@ -2342,6 +2342,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
+name = "file-ingest"
+version = "0.4.0-beta.2"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "filedescriptor"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6387,6 +6394,7 @@ dependencies = [
  "data-exchange",
  "diagnostics",
  "dirs 6.0.0",
+ "file-ingest",
  "gpui-component",
  "gpui-pre",
  "log",
@@ -8401,6 +8409,7 @@ dependencies = [
  "base64",
  "clustering",
  "diagnostics",
+ "file-ingest",
  "gpui-base",
  "gpui-component",
  "gpui-pre",
