@@ -167,10 +167,9 @@ struct RowMember {
 struct Row {
     icon: IconName,
     severity: Severity,
-    /// Which cell, row, or column this points at, already phrased for display.
-    scope: SharedString,
-    /// A row- or column-wide note, which reads differently from a cell coordinate.
-    wide: bool,
+    /// The row and column cells, each empty when the finding does not narrow to one.
+    row_label: SharedString,
+    column: SharedString,
     message: SharedString,
     source: SharedString,
     source_key: SharedString,
@@ -178,6 +177,7 @@ struct Row {
     ignored: bool,
     location: Location,
     group: Option<String>,
+    count: usize,
     members: Vec<RowMember>,
     depth: usize,
 }
@@ -196,6 +196,90 @@ fn group_id(d: &Diagnostic) -> Option<String> {
 
 /// Joins a group id to one observed form. `group_id` is `Debug` output, which escapes it.
 const FORM_SEPARATOR: char = '\u{1f}';
+
+fn subject(d: &Diagnostic) -> Option<SharedString> {
+    d.group.as_ref().and_then(|group| group.subject.clone())
+}
+
+fn occurrence(d: &Diagnostic, depth: usize) -> Row {
+    let (row_label, column) = match d.location.scope() {
+        Scope::Cell { row, column } => {
+            (format!("Row {}", row + 1).into(), column.to_owned().into())
+        }
+        Scope::Row(row) => (format!("Row {}", row + 1).into(), SharedString::default()),
+        Scope::Column(column) => (SharedString::default(), column.to_owned().into()),
+        Scope::Dataset => (SharedString::default(), d.location.dataset.clone()),
+    };
+    Row {
+        icon: match d.severity {
+            Severity::Error => IconName::CircleX,
+            Severity::Warning => IconName::TriangleAlert,
+            Severity::Note => IconName::Info,
+        },
+        severity: d.severity,
+        row_label,
+        column,
+        message: d.message.clone(),
+        source: match d.source {
+            Source::Note => SharedString::default(),
+            _ => d.source.label(),
+        },
+        source_key: d.source.key(),
+        finding: d.clone(),
+        ignored: false,
+        location: d.location.clone(),
+        group: None,
+        count: 1,
+        members: Vec::new(),
+        depth,
+    }
+}
+
+/// A group header over `found`, or the lone finding itself. Each observed form nests one level
+/// down by the same rule, so a form seen once is a plain row.
+fn push_group(
+    rows: &mut Vec<Row>,
+    found: &[&Diagnostic],
+    cluster: &[RowMember],
+    id: String,
+    message: SharedString,
+    depth: usize,
+    expanded: &BTreeSet<String>,
+) {
+    if let [single] = found {
+        rows.push(occurrence(single, depth));
+        return;
+    }
+    let mut columns: Vec<_> = found.iter().map(|d| &d.location.column).collect();
+    columns.sort();
+    columns.dedup();
+    let open = expanded.contains(&id);
+    rows.push(Row {
+        column: match columns.as_slice() {
+            [Some(column)] => column.clone(),
+            _ => format!("{} columns", columns.len()).into(),
+        },
+        row_label: SharedString::default(),
+        message,
+        group: Some(id.clone()),
+        count: found.len(),
+        members: cluster.to_vec(),
+        ..occurrence(found[0], depth)
+    });
+    if !open {
+        return;
+    }
+    let forms: Vec<_> = found.chunk_by(|a, b| subject(a) == subject(b)).collect();
+    for form in &forms {
+        if forms.len() == 1 {
+            rows.extend(form.iter().map(|d| occurrence(d, depth + 1)));
+        } else {
+            let form_id = format!("{id}{FORM_SEPARATOR}{:?}", subject(form[0]));
+            let message = form[0].message.clone();
+            push_group(rows, form, cluster, form_id, message, depth + 1, expanded);
+        }
+    }
+}
 
 /// Atomic findings stay in the store; only this flat, virtualized view collapses them.
 fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row> {
@@ -232,36 +316,6 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
             group_id(d),
         )
     });
-    let occurrence = |d: &Diagnostic, depth| {
-        let (scope, wide) = match d.location.scope() {
-            Scope::Cell { row, column } => (format!("Row {} · {column}", row + 1).into(), false),
-            Scope::Row(row) => (format!("Row {}", row + 1).into(), true),
-            Scope::Column(column) => (column.to_owned().into(), true),
-            Scope::Dataset => (d.location.dataset.clone(), true),
-        };
-        Row {
-            icon: match d.severity {
-                Severity::Error => IconName::CircleX,
-                Severity::Warning => IconName::TriangleAlert,
-                Severity::Note => IconName::Info,
-            },
-            severity: d.severity,
-            scope,
-            wide,
-            message: d.message.clone(),
-            source: match d.source {
-                Source::Note => SharedString::default(),
-                _ => d.source.label(),
-            },
-            source_key: d.source.key(),
-            finding: d.clone(),
-            ignored: false,
-            location: d.location.clone(),
-            group: None,
-            members: Vec::new(),
-            depth,
-        }
-    };
     let mut rows = Vec::new();
     for d in items {
         let Some(id) = group_id(d) else {
@@ -271,12 +325,7 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
         let Some(mut members) = groups.remove(&id) else {
             continue;
         };
-        if members.len() == 1 {
-            rows.push(occurrence(members[0], 0));
-            continue;
-        }
-        let subject = |d: &Diagnostic| d.group.as_ref().and_then(|group| group.subject.clone());
-        members.sort_by_cached_key(|&d| {
+        members.sort_by_cached_key(|d| {
             (
                 subject(d),
                 d.message.clone(),
@@ -284,51 +333,16 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
                 d.location.column.clone(),
             )
         });
-        let header = |first: &Diagnostic, id: String, count: usize, depth| {
-            let mut header = occurrence(first, depth);
-            header.scope = format!(
-                "{} · {count} occurrences",
-                if expanded.contains(&id) { "▾" } else { "▸" },
-            )
-            .into();
-            header.wide = true;
-            header.group = Some(id);
-            header.members = members
-                .iter()
-                .map(|member| RowMember {
-                    location: member.location.clone(),
-                    message: member.message.clone(),
-                    subject: subject(member),
-                })
-                .collect();
-            header
-        };
-        let mut top = header(d, id.clone(), members.len(), 0);
-        top.message = d
-            .group
-            .as_ref()
-            .expect("group identity requires metadata")
-            .summary
-            .clone();
-        rows.push(top);
-        if !expanded.contains(&id) {
-            continue;
-        }
-        let forms: Vec<_> = members
-            .chunk_by(|&a, &b| subject(a) == subject(b))
+        let cluster: Vec<_> = members
+            .iter()
+            .map(|member| RowMember {
+                location: member.location.clone(),
+                message: member.message.clone(),
+                subject: subject(member),
+            })
             .collect();
-        if forms.len() == 1 {
-            rows.extend(members.iter().map(|&member| occurrence(member, 1)));
-            continue;
-        }
-        for form in forms {
-            let form_id = format!("{id}{FORM_SEPARATOR}{:?}", subject(form[0]));
-            let open = expanded.contains(&form_id);
-            rows.push(header(form[0], form_id, form.len(), 1));
-            if open {
-                rows.extend(form.iter().map(|&member| occurrence(member, 2)));
-            }
-        }
+        let summary = d.group.as_ref().expect("group metadata").summary.clone();
+        push_group(&mut rows, &members, &cluster, id, summary, 0, expanded);
     }
     rows
 }
@@ -613,6 +627,8 @@ impl Render for ProblemsPanel {
                         let (hover_bg, chip_bg) =
                             (cx.theme().secondary_hover, cx.theme().secondary);
                         let muted = cx.theme().muted_foreground;
+                        let (guide, nested_bg) =
+                            (cx.theme().border, cx.theme().muted.opacity(0.35));
                         rows[range.clone()]
                             .iter()
                             .zip(range)
@@ -634,9 +650,7 @@ impl Render for ProblemsPanel {
                                     .items_center()
                                     .gap_2()
                                     .px_2()
-                                    .py_1()
-                                    .when(r.depth == 1, |row| row.pl_6())
-                                    .when(r.depth == 2, |row| row.pl_12())
+                                    .when(r.depth > 0, |row| row.bg(nested_bg))
                                     .cursor_pointer()
                                     .when(ignored, |row| row.opacity(0.6))
                                     .hover(|row| row.bg(hover_bg))
@@ -645,22 +659,33 @@ impl Render for ProblemsPanel {
                                             .small()
                                             .text_color(severity_color(r.severity, cx)),
                                     )
-                                    // A row- or column-wide note gets a chip so it doesn't read
-                                    // as a cell coordinate that just lost half its address.
                                     .child(
-                                        div()
+                                        h_flex()
+                                            .w(px(104.))
                                             .flex_shrink_0()
+                                            .h_full()
+                                            .children((0..r.depth).map(|_| {
+                                                div()
+                                                    .w(px(12.))
+                                                    .h_full()
+                                                    .border_l_1()
+                                                    .border_color(guide)
+                                            }))
                                             .text_sm()
                                             .text_color(muted)
-                                            .when(r.wide, |s| s.px_1().rounded_sm().bg(chip_bg))
-                                            .when(!is_group, |scope| scope.child(r.scope.clone()))
-                                            .when_some(r.group.clone(), |scope, id| {
+                                            .when(!is_group, |cell| cell.child(r.row_label.clone()))
+                                            .when_some(r.group.clone(), |cell, id| {
                                                 let panel_handle = panel_handle.clone();
-                                                scope.child(
+                                                cell.child(
                                                     Button::new(("expand-problem", ix))
-                                                        .ghost()
+                                                        .text()
                                                         .small()
-                                                        .label(r.scope.clone())
+                                                        .icon(if is_expanded {
+                                                            IconName::ChevronDown
+                                                        } else {
+                                                            IconName::ChevronRight
+                                                        })
+                                                        .label(format!("({})", r.count))
                                                         .accessibility_label(format!(
                                                             "{} {}",
                                                             if is_expanded {
@@ -668,10 +693,6 @@ impl Render for ProblemsPanel {
                                                             } else {
                                                                 "Expand"
                                                             },
-                                                            r.message
-                                                        ))
-                                                        .tooltip(format!(
-                                                            "Expand or collapse: {}",
                                                             r.message
                                                         ))
                                                         .on_click(move |_, _, cx| {
@@ -690,12 +711,43 @@ impl Render for ProblemsPanel {
                                     )
                                     .child(
                                         div()
+                                            .w(px(160.))
+                                            .flex_shrink_0()
+                                            .text_sm()
+                                            .text_color(muted)
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .child(r.column.clone())
+                                            .id(("problem-column", ix))
+                                            .tooltip({
+                                                let text = r.column.clone();
+                                                move |window, cx| {
+                                                    gpui_component::tooltip::Tooltip::new(
+                                                        text.clone(),
+                                                    )
+                                                    .build(window, cx)
+                                                }
+                                            }),
+                                    )
+                                    .child(
+                                        div()
                                             .flex_1()
                                             .min_w_0()
                                             .text_sm()
                                             .overflow_hidden()
                                             .text_ellipsis()
-                                            .child(r.message.clone()),
+                                            .child(r.message.clone())
+                                            // ponytail: always offered, since gpui cannot tell us whether the text was cut
+                                            .id(("problem-message", ix))
+                                            .tooltip({
+                                                let text = r.message.clone();
+                                                move |window, cx| {
+                                                    gpui_component::tooltip::Tooltip::new(
+                                                        text.clone(),
+                                                    )
+                                                    .build(window, cx)
+                                                }
+                                            }),
                                     )
                                     .when(ignored, |row| {
                                         row.child(
@@ -899,7 +951,7 @@ mod tests {
         let mut items = repeated();
         let closed = super::project(items.iter().collect(), &Default::default());
         assert_eq!(closed.len(), 1);
-        assert!(closed[0].scope.contains("100 occurrences"));
+        assert_eq!((closed[0].count, closed[0].column.as_ref()), (100, "Title"));
         let expanded = [closed[0].group.clone().unwrap()].into_iter().collect();
         let open = super::project(items.iter().collect(), &expanded);
         assert_eq!(open.len(), 101);
@@ -925,55 +977,73 @@ mod tests {
         let rows = super::project(vec![&items[0]], &Default::default());
         assert_eq!(rows.len(), 1);
         assert!(rows[0].group.is_none());
-        assert_eq!(rows[0].scope, "Row 1 · Title");
+        assert_eq!(
+            (rows[0].row_label.as_ref(), rows[0].column.as_ref()),
+            ("Row 1", "Title")
+        );
     }
 
     #[test]
-    fn expanded_variants_nest_occurrences_under_each_observed_form() {
+    fn expanded_variants_nest_forms_and_a_single_form_is_a_plain_row() {
         let mut items = repeated();
-        items.truncate(4);
+        items.truncate(5);
         for (row, item) in items.iter_mut().enumerate() {
-            let form = if row % 2 == 0 {
+            let form = if row < 3 {
                 "Akbar, Mohamed"
-            } else {
+            } else if row == 3 {
                 "Akbar, Mohammed"
+            } else {
+                "Akbar, Muhammad"
             };
             item.message = form.into();
             item.group.as_mut().unwrap().subject = Some(form.into());
         }
+        items[4].location.column = Some("Creator".into());
         let closed = super::project(items.iter().collect(), &Default::default());
-        assert_eq!(closed[0].members.len(), 4);
+        assert_eq!(
+            (closed[0].count, closed[0].column.as_ref()),
+            (5, "2 columns")
+        );
         let group = closed[0].group.clone().unwrap();
         let summarize = |rows: &[super::Row]| {
             rows.iter()
-                .map(|row| (row.depth, row.message.to_string(), row.scope.to_string()))
+                .map(|row| {
+                    (
+                        row.depth,
+                        row.group.is_some(),
+                        row.count,
+                        row.row_label.to_string(),
+                        row.message.to_string(),
+                    )
+                })
                 .collect::<Vec<_>>()
         };
         let open = super::project(items.iter().collect(), &[group.clone()].into());
         assert_eq!(
             summarize(&open[1..]),
             [
-                (1, "Akbar, Mohamed".into(), "▸ · 2 occurrences".into()),
-                (1, "Akbar, Mohammed".into(), "▸ · 2 occurrences".into()),
+                (1, true, 3, "".into(), "Akbar, Mohamed".into()),
+                (1, false, 1, "Row 4".into(), "Akbar, Mohammed".into()),
+                (1, false, 1, "Row 5".into(), "Akbar, Muhammad".into()),
             ]
         );
         assert_eq!(
             open[1].members.len(),
-            4,
+            5,
             "a form still resolves the whole cluster"
         );
-        let form = open[2].group.clone().unwrap();
+        let form = open[1].group.clone().unwrap();
         let nested = super::project(items.iter().collect(), &[group, form].into());
         assert_eq!(
-            summarize(&nested[1..]),
+            summarize(&nested[2..5]),
             [
-                (1, "Akbar, Mohamed".into(), "▸ · 2 occurrences".into()),
-                (1, "Akbar, Mohammed".into(), "▾ · 2 occurrences".into()),
-                (2, "Akbar, Mohammed".into(), "Row 2 · Title".into()),
-                (2, "Akbar, Mohammed".into(), "Row 4 · Title".into()),
+                (2, false, 1, "Row 1".into(), "Akbar, Mohamed".into()),
+                (2, false, 1, "Row 2".into(), "Akbar, Mohamed".into()),
+                (2, false, 1, "Row 3".into(), "Akbar, Mohamed".into()),
             ]
         );
     }
+
     #[gpui::test]
     fn clicking_a_group_expands_without_navigation(cx: &mut TestAppContext) {
         #[derive(Default)]
