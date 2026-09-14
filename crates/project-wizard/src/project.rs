@@ -5,7 +5,10 @@
 
 use std::path::Path;
 
-pub use settings::project::{ProjectColumn, ProjectSpec, RowId, StoredNote, write_notes};
+pub use settings::project::{
+    ProjectColumn, ProjectSpec, RowId, RowStructure, SourceKind, StoredNote, write_notes,
+    write_row_structure,
+};
 
 pub fn sanitize_file_stem(name: &str) -> String {
     let cleaned: String = name
