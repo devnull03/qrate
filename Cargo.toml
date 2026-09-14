@@ -8,6 +8,7 @@ members = [
   "crates/clustering",
   "crates/data-exchange",
   "crates/diagnostics",
+  "crates/file-ingest",
   "crates/plugin-api",
   "crates/plugin-host",
   "crates/plugin-package",

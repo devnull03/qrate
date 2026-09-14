@@ -16,6 +16,13 @@ The release name is **Filesystem Collections**. The user-facing release line is:
 > Build projects from files and folders, add material by dropping it into an open project, and
 > arrange nested components without leaving the table.
 
+## Implementation status
+
+- In progress: shared filesystem inventory, relative-path preservation, and adoption by project
+  creation and open-project file resolution.
+- Pending: schema version 4, hierarchical table behavior, import preview, drop surfaces, and
+  interchange contracts.
+
 ## Archival model
 
 RAD and DACS describe archival material at multiple levels and require the relationship between a

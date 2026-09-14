@@ -4,7 +4,6 @@
 //! [`match_folder`] path from here on.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
 use std::path::Path;
 
 use calamine::{Data, Reader, open_workbook_auto};
@@ -184,44 +183,29 @@ impl FolderError {
 /// wizard's check has to be able to look as deep as the app will.
 pub fn list_files(folder: &str, recursive: bool) -> Result<Vec<String>, FolderError> {
     let dir = Path::new(folder);
-    if !dir.is_dir() {
-        log::warn!("Files folder rejected: {folder} is not a folder qrate can see");
-        return Err(FolderError::NotFound);
-    }
-    // Reading the root up front keeps an unreadable folder an error; an unreadable subfolder
-    // below is only skipped.
-    fs::read_dir(dir).map_err(|e| {
-        log::warn!("Files folder rejected: cannot read {folder} — {e}");
-        FolderError::Permission
-    })?;
-
-    let mut files = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if name.starts_with("._") || name.eq_ignore_ascii_case(".ds_store") {
-                continue;
-            }
-            if path.is_dir() {
-                if recursive {
-                    stack.push(path);
-                }
-            } else {
-                files.push(name.to_string());
-            }
+    let inventory = file_ingest::scan(dir, recursive).map_err(|error| match error {
+        file_ingest::Error::NotDirectory => {
+            log::warn!("Files folder rejected: {folder} is not a folder qrate can see");
+            FolderError::NotFound
         }
+        file_ingest::Error::Permission(error) => {
+            log::warn!("Files folder rejected: cannot read {folder} — {error}");
+            FolderError::Permission
+        }
+        file_ingest::Error::Empty => {
+            log::warn!("Files folder rejected: {folder} holds no files (recursive: {recursive})");
+            FolderError::Empty { recursive }
+        }
+    })?;
+    for warning in &inventory.warnings {
+        log::warn!("Files folder scan warning for {folder}: {warning:?}");
     }
-    if files.is_empty() {
-        log::warn!("Files folder rejected: {folder} holds no files (recursive: {recursive})");
-        return Err(FolderError::Empty { recursive });
-    }
+    // Relative paths keep same-named files in separate subfolders distinct. Filename matching
+    // still accepts them because `settings::filenames` reads the path tail as one of its keys.
+    let files: Vec<_> = inventory
+        .files()
+        .map(|entry| file_ingest::normalized_path(&entry.relative_path))
+        .collect();
     log::debug!(
         "Files folder {folder}: {} file(s) found (recursive: {recursive})",
         files.len()
@@ -486,6 +470,7 @@ pub fn load_column_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::io::Write;
 
     fn sample_dir() -> std::path::PathBuf {
@@ -548,7 +533,7 @@ mod tests {
         );
         let mut deep = list_files(dir.to_str().unwrap(), true).unwrap();
         deep.sort();
-        assert_eq!(deep, ["nested.jpg", "top.jpg"]);
+        assert_eq!(deep, ["batch/nested.jpg", "top.jpg"]);
     }
 
     #[test]
@@ -562,7 +547,7 @@ mod tests {
         inventory.extra_files.sort();
         assert_eq!(inventory.matched_rows, 0);
         assert_eq!(inventory.total_rows, 0);
-        assert_eq!(inventory.extra_files, ["one.jpg", "two.png"]);
+        assert_eq!(inventory.extra_files, ["batch/two.png", "one.jpg"]);
     }
 
     #[test]
