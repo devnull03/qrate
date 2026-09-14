@@ -144,6 +144,43 @@ pub fn plan(root: &Path, options: &PlanOptions<'_>) -> Result<ImportPlan, Error>
     })
 }
 
+/// Plans one or more dropped files and directories as independent root components.
+pub fn plan_paths(paths: &[PathBuf], options: &PlanOptions<'_>) -> Result<ImportPlan, Error> {
+    if paths.is_empty() {
+        return Err(Error::Empty);
+    }
+    let mut combined = ImportPlan {
+        components: Vec::new(),
+        warnings: Vec::new(),
+    };
+    for path in paths {
+        if path.is_dir() {
+            let mut next = plan(path, options)?;
+            let offset = combined.components.len();
+            for component in &mut next.components {
+                component.parent = component.parent.map(|parent| parent + offset);
+            }
+            combined.components.extend(next.components);
+            combined.warnings.extend(next.warnings);
+        } else if path.is_file() {
+            combined.components.push(PlannedComponent {
+                title: display_name(path),
+                absolute_path: path.clone(),
+                source_path: path.clone(),
+                kind: EntryKind::File,
+                parent: None,
+                level_key: options.file_level_key.to_string(),
+            });
+        } else {
+            return Err(Error::NotDirectory);
+        }
+    }
+    if combined.components.is_empty() {
+        return Err(Error::Empty);
+    }
+    Ok(combined)
+}
+
 fn display_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -236,7 +273,7 @@ pub fn is_ignored(name: &str) -> bool {
 mod tests {
     use std::fs;
 
-    use crate::{EntryKind, Error, PlanOptions, normalized_path, plan, scan};
+    use crate::{EntryKind, Error, PlanOptions, normalized_path, plan, plan_paths, scan};
 
     #[test]
     fn recursive_inventory_preserves_directories_parents_and_duplicate_names() {
@@ -377,5 +414,21 @@ mod tests {
         assert_eq!(plan.components.len(), 1);
         assert_eq!(plan.components[0].parent, None);
         assert_eq!(plan.components[0].title, "one.jpg");
+    }
+
+    #[test]
+    fn several_dropped_roots_keep_independent_parent_indexes() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("folder");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("inside.jpg"), "inside").unwrap();
+        let loose = root.path().join("loose.jpg");
+        fs::write(&loose, "loose").unwrap();
+
+        let plan = plan_paths(&[folder, loose], &PlanOptions::default()).unwrap();
+        assert_eq!(plan.components.len(), 3);
+        assert_eq!(plan.components[0].parent, None);
+        assert_eq!(plan.components[1].parent, Some(0));
+        assert_eq!(plan.components[2].parent, None);
     }
 }
