@@ -12,47 +12,33 @@
 
 use settings::columns::ColumnType;
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Filenames a recursive walk should ignore — OS cruft, not collection data.
-fn is_ignored(name: &str) -> bool {
-    name.starts_with("._") || name.eq_ignore_ascii_case(".ds_store")
-}
-
-/// Every file under `folder`, found recursively, keyed by lowercased filename (with extension).
-/// A depth-first stack walk rather than `walkdir` — the whole point of a recursive listing here
-/// is a handful of nesting levels, not arbitrary directory trees, so std's `read_dir` is enough.
+/// Every file under `folder`, found recursively, keyed by relative path and lowercased filename.
+/// The shared inventory preserves paths for duplicate basenames; the basename keys retain the
+/// tolerant matching used by existing projects.
 fn index_files(folder: &Path) -> HashMap<String, PathBuf> {
     let mut index = HashMap::new();
-    let mut stack = vec![folder.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
+    let Ok(inventory) = file_ingest::scan(folder, true) else {
+        return index;
+    };
+    for entry in inventory.files() {
+        let Some(name) = entry.path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if is_ignored(name) {
-                continue;
-            }
-            if path.is_dir() {
-                stack.push(path);
-            } else {
-                // Two batches can hold the same filename. Keeping the first by path rather than
-                // the first walked means the same row shows the same picture on every launch.
-                index
-                    .entry(name.to_lowercase())
-                    .and_modify(|kept| {
-                        if path < *kept {
-                            *kept = path.clone();
-                        }
-                    })
-                    .or_insert(path);
-            }
-        }
+        let path = entry.path.clone();
+        let relative = file_ingest::normalized_path(&entry.relative_path).to_lowercase();
+        index.insert(relative, path.clone());
+        // Two batches can hold the same filename. Keeping the first by path rather than the first
+        // walked means the same row shows the same picture on every launch.
+        index
+            .entry(name.to_lowercase())
+            .and_modify(|kept| {
+                if path < *kept {
+                    *kept = path.clone();
+                }
+            })
+            .or_insert(path);
     }
     index
 }
@@ -87,10 +73,14 @@ impl PhotoIndex {
         Self { by_key }
     }
 
-    pub(crate) fn resolve_cell(&self, cell: &str) -> Option<&PathBuf> {
+    pub(crate) fn resolve_cell(&self, cell: &str) -> Option<PathBuf> {
+        let direct = PathBuf::from(cell);
+        if direct.is_absolute() && direct.is_file() {
+            return Some(direct);
+        }
         settings::filenames::lookup_keys(cell)
             .iter()
-            .find_map(|key| self.by_key.get(key))
+            .find_map(|key| self.by_key.get(key).cloned())
     }
 
     /// The image path for `row`'s cells, if any cell names a file this index found. Checks the
@@ -118,9 +108,9 @@ impl PhotoIndex {
             .and_then(|ix| row.get(ix))
             .and_then(|c| self.resolve_cell(c))
         {
-            return Some(hit.clone());
+            return Some(hit);
         }
-        row.iter().find_map(|c| self.resolve_cell(c).cloned())
+        row.iter().find_map(|c| self.resolve_cell(c))
     }
 }
 
@@ -177,6 +167,7 @@ pub(crate) fn refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::io::Write;
 
     fn tempdir(name: &str) -> PathBuf {
@@ -234,6 +225,23 @@ mod tests {
     }
 
     #[test]
+    fn a_relative_path_disambiguates_duplicate_filenames() {
+        let dir = tempdir("duplicate-basename");
+        touch(&dir.join("photographs").join("001.jpg"));
+        touch(&dir.join("documents").join("001.jpg"));
+
+        let index = PhotoIndex::build(dir.to_str().unwrap());
+        assert_eq!(
+            index.resolve_cell("photographs/001.jpg"),
+            Some(dir.join("photographs").join("001.jpg"))
+        );
+        assert_eq!(
+            index.resolve_cell("documents/001.jpg"),
+            Some(dir.join("documents").join("001.jpg"))
+        );
+    }
+
+    #[test]
     fn an_item_id_resolves_to_the_first_of_its_parts() {
         // The row names the item; the folder holds its numbered parts. Whichever order the walk
         // reached them in, the panel shows part 001.
@@ -244,7 +252,7 @@ mod tests {
         let index = PhotoIndex::build(dir.to_str().unwrap());
         assert_eq!(
             index.resolve_cell("2020_04_001"),
-            Some(&dir.join("2020_04_001_001.jpg"))
+            Some(dir.join("2020_04_001_001.jpg"))
         );
     }
 

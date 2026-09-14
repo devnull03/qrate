@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 ai = { path = "../ai" }
 diagnostics = { path = "../diagnostics" }
+file-ingest = { path = "../file-ingest" }
 plugin-api = { path = "../plugin-api" }
 settings = { path = "../settings" }
 plugin-host = { path = "../plugin-host" }

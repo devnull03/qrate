@@ -24,6 +24,12 @@ pub enum ExportError {
     Zip(#[from] zip::result::ZipError),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchiveFile {
+    pub path: PathBuf,
+    pub source_path: Option<String>,
+}
+
 /// The grid as CSV: the header row, then every row in table order.
 fn csv_bytes(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, csv::Error> {
     let mut writer = csv::Writer::from_writer(Vec::new());
@@ -43,19 +49,104 @@ pub fn write_json(path: &Path, value: &Value) -> Result<(), ExportError> {
     Ok(serde_json::to_writer_pretty(File::create(path)?, value).map_err(std::io::Error::from)?)
 }
 
+/// Fills user-declared archival projection columns without adding columns to the dataset.
+pub fn project_structure_columns(
+    headers: &[String],
+    row_ids: &[settings::project::RowId],
+    rows: &mut [Vec<String>],
+    structure: &[settings::project::RowStructure],
+    columns: &[(String, ColumnType)],
+    description: &settings::description::DescriptionConfig,
+) {
+    let by_id: std::collections::HashMap<_, _> = structure
+        .iter()
+        .map(|component| (component.row_id, component))
+        .collect();
+    let title_col = columns
+        .iter()
+        .find(|(_, kind)| *kind == ColumnType::Title)
+        .and_then(|(name, _)| headers.iter().position(|header| header == name));
+    let titles: std::collections::HashMap<_, _> = title_col
+        .map(|title| {
+            row_ids
+                .iter()
+                .zip(rows.iter())
+                .filter_map(|(id, row)| row.get(title).map(|value| (*id, value.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let level_labels: std::collections::HashMap<_, _> = description
+        .levels
+        .iter()
+        .map(|level| (level.key.as_str(), level.label.as_str()))
+        .collect();
+    for (source, row) in rows.iter_mut().enumerate() {
+        let Some(component) = row_ids.get(source).and_then(|id| by_id.get(id)) else {
+            continue;
+        };
+        for (name, kind) in columns {
+            let Some(col) = headers.iter().position(|header| header == name) else {
+                continue;
+            };
+            // A value the archivist typed stays theirs; only a blank cell is filled from structure.
+            if row.get(col).is_none_or(|value| !value.trim().is_empty()) {
+                continue;
+            }
+            row[col] = match kind {
+                ColumnType::DescriptionLevel => level_labels
+                    .get(component.level_key.as_str())
+                    .copied()
+                    .unwrap_or(component.level_key.as_str())
+                    .to_string(),
+                ColumnType::ParentComponent => component
+                    .parent_id
+                    .map(|parent_id| {
+                        titles
+                            .get(&parent_id)
+                            .filter(|title| !title.trim().is_empty())
+                            .cloned()
+                            .unwrap_or_else(|| parent_id.to_string())
+                    })
+                    .unwrap_or_default(),
+                ColumnType::SourcePath => component.source_path.clone().unwrap_or_default(),
+                _ => continue,
+            };
+        }
+    }
+}
+
 /// One node per row, keyed by the column headers verbatim. The headers are the vocabulary a
 /// collection already uses, so `@vocab` resolves them rather than a mapping table nobody wrote —
-/// a reader gets terms that match the spreadsheet they came from.
-pub fn jsonld_value(headers: &[String], rows: &[Vec<String>]) -> Value {
+/// a reader gets terms that match the spreadsheet they came from. Each node also carries a stable
+/// component `@id` and, when it has a parent, an `isPartOf` whole-part link.
+pub fn jsonld_hierarchy_value(
+    headers: &[String],
+    row_ids: &[settings::project::RowId],
+    rows: &[Vec<String>],
+    structure: &[settings::project::RowStructure],
+) -> Value {
+    let structure: std::collections::HashMap<_, _> =
+        structure.iter().map(|item| (item.row_id, item)).collect();
     let graph: Vec<Value> = rows
         .iter()
-        .map(|row| {
-            let node: Map<String, Value> = headers
+        .zip(row_ids)
+        .map(|(row, row_id)| {
+            let mut node: Map<String, Value> = headers
                 .iter()
                 .zip(row)
                 .filter(|(_, cell)| !cell.trim().is_empty())
                 .map(|(header, cell)| (header.clone(), Value::String(cell.clone())))
                 .collect();
+            node.insert("@id".into(), format!("urn:qrate:component:{row_id}").into());
+            if let Some(component) = structure.get(row_id) {
+                node.insert("additionalType".into(), component.level_key.clone().into());
+                if let Some(parent_id) = component.parent_id {
+                    node.insert(
+                        "isPartOf".into(),
+                        json!({ "@id": format!("urn:qrate:component:{parent_id}") }),
+                    );
+                }
+            }
             Value::Object(node)
         })
         .collect();
@@ -156,8 +247,10 @@ pub fn csl_items(headers: &[String], rows: &[Vec<String>], mapping: &CslMapping)
 pub fn write_zip(
     path: &Path,
     headers: &[String],
+    row_ids: &[settings::project::RowId],
     rows: &[Vec<String>],
-    images: &[PathBuf],
+    structure: &[settings::project::RowStructure],
+    images: &[ArchiveFile],
 ) -> Result<(), ExportError> {
     let mut zip = zip::ZipWriter::new(File::create(path)?);
     let text = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -168,41 +261,70 @@ pub fn write_zip(
     zip.write_all(&csv_bytes(headers, rows)?)?;
     zip.start_file("metadata.jsonld", text)?;
     zip.write_all(
-        &serde_json::to_vec_pretty(&jsonld_value(headers, rows)).map_err(std::io::Error::from)?,
+        &serde_json::to_vec_pretty(&jsonld_hierarchy_value(headers, row_ids, rows, structure))
+            .map_err(std::io::Error::from)?,
     )?;
 
     let mut taken: HashSet<String> = HashSet::new();
     for image in images {
-        let Some(name) = image.file_name().and_then(|n| n.to_str()) else {
+        let Some(fallback) = image.path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
+        let relative = image
+            .source_path
+            .as_deref()
+            .and_then(safe_archive_path)
+            .unwrap_or_else(|| fallback.to_string());
         // Two folders can hold the same filename, and a zip entry that repeats one silently wins.
-        let mut name = name.to_string();
+        let mut name = relative;
         for n in 2.. {
             if taken.insert(name.clone()) {
                 break;
             }
             let stem = Path::new(&name).file_stem().unwrap_or_default();
-            name = format!("{}_{n}", stem.to_string_lossy());
-            if let Some(ext) = image.extension().and_then(|e| e.to_str()) {
-                name = format!("{name}.{ext}");
+            let parent = Path::new(&name).parent().unwrap_or_else(|| Path::new(""));
+            let mut renamed = format!("{}_{n}", stem.to_string_lossy());
+            if let Some(ext) = image.path.extension().and_then(|e| e.to_str()) {
+                renamed = format!("{renamed}.{ext}");
             }
+            name = file_ingest::normalized_path(&parent.join(renamed));
         }
-        match std::fs::read(image) {
+        match std::fs::read(&image.path) {
             Ok(bytes) => {
                 zip.start_file(format!("files/{name}"), binary)?;
                 zip.write_all(&bytes)?;
             }
-            Err(err) => log::warn!("left {} out of the export archive: {err}", image.display()),
+            Err(err) => log::warn!(
+                "left {} out of the export archive: {err}",
+                image.path.display()
+            ),
         }
     }
     zip.finish()?;
     Ok(())
 }
 
+fn safe_archive_path(source: &str) -> Option<String> {
+    let path = Path::new(source);
+    if path.is_absolute() || source.trim().is_empty() {
+        return None;
+    }
+    let safe: PathBuf = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part),
+            _ => None,
+        })
+        .collect();
+    (!safe.as_os_str().is_empty()).then(|| file_ingest::normalized_path(&safe))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CslMapping, csl_items, derive_csl_mapping, jsonld_value, write_zip};
+    use super::{
+        ArchiveFile, CslMapping, csl_items, derive_csl_mapping, jsonld_hierarchy_value,
+        project_structure_columns, write_zip,
+    };
     use settings::columns::ColumnType;
 
     fn grid() -> (Vec<String>, Vec<Vec<String>>) {
@@ -221,15 +343,105 @@ mod tests {
     #[test]
     fn jsonld_keeps_column_order_and_drops_empty_cells() {
         let (headers, rows) = grid();
-        let doc = jsonld_value(&headers, &rows);
+        let doc = jsonld_hierarchy_value(&headers, &[1, 2], &rows, &[]);
         let graph = doc["@graph"].as_array().unwrap();
         assert_eq!(graph.len(), 2);
         assert_eq!(
             graph[0].as_object().unwrap().keys().collect::<Vec<_>>(),
-            ["Digital ID", "Title", "Taken", "Notes"]
+            ["Digital ID", "Title", "Taken", "Notes", "@id"]
         );
         // The second row's blanks are absent, not empty strings — a null value is a claim.
-        assert_eq!(graph[1].as_object().unwrap().len(), 2);
+        assert_eq!(graph[1].as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn jsonld_exports_archival_whole_part_relationships() {
+        let (headers, rows) = grid();
+        let structure = [
+            settings::project::RowStructure {
+                row_id: 10,
+                parent_id: None,
+                level_key: "series".into(),
+                sibling_order: 0,
+                source_path: None,
+                source_kind: None,
+            },
+            settings::project::RowStructure {
+                row_id: 11,
+                parent_id: Some(10),
+                level_key: "item".into(),
+                sibling_order: 0,
+                source_path: None,
+                source_kind: None,
+            },
+        ];
+        let graph = jsonld_hierarchy_value(&headers, &[10, 11], &rows, &structure);
+        assert_eq!(graph["@graph"][0]["additionalType"], "series");
+        assert_eq!(
+            graph["@graph"][1]["isPartOf"]["@id"],
+            "urn:qrate:component:10"
+        );
+    }
+
+    #[test]
+    fn declared_structure_columns_are_filled_without_adding_columns() {
+        let headers = vec![
+            "Title".into(),
+            "Level".into(),
+            "Parent".into(),
+            "Path".into(),
+        ];
+        let mut rows = vec![
+            vec![
+                "Photographs".into(),
+                "Fonds".into(),
+                String::new(),
+                String::new(),
+            ],
+            vec![
+                "one.jpg".into(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ],
+        ];
+        let structure = [
+            settings::project::RowStructure {
+                row_id: 10,
+                parent_id: None,
+                level_key: "series".into(),
+                sibling_order: 0,
+                source_path: Some("Photographs".into()),
+                source_kind: None,
+            },
+            settings::project::RowStructure {
+                row_id: 11,
+                parent_id: Some(10),
+                level_key: "item".into(),
+                sibling_order: 0,
+                source_path: Some("Photographs/one.jpg".into()),
+                source_kind: None,
+            },
+        ];
+        project_structure_columns(
+            &headers,
+            &[10, 11],
+            &mut rows,
+            &structure,
+            &[
+                ("Title".into(), ColumnType::Title),
+                ("Level".into(), ColumnType::DescriptionLevel),
+                ("Parent".into(), ColumnType::ParentComponent),
+                ("Path".into(), ColumnType::SourcePath),
+            ],
+            &settings::description::DescriptionProfile::Rad.defaults(),
+        );
+        assert_eq!(
+            rows[1],
+            ["one.jpg", "Item", "Photographs", "Photographs/one.jpg"]
+        );
+        assert_eq!(rows[0][1], "Fonds", "a typed value is never overwritten");
+        assert_eq!(headers.len(), 4);
     }
 
     #[test]
@@ -275,20 +487,31 @@ mod tests {
         write_zip(
             &archive,
             &headers,
+            &[10, 11],
             &rows,
-            &[dir.join("a/1.jpg"), dir.join("b/1.jpg")],
+            &[],
+            &[
+                ArchiveFile {
+                    path: dir.join("a/1.jpg"),
+                    source_path: Some("a/1.jpg".into()),
+                },
+                ArchiveFile {
+                    path: dir.join("b/1.jpg"),
+                    source_path: Some("b/1.jpg".into()),
+                },
+            ],
         )
         .unwrap();
 
         let zip = zip::ZipArchive::new(std::fs::File::open(&archive).unwrap()).unwrap();
-        // Two files sharing a name both survive; the second is renamed rather than overwriting.
+        // Two files sharing a name both survive in their source directories.
         assert_eq!(
             zip.file_names().collect::<std::collections::HashSet<_>>(),
             [
                 "data.csv",
                 "metadata.jsonld",
-                "files/1.jpg",
-                "files/1_2.jpg"
+                "files/a/1.jpg",
+                "files/b/1.jpg"
             ]
             .into_iter()
             .collect()

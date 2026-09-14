@@ -251,9 +251,31 @@ fn structural_items(menu: PopupMenu, rows: Option<&[usize]>, col: Option<usize>)
                 }),
             )
             .item(
-                PopupMenuItem::new(rows_label("Delete", rows)).on_click(move |_, _, cx| {
-                    crate::structural(Structural::DeleteRows(delete.clone()), cx)
+                PopupMenuItem::new("Indent row")
+                    .on_click(move |_, _, cx| crate::arrange(crate::Arrangement::Indent(dup), cx)),
+            )
+            .item(
+                PopupMenuItem::new("Outdent row")
+                    .on_click(move |_, _, cx| crate::arrange(crate::Arrangement::Outdent(dup), cx)),
+            )
+            .item(
+                PopupMenuItem::new(rows_label("Delete and promote children", rows)).on_click(
+                    move |_, _, cx| crate::structural(Structural::DeleteRows(delete.clone()), cx),
+                ),
+            )
+            .item(
+                PopupMenuItem::new("Delete row and descendants").on_click(move |_, _, cx| {
+                    crate::arrange(crate::Arrangement::DeleteSubtree(dup), cx)
                 }),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new("Expand all groups")
+                    .on_click(move |_, _, cx| cx.dispatch_action(&crate::ExpandAll)),
+            )
+            .item(
+                PopupMenuItem::new("Collapse all groups")
+                    .on_click(move |_, _, cx| cx.dispatch_action(&crate::CollapseAll)),
             )
         }
         None => menu,

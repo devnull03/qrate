@@ -9,6 +9,7 @@ csv.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 settings = { path = "../settings" }
+file-ingest = { path = "../file-ingest" }
 # blocking, not async: gpui's executor isn't a tokio reactor, so we run the
 # one-shot fetch on the background executor with the blocking client.
 reqwest = { version = "0.12", features = ["blocking", "json"] }

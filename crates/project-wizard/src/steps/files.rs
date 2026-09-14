@@ -4,7 +4,7 @@ use gpui_component::button::Button;
 use gpui_component::input::Input;
 use gpui_component::label::Label;
 use gpui_component::text::Text;
-use gpui_component::{ActiveTheme, Disableable, Sizable, StyledExt, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Disableable, Selectable, Sizable, StyledExt, h_flex, v_flex};
 
 use crate::data;
 use crate::wizard::{EntryKind, ProjectWizard};
@@ -76,7 +76,7 @@ impl ProjectWizard {
         let _ = window;
     }
 
-    fn set_local_path(&mut self, path: String, _cx: &mut Context<Self>) {
+    pub(crate) fn set_local_path(&mut self, path: String, _cx: &mut Context<Self>) {
         self.local_path = path;
         match data::load_spreadsheet_preview(&self.local_path) {
             Ok(preview) => {
@@ -91,7 +91,7 @@ impl ProjectWizard {
         self.revalidate_folder();
     }
 
-    fn set_folder_path(&mut self, path: String, _cx: &mut Context<Self>) {
+    pub(crate) fn set_folder_path(&mut self, path: String, _cx: &mut Context<Self>) {
         self.folder_path = path;
         self.revalidate_folder();
     }
@@ -186,9 +186,104 @@ impl ProjectWizard {
             EntryKind::Blank => self.render_blank_files(window, cx).into_any_element(),
         };
         v_flex()
+            .id("files-drop-area")
             .gap_3()
+            .drag_over::<ExternalPaths>(|style, _, _, cx| {
+                style.bg(cx.theme().secondary_hover)
+            })
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                let paths = paths.paths();
+                if paths.len() == 1 && paths[0].is_dir() {
+                    this.set_folder_path(paths[0].to_string_lossy().into_owned(), cx);
+                } else if this.entry_kind == EntryKind::LocalFile
+                    && paths.len() == 1
+                    && paths[0].is_file()
+                {
+                    this.set_local_path(paths[0].to_string_lossy().into_owned(), cx);
+                } else {
+                    this.folder_error = Some(
+                        "Drop one folder here. You can drop several individual files into the table after the project opens."
+                            .into(),
+                    );
+                }
+                cx.notify();
+            }))
             .child(body)
+            .when(!self.skip_files, |this| {
+                this.child(self.render_description_profile(cx))
+            })
             .child(self.render_skip_files_toggle(cx))
+    }
+
+    fn render_description_profile(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = self.description_profile;
+        v_flex()
+            .gap_2()
+            .pt_2()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(Label::new("Archival description standard").text_sm())
+            .child(
+                Label::new(
+                    "Folder and file rows become archival components using this vocabulary.",
+                )
+                .text_sm()
+                .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                h_flex().gap_1().flex_wrap().children(
+                    settings::description::DescriptionProfile::ALL
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, profile)| {
+                            Button::new(("description-profile", index))
+                                .label(profile.label())
+                                .outline()
+                                .selected(profile == selected)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.description_profile = profile;
+                                    let defaults = profile.defaults();
+                                    let folder_label = defaults
+                                        .levels
+                                        .iter()
+                                        .find(|level| level.key == defaults.folder_level_key)
+                                        .map(|level| level.label.as_str())
+                                        .unwrap_or("Group");
+                                    let file_label = defaults
+                                        .levels
+                                        .iter()
+                                        .find(|level| level.key == defaults.file_level_key)
+                                        .map(|level| level.label.as_str())
+                                        .unwrap_or("Item");
+                                    this.folder_level_input.update(cx, |input, cx| {
+                                        input.set_value(folder_label, window, cx)
+                                    });
+                                    this.file_level_input.update(cx, |input, cx| {
+                                        input.set_value(file_label, window, cx)
+                                    });
+                                    cx.notify();
+                                }))
+                        }),
+                ),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .gap_1()
+                            .child(Label::new("Folders are called").text_sm())
+                            .child(Input::new(&self.folder_level_input)),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .gap_1()
+                            .child(Label::new("Files are called").text_sm())
+                            .child(Input::new(&self.file_level_input)),
+                    ),
+            )
     }
 
     fn folder_field(

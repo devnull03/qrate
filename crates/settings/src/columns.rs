@@ -43,6 +43,12 @@ pub enum ColumnType {
     Url,
     /// An accession number, call number, or other opaque handle.
     Identifier,
+    /// The archival level assigned to this component.
+    DescriptionLevel,
+    /// A stable reference to this component's broader parent.
+    ParentComponent,
+    /// A file or directory path retained from filesystem ingest.
+    SourcePath,
 }
 
 impl ColumnType {
@@ -56,11 +62,14 @@ impl ColumnType {
             ColumnType::Number => "Number",
             ColumnType::Url => "Url",
             ColumnType::Identifier => "Identifier",
+            ColumnType::DescriptionLevel => "Description Level",
+            ColumnType::ParentComponent => "Parent Component",
+            ColumnType::SourcePath => "Source Path",
         }
     }
 
     /// Every type, in the order the wizard offers them.
-    pub const ALL: [ColumnType; 7] = [
+    pub const ALL: [ColumnType; 10] = [
         ColumnType::Title,
         ColumnType::Text,
         ColumnType::Date,
@@ -68,6 +77,9 @@ impl ColumnType {
         ColumnType::Number,
         ColumnType::Url,
         ColumnType::Identifier,
+        ColumnType::DescriptionLevel,
+        ColumnType::ParentComponent,
+        ColumnType::SourcePath,
     ];
 
     /// Read a declared type. Case- and space-insensitive, and it accepts the spellings a person
@@ -81,6 +93,11 @@ impl ColumnType {
             "number" | "integer" | "int" | "float" | "decimal" => ColumnType::Number,
             "url" | "uri" | "link" => ColumnType::Url,
             "identifier" | "id" => ColumnType::Identifier,
+            "descriptionlevel" | "description level" | "levelofdescription" => {
+                ColumnType::DescriptionLevel
+            }
+            "parentcomponent" | "parent component" | "parent" => ColumnType::ParentComponent,
+            "sourcepath" | "source path" => ColumnType::SourcePath,
             _ => ColumnType::Text,
         }
     }

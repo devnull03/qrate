@@ -61,7 +61,12 @@ actions!(
         InsertColumnLeft,
         InsertColumnRight,
         DeleteColumn,
-        RenameColumn
+        RenameColumn,
+        ExpandAll,
+        CollapseAll,
+        IndentRow,
+        OutdentRow,
+        DeleteSubtree
     ]
 );
 
@@ -122,6 +127,24 @@ impl TablePanel {
                 &project.data.row_ids,
                 &project.data.rows,
             );
+            let structure =
+                settings::project::read_row_structure(&project.file).unwrap_or_else(|error| {
+                    log::warn!(
+                        "Could not read row structure from {:?}: {error}",
+                        project.file
+                    );
+                    Vec::new()
+                });
+            let description =
+                settings::description::DescriptionConfig::from_values(&project.data.values);
+            delegate.set_structure(&structure, &description.file_level_key);
+            let expanded: Vec<settings::project::RowId> = project
+                .data
+                .values
+                .get(settings::description::HIERARCHY_EXPANDED_KEY)
+                .and_then(|value| serde_json::from_str(&value.text()).ok())
+                .unwrap_or_default();
+            delegate.restore_expanded(&expanded);
             Self::apply_saved_layout(&mut delegate, &project.file);
             delegate.set_image_paths(Self::resolve_images(&project.data));
             loaded_project = Some(project.file.clone());
@@ -331,9 +354,26 @@ impl TablePanel {
                     project.data.rows.clone(),
                 );
                 let image_paths = Self::resolve_images(&project.data);
+                let structure =
+                    settings::project::read_row_structure(&file).unwrap_or_else(|error| {
+                        log::warn!("Could not read row structure from {file:?}: {error}");
+                        Vec::new()
+                    });
+                let description =
+                    settings::description::DescriptionConfig::from_values(&project.data.values);
+                let expanded: Vec<settings::project::RowId> = project
+                    .data
+                    .values
+                    .get(settings::description::HIERARCHY_EXPANDED_KEY)
+                    .and_then(|value| serde_json::from_str(&value.text()).ok())
+                    .unwrap_or_default();
                 this.loaded_project = Some(file.clone());
                 this.state.update(cx, |state, cx| {
                     state.delegate_mut().set_data(&headers, &row_ids, &rows);
+                    state
+                        .delegate_mut()
+                        .set_structure(&structure, &description.file_level_key);
+                    state.delegate_mut().restore_expanded(&expanded);
                     Self::apply_saved_layout(state.delegate_mut(), &file);
                     state.delegate_mut().set_image_paths(image_paths);
                     apply_settings(state.delegate_mut(), cx);
@@ -408,6 +448,128 @@ impl TablePanel {
             cx.background_executor().timer(REVALIDATE_DEBOUNCE).await;
             this.update(cx, |_this, cx| crate::revalidate_now(cx)).ok();
         }));
+    }
+
+    fn import_external_paths(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let description = cx
+            .try_global::<settings::project::CurrentProject>()
+            .map(|project| {
+                settings::description::DescriptionConfig::from_values(&project.data.values)
+            })
+            .unwrap_or_else(|| settings::description::DescriptionProfile::Rad.defaults());
+        let folder_level = description.folder_level_key;
+        let file_level = description.file_level_key;
+        let task = cx.background_executor().spawn(async move {
+            file_ingest::plan_paths(
+                &paths,
+                &file_ingest::PlanOptions {
+                    recursive: true,
+                    include_root: true,
+                    folder_level_key: &folder_level,
+                    file_level_key: &file_level,
+                },
+            )
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(plan) = task.await else {
+                log::warn!("the dropped paths could not be inventoried");
+                return;
+            };
+            this.update_in(cx, |_this, window, cx| {
+                let files = plan
+                    .components
+                    .iter()
+                    .filter(|component| component.kind == file_ingest::EntryKind::File)
+                    .count();
+                let folders = plan.components.len() - files;
+                let detail = format!(
+                    "Add {} component{} ({} file{}, {} folder{})?{}",
+                    plan.components.len(),
+                    if plan.components.len() == 1 { "" } else { "s" },
+                    files,
+                    if files == 1 { "" } else { "s" },
+                    folders,
+                    if folders == 1 { "" } else { "s" },
+                    if plan.warnings.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {} path warning(s) will be skipped.", plan.warnings.len())
+                    }
+                );
+                let answer = window.prompt(
+                    PromptLevel::Info,
+                    "Import dropped files",
+                    Some(&detail),
+                    &["Import", "Cancel"],
+                    cx,
+                );
+                cx.spawn_in(window, async move |this, cx| {
+                    if answer.await.unwrap_or(1) != 0 {
+                        return;
+                    }
+                    this.update(cx, |this, cx| {
+                        let project = cx.global::<settings::project::CurrentProject>();
+                        let files_root = project
+                            .data
+                            .values
+                            .get(settings::project::FILES_FOLDER_KEY)
+                            .map(|folder| std::path::PathBuf::from(folder.text().as_ref()));
+                        let (title_name, file_name) = project.data.columns.iter().fold(
+                            (None, None),
+                            |(title, file), column| {
+                                match settings::columns::ColumnType::from_declared(
+                                    &column.data_type,
+                                ) {
+                                    settings::columns::ColumnType::Title => {
+                                        (Some(column.name.clone()), file)
+                                    }
+                                    settings::columns::ColumnType::Filename => {
+                                        (title, Some(column.name.clone()))
+                                    }
+                                    _ => (title, file),
+                                }
+                            },
+                        );
+                        this.state.update(cx, |state, cx| {
+                            let title_col = title_name
+                                .as_deref()
+                                .and_then(|name| state.delegate().data_col(name));
+                            let file_col = file_name
+                                .as_deref()
+                                .and_then(|name| state.delegate().data_col(name));
+                            state.delegate_mut().append_components(
+                                &plan,
+                                title_col,
+                                file_col,
+                                None,
+                                files_root.as_deref(),
+                            );
+                            state.refresh(cx);
+                            cx.emit(TableChanged);
+                            cx.notify();
+                        });
+                        let row_ids = this.state.read(cx).delegate().row_ids().to_vec();
+                        diagnostics::Diagnostics::align_note_rows(
+                            diagnostics::DATASET_MAIN,
+                            &row_ids,
+                            cx,
+                        );
+                        settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+                        this.schedule_revalidate(cx);
+                        this.schedule_autosave(cx);
+                    })
+                    .ok();
+                })
+                .detach();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// React to a committed cell edit per the Autosave setting: write immediately, buffer behind a
@@ -902,6 +1064,10 @@ impl Render for TablePanel {
             .id("table-panel")
             .role(Role::Group)
             .aria_label("Table")
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary_hover))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.import_external_paths(paths.paths().to_vec(), window, cx)
+            }))
             .on_action(cx.listener(|this, _: &Search, window, cx| this.toggle_search(window, cx)))
             .on_action(cx.listener(|this, _: &Replace, window, cx| {
                 this.replace_open = true;
@@ -956,6 +1122,39 @@ impl Render for TablePanel {
             .on_action(cx.listener(|this, _: &Clear, _, cx| this.clear_range(cx)))
             .on_action(cx.listener(|this, _: &UnfreezeColumns, _, cx| {
                 crate::set_frozen_columns(&this.state.clone(), 0, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExpandAll, _, cx| {
+                let expanded = this.state.update(cx, |state, cx| {
+                    state.delegate_mut().expand_all();
+                    let expanded = state.delegate().expanded_rows();
+                    state.refresh(cx);
+                    cx.emit(TableChanged);
+                    expanded
+                });
+                crate::persist_expanded(&expanded, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CollapseAll, _, cx| {
+                this.state.update(cx, |state, cx| {
+                    state.delegate_mut().collapse_all();
+                    state.refresh(cx);
+                    cx.emit(TableChanged);
+                });
+                crate::persist_expanded(&[], cx);
+            }))
+            .on_action(cx.listener(|this, _: &IndentRow, _, cx| {
+                if let Some((rows, _)) = this.structural_target(cx) {
+                    crate::arrange(crate::Arrangement::Indent(rows[0]), cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OutdentRow, _, cx| {
+                if let Some((rows, _)) = this.structural_target(cx) {
+                    crate::arrange(crate::Arrangement::Outdent(rows[0]), cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &DeleteSubtree, _, cx| {
+                if let Some((rows, _)) = this.structural_target(cx) {
+                    crate::arrange(crate::Arrangement::DeleteSubtree(rows[0]), cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &InsertRowAbove, _, cx| {
                 this.structural(|rows, _| crate::Structural::InsertRow { at: rows[0] }, cx)

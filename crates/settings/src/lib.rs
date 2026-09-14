@@ -2,6 +2,7 @@
 //! settings-window shell (`SettingsWindow`). Product-specific pages live in `app`.
 
 pub mod columns;
+pub mod description;
 pub mod dirty;
 pub mod filenames;
 pub mod os_open;

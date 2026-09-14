@@ -80,6 +80,18 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-x", table::Cut, Some(table::GRID_CONTEXT)),
         KeyBinding::new("secondary-c", table::Copy, Some(table::GRID_CONTEXT)),
         KeyBinding::new("secondary-v", table::Paste, Some(table::GRID_CONTEXT)),
+        KeyBinding::new(
+            "secondary-alt-right",
+            table::ExpandAll,
+            Some(table::GRID_CONTEXT),
+        ),
+        KeyBinding::new(
+            "secondary-alt-left",
+            table::CollapseAll,
+            Some(table::GRID_CONTEXT),
+        ),
+        KeyBinding::new("secondary-]", table::IndentRow, Some(table::GRID_CONTEXT)),
+        KeyBinding::new("secondary-[", table::OutdentRow, Some(table::GRID_CONTEXT)),
         // Blank the selection, the spreadsheet convention — and both keys, since Sheets and Excel
         // accept either. Scoped to the grid like the clipboard keys above, which is what keeps
         // Backspace deleting *text* while the cell editor or the find bar holds focus.

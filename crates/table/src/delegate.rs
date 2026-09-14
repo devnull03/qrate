@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
@@ -15,7 +15,13 @@ use serde::{Deserialize, Serialize};
 use diagnostics::{DATASET_MAIN, Location};
 
 use crate::history::{Cells, Col, History, Row, Step};
-use crate::{cell, editing::EditState, filter, row_index};
+use crate::{
+    cell,
+    editing::EditState,
+    filter,
+    hierarchy::{Hierarchy, Placement},
+    row_index,
+};
 
 /// Emitted whenever the table's selection, a cell's text, or the column layout changes, so
 /// cross-crate listeners know to re-render.
@@ -76,6 +82,10 @@ pub struct QrateTableDelegate {
     /// View→source row mapping: `visible_rows[view] == source`. The library only ever sees this
     /// narrowed set, so filtering composes with the virtualized render for free.
     visible_rows: Vec<usize>,
+    /// Hierarchy depth parallel to `visible_rows`.
+    visible_depths: Vec<usize>,
+    hierarchy: Hierarchy,
+    default_level: String,
     /// Per-data-column set of *excluded* cell values, parallel to `columns`. Empty = no filter.
     filters: Vec<HashSet<SharedString>>,
     /// Whether each column offers a filter dropdown at all, parallel to `columns`. Off for every
@@ -113,6 +123,9 @@ impl QrateTableDelegate {
             note_editor,
             image_paths: Vec::new(),
             visible_rows: Vec::new(),
+            visible_depths: Vec::new(),
+            hierarchy: Hierarchy::default(),
+            default_level: "item".into(),
             filters: Vec::new(),
             filters_enabled: Vec::new(),
             subdelimiter: SharedString::default(),
@@ -158,6 +171,50 @@ impl QrateTableDelegate {
         &self.visible_rows
     }
 
+    pub fn row_depth(&self, view: usize) -> usize {
+        self.visible_depths.get(view).copied().unwrap_or_default()
+    }
+
+    pub(crate) fn row_has_children(&self, source: usize) -> bool {
+        self.row_ids
+            .get(source)
+            .is_some_and(|row_id| self.hierarchy.has_children(*row_id))
+    }
+
+    pub(crate) fn row_expanded(&self, source: usize) -> bool {
+        self.row_ids
+            .get(source)
+            .is_some_and(|row_id| self.hierarchy.is_expanded(*row_id))
+    }
+
+    pub(crate) fn toggle_expanded(&mut self, source: usize) {
+        let Some(row_id) = self.row_ids.get(source).copied() else {
+            return;
+        };
+        self.hierarchy
+            .set_expanded(row_id, !self.hierarchy.is_expanded(row_id));
+        self.recompute_visible();
+    }
+
+    pub(crate) fn expand_all(&mut self) {
+        self.hierarchy.expand_all();
+        self.recompute_visible();
+    }
+
+    pub(crate) fn collapse_all(&mut self) {
+        self.hierarchy.collapse_all();
+        self.recompute_visible();
+    }
+
+    pub(crate) fn expanded_rows(&self) -> Vec<settings::project::RowId> {
+        self.hierarchy.expanded_rows()
+    }
+
+    pub(crate) fn restore_expanded(&mut self, row_ids: &[settings::project::RowId]) {
+        self.hierarchy.restore_expanded(row_ids);
+        self.recompute_visible();
+    }
+
     /// Source→view, the inverse of [`source`](Self::source). `None` when a filter currently hides
     /// the row — a diagnostic can point at a row the user has narrowed away.
     pub fn view_row(&self, source: usize) -> Option<usize> {
@@ -197,7 +254,28 @@ impl QrateTableDelegate {
     }
 
     fn recompute_visible(&mut self) {
-        self.visible_rows = compute_visible_rows(&self.rows, &self.filters, &self.subdelimiter);
+        let matching = compute_visible_rows(&self.rows, &self.filters, &self.subdelimiter);
+        let matching_ids = (matching.len() != self.rows.len()).then(|| {
+            matching
+                .into_iter()
+                .filter_map(|source| self.row_ids.get(source).copied())
+                .collect::<HashSet<_>>()
+        });
+        let source_by_id: HashMap<_, _> = self
+            .row_ids
+            .iter()
+            .enumerate()
+            .map(|(source, row_id)| (*row_id, source))
+            .collect();
+        let projection = self.hierarchy.projection(matching_ids.as_ref());
+        self.visible_rows.clear();
+        self.visible_depths.clear();
+        for (row_id, depth) in projection {
+            if let Some(source) = source_by_id.get(&row_id) {
+                self.visible_rows.push(*source);
+                self.visible_depths.push(depth);
+            }
+        }
         // `range` is in view coordinates, which this just redefined.
         self.range = None;
     }
@@ -389,9 +467,25 @@ impl QrateTableDelegate {
         self.filters = vec![HashSet::new(); self.columns.len()];
         self.filters_enabled = vec![false; self.columns.len()];
         self.visible_rows = (0..self.rows.len()).collect();
+        self.visible_depths = vec![0; self.rows.len()];
+        self.hierarchy = Hierarchy::from_rows(&self.row_ids, &[], &self.default_level);
         // Stale — indexes into the old row set; `TablePanel` re-resolves right after.
         self.image_paths = vec![None; self.rows.len()];
         self.values_generation += 1;
+    }
+
+    pub fn set_structure(
+        &mut self,
+        structure: &[settings::project::RowStructure],
+        default_level: &str,
+    ) {
+        self.default_level = default_level.into();
+        self.hierarchy = Hierarchy::from_rows(&self.row_ids, structure, default_level);
+        self.recompute_visible();
+    }
+
+    pub fn row_structure(&self) -> &[settings::project::RowStructure] {
+        self.hierarchy.rows()
     }
 
     /// Replaces the per-row resolved image paths. A length mismatch (a stale call racing a newer
@@ -540,7 +634,10 @@ impl QrateTableDelegate {
     /// was nothing to undo.
     pub(crate) fn undo(&mut self) -> Option<bool> {
         let step = self.history.undo()?;
-        let rows_changed = matches!(step, Step::RowsAdded { .. } | Step::RowsRemoved(_));
+        let rows_changed = matches!(
+            step,
+            Step::RowsAdded { .. } | Step::RowsRemoved { .. } | Step::Hierarchy { .. }
+        );
         self.replay(&step, false);
         Some(rows_changed)
     }
@@ -548,7 +645,10 @@ impl QrateTableDelegate {
     /// [`undo`](Self::undo)'s mirror.
     pub(crate) fn redo(&mut self) -> Option<bool> {
         let step = self.history.redo()?;
-        let rows_changed = matches!(step, Step::RowsAdded { .. } | Step::RowsRemoved(_));
+        let rows_changed = matches!(
+            step,
+            Step::RowsAdded { .. } | Step::RowsRemoved { .. } | Step::Hierarchy { .. }
+        );
         self.replay(&step, true);
         Some(rows_changed)
     }
@@ -563,14 +663,33 @@ impl QrateTableDelegate {
                     self.set_cell(*row, *col, text.clone());
                 }
             }
-            Step::RowsAdded { at, rows } => {
+            Step::RowsAdded {
+                at,
+                rows,
+                before_structure,
+                after_structure,
+            } => {
                 if forward {
                     self.splice_rows(*at, rows);
                 } else {
                     self.cut_rows(&(*at..at + rows.len()).collect::<Vec<_>>());
                 }
+                self.hierarchy.replace_rows(
+                    &self.row_ids,
+                    if forward {
+                        after_structure
+                    } else {
+                        before_structure
+                    },
+                    &self.default_level,
+                );
+                self.recompute_visible();
             }
-            Step::RowsRemoved(rows) => {
+            Step::RowsRemoved {
+                rows,
+                before_structure,
+                after_structure,
+            } => {
                 if forward {
                     self.cut_rows(&rows.iter().map(|(at, _)| *at).collect::<Vec<_>>());
                 } else {
@@ -578,6 +697,16 @@ impl QrateTableDelegate {
                         self.splice_rows(*at, std::slice::from_ref(row));
                     }
                 }
+                self.hierarchy.replace_rows(
+                    &self.row_ids,
+                    if forward {
+                        after_structure
+                    } else {
+                        before_structure
+                    },
+                    &self.default_level,
+                );
+                self.recompute_visible();
             }
             Step::ColumnAdded { at, col } => {
                 if forward {
@@ -595,6 +724,14 @@ impl QrateTableDelegate {
             }
             Step::Renamed { col, before, after } => {
                 self.set_column_name(*col, if forward { after } else { before }.clone());
+            }
+            Step::Hierarchy { before, after } => {
+                self.hierarchy.replace_rows(
+                    &self.row_ids,
+                    if forward { after } else { before },
+                    &self.default_level,
+                );
+                self.recompute_visible();
             }
         }
         // An open edit would commit over what was just restored.
@@ -688,6 +825,7 @@ impl QrateTableDelegate {
     /// What every row insert or delete invalidates. The view is rebuilt rather than patched: a
     /// filtered view's indices all move, and `recompute_visible` already drops the range for that.
     fn rows_changed(&mut self) {
+        self.hierarchy.reconcile(&self.row_ids, &self.default_level);
         self.recompute_visible();
         self.editing = EditState::Idle;
         self.values_generation += 1;
@@ -725,6 +863,7 @@ impl QrateTableDelegate {
 
     /// Insert a blank row at `at`, or a copy of `source` when duplicating a row.
     pub(crate) fn insert_rows(&mut self, at: usize, source: Option<usize>) {
+        let before_structure = self.hierarchy.rows().to_vec();
         let cells = match source.and_then(|r| self.rows.get(r)) {
             Some(row) => row.clone(),
             None => vec![SharedString::default(); self.columns.len()],
@@ -733,13 +872,135 @@ impl QrateTableDelegate {
         let id = self.fresh_row_id();
         let rows = vec![Row { id, cells, image }];
         self.splice_rows(at, &rows);
-        self.history.push(Step::RowsAdded { at, rows });
+        // A duplicate follows its original; a blank row takes the place of the row it pushed down.
+        let neighbour = source
+            .map(|row| (row, false))
+            .or_else(|| (at + 1 < self.rows.len()).then_some((at + 1, true)))
+            .or_else(|| at.checked_sub(1).map(|row| (row, false)));
+        if let Some((neighbour, before)) = neighbour
+            && let Some(neighbour_id) = self.row_id(neighbour)
+        {
+            let level = self.hierarchy.level(neighbour_id).map(str::to_owned);
+            let placement = match before {
+                true => Placement::Before(neighbour_id),
+                false => Placement::After(neighbour_id),
+            };
+            let placed = self.hierarchy.move_row(id, placement);
+            if let (Ok(()), Some(level)) = (placed, level) {
+                let _ = self.hierarchy.set_level(id, &level);
+            }
+            self.recompute_visible();
+        }
+        let after_structure = self.hierarchy.rows().to_vec();
+        self.history.push(Step::RowsAdded {
+            at,
+            rows,
+            before_structure,
+            after_structure,
+        });
+    }
+
+    pub(crate) fn append_components(
+        &mut self,
+        plan: &file_ingest::ImportPlan,
+        title_col: Option<usize>,
+        file_col: Option<usize>,
+        destination_parent: Option<usize>,
+        files_root: Option<&Path>,
+    ) -> usize {
+        if plan.components.is_empty() {
+            return 0;
+        }
+        let at = self.rows.len();
+        let before_structure = self.hierarchy.rows().to_vec();
+        let destination_parent = destination_parent.and_then(|source| self.row_id(source));
+        let existing_siblings = before_structure
+            .iter()
+            .filter(|row| row.parent_id == destination_parent)
+            .count();
+        let ids: Vec<_> = (0..plan.components.len())
+            .map(|_| self.fresh_row_id())
+            .collect();
+        let rows: Vec<_> = plan
+            .components
+            .iter()
+            .zip(&ids)
+            .map(|(component, id)| {
+                let mut cells = vec![SharedString::default(); self.columns.len()];
+                if let Some(col) = title_col.filter(|col| *col < cells.len()) {
+                    cells[col] = component.title.clone().into();
+                }
+                if component.kind == file_ingest::EntryKind::File
+                    && let Some(col) = file_col.filter(|col| *col < cells.len())
+                {
+                    cells[col] = file_ingest::normalized_path(&component.absolute_path).into();
+                }
+                Row {
+                    id: *id,
+                    cells,
+                    image: (component.kind == file_ingest::EntryKind::File)
+                        .then(|| component.absolute_path.clone()),
+                }
+            })
+            .collect();
+        let mut after_structure = before_structure.clone();
+        after_structure.extend(
+            plan.components
+                .iter()
+                .enumerate()
+                .map(|(index, component)| settings::project::RowStructure {
+                    row_id: ids[index],
+                    parent_id: component
+                        .parent
+                        .and_then(|parent| ids.get(parent).copied())
+                        .or(destination_parent),
+                    level_key: component.level_key.clone(),
+                    // Top-level components queue after the destination's existing children.
+                    sibling_order: (index + component.parent.map_or(existing_siblings, |_| 0))
+                        as i64,
+                    source_path: Some(file_ingest::normalized_path(
+                        files_root
+                            .and_then(|root| component.absolute_path.strip_prefix(root).ok())
+                            .filter(|relative| !relative.as_os_str().is_empty())
+                            .unwrap_or(&component.absolute_path),
+                    )),
+                    source_kind: Some(match component.kind {
+                        file_ingest::EntryKind::File => settings::project::SourceKind::File,
+                        file_ingest::EntryKind::Directory => {
+                            settings::project::SourceKind::Directory
+                        }
+                    }),
+                }),
+        );
+        self.splice_rows(at, &rows);
+        self.hierarchy
+            .replace_rows(&self.row_ids, &after_structure, &self.default_level);
+        self.recompute_visible();
+        self.history.push(Step::RowsAdded {
+            at,
+            rows,
+            before_structure,
+            after_structure,
+        });
+        plan.components.len()
     }
 
     /// Delete the rows at `ats` as one undo step, carrying their cells and photos on it.
     pub(crate) fn remove_rows(&mut self, ats: &[usize]) {
+        let before_structure = self.hierarchy.rows().to_vec();
+        let removed_ids: Vec<_> = ats.iter().filter_map(|at| self.row_id(*at)).collect();
+        for row_id in removed_ids {
+            let _ = self
+                .hierarchy
+                .delete(row_id, crate::hierarchy::DeleteMode::PromoteChildren);
+        }
         let removed = self.cut_rows(ats);
-        self.history.push(Step::RowsRemoved(removed));
+        let after_structure = self.hierarchy.rows().to_vec();
+        self.history.push(Step::RowsRemoved {
+            rows: removed,
+            before_structure,
+            after_structure,
+        });
     }
 
     pub(crate) fn row_id(&self, source: usize) -> Option<settings::project::RowId> {
@@ -748,6 +1009,93 @@ impl QrateTableDelegate {
 
     pub(crate) fn row_ids(&self) -> &[settings::project::RowId] {
         &self.row_ids
+    }
+
+    pub(crate) fn indent_row(&mut self, source: usize) -> Result<(), crate::hierarchy::Error> {
+        let row_id = self
+            .row_ids
+            .get(source)
+            .copied()
+            .ok_or(crate::hierarchy::Error::UnknownRow(source as i64))?;
+        self.edit_hierarchy(|hierarchy| hierarchy.indent(row_id))
+    }
+
+    pub(crate) fn outdent_row(&mut self, source: usize) -> Result<(), crate::hierarchy::Error> {
+        let row_id = self
+            .row_ids
+            .get(source)
+            .copied()
+            .ok_or(crate::hierarchy::Error::UnknownRow(source as i64))?;
+        self.edit_hierarchy(|hierarchy| hierarchy.outdent(row_id))
+    }
+
+    pub(crate) fn reparent_row(
+        &mut self,
+        source: usize,
+        parent_source: Option<usize>,
+    ) -> Result<(), crate::hierarchy::Error> {
+        let row_id = self
+            .row_ids
+            .get(source)
+            .copied()
+            .ok_or(crate::hierarchy::Error::UnknownRow(source as i64))?;
+        let placement = match parent_source {
+            Some(parent) => Placement::ChildOf(
+                self.row_ids
+                    .get(parent)
+                    .copied()
+                    .ok_or(crate::hierarchy::Error::UnknownRow(parent as i64))?,
+            ),
+            None => Placement::Root,
+        };
+        self.edit_hierarchy(|hierarchy| hierarchy.move_row(row_id, placement))
+    }
+
+    pub(crate) fn move_row_relative(
+        &mut self,
+        source: usize,
+        target: usize,
+        placement: crate::RowPlacement,
+    ) -> Result<(), crate::hierarchy::Error> {
+        let row_id = self
+            .row_id(source)
+            .ok_or(crate::hierarchy::Error::UnknownRow(source as i64))?;
+        let target_id = self
+            .row_id(target)
+            .ok_or(crate::hierarchy::Error::UnknownRow(target as i64))?;
+        let placement = match placement {
+            crate::RowPlacement::Before => Placement::Before(target_id),
+            crate::RowPlacement::Child => Placement::ChildOf(target_id),
+            crate::RowPlacement::After => Placement::After(target_id),
+        };
+        self.edit_hierarchy(|hierarchy| hierarchy.move_row(row_id, placement))
+    }
+
+    pub(crate) fn subtree_sources(&self, source: usize) -> Vec<usize> {
+        let Some(row_id) = self.row_ids.get(source).copied() else {
+            return Vec::new();
+        };
+        let Ok(subtree) = self.hierarchy.subtree(row_id) else {
+            return Vec::new();
+        };
+        let subtree: HashSet<_> = subtree.into_iter().collect();
+        self.row_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(source, row_id)| subtree.contains(row_id).then_some(source))
+            .collect()
+    }
+
+    fn edit_hierarchy(
+        &mut self,
+        edit: impl FnOnce(&mut Hierarchy) -> Result<(), crate::hierarchy::Error>,
+    ) -> Result<(), crate::hierarchy::Error> {
+        let before = self.hierarchy.rows().to_vec();
+        edit(&mut self.hierarchy)?;
+        let after = self.hierarchy.rows().to_vec();
+        self.history.push(Step::Hierarchy { before, after });
+        self.recompute_visible();
+        Ok(())
     }
 
     fn fresh_row_id(&mut self) -> settings::project::RowId {
@@ -1216,7 +1564,7 @@ impl TableDelegate for QrateTableDelegate {
             // it while its row holds the active (edited/selected) cell.
             let highlighted = self.active_cell().is_some_and(|(r, _)| r == source)
                 || self.selected_rows.contains(&source);
-            row_index::render_td(self, source, highlighted, cx)
+            row_index::render_td(self, row_ix, source, highlighted, cx)
         } else {
             // A ⌘-clicked row paints across every column, which is what makes a discontiguous
             // selection read as a set of *items* rather than a column of tinted cells.
@@ -1570,6 +1918,197 @@ mod app_tests {
                 assert_eq!(cols, 0..=1);
                 assert!(delegate.in_range(1, 1));
                 assert!(!delegate.in_range(2, 0), "past the end of the range");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn hierarchy_projection_maps_view_rows_to_sources_and_depths(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.set_structure(
+                    &[
+                        settings::project::RowStructure {
+                            row_id: 1,
+                            parent_id: None,
+                            level_key: "series".into(),
+                            sibling_order: 0,
+                            source_path: None,
+                            source_kind: None,
+                        },
+                        settings::project::RowStructure {
+                            row_id: 2,
+                            parent_id: Some(1),
+                            level_key: "item".into(),
+                            sibling_order: 0,
+                            source_path: None,
+                            source_kind: None,
+                        },
+                    ],
+                    "item",
+                );
+                assert_eq!(delegate.visible(), &[0, 2, 3]);
+                delegate.toggle_expanded(0);
+                assert_eq!(delegate.visible(), &[0, 1, 2, 3]);
+                assert_eq!(delegate.row_depth(1), 1);
+                assert_eq!(delegate.source(1), Some(1));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn dropped_components_append_as_one_undoable_hierarchy(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let plan = file_ingest::ImportPlan {
+                    components: vec![
+                        file_ingest::PlannedComponent {
+                            title: "Series".into(),
+                            absolute_path: "C:/archive/Series".into(),
+                            source_path: "Series".into(),
+                            kind: file_ingest::EntryKind::Directory,
+                            parent: None,
+                            level_key: "series".into(),
+                        },
+                        file_ingest::PlannedComponent {
+                            title: "image.jpg".into(),
+                            absolute_path: "C:/archive/Series/image.jpg".into(),
+                            source_path: "Series/image.jpg".into(),
+                            kind: file_ingest::EntryKind::File,
+                            parent: Some(0),
+                            level_key: "item".into(),
+                        },
+                    ],
+                    warnings: Vec::new(),
+                };
+                let delegate = state.delegate_mut();
+                assert_eq!(
+                    delegate.append_components(
+                        &plan,
+                        Some(1),
+                        Some(0),
+                        None,
+                        Some(std::path::Path::new("C:/archive"))
+                    ),
+                    2
+                );
+                assert_eq!(delegate.row_count(), 6);
+                // The dropped series queues after the existing roots; its collapsed child stays hidden.
+                assert_eq!(delegate.visible(), &[0, 1, 2, 3, 4]);
+                let structure = delegate.row_structure();
+                assert_eq!(structure[5].parent_id, Some(structure[4].row_id));
+                assert_eq!(
+                    structure[5].source_path.as_deref(),
+                    Some("Series/image.jpg")
+                );
+                assert_eq!(delegate.cell(5, 1).map(AsRef::as_ref), Some("image.jpg"));
+                assert_eq!(delegate.undo(), Some(true));
+                assert_eq!(delegate.row_count(), 4);
+                assert_eq!(delegate.redo(), Some(true));
+                assert_eq!(delegate.row_count(), 6);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn inserted_rows_appear_where_they_were_asked_for(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.insert_rows(1, None);
+                assert_eq!(delegate.visible(), &[0, 1, 2, 3, 4]);
+                delegate.insert_rows(3, Some(2));
+                assert_eq!(delegate.visible(), &[0, 1, 2, 3, 4, 5]);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn deleting_a_middle_parent_promotes_children_into_its_place(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let component =
+                    |row_id, parent_id, sibling_order| settings::project::RowStructure {
+                        row_id,
+                        parent_id,
+                        level_key: "item".into(),
+                        sibling_order,
+                        source_path: None,
+                        source_kind: None,
+                    };
+                let delegate = state.delegate_mut();
+                // 1 ─┬─ 2 ── 3
+                //    └─ 4
+                delegate.set_structure(
+                    &[
+                        component(1, None, 0),
+                        component(2, Some(1), 0),
+                        component(3, Some(2), 0),
+                        component(4, Some(1), 1),
+                    ],
+                    "item",
+                );
+                delegate.remove_rows(&[1]);
+                let parent_of = |id| {
+                    delegate
+                        .row_structure()
+                        .iter()
+                        .find(|row| row.row_id == id)
+                        .map(|row| (row.parent_id, row.sibling_order))
+                };
+                assert_eq!(parent_of(3), Some((Some(1), 0)));
+                assert_eq!(parent_of(4), Some((Some(1), 1)));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn hierarchy_edits_and_row_deletion_restore_structure_on_undo(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.set_structure(
+                    &[
+                        settings::project::RowStructure {
+                            row_id: 1,
+                            parent_id: None,
+                            level_key: "series".into(),
+                            sibling_order: 0,
+                            source_path: None,
+                            source_kind: None,
+                        },
+                        settings::project::RowStructure {
+                            row_id: 2,
+                            parent_id: None,
+                            level_key: "item".into(),
+                            sibling_order: 1,
+                            source_path: None,
+                            source_kind: None,
+                        },
+                    ],
+                    "item",
+                );
+                delegate.indent_row(1).unwrap();
+                assert_eq!(delegate.row_structure()[1].parent_id, Some(1));
+                delegate.undo();
+                assert_eq!(delegate.row_structure()[1].parent_id, None);
+
+                delegate.indent_row(1).unwrap();
+                delegate.remove_rows(&[0]);
+                assert_eq!(delegate.row_structure()[0].parent_id, None);
+                delegate.undo();
+                let child = delegate
+                    .row_structure()
+                    .iter()
+                    .find(|row| row.row_id == 2)
+                    .unwrap();
+                assert_eq!(child.parent_id, Some(1));
             });
         });
     }

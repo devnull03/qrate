@@ -1693,6 +1693,7 @@ dependencies = [
  "base64",
  "calamine 0.26.1",
  "csv",
+ "file-ingest",
  "getrandom 0.3.4",
  "log",
  "quick-xml 0.37.5",
@@ -2243,6 +2244,13 @@ name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
+
+[[package]]
+name = "file-ingest"
+version = "0.4.0-beta.2"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "filedescriptor"
@@ -6152,6 +6160,7 @@ dependencies = [
  "data-exchange",
  "diagnostics",
  "dirs 6.0.0",
+ "file-ingest",
  "gpui-component",
  "gpui-pre",
  "log",
@@ -6159,6 +6168,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "tempfile",
  "window-wrapper",
 ]
 
@@ -8077,6 +8087,7 @@ dependencies = [
  "base64",
  "clustering",
  "diagnostics",
+ "file-ingest",
  "gpui-base",
  "gpui-component",
  "gpui-pre",

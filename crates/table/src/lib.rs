@@ -15,6 +15,7 @@ pub mod editor;
 pub mod file_links;
 mod filter;
 pub mod floating;
+mod hierarchy;
 mod history;
 mod note;
 mod panel;
@@ -28,9 +29,10 @@ pub use editor::editor_box;
 /// growing a second, quietly diverging copy.
 pub use note::{Target as MenuTarget, menu as context_menu};
 pub use panel::{
-    Clear, Copy, Cut, DeleteColumn, DeleteRow, Deselect, DuplicateRow, EditCell, GRID_CONTEXT,
-    InsertColumnLeft, InsertColumnRight, InsertNote, InsertRowAbove, InsertRowBelow, Paste, Redo,
-    RenameColumn, Replace, Search, TablePanel, Undo, UnfreezeColumns,
+    Clear, CollapseAll, Copy, Cut, DeleteColumn, DeleteRow, DeleteSubtree, Deselect, DuplicateRow,
+    EditCell, ExpandAll, GRID_CONTEXT, IndentRow, InsertColumnLeft, InsertColumnRight, InsertNote,
+    InsertRowAbove, InsertRowBelow, OutdentRow, Paste, Redo, RenameColumn, Replace, Search,
+    TablePanel, Undo, UnfreezeColumns,
 };
 
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
@@ -261,6 +263,82 @@ pub enum Structural {
         col: usize,
         name: SharedString,
     },
+}
+
+pub enum Arrangement {
+    Indent(usize),
+    Outdent(usize),
+    Reparent {
+        row: usize,
+        parent: Option<usize>,
+    },
+    DeleteSubtree(usize),
+    Move {
+        row: usize,
+        target: usize,
+        placement: RowPlacement,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub enum RowPlacement {
+    Before,
+    Child,
+    After,
+}
+
+pub fn arrange(op: Arrangement, cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+    else {
+        return;
+    };
+    if let Arrangement::DeleteSubtree(row) = op {
+        let rows = state.read(cx).delegate().subtree_sources(row);
+        structural(Structural::DeleteRows(rows), cx);
+        return;
+    }
+    let result = state.update(cx, |state, cx| {
+        let result = match op {
+            Arrangement::Indent(row) => state.delegate_mut().indent_row(row),
+            Arrangement::Outdent(row) => state.delegate_mut().outdent_row(row),
+            Arrangement::Reparent { row, parent } => state.delegate_mut().reparent_row(row, parent),
+            Arrangement::Move {
+                row,
+                target,
+                placement,
+            } => state
+                .delegate_mut()
+                .move_row_relative(row, target, placement),
+            Arrangement::DeleteSubtree(_) => unreachable!(),
+        };
+        if result.is_ok() {
+            state.refresh(cx);
+            cx.emit(delegate::TableChanged);
+            cx.notify();
+        }
+        result
+    });
+    if let Err(error) = result {
+        log::warn!("Could not change archival hierarchy: {error:?}");
+        return;
+    }
+    settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+    autosave(cx);
+}
+
+pub(crate) fn persist_expanded(rows: &[settings::project::RowId], cx: &mut App) {
+    if !cx.has_global::<settings::project::CurrentProject>() {
+        return;
+    }
+    settings::project::CurrentProject::set_text(
+        settings::description::HIERARCHY_EXPANDED_KEY,
+        serde_json::to_string(rows)
+            .unwrap_or_else(|_| "[]".into())
+            .into(),
+        cx,
+    );
 }
 
 /// Apply a shape change to the table and everything keyed off the shape.
@@ -502,8 +580,10 @@ pub fn save_now(cx: &mut App) {
         return;
     };
     let started = std::time::Instant::now();
-    let (headers, row_ids, rows) = state.read(cx).delegate().dataset_snapshot();
-    match settings::project::save_dataset(&file, &headers, &row_ids, &rows) {
+    let delegate = state.read(cx).delegate();
+    let (headers, row_ids, rows) = delegate.dataset_snapshot();
+    let structure = delegate.row_structure().to_vec();
+    match settings::project::save_dataset(&file, &headers, &row_ids, &rows, Some(&structure)) {
         Ok(()) => {
             log::debug!("saved {} rows in {:?}", rows.len(), started.elapsed());
             settings::dirty::clear(settings::dirty::PROJECT_DATA, cx)

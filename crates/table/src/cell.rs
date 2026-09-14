@@ -6,9 +6,9 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, BorderStyle, Bounds, Context, ElementId, InteractiveElement as _, IntoElement,
-    MouseButton, ParentElement as _, Pixels, StatefulInteractiveElement as _, Styled as _, Window,
-    canvas, div, fill, outline, point, px, size,
+    AnyElement, BorderStyle, Bounds, Context, ElementId, ExternalPaths, InteractiveElement as _,
+    IntoElement, MouseButton, ParentElement as _, Pixels, StatefulInteractiveElement as _,
+    Styled as _, Window, canvas, div, fill, outline, point, px, size,
 };
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, table::TableState};
@@ -90,6 +90,23 @@ pub(crate) fn render_cell(
         // Own the containing block for the capture canvas below: without this it resolves against
         // the library's cell div, whose padding makes "the bounds" ambiguous.
         .relative()
+        .when(is_filename, |cell| {
+            cell.can_drop(|value, _, _| {
+                value
+                    .downcast_ref::<ExternalPaths>()
+                    .is_some_and(|paths| paths.paths().len() == 1 && paths.paths()[0].is_file())
+            })
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary_hover))
+            .on_drop(move |paths: &ExternalPaths, window, cx| {
+                let Some(path) = paths.paths().first() else {
+                    return;
+                };
+                let text = file_ingest::normalized_path(path);
+                window.defer(cx, move |_, cx| {
+                    crate::write_cell(row_ix, col_ix, text.into(), cx)
+                });
+            })
+        })
         .when(is_filename, |cell| {
             cell.child(
                 h_flex()

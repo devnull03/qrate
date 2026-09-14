@@ -14,8 +14,12 @@ gpui-component.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 data-exchange = { path = "../data-exchange" }
+file-ingest = { path = "../file-ingest" }
 diagnostics = { path = "../diagnostics" }
 # Column configs can carry a plugin's mapping, and this is where its shape lives.
 plugin-api = { path = "../plugin-api" }
 settings = { path = "../settings" }
 window-wrapper = { path = "../window-wrapper" }
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,4 +1,4 @@
-//! On-disk `.qrate` project file (v3). One SQLite database per project,
+//! On-disk `.qrate` project file (v4). One SQLite database per project,
 //! written once by the "New Project" wizard. Runs in `journal_mode=DELETE`,
 //! not WAL: with a single short-lived connection per operation WAL buys no
 //! concurrency, and its `-wal`/`-shm` siblings only vanish when the *last*
@@ -24,7 +24,7 @@
 //! get `__notes` created lazily on first write rather than a migration pass, so
 //! opening a project stays a read-only operation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
@@ -36,12 +36,59 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 
 /// `PRAGMA application_id` value so `file`-style tools can recognize `.qrate`.
 const QRATE_APPLICATION_ID: i32 = 1097887558;
-const QRATE_SCHEMA_VERSION: i32 = 3;
+const QRATE_SCHEMA_VERSION: i32 = 4;
 
 /// Private identity of one `dataset_main` row. Unlike the source index shown in the `#` column,
 /// this value survives inserts, deletes, and save/reload cycles.
 pub type RowId = i64;
 type LoadedDataset = (Vec<String>, Vec<RowId>, Vec<Vec<String>>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceKind {
+    File,
+    Directory,
+}
+
+impl SourceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Directory => "directory",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "file" => Some(Self::File),
+            "directory" => Some(Self::Directory),
+            _ => None,
+        }
+    }
+}
+
+/// Private arrangement metadata for one archival component. None of these values becomes a
+/// visible dataset column unless the user explicitly maps it during export.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowStructure {
+    pub row_id: RowId,
+    pub parent_id: Option<RowId>,
+    pub level_key: String,
+    pub sibling_order: i64,
+    pub source_path: Option<String>,
+    pub source_kind: Option<SourceKind>,
+}
+
+const ROW_STRUCTURE_DDL: &str = r#"
+    CREATE TABLE IF NOT EXISTS __row_structure (
+      row_id        INTEGER PRIMARY KEY,
+      parent_id     INTEGER REFERENCES dataset_main(_row_id) ON DELETE CASCADE,
+      level_key     TEXT NOT NULL,
+      sibling_order INTEGER NOT NULL,
+      source_path   TEXT,
+      source_kind   TEXT CHECK (source_kind IN ('file', 'directory')),
+      FOREIGN KEY(row_id) REFERENCES dataset_main(_row_id) ON DELETE CASCADE
+    );
+"#;
 
 /// `__settings` key for the files folder chosen in the wizard's Files step. Only the path is
 /// kept — qrate never copies source files, so the table crate re-resolves row images against
@@ -252,7 +299,7 @@ pub struct ProjectSpec<'a> {
     pub rows: &'a [Vec<String>],
 }
 
-/// Creates `path` (a `.qrate` file) with the v3 schema and the imported data.
+/// Creates `path` (a `.qrate` file) with the current schema and imported data.
 pub fn create_project_file(path: &Path, spec: &ProjectSpec<'_>) -> Result<()> {
     let &ProjectSpec {
         name,
@@ -323,6 +370,8 @@ pub fn create_project_file(path: &Path, spec: &ProjectSpec<'_>) -> Result<()> {
     if !headers.is_empty() {
         write_dataset(&conn, headers, rows)?;
     }
+    conn.execute_batch(ROW_STRUCTURE_DDL)
+        .context("Create __row_structure")?;
     Ok(())
 }
 
@@ -417,6 +466,103 @@ fn load_dataset(conn: &Connection) -> Result<LoadedDataset> {
         rows.push(cells);
     }
     Ok((headers, row_ids, rows))
+}
+
+/// Reads the optional hierarchy without upgrading an older project. Rows missing from this table
+/// are ungrouped roots, so v3 and partially arranged projects remain usable.
+pub fn read_row_structure(path: &Path) -> Result<Vec<RowStructure>> {
+    let conn = open_ro(path)?;
+    if !table_exists(&conn, "__row_structure")? {
+        return Ok(Vec::new());
+    }
+    read_row_structure_from(&conn)
+}
+
+fn read_row_structure_from(conn: &Connection) -> Result<Vec<RowStructure>> {
+    let mut stmt = conn.prepare(
+        "SELECT row_id, parent_id, level_key, sibling_order, source_path, source_kind
+         FROM __row_structure ORDER BY parent_id, sibling_order, row_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let source_kind: Option<String> = row.get(5)?;
+        Ok(RowStructure {
+            row_id: row.get(0)?,
+            parent_id: row.get(1)?,
+            level_key: row.get(2)?,
+            sibling_order: row.get(3)?,
+            source_path: row.get(4)?,
+            source_kind: source_kind.as_deref().and_then(SourceKind::parse),
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("Read row structure")
+}
+
+fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        params![name],
+        |row| row.get::<_, i64>(0),
+    )? != 0)
+}
+
+/// Replaces the hierarchy in one transaction. This is the lazy v3-to-v4 migration point: opening
+/// an older project stays read-only, while its first structural edit creates the private table.
+pub fn write_row_structure(path: &Path, structure: &[RowStructure]) -> Result<()> {
+    validate_row_structure(structure)?;
+    let mut conn = open_rw(path)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    let tx = conn.transaction().context("Begin row structure update")?;
+    tx.execute_batch(ROW_STRUCTURE_DDL)
+        .context("Create __row_structure")?;
+    tx.execute("DELETE FROM __row_structure", [])
+        .context("Clear row structure")?;
+    insert_row_structure(&tx, structure)?;
+    tx.pragma_update(None, "user_version", QRATE_SCHEMA_VERSION)
+        .context("Set user_version")?;
+    tx.commit().context("Commit row structure update")
+}
+
+fn insert_row_structure(conn: &Connection, structure: &[RowStructure]) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO __row_structure
+         (row_id, parent_id, level_key, sibling_order, source_path, source_kind)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    for component in structure {
+        stmt.execute(params![
+            component.row_id,
+            component.parent_id,
+            component.level_key,
+            component.sibling_order,
+            component.source_path,
+            component.source_kind.map(SourceKind::as_str),
+        ])
+        .with_context(|| format!("Insert structure for row {}", component.row_id))?;
+    }
+    Ok(())
+}
+
+fn validate_row_structure(structure: &[RowStructure]) -> Result<()> {
+    let by_id: HashMap<_, _> = structure.iter().map(|row| (row.row_id, row)).collect();
+    if by_id.len() != structure.len() {
+        anyhow::bail!("row structure contains duplicate row ids");
+    }
+    for row in structure {
+        if row.level_key.trim().is_empty() {
+            anyhow::bail!("row {} has an empty description level", row.row_id);
+        }
+        let mut parent = row.parent_id;
+        let mut remaining = structure.len();
+        while let Some(parent_id) = parent {
+            if parent_id == row.row_id || remaining == 0 {
+                anyhow::bail!("row structure contains a cycle at row {}", row.row_id);
+            }
+            parent = by_id.get(&parent_id).and_then(|parent| parent.parent_id);
+            remaining -= 1;
+        }
+    }
+    Ok(())
 }
 
 /// Reads one `__settings` value from a `.qrate` file (e.g. the dock layout).
@@ -838,22 +984,80 @@ fn write_dataset(conn: &Connection, headers: &[String], rows: &[Vec<String>]) ->
 /// the connection drops). `headers`/`rows` must be in the project's *original* column order: the
 /// `.qrate` schema keeps a fixed physical column order, and the separately-saved column layout
 /// maps that to display order. A blank project (no headers, no `dataset_main`) is a no-op.
+///
+/// `structure` is the live hierarchy, written in the same transaction as the rows it names;
+/// `None` keeps whatever hierarchy the file already holds.
 pub fn save_dataset(
     path: &Path,
     headers: &[String],
     row_ids: &[RowId],
     rows: &[Vec<String>],
+    structure: Option<&[RowStructure]>,
 ) -> Result<()> {
     if headers.is_empty() {
         return Ok(());
     }
-    let conn = open_rw(path)?;
-    conn.execute_batch("BEGIN; DROP TABLE IF EXISTS dataset_main;")
+    let mut conn = open_rw(path)?;
+    let had_structure = table_exists(&conn, "__row_structure")?;
+    let structure = match structure {
+        Some(structure) => structure.to_vec(),
+        None if had_structure => read_row_structure_from(&conn)?,
+        None => Vec::new(),
+    };
+    let structure = retained_row_structure(structure, row_ids);
+    // A flat v3 project stays v3 until it has an arrangement worth storing.
+    let write_structure = had_structure || !is_flat(&structure, row_ids);
+    if write_structure {
+        validate_row_structure(&structure)?;
+    }
+    let tx = conn.transaction().context("Begin dataset rewrite")?;
+    tx.execute_batch("DROP TABLE IF EXISTS __row_structure; DROP TABLE IF EXISTS dataset_main;")
         .context("Begin dataset rewrite")?;
-    create_and_fill_dataset(&conn, headers, Some(row_ids), rows)?;
-    conn.execute_batch("COMMIT")
-        .context("Commit dataset rewrite")?;
-    Ok(())
+    create_and_fill_dataset(&tx, headers, Some(row_ids), rows)?;
+    if write_structure {
+        tx.execute_batch(ROW_STRUCTURE_DDL)
+            .context("Recreate __row_structure")?;
+        insert_row_structure(&tx, &structure)?;
+        tx.pragma_update(None, "user_version", QRATE_SCHEMA_VERSION)
+            .context("Set user_version")?;
+    }
+    tx.commit().context("Commit dataset rewrite")
+}
+
+fn is_flat(structure: &[RowStructure], row_ids: &[RowId]) -> bool {
+    let Some(first) = structure.first() else {
+        return true;
+    };
+    let position: HashMap<_, _> = row_ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+    let mut by_order: Vec<_> = structure.iter().collect();
+    by_order.sort_by_key(|row| (row.sibling_order, row.row_id));
+    structure.iter().all(|row| {
+        row.parent_id.is_none() && row.source_path.is_none() && row.level_key == first.level_key
+    }) && by_order
+        .windows(2)
+        .all(|pair| position.get(&pair[0].row_id) < position.get(&pair[1].row_id))
+}
+
+fn retained_row_structure(structure: Vec<RowStructure>, row_ids: &[RowId]) -> Vec<RowStructure> {
+    let retained: HashSet<_> = row_ids.iter().copied().collect();
+    let mut structure: Vec<_> = structure
+        .into_iter()
+        .filter(|row| retained.contains(&row.row_id))
+        .map(|mut row| {
+            if row.parent_id.is_some_and(|id| !retained.contains(&id)) {
+                row.parent_id = None;
+            }
+            row
+        })
+        .collect();
+    structure.sort_by_key(|row| (row.parent_id, row.sibling_order, row.row_id));
+    let mut next_order = HashMap::<Option<RowId>, i64>::new();
+    for row in &mut structure {
+        let order = next_order.entry(row.parent_id).or_default();
+        row.sibling_order = *order;
+        *order += 1;
+    }
+    structure
 }
 
 /// Quotes each header as a SQL identifier, de-duplicating case-insensitively
@@ -1177,7 +1381,7 @@ mod tests {
             vec!["1".to_string(), "Edited".to_string()],
             vec!["2".to_string(), "Second".to_string()],
         ];
-        save_dataset(&path, &headers, &[1, 2], &edited).unwrap();
+        save_dataset(&path, &headers, &[1, 2], &edited, None).unwrap();
 
         let data = load_project_file(&path).unwrap();
         assert_eq!(data.headers, headers);
@@ -1186,6 +1390,186 @@ mod tests {
         // DELETE mode's invariant survives the rewrite: only the `.qrate` file at rest.
         assert!(!path.with_extension("qrate-journal").exists());
         assert!(!path.with_extension("qrate-wal").exists());
+    }
+
+    #[test]
+    fn row_structure_round_trips_and_rejects_cycles() {
+        let path = tempfile("structure.qrate");
+        create_project_file(
+            &path,
+            &ProjectSpec {
+                name: "Structure",
+                source: "Folder",
+                headers: &["Title".into()],
+                rows: &[vec!["Series".into()], vec!["Item".into()]],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let structure = vec![
+            RowStructure {
+                row_id: 1,
+                parent_id: None,
+                level_key: "series".into(),
+                sibling_order: 0,
+                source_path: Some("photographs".into()),
+                source_kind: Some(SourceKind::Directory),
+            },
+            RowStructure {
+                row_id: 2,
+                parent_id: Some(1),
+                level_key: "item".into(),
+                sibling_order: 0,
+                source_path: Some("photographs/001.jpg".into()),
+                source_kind: Some(SourceKind::File),
+            },
+        ];
+        write_row_structure(&path, &structure).unwrap();
+        assert_eq!(read_row_structure(&path).unwrap(), structure);
+
+        let cycle = vec![
+            RowStructure {
+                parent_id: Some(2),
+                ..structure[0].clone()
+            },
+            structure[1].clone(),
+        ];
+        assert!(write_row_structure(&path, &cycle).is_err());
+        assert_eq!(read_row_structure(&path).unwrap(), structure);
+    }
+
+    #[test]
+    fn opening_v3_does_not_create_structure_until_its_first_write() {
+        let path = tempfile("lazy-v4.qrate");
+        create_project_file(
+            &path,
+            &ProjectSpec {
+                name: "Legacy",
+                source: "CSV",
+                headers: &["Title".into()],
+                rows: &[vec!["Item".into()]],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        {
+            let conn = open_rw(&path).unwrap();
+            conn.execute_batch("DROP TABLE __row_structure; PRAGMA user_version = 3")
+                .unwrap();
+        }
+
+        let root = |row_id, sibling_order| RowStructure {
+            row_id,
+            parent_id: None,
+            level_key: "item".into(),
+            sibling_order,
+            source_path: None,
+            source_kind: None,
+        };
+        let headers = ["Title".to_string()];
+        assert!(read_row_structure(&path).unwrap().is_empty());
+        save_dataset(
+            &path,
+            &headers,
+            &[1],
+            &[vec!["Edited".into()]],
+            Some(&[root(1, 0)]),
+        )
+        .unwrap();
+        let conn = open_ro(&path).unwrap();
+        assert!(!table_exists(&conn, "__row_structure").unwrap());
+        drop(conn);
+
+        // The child is new in this save: its structure has to land with its row, not before it.
+        let nested = [
+            root(1, 0),
+            RowStructure {
+                parent_id: Some(1),
+                ..root(2, 0)
+            },
+        ];
+        save_dataset(
+            &path,
+            &headers,
+            &[1, 2],
+            &[vec!["Series".into()], vec!["Child".into()]],
+            Some(&nested),
+        )
+        .unwrap();
+        assert_eq!(read_row_structure(&path).unwrap(), nested);
+        let conn = open_ro(&path).unwrap();
+        assert!(table_exists(&conn, "__row_structure").unwrap());
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i32>(0))
+                .unwrap(),
+            4
+        );
+    }
+
+    #[test]
+    fn dataset_save_preserves_retained_structure_and_promotes_orphans() {
+        let path = tempfile("save-structure.qrate");
+        let headers = vec!["Title".into()];
+        create_project_file(
+            &path,
+            &ProjectSpec {
+                name: "Save structure",
+                source: "Folder",
+                headers: &headers,
+                rows: &[vec!["Series".into()], vec!["A".into()], vec!["B".into()]],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        write_row_structure(
+            &path,
+            &[
+                RowStructure {
+                    row_id: 1,
+                    parent_id: None,
+                    level_key: "series".into(),
+                    sibling_order: 0,
+                    source_path: None,
+                    source_kind: None,
+                },
+                RowStructure {
+                    row_id: 2,
+                    parent_id: Some(1),
+                    level_key: "item".into(),
+                    sibling_order: 0,
+                    source_path: None,
+                    source_kind: None,
+                },
+                RowStructure {
+                    row_id: 3,
+                    parent_id: Some(1),
+                    level_key: "item".into(),
+                    sibling_order: 1,
+                    source_path: None,
+                    source_kind: None,
+                },
+            ],
+        )
+        .unwrap();
+
+        save_dataset(
+            &path,
+            &headers,
+            &[2, 3],
+            &[vec!["A".into()], vec!["B".into()]],
+            None,
+        )
+        .unwrap();
+        let structure = read_row_structure(&path).unwrap();
+        assert_eq!(structure.len(), 2);
+        assert!(structure.iter().all(|row| row.parent_id.is_none()));
+        assert_eq!(
+            structure
+                .iter()
+                .map(|row| row.sibling_order)
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
     }
 
     #[test]
@@ -1234,7 +1618,7 @@ mod tests {
 
         let mut inserted = vec![vec!["new item".into()]];
         inserted.extend(rows);
-        save_dataset(&path, &headers, &[7, 1, 2, 3, 4, 5, 6], &inserted).unwrap();
+        save_dataset(&path, &headers, &[7, 1, 2, 3, 4, 5, 6], &inserted, None).unwrap();
 
         let reopened = load_project_file(&path).unwrap();
         assert_eq!(reopened.row_ids, vec![7, 1, 2, 3, 4, 5, 6]);
