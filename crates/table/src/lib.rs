@@ -15,6 +15,7 @@ pub mod editor;
 pub mod file_links;
 mod filter;
 pub mod floating;
+mod hierarchy;
 mod history;
 mod note;
 mod panel;
