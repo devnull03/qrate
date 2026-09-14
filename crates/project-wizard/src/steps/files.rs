@@ -76,7 +76,7 @@ impl ProjectWizard {
         let _ = window;
     }
 
-    fn set_local_path(&mut self, path: String, _cx: &mut Context<Self>) {
+    pub(crate) fn set_local_path(&mut self, path: String, _cx: &mut Context<Self>) {
         self.local_path = path;
         match data::load_spreadsheet_preview(&self.local_path) {
             Ok(preview) => {
@@ -91,7 +91,7 @@ impl ProjectWizard {
         self.revalidate_folder();
     }
 
-    fn set_folder_path(&mut self, path: String, _cx: &mut Context<Self>) {
+    pub(crate) fn set_folder_path(&mut self, path: String, _cx: &mut Context<Self>) {
         self.folder_path = path;
         self.revalidate_folder();
     }
@@ -186,7 +186,28 @@ impl ProjectWizard {
             EntryKind::Blank => self.render_blank_files(window, cx).into_any_element(),
         };
         v_flex()
+            .id("files-drop-area")
             .gap_3()
+            .drag_over::<ExternalPaths>(|style, _, _, cx| {
+                style.bg(cx.theme().secondary_hover)
+            })
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                let paths = paths.paths();
+                if paths.len() == 1 && paths[0].is_dir() {
+                    this.set_folder_path(paths[0].to_string_lossy().into_owned(), cx);
+                } else if this.entry_kind == EntryKind::LocalFile
+                    && paths.len() == 1
+                    && paths[0].is_file()
+                {
+                    this.set_local_path(paths[0].to_string_lossy().into_owned(), cx);
+                } else {
+                    this.folder_error = Some(
+                        "Drop one folder here. You can drop several individual files into the table after the project opens."
+                            .into(),
+                    );
+                }
+                cx.notify();
+            }))
             .child(body)
             .when(!self.skip_files, |this| {
                 this.child(self.render_description_profile(cx))
