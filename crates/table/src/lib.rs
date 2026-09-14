@@ -29,9 +29,10 @@ pub use editor::editor_box;
 /// growing a second, quietly diverging copy.
 pub use note::{Target as MenuTarget, menu as context_menu};
 pub use panel::{
-    Clear, CollapseAll, Copy, Cut, DeleteColumn, DeleteRow, Deselect, DuplicateRow, EditCell,
-    ExpandAll, GRID_CONTEXT, InsertColumnLeft, InsertColumnRight, InsertNote, InsertRowAbove,
-    InsertRowBelow, Paste, Redo, RenameColumn, Replace, Search, TablePanel, Undo, UnfreezeColumns,
+    Clear, CollapseAll, Copy, Cut, DeleteColumn, DeleteRow, DeleteSubtree, Deselect, DuplicateRow,
+    EditCell, ExpandAll, GRID_CONTEXT, IndentRow, InsertColumnLeft, InsertColumnRight, InsertNote,
+    InsertRowAbove, InsertRowBelow, OutdentRow, Paste, Redo, RenameColumn, Replace, Search,
+    TablePanel, Undo, UnfreezeColumns,
 };
 
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
@@ -233,6 +234,7 @@ pub fn history_step(redo: bool, cx: &mut App) {
     };
     if let Some(row_ids) = row_ids {
         diagnostics::Diagnostics::align_note_rows(diagnostics::DATASET_MAIN, &row_ids, cx);
+        persist_structure(&state, cx);
     }
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
     revalidate_now(cx);
@@ -262,6 +264,60 @@ pub enum Structural {
         col: usize,
         name: SharedString,
     },
+}
+
+pub enum Arrangement {
+    Indent(usize),
+    Outdent(usize),
+    Reparent { row: usize, parent: Option<usize> },
+    DeleteSubtree(usize),
+}
+
+pub fn arrange(op: Arrangement, cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+    else {
+        return;
+    };
+    if let Arrangement::DeleteSubtree(row) = op {
+        let rows = state.read(cx).delegate().subtree_sources(row);
+        structural(Structural::DeleteRows(rows), cx);
+        return;
+    }
+    let result = state.update(cx, |state, cx| {
+        let result = match op {
+            Arrangement::Indent(row) => state.delegate_mut().indent_row(row),
+            Arrangement::Outdent(row) => state.delegate_mut().outdent_row(row),
+            Arrangement::Reparent { row, parent } => state.delegate_mut().reparent_row(row, parent),
+            Arrangement::DeleteSubtree(_) => unreachable!(),
+        };
+        if result.is_ok() {
+            state.refresh(cx);
+            cx.emit(delegate::TableChanged);
+            cx.notify();
+        }
+        result
+    });
+    if let Err(error) = result {
+        log::warn!("Could not change archival hierarchy: {error:?}");
+        return;
+    }
+    persist_structure(&state, cx);
+    settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+}
+
+fn persist_structure(state: &Entity<TableState<delegate::QrateTableDelegate>>, cx: &mut App) {
+    let Some(file) = cx
+        .try_global::<settings::project::CurrentProject>()
+        .map(|project| project.file.clone())
+    else {
+        return;
+    };
+    let structure = state.read(cx).delegate().row_structure().to_vec();
+    if let Err(error) = settings::project::write_row_structure(&file, &structure) {
+        log::error!("failed to save archival row structure: {error}");
+    }
 }
 
 /// Apply a shape change to the table and everything keyed off the shape.
@@ -329,6 +385,7 @@ pub fn structural(op: Structural, cx: &mut App) {
     ) {
         let row_ids = state.read(cx).delegate().row_ids().to_vec();
         diagnostics::Diagnostics::align_note_rows(diagnostics::DATASET_MAIN, &row_ids, cx);
+        persist_structure(&state, cx);
     }
     if let Some((before, after)) = renamed {
         diagnostics::Diagnostics::column_renamed(diagnostics::DATASET_MAIN, &before, &after, cx);
