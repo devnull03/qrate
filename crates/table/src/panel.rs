@@ -513,6 +513,121 @@ impl TablePanel {
         }));
     }
 
+    fn import_external_paths(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let description = cx
+            .try_global::<settings::project::CurrentProject>()
+            .map(|project| {
+                settings::description::DescriptionConfig::from_values(&project.data.values)
+            })
+            .unwrap_or_else(|| settings::description::DescriptionProfile::Rad.defaults());
+        let folder_level = description.folder_level_key;
+        let file_level = description.file_level_key;
+        let task = cx.background_executor().spawn(async move {
+            file_ingest::plan_paths(
+                &paths,
+                &file_ingest::PlanOptions {
+                    recursive: true,
+                    include_root: true,
+                    folder_level_key: &folder_level,
+                    file_level_key: &file_level,
+                },
+            )
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(plan) = task.await else {
+                log::warn!("the dropped paths could not be inventoried");
+                return;
+            };
+            this.update_in(cx, |_this, window, cx| {
+                let files = plan
+                    .components
+                    .iter()
+                    .filter(|component| component.kind == file_ingest::EntryKind::File)
+                    .count();
+                let folders = plan.components.len() - files;
+                let detail = format!(
+                    "Add {} component{} ({} file{}, {} folder{})?{}",
+                    plan.components.len(),
+                    if plan.components.len() == 1 { "" } else { "s" },
+                    files,
+                    if files == 1 { "" } else { "s" },
+                    folders,
+                    if folders == 1 { "" } else { "s" },
+                    if plan.warnings.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {} path warning(s) will be skipped.", plan.warnings.len())
+                    }
+                );
+                let answer = window.prompt(
+                    PromptLevel::Info,
+                    "Import dropped files",
+                    Some(&detail),
+                    &["Import", "Cancel"],
+                    cx,
+                );
+                cx.spawn_in(window, async move |this, cx| {
+                    if answer.await.unwrap_or(1) != 0 {
+                        return;
+                    }
+                    this.update(cx, |this, cx| {
+                        let (title_name, file_name) = cx
+                            .global::<settings::project::CurrentProject>()
+                            .data
+                            .columns
+                            .iter()
+                            .fold((None, None), |(title, file), column| {
+                                match settings::columns::ColumnType::from_declared(
+                                    &column.data_type,
+                                ) {
+                                    settings::columns::ColumnType::Title => {
+                                        (Some(column.name.clone()), file)
+                                    }
+                                    settings::columns::ColumnType::Filename => {
+                                        (title, Some(column.name.clone()))
+                                    }
+                                    _ => (title, file),
+                                }
+                            });
+                        this.state.update(cx, |state, cx| {
+                            let title_col = title_name
+                                .as_deref()
+                                .and_then(|name| state.delegate().data_col(name));
+                            let file_col = file_name
+                                .as_deref()
+                                .and_then(|name| state.delegate().data_col(name));
+                            state
+                                .delegate_mut()
+                                .append_components(&plan, title_col, file_col, None);
+                            state.refresh(cx);
+                            cx.emit(TableChanged);
+                            cx.notify();
+                        });
+                        crate::persist_structure(&this.state, cx);
+                        let row_ids = this.state.read(cx).delegate().row_ids().to_vec();
+                        diagnostics::Diagnostics::align_note_rows(
+                            diagnostics::DATASET_MAIN,
+                            &row_ids,
+                            cx,
+                        );
+                        settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+                        this.schedule_revalidate(cx);
+                        this.schedule_autosave(cx);
+                    })
+                    .ok();
+                })
+                .detach();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// React to a committed cell edit per the Autosave setting: write immediately, buffer behind a
     /// short debounce (the default), or leave it for Ctrl+S / quit. The default and any unset/
     /// unrecognized value both mean "timed".
@@ -1354,6 +1469,10 @@ impl Render for TablePanel {
             .id("table-panel")
             .role(Role::Group)
             .aria_label("Table")
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary_hover))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.import_external_paths(paths.paths().to_vec(), window, cx)
+            }))
             // Search, Replace and the find bar's own Escape are handled by `ViewsPanel`, which draws
             // the bar above every view. An action stops propagating by default, so declining an
             // Escape that is not ours has to be explicit.
