@@ -26,6 +26,13 @@ use settings::project::CurrentProject;
 /// Where the CSL picker's answer is remembered, per project.
 const CSL_MAPPING_KEY: &str = "csl_mapping";
 
+struct ExportGrid {
+    headers: Vec<String>,
+    row_ids: Vec<settings::project::RowId>,
+    rows: Vec<Vec<String>>,
+    structure: Vec<settings::project::RowStructure>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 pub enum ExportFormat {
     Csv,
@@ -208,6 +215,15 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
         return;
     };
     let (file, title) = (project.file.clone(), project.display_name());
+    let (row_ids, structure) = cx
+        .try_global::<table::TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+        .map(|state| {
+            let state = state.read(cx);
+            let (_, row_ids, _) = state.delegate().dataset_snapshot();
+            (row_ids, state.delegate().row_structure().to_vec())
+        })
+        .unwrap_or_default();
 
     if is_google(format) {
         // A project that already knows its spreadsheet refills that one; otherwise "Sync" asks
@@ -246,7 +262,19 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
         Vec::new()
     };
 
-    save_as(format, file, headers, rows, images, CslMapping::new(), cx);
+    save_as(
+        format,
+        file,
+        ExportGrid {
+            headers,
+            row_ids,
+            rows,
+            structure,
+        },
+        images,
+        CslMapping::new(),
+        cx,
+    );
 }
 
 /// Ask where it goes, then write it off the UI thread. The ZIP copies image bytes and the others
@@ -254,12 +282,17 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
 fn save_as(
     format: ExportFormat,
     project_file: PathBuf,
-    headers: Vec<String>,
-    rows: Vec<Vec<String>>,
+    grid: ExportGrid,
     images: Vec<PathBuf>,
     mapping: CslMapping,
     cx: &mut App,
 ) {
+    let ExportGrid {
+        headers,
+        row_ids,
+        rows,
+        structure,
+    } = grid;
     let directory = project_file
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
@@ -275,9 +308,10 @@ fn save_as(
         };
         let result = match format {
             ExportFormat::Csv => export::write_csv(&path, &headers, &rows),
-            ExportFormat::JsonLd => {
-                export::write_json(&path, &export::jsonld_value(&headers, &rows))
-            }
+            ExportFormat::JsonLd => export::write_json(
+                &path,
+                &export::jsonld_hierarchy_value(&headers, &row_ids, &rows, &structure),
+            ),
             ExportFormat::Csl => {
                 export::write_json(&path, &export::csl_items(&headers, &rows, &mapping))
             }
@@ -393,8 +427,12 @@ fn ask_csl_mapping(
                 save_as(
                     ExportFormat::Csl,
                     project_file.clone(),
-                    headers.clone(),
-                    rows.clone(),
+                    ExportGrid {
+                        headers: headers.clone(),
+                        row_ids: Vec::new(),
+                        rows: rows.clone(),
+                        structure: Vec::new(),
+                    },
                     Vec::new(),
                     mapping,
                     cx,
