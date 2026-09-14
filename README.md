@@ -19,7 +19,7 @@ Collection data rarely lives in just one place. A spreadsheet names an object, a
 ![Diagram comparing a disconnected cataloguing toolchain with qrate's unified workspace for metadata, media, diagnostics, and authorities.](docs/assets/final-report/toolchain.png)
 
 - **Keep ownership of your work.** Each project is a portable `.qrate` SQLite file; linked media remains where you keep it. qrate does not require an account or a hosted service.
-- **Describe collections with less friction.** Create a project, import a CSV and its folder, or start from a Google Sheet. Edit, search, filter, copy and paste, undo changes, and tailor columns to the collection.
+- **Describe collections with less friction.** Import CSV, Excel, or OpenDocument spreadsheets with their folders. You can also start from a Google Sheet. Edit, search, filter, copy and paste, undo changes, and tailor columns to the collection.
 - **See the records and the material together.** Link by filename or a pattern, browse a gallery of thumbnails, and preview images, documents, audio, and video alongside each record.
 - **Catch problems while you work.** Check spelling, date formats, file links, headings, and selected authority sources. Review a proposed whole-cell correction before applying it.
 - **Take your data where it needs to go.** Export CSV, JSON-LD, CSL-JSON, or a ZIP archive. Google Sheets export and sync are available when you choose to enable them.
@@ -27,7 +27,7 @@ Collection data rarely lives in just one place. A spreadsheet names an object, a
 
 ## A typical workflow
 
-1. Create a blank project or bring in an existing CSV or Google Sheet.
+1. Create a blank project or import a CSV, Excel, OpenDocument spreadsheet, or Google Sheet.
 2. Describe and organize records in the grid; configure the fields that matter to your collection.
 3. Link supporting photos, scans, recordings, or video, then inspect them from the record.
 4. Use the Problems panel to review data-quality checks and proposed corrections.

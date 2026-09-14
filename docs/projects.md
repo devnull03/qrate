@@ -13,8 +13,9 @@ the files-folder path at its new location.
 The launcher offers three ways to start:
 
 1. **Blank project.** Start with an empty grid and add columns yourself.
-2. **Import a CSV file and its folder.** qrate reads the CSV as the grid and, if you also
-   give it a files folder, links rows to files in that folder by filename.
+2. **Import a spreadsheet and its folder.** qrate reads a CSV, Excel workbook, or
+   OpenDocument spreadsheet as the grid. If you also give it a files folder, qrate links rows
+   to files in that folder by filename.
 3. **Start from a Google Sheet link.** qrate reads the sheet once to build the project. See
    [Export and Google Sheets](export-and-sync.md) for how to keep the two in sync afterward.
 
