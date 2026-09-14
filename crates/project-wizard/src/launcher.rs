@@ -122,6 +122,54 @@ impl Launcher {
         self.recents = recent::list(cx);
         cx.notify();
     }
+
+    fn accept_drop(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if paths.len() != 1 {
+            self.error = Some("Drop one project, spreadsheet, or folder at a time here.".into());
+            cx.notify();
+            return;
+        }
+        let path = &paths[0];
+        let extension = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if extension == "qrate" {
+            self.open_project_file(path.to_string_lossy().into_owned(), window, cx);
+            return;
+        }
+        if path.is_dir() {
+            wizard::open_project_wizard_seeded(
+                EntryKind::Blank,
+                None,
+                Some(path.to_string_lossy().into_owned()),
+                cx,
+            );
+            window.remove_window();
+            return;
+        }
+        if matches!(
+            extension.as_str(),
+            "csv" | "tsv" | "xlsx" | "xlsm" | "xlsb" | "xls" | "ods"
+        ) {
+            wizard::open_project_wizard_seeded(
+                EntryKind::LocalFile,
+                Some(path.to_string_lossy().into_owned()),
+                None,
+                cx,
+            );
+            window.remove_window();
+            return;
+        }
+        self.error = Some("Drop a .qrate project, supported spreadsheet, or folder.".into());
+        cx.notify();
+    }
 }
 
 impl Render for Launcher {
@@ -191,6 +239,10 @@ impl Render for Launcher {
         v_flex()
             .size_full()
             .bg(cx.theme().background)
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary_hover))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.accept_drop(paths.paths(), window, cx)
+            }))
             .child(
                 TitleBar::new()
                     .text_xs()
