@@ -2344,7 +2344,7 @@ checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "file-ingest"
-version = "0.4.0-beta.2"
+version = "0.5.0-beta.1"
 dependencies = [
  "tempfile",
 ]

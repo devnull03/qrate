@@ -457,21 +457,8 @@ pub fn arrange(op: Arrangement, cx: &mut App) {
         log::warn!("Could not change archival hierarchy: {error:?}");
         return;
     }
-    persist_structure(&state, cx);
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
-}
-
-fn persist_structure(state: &Entity<TableState<delegate::QrateTableDelegate>>, cx: &mut App) {
-    let Some(file) = cx
-        .try_global::<settings::project::CurrentProject>()
-        .map(|project| project.file.clone())
-    else {
-        return;
-    };
-    let structure = state.read(cx).delegate().row_structure().to_vec();
-    if let Err(error) = settings::project::write_row_structure(&file, &structure) {
-        log::error!("failed to save archival row structure: {error}");
-    }
+    autosave(cx);
 }
 
 pub(crate) fn persist_expanded(rows: &[settings::project::RowId], cx: &mut App) {
@@ -733,19 +720,29 @@ pub fn save_now(cx: &mut App) {
         return;
     };
     let started = std::time::Instant::now();
-    let (headers, row_ids, rows) = state.read(cx).delegate().dataset_snapshot();
     let author = settings::history::author(cx);
-    let history: Vec<_> = state
-        .read(cx)
-        .delegate()
-        .unsaved_history()
-        .iter()
-        .map(|entry| settings::history::Entry {
-            author: author.clone(),
-            ..entry.clone()
-        })
-        .collect();
-    match settings::project::save_dataset(&file, &headers, &row_ids, &rows, &history) {
+    let (headers, row_ids, rows, structure, history) = {
+        let delegate = state.read(cx).delegate();
+        let (headers, row_ids, rows) = delegate.dataset_snapshot();
+        let structure = delegate.row_structure().to_vec();
+        let history = delegate
+            .unsaved_history()
+            .iter()
+            .map(|entry| settings::history::Entry {
+                author: author.clone(),
+                ..entry.clone()
+            })
+            .collect::<Vec<_>>();
+        (headers, row_ids, rows, structure, history)
+    };
+    match settings::project::save_dataset(
+        &file,
+        &headers,
+        &row_ids,
+        &rows,
+        Some(&structure),
+        &history,
+    ) {
         Ok(()) => {
             state.update(cx, |state, _| {
                 state.delegate_mut().history_saved(history.len())

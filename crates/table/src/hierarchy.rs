@@ -28,6 +28,8 @@ pub(crate) enum Error {
 pub(crate) struct Hierarchy {
     rows: Vec<RowStructure>,
     expanded: HashSet<RowId>,
+    /// Rows with at least one child, rebuilt by `normalize` after every structural change.
+    parents: HashSet<RowId>,
 }
 
 impl Hierarchy {
@@ -70,7 +72,7 @@ impl Hierarchy {
             .collect::<Vec<_>>();
         let mut hierarchy = Self {
             rows,
-            expanded: HashSet::new(),
+            ..Self::default()
         };
         hierarchy.normalize();
         hierarchy
@@ -132,20 +134,20 @@ impl Hierarchy {
     }
 
     pub(crate) fn has_children(&self, row_id: RowId) -> bool {
-        self.rows.iter().any(|row| row.parent_id == Some(row_id))
+        self.parents.contains(&row_id)
+    }
+
+    pub(crate) fn set_level(&mut self, row_id: RowId, level_key: &str) -> Result<(), Error> {
+        self.row_mut(row_id)?.level_key = level_key.into();
+        Ok(())
+    }
+
+    pub(crate) fn level(&self, row_id: RowId) -> Option<&str> {
+        self.row(row_id).ok().map(|row| row.level_key.as_str())
     }
 
     pub(crate) fn expand_all(&mut self) {
-        self.expanded = self
-            .rows
-            .iter()
-            .filter(|row| {
-                self.rows
-                    .iter()
-                    .any(|child| child.parent_id == Some(row.row_id))
-            })
-            .map(|row| row.row_id)
-            .collect();
+        self.expanded = self.parents.clone();
     }
 
     pub(crate) fn collapse_all(&mut self) {
@@ -167,35 +169,33 @@ impl Hierarchy {
             }
             included
         });
+        let index = self.children_index();
         let mut output = Vec::new();
-        self.append_children(None, 0, included.as_ref(), &mut output);
+        self.append_children(&index, None, 0, included.as_ref(), &mut output);
         output
     }
 
     fn append_children(
         &self,
+        index: &HashMap<Option<RowId>, Vec<RowId>>,
         parent: Option<RowId>,
         depth: usize,
         included: Option<&HashSet<RowId>>,
         output: &mut Vec<(RowId, usize)>,
     ) {
-        let mut children: Vec<_> = self
-            .rows
-            .iter()
-            .filter(|row| row.parent_id == parent)
-            .collect();
-        children.sort_by_key(|row| (row.sibling_order, row.row_id));
-        for child in children {
-            if included.is_none_or(|included| included.contains(&child.row_id)) {
-                output.push((child.row_id, depth));
+        for &child in index.get(&parent).map(Vec::as_slice).unwrap_or_default() {
+            if included.is_none_or(|included| included.contains(&child)) {
+                output.push((child, depth));
             }
+            // `included` holds every ancestor of a match, so a deeper match shows up as an
+            // included direct child.
             let reveal_match = included.is_some_and(|included| {
-                self.descendants(child.row_id)
-                    .iter()
-                    .any(|row| included.contains(row))
+                index
+                    .get(&Some(child))
+                    .is_some_and(|children| children.iter().any(|row| included.contains(row)))
             });
-            if self.expanded.contains(&child.row_id) || reveal_match {
-                self.append_children(Some(child.row_id), depth + 1, included, output);
+            if self.expanded.contains(&child) || reveal_match {
+                self.append_children(index, Some(child), depth + 1, included, output);
             }
         }
     }
@@ -254,14 +254,17 @@ impl Hierarchy {
                 removed
             }
             DeleteMode::PromoteChildren => {
-                for child in self
-                    .rows
-                    .iter_mut()
-                    .filter(|child| child.parent_id == Some(row_id))
-                {
-                    child.parent_id = row.parent_id;
+                let mut siblings = self.children(row.parent_id);
+                let at = siblings.iter().position(|id| *id == row_id).unwrap_or(0);
+                let children = self.children(Some(row_id));
+                siblings.splice(at..=at, children.iter().copied());
+                self.rows.retain(|candidate| candidate.row_id != row_id);
+                for (order, sibling) in siblings.into_iter().enumerate() {
+                    if let Ok(sibling) = self.row_mut(sibling) {
+                        sibling.parent_id = row.parent_id;
+                        sibling.sibling_order = order as i64;
+                    }
                 }
-                self.rows.retain(|row| row.row_id != row_id);
                 vec![row_id]
             }
         };
@@ -297,11 +300,29 @@ impl Hierarchy {
         children.into_iter().map(|(_, row_id)| row_id).collect()
     }
 
+    fn children_index(&self) -> HashMap<Option<RowId>, Vec<RowId>> {
+        let mut index: HashMap<Option<RowId>, Vec<(i64, RowId)>> = HashMap::new();
+        for row in &self.rows {
+            index
+                .entry(row.parent_id)
+                .or_default()
+                .push((row.sibling_order, row.row_id));
+        }
+        index
+            .into_iter()
+            .map(|(parent, mut children)| {
+                children.sort_unstable();
+                (parent, children.into_iter().map(|(_, id)| id).collect())
+            })
+            .collect()
+    }
+
     fn descendants(&self, row_id: RowId) -> Vec<RowId> {
+        let index = self.children_index();
         let mut descendants = Vec::new();
-        let mut pending = self.children(Some(row_id));
+        let mut pending = index.get(&Some(row_id)).cloned().unwrap_or_default();
         while let Some(child) = pending.pop() {
-            pending.extend(self.children(Some(child)));
+            pending.extend(index.get(&Some(child)).into_iter().flatten().copied());
             descendants.push(child);
         }
         descendants
@@ -329,15 +350,15 @@ impl Hierarchy {
     }
 
     fn normalize(&mut self) {
-        let parents: HashSet<_> = self.rows.iter().map(|row| row.parent_id).collect();
-        for parent in parents {
-            let children = self.children(parent);
-            for (order, child) in children.into_iter().enumerate() {
-                if let Ok(row) = self.row_mut(child) {
-                    row.sibling_order = order as i64;
-                }
-            }
+        let order: HashMap<RowId, i64> = self
+            .children_index()
+            .into_values()
+            .flat_map(|children| children.into_iter().zip(0..))
+            .collect();
+        for row in &mut self.rows {
+            row.sibling_order = order[&row.row_id];
         }
+        self.parents = self.rows.iter().filter_map(|row| row.parent_id).collect();
     }
 }
 
@@ -441,6 +462,8 @@ mod tests {
             [3]
         );
         assert_eq!(promoted.row(4).unwrap().parent_id, Some(1));
+        // 4 takes 3's place after 2 rather than joining the end of the list.
+        assert_eq!(promoted.children(Some(1)), [2, 4]);
 
         let mut removed = hierarchy();
         let removed_ids: HashSet<_> = removed
