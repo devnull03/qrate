@@ -62,6 +62,41 @@ pub fn jsonld_value(headers: &[String], rows: &[Vec<String>]) -> Value {
     json!({ "@context": { "@vocab": "https://schema.org/" }, "@graph": graph })
 }
 
+/// JSON-LD with stable component identities and archival whole-part relationships.
+pub fn jsonld_hierarchy_value(
+    headers: &[String],
+    row_ids: &[settings::project::RowId],
+    rows: &[Vec<String>],
+    structure: &[settings::project::RowStructure],
+) -> Value {
+    let structure: std::collections::HashMap<_, _> =
+        structure.iter().map(|item| (item.row_id, item)).collect();
+    let graph: Vec<Value> = rows
+        .iter()
+        .zip(row_ids)
+        .map(|(row, row_id)| {
+            let mut node: Map<String, Value> = headers
+                .iter()
+                .zip(row)
+                .filter(|(_, cell)| !cell.trim().is_empty())
+                .map(|(header, cell)| (header.clone(), Value::String(cell.clone())))
+                .collect();
+            node.insert("@id".into(), format!("urn:qrate:component:{row_id}").into());
+            if let Some(component) = structure.get(row_id) {
+                node.insert("additionalType".into(), component.level_key.clone().into());
+                if let Some(parent_id) = component.parent_id {
+                    node.insert(
+                        "isPartOf".into(),
+                        json!({ "@id": format!("urn:qrate:component:{parent_id}") }),
+                    );
+                }
+            }
+            Value::Object(node)
+        })
+        .collect();
+    json!({ "@context": { "@vocab": "https://schema.org/" }, "@graph": graph })
+}
+
 /// Which column feeds which CSL field, by header name. Persisted per project so the dialog opens
 /// on last time's answer.
 pub type CslMapping = BTreeMap<String, String>;
@@ -202,7 +237,9 @@ pub fn write_zip(
 
 #[cfg(test)]
 mod tests {
-    use super::{CslMapping, csl_items, derive_csl_mapping, jsonld_value, write_zip};
+    use super::{
+        CslMapping, csl_items, derive_csl_mapping, jsonld_hierarchy_value, jsonld_value, write_zip,
+    };
     use settings::columns::ColumnType;
 
     fn grid() -> (Vec<String>, Vec<Vec<String>>) {
@@ -230,6 +267,35 @@ mod tests {
         );
         // The second row's blanks are absent, not empty strings — a null value is a claim.
         assert_eq!(graph[1].as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn jsonld_exports_archival_whole_part_relationships() {
+        let (headers, rows) = grid();
+        let structure = [
+            settings::project::RowStructure {
+                row_id: 10,
+                parent_id: None,
+                level_key: "series".into(),
+                sibling_order: 0,
+                source_path: None,
+                source_kind: None,
+            },
+            settings::project::RowStructure {
+                row_id: 11,
+                parent_id: Some(10),
+                level_key: "item".into(),
+                sibling_order: 0,
+                source_path: None,
+                source_kind: None,
+            },
+        ];
+        let graph = jsonld_hierarchy_value(&headers, &[10, 11], &rows, &structure);
+        assert_eq!(graph["@graph"][0]["additionalType"], "series");
+        assert_eq!(
+            graph["@graph"][1]["isPartOf"]["@id"],
+            "urn:qrate:component:10"
+        );
     }
 
     #[test]
