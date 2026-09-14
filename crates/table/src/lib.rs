@@ -234,7 +234,6 @@ pub fn history_step(redo: bool, cx: &mut App) {
     };
     if let Some(row_ids) = row_ids {
         diagnostics::Diagnostics::align_note_rows(diagnostics::DATASET_MAIN, &row_ids, cx);
-        persist_structure(&state, cx);
     }
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
     revalidate_now(cx);
@@ -325,21 +324,8 @@ pub fn arrange(op: Arrangement, cx: &mut App) {
         log::warn!("Could not change archival hierarchy: {error:?}");
         return;
     }
-    persist_structure(&state, cx);
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
-}
-
-fn persist_structure(state: &Entity<TableState<delegate::QrateTableDelegate>>, cx: &mut App) {
-    let Some(file) = cx
-        .try_global::<settings::project::CurrentProject>()
-        .map(|project| project.file.clone())
-    else {
-        return;
-    };
-    let structure = state.read(cx).delegate().row_structure().to_vec();
-    if let Err(error) = settings::project::write_row_structure(&file, &structure) {
-        log::error!("failed to save archival row structure: {error}");
-    }
+    autosave(cx);
 }
 
 pub(crate) fn persist_expanded(rows: &[settings::project::RowId], cx: &mut App) {
@@ -420,7 +406,6 @@ pub fn structural(op: Structural, cx: &mut App) {
     ) {
         let row_ids = state.read(cx).delegate().row_ids().to_vec();
         diagnostics::Diagnostics::align_note_rows(diagnostics::DATASET_MAIN, &row_ids, cx);
-        persist_structure(&state, cx);
     }
     if let Some((before, after)) = renamed {
         diagnostics::Diagnostics::column_renamed(diagnostics::DATASET_MAIN, &before, &after, cx);
@@ -595,8 +580,10 @@ pub fn save_now(cx: &mut App) {
         return;
     };
     let started = std::time::Instant::now();
-    let (headers, row_ids, rows) = state.read(cx).delegate().dataset_snapshot();
-    match settings::project::save_dataset(&file, &headers, &row_ids, &rows) {
+    let delegate = state.read(cx).delegate();
+    let (headers, row_ids, rows) = delegate.dataset_snapshot();
+    let structure = delegate.row_structure().to_vec();
+    match settings::project::save_dataset(&file, &headers, &row_ids, &rows, Some(&structure)) {
         Ok(()) => {
             log::debug!("saved {} rows in {:?}", rows.len(), started.elapsed());
             settings::dirty::clear(settings::dirty::PROJECT_DATA, cx)

@@ -513,12 +513,15 @@ impl TablePanel {
                         return;
                     }
                     this.update(cx, |this, cx| {
-                        let (title_name, file_name) = cx
-                            .global::<settings::project::CurrentProject>()
+                        let project = cx.global::<settings::project::CurrentProject>();
+                        let files_root = project
                             .data
-                            .columns
-                            .iter()
-                            .fold((None, None), |(title, file), column| {
+                            .values
+                            .get(settings::project::FILES_FOLDER_KEY)
+                            .map(|folder| std::path::PathBuf::from(folder.text().as_ref()));
+                        let (title_name, file_name) = project.data.columns.iter().fold(
+                            (None, None),
+                            |(title, file), column| {
                                 match settings::columns::ColumnType::from_declared(
                                     &column.data_type,
                                 ) {
@@ -530,7 +533,8 @@ impl TablePanel {
                                     }
                                     _ => (title, file),
                                 }
-                            });
+                            },
+                        );
                         this.state.update(cx, |state, cx| {
                             let title_col = title_name
                                 .as_deref()
@@ -538,14 +542,17 @@ impl TablePanel {
                             let file_col = file_name
                                 .as_deref()
                                 .and_then(|name| state.delegate().data_col(name));
-                            state
-                                .delegate_mut()
-                                .append_components(&plan, title_col, file_col, None);
+                            state.delegate_mut().append_components(
+                                &plan,
+                                title_col,
+                                file_col,
+                                None,
+                                files_root.as_deref(),
+                            );
                             state.refresh(cx);
                             cx.emit(TableChanged);
                             cx.notify();
                         });
-                        crate::persist_structure(&this.state, cx);
                         let row_ids = this.state.read(cx).delegate().row_ids().to_vec();
                         diagnostics::Diagnostics::align_note_rows(
                             diagnostics::DATASET_MAIN,
