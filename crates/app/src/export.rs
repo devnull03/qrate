@@ -9,7 +9,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use data_exchange::export::{self, CSL_FIELDS, CslMapping};
+use data_exchange::export::{self, ArchiveFile, CSL_FIELDS, CslMapping};
 use gpui::{
     Action, App, AppContext as _, ClickEvent, IntoElement, ParentElement, SharedString, Styled,
     Window,
@@ -256,7 +256,17 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
             .unwrap_or_default();
         table::photos::resolve_row_images(&headers, &rows, &folder, &declared)
             .into_iter()
-            .flatten()
+            .enumerate()
+            .filter_map(|(index, path)| {
+                let path = path?;
+                let source_path = row_ids.get(index).and_then(|row_id| {
+                    structure
+                        .iter()
+                        .find(|component| component.row_id == *row_id)
+                        .and_then(|component| component.source_path.clone())
+                });
+                Some(ArchiveFile { path, source_path })
+            })
             .collect()
     } else {
         Vec::new()
@@ -283,7 +293,7 @@ fn save_as(
     format: ExportFormat,
     project_file: PathBuf,
     grid: ExportGrid,
-    images: Vec<PathBuf>,
+    images: Vec<ArchiveFile>,
     mapping: CslMapping,
     cx: &mut App,
 ) {
@@ -315,7 +325,9 @@ fn save_as(
             ExportFormat::Csl => {
                 export::write_json(&path, &export::csl_items(&headers, &rows, &mapping))
             }
-            ExportFormat::Zip => export::write_zip(&path, &headers, &rows, &images),
+            ExportFormat::Zip => {
+                export::write_zip(&path, &headers, &row_ids, &rows, &structure, &images)
+            }
             // Handled in `run` — they have no path to write to.
             ExportFormat::GoogleSheet | ExportFormat::GoogleSheetSync => return,
         };
