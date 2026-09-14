@@ -269,8 +269,23 @@ pub enum Structural {
 pub enum Arrangement {
     Indent(usize),
     Outdent(usize),
-    Reparent { row: usize, parent: Option<usize> },
+    Reparent {
+        row: usize,
+        parent: Option<usize>,
+    },
     DeleteSubtree(usize),
+    Move {
+        row: usize,
+        target: usize,
+        placement: RowPlacement,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub enum RowPlacement {
+    Before,
+    Child,
+    After,
 }
 
 pub fn arrange(op: Arrangement, cx: &mut App) {
@@ -290,6 +305,13 @@ pub fn arrange(op: Arrangement, cx: &mut App) {
             Arrangement::Indent(row) => state.delegate_mut().indent_row(row),
             Arrangement::Outdent(row) => state.delegate_mut().outdent_row(row),
             Arrangement::Reparent { row, parent } => state.delegate_mut().reparent_row(row, parent),
+            Arrangement::Move {
+                row,
+                target,
+                placement,
+            } => state
+                .delegate_mut()
+                .move_row_relative(row, target, placement),
             Arrangement::DeleteSubtree(_) => unreachable!(),
         };
         if result.is_ok() {

@@ -1020,6 +1020,26 @@ impl QrateTableDelegate {
         self.edit_hierarchy(|hierarchy| hierarchy.move_row(row_id, placement))
     }
 
+    pub(crate) fn move_row_relative(
+        &mut self,
+        source: usize,
+        target: usize,
+        placement: crate::RowPlacement,
+    ) -> Result<(), crate::hierarchy::Error> {
+        let row_id = self
+            .row_id(source)
+            .ok_or(crate::hierarchy::Error::UnknownRow(source as i64))?;
+        let target_id = self
+            .row_id(target)
+            .ok_or(crate::hierarchy::Error::UnknownRow(target as i64))?;
+        let placement = match placement {
+            crate::RowPlacement::Before => Placement::Before(target_id),
+            crate::RowPlacement::Child => Placement::ChildOf(target_id),
+            crate::RowPlacement::After => Placement::After(target_id),
+        };
+        self.edit_hierarchy(|hierarchy| hierarchy.move_row(row_id, placement))
+    }
+
     pub(crate) fn subtree_sources(&self, source: usize) -> Vec<usize> {
         let Some(row_id) = self.row_ids.get(source).copied() else {
             return Vec::new();
