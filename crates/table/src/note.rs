@@ -255,6 +255,15 @@ fn structural_items(menu: PopupMenu, rows: Option<&[usize]>, col: Option<usize>)
                     crate::structural(Structural::DeleteRows(delete.clone()), cx)
                 }),
             )
+            .separator()
+            .item(
+                PopupMenuItem::new("Expand all groups")
+                    .on_click(move |_, _, cx| cx.dispatch_action(&crate::ExpandAll)),
+            )
+            .item(
+                PopupMenuItem::new("Collapse all groups")
+                    .on_click(move |_, _, cx| cx.dispatch_action(&crate::CollapseAll)),
+            )
         }
         None => menu,
     };

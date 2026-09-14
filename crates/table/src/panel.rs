@@ -61,7 +61,9 @@ actions!(
         InsertColumnLeft,
         InsertColumnRight,
         DeleteColumn,
-        RenameColumn
+        RenameColumn,
+        ExpandAll,
+        CollapseAll
     ]
 );
 
@@ -122,6 +124,17 @@ impl TablePanel {
                 &project.data.row_ids,
                 &project.data.rows,
             );
+            let structure =
+                settings::project::read_row_structure(&project.file).unwrap_or_else(|error| {
+                    log::warn!(
+                        "Could not read row structure from {:?}: {error}",
+                        project.file
+                    );
+                    Vec::new()
+                });
+            let description =
+                settings::description::DescriptionConfig::from_values(&project.data.values);
+            delegate.set_structure(&structure, &description.file_level_key);
             Self::apply_saved_layout(&mut delegate, &project.file);
             delegate.set_image_paths(Self::resolve_images(&project.data));
             loaded_project = Some(project.file.clone());
@@ -331,9 +344,19 @@ impl TablePanel {
                     project.data.rows.clone(),
                 );
                 let image_paths = Self::resolve_images(&project.data);
+                let structure =
+                    settings::project::read_row_structure(&file).unwrap_or_else(|error| {
+                        log::warn!("Could not read row structure from {file:?}: {error}");
+                        Vec::new()
+                    });
+                let description =
+                    settings::description::DescriptionConfig::from_values(&project.data.values);
                 this.loaded_project = Some(file.clone());
                 this.state.update(cx, |state, cx| {
                     state.delegate_mut().set_data(&headers, &row_ids, &rows);
+                    state
+                        .delegate_mut()
+                        .set_structure(&structure, &description.file_level_key);
                     Self::apply_saved_layout(state.delegate_mut(), &file);
                     state.delegate_mut().set_image_paths(image_paths);
                     apply_settings(state.delegate_mut(), cx);
@@ -956,6 +979,20 @@ impl Render for TablePanel {
             .on_action(cx.listener(|this, _: &Clear, _, cx| this.clear_range(cx)))
             .on_action(cx.listener(|this, _: &UnfreezeColumns, _, cx| {
                 crate::set_frozen_columns(&this.state.clone(), 0, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExpandAll, _, cx| {
+                this.state.update(cx, |state, cx| {
+                    state.delegate_mut().expand_all();
+                    state.refresh(cx);
+                    cx.emit(TableChanged);
+                });
+            }))
+            .on_action(cx.listener(|this, _: &CollapseAll, _, cx| {
+                this.state.update(cx, |state, cx| {
+                    state.delegate_mut().collapse_all();
+                    state.refresh(cx);
+                    cx.emit(TableChanged);
+                });
             }))
             .on_action(cx.listener(|this, _: &InsertRowAbove, _, cx| {
                 this.structural(|rows, _| crate::Structural::InsertRow { at: rows[0] }, cx)
