@@ -39,8 +39,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use diagnostics::{
-    ColumnFinding, ColumnSnapshot, DATASET_MAIN, DiagnosticGroup, Diagnostics, Fix, FixProviders,
-    Location, Severity, Source,
+    ColumnFinding, ColumnSnapshot, DATASET_MAIN, DiagnosticGroup, DiagnosticHooks, Diagnostics,
+    Fix, FixProviders, GroupFix, Location, Severity, Source, SourceActions,
 };
 use gpui::{App, AppContext as _, Global, SharedString, Task};
 
@@ -63,6 +63,9 @@ const WINDOW: Duration = Duration::from_secs(60);
 /// Per request. A server that has not answered in this long is not going to.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long a term whose request failed waits before it is asked again.
+const RETRY_AFTER: Duration = Duration::from_secs(300);
+
 /// What an authority said about one term.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Verdict {
@@ -81,6 +84,10 @@ struct Cache {
     terms: HashMap<String, HashMap<String, Verdict>>,
     scopes: HashMap<String, String>,
     failures: HashMap<String, String>,
+    /// Terms a request is out for, per source, so an overlapping run never asks for them twice.
+    pending: HashMap<String, HashSet<String>>,
+    /// Terms whose request failed, per source, with when they may be asked again.
+    unanswered: HashMap<String, HashMap<String, Instant>>,
     loaded: bool,
     /// Keeps the in-flight run alive; dropping it cancels, which is what a newer run wants.
     run: Option<Task<()>>,
@@ -163,8 +170,6 @@ struct Job {
     source: Box<dyn AuthoritySource>,
     scope: String,
     columns: Vec<ColumnSnapshot>,
-    /// Terms nothing is cached for, already capped at [`PER_RUN`].
-    ask: Vec<String>,
 }
 
 /// Split a cell into the values it actually holds. Archival subject and name columns are commonly
@@ -231,94 +236,126 @@ pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
             cache.scopes.insert(name.into(), scope.clone());
             cache.terms.remove(name);
             cache.failures.remove(name);
+            cache.unanswered.remove(name);
         }
-        let failed = cache.failures.contains_key(name);
-        let cached = cache.terms.entry(name.into()).or_default();
-        let mut seen = HashSet::new();
-        let ask: Vec<String> = mine
-            .iter()
-            .flat_map(|c| c.values.iter())
-            .flat_map(|cell| values_in(cell, &subdelimiter))
-            .filter(|value| seen.insert(value.to_lowercase()))
-            .filter(|value| !cached.contains_key(&value.to_lowercase()))
-            .filter(|_| !failed)
-            .take(PER_RUN)
-            .collect();
-
         jobs.push(Job {
             source,
             scope,
             columns: mine,
-            ask,
         });
     }
 
     if jobs.is_empty() {
         return;
     }
+    // Everything already cached is published before any request goes out, so a reopened project
+    // shows what it knew immediately instead of after a round trip.
+    publish(&jobs, &subdelimiter, cx);
 
     let task = cx.spawn(async move |cx| {
-        // Everything already cached is published before the first request goes out, so a reopened
-        // project shows what it knew immediately instead of after a round trip.
-        cx.update(|cx| publish(&jobs, &subdelimiter, cx));
-
-        let asked: Vec<(String, String, Vec<String>)> = jobs
-            .iter()
-            .filter(|job| !job.ask.is_empty())
-            .map(|job| {
-                (
-                    job.source.name().to_string(),
-                    job.scope.clone(),
-                    job.ask.clone(),
-                )
-            })
-            .collect();
+        cx.background_executor().timer(DEBOUNCE).await;
+        let asked = cx.update(|cx| claim(&jobs, &subdelimiter, cx));
         if asked.is_empty() {
             return;
         }
-
-        cx.background_executor().timer(DEBOUNCE).await;
-        let fetched = cx
-            .background_spawn(async move {
-                let sources = source::all(&config);
-                asked
-                    .into_iter()
-                    .filter_map(|(name, scope, terms)| {
-                        let source = sources.iter().find(|s| s.name() == name)?;
-                        Some((name.clone(), scope, lookup_all(source.as_ref(), &terms)))
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .await;
-
-        cx.update(|cx| {
-            for (name, scope, result) in fetched {
-                let cache = cx.default_global::<Cache>();
-                if cache.scopes.get(&name) != Some(&scope) {
-                    continue;
-                }
-                if let Some(failure) = result.failure {
-                    log::warn!("{name} checks paused: {failure}");
-                    cache.failures.insert(name.clone(), failure);
-                }
-                let verdicts = result.verdicts;
-                let for_source = cache.terms.entry(name.clone()).or_default();
-                for (term, verdict) in verdicts {
-                    for_source.insert(term, verdict);
-                }
-                if for_source.is_empty() {
-                    continue;
-                }
-                let scope = cache.scopes.get(&name).cloned().unwrap_or_default();
-                let snapshot = for_source.clone();
-                cx.background_executor()
-                    .spawn(async move { write_cache(&name, &scope, &snapshot) })
-                    .detach();
-            }
-            publish(&jobs, &subdelimiter, cx);
-        });
+        // Detached: a newer run cancels the debounce, never answers a request already paid for.
+        cx.spawn(async move |cx| {
+            let fetched = cx
+                .background_spawn(async move {
+                    let sources = source::all(&config);
+                    asked
+                        .into_iter()
+                        .filter_map(|(name, scope, terms)| {
+                            let source = sources.iter().find(|s| s.name() == name)?;
+                            let result = lookup_all(source.as_ref(), &terms);
+                            Some((name, scope, terms, result))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            cx.update(|cx| store(fetched, cx));
+        })
+        .detach();
     });
     cx.default_global::<Cache>().run = Some(task);
+}
+
+/// Each source's next [`PER_RUN`] distinct terms that nothing is cached, pending, or waiting to
+/// retry for, marked pending as they are handed out.
+fn claim(jobs: &[Job], subdelimiter: &str, cx: &mut App) -> Vec<(String, String, Vec<String>)> {
+    let cache = cx.default_global::<Cache>();
+    let now = Instant::now();
+    jobs.iter()
+        .filter_map(|job| {
+            let name = job.source.name();
+            if cache.scopes.get(name) != Some(&job.scope) || cache.failures.contains_key(name) {
+                return None;
+            }
+            let cached = cache.terms.get(name);
+            let unanswered = cache.unanswered.get(name);
+            let pending = cache.pending.entry(name.into()).or_default();
+            let mut seen = HashSet::new();
+            let ask: Vec<String> = job
+                .columns
+                .iter()
+                .flat_map(|c| c.values.iter())
+                .flat_map(|cell| values_in(cell, subdelimiter))
+                .filter(|value| {
+                    let key = value.to_lowercase();
+                    !cached.is_some_and(|cached| cached.contains_key(&key))
+                        && unanswered
+                            .and_then(|unanswered| unanswered.get(&key))
+                            .is_none_or(|retry_at| now >= *retry_at)
+                        && !pending.contains(&key)
+                        && seen.insert(key)
+                })
+                .take(PER_RUN)
+                .collect();
+            pending.extend(ask.iter().map(|term| term.to_lowercase()));
+            (!ask.is_empty()).then(|| (name.to_owned(), job.scope.clone(), ask))
+        })
+        .collect()
+}
+
+/// Cache what came back, then revalidate so the answers publish against the sheet as it is now —
+/// which also claims the next batch, until every term has an answer.
+fn store(fetched: Vec<(String, String, Vec<String>, LookupBatch)>, cx: &mut App) {
+    let mut answered = false;
+    for (name, scope, asked, result) in fetched {
+        let cache = cx.default_global::<Cache>();
+        if let Some(pending) = cache.pending.get_mut(&name) {
+            for term in &asked {
+                pending.remove(&term.to_lowercase());
+            }
+        }
+        if cache.scopes.get(&name) != Some(&scope) {
+            continue;
+        }
+        let retry_at = Instant::now() + RETRY_AFTER;
+        cache
+            .unanswered
+            .entry(name.clone())
+            .or_default()
+            .extend(result.unanswered.into_iter().map(|term| (term, retry_at)));
+        if let Some(failure) = result.failure {
+            log::warn!("{name} checks paused: {failure}");
+            cache.failures.insert(name.clone(), failure);
+            answered = true;
+        }
+        if result.verdicts.is_empty() {
+            continue;
+        }
+        answered = true;
+        let for_source = cache.terms.entry(name.clone()).or_default();
+        for_source.extend(result.verdicts);
+        let snapshot = for_source.clone();
+        cx.background_executor()
+            .spawn(async move { write_cache(&name, &scope, &snapshot) })
+            .detach();
+    }
+    if answered && let Some(hooks) = cx.try_global::<DiagnosticHooks>().copied() {
+        (hooks.revalidate)(cx);
+    }
 }
 
 /// Turn what the cache knows into findings, for every job. A term nothing is cached for is not
@@ -388,6 +425,8 @@ fn publish(jobs: &[Job], subdelimiter: &str, cx: &mut App) {
 
 struct LookupBatch {
     verdicts: Vec<(String, Verdict)>,
+    /// Lowercased terms the server did not answer, to wait [`RETRY_AFTER`] before asking again.
+    unanswered: Vec<String>,
     failure: Option<String>,
 }
 
@@ -399,7 +438,11 @@ enum Lookup {
 
 /// Ask `source` about each term in turn, skipping the rest once the request budget is spent.
 fn lookup_all(source: &dyn AuthoritySource, terms: &[String]) -> LookupBatch {
-    let mut verdicts = Vec::new();
+    let mut batch = LookupBatch {
+        verdicts: Vec::new(),
+        unanswered: Vec::new(),
+        failure: None,
+    };
     for term in terms {
         if !take_token() {
             log::warn!(
@@ -409,20 +452,15 @@ fn lookup_all(source: &dyn AuthoritySource, terms: &[String]) -> LookupBatch {
             break;
         }
         match lookup_result(source, term) {
-            Lookup::Verdict(verdict) => verdicts.push((term.to_lowercase(), verdict)),
-            Lookup::Retry => {}
+            Lookup::Verdict(verdict) => batch.verdicts.push((term.to_lowercase(), verdict)),
+            Lookup::Retry => batch.unanswered.push(term.to_lowercase()),
             Lookup::Refused(failure) => {
-                return LookupBatch {
-                    verdicts,
-                    failure: Some(failure),
-                };
+                batch.failure = Some(failure);
+                break;
             }
         }
     }
-    LookupBatch {
-        verdicts,
-        failure: None,
-    }
+    batch
 }
 
 /// One term. `None` when the authority could not be reached or did not answer with anything
@@ -564,10 +602,50 @@ fn offer(location: &Location, text: &str, subject: Option<&str>, cx: &App) -> Ve
         .collect()
 }
 
+/// "Try again" once a source has been refused, otherwise "Refresh": both ask the server afresh.
+fn actions(name: &str, cx: &App) -> Vec<GroupFix> {
+    let failed = cx
+        .try_global::<Cache>()
+        .is_some_and(|cache| cache.failures.contains_key(name));
+    let label = if failed {
+        format!("Try {name} again")
+    } else {
+        format!("Refresh {name} results")
+    };
+    let name = name.to_owned();
+    vec![GroupFix::action(label, move |cx| {
+        refresh(&name, failed, cx)
+    })]
+}
+
+/// Forget a refusal, or every verdict, and check again.
+fn refresh(name: &str, only_failure: bool, cx: &mut App) {
+    ensure_loaded(cx);
+    let cache = cx.default_global::<Cache>();
+    cache.failures.remove(name);
+    cache.unanswered.remove(name);
+    if !only_failure {
+        cache.terms.remove(name);
+        if let Some(path) = cache_path(name)
+            && let Err(err) = std::fs::remove_file(&path)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!(
+                "could not clear the saved {name} answers at {}, so a restart may show old results: {err}",
+                path.display()
+            );
+        }
+    }
+    if let Some(hooks) = cx.try_global::<DiagnosticHooks>().copied() {
+        (hooks.revalidate)(cx);
+    }
+}
+
 /// Wire the authority check in. Reached through [`crate::init`].
 pub fn init(cx: &mut App) {
     for name in source::NAMES {
         FixProviders::register(name, offer, cx);
+        SourceActions::register(name, actions, cx);
     }
     diagnostics::AsyncValidators::register("authority", check, cx);
 }
@@ -576,6 +654,76 @@ pub fn init(cx: &mut App) {
 mod tests {
     use crate::authority::geonames::GeoNames;
     use crate::authority::{Lookup, Verdict, interpret, values_in};
+
+    #[gpui::test]
+    fn a_repeated_value_is_asked_once_and_never_while_pending(cx: &mut gpui::TestAppContext) {
+        use crate::authority::{Cache, Job, claim};
+        let job = || Job {
+            source: Box::new(GeoNames {
+                username: "archivist".into(),
+            }),
+            scope: "GeoNames:archivist".into(),
+            columns: vec![diagnostics::ColumnSnapshot {
+                name: "Place".into(),
+                data_type: "Text".into(),
+                settings: Default::default(),
+                values: ["Vancouver", "vancouver", "Vancouver; Paris", "Surrey"]
+                    .map(Into::into)
+                    .to_vec(),
+                subdelimiter: ";".into(),
+                row_ids: std::sync::Arc::new([]),
+            }],
+        };
+        cx.update(|cx| {
+            let cache = cx.default_global::<Cache>();
+            cache.loaded = true;
+            cache
+                .scopes
+                .insert("GeoNames".into(), "GeoNames:archivist".into());
+            cache.terms.entry("GeoNames".into()).or_default().insert(
+                "surrey".into(),
+                Verdict {
+                    known: true,
+                    suggestions: Vec::new(),
+                },
+            );
+            let asked = claim(&[job()], ";", cx);
+            assert_eq!(asked.len(), 1);
+            assert_eq!(asked[0].2, ["Vancouver", "Paris"]);
+            assert!(
+                claim(&[job()], ";", cx).is_empty(),
+                "an overlapping run finds every term already pending"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn trying_a_refused_source_again_keeps_its_answers(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let cache = cx.default_global::<crate::authority::Cache>();
+            cache.loaded = true;
+            cache
+                .failures
+                .insert("GeoNames".into(), "credits spent".into());
+            cache.terms.entry("GeoNames".into()).or_default().insert(
+                "paris".into(),
+                Verdict {
+                    known: true,
+                    suggestions: Vec::new(),
+                },
+            );
+            let offered = crate::authority::actions("GeoNames", cx);
+            assert_eq!(offered[0].label, "Try GeoNames again");
+            offered[0].apply(cx);
+            let cache = cx.global::<crate::authority::Cache>();
+            assert!(cache.failures.is_empty());
+            assert!(cache.terms["GeoNames"].contains_key("paris"));
+            assert_eq!(
+                crate::authority::actions("GeoNames", cx)[0].label,
+                "Refresh GeoNames results"
+            );
+        });
+    }
 
     #[test]
     fn a_multi_valued_cell_splits_into_its_values() {
