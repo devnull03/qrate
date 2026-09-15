@@ -48,6 +48,14 @@ pub fn open_project(file: &Path, cx: &mut gpui::App) -> anyhow::Result<String> {
     };
     let name = project.display_name();
     cx.set_global(project);
+    if let Some(path) = file.to_str() {
+        super::recent::record_opened(name.clone(), path.to_owned(), cx);
+    } else {
+        log::warn!(
+            "opened project {}, but its non-Unicode path cannot be saved in recent projects",
+            file.display()
+        );
+    }
     Ok(name)
 }
 

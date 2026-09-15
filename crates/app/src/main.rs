@@ -2,7 +2,7 @@
 
 mod about;
 mod actions;
-mod agent_bridge;
+mod app_control;
 mod app_menus;
 mod app_settings;
 mod assets;
@@ -12,6 +12,7 @@ mod instance_handoff;
 mod logging;
 mod plugin_marketplace;
 mod site;
+mod startup;
 mod status_items;
 mod theming;
 mod title_items;
@@ -465,7 +466,7 @@ fn flush_all_state(cx: &mut gpui::App) {
     }
     // Everything above reached disk synchronously, so nothing is outstanding.
     settings::dirty::clear_all(cx);
-    agent_bridge::shutdown();
+    app_control::shutdown();
 }
 
 pub(crate) fn restart_for_update(_: &ClickEvent, window: &mut Window, cx: &mut gpui::App) {
@@ -513,24 +514,18 @@ fn main() {
     // First, so failures in GPUI platform construction and startup still reach the log file.
     logging::init();
     log::info!("site origin: {}", site::url("/"));
-    let initial_link = std::env::args()
-        .find(|argument| argument.starts_with("qrate://"))
-        .filter(|link| {
-            plugin_package::parse_install_link(link)
-                .inspect_err(|error| log::warn!("ignored invalid plugin install link: {error:#}"))
-                .is_ok()
-        });
-    if initial_link.is_some() {
-        log::info!("received plugin install link at startup");
-    }
+    let initial_target = startup::launch_argument(std::env::args_os().skip(1));
     let (url_sender, url_receiver) = async_channel::unbounded();
-    if !instance_handoff::start(initial_link.as_deref(), url_sender.clone()) {
+    let handoff = initial_target
+        .as_ref()
+        .and_then(startup::LaunchTarget::handoff);
+    if !instance_handoff::start(handoff, url_sender.clone()) {
         return;
     }
     let app = gpui_platform::application().with_assets(assets::Assets);
     app.on_open_urls(move |urls| {
         for url in urls {
-            log::info!("received plugin install link from the operating system");
+            log::info!("received a qrate link from the operating system");
             let _ = url_sender.try_send(url);
         }
     });
@@ -589,10 +584,10 @@ fn main() {
             cx,
         );
         checks::init(cx);
-        agent_bridge::init(cx);
+        app_control::init(cx);
         agent_runtime::init(cx);
         log::debug!(
-            "startup: validators and bridges registered at {:?}",
+            "startup: validators and app control registered at {:?}",
             started.elapsed()
         );
 
@@ -656,8 +651,13 @@ fn main() {
         });
 
         cx.spawn(async move |cx| {
-            while let Ok(link) = url_receiver.recv().await {
-                cx.update(|cx| open_install_link(&link, cx));
+            while let Ok(message) = url_receiver.recv().await {
+                match startup::parse(std::ffi::OsStr::new(&message)) {
+                    Some(target) => {
+                        cx.update(|cx| open_target(target, cx));
+                    }
+                    None => log::warn!("ignored a handed-off target qrate cannot open"),
+                }
             }
         })
         .detach();
@@ -669,24 +669,35 @@ fn main() {
         })
         .detach();
 
-        match initial_link {
-            Some(link) if open_install_link(&link, cx) => {}
-            // The launcher is the normal startup window; it opens the main window or the wizard.
-            _ => project_wizard::open_launcher_window(cx),
+        // The launcher is the normal startup window; it opens the main window or the wizard.
+        if !initial_target.is_some_and(|target| open_target(target, cx)) {
+            project_wizard::open_launcher_window(cx);
         }
     });
 }
 
-fn open_install_link(link: &str, cx: &mut gpui::App) -> bool {
-    match plugin_package::parse_install_link(link) {
-        Ok(target) => {
-            log::info!("opening plugin installation target: {target:?}");
-            plugin_marketplace::open_install_target(target, cx);
-            true
-        }
-        Err(error) => {
-            log::warn!("ignored invalid plugin install link: {error:#}");
-            false
-        }
+fn open_target(target: startup::LaunchTarget, cx: &mut gpui::App) -> bool {
+    match target {
+        startup::LaunchTarget::Project(path) => match project_wizard::open_project(&path, cx) {
+            Ok(_) => {
+                open_main_window(cx);
+                true
+            }
+            Err(error) => {
+                log::error!("cannot open project {}: {error:#}", path.display());
+                false
+            }
+        },
+        startup::LaunchTarget::Link(link) => match plugin_package::parse_install_link(&link) {
+            Ok(target) => {
+                log::info!("opening plugin installation target: {target:?}");
+                plugin_marketplace::open_install_target(target, cx);
+                true
+            }
+            Err(error) => {
+                log::warn!("ignored invalid plugin install link: {error:#}");
+                false
+            }
+        },
     }
 }

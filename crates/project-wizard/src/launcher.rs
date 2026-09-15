@@ -74,8 +74,7 @@ impl Launcher {
     /// the main window. On failure the launcher stays up and shows why.
     fn open_project_file(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
         match project::open_project(std::path::Path::new(&path), cx) {
-            Ok(name) => {
-                recent::record_opened(name, path, cx);
+            Ok(_) => {
                 if let Some(hooks) = cx.try_global::<LauncherHooks>().copied() {
                     (hooks.open_main_window)(cx);
                 }

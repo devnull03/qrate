@@ -5,6 +5,8 @@
 # Usage:
 #   scripts/bundle-mac.sh <path-to-universal-binary> <version>
 #
+# The GUI binary must have universal qrate-cli and qrate-update-helper siblings.
+#
 # Produces:
 #   dist/qrate.app
 #   dist/qrate-<version>-universal.dmg
@@ -29,6 +31,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Helpers"
 # ---- Executable ------------------------------------------------------------
 cp "$BIN" "$app/Contents/MacOS/$executable"
 chmod +x "$app/Contents/MacOS/$executable"
+cp "$(dirname "$BIN")/qrate-cli" "$app/Contents/MacOS/qrate-cli"
+chmod +x "$app/Contents/MacOS/qrate-cli"
 
 cp "$(dirname "$BIN")/qrate-update-helper" "$app/Contents/Helpers/qrate-update-helper"
 chmod +x "$app/Contents/Helpers/qrate-update-helper"

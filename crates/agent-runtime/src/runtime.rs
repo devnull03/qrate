@@ -12,7 +12,8 @@ pub struct AgentRuntime {
     pub leading_args: Vec<String>,
     pub extension: PathBuf,
     pub profile: PathBuf,
-    pub endpoint: PathBuf,
+    /// The `qrate-cli` shipped beside this app, which is how Pi reads the live project.
+    pub cli: PathBuf,
 }
 
 impl Global for AgentRuntime {}
@@ -39,7 +40,7 @@ fn prepare() -> Result<AgentRuntime, String> {
     let program = root.join(if cfg!(windows) { "pi.exe" } else { "pi" });
     let package = root.join("qrate-pi-extension");
     let extension = package.join("extensions/qrate.ts");
-    let extension_bridge = package.join("src/bridge.ts");
+    let extension_cli = package.join("src/cli.ts");
     let extension_permissions = package.join("src/permissions.ts");
     let source_system = package.join("SYSTEM.md");
     let dark_theme = root.join("theme/dark.json");
@@ -47,7 +48,7 @@ fn prepare() -> Result<AgentRuntime, String> {
     for required in [
         &program,
         &extension,
-        &extension_bridge,
+        &extension_cli,
         &extension_permissions,
         &source_system,
         &dark_theme,
@@ -75,15 +76,21 @@ fn prepare() -> Result<AgentRuntime, String> {
         .map_err(|err| format!("could not seed Pi's settings: {err}"))?;
     }
 
-    let endpoint = settings::data_dir()
-        .expect("data directory was available above")
-        .join("agent-bridge.json");
+    let cli = std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            Some(
+                exe.parent()?
+                    .join(format!("qrate-cli{}", std::env::consts::EXE_SUFFIX)),
+            )
+        })
+        .ok_or_else(|| "qrate cannot locate its own executable".to_owned())?;
     Ok(AgentRuntime {
         program,
         leading_args: Vec::new(),
         extension,
         profile,
-        endpoint,
+        cli,
     })
 }
 

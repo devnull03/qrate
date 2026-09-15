@@ -11,4 +11,5 @@ mod steps;
 pub mod wizard;
 
 pub use launcher::{LauncherHooks, open_launcher_window};
+pub use project::open_project;
 pub use wizard::{EntryKind, open_project_wizard};
