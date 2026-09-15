@@ -803,22 +803,20 @@ impl Render for Viewer {
                     .gap_1()
                     .p_1()
                     .rounded(cx.theme().radius)
-                    .bg(cx.theme().background)
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .shadow_lg()
-                    .occlude()
+                    .bg(pill)
                     .child(
                         Button::new("previous-row")
                             .icon(IconName::ArrowLeft)
-                            .outline()
+                            .ghost()
+                            .small()
                             .tooltip("Previous row (↑)")
                             .on_click(|_, _, cx| step_row(-1, cx)),
                     )
                     .child(
                         Button::new("next-row")
                             .icon(IconName::ArrowRight)
-                            .outline()
+                            .ghost()
+                            .small()
                             .tooltip("Next row (↓)")
                             .on_click(|_, _, cx| step_row(1, cx)),
                     ),
