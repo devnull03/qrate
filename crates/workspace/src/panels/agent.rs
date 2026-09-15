@@ -60,25 +60,25 @@ impl View {
 /// What kind of entry this is, which is also how loudly it reads.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Entry {
-    /// The bridge answered.
+    /// qrate answered.
     Answered,
-    /// The bridge refused before answering — a wrong token, an unparseable request, a rejected
+    /// qrate refused before answering — access switched off, an unparseable request, a rejected
     /// one. The reason this list is worth reading.
     Refused,
-    /// A connect or disconnect. The transport infers both: the protocol has no session, so
-    /// "connected" is the first authenticated call from a name and "disconnected" is silence.
+    /// The first call from a name. Every `qrate agent` command is its own process, so there is no
+    /// session to connect or disconnect; "connected" is just the first time a name is seen.
     Lifecycle,
 }
 
-/// What the agent bridge reports about one thing that happened on it.
+/// What `app_control` reports about one agent call.
 ///
 /// Plain strings rather than the contract's types: this crate hosts panels and has no business
 /// knowing `ai::agent`, and the transport is already matching on the request to answer it.
 pub struct AgentCall {
-    /// Who said they were calling — the `X-Agent` header. A label the caller chose, never proof:
-    /// anything holding the token can claim any name. See the README.
+    /// Who said they were calling — `qrate agent --agent`. A label the caller chose, never proof:
+    /// any local program can claim any name.
     pub agent: SharedString,
-    /// The wire method, or `connected` / `disconnected` for a [`Entry::Lifecycle`] entry.
+    /// The wire method, or `connected` for a [`Entry::Lifecycle`] entry.
     pub label: SharedString,
     /// What was asked for, phrased short — a row count, the query, how many findings.
     pub detail: SharedString,
@@ -111,7 +111,7 @@ impl Logged {
     }
 }
 
-/// Everything that happened on the agent bridge this run, oldest first.
+/// Every agent call this run, oldest first.
 ///
 /// Chronological because this reads as a log: a call and the answer that followed it belong in the
 /// order they happened, and the panel follows the tail rather than making the reader chase it.
@@ -653,8 +653,8 @@ impl Render for AgentPanel {
                         .p_3()
                         .text_sm()
                         .text_color(muted)
-                        // Names where the switch is: an agent that never connected and a bridge
-                        // that was switched off look identical from here otherwise.
+                        // Names where the switch is: an agent that never called and access that
+                        // was switched off look identical from here otherwise.
                         .child("No agent activity yet. Agents may read this app unless you switch that off under Settings ▸ Agent."),
                 )
             })
@@ -790,7 +790,7 @@ mod tests {
             label: label.into(),
             detail: "3 row(s)".into(),
             outcome: match entry {
-                Entry::Refused => "forbidden".into(),
+                Entry::Refused => "agent_access_off".into(),
                 Entry::Lifecycle => "first call from this agent".into(),
                 Entry::Answered => "3 rows".into(),
             },
@@ -823,7 +823,7 @@ mod tests {
     }
 
     /// The panel must render before anything has called, and after — the empty state is what an
-    /// archivist sees on every launch that never starts the bridge. All three entry kinds render,
+    /// archivist sees on every launch no agent calls. All three entry kinds render,
     /// because each takes its own colour branch.
     #[gpui::test]
     fn renders_empty_and_every_entry_kind(cx: &mut TestAppContext) {
@@ -835,7 +835,6 @@ mod tests {
             record(call("connected", Entry::Lifecycle), cx);
             record(call("rows", Entry::Answered), cx);
             record(call("stage_findings", Entry::Refused), cx);
-            record(call("disconnected", Entry::Lifecycle), cx);
         });
         cx.add_window_view(AgentPanel::new);
     }

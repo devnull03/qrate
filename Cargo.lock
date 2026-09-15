@@ -314,6 +314,7 @@ dependencies = [
  "data-exchange",
  "diagnostics",
  "dirs 6.0.0",
+ "getrandom 0.3.4",
  "gpui-component",
  "gpui-kit-assets",
  "gpui-pre",
