@@ -3,20 +3,18 @@
 //!
 //! Shared across windows as a global, because the model holds 600 MB and one copy is plenty.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::{App, Global, SharedString, Task};
-use visual_search::{Clip, Index, Stamp};
+use settings::project::{CurrentProject, FILES_FOLDER_KEY, VisualEntry};
+use visual_search::Clip;
 
 /// Files embedded per model call. Larger batches barely help on a CPU and delay the progress count.
 const BATCH: usize = 16;
-
-/// Batches between index saves, about a minute of CPU work, so quitting mid-index keeps progress.
-const SAVE_EVERY: usize = 40;
 
 /// The most rows a visual search keeps, however broad the search.
 const MAX_RESULTS: usize = 500;
@@ -47,10 +45,18 @@ pub(crate) enum Status {
     Failed(SharedString),
 }
 
+/// Each linked file's vector, with the file length it was embedded at.
+///
+/// ponytail: staleness is judged on length alone, so a copied project keeps its vectors when file
+/// times change. Store a content hash if same-length edits turn out to matter.
+type Index = HashMap<PathBuf, (u64, Vec<f32>)>;
+
 pub(crate) struct Visual {
     pub status: Status,
     clip: Option<Arc<Clip>>,
     index: Arc<Mutex<Index>>,
+    /// The `.qrate` file `index` belongs to. Another project starts from its own stored index.
+    project: Option<PathBuf>,
     /// Files the indexing job has already been handed this session, so asking again is free.
     seen: HashSet<PathBuf>,
     job: Option<Task<()>>,
@@ -68,10 +74,6 @@ fn model_dir() -> Option<PathBuf> {
     )
 }
 
-fn index_file() -> Option<PathBuf> {
-    Some(settings::data_dir()?.join("visual-index.bin"))
-}
-
 pub(crate) fn init(cx: &mut App) {
     if cx.has_global::<Visual>() {
         return;
@@ -84,7 +86,8 @@ pub(crate) fn init(cx: &mut App) {
             Status::Missing
         },
         clip: None,
-        index: Arc::new(Mutex::new(Index::new(visual_search::MODEL))),
+        index: Arc::default(),
+        project: None,
         seen: HashSet::new(),
         job: None,
         similar: None,
@@ -170,50 +173,72 @@ pub(crate) fn install(cx: &mut App) {
     state(cx).job = Some(job);
 }
 
-/// Embed any of `paths` the index does not already hold for their current contents. Returns at
-/// once; progress shows in [`Status::Indexing`].
+/// Embed any of `paths` the index does not already hold at their current length, storing the
+/// vectors in the open project. Returns at once; progress shows in [`Status::Indexing`].
 pub(crate) fn index(paths: Vec<PathBuf>, cx: &mut App) {
+    let project = cx.try_global::<CurrentProject>().map(|project| {
+        let folder = project
+            .data
+            .values
+            .get(FILES_FOLDER_KEY)
+            .map(|v| PathBuf::from(v.text().to_string()))
+            .unwrap_or_default();
+        (project.file.clone(), folder)
+    });
     let visual = cx.global::<Visual>();
+    let Some(dir) = model_dir() else {
+        return;
+    };
     if visual.status != Status::Ready || visual.job.is_some() {
         return;
     }
+    let switched = visual.project != project.as_ref().map(|(file, _)| file.clone());
     let fresh: Vec<PathBuf> = paths
         .into_iter()
-        .filter(|path| !visual.seen.contains(path))
+        .filter(|path| switched || !visual.seen.contains(path))
         .collect();
-    let (Some(dir), Some(file)) = (model_dir(), index_file()) else {
-        return;
-    };
     if fresh.is_empty() {
         return;
     }
-    let (index, clip) = (visual.index.clone(), visual.clip.clone());
-    state(cx).seen.extend(fresh.iter().cloned());
+    let clip = visual.clip.clone();
+    let visual = state(cx);
+    if switched {
+        visual.project = project.as_ref().map(|(file, _)| file.clone());
+        visual.seen.clear();
+        visual.index = Arc::default();
+    }
+    visual.seen.extend(fresh.iter().cloned());
+    let index = visual.index.clone();
     let job = cx.spawn(async move |cx| {
         let prepared = cx
             .background_executor()
             .spawn({
-                let index = index.clone();
-                let file = file.clone();
+                let (index, project) = (index.clone(), project.clone());
                 async move {
                     let clip = match clip {
                         Some(clip) => clip,
                         None => Arc::new(Clip::load(&dir).map_err(|err| format!("{err:#}"))?),
                     };
-                    // Stat outside the lock: searches rank rows on the UI thread through this index.
-                    let stamped: Vec<(PathBuf, Stamp)> = fresh
-                        .into_iter()
-                        .filter_map(|path| Stamp::of(&path).map(|stamp| (path, stamp)))
-                        .collect();
-                    let empty = lock(&index).is_empty();
-                    let loaded = empty.then(|| Index::load(&file, visual_search::MODEL));
-                    let mut index = lock(&index);
-                    if let Some(loaded) = loaded {
-                        *index = loaded;
+                    if switched && let Some((file, folder)) = &project {
+                        match settings::project::read_visual_index(file, visual_search::MODEL) {
+                            Ok(stored) => lock(&index).extend(
+                                stored
+                                    .into_iter()
+                                    .map(|(path, len, vector)| (folder.join(path), (len, vector))),
+                            ),
+                            Err(err) => log::warn!(
+                                "could not read the project's visual search index, rebuilding it: {err:#}"
+                            ),
+                        }
                     }
-                    let stale: Vec<(PathBuf, Stamp)> = stamped
+                    // Stat outside the lock: searches rank rows on the UI thread through this index.
+                    let stale: Vec<(PathBuf, u64)> = fresh
                         .into_iter()
-                        .filter(|(path, stamp)| !index.is_current(path, *stamp))
+                        .filter_map(|path| {
+                            let len = std::fs::metadata(&path).ok()?.len();
+                            let kept = lock(&index).get(&path).map(|(kept, _)| *kept);
+                            (kept != Some(len)).then_some((path, len))
+                        })
                         .collect();
                     Ok::<_, String>((clip, stale))
                 }
@@ -241,15 +266,27 @@ pub(crate) fn index(paths: Vec<PathBuf>, cx: &mut App) {
                     total,
                 }
             });
-            let (clip, index, file, batch) =
-                (clip.clone(), index.clone(), file.clone(), batch.to_vec());
-            let last = (at + 1) * BATCH >= total;
+            let (clip, index, project, batch) =
+                (clip.clone(), index.clone(), project.clone(), batch.to_vec());
             cx.background_executor()
                 .spawn(async move {
-                    embed_batch(&clip, &index, batch);
-                    if last || at % SAVE_EVERY == SAVE_EVERY - 1 {
-                        save(&index, &file);
+                    let embedded = embed_batch(&clip, batch);
+                    if let Some((file, folder)) = &project {
+                        let stored: Vec<VisualEntry> = embedded
+                            .iter()
+                            .map(|(path, len, vector)| (stored_path(path, folder), *len, vector.clone()))
+                            .collect();
+                        if let Err(err) =
+                            settings::project::write_visual_index(file, visual_search::MODEL, &stored)
+                        {
+                            log::warn!("could not save visual search vectors to the project, they will be rebuilt: {err:#}");
+                        }
                     }
+                    lock(&index).extend(
+                        embedded
+                            .into_iter()
+                            .map(|(path, len, vector)| (path, (len, vector))),
+                    );
                 })
                 .await;
         }
@@ -269,31 +306,40 @@ fn lock(index: &Mutex<Index>) -> std::sync::MutexGuard<'_, Index> {
     index.lock().unwrap_or_else(|err| err.into_inner())
 }
 
-fn save(index: &Mutex<Index>, file: &Path) {
-    if let Err(err) = lock(index).save(file) {
-        log::warn!("could not save the visual search index, it will be rebuilt next launch: {err}");
+/// `path` relative to the files folder with `/` separators, so a project moved with its files, or
+/// to another platform, still finds its vectors. Absolute when the file lives elsewhere.
+fn stored_path(path: &Path, folder: &Path) -> String {
+    match path.strip_prefix(folder) {
+        Ok(relative) if !folder.as_os_str().is_empty() => relative
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+        _ => path.to_string_lossy().into_owned(),
     }
 }
 
-fn embed_batch(clip: &Clip, index: &Mutex<Index>, batch: Vec<(PathBuf, Stamp)>) {
+fn embed_batch(clip: &Clip, batch: Vec<(PathBuf, u64)>) -> Vec<(PathBuf, u64, Vec<f32>)> {
     let (files, images): (Vec<_>, Vec<_>) = batch
         .into_iter()
-        .filter_map(|(path, stamp)| {
+        .filter_map(|(path, len)| {
             let pixels = preview::thumbnail_pixels(&path, preview::CARD, 0)?;
-            Some(((path, stamp), pixels))
+            Some(((path, len), pixels))
         })
         .unzip();
     if images.is_empty() {
-        return;
+        return Vec::new();
     }
     match clip.embed_images(&images) {
-        Ok(vectors) => {
-            let mut index = lock(index);
-            for ((path, stamp), vector) in files.into_iter().zip(vectors) {
-                index.insert(path, stamp, vector);
-            }
+        Ok(vectors) => files
+            .into_iter()
+            .zip(vectors)
+            .map(|((path, len), vector)| (path, len, vector))
+            .collect(),
+        Err(err) => {
+            log::warn!("visual search skipped {} files: {err:#}", files.len());
+            Vec::new()
         }
-        Err(err) => log::warn!("visual search skipped {} files: {err:#}", files.len()),
     }
 }
 
@@ -303,7 +349,7 @@ pub(crate) enum Query {
     Like(PathBuf),
 }
 
-/// A scoring function over files for [`crate::delegate::QrateTableDelegate::ranked_matches`], or
+/// A scoring function over files for [`crate::delegate::QrateTableDelegate::ranked_rows`], or
 /// `None` when the model is not loaded or the query cannot be embedded.
 pub(crate) fn scorer(
     query: Query,
@@ -317,11 +363,11 @@ pub(crate) fn scorer(
                 .embed_text(&text)
                 .map_err(|err| log::warn!("could not embed a visual search query: {err:#}"))
                 .ok()?,
-            Query::Like(path) => lock(&index).vector(&path)?.to_vec(),
+            Query::Like(path) => lock(&index).get(&path)?.1.clone(),
         };
         Some(move |path: &Path| {
             let index = lock(&index);
-            Some(visual_search::similarity(&vector, index.vector(path)?))
+            Some(visual_search::similarity(&vector, &index.get(path)?.1))
         })
     })
 }
@@ -333,7 +379,26 @@ pub(crate) fn find_similar(path: PathBuf, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::cutoff;
+    use std::path::Path;
+
+    use super::{cutoff, stored_path};
+
+    #[test]
+    fn stored_paths_are_relative_to_the_files_folder() {
+        let folder = Path::new("/archive/files");
+        assert_eq!(
+            stored_path(&folder.join("box 1").join("a.jpg"), folder),
+            "box 1/a.jpg"
+        );
+        assert_eq!(
+            stored_path(Path::new("/elsewhere/b.jpg"), folder),
+            "/elsewhere/b.jpg"
+        );
+        assert_eq!(
+            stored_path(Path::new("/x/c.jpg"), Path::new("")),
+            "/x/c.jpg"
+        );
+    }
 
     #[test]
     fn cutoff_keeps_hits_near_the_best_one() {
