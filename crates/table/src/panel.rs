@@ -3,7 +3,7 @@ use std::ops::RangeInclusive;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable as _,
+    ActiveTheme, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Escape, Input, InputEvent, InputState, TextareaState},
@@ -378,7 +378,10 @@ impl TablePanel {
         // Picks up a "find similar" request from a menu, and re-runs a visual search as the model
         // downloads and the index fills in.
         let _visual_sub = cx.observe_global_in::<visual::Visual>(window, |this, window, cx| {
-            if let Some(path) = cx.global_mut::<visual::Visual>().similar.take() {
+            // Read first: `global_mut` notifies this observer again, so calling it unconditionally loops.
+            if cx.global::<visual::Visual>().similar.is_some()
+                && let Some(path) = cx.global_mut::<visual::Visual>().similar.take()
+            {
                 this.similar = Some(path);
                 this.search_opts.visual = true;
                 this.search_open = true;
@@ -1129,7 +1132,7 @@ impl Render for TablePanel {
             .when(self.search_open, |this| {
                 let opts = self.search_opts;
                 let toggle = |id: &'static str,
-                              icon: Option<IconName>,
+                              icon: Option<Icon>,
                               label: &'static str,
                               tip: &'static str,
                               on: bool,
@@ -1181,7 +1184,7 @@ impl Render for TablePanel {
                                         .child(div().flex_1().child(Input::new(&self.search_input)))
                                         .child(toggle(
                                             "search-case",
-                                            Some(IconName::CaseSensitive),
+                                            Some(IconName::CaseSensitive.into()),
                                             "",
                                             "Match case",
                                             opts.case,
@@ -1205,7 +1208,7 @@ impl Render for TablePanel {
                                         ))
                                         .child(toggle(
                                             "search-files",
-                                            Some(IconName::BookOpen),
+                                            Some(IconName::BookOpen.into()),
                                             "",
                                             "Include text inside linked files",
                                             opts.files,
@@ -1213,7 +1216,7 @@ impl Render for TablePanel {
                                         ))
                                         .child(toggle(
                                             "search-visual",
-                                            Some(IconName::Frame),
+                                            Some(Icon::empty().path("icons/image.svg")),
                                             "",
                                             "Search by what images show",
                                             opts.visual,
