@@ -131,6 +131,65 @@ pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut Ap
     });
 }
 
+/// Open the file of the next row, by `delta`, in the view's order from the one showing, and select
+/// that row. During a search the view is its hits, so this steps through the results. Rows with
+/// nothing to preview are skipped.
+fn step_row(path: &std::path::Path, scope: Scope, delta: isize, window: &mut Window, cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<table::TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+    else {
+        return;
+    };
+    let target = {
+        let delegate = state.read(cx).delegate();
+        let visible = delegate.visible();
+        let file = |view: usize| {
+            delegate
+                .row_image(visible[view])
+                .filter(|file| preview::can_preview(file))
+        };
+        let selected = match delegate.selection() {
+            Some(table::Selection::Cell { row, .. } | table::Selection::Row(row)) => delegate
+                .view_row(row)
+                .filter(|&view| file(view) == Some(path)),
+            _ => None,
+        };
+        selected
+            .or_else(|| (0..visible.len()).find(|&view| file(view) == Some(path)))
+            .and_then(|from| next_row(from, delta, visible.len(), |view| file(view).is_some()))
+            .and_then(|view| Some((view, file(view)?.to_path_buf())))
+    };
+    let Some((view, file)) = target else {
+        return;
+    };
+    state.update(cx, |state, cx| {
+        state.delegate_mut().clear_selection();
+        state.set_selected_row(view, cx);
+    });
+    open_viewer(file, scope, window, cx);
+}
+
+/// The nearest view index past `from` in `delta`'s direction that `viewable` accepts, if any.
+fn next_row(
+    from: usize,
+    delta: isize,
+    len: usize,
+    viewable: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    let step = delta.signum();
+    let mut view = from as isize;
+    loop {
+        view += step;
+        if step == 0 || view < 0 || view >= len as isize {
+            return None;
+        }
+        if viewable(view as usize) {
+            return Some(view as usize);
+        }
+    }
+}
+
 pub fn close_viewer(window: &mut Window, cx: &mut App) {
     // Without this the recording plays on over an empty screen, with nothing left to stop it.
     preview::playback::stop(cx);
@@ -456,6 +515,10 @@ impl Render for Viewer {
                         this.set_zoom(1.0);
                         cx.notify();
                     }
+                    "up" | "down" if reading => {
+                        let delta = if ev.keystroke.key == "up" { -1 } else { 1 };
+                        step_row(&this.path, this.scope, delta, window, cx);
+                    }
                     _ => {}
                 }
             }))
@@ -740,6 +803,26 @@ impl Render for Viewer {
                         )
                     })
                     .child(
+                        Button::new("previous-row")
+                            .icon(IconName::ChevronUp)
+                            .ghost()
+                            .small()
+                            .tooltip("Previous row (↑)")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                step_row(&this.path, this.scope, -1, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("next-row")
+                            .icon(IconName::ChevronDown)
+                            .ghost()
+                            .small()
+                            .tooltip("Next row (↓)")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                step_row(&this.path, this.scope, 1, window, cx)
+                            })),
+                    )
+                    .child(
                         Button::new("zoom-out")
                             .icon(IconName::Minus)
                             .ghost()
@@ -781,7 +864,17 @@ mod tests {
         VisualTestContext, Window, div,
     };
 
-    use crate::viewer::{Scope, close_viewer, open_viewer, viewer_in};
+    use crate::viewer::{Scope, close_viewer, next_row, open_viewer, viewer_in};
+
+    #[test]
+    fn stepping_rows_skips_what_cannot_be_previewed_and_stops_at_the_ends() {
+        let viewable = |view: usize| view != 2;
+        assert_eq!(next_row(1, 1, 5, viewable), Some(3));
+        assert_eq!(next_row(3, -1, 5, viewable), Some(1));
+        assert_eq!(next_row(4, 1, 5, viewable), None);
+        assert_eq!(next_row(0, -1, 5, viewable), None);
+        assert_eq!(next_row(3, 1, 4, viewable), None);
+    }
 
     struct FocusProbe(FocusHandle);
 
