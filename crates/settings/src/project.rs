@@ -711,8 +711,10 @@ pub fn read_visual_index(path: &Path, model: &str) -> Result<Vec<VisualEntry>> {
     let rows = stmt.query_map([], |r| {
         let bytes: Vec<u8> = r.get(2)?;
         let vector = bytes
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect();
         Ok((r.get(0)?, r.get::<_, i64>(1)? as u64, vector))
     })?;
