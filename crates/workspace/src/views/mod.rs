@@ -19,11 +19,12 @@ use gpui_component::{
     button::Button,
     dock::{BasePanel, DockArea, Panel, PanelEvent},
     h_flex,
+    input::Escape,
     slider::{Slider, SliderEvent, SliderState},
     tab::{Tab, TabBar},
     v_flex,
 };
-use table::{QrateTableDelegate, TableChanged, TablePanel, TableStateHandle};
+use table::{QrateTableDelegate, Replace, Search, TableChanged, TablePanel, TableStateHandle};
 
 use crate::ViewerScope;
 
@@ -136,6 +137,12 @@ pub struct ViewsPanel {
     thumb: Entity<SliderState>,
     /// Persists the count as it is dragged, and repaints the cards to match.
     _thumb_sub: Subscription,
+    /// Repaints the find bar, which this panel draws on the table's behalf, as the search moves.
+    _table_sub: Subscription,
+    gallery_scroll: UniformListScrollHandle,
+    /// The row the gallery last scrolled to, so it follows the selection (stepping through search
+    /// hits) without pulling back a card the user has scrolled away from.
+    gallery_followed: Option<usize>,
 }
 
 impl ViewsPanel {
@@ -169,7 +176,7 @@ impl ViewsPanel {
         });
         let mut this = Self {
             focus_handle: cx.focus_handle(),
-            table,
+            table: table.clone(),
             dock_area,
             view: ViewMode::parse(&settings::effective_text(VIEW_MODE_KEY, cx)),
             body_width: px(0.),
@@ -182,6 +189,9 @@ impl ViewsPanel {
             _viewer_sub: cx.observe_global::<crate::viewer::ActiveViewer>(|_, cx| cx.notify()),
             thumb,
             _thumb_sub,
+            _table_sub: cx.observe(&table, |_, _, cx| cx.notify()),
+            gallery_scroll: UniformListScrollHandle::new(),
+            gallery_followed: None,
         };
         this.bind(cx);
         cx.set_global(ActiveViewsPanel(cx.entity().downgrade()));
@@ -337,11 +347,8 @@ impl Panel for ViewsPanel {
     }
 
     /// Rendered by `TabPanel::render_toolbar` immediately left of the ⋯ menu, forced to
-    /// `.xsmall().ghost()` by the library. Only the grid has anything to find in.
+    /// `.xsmall().ghost()` by the library. Every view shows the same rows, so every view can find in them.
     fn toolbar_buttons(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> Option<Vec<Button>> {
-        if self.view != ViewMode::Table {
-            return None;
-        }
         let table = self.table.downgrade();
         Some(vec![
             Button::new("table-search")
@@ -366,6 +373,27 @@ impl Render for ViewsPanel {
             .id("views-panel")
             .role(Role::Group)
             .aria_label("Views")
+            // The find bar lives above whichever view is showing, so its keys are handled here too.
+            .on_action(cx.listener(|this, _: &Search, window, cx| {
+                this.table
+                    .update(cx, |table, cx| table.toggle_search(window, cx))
+            }))
+            .on_action(cx.listener(|this, _: &Replace, window, cx| {
+                this.table
+                    .update(cx, |table, cx| table.open_replace(window, cx))
+            }))
+            .on_action(cx.listener(|this, _: &Escape, window, cx| {
+                if !this
+                    .table
+                    .update(cx, |table, cx| table.escape_search(window, cx))
+                {
+                    cx.propagate();
+                }
+            }))
+            .child(
+                self.table
+                    .update(cx, |table, cx| table.render_search_bar(cx)),
+            )
             .child(
                 div()
                     .flex_1()
@@ -391,13 +419,35 @@ impl Render for ViewsPanel {
                     // chained-builder types meeting in one `match` overflows rustc's stack.
                     .child(match self.view {
                         ViewMode::Table => self.table.clone().into_any_element(),
-                        ViewMode::Gallery => gallery::render(
-                            self.state.as_ref().and_then(WeakEntity::upgrade),
-                            self.body_width,
-                            self.thumb.read(cx).value().start().round() as usize,
-                            &self.focus_handle,
-                            cx,
-                        ),
+                        ViewMode::Gallery => {
+                            let state = self.state.as_ref().and_then(WeakEntity::upgrade);
+                            let cols = self.thumb.read(cx).value().start().round() as usize;
+                            let cursor = state.as_ref().and_then(|state| {
+                                let delegate = state.read(cx).delegate();
+                                match delegate.selection()? {
+                                    table::Selection::Cell { row, .. }
+                                    | table::Selection::Row(row) => delegate.view_row(row),
+                                    table::Selection::Column(_) => None,
+                                }
+                            });
+                            if cursor != self.gallery_followed {
+                                self.gallery_followed = cursor;
+                                if let Some(view) = cursor {
+                                    self.gallery_scroll.scroll_to_item(
+                                        view / cols.max(1),
+                                        ScrollStrategy::Nearest,
+                                    );
+                                }
+                            }
+                            gallery::render(
+                                state,
+                                self.body_width,
+                                cols,
+                                &self.gallery_scroll,
+                                &self.focus_handle,
+                                cx,
+                            )
+                        }
                     })
                     .children(crate::viewer::viewer_in(ViewerScope::Centre, cx)),
             )

@@ -27,6 +27,7 @@ pub(super) fn render(
     state: Option<Entity<TableState<QrateTableDelegate>>>,
     width: Pixels,
     cols: usize,
+    scroll: &UniformListScrollHandle,
     focus: &FocusHandle,
     cx: &mut App,
 ) -> AnyElement {
@@ -65,6 +66,7 @@ pub(super) fn render(
                 .collect()
         },
     )
+    .track_scroll(scroll)
     .size_full()
     .p_2()
     .into_any_element()

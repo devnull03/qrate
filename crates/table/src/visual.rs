@@ -18,11 +18,25 @@ const BATCH: usize = 16;
 /// Batches between index saves, about a minute of CPU work, so quitting mid-index keeps progress.
 const SAVE_EVERY: usize = 40;
 
-/// How many rows a visual search returns, best first.
+/// The most rows a visual search keeps, however broad the search.
+const MAX_RESULTS: usize = 500;
+
+/// The breadth a new search starts at, and the range its slider allows.
+pub(crate) const BREADTH: f32 = 0.15;
+pub(crate) const BREADTH_RANGE: std::ops::RangeInclusive<f32> = 0.02..=0.4;
+
+/// How many of `scores` (best first) to keep: those within `breadth` of the best, proportionally.
 ///
-/// ponytail: a fixed count, not a similarity threshold. CLIP scores cluster tightly, so a cut-off
-/// needs tuning against real collections first.
-pub(crate) const RESULTS: usize = 50;
+/// ponytail: a proportional gap from the best hit, so text queries (best around 0.3) and find
+/// similar (best 1.0) share one slider. Tuned on one collection; calibrate per model if it misjudges.
+pub(crate) fn cutoff(scores: impl IntoIterator<Item = f32>, breadth: f32) -> usize {
+    let mut scores = scores.into_iter();
+    let Some(best) = scores.next() else {
+        return 0;
+    };
+    let floor = best * (1.0 - breadth);
+    (1 + scores.take_while(|&score| score >= floor).count()).min(MAX_RESULTS)
+}
 
 #[derive(Clone, PartialEq)]
 pub(crate) enum Status {
@@ -315,4 +329,26 @@ pub(crate) fn scorer(
 /// Ask the search bar to show the files that look most like `path`.
 pub(crate) fn find_similar(path: PathBuf, cx: &mut App) {
     state(cx).similar = Some(path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cutoff;
+
+    #[test]
+    fn cutoff_keeps_hits_near_the_best_one() {
+        assert_eq!(cutoff([], 0.15), 0);
+        assert_eq!(cutoff([0.30, 0.28, 0.26, 0.20], 0.15), 3);
+        assert_eq!(
+            cutoff([0.30, 0.28, 0.26, 0.20], 0.02),
+            1,
+            "the best hit always stays"
+        );
+        assert_eq!(
+            cutoff([1.0, 0.9, 0.5], 0.15),
+            2,
+            "find similar starts from itself"
+        );
+        assert_eq!(cutoff(vec![0.3; 900], 0.4), 500, "capped");
+    }
 }
