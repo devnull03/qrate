@@ -1,14 +1,13 @@
 //! Searching a collection by what its images show.
 //!
 //! CLIP turns an image and a sentence into vectors in the same space, so "a sawmill by the water"
-//! lands near photographs of one. Every linked file's thumbnail is embedded once into an [`Index`]
-//! on disk; a query is embedded as text, or taken from another image for "find similar", and rows
+//! lands near photographs of one. Every linked file's thumbnail is embedded once and stored in the
+//! project; a query is embedded as text, or taken from another image for "find similar", and rows
 //! are ranked by how close their vectors are.
 //!
 //! The model runs on the CPU through candle, which is pure Rust. Its weights are not part of the
 //! install: [`download`] fetches a pinned revision and checks it against the published checksum.
 
-mod index;
 mod tokenizer;
 
 use std::fs;
@@ -20,8 +19,6 @@ use candle_core::{DType, Device, Tensor};
 use candle_transformers::models::clip::{ClipConfig, ClipModel, div_l2_norm};
 use image::{DynamicImage, RgbaImage, imageops::FilterType};
 use sha2::{Digest as _, Sha256};
-
-pub use index::{Index, Stamp};
 
 /// Which weights an index was built with. Vectors from different models are not comparable, so an
 /// index recorded under another name is discarded rather than searched.
