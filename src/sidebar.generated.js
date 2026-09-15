@@ -16,6 +16,7 @@ export default [
     "label": "Plugins",
     "items": [
       "docs/plugins",
+      "docs/plugins/developing",
       "docs/plugins/islandora",
       "docs/plugins/api-reference"
     ]

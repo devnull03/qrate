@@ -1,8 +1,8 @@
 ---
 title: 'Islandora plugin'
-description: 'the first plugin qrate ships with'
+description: 'use Islandora vocabularies in qrate'
 sidebar:
-  order: 8
+  order: 9
 ---
 
 Islandora is an open-source repository platform that libraries and archives use to publish digital

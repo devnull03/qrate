@@ -1,7 +1,7 @@
 ---
 title: 'Plugin API reference'
 sidebar:
-  order: 9
+  order: 10
 ---
 
 Everything a plugin can do goes through two surfaces. The first is the table `init.lua` returns,
