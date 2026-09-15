@@ -41,7 +41,7 @@ Collection data rarely lives in just one place. A spreadsheet names an object, a
 
 *Review a collection record, its linked media, and every problem found across the project in one workspace.*
 
-![qrate's agent bridge shows that an agent can stage findings but only an archivist can apply a change.](docs/assets/final-report/agent-bridge.png)
+![qrate's Agent panel shows that an agent can stage findings but only an archivist can apply a change.](docs/assets/final-report/agent-bridge.png)
 
 *Optional AI review is advisory: it stages findings for the archivist to accept or reject.*
 

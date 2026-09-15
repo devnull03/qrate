@@ -5,8 +5,8 @@ and hand its findings back as drafts. They are packaged here so an archivist can
 rather than being told to paste a protocol into a chat.
 
 Every skill here is runtime-neutral. It says *when* to reach for qrate and *how to behave* while
-doing so; the protocol itself — the endpoint, the token, every request and its limits — lives in
-[`AGENTS.md`](../AGENTS.md) at the repo root, and each skill points there. One copy, so a method
+doing so; the contract itself — every `qrate agent` command, its input and its limits — lives in
+[`AGENTS.md`](../AGENTS.md) at the repo root, and each skill points there. One copy, so a command
 that changes in the code cannot leave a second description of it standing.
 
 **Download `AGENTS.md` alongside whichever skill you take.** Without it the skill is a signpost to
@@ -16,7 +16,7 @@ a file you do not have.
 
 | Skill | What it does |
 |---|---|
-| [`qrate-live-review`](qrate-live-review/SKILL.md) | Read the open project's columns, rows, diagnostics and selection over the local bridge; review them; stage findings back into qrate's Problems panel and Fixes menu as drafts. |
+| [`qrate-live-review`](qrate-live-review/SKILL.md) | Read the open project's columns, rows, diagnostics and selection with `qrate agent`; review them; stage findings back into qrate's Problems panel and Fixes menu as drafts. |
 
 ## Installing
 
@@ -31,11 +31,11 @@ instructions — usually the root of the folder you open the agent in.
 
 ## The one thing every agent must do
 
-Send `X-Agent: <your runtime>` on every bridge call, naming yourself honestly. It is a label qrate
+Pass `--agent <your runtime>` (or set `QRATE_AGENT`) on every call, naming yourself honestly. It is a label qrate
 cannot verify, and it is all the archivist has to tell which agent did what in the Agent panel.
 
 ## What an agent can never do here
 
-The bridge cannot change a cell. Staged findings are proposals that sit in the Problems panel until
+No `qrate agent` command can change a cell. Staged findings are proposals that sit in the Problems panel until
 the archivist clicks one. An agent that reports it corrected something is reporting a thing that
 did not happen.
