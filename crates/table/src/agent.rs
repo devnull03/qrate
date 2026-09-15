@@ -955,7 +955,7 @@ mod tests {
         });
     }
 
-    /// The end of the bridge an agent actually grades its review on: real cell values out of the
+    /// The end of the agent contract an agent actually grades its review on: real cell values out of the
     /// live delegate, not the shape of the protocol.
     #[gpui::test]
     fn the_live_table_answers_with_its_own_contents(cx: &mut TestAppContext) {

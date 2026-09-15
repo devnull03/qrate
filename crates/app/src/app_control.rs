@@ -1,41 +1,87 @@
-//! Private, read-only local control endpoint for the qrate CLI.
+//! The desktop's one private endpoint. Only a `qrate-cli` from the same release talks to it; the
+//! public contract for scripts and agents is the CLI's JSON, not this.
+//!
+//! Loopback TCP behind a per-launch token published in `app-control.json`. Sockets are read and
+//! written on their own threads; the main thread only answers, because only it may read GPUI state.
 
-use std::{
-    fs,
-    hash::{BuildHasher, RandomState},
-    io::{BufRead, BufReader, Write},
-    net::{Ipv4Addr, TcpListener, TcpStream},
-    path::PathBuf,
-    time::Duration,
-};
+use std::collections::HashSet;
+use std::fs;
+use std::io::{BufRead, BufReader, Write as _};
+use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
-use gpui::App;
+use gpui::{App, SharedString};
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{Value, json};
+use workspace::{AgentCall, AgentEntry};
 
-const POLL: Duration = Duration::from_millis(250);
+const PROTOCOL: u8 = 1;
+const IO_TIMEOUT: Duration = Duration::from_secs(2);
+/// Enough for a full batch of staged findings, each carrying the cell text it was judged against.
+const MAX_BODY: usize = 256 * 1024;
+const MAX_AGENT_NAME: usize = 48;
+const UNNAMED: &str = "unnamed agent";
+
+/// Whether agents may use the live project. Absent means on; status and project info ignore it.
+pub const AGENT_ACCESS_KEY: &str = "agent_access";
 
 fn endpoint_path() -> Option<PathBuf> {
     settings::data_dir().map(|dir| dir.join("app-control.json"))
 }
 
+enum Call {
+    Status,
+    ProjectInfo,
+    Agent { agent: SharedString, body: Vec<u8> },
+}
+
+struct Job {
+    call: Call,
+    reply: async_channel::Sender<(&'static str, Value)>,
+}
+
 pub fn init(cx: &mut App) {
+    // Written once so the Settings switch shows the default rather than reading "off".
+    if !settings::AppSettings::get(cx)
+        .values
+        .contains_key(AGENT_ACCESS_KEY)
+    {
+        settings::AppSettings::set_bool(AGENT_ACCESS_KEY, true, cx);
+    }
     let Some((listener, token)) = start() else {
         return;
     };
-    cx.spawn(async move |cx| {
-        loop {
-            cx.background_executor().timer(POLL).await;
-            loop {
-                match listener.accept() {
-                    Ok((stream, _)) => serve(stream, &token, cx),
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(error) => {
-                        log::warn!("app control dropped a connection: {error}");
-                        break;
+    let (jobs, inbox) = async_channel::unbounded::<Job>();
+    let spawned = std::thread::Builder::new()
+        .name("app-control".into())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let (token, jobs) = (token.clone(), jobs.clone());
+                match stream {
+                    Ok(stream) => {
+                        let _ = std::thread::Builder::new()
+                            .name("app-control-connection".into())
+                            .spawn(move || serve(stream, &token, &jobs));
                     }
+                    Err(error) => log::warn!("app control dropped a connection: {error}"),
                 }
             }
+        });
+    if let Err(error) = spawned {
+        log::error!("app control could not start its listener thread: {error}");
+        shutdown();
+        return;
+    }
+    cx.spawn(async move |cx| {
+        let mut seen = HashSet::new();
+        while let Ok(job) = inbox.recv().await {
+            let answer = match job.call {
+                Call::Status => cx.update(|cx| ("200 OK", status(cx))),
+                Call::ProjectInfo => cx.update(project_info),
+                Call::Agent { agent, body } => answer_agent(agent, &body, &mut seen, cx).await,
+            };
+            let _ = job.reply.send(answer).await;
         }
     })
     .detach();
@@ -45,91 +91,99 @@ fn start() -> Option<(TcpListener, String)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .inspect_err(|error| log::error!("app control could not bind loopback: {error}"))
         .ok()?;
-    listener
-        .set_nonblocking(true)
-        .inspect_err(|error| log::error!("app control could not poll its listener: {error}"))
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .inspect_err(|error| log::error!("app control could not generate a token: {error}"))
         .ok()?;
-    let token = format!(
-        "{:016x}{:016x}",
-        RandomState::new().hash_one(2u8),
-        RandomState::new().hash_one(3u8)
-    );
-    let path = endpoint_path()?;
+    let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let path = endpoint_path().or_else(|| {
+        log::error!("app control has no application-data directory to publish into");
+        None
+    })?;
     let descriptor = json!({
-        "app_control_protocol": 1,
+        "app_control_protocol": PROTOCOL,
         "url": format!("http://{}", listener.local_addr().ok()?),
         "token": token,
     });
-    fs::write(&path, descriptor.to_string())
+    write_private(&path, descriptor.to_string().as_bytes())
         .inspect_err(|error| log::error!("app control could not write {}: {error}", path.display()))
         .ok()?;
+    log::info!("app control listening, endpoint in {}", path.display());
     Some((listener, token))
 }
 
-fn serve(mut stream: TcpStream, token: &str, cx: &mut gpui::AsyncApp) {
-    let _ = stream
-        .set_read_timeout(Some(POLL))
-        .and_then(|()| stream.set_write_timeout(Some(POLL)));
-    let Ok(clone) = stream.try_clone() else {
-        return;
-    };
-    let mut lines = BufReader::new(clone).lines();
-    let request = lines.next().and_then(Result::ok).unwrap_or_default();
-    let authenticated = lines
-        .map_while(Result::ok)
-        .take_while(|line| !line.is_empty())
-        .any(|line| {
-            line.split_once(':').is_some_and(|(name, value)| {
-                name.eq_ignore_ascii_case("authorization")
-                    && value.trim() == format!("Bearer {token}")
-            })
-        });
-    if !authenticated {
-        respond(&mut stream, "401 Unauthorized", "{}");
-        return;
-    }
-    match request.as_str() {
-        "GET /status HTTP/1.1" => {
-            let project = cx.update(|cx| {
-                cx.try_global::<settings::project::CurrentProject>()
-                    .map(|project| project.file.to_string_lossy().into_owned())
-            });
-            respond(
-                &mut stream,
-                "200 OK",
-                &json!({ "running": true, "project": project }).to_string(),
-            );
-        }
-        "GET /v1/project/info HTTP/1.1" => {
-            let project = cx.update(|cx| {
-                cx.try_global::<settings::project::CurrentProject>()
-                    .map(project_info)
-            });
-            match project {
-                Some(project) => respond(
-                    &mut stream,
-                    "200 OK",
-                    &serde_json::to_string(&ProjectInfoResponse {
-                        app_control_protocol: 1,
-                        project,
-                    })
-                    .expect("project info is serializable"),
-                ),
-                None => respond(
-                    &mut stream,
-                    "409 Conflict",
-                    r#"{"app_control_protocol":1,"error":"no_active_project"}"#,
-                ),
-            }
-        }
-        _ => respond(&mut stream, "404 Not Found", "{}"),
+fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(contents)
+}
+
+pub fn shutdown() {
+    if let Some(path) = endpoint_path() {
+        let _ = fs::remove_file(path);
     }
 }
 
-#[derive(Serialize)]
-struct ProjectInfoResponse {
-    app_control_protocol: u8,
-    project: ProjectInfo,
+fn serve(mut stream: TcpStream, token: &str, jobs: &async_channel::Sender<Job>) {
+    let configured = stream
+        .set_nonblocking(false)
+        .and_then(|()| stream.set_read_timeout(Some(IO_TIMEOUT)))
+        .and_then(|()| stream.set_write_timeout(Some(IO_TIMEOUT)));
+    let request = configured
+        .map_err(|_| "unreadable_request")
+        .and_then(|()| stream.try_clone().map_err(|_| "unreadable_request"))
+        .and_then(|clone| read_request(&mut BufReader::new(clone)));
+    let (status, body) = match request {
+        Err("request_too_large") => (
+            "413 Payload Too Large",
+            json!({ "error": "request_too_large" }),
+        ),
+        Err(reason) => ("400 Bad Request", json!({ "error": reason })),
+        Ok(request) if request.credential.as_deref() != Some(token) => {
+            log::warn!("app control refused a request with a missing or wrong token");
+            ("401 Unauthorized", json!({ "error": "unauthorized" }))
+        }
+        Ok(request) => {
+            let call = match (request.method.as_str(), request.path.as_str()) {
+                ("GET", "/v1/status") => Some(Call::Status),
+                ("GET", "/v1/project/info") => Some(Call::ProjectInfo),
+                ("POST", "/v1/agent") => Some(Call::Agent {
+                    agent: request
+                        .agent
+                        .map_or_else(|| UNNAMED.into(), SharedString::from),
+                    body: request.body,
+                }),
+                _ => None,
+            };
+            let (reply, answer) = async_channel::bounded(1);
+            match call {
+                None => ("404 Not Found", json!({ "error": "not_found" })),
+                Some(call) => match jobs.send_blocking(Job { call, reply }) {
+                    Ok(()) => answer
+                        .recv_blocking()
+                        .unwrap_or(("503 Service Unavailable", json!({ "error": "app_closing" }))),
+                    Err(_) => ("503 Service Unavailable", json!({ "error": "app_closing" })),
+                },
+            }
+        }
+    };
+    let body = body.to_string();
+    let reply = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    if let Err(error) = stream.write_all(reply.as_bytes()) {
+        log::warn!("app control could not answer a connection: {error}");
+    }
+}
+
+fn status(cx: &mut App) -> Value {
+    let project = cx
+        .try_global::<settings::project::CurrentProject>()
+        .map(|project| project.file.to_string_lossy().into_owned());
+    json!({ "app_control_protocol": PROTOCOL, "project": project })
 }
 
 #[derive(Serialize)]
@@ -144,7 +198,10 @@ struct ProjectInfo {
     column_count: usize,
 }
 
-fn project_info(project: &settings::project::CurrentProject) -> ProjectInfo {
+fn project_info(cx: &mut App) -> (&'static str, Value) {
+    let Some(project) = cx.try_global::<settings::project::CurrentProject>() else {
+        return ("409 Conflict", json!({ "error": "no_active_project" }));
+    };
     let setting = |key: &str| {
         project
             .data
@@ -153,7 +210,7 @@ fn project_info(project: &settings::project::CurrentProject) -> ProjectInfo {
             .map(|value| value.text().to_string())
             .filter(|value| !value.is_empty())
     };
-    ProjectInfo {
+    let info = ProjectInfo {
         name: project.display_name(),
         path: project.file.to_string_lossy().into_owned(),
         source: setting("source"),
@@ -162,67 +219,266 @@ fn project_info(project: &settings::project::CurrentProject) -> ProjectInfo {
         files_folder: setting(settings::project::FILES_FOLDER_KEY),
         row_count: project.data.rows.len(),
         column_count: project.data.columns.len(),
+    };
+    (
+        "200 OK",
+        json!({ "app_control_protocol": PROTOCOL, "project": info }),
+    )
+}
+
+async fn answer_agent(
+    agent: SharedString,
+    body: &[u8],
+    seen: &mut HashSet<SharedString>,
+    cx: &mut gpui::AsyncApp,
+) -> (&'static str, Value) {
+    let started = Instant::now();
+    let allowed = cx.update(|cx| {
+        settings::AppSettings::get(cx)
+            .values
+            .get(AGENT_ACCESS_KEY)
+            .is_none_or(|value| value.bool())
+    });
+    let (mut method, mut detail) = (SharedString::from("—"), SharedString::default());
+    let (status, payload, outcome, refused) =
+        match serde_json::from_slice::<ai::agent::Request>(body) {
+            _ if !allowed => (
+                "403 Forbidden",
+                json!({ "error": "agent_access_off" }),
+                SharedString::from("agent access is off in Settings"),
+                true,
+            ),
+            Err(error) => (
+                "400 Bad Request",
+                json!({ "error": "malformed_request", "detail": error.to_string() }),
+                SharedString::from("malformed_request"),
+                true,
+            ),
+            Ok(request) => {
+                (method, detail) = summarize(&request);
+                match cx
+                    .update(|cx| table::respond_to_agent_async(request, cx))
+                    .await
+                {
+                    Ok(response) => (
+                        "200 OK",
+                        serde_json::to_value(&response).unwrap_or_else(|_| json!({})),
+                        describe(&response.result),
+                        false,
+                    ),
+                    Err(error) => {
+                        let outcome = wire_name(&error);
+                        ("400 Bad Request", json!({ "error": error }), outcome, true)
+                    }
+                }
+            }
+        };
+    cx.update(|cx| {
+        if seen.insert(agent.clone()) {
+            workspace::record_agent_call(
+                AgentCall {
+                    agent: agent.clone(),
+                    label: "connected".into(),
+                    detail: SharedString::default(),
+                    outcome: "first call from this agent".into(),
+                    entry: AgentEntry::Lifecycle,
+                    took: Duration::ZERO,
+                },
+                cx,
+            );
+        }
+        workspace::record_agent_call(
+            AgentCall {
+                agent,
+                label: method,
+                detail,
+                outcome,
+                entry: if refused {
+                    AgentEntry::Refused
+                } else {
+                    AgentEntry::Answered
+                },
+                took: started.elapsed(),
+            },
+            cx,
+        )
+    });
+    (status, payload)
+}
+
+/// The method name and a one-line summary of what was asked for, read back out of the serialized
+/// request so the panel can never disagree with what went over the wire.
+fn summarize(request: &ai::agent::Request) -> (SharedString, SharedString) {
+    let method = serde_json::to_value(request)
+        .ok()
+        .and_then(|value| value["method"].as_str().map(SharedString::from))
+        .unwrap_or_else(|| "?".into());
+    let detail = match request {
+        ai::agent::Request::Query(query) => {
+            format!("{:?}, max {}", query.source, query.limit).into()
+        }
+        ai::agent::Request::StageFindings { revision, findings } => {
+            format!("{} finding(s) at revision {}", findings.len(), revision.0).into()
+        }
+        ai::agent::Request::ProgramSave { source } => {
+            format!("{} source byte(s)", source.len()).into()
+        }
+        ai::agent::Request::ProgramRun { revision, .. } => {
+            format!("at revision {}", revision.0).into()
+        }
+        ai::agent::Request::Thumbnails { items } => format!("{} thumbnail(s)", items.len()).into(),
+        ai::agent::Request::Overview => SharedString::default(),
+    };
+    (method, detail)
+}
+
+/// The size of an answer, not its contents — archive data does not belong in a debugging list.
+fn describe(result: &ai::agent::ResultSet) -> SharedString {
+    match result {
+        ai::agent::ResultSet::Overview(overview) => format!(
+            "{} rows × {} columns",
+            overview.project.row_count, overview.project.column_count
+        )
+        .into(),
+        ai::agent::ResultSet::Query(page) => {
+            format!("{} returned, {} remaining", page.returned, page.remaining).into()
+        }
+        ai::agent::ResultSet::ProgramSaved { version, hash } => {
+            format!("program v{version} {hash}").into()
+        }
+        ai::agent::ResultSet::ProgramRun(output) => {
+            format!("program v{} in {} ms", output.version, output.elapsed_ms).into()
+        }
+        ai::agent::ResultSet::Thumbnails { items } => {
+            format!("{} thumbnail(s)", items.len()).into()
+        }
+        ai::agent::ResultSet::Staged { accepted, stale } => {
+            format!("{accepted} staged, {} stale", stale.len()).into()
+        }
     }
 }
 
-fn respond(stream: &mut TcpStream, status: &str, body: &str) {
-    let _ = write!(
-        stream,
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
+fn wire_name(error: &ai::agent::RequestError) -> SharedString {
+    serde_json::to_value(error)
+        .ok()
+        .and_then(|value| value.get("code")?.as_str().map(SharedString::from))
+        .unwrap_or_else(|| "request_error".into())
 }
 
-pub fn shutdown() {
-    if let Some(path) = endpoint_path() {
-        let _ = fs::remove_file(path);
+struct RawRequest {
+    method: String,
+    path: String,
+    credential: Option<String>,
+    /// What the caller named itself in `X-Agent`. A label, never proof.
+    agent: Option<String>,
+    body: Vec<u8>,
+}
+
+fn read_request(reader: &mut impl BufRead) -> Result<RawRequest, &'static str> {
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|_| "unreadable_request")?;
+    let mut parts = line.split_whitespace();
+    let (Some(method), Some(path)) = (parts.next(), parts.next()) else {
+        return Err("malformed_request");
+    };
+    let (method, path) = (method.to_owned(), path.to_owned());
+    let (mut credential, mut agent, mut length) = (None, None, 0usize);
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(_) => return Err("unreadable_request"),
+        }
+        let Some((name, value)) = line.trim_end().split_once(':') else {
+            break;
+        };
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("authorization") {
+            credential = value.strip_prefix("Bearer ").map(str::to_owned);
+        } else if name.eq_ignore_ascii_case("content-length") {
+            length = value.parse().map_err(|_| "malformed_request")?;
+        } else if name.eq_ignore_ascii_case("x-agent") {
+            agent = Some(value.chars().take(MAX_AGENT_NAME).collect());
+        }
     }
+    if length > MAX_BODY {
+        return Err("request_too_large");
+    }
+    let mut body = vec![0; length];
+    reader
+        .read_exact(&mut body)
+        .map_err(|_| "truncated_request")?;
+    Ok(RawRequest {
+        method,
+        path,
+        credential,
+        agent,
+        body,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ProjectInfo, ProjectInfoResponse, respond};
-    use std::io::Read;
+    use std::io::Cursor;
+
+    use super::{MAX_AGENT_NAME, MAX_BODY, read_request};
+
+    fn request(headers: &str, body: &str) -> Cursor<Vec<u8>> {
+        Cursor::new(
+            format!(
+                "POST /v1/agent HTTP/1.1\r\nHost: 127.0.0.1\r\n{headers}Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_bytes(),
+        )
+    }
 
     #[test]
-    fn response_is_http_framed() {
-        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let address = listener.local_addr().unwrap();
-        let client = std::thread::spawn(move || {
-            let mut stream = std::net::TcpStream::connect(address).unwrap();
-            let mut response = String::new();
-            stream.read_to_string(&mut response).unwrap();
-            response
-        });
-        let (mut stream, _) = listener.accept().unwrap();
-        respond(&mut stream, "200 OK", "{}");
-        drop(stream);
+    fn only_a_bearer_credential_counts_as_a_token() {
+        let credential = |headers: &str| {
+            read_request(&mut request(headers, "{}"))
+                .unwrap()
+                .credential
+        };
+        assert_eq!(credential(""), None);
+        assert_eq!(credential("Authorization: Basic abc\r\n"), None);
+        assert_eq!(credential("Authorization: Bearer\r\n"), None);
         assert_eq!(
-            client.join().unwrap(),
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+            credential("authorization: Bearer s3cret\r\n"),
+            Some("s3cret".into())
         );
     }
 
     #[test]
-    fn project_info_response_has_a_versioned_stable_shape() {
-        let body = serde_json::to_value(ProjectInfoResponse {
-            app_control_protocol: 1,
-            project: ProjectInfo {
-                name: "Archive".into(),
-                path: "/projects/archive.qrate".into(),
-                source: Some("CSV".into()),
-                created_at: Some("1234".into()),
-                link_method: None,
-                files_folder: None,
-                row_count: 12,
-                column_count: 4,
-            },
-        })
+    fn reads_route_agent_and_body() {
+        let parsed = read_request(&mut request(
+            &format!("X-Agent: {}\r\n", "n".repeat(MAX_AGENT_NAME + 20)),
+            "{\"a\":1}",
+        ))
         .unwrap();
-        assert_eq!(body["app_control_protocol"], 1);
-        assert_eq!(body["project"]["name"], "Archive");
-        assert_eq!(body["project"]["row_count"], 12);
-        assert_eq!(body["project"]["column_count"], 4);
-        assert!(body["project"]["link_method"].is_null());
+        assert_eq!(
+            (parsed.method.as_str(), parsed.path.as_str()),
+            ("POST", "/v1/agent")
+        );
+        assert_eq!(parsed.agent.map(|name| name.len()), Some(MAX_AGENT_NAME));
+        assert_eq!(parsed.body, b"{\"a\":1}");
+    }
+
+    #[test]
+    fn an_oversized_body_is_refused_before_it_is_read() {
+        let mut oversized = Cursor::new(
+            format!(
+                "POST /v1/agent HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+                MAX_BODY + 1
+            )
+            .into_bytes(),
+        );
+        assert_eq!(
+            read_request(&mut oversized).err(),
+            Some("request_too_large")
+        );
     }
 }
