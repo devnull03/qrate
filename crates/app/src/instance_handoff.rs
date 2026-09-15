@@ -1,4 +1,4 @@
-//! Per-user handoff for browser links that launch a second qrate process.
+//! Per-user handoff of links and project files that launch a second qrate process.
 
 use std::fs;
 use std::io::Write as _;
@@ -7,16 +7,18 @@ use std::time::{Duration, SystemTime};
 
 const INSTANCE_NAME: &str = "io.github.devnull03.qrate.plugin-links";
 
-pub fn start(link: Option<&str>, sender: async_channel::Sender<String>) -> bool {
+pub fn start(target: Option<&str>, sender: async_channel::Sender<String>) -> bool {
     let Ok(instance) = single_instance::SingleInstance::new(INSTANCE_NAME) else {
         log::warn!("could not initialize plugin-link process handoff");
         return true;
     };
     if !instance.is_single() {
-        if let Some(link) = link {
-            log::info!("handing plugin install link to the running qrate instance");
-            if let Err(error) = send(link) {
-                log::error!("could not hand plugin link to the running qrate process: {error}");
+        if let Some(target) = target {
+            log::info!("handing startup target to the running qrate instance");
+            if let Err(error) = send(target) {
+                log::error!(
+                    "could not hand the startup target to the running qrate process: {error}"
+                );
             }
             return false;
         }
@@ -76,7 +78,7 @@ fn watch(
                     .filter(|link| link.len() <= 4096);
                 let _ = fs::remove_file(path);
                 if let Some(link) = link {
-                    log::info!("received plugin install link from a second qrate process");
+                    log::info!("received a startup target from a second qrate process");
                     let _ = sender.send_blocking(link);
                 }
             }

@@ -12,7 +12,8 @@ pub struct AgentRuntime {
     pub leading_args: Vec<String>,
     pub extension: PathBuf,
     pub profile: PathBuf,
-    pub endpoint: PathBuf,
+    /// The `qrate-cli` shipped beside this app, which is how Pi reads the live project.
+    pub cli: PathBuf,
 }
 
 impl Global for AgentRuntime {}
@@ -75,15 +76,21 @@ fn prepare() -> Result<AgentRuntime, String> {
         .map_err(|err| format!("could not seed Pi's settings: {err}"))?;
     }
 
-    let endpoint = settings::data_dir()
-        .expect("data directory was available above")
-        .join("agent-bridge.json");
+    let cli = std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            Some(
+                exe.parent()?
+                    .join(format!("qrate-cli{}", std::env::consts::EXE_SUFFIX)),
+            )
+        })
+        .ok_or_else(|| "qrate cannot locate its own executable".to_owned())?;
     Ok(AgentRuntime {
         program,
         leading_args: Vec::new(),
         extension,
         profile,
-        endpoint,
+        cli,
     })
 }
 

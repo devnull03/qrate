@@ -102,16 +102,17 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
         project_page(cx),
         SettingPage::new("Agent")
             .description(
-                "An AI agent you run yourself can read the project open in qrate over a local \
-                 connection. It cannot change a cell — it can only stage findings you accept.",
+                "An AI agent you run yourself can read the project open in qrate through the \
+                 `qrate agent` commands. It cannot change a cell — it can only stage findings \
+                 you accept.",
             )
             .group(
-                divided_group(cx).title("Local bridge").item(
+                divided_group(cx).title("Access").item(
                     Setting::Switch {
-                        key: crate::agent_bridge::AGENT_BRIDGE_KEY,
+                        key: crate::app_control::AGENT_ACCESS_KEY,
                         label: "Allow agents to read this app",
-                        description: "Listens on your own machine only, behind a token that \
-                                      changes every launch. Switch off to close the port now.",
+                        description: "Only programs running as you on this machine can ask. \
+                                      Switch off to refuse every agent command now.",
                     }
                     .into_item(cx),
                 ),
