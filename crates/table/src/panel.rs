@@ -3,10 +3,11 @@ use std::ops::RangeInclusive;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable as _,
+    ActiveTheme, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Escape, Input, InputEvent, InputState, TextareaState},
+    slider::{Slider, SliderEvent, SliderState},
     table::{DataTable, TableEvent, TableState},
     v_flex,
 };
@@ -21,7 +22,7 @@ use crate::{
     editing::{self, EditState},
     floating::float_at,
     history::Cells,
-    note, photos, row_index,
+    note, photos, row_index, visual,
 };
 
 const COLUMN_LAYOUT_KEY: &str = "table_columns";
@@ -93,6 +94,19 @@ pub struct TablePanel {
     search_opts: SearchOpts,
     search_error: bool,
     _search_sub: Subscription,
+    /// Linked documents being read for a search that includes them. `Some` while it runs.
+    reading_documents: Option<Task<()>>,
+    /// The pending visual query. Replacing it cancels the one before, which debounces typing.
+    visual_query: Option<Task<()>>,
+    /// The file a visual search with an empty query ranks against, from "Find similar items".
+    similar: Option<std::path::PathBuf>,
+    _visual_sub: Subscription,
+    /// The last visual ranking as `(score, source_row, data_col)`, best first, so moving the
+    /// breadth slider re-cuts it without asking the model again.
+    ranking: Vec<(f32, usize, usize)>,
+    /// How far below the best visual hit still counts as a match.
+    breadth: Entity<SliderState>,
+    _breadth_sub: Subscription,
     replace_input: Entity<InputState>,
     replace_open: bool,
     _replace_sub: Subscription,
@@ -367,6 +381,38 @@ impl TablePanel {
                 },
             );
 
+        visual::init(cx);
+        // Picks up a "find similar" request from a menu, and re-runs a visual search as the model
+        // downloads and the index fills in.
+        let _visual_sub = cx.observe_global_in::<visual::Visual>(window, |this, window, cx| {
+            // Read first: `global_mut` notifies this observer again, so calling it unconditionally loops.
+            if cx.global::<visual::Visual>().similar.is_some()
+                && let Some(path) = cx.global_mut::<visual::Visual>().similar.take()
+            {
+                this.similar = Some(path);
+                this.search_opts.visual = true;
+                this.search_open = true;
+                this.search_input.update(cx, |input, cx| {
+                    input.set_value("", window, cx);
+                    input.focus(window, cx);
+                });
+                this.refresh_search(cx);
+            } else if this.search_open && this.search_opts.visual {
+                this.refresh_search(cx);
+            }
+        });
+
+        let breadth = cx.new(|_| {
+            SliderState::new()
+                .min(*visual::BREADTH_RANGE.start())
+                .max(*visual::BREADTH_RANGE.end())
+                .step(0.01)
+                .default_value(visual::BREADTH)
+        });
+        let _breadth_sub = cx.subscribe(&breadth, |this, _, _: &SliderEvent, cx| {
+            this.show_ranking(cx)
+        });
+
         let _replace_sub = cx.subscribe(&replace_input, |this, _input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.replace(false, cx);
@@ -389,6 +435,13 @@ impl TablePanel {
             search_opts: SearchOpts::default(),
             search_error: false,
             _search_sub,
+            reading_documents: None,
+            visual_query: None,
+            similar: None,
+            _visual_sub,
+            ranking: Vec::new(),
+            breadth,
+            _breadth_sub,
             replace_input,
             replace_open: false,
             _replace_sub,
@@ -431,9 +484,23 @@ impl TablePanel {
     /// Recompute the find matches from the current query and jump to the first, if any. Called on
     /// every keystroke in the find bar (the scan is sub-millisecond for qrate's grids).
     fn refresh_search(&mut self, cx: &mut Context<Self>) {
+        if self.search_opts.visual {
+            self.search_visual(cx);
+            return;
+        }
+        self.ranking.clear();
         let needle = self.search_input.read(cx).value().to_string();
         self.search_error =
             !needle.trim().is_empty() && compile_search(&needle, self.search_opts).is_none();
+        // A search that reaches into linked files narrows the view to its hits.
+        let hits = (self.search_opts.files && !needle.trim().is_empty() && !self.search_error)
+            .then(|| {
+                self.state
+                    .read(cx)
+                    .delegate()
+                    .hit_rows(&needle, self.search_opts)
+            });
+        self.set_search_rows(hits, cx);
         self.search_matches = self
             .state
             .read(cx)
@@ -441,7 +508,115 @@ impl TablePanel {
             .search_matches(&needle, self.search_opts);
         self.search_ix = 0;
         self.select_current_match(cx);
+        self.read_documents(cx);
         cx.notify();
+    }
+
+    /// Rank rows by how well their linked file matches the query, or looks like the file "Find
+    /// similar items" was raised on when the query is empty. Typing waits for a pause first.
+    fn search_visual(&mut self, cx: &mut Context<Self>) {
+        let files = self.state.read(cx).delegate().linked_files();
+        visual::index(files, cx);
+        self.search_error = false;
+        let needle = self.search_input.read(cx).value().trim().to_string();
+        let (query, pause) = match (needle.is_empty(), self.similar.clone()) {
+            (false, _) => (
+                visual::Query::Text(needle),
+                std::time::Duration::from_millis(300),
+            ),
+            (true, Some(path)) => (visual::Query::Like(path), std::time::Duration::ZERO),
+            (true, None) => {
+                self.visual_query = None;
+                self.ranking.clear();
+                self.show_ranking(cx);
+                return;
+            }
+        };
+        self.visual_query = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(pause).await;
+            let Ok(score) = this.update(cx, |_, cx| visual::scorer(query, cx)) else {
+                return;
+            };
+            let score = score.await;
+            this.update(cx, |this, cx| {
+                // No scorer means the model is not loaded yet: show every row until it is.
+                this.ranking = score
+                    .map(|score| this.state.read(cx).delegate().ranked_rows(score))
+                    .unwrap_or_default();
+                this.show_ranking(cx);
+            })
+            .ok();
+        }));
+    }
+
+    /// Narrow the view to the visual ranking's hits within the breadth slider, best first, and step
+    /// through them in that order. An empty ranking shows every row.
+    fn show_ranking(&mut self, cx: &mut Context<Self>) {
+        let breadth = self.breadth.read(cx).value().start();
+        let keep = visual::cutoff(self.ranking.iter().map(|hit| hit.0), breadth);
+        let hits = &self.ranking[..keep];
+        let cols: std::collections::HashMap<usize, usize> =
+            hits.iter().map(|&(_, row, col)| (row, col)).collect();
+        self.set_search_rows(
+            (!hits.is_empty()).then(|| hits.iter().map(|hit| hit.1).collect()),
+            cx,
+        );
+        self.search_matches = self
+            .state
+            .read(cx)
+            .delegate()
+            .visible()
+            .iter()
+            .enumerate()
+            .filter_map(|(view, source)| cols.get(source).map(|&col| (view, col)))
+            .collect();
+        self.search_ix = 0;
+        self.select_current_match(cx);
+        cx.notify();
+    }
+
+    fn set_search_rows(&mut self, rows: Option<Vec<usize>>, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            if state.delegate_mut().set_search_rows(rows) {
+                cx.emit(TableChanged);
+                cx.notify();
+            }
+        });
+    }
+
+    /// Read the text of every linked document the search has not seen yet, off the UI thread, then
+    /// search again so their hits join the results.
+    fn read_documents(&mut self, cx: &mut Context<Self>) {
+        if !self.search_opts.files || self.reading_documents.is_some() {
+            return;
+        }
+        let unread = self.state.read(cx).delegate().unread_documents();
+        if unread.is_empty() {
+            return;
+        }
+        self.reading_documents = Some(cx.spawn(async move |this, cx| {
+            let texts = cx
+                .background_executor()
+                .spawn(async move {
+                    unread
+                        .into_iter()
+                        .map(|path| {
+                            let text = preview::document_text(&path).unwrap_or_default();
+                            (path, text)
+                        })
+                        .collect()
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.reading_documents = None;
+                this.state
+                    .update(cx, |state, _| state.delegate_mut().add_document_text(texts));
+                if this.search_open {
+                    this.refresh_search(cx);
+                }
+            })
+            .ok();
+        }));
     }
 
     fn toggle_opt(&mut self, pick: fn(&mut SearchOpts) -> &mut bool, cx: &mut Context<Self>) {
@@ -452,12 +627,15 @@ impl TablePanel {
 
     fn goto_match(&mut self, delta: isize, cx: &mut Context<Self>) {
         // Re-scan first: matches are view indices, and a filter change since last keystroke invalidates them.
-        let needle = self.search_input.read(cx).value().to_string();
-        self.search_matches = self
-            .state
-            .read(cx)
-            .delegate()
-            .search_matches(&needle, self.search_opts);
+        // A visual ranking costs a model call, so it keeps the order it was given.
+        if !self.search_opts.visual {
+            let needle = self.search_input.read(cx).value().to_string();
+            self.search_matches = self
+                .state
+                .read(cx)
+                .delegate()
+                .search_matches(&needle, self.search_opts);
+        }
         let n = self.search_matches.len();
         if n == 0 {
             return;
@@ -481,6 +659,9 @@ impl TablePanel {
     /// whole visible set instead, as a single undo step. Matches are cell-granular, so this
     /// substitutes every occurrence *within* each affected cell and leaves the rest of its text.
     fn replace(&mut self, all: bool, cx: &mut Context<Self>) {
+        if self.search_opts.visual {
+            return;
+        }
         let needle = self.search_input.read(cx).value().to_string();
         let replacement = self.replace_input.read(cx).value().to_string();
         let only = match all {
@@ -515,9 +696,33 @@ impl TablePanel {
                 .update(cx, |input, cx| input.focus(window, cx));
             self.refresh_search(cx);
         } else {
+            self.ranking.clear();
+            self.set_search_rows(None, cx);
             self.focus_handle.focus(window, cx);
         }
         cx.notify();
+    }
+
+    /// Open the find bar with its replace row. Replace has nothing to rewrite in a visual search.
+    pub fn open_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.search_opts.visual {
+            self.replace_open = true;
+        }
+        if !self.search_open {
+            self.toggle_search(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Close the find bar if one of its own fields holds focus. `Escape` is bound in the `Input`
+    /// context, which the cell editor shares, so the caller must propagate when this declines.
+    pub fn escape_search(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let focused = self.search_input.focus_handle(cx).is_focused(window)
+            || self.replace_input.focus_handle(cx).is_focused(window);
+        if focused {
+            self.dismiss_search(window, cx);
+        }
+        focused
     }
 
     fn dismiss_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -525,6 +730,8 @@ impl TablePanel {
             return;
         }
         self.search_open = false;
+        self.ranking.clear();
+        self.set_search_rows(None, cx);
         self.focus_handle.focus(window, cx);
         cx.notify();
     }
@@ -868,6 +1075,216 @@ impl TablePanel {
             (hooks.forget_suggestions)(cx);
         }
     }
+
+    /// The find bar, or nothing while it is closed. Drawn by whichever view is showing, so a search
+    /// carries on across Table and Gallery.
+    pub fn render_search_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.search_open {
+            return Empty.into_any_element();
+        }
+        let query = self.search_input.read(cx).value();
+        let visual_status = visual::status(cx);
+        let count = if let Some(status) = self
+            .search_opts
+            .visual
+            .then(|| visual::status_label(&visual_status))
+            .flatten()
+        {
+            status
+        } else if self.search_error {
+            SharedString::from("Invalid regex")
+        } else if !self.search_matches.is_empty() {
+            SharedString::from(format!(
+                "{} of {}",
+                self.search_ix + 1,
+                self.search_matches.len()
+            ))
+        } else if query.trim().is_empty() {
+            match (&self.similar, self.search_opts.visual) {
+                (Some(_), true) => SharedString::from("No similar items"),
+                _ => SharedString::default(),
+            }
+        } else if self.reading_documents.is_some() {
+            SharedString::from("Reading files…")
+        } else {
+            SharedString::from("No results")
+        };
+        let (border, muted) = (cx.theme().border, cx.theme().muted_foreground);
+        let opts = self.search_opts;
+        let toggle = |id: &'static str,
+                      icon: Option<Icon>,
+                      label: &'static str,
+                      tip: &'static str,
+                      on: bool,
+                      pick: fn(&mut SearchOpts) -> &mut bool| {
+            Button::new(id)
+                .ghost()
+                .small()
+                .selected(on)
+                // Text rules have no meaning for a query about what an image shows.
+                .disabled(opts.visual && id != "search-visual")
+                .tooltip(tip)
+                .map(|b| match icon {
+                    Some(icon) => b.icon(icon),
+                    None => b.label(label),
+                })
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_opt(pick, cx)))
+        };
+        let has_matches = !self.search_matches.is_empty();
+        v_flex()
+            .flex_none()
+            .gap_1()
+            .px_2()
+            .py_2()
+            .border_b_1()
+            .border_color(border)
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        Button::new("replace-toggle")
+                            .ghost()
+                            .small()
+                            .icon(match self.replace_open {
+                                true => IconName::ChevronDown,
+                                false => IconName::ChevronRight,
+                            })
+                            .disabled(opts.visual)
+                            .tooltip("Toggle replace (Ctrl+H)")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.replace_open = !this.replace_open;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .items_center()
+                            .gap_1()
+                            .child(div().flex_1().child(Input::new(&self.search_input)))
+                            .child(toggle(
+                                "search-case",
+                                Some(IconName::CaseSensitive.into()),
+                                "",
+                                "Match case",
+                                opts.case,
+                                |o| &mut o.case,
+                            ))
+                            .child(toggle(
+                                "search-word",
+                                None,
+                                "W",
+                                "Match whole word",
+                                opts.word,
+                                |o| &mut o.word,
+                            ))
+                            .child(toggle(
+                                "search-regex",
+                                None,
+                                ".*",
+                                "Use regular expression",
+                                opts.regex,
+                                |o| &mut o.regex,
+                            ))
+                            .child(toggle(
+                                "search-files",
+                                Some(IconName::BookOpen.into()),
+                                "",
+                                "Include text inside linked files",
+                                opts.files,
+                                |o| &mut o.files,
+                            ))
+                            .child(toggle(
+                                "search-visual",
+                                Some(Icon::empty().path("icons/image.svg")),
+                                "",
+                                "Search by what images show",
+                                opts.visual,
+                                |o| &mut o.visual,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(64.))
+                            .text_xs()
+                            .text_color(muted)
+                            .child(count),
+                    )
+                    .when(opts.visual, |bar| match visual_status {
+                        visual::Status::Missing | visual::Status::Failed(_) => bar.child(
+                            Button::new("visual-install")
+                                .small()
+                                .label(visual::download_label())
+                                .on_click(|_, _, cx| visual::install(cx)),
+                        ),
+                        _ => bar.child(
+                            div()
+                                .id("visual-breadth")
+                                .w(px(80.))
+                                .tooltip(|window, cx| {
+                                    gpui_component::tooltip::Tooltip::new("Fewer or more matches")
+                                        .build(window, cx)
+                                })
+                                .child(Slider::new(&self.breadth)),
+                        ),
+                    })
+                    .child(
+                        Button::new("search-prev")
+                            .icon(IconName::ChevronUp)
+                            .ghost()
+                            .small()
+                            .tooltip("Previous match (Shift+Enter)")
+                            .on_click(cx.listener(|this, _, _, cx| this.goto_match(-1, cx))),
+                    )
+                    .child(
+                        Button::new("search-next")
+                            .icon(IconName::ChevronDown)
+                            .ghost()
+                            .small()
+                            .tooltip("Next match (Enter)")
+                            .on_click(cx.listener(|this, _, _, cx| this.goto_match(1, cx))),
+                    )
+                    .child(
+                        Button::new("search-close")
+                            .icon(IconName::Close)
+                            .ghost()
+                            .small()
+                            .tooltip("Close find (Esc)")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.dismiss_search(window, cx)),
+                            ),
+                    ),
+            )
+            .when(self.replace_open && !opts.visual, |bar| {
+                bar.child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .pl_7()
+                        .child(div().flex_1().child(Input::new(&self.replace_input)))
+                        .child(
+                            Button::new("replace-one")
+                                .ghost()
+                                .small()
+                                .label("Replace")
+                                .disabled(!has_matches)
+                                .tooltip("Replace in this cell (Enter)")
+                                .on_click(cx.listener(|this, _, _, cx| this.replace(false, cx))),
+                        )
+                        .child(
+                            Button::new("replace-all")
+                                .ghost()
+                                .small()
+                                .label("All")
+                                .disabled(!has_matches)
+                                .tooltip("Replace every match in the visible rows")
+                                .on_click(cx.listener(|this, _, _, cx| this.replace(true, cx))),
+                        ),
+                )
+            })
+            .into_any_element()
+    }
 }
 
 impl Focusable for TablePanel {
@@ -879,21 +1296,6 @@ impl Focusable for TablePanel {
 impl Render for TablePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let stripe = settings::effective_bool(crate::TABLE_STRIPES_KEY, cx);
-        let query = self.search_input.read(cx).value();
-        let count = if self.search_error {
-            SharedString::from("Invalid regex")
-        } else if !self.search_matches.is_empty() {
-            SharedString::from(format!(
-                "{} of {}",
-                self.search_ix + 1,
-                self.search_matches.len()
-            ))
-        } else if query.trim().is_empty() {
-            SharedString::default()
-        } else {
-            SharedString::from("No results")
-        };
-        let (border, muted) = (cx.theme().border, cx.theme().muted_foreground);
 
         v_flex()
             .size_full()
@@ -902,28 +1304,10 @@ impl Render for TablePanel {
             .id("table-panel")
             .role(Role::Group)
             .aria_label("Table")
-            .on_action(cx.listener(|this, _: &Search, window, cx| this.toggle_search(window, cx)))
-            .on_action(cx.listener(|this, _: &Replace, window, cx| {
-                this.replace_open = true;
-                if !this.search_open {
-                    this.toggle_search(window, cx);
-                }
-                cx.notify();
-            }))
-            // The find input propagates Escape (it doesn't consume it), so dismiss the bar here.
-            //
-            // Only when the bar's own fields hold the key, though. `Escape` is bound in the `Input`
-            // context, which the *cell* editor is in too, and this listener is an ancestor of both —
-            // so without the check, Escape in a cell editor either closed the find bar behind it or,
-            // with the bar already shut, was swallowed by a no-op handler and did nothing at all.
-            // An action stops propagating by default, so declining it has to be explicit.
+            // Search, Replace and the find bar's own Escape are handled by `ViewsPanel`, which draws
+            // the bar above every view. An action stops propagating by default, so declining an
+            // Escape that is not ours has to be explicit.
             .on_action(cx.listener(|this, _: &Escape, window, cx| {
-                if this.search_input.focus_handle(cx).is_focused(window)
-                    || this.replace_input.focus_handle(cx).is_focused(window)
-                {
-                    this.dismiss_search(window, cx);
-                    return;
-                }
                 // Like a cell edit, a note owns the blur that Escape is about to cause. Drop that
                 // ownership first or `_note_sub` will mistake the blur for a commit.
                 if this.cancel_note_edit(window, cx) {
@@ -991,156 +1375,6 @@ impl Render for TablePanel {
             )
             .p_2()
             .gap_2()
-            // Find bar renders here, not in `title_suffix`: the parent `TabPanel` never observes us to redraw it.
-            .when(self.search_open, |this| {
-                let opts = self.search_opts;
-                let toggle = |id: &'static str,
-                              icon: Option<IconName>,
-                              label: &'static str,
-                              tip: &'static str,
-                              on: bool,
-                              pick: fn(&mut SearchOpts) -> &mut bool| {
-                    Button::new(id)
-                        .ghost()
-                        .small()
-                        .selected(on)
-                        .tooltip(tip)
-                        .map(|b| match icon {
-                            Some(icon) => b.icon(icon),
-                            None => b.label(label),
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| this.toggle_opt(pick, cx)))
-                };
-                let has_matches = !self.search_matches.is_empty();
-                this.child(
-                    v_flex()
-                        .flex_none()
-                        .gap_1()
-                        .pb_2()
-                        .border_b_1()
-                        .border_color(border)
-                        .child(
-                            h_flex()
-                                .gap_1()
-                                .items_center()
-                                .child(
-                                    Button::new("replace-toggle")
-                                        .ghost()
-                                        .small()
-                                        .icon(match self.replace_open {
-                                            true => IconName::ChevronDown,
-                                            false => IconName::ChevronRight,
-                                        })
-                                        .tooltip("Toggle replace (Ctrl+H)")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.replace_open = !this.replace_open;
-                                            cx.notify();
-                                        })),
-                                )
-                                .child(
-                                    h_flex()
-                                        .flex_1()
-                                        .items_center()
-                                        .gap_1()
-                                        .child(div().flex_1().child(Input::new(&self.search_input)))
-                                        .child(toggle(
-                                            "search-case",
-                                            Some(IconName::CaseSensitive),
-                                            "",
-                                            "Match case",
-                                            opts.case,
-                                            |o| &mut o.case,
-                                        ))
-                                        .child(toggle(
-                                            "search-word",
-                                            None,
-                                            "W",
-                                            "Match whole word",
-                                            opts.word,
-                                            |o| &mut o.word,
-                                        ))
-                                        .child(toggle(
-                                            "search-regex",
-                                            None,
-                                            ".*",
-                                            "Use regular expression",
-                                            opts.regex,
-                                            |o| &mut o.regex,
-                                        )),
-                                )
-                                .child(
-                                    div()
-                                        .min_w(px(64.))
-                                        .text_xs()
-                                        .text_color(muted)
-                                        .child(count),
-                                )
-                                .child(
-                                    Button::new("search-prev")
-                                        .icon(IconName::ChevronUp)
-                                        .ghost()
-                                        .small()
-                                        .tooltip("Previous match (Shift+Enter)")
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.goto_match(-1, cx)),
-                                        ),
-                                )
-                                .child(
-                                    Button::new("search-next")
-                                        .icon(IconName::ChevronDown)
-                                        .ghost()
-                                        .small()
-                                        .tooltip("Next match (Enter)")
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.goto_match(1, cx)),
-                                        ),
-                                )
-                                .child(
-                                    Button::new("search-close")
-                                        .icon(IconName::Close)
-                                        .ghost()
-                                        .small()
-                                        .tooltip("Close find (Esc)")
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.dismiss_search(window, cx)
-                                        })),
-                                ),
-                        )
-                        .when(self.replace_open, |bar| {
-                            bar.child(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .pl_7()
-                                    .child(div().flex_1().child(Input::new(&self.replace_input)))
-                                    .child(
-                                        Button::new("replace-one")
-                                            .ghost()
-                                            .small()
-                                            .label("Replace")
-                                            .disabled(!has_matches)
-                                            .tooltip("Replace in this cell (Enter)")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.replace(false, cx)
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("replace-all")
-                                            .ghost()
-                                            .small()
-                                            .label("All")
-                                            .disabled(!has_matches)
-                                            .tooltip("Replace every match in the visible rows")
-                                            .on_click(
-                                                cx.listener(|this, _, _, cx| {
-                                                    this.replace(true, cx)
-                                                }),
-                                            ),
-                                    ),
-                            )
-                        }),
-                )
-            })
             .child(
                 div()
                     .flex_1()
