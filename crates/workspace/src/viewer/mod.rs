@@ -87,7 +87,28 @@ pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut Ap
         .try_global::<ActiveViewer>()
         .and_then(|active| active.return_focus.clone())
         .or_else(|| window.focused(cx));
+    let table = cx
+        .try_global::<table::TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade());
     let viewer = cx.new(|cx| Viewer {
+        _follow: table.map(|table| {
+            cx.subscribe_in(
+                &table,
+                window,
+                |this: &mut Viewer, table, _: &table::TableChanged, window, cx| {
+                    let delegate = table.read(cx).delegate();
+                    let file = match delegate.selection() {
+                        Some(table::Selection::Cell { row, .. } | table::Selection::Row(row)) => {
+                            previewable(delegate, row)
+                        }
+                        _ => None,
+                    };
+                    if let Some(file) = file.filter(|file| *file != this.path) {
+                        open_viewer(file, this.scope, window, cx);
+                    }
+                },
+            )
+        }),
         transport: Transport::new(path.clone(), cx),
         path,
         details,
@@ -131,10 +152,10 @@ pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut Ap
     });
 }
 
-/// Open the file of the next row, by `delta`, in the view's order from the one showing, and select
-/// that row. During a search the view is its hits, so this steps through the results. Rows with
-/// nothing to preview are skipped.
-fn step_row(path: &std::path::Path, scope: Scope, delta: isize, window: &mut Window, cx: &mut App) {
+/// Select the next row, by `delta`, in the view's order that has something to preview. During a
+/// search the view is its hits, so this steps through the results. The open viewer follows the
+/// selection to that row's file.
+fn step_row(delta: isize, cx: &mut App) {
     let Some(state) = cx
         .try_global::<table::TableStateHandle>()
         .and_then(|handle| handle.0.upgrade())
@@ -144,30 +165,32 @@ fn step_row(path: &std::path::Path, scope: Scope, delta: isize, window: &mut Win
     let target = {
         let delegate = state.read(cx).delegate();
         let visible = delegate.visible();
-        let file = |view: usize| {
-            delegate
-                .row_image(visible[view])
-                .filter(|file| preview::can_preview(file))
-        };
-        let selected = match delegate.selection() {
-            Some(table::Selection::Cell { row, .. } | table::Selection::Row(row)) => delegate
-                .view_row(row)
-                .filter(|&view| file(view) == Some(path)),
+        let from = match delegate.selection() {
+            Some(table::Selection::Cell { row, .. } | table::Selection::Row(row)) => {
+                delegate.view_row(row)
+            }
             _ => None,
         };
-        selected
-            .or_else(|| (0..visible.len()).find(|&view| file(view) == Some(path)))
-            .and_then(|from| next_row(from, delta, visible.len(), |view| file(view).is_some()))
-            .and_then(|view| Some((view, file(view)?.to_path_buf())))
+        from.and_then(|from| {
+            next_row(from, delta, visible.len(), |view| {
+                previewable(delegate, visible[view]).is_some()
+            })
+        })
     };
-    let Some((view, file)) = target else {
-        return;
-    };
-    state.update(cx, |state, cx| {
-        state.delegate_mut().clear_selection();
-        state.set_selected_row(view, cx);
-    });
-    open_viewer(file, scope, window, cx);
+    if let Some(view) = target {
+        state.update(cx, |state, cx| {
+            state.delegate_mut().clear_selection();
+            state.set_selected_row(view, cx);
+        });
+    }
+}
+
+/// The file `row` links to, if the viewer can show it.
+fn previewable(delegate: &table::QrateTableDelegate, row: usize) -> Option<PathBuf> {
+    delegate
+        .row_image(row)
+        .filter(|file| preview::can_preview(file))
+        .map(|file| file.to_path_buf())
 }
 
 /// The nearest view index past `from` in `delta`'s direction that `viewable` accepts, if any.
@@ -242,6 +265,9 @@ pub struct Viewer {
     /// carries the drag handle, the sizing and the propagation rules, none of which are ours to
     /// reinvent.
     split: Entity<ResizableState>,
+    /// Swaps in the selected row's file when the selection moves, from the find bar, the arrows or
+    /// anywhere else.
+    _follow: Option<Subscription>,
 }
 
 impl Viewer {
@@ -516,8 +542,7 @@ impl Render for Viewer {
                         cx.notify();
                     }
                     "up" | "down" if reading => {
-                        let delta = if ev.keystroke.key == "up" { -1 } else { 1 };
-                        step_row(&this.path, this.scope, delta, window, cx);
+                        step_row(if ev.keystroke.key == "up" { -1 } else { 1 }, cx);
                     }
                     _ => {}
                 }
@@ -767,6 +792,37 @@ impl Render for Viewer {
                 )
                 },
             )
+            // Rows, not pages: the neighbouring files in the view's order, which during a search are
+            // the neighbouring results.
+            .child(
+                div()
+                    .absolute()
+                    .bottom_4()
+                    .right_4()
+                    .flex()
+                    .gap_1()
+                    .p_1()
+                    .rounded(cx.theme().radius)
+                    .bg(cx.theme().background)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .shadow_lg()
+                    .occlude()
+                    .child(
+                        Button::new("previous-row")
+                            .icon(IconName::ArrowLeft)
+                            .outline()
+                            .tooltip("Previous row (↑)")
+                            .on_click(|_, _, cx| step_row(-1, cx)),
+                    )
+                    .child(
+                        Button::new("next-row")
+                            .icon(IconName::ArrowRight)
+                            .outline()
+                            .tooltip("Next row (↓)")
+                            .on_click(|_, _, cx| step_row(1, cx)),
+                    ),
+            )
             .child(
                 div()
                     .absolute()
@@ -802,26 +858,6 @@ impl Render for Viewer {
                                 })),
                         )
                     })
-                    .child(
-                        Button::new("previous-row")
-                            .icon(IconName::ChevronUp)
-                            .ghost()
-                            .small()
-                            .tooltip("Previous row (↑)")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                step_row(&this.path, this.scope, -1, window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("next-row")
-                            .icon(IconName::ChevronDown)
-                            .ghost()
-                            .small()
-                            .tooltip("Next row (↓)")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                step_row(&this.path, this.scope, 1, window, cx)
-                            })),
-                    )
                     .child(
                         Button::new("zoom-out")
                             .icon(IconName::Minus)
