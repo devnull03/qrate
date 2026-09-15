@@ -186,8 +186,6 @@ jobs:
       - name: Install NSIS
         run: choco install nsis -y --no-progress
 
-      - uses: ilammy/msvc-dev-cmd@v1
-
       # The MSI is the enterprise-deployable counterpart to the NSIS installer — see
       # scripts/installer.wxs for why GPO/SCCM/Intune push installs need one. windows-latest ships
       # the .NET SDK, so the WiX CLI installs as a dotnet global tool; no matrix leg for this, since
@@ -227,29 +225,9 @@ jobs:
           Copy-Item target/release/qrate.exe dist/portable/qrate.exe
           Copy-Item target/release/qrate-cli.exe dist/portable/qrate-cli.exe
           Copy-Item target/release/qrate-update-helper.exe dist/portable/qrate-update-helper.exe
+          # PATH gets only bin\, so `qrate` in a terminal is the CLI and never the GUI qrate.exe.
           New-Item -ItemType Directory -Force dist/portable/bin | Out-Null
-          # The PATH entry must not expose the GUI qrate.exe. Build a native console shim in its own
-          # directory; it needs no runtime, inherits terminal handles, and relays the CLI's exit code.
-          @'
-          #include <process.h>
-          #include <stdlib.h>
-          #include <wchar.h>
-          #include <windows.h>
-          int wmain(int argc, wchar_t **argv) {
-            wchar_t cli[MAX_PATH];
-            DWORD length = GetModuleFileNameW(NULL, cli, MAX_PATH);
-            if (!length || length >= MAX_PATH) return 1;
-            wchar_t *slash = wcsrchr(cli, L'\\');
-            if (!slash) return 1;
-            wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - cli), L"..\\qrate-cli.exe");
-            argv[0] = cli;
-            intptr_t status = _wspawnv(_P_WAIT, cli, (const wchar_t * const *)argv);
-            return status == -1 ? 1 : (int)status;
-          }
-          '@ | Set-Content -Encoding utf8 dist/qrate-shim.c
-          cl.exe /nologo /O1 /DUNICODE /D_UNICODE dist/qrate-shim.c `
-            /Fe:dist/portable/bin/qrate.exe
-          if ($LASTEXITCODE -ne 0) { throw "qrate shim build failed ($LASTEXITCODE)" }
+          Copy-Item target/release/qrate-cli.exe dist/portable/bin/qrate.exe
           @{ schema = 1; kind = "windows-portable"; packaged_version = $ver } |
             ConvertTo-Json | Set-Content -Encoding utf8 dist/portable/qrate-install.json
           # Zip the staging folder's *contents*, so the sidecars sit beside GUI qrate.exe on extract —
@@ -333,27 +311,24 @@ jobs:
           chmod +x scripts/fetch-binaries.sh
           ver="${{ needs.version.outputs.version }}"
           stage="qrate-$ver-x86_64-linux"
-          mkdir -p "$stage/bin" "$stage/lib/qrate"
-          cp target/release/qrate "$stage/lib/qrate/qrate"
-          cp target/release/qrate-cli "$stage/lib/qrate/qrate-cli"
-          ln -s ../lib/qrate/qrate-cli "$stage/bin/qrate-cli"
-          cp target/release/qrate-update-helper "$stage/lib/qrate/qrate-update-helper"
-          chmod +x "$stage/lib/qrate/qrate-update-helper"
+          # The updater swaps this whole directory, so every program stays at its top level.
+          mkdir -p "$stage/bin"
+          cp target/release/qrate "$stage/qrate"
+          cp target/release/qrate-cli "$stage/qrate-cli"
+          ln -s ../qrate-cli "$stage/bin/qrate"
+          cp target/release/qrate-update-helper "$stage/qrate-update-helper"
+          chmod +x "$stage/qrate-update-helper"
           printf '{\n  "schema": 1,\n  "kind": "linux-tar",\n  "packaged_version": "%s"\n}\n' \
-            "$ver" > "$stage/lib/qrate/qrate-install.json"
+            "$ver" > "$stage/qrate-install.json"
           cp assets/icons/app-icon.png "$stage/qrate.png"
           # PDFium ships in the tarball beside the binary, where the preview tier looks for it.
           # ffmpeg does not: it is one `apt install` away and every distro packages it, so we
           # would be shipping ~50 MB to duplicate something already on most machines.
-          QRATE_SKIP_FFMPEG=1 QRATE_STRICT_BINARIES=1 ./scripts/fetch-binaries.sh "$stage/lib/qrate"
+          QRATE_SKIP_FFMPEG=1 QRATE_STRICT_BINARIES=1 ./scripts/fetch-binaries.sh "$stage"
           chmod +x scripts/fetch-agent-runtime.sh
-          ./scripts/fetch-agent-runtime.sh "$stage/lib/qrate" linux-x64
-          printf '%s\n' '#!/bin/sh' \
-            'exec "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/../lib/qrate/qrate" "$@"' \
-            > "$stage/bin/qrate-gui"
-          chmod +x "$stage/bin/qrate-gui"
+          ./scripts/fetch-agent-runtime.sh "$stage" linux-x64
           printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=qrate' \
-            'Exec=qrate-gui %u' 'Icon=qrate' 'Terminal=false' \
+            'Exec=qrate %u' 'Icon=qrate' 'Terminal=false' \
             'Categories=Office;Database;' 'MimeType=x-scheme-handler/qrate;' \
             > "$stage/qrate.desktop"
           mkdir -p dist
@@ -433,8 +408,8 @@ jobs:
 
             ### Command line
             Each package includes the `qrate-cli` console program. On Windows, installers add the
-            package's separate `bin` directory to `PATH`; its `qrate.exe` shim invokes
-            `qrate-cli.exe`, while shortcuts and URL associations launch the GUI `qrate.exe`.
+            package's separate `bin` directory to `PATH`; its `qrate.exe` is the CLI, while
+            shortcuts and URL associations launch the GUI `qrate.exe`.
             The portable ZIP does not change `PATH`; add its `bin` directory yourself.
 
             On macOS, the CLI is `/Applications/qrate.app/Contents/MacOS/qrate-cli`. To expose it
@@ -445,11 +420,8 @@ jobs:
             ```
             Add `$HOME/.local/bin` to your shell's `PATH` if needed.
 
-            On Linux, the archive keeps the real programs under `lib/qrate`, exposes
-            `bin/qrate-cli` as a relative symlink, and includes a `bin/qrate-gui` desktop launcher. Add the extracted
-            `bin` directory to `PATH`, or create a
-            user-owned `$HOME/.local/bin/qrate` symlink to `bin/qrate-cli`. The desktop file launches
-            the GUI directly.
+            On Linux, the archive's `bin/qrate` is a relative symlink to the CLI. Add the extracted
+            `bin` directory to `PATH`, or symlink `$HOME/.local/bin/qrate` to it.
 
             ### Enterprise (Windows)
             `*-x86_64.msi` installs per-machine and is built for Group Policy Software

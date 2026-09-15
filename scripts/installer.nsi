@@ -66,10 +66,32 @@ SetCompressor /SOLID lzma
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
 !include "LogicLib.nsh"
-!include "EnvVarUpdate.nsh"
 !include "WinMessages.nsh"
 
 Var UpdateRestart
+
+; NSIS strings stop at 1024 characters, so PATH is edited by PowerShell straight in the registry,
+; unexpanded, and never read into an NSIS variable. $1 = "1" to add $INSTDIR\bin, "" to remove it.
+!macro PATH_EDIT UN
+Function ${UN}EditPath
+  ${If} $MultiUser.InstallMode == "AllUsers"
+    StrCpy $0 "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+  ${Else}
+    StrCpy $0 "HKCU:\Environment"
+  ${EndIf}
+  System::Call 'Kernel32::SetEnvironmentVariable(t "QRATE_PATH_KEY", t "$0")i'
+  System::Call 'Kernel32::SetEnvironmentVariable(t "QRATE_PATH_DIR", t "$INSTDIR\bin")i'
+  System::Call 'Kernel32::SetEnvironmentVariable(t "QRATE_PATH_ADD", t "$1")i'
+  nsExec::ExecToLog `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$k = $$env:QRATE_PATH_KEY; $$d = $$env:QRATE_PATH_DIR; $$p = (Get-Item $$k).GetValue('Path', '', 'DoNotExpandEnvironmentNames'); $$e = @($$p -split ';' | Where-Object { $$_ -and $$_ -ne $$d }); if ($$env:QRATE_PATH_ADD) { $$e += $$d }; $$n = $$e -join ';'; if ($$n -ne $$p) { New-ItemProperty $$k Path -Value $$n -PropertyType ExpandString -Force | Out-Null }"`
+  Pop $0
+  ${If} $0 != "0"
+    DetailPrint "Could not update PATH for $INSTDIR\bin (exit $0)"
+  ${EndIf}
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+FunctionEnd
+!macroend
+!insertmacro PATH_EDIT ""
+!insertmacro PATH_EDIT "un."
 
 !define MUI_ICON   "${ICONFILE}"
 !define MUI_UNICON "${ICONFILE}"
@@ -155,13 +177,9 @@ Section "Install"
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoModify" 1
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoRepair" 1
 
-  ; Only the shim directory is PATH-facing, so `qrate` in a terminal cannot resolve to the GUI.
-  ${If} $MultiUser.InstallMode == "AllUsers"
-    ${EnvVarUpdate} $1 "PATH" "A" "HKLM" "$INSTDIR\bin"
-  ${Else}
-    ${EnvVarUpdate} $1 "PATH" "A" "HKCU" "$INSTDIR\bin"
-  ${EndIf}
-  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment"
+  ; Only bin\ is PATH-facing, so `qrate` in a terminal is the CLI and never the GUI.
+  StrCpy $1 "1"
+  Call EditPath
 
   ${If} $UpdateRestart == "1"
     Exec '"$INSTDIR\${EXENAME}"'
@@ -192,12 +210,8 @@ Section "un.qrate" SEC_UNAPP
   DeleteRegKey SHCTX "Software\Classes\qrate"
   DeleteRegKey SHCTX "${UNINSTKEY}"
   DeleteRegKey SHCTX "Software\${APPNAME}"
-  ${If} $MultiUser.InstallMode == "AllUsers"
-    ${un.EnvVarUpdate} $1 "PATH" "R" "HKLM" "$INSTDIR\bin"
-  ${Else}
-    ${un.EnvVarUpdate} $1 "PATH" "R" "HKCU" "$INSTDIR\bin"
-  ${EndIf}
-  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment"
+  StrCpy $1 ""
+  Call un.EditPath
 
   ; Caches and downloaded tooling always go: they are rebuilt or re-fetched on demand, so keeping
   ; them costs ~100 MB and buys nothing once qrate is gone.
@@ -207,7 +221,7 @@ Section "un.qrate" SEC_UNAPP
   RMDir /r "${DATADIR}\pi-agent\bin"
   Delete "${DATADIR}\pi-agent\models-store.json"
   Delete "${DATADIR}\pi-agent\SYSTEM.md"
-  Delete "${DATADIR}\agent-bridge.json"
+  Delete "${DATADIR}\app-control.json"
 SectionEnd
 
 Section /o "un.Settings, plugins and dictionary" SEC_UNDATA
