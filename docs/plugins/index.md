@@ -27,6 +27,29 @@ For local development or an offline installation, open **Plugins ▸ Plugins Fol
 single `.lua` file or a plugin folder there. Manual plugins are unmanaged: qrate does not update or
 remove them.
 
+## The official plugin registry
+
+The [plugin catalog](https://qrate.dvnl.work/plugins/) shows releases from the official plugin
+registry. qrate reads the signed catalog when you open the Discover Plugins command. The registry
+stores the release metadata, package hash, and signature. It does not host a plugin's source code.
+
+An official listing means that qrate maintainers reviewed the listed release metadata and package
+hash. It does not make third-party code safe. Review the source and requested permissions before
+you install a plugin.
+
+### List your plugin in the registry
+
+1. Start with the [plugin template](https://github.com/devnull03/qrate-plugin-template).
+2. Check your plugin package with `npm run check`.
+3. Tag the version in your plugin repository. The template workflow creates a release ZIP and a
+   checksum.
+4. Check the release ZIP and checksum before you submit them.
+5. Follow the [plugin submission guide](https://qrate.dvnl.work/plugins/submit/) to open a pull
+   request to the [plugin registry](https://github.com/devnull03/qrate-plugin-registry).
+
+The registry pull request must identify one exact release. Do not change that release after the
+registry lists it.
+
 ## What a plugin can do
 
 - **Check a column.** A plugin reports what is wrong with a column's values. Its findings go to
