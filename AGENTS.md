@@ -1,35 +1,42 @@
 # Agent instructions
 
 - **Changing qrate code?** Read [CLAUDE.md](CLAUDE.md).
-- **Reviewing the project open in qrate?** Use bridge protocol 2 below. The saved `.qrate` file can omit unsaved on-screen edits.
+- **Reviewing the project open in qrate?** Use the `qrate agent` commands below. The saved `.qrate` file can omit unsaved on-screen edits.
 
-## Live qrate bridge
+## Reading a running qrate
 
-qrate publishes `agent-bridge.json` in the platform application-data directory. It contains `url`, a per-launch `token`, and `bridge_protocol: 2`. If it is missing, qrate is not running or Settings ▸ Agent is off. Reject any other protocol version.
+Run `qrate agent <command>`. The parameters are one JSON object on stdin, and the answer is JSON on stdout. Name yourself with `--agent codex` or `QRATE_AGENT=codex`. The name only labels your calls in qrate's Agent panel; it proves nothing about who you are.
 
-POST one JSON request to `url` with `Authorization: Bearer <token>`, `Content-Type: application/json`, and `X-Agent: codex`. The agent name is a visible label, not authority. Re-read the endpoint after `forbidden` because the token changes each launch.
+| Exit | Meaning | Where to look |
+|---|---|---|
+| `0` | Answered | stdout: the response |
+| `1` | Refused, for example a stale revision, bad parameters, or agent access switched off in Settings ▸ Agent | stdout: `{"error": …}` |
+| `2` | Usage error, such as stdin that is not a JSON object | stderr |
+| `3` | qrate is not running or cannot be reached | stderr |
 
-The bridge never changes a cell. `stage_findings` only replaces that agent's draft findings in the Problems panel and optionally offers whole-cell replacements under that finding in the cell's Problems menu.
-Bridge findings remain ungrouped atomic diagnostics. Built-in diagnostic groups do not change protocol 2 query or staging formats.
-Findings the archivist ignored are absent from `overview` counts and `diagnostics` queries, exactly as they are hidden in the Problems panel.
+No command changes a cell. `stage-findings` only replaces this agent's draft findings in the Problems panel. It can also offer whole-cell replacements under a finding in that cell's Problems menu. Only the archivist applies them.
+Agent findings stay ungrouped atomic diagnostics. Findings the archivist ignored are absent from `overview` counts and `diagnostics` queries, exactly as they are hidden in the Problems panel.
 
-qrate's bundled Pi runs as a contained child process. Stop, Restart, panel teardown, and app exit terminate its process tree; do not rely on an older Pi process surviving a restart.
-The bundled assistant loads its protocol 2 extension and `SYSTEM.md` with all skills disabled. The `skills/` folder in this repo packages the same instructions for an agent running outside qrate — `qrate-live-review` there is for an external Pi or any other runtime, not the built-in session.
+qrate's bundled Pi runs as a contained child process with `QRATE_CLI` (this CLI) and `QRATE_AGENT=pi` set. Stop, Restart, panel teardown, and app exit terminate its process tree; do not rely on an older Pi process surviving a restart.
+The bundled assistant loads its extension and `SYSTEM.md` with all skills disabled. The `skills/` folder in this repo packages the same instructions for an agent running outside qrate.
 
-### Protocol 2 methods
+### Commands
 
-- `overview`: compact project, column, selection, diagnostic-count, and revision information.
-- `overview` column `data_type` values include `Title` for the primary human-readable row name.
-- `query`: bounded live rows or diagnostics. Sources are `all_rows`, `selected_rows`, `rows`, `search`, and filtered `diagnostics`. Operations include `select`, `where`, `distinct`, `group_by`, `order_by`, `limit`, and revision-bound `cursor`.
-- `program_save`: validate and activate a confined Luau function without running it.
-- `program_run`: run the saved function once against an immutable snapshot at an exact revision.
-- `thumbnails`: return at most four qrate-generated 512-pixel PNG derivatives by source row/page.
-- `stage_findings`: publish a complete advisory draft batch.
+- `overview` (no stdin): compact project, column, selection, diagnostic-count, and revision information. Column `data_type` values include `Title` for the primary human-readable row name.
+- `query`: bounded live rows or diagnostics. `source.kind` is `all_rows`, `selected_rows`, `rows`, `search`, or `diagnostics`. Operations are `select`, `where`, `distinct`, `group_by`, `order_by`, `limit`, and a revision-bound `cursor`.
+- `program-save` (`{"source": …}`): validate and activate a confined Luau function without running it.
+- `program-run` (`{"revision": …, "args": …}`): run the saved function once against an immutable snapshot at an exact revision.
+- `thumbnails` (`{"items": […]}`): return at most four qrate-generated 512-pixel PNG derivatives by source row/page.
+- `stage-findings` (`{"revision": …, "findings": […]}`): publish a complete advisory draft batch.
 
-Queries default to 20 and allow at most 50 records. Collection results send one `fields` array and positional `items`, plus `returned`, `remaining`, `truncated`, and `next_cursor`. Ask for the smallest useful field set and follow a cursor only when more evidence could change the answer.
+```sh
+echo '{"source":{"kind":"selected_rows"},"select":["Title"],"limit":10}' | qrate agent query --agent codex
+```
+
+Queries default to 20 and allow at most 50 records. Collection results send one `fields` array and positional `items`, plus `returned`, `remaining`, `truncated`, and `next_cursor`. Ask for the smallest useful field set, and follow a cursor only when more evidence could change the answer.
 
 Programs have no network, filesystem, process, clock, randomness, plugin storage, UI, raw qrate objects, or staging access. Their only linked-file methods are qrate-resolved bounded UTF-8 reads and PDF text search. Original paths and bytes are never returned.
 
-Every staged finding needs the exact response `revision`, source `row`, `column`, severity, one-sentence message, and exact current whole-cell `expected`; `replacement` is optional and must be the whole proposed value. A stale cell is rejected. Never report that staging corrected data.
+Every staged finding needs the exact response `revision`, source `row`, `column`, severity, one-sentence message, and exact current whole-cell `expected`. `replacement` is optional and must be the whole proposed value. A stale cell is rejected. Never report that staging corrected data.
 
-The contract is `crates/ai/src/agent.rs`, transport is `crates/app/src/agent_bridge.rs`, live adapter is `crates/table/src/agent.rs`, private runner is `crates/plugin-host/src/agent_program.rs`, and the audit panel is `crates/workspace/src/panels/agent.rs`. Keep this file synchronized when those surfaces change.
+The contract is `crates/ai/src/agent.rs`. The public command is `crates/cli/src/main.rs`, the private transport is `crates/app/src/app_control.rs`, the live adapter is `crates/table/src/agent.rs`, the private runner is `crates/plugin-host/src/agent_program.rs`, and the audit panel is `crates/workspace/src/panels/agent.rs`. Keep this file synchronized when those surfaces change.
