@@ -3,13 +3,15 @@
 Status: implementation in progress. The packaged `qrate` launcher, `open`, `--wait`, `version`,
 help, project-path forwarding, `qrate://` forwarding, and the read-only app-control foundation exist.
 Implemented app commands are `status`, `path`, and `launch`. `qrate project info` reads the active
-desktop project. `quit`, other project-data commands, and direct-file commands remain proposed.
+desktop project. `qrate agent` replaces the loopback agent bridge for live review. `quit`, other
+project-data commands, and direct-file commands remain proposed.
 
 ## Decision
 
 Use `qrate` as the public command name. The desktop executable keeps the platform-standard `qrate`
 filename, and the console crate builds `qrate-cli`. Packaging resolves the Windows filename conflict
-with a dedicated PATH-facing shim.
+with a PATH-facing `bin` directory whose `qrate` is the CLI (a copy on Windows, a symlink on
+Linux).
 
 The desktop binary uses the Windows GUI subsystem in release builds. Windows does not attach that
 binary to a terminal. A separate executable gives scripts reliable standard input, output, and exit
@@ -21,8 +23,9 @@ The public command has two project modes:
    its active project.
 2. **Direct-file mode** uses `--use <PATH>`. It opens that `.qrate` file without the desktop app.
 
-Use a small local control interface for open-project mode. This interface is an application API, not
-an agent bridge. A future MCP server can wrap the CLI without becoming part of the first release.
+Use a small local control interface for open-project mode. It is the app's only local endpoint; the
+old agent bridge is gone. A future MCP server can wrap the CLI without becoming part of the first
+release.
 
 Direct-file commands must refuse writes when another process has the project open. Each write must
 use one SQLite transaction. Read commands can run concurrently.
@@ -30,8 +33,9 @@ use one SQLite transaction. Read commands can run concurrently.
 ### App control boundary
 
 The desktop app publishes a versioned local endpoint and a per-launch token in its application-data
-directory. The endpoint accepts qrate commands only. It does not accept agent programs, findings, or
-arbitrary SQL.
+directory. The endpoint accepts qrate commands and the `ai::agent` requests behind `qrate agent`. It
+does not accept arbitrary SQL. Sockets are served off the main thread; only the answer reads GPUI
+state.
 
 The app executes reads against its current in-memory project snapshot. It executes writes through the
 same edit, undo, validation, and persistence paths as the grid. This makes command changes visible in
@@ -393,11 +397,14 @@ browser unless `--no-input` is set.
 
 ### Phase 4: external automation
 
-The CLI itself is the supported automation boundary. Do not add agent-specific commands or reuse
-bridge protocol 2.
+The CLI itself is the supported automation boundary. `qrate agent overview|query|program-save|
+program-run|thumbnails|stage-findings` forwards the `ai::agent` contract verbatim: parameters on
+stdin, the answer on stdout, exit `1` for a refusal (JSON on stdout), `2` for usage, `3` when qrate
+is unreachable. `--agent` or `QRATE_AGENT` names the caller in the Agent panel.
 
-A future MCP server can execute `qrate` commands and convert their JSON results into MCP tools. Keep
-that wrapper in its own crate or repository. Do not make the first CLI release depend on MCP.
+The embedded Pi is started with `QRATE_CLI` and `QRATE_AGENT=pi` and calls these commands directly.
+A future `qrate mcp` can expose the same handlers as MCP tools for clients that cannot run a command.
+Do not make the first CLI release depend on MCP.
 
 ### Phase 5: shell support
 
@@ -416,7 +423,9 @@ the two filenames from colliding.
 ### Windows
 
 - Install GUI `qrate.exe` and `qrate-cli.exe` in the application directory.
-- Install a dedicated forwarding shim as `bin\qrate.exe`.
+- Install a copy of `qrate-cli.exe` as `bin\qrate.exe`. It finds the GUI one directory up, because
+  a program named `qrate` is its own sibling. A copy rather than a native shim keeps argument
+  quoting and exit codes exactly the CLI's.
 - Point Start Menu shortcuts, desktop shortcuts, URL associations, and updater launches to the GUI
   `qrate.exe`.
 - Add only the `bin` directory to the user `PATH` for per-user NSIS installs.
@@ -440,11 +449,13 @@ Do not use `/usr/bin`. System Integrity Protection owns that directory.
 
 ### Linux
 
-- Put the GUI and real console program at `lib/qrate/qrate` and `lib/qrate/qrate-cli`. Expose the
-  console program through a relative `bin/qrate-cli` symlink and the GUI through `bin/qrate-gui`.
-- The desktop file launches `qrate-gui`, never a PATH-resolved `qrate`.
+- Keep `qrate`, `qrate-cli`, the update helper and `qrate-install.json` at the top of the extracted
+  directory. The updater swaps that whole directory, so the layout must not change between releases.
+- Expose the CLI through a relative `bin/qrate` symlink to `../qrate-cli`. The CLI resolves its
+  canonical path, so any further symlink to it still finds the GUI.
+- The desktop file runs `qrate %u`: the CLI on `PATH` forwards the link to the GUI.
 - A system package can expose the CLI as `/usr/bin/qrate`; a per-user install can create
-  `$HOME/.local/bin/qrate` as a symlink to `bin/qrate-cli`.
+  `$HOME/.local/bin/qrate` as a symlink to `bin/qrate`.
 - The tarball itself does not change `PATH`.
 
 Flatpak isolates host commands. A Flatpak build should keep live desktop integration separate from a

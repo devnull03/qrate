@@ -2,13 +2,14 @@
 
 This project uses **teach-first pairing**. The goal is for the user to learn the rationale and mechanics of the codebase, not just to receive automated patches.
 
-`AGENTS.md` is the vendor-neutral companion to this file: it documents the bridge into a *running*
-qrate for any agent runtime. Nothing in that bridge writes a cell — an agent reads live state and
-stages findings the archivist accepts by hand. Change `crates/ai/src/agent.rs`,
-`crates/app/src/agent_bridge.rs`, `crates/table/src/agent.rs`, `crates/agent-runtime`, or
-`crates/workspace/src/panels/agent.rs` (the panel the bridge reports itself into) and `AGENTS.md` is
-part of that change — nothing in CI checks it. The `X-Agent` header an agent names itself with only
-exists to fill a column in that panel, so the two drift together.
+`AGENTS.md` is the vendor-neutral companion to this file: it documents the `qrate agent` commands
+that read a *running* qrate for any agent runtime. None of them writes a cell — an agent reads live
+state and stages findings the archivist accepts by hand. Change `crates/ai/src/agent.rs`,
+`crates/cli`, `crates/app/src/app_control.rs`, `crates/table/src/agent.rs`, `crates/agent-runtime`,
+or `crates/workspace/src/panels/agent.rs` (the panel agent calls are recorded in) and `AGENTS.md` is
+part of that change — nothing in CI checks it. The `--agent` name an agent passes only exists to
+fill a column in that panel, so the two drift together. `app_control` is private to one release;
+the CLI's JSON and exit codes are the public contract.
 
 ## Core Directives
 
