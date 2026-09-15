@@ -50,11 +50,15 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // registered globally in `main.rs`, so this only adds the key.
         KeyBinding::new("secondary-,", OpenSettings, None),
         // The grid's own actions are declared in `crate::table` (app→table is one-way). Ctrl+F is
-        // scoped to the panel so it works wherever focus sits inside it; everything below acts on a
+        // scoped to the centre views so it works in Table and Gallery alike; everything below acts on a
         // grid selection and is scoped to the grid, which keeps the cell editor's own Ctrl+Z/Ctrl+C
         // and its Enter-to-commit intact while it has focus.
-        KeyBinding::new("secondary-f", table::Search, Some("TablePanel")),
-        KeyBinding::new("secondary-h", table::Replace, Some("TablePanel")),
+        KeyBinding::new("secondary-f", table::Search, Some(workspace::VIEWS_CONTEXT)),
+        KeyBinding::new(
+            "secondary-h",
+            table::Replace,
+            Some(workspace::VIEWS_CONTEXT),
+        ),
         KeyBinding::new("enter", table::EditCell, Some(table::GRID_CONTEXT)),
         KeyBinding::new("secondary-z", table::Undo, Some(table::GRID_CONTEXT)),
         KeyBinding::new("secondary-y", table::Redo, Some(table::GRID_CONTEXT)),

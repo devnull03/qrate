@@ -79,6 +79,11 @@ pub struct QrateTableDelegate {
     /// View→source row mapping: `visible_rows[view] == source`. The library only ever sees this
     /// narrowed set, so filtering composes with the virtualized render for free.
     visible_rows: Vec<usize>,
+    /// The rows the column filters let through, before a search narrows them. What searches scan,
+    /// so typing more can widen the hits again.
+    filtered_rows: Vec<usize>,
+    /// A visual or linked-file search's hits as source rows, in the order the view shows them.
+    search_rows: Option<Vec<usize>>,
     /// Per-data-column set of *excluded* cell values, parallel to `columns`. Empty = no filter.
     filters: Vec<HashSet<SharedString>>,
     /// Whether each column offers a filter dropdown at all, parallel to `columns`. Off for every
@@ -117,6 +122,8 @@ impl QrateTableDelegate {
             image_paths: Vec::new(),
             document_text: HashMap::new(),
             visible_rows: Vec::new(),
+            filtered_rows: Vec::new(),
+            search_rows: None,
             filters: Vec::new(),
             filters_enabled: Vec::new(),
             subdelimiter: SharedString::default(),
@@ -201,7 +208,17 @@ impl QrateTableDelegate {
     }
 
     fn recompute_visible(&mut self) {
-        self.visible_rows = compute_visible_rows(&self.rows, &self.filters, &self.subdelimiter);
+        self.filtered_rows = compute_visible_rows(&self.rows, &self.filters, &self.subdelimiter);
+        self.visible_rows = match &self.search_rows {
+            Some(hits) => {
+                let kept: HashSet<usize> = self.filtered_rows.iter().copied().collect();
+                hits.iter()
+                    .copied()
+                    .filter(|row| kept.contains(row))
+                    .collect()
+            }
+            None => self.filtered_rows.clone(),
+        };
         // `range` is in view coordinates, which this just redefined.
         self.range = None;
     }
@@ -347,29 +364,64 @@ impl QrateTableDelegate {
         hits
     }
 
-    /// The visible rows with a linked file that `score` can rate, best first and at most `limit` of
-    /// them, addressed like search hits.
-    pub(crate) fn ranked_matches(
+    /// Every filtered row with a linked file that `score` can rate, as `(score, source_row,
+    /// data_col)` best first. Ignores any narrowing a previous search applied.
+    pub(crate) fn ranked_rows(
         &self,
         score: impl Fn(&Path) -> Option<f32>,
-        limit: usize,
-    ) -> Vec<(usize, usize)> {
+    ) -> Vec<(f32, usize, usize)> {
         let mut scored: Vec<(f32, usize, usize)> = self
-            .visible_rows
+            .filtered_rows
             .iter()
-            .enumerate()
-            .filter_map(|(view, &source)| {
+            .filter_map(|&source| {
                 let path = self.image_paths.get(source)?.as_ref()?;
                 let col = file_column(self.rows.get(source)?, path);
-                Some((score(path)?, view, col))
+                Some((score(path)?, source, col))
             })
             .collect();
         scored.sort_by(|a, b| b.0.total_cmp(&a.0));
         scored
+    }
+
+    /// The filtered rows with a hit for `needle`, in cells or linked files, as source rows in order.
+    /// Ignores any narrowing a previous search applied.
+    pub(crate) fn hit_rows(&self, needle: &str, opts: SearchOpts) -> Vec<usize> {
+        let mut hits = find_matches(
+            &self.rows,
+            &self.filtered_rows,
+            self.columns.len(),
+            needle,
+            opts,
+        );
+        if opts.files {
+            hits.extend(find_file_matches(
+                &self.rows,
+                &self.filtered_rows,
+                &self.image_paths,
+                &self.document_text,
+                needle,
+                opts,
+            ));
+        }
+        let mut rows: Vec<usize> = hits
             .into_iter()
-            .take(limit)
-            .map(|(_, view, col)| (view, col))
-            .collect()
+            .map(|(at, _)| self.filtered_rows[at])
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+        rows
+    }
+
+    /// Show only `rows`, in that order, until a later call passes `None`. Column filters still apply.
+    /// Returns whether the view changed.
+    pub(crate) fn set_search_rows(&mut self, rows: Option<Vec<usize>>) -> bool {
+        if self.search_rows == rows {
+            return false;
+        }
+        self.search_rows = rows;
+        self.recompute_visible();
+        self.editing = EditState::Idle;
+        true
     }
 
     /// Every distinct file the rows link to.
@@ -456,7 +508,9 @@ impl QrateTableDelegate {
         self.history = History::default();
         self.filters = vec![HashSet::new(); self.columns.len()];
         self.filters_enabled = vec![false; self.columns.len()];
-        self.visible_rows = (0..self.rows.len()).collect();
+        self.search_rows = None;
+        self.filtered_rows = (0..self.rows.len()).collect();
+        self.visible_rows = self.filtered_rows.clone();
         // Stale — indexes into the old row set; `TablePanel` re-resolves right after.
         self.image_paths = vec![None; self.rows.len()];
         self.values_generation += 1;
@@ -756,6 +810,8 @@ impl QrateTableDelegate {
     /// What every row insert or delete invalidates. The view is rebuilt rather than patched: a
     /// filtered view's indices all move, and `recompute_visible` already drops the range for that.
     fn rows_changed(&mut self) {
+        // Hits are source rows, which an insert or delete just shifted.
+        self.search_rows = None;
         self.recompute_visible();
         self.editing = EditState::Idle;
         self.values_generation += 1;
@@ -1892,7 +1948,7 @@ mod app_tests {
 
     /// Visual results come best first, skip rows the index cannot rate, and stop at the limit.
     #[gpui::test]
-    fn ranked_matches_order_by_score_and_respect_the_limit(cx: &mut TestAppContext) {
+    fn search_rows_reorder_the_view_and_searches_still_see_every_row(cx: &mut TestAppContext) {
         let state = table(cx);
         cx.update(|cx| {
             state.update(cx, |state, _| {
@@ -1908,13 +1964,30 @@ mod app_tests {
                     Some("2.jpg") => Some(0.9),
                     _ => None,
                 };
-                let rows: Vec<usize> = delegate
-                    .ranked_matches(score, 5)
-                    .into_iter()
-                    .map(|(row, _)| row)
-                    .collect();
-                assert_eq!(rows, vec![2, 0]);
-                assert_eq!(delegate.ranked_matches(score, 1).len(), 1);
+                let rows = |d: &super::QrateTableDelegate| -> Vec<usize> {
+                    d.ranked_rows(score)
+                        .into_iter()
+                        .map(|(_, row, _)| row)
+                        .collect()
+                };
+                assert_eq!(rows(delegate), vec![2, 0]);
+
+                delegate.set_search_rows(Some(vec![2]));
+                assert_eq!(delegate.visible(), &[2]);
+                assert_eq!(
+                    rows(delegate),
+                    vec![2, 0],
+                    "a narrowed view still ranks every row"
+                );
+
+                delegate.set_search_rows(Some(vec![3, 0]));
+                assert_eq!(delegate.visible(), &[3, 0], "hits keep their order");
+                delegate.remove_rows(&[1]);
+                assert_eq!(
+                    delegate.visible(),
+                    &[0, 1, 2],
+                    "a delete drops the stale hits"
+                );
             });
         });
     }
