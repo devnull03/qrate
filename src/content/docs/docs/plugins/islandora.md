@@ -9,9 +9,9 @@ Islandora is an open-source repository platform that libraries and archives use 
 collections. An Islandora site keeps its controlled vocabularies — subjects, genres, names — as
 taxonomies.
 
-The Islandora plugin holds a column in qrate to those vocabularies. It checks each value against
-the site, and it offers terms from the site while you type. qrate ships this plugin as the first
-example of what a plugin can do.
+The Islandora plugin connects a qrate column to those vocabularies. It checks each value against
+the site, and it offers terms from the site while you type. The official plugin catalog lists the
+plugin as an example of what a plugin can do.
 
 ## What the plugin does
 
@@ -45,6 +45,21 @@ A first pass over a wide sheet checks up to 200 new values per run. The rest wai
 which the next edit starts.
 
 ## Install the plugin
+
+Open the [Islandora plugin page](https://qrate.dvnl.work/plugins/org.islandora.vocabularies/) and
+select **Open in qrate**. qrate opens a review screen for the official catalog release. Review the
+source, version, package hash, and requested permissions. Then select **Install**.
+
+If you installed qrate from source, the button does not open qrate. Use the Discover Plugins
+command and select Islandora instead.
+
+You can also open the install screen directly:
+[Open Islandora in qrate](qrate://plugin/install?source=registry&id=org.islandora.vocabularies).
+
+The [Islandora plugin repository](https://github.com/devnull03/qrate-islandora-plugin) has its
+source code and release history.
+
+## Manual install
 
 1. Open **Plugins ▸ Plugins Folder**.
 2. Put the plugin folder there. To clone it, run

@@ -62,7 +62,7 @@ const urlFor = (rel) => {
 // first is not a docs page, the second is deliberately unpublished.
 const rewriteLinks = (body, srcDir) =>
   body.replace(/\]\(([^)]+)\)/g, (whole, href) => {
-    if (/^(https?:|mailto:|#)/.test(href)) return whole;
+    if (/^(https?:|mailto:|qrate:|#)/.test(href)) return whole;
 
     const [path, hash = ''] = href.split('#');
     const frag = hash ? `#${hash}` : '';
