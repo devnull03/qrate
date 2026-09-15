@@ -54,10 +54,9 @@ const FULL_FALLBACK: u32 = 2048;
 /// How much decoded image data may stay resident. gpui's asset cache never evicts on its own, so
 /// without a ceiling a scroll through a large collection retains every thumbnail it passes.
 ///
-/// ponytail: one global budget, FIFO, and a linear scan of the held entries per drawn card. It
-/// only has to exceed what is on screen at once — a gallery shows a few dozen cards — so eviction
-/// never touches a visible card and true LRU buys nothing. The scan is a few thousand path
-/// comparisons a frame at this budget; index the deque by key if the budget is ever raised much.
+/// ponytail: one global budget, least recently drawn first, and a linear scan of the held entries
+/// per drawn card. The scan is a few thousand path comparisons a frame at this budget; index the
+/// deque by key if the budget is ever raised much.
 const BUDGET: usize = 192 * 1024 * 1024;
 
 /// Formats the `image` crate decodes for us directly — gpui's own list minus AVIF, which
@@ -513,7 +512,7 @@ fn downscale(image: image::DynamicImage, max_edge: u32) -> image::RgbaImage {
         .to_rgba8()
 }
 
-/// Everything currently decoded, oldest first, and what it costs.
+/// Everything currently decoded, least recently drawn first, and what it costs.
 ///
 /// Holding the `Arc` here is deliberate: releasing an image needs the handle itself, not just its
 /// cache slot, because the GPU-side texture is freed by `App::drop_image` rather than by the last
@@ -522,13 +521,25 @@ fn downscale(image: image::DynamicImage, max_edge: u32) -> image::RgbaImage {
 struct Live {
     entries: VecDeque<((PathBuf, u32, usize), Arc<RenderImage>)>,
     bytes: usize,
+    /// Whether a [`release`] is already queued for the next frame.
+    releasing: bool,
 }
 
 impl Global for Live {}
 
-/// Account for a freshly-loaded image and release older ones until the total is back under
-/// `budget`. Called on every frame a preview is drawn, so re-registering an image already tracked
-/// has to be free.
+fn cost(image: &RenderImage) -> usize {
+    // ponytail: frame 0 only, so an animated GIF is undercounted. Costs accuracy on a format the
+    // budget already tolerates; revisit if animations become common in collections.
+    image.as_bytes(0).map_or(0, <[u8]>::len)
+}
+
+/// Account for an image being drawn, and queue a [`release`] when the total is over `budget`.
+/// Called every time a preview is laid out or painted, so an image already tracked only moves to
+/// the back: what is on screen is always the last thing released.
+///
+/// Never releases anything itself. This runs inside a frame, and freeing an image there pulls its
+/// GPU texture out from under a sprite the same frame already painted, which gpui panics on when
+/// it presents the frame.
 ///
 /// `budget` is a parameter rather than reading [`BUDGET`] directly so a test can drive eviction
 /// with a handful of small images instead of allocating its way past the real ceiling.
@@ -539,28 +550,50 @@ fn retain(
     window: &mut Window,
     cx: &mut App,
 ) {
-    // ponytail: frame 0 only, so an animated GIF is undercounted. Costs accuracy on a format the
-    // budget already tolerates; revisit if animations become common in collections.
-    let cost = image.as_bytes(0).map_or(0, <[u8]>::len);
     let live = cx.default_global::<Live>();
-    if live.entries.iter().any(|(key, _)| key == source) {
-        return;
+    match live.entries.iter().position(|(key, _)| key == source) {
+        Some(at) => {
+            if let Some(entry) = live.entries.remove(at) {
+                live.entries.push_back(entry);
+            }
+        }
+        None => {
+            live.entries.push_back((source.clone(), image.clone()));
+            live.bytes += cost(image);
+        }
     }
-    live.entries.push_back((source.clone(), image.clone()));
-    live.bytes += cost;
+    if live.bytes > budget && !live.releasing {
+        live.releasing = true;
+        window.on_next_frame(move |window, cx| release(budget, window, cx));
+    }
+}
 
-    // Never evict the entry just added, or a single oversized image would thrash forever.
-    while cx.global::<Live>().bytes > budget && cx.global::<Live>().entries.len() > 1 {
-        let live = cx.global_mut::<Live>();
+/// Free the least recently drawn images until the total is back under `budget`. Runs at the start
+/// of a frame, before anything is laid out, so no sprite that frame paints can point at a freed
+/// texture.
+fn release(budget: usize, window: &mut Window, cx: &mut App) {
+    let live = cx.default_global::<Live>();
+    live.releasing = false;
+    let mut released = Vec::new();
+    // Never the most recent entry, or a single oversized image would thrash forever.
+    while live.bytes > budget && live.entries.len() > 1 {
         let Some((key, image)) = live.entries.pop_front() else {
             break;
         };
-        live.bytes = live
-            .bytes
-            .saturating_sub(image.as_bytes(0).map_or(0, <[u8]>::len));
+        live.bytes = live.bytes.saturating_sub(cost(&image));
+        released.push((key, image));
+    }
+    if released.is_empty() {
+        return;
+    }
+    for (key, image) in released {
         cx.remove_asset::<Preview>(&key);
         cx.drop_image(image, Some(window));
     }
+    // A cached view replays the sprites of its last paint without painting again, and those may
+    // be the images just freed. Repaint everything so no frame presents one.
+    window.refresh();
+    cx.refresh_windows();
 }
 
 /// The file's contents fit to whatever box the caller gives it, or a type icon when there is
@@ -1024,6 +1057,17 @@ mod tests {
                 let key = (PathBuf::from(format!("/f/{n}.png")), crate::CARD, 0);
                 crate::retain(&key, &image(), budget, window, cx);
             }
+            assert_eq!(
+                cx.global::<crate::Live>().entries.len(),
+                8,
+                "nothing is freed inside the frame that drew it"
+            );
+
+            // Drawn again, so it is no longer the least recently drawn.
+            let first = cx.global::<crate::Live>().entries[0].clone();
+            crate::retain(&first.0, &first.1, budget, window, cx);
+
+            crate::release(budget, window, cx);
             let live = cx.global::<crate::Live>();
             assert!(
                 live.bytes <= budget,
@@ -1031,10 +1075,11 @@ mod tests {
                 live.bytes
             );
             assert_eq!(live.entries.len(), 3, "older images were released");
+            let kept: Vec<PathBuf> = live.entries.iter().map(|(key, _)| key.0.clone()).collect();
             assert_eq!(
-                live.entries.front().map(|(key, _)| key.0.clone()),
-                Some(PathBuf::from("/f/5.png")),
-                "the survivors are the most recent, oldest first"
+                kept,
+                ["/f/6.png", "/f/7.png", "/f/0.png"].map(PathBuf::from),
+                "the survivors are the most recently drawn, in that order"
             );
 
             // Re-registering something already held must not double-count it: this runs on every
