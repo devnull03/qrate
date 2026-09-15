@@ -40,7 +40,7 @@ fn prepare() -> Result<AgentRuntime, String> {
     let program = root.join(if cfg!(windows) { "pi.exe" } else { "pi" });
     let package = root.join("qrate-pi-extension");
     let extension = package.join("extensions/qrate.ts");
-    let extension_bridge = package.join("src/bridge.ts");
+    let extension_cli = package.join("src/cli.ts");
     let extension_permissions = package.join("src/permissions.ts");
     let source_system = package.join("SYSTEM.md");
     let dark_theme = root.join("theme/dark.json");
@@ -48,7 +48,7 @@ fn prepare() -> Result<AgentRuntime, String> {
     for required in [
         &program,
         &extension,
-        &extension_bridge,
+        &extension_cli,
         &extension_permissions,
         &source_system,
         &dark_theme,
