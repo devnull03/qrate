@@ -15,8 +15,9 @@ checks the data against validators, and exports it to the formats other systems 
 
 ## Plugins
 
-- [Plugins](plugins/index.md) — what a plugin can do, and how to write one
-- [Islandora plugin](plugins/islandora.md) — the first plugin qrate ships with
+- [Plugins](plugins/index.md) — find, install, and manage plugins
+- [Develop plugins](plugins/developing.md) — create, test, and publish a plugin
+- [Islandora plugin](plugins/islandora.md) — use Islandora vocabularies in qrate
 
 ## For contributors
 
