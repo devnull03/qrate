@@ -551,6 +551,16 @@ impl TablePanel {
                 },
             )
         });
+        let policy = cx
+            .try_global::<settings::project::CurrentProject>()
+            .and_then(|project| {
+                project
+                    .data
+                    .values
+                    .get(settings::project::IMPORT_DUPLICATE_POLICY_KEY)
+            })
+            .map(|value| file_ingest::duplicates::DuplicatePolicy::parse(&value.text()))
+            .unwrap_or_default();
         cx.spawn_in(window, async move |this, cx| {
             let plan = match task.await {
                 Ok(plan) => plan,
@@ -564,76 +574,129 @@ impl TablePanel {
             for warning in &plan.warnings {
                 log::warn!("Left a dropped path out of the import: {warning:?}");
             }
-            this.update_in(cx, |_this, window, cx| {
-                let files = plan
+            this.update_in(cx, |this, window, cx| {
+                let project = cx.global::<settings::project::CurrentProject>();
+                let files_root = project
+                    .data
+                    .values
+                    .get(settings::project::FILES_FOLDER_KEY)
+                    .map(|folder| std::path::PathBuf::from(folder.text().as_ref()));
+                let (title_name, file_name) = project.data.columns.iter().fold(
+                    (None, None),
+                    |(title, file), column| {
+                        match settings::columns::ColumnType::from_declared(&column.data_type) {
+                            settings::columns::ColumnType::Title => {
+                                (Some(column.name.clone()), file)
+                            }
+                            settings::columns::ColumnType::Filename => {
+                                (title, Some(column.name.clone()))
+                            }
+                            _ => (title, file),
+                        }
+                    },
+                );
+                let (title_col, file_col) = {
+                    let delegate = this.state.read(cx).delegate();
+                    (
+                        title_name.as_deref().and_then(|name| delegate.data_col(name)),
+                        file_name.as_deref().and_then(|name| delegate.data_col(name)),
+                    )
+                };
+                let existing = this
+                    .state
+                    .read(cx)
+                    .delegate()
+                    .existing_components(file_col, files_root.as_deref());
+                let resolved = file_ingest::duplicates::resolve(
+                    plan,
+                    &existing,
+                    settings::filenames::keys,
+                    policy,
+                );
+
+                let files = resolved
+                    .plan
                     .components
                     .iter()
                     .filter(|component| component.kind == file_ingest::EntryKind::File)
                     .count();
-                let folders = plan.components.len() - files;
+                let folders = resolved.plan.components.len() - files;
+                let duplicates = resolved.duplicates();
                 let detail = format!(
-                    "Add {} component{} ({} file{}, {} folder{})?{}",
-                    plan.components.len(),
-                    if plan.components.len() == 1 { "" } else { "s" },
+                    "Add {} component{} ({} file{}, {} folder{})?{}{}{}",
+                    resolved.plan.components.len(),
+                    if resolved.plan.components.len() == 1 { "" } else { "s" },
                     files,
                     if files == 1 { "" } else { "s" },
                     folders,
                     if folders == 1 { "" } else { "s" },
-                    if plan.warnings.is_empty() {
+                    if duplicates == 0 {
                         String::new()
                     } else {
-                        format!(" {} path warning(s) will be skipped.", plan.warnings.len())
+                        format!(" {duplicates} are already in this project.")
+                    },
+                    if resolved.ambiguous() == 0 {
+                        String::new()
+                    } else {
+                        format!(
+                            " {} match several rows and will be added as new rows.",
+                            resolved.ambiguous()
+                        )
+                    },
+                    if resolved.plan.warnings.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " {} path warning(s) will be skipped.",
+                            resolved.plan.warnings.len()
+                        )
                     }
                 );
+                // Only a drop that actually repeats material asks what to do about it.
+                let choices: &[&str] = match duplicates {
+                    0 => &["Import", "Cancel"],
+                    _ => &["Skip duplicates", "Update existing", "Add all as new", "Cancel"],
+                };
                 let answer = window.prompt(
                     PromptLevel::Info,
                     "Import dropped files",
                     Some(&detail),
-                    &["Import", "Cancel"],
+                    choices,
                     cx,
                 );
                 cx.spawn_in(window, async move |this, cx| {
-                    if answer.await.unwrap_or(1) != 0 {
-                        return;
-                    }
+                    let chosen = answer.await.unwrap_or(usize::MAX);
+                    let chosen = match (duplicates, chosen) {
+                        (0, 0) => policy,
+                        (_, 0) => file_ingest::duplicates::DuplicatePolicy::Skip,
+                        (_, 1) => file_ingest::duplicates::DuplicatePolicy::Update,
+                        (_, 2) => file_ingest::duplicates::DuplicatePolicy::AddAsNew,
+                        _ => return,
+                    };
                     this.update(cx, |this, cx| {
-                        let project = cx.global::<settings::project::CurrentProject>();
-                        let files_root = project
-                            .data
-                            .values
-                            .get(settings::project::FILES_FOLDER_KEY)
-                            .map(|folder| std::path::PathBuf::from(folder.text().as_ref()));
-                        let (title_name, file_name) = project.data.columns.iter().fold(
-                            (None, None),
-                            |(title, file), column| {
-                                match settings::columns::ColumnType::from_declared(
-                                    &column.data_type,
-                                ) {
-                                    settings::columns::ColumnType::Title => {
-                                        (Some(column.name.clone()), file)
-                                    }
-                                    settings::columns::ColumnType::Filename => {
-                                        (title, Some(column.name.clone()))
-                                    }
-                                    _ => (title, file),
-                                }
-                            },
-                        );
+                        // Re-resolving is what makes the buttons mean what they say.
+                        let resolved = match chosen == policy {
+                            true => resolved,
+                            false => file_ingest::duplicates::resolve(
+                                resolved.plan,
+                                &existing,
+                                settings::filenames::keys,
+                                chosen,
+                            ),
+                        };
                         this.state.update(cx, |state, cx| {
-                            let title_col = title_name
-                                .as_deref()
-                                .and_then(|name| state.delegate().data_col(name));
-                            let file_col = file_name
-                                .as_deref()
-                                .and_then(|name| state.delegate().data_col(name));
                             let added = state.delegate_mut().append_components(
-                                &plan,
+                                &resolved,
                                 title_col,
                                 file_col,
                                 None,
                                 files_root.as_deref(),
                             );
-                            log::info!("imported {added} dropped components into the open project");
+                            log::info!(
+                                "imported {added} dropped component(s) as {}, reusing {} already in the project",
+                                chosen.key(),
+                                resolved.duplicates()
+                            );
                             state.refresh(cx);
                             cx.emit(TableChanged);
                             cx.notify();

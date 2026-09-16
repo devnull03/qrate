@@ -56,6 +56,8 @@ pub(crate) enum Step {
     RowsAdded {
         at: usize,
         rows: Vec<Row>,
+        /// Cells an import re-linked on rows already in the table, so it undoes as one step.
+        cells: Vec<(usize, usize, SharedString, SharedString)>,
         before_structure: Vec<settings::project::RowStructure>,
         after_structure: Vec<settings::project::RowStructure>,
     },
@@ -95,7 +97,7 @@ impl Step {
     fn is_empty(&self) -> bool {
         match self {
             Step::Cells(cells) => cells.is_empty(),
-            Step::RowsAdded { rows, .. } => rows.is_empty(),
+            Step::RowsAdded { rows, cells, .. } => rows.is_empty() && cells.is_empty(),
             Step::RowsRemoved { rows, .. } => rows.is_empty(),
             Step::Renamed { before, after, .. } => before == after,
             Step::ColumnMoved { from, to } => from == to,
