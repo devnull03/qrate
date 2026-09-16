@@ -189,6 +189,25 @@ impl CurrentProject {
         queue_write(&file, key, &value, cx);
     }
 
+    /// Follow the grid's column set. The Settings pages, the declared types and the preview
+    /// resolver all read this list, so a column added or renamed in the grid stays invisible to
+    /// them until it lands here.
+    pub fn set_columns(headers: Vec<String>, renamed: Option<(&str, &str)>, cx: &mut gpui::App) {
+        // Undo lands here after every step, and a write wakes every observer of the project.
+        if cx
+            .try_global::<Self>()
+            .is_none_or(|project| renamed.is_none() && project.data.headers == headers)
+        {
+            return;
+        }
+        let project = cx.global_mut::<Self>();
+        if let Some((before, after)) = renamed
+            && let Some(column) = project.data.columns.iter_mut().find(|c| c.name == before)
+        {
+            column.name = after.to_string();
+        }
+        project.data.headers = headers;
+    }
     /// Declares a column's type, updating the cache validators read and writing `__columns`.
     /// Synchronous rather than queued: [`ProjectSettingsWriter`] is keyed by `__settings` key and
     /// this is another table, and picking a type is one deliberate click, not a drag.

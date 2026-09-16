@@ -134,6 +134,11 @@ impl History {
         }
     }
 
+    /// The step just recorded, for a command built from two edits that must undo as one.
+    pub(crate) fn last_mut(&mut self) -> Option<&mut Step> {
+        self.done.last_mut()
+    }
+
     /// The last step, to be replayed backwards. `None` when there is nothing left to undo.
     pub(crate) fn undo(&mut self) -> Option<Step> {
         let step = self.done.pop()?;

@@ -6,7 +6,8 @@ use gpui::{
 };
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{
-    ActiveTheme,
+    ActiveTheme, IconName, Sizable as _,
+    button::{Button, ButtonVariants as _},
     table::{Column, TableState},
 };
 
@@ -17,7 +18,7 @@ use crate::note::{self, Target};
 
 pub(crate) const COL_IX: usize = 0;
 
-const WIDTH: f32 = 88.;
+const WIDTH: f32 = 128.;
 
 #[derive(Clone)]
 struct RowDrag(usize);
@@ -67,7 +68,7 @@ pub(crate) fn render_td(
     let worst = Diagnostics::worst_at(&location.dataset, Some(row_ix), None, cx);
     let tip = note::tooltip_text(&location, cx);
     let depth = delegate.row_depth(view_ix);
-    let has_children = delegate.row_has_children(row_ix);
+    let children = delegate.row_child_count(row_ix);
     let expanded = delegate.row_expanded(row_ix);
 
     div()
@@ -76,7 +77,7 @@ pub(crate) fn render_td(
         .relative()
         .flex()
         .items_center()
-        .pl(px(6. + depth.min(4) as f32 * 12.))
+        .pl(px(6.))
         .gap_1()
         .on_drag(RowDrag(row_ix), move |drag, _, _, cx| {
             cx.new(|_| RowDragPreview(drag.0))
@@ -109,25 +110,46 @@ pub(crate) fn render_td(
             ),
         )
         .bg(bg)
+        // The Problems panel's nesting: a tint under anything inside a group, and one guide line
+        // per level instead of bare indentation.
+        .when(depth > 0 && !highlighted, |d| {
+            d.bg(cx.theme().muted.opacity(0.35))
+        })
+        .children((0..depth.min(4)).map(|_| {
+            div()
+                .w(px(12.))
+                .h_full()
+                .flex_shrink_0()
+                .border_l_1()
+                .border_color(cx.theme().border)
+        }))
         .text_color(fg)
         .when(highlighted, |d| d.font_weight(FontWeight::SEMIBOLD))
-        .child(
-            div()
-                .id(("row-chevron", row_ix))
-                .w(px(14.))
-                .cursor_pointer()
-                .when(has_children, |chevron| {
-                    chevron
-                        .child(if expanded { "▾" } else { "▸" })
-                        .on_click(cx.listener(move |state, _, _, cx| {
-                            state.delegate_mut().toggle_expanded(row_ix);
-                            let expanded = state.delegate().expanded_rows();
-                            state.refresh(cx);
-                            crate::persist_expanded(&expanded, cx);
-                            cx.notify();
-                        }))
-                }),
-        )
+        .when(children > 0, |d| {
+            d.child(
+                Button::new(("row-chevron", row_ix))
+                    .text()
+                    .small()
+                    .icon(match expanded {
+                        true => IconName::ChevronDown,
+                        false => IconName::ChevronRight,
+                    })
+                    .label(format!("({children})"))
+                    .accessibility_label(format!(
+                        "{} component {}",
+                        if expanded { "Collapse" } else { "Expand" },
+                        row_ix + 1
+                    ))
+                    .on_click(cx.listener(move |state, _, _, cx| {
+                        cx.stop_propagation();
+                        state.delegate_mut().toggle_expanded(row_ix);
+                        let expanded = state.delegate().expanded_rows();
+                        state.refresh(cx);
+                        crate::persist_expanded(&expanded, cx);
+                        cx.notify();
+                    })),
+            )
+        })
         .child(SharedString::from((row_ix + 1).to_string()))
         .when_some(worst, |d, severity| d.child(note::marker(severity, cx)))
         .when_some(tip, |d, text| {

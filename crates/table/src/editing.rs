@@ -57,10 +57,21 @@ pub(crate) fn start(
         cx.spawn_in(window, async move |_, cx| {
             if let Ok(Ok(Some(paths))) = receiver.await
                 && let Some(path) = paths.first()
-                && let Some(name) = path.file_name().and_then(|name| name.to_str())
             {
-                let name: SharedString = name.to_owned().into();
                 let parent = path.parent().map(Path::to_path_buf);
+                // Relative to the files folder when the file is inside it, the way an imported
+                // row names its file. A file from anywhere else keeps its absolute path, since a
+                // bare name there is one the preview resolver can never find.
+                let root = match had_folder {
+                    true => Some(Path::new(folder.as_ref()).to_path_buf()),
+                    false => parent.clone(),
+                };
+                let name: SharedString =
+                    match root.as_deref().map(|root| path.strip_prefix(root)) {
+                        Some(Ok(relative)) => relative.to_string_lossy().replace('\\', "/"),
+                        _ => path.to_string_lossy().into_owned(),
+                    }
+                    .into();
                 let _ = cx.update(|_, cx| {
                     // A project with no files folder resolves every row to no file, so the picked
                     // file would name a preview qrate could never find. The first file chosen by
@@ -298,6 +309,41 @@ mod tests {
                     "the preview resolves without reopening the project"
                 );
             });
+        });
+    }
+
+    /// A file picked from outside the files folder has no name the folder's index knows, so the
+    /// cell has to carry where it is or the row previews nothing.
+    #[gpui::test]
+    async fn a_file_picked_outside_the_files_folder_still_resolves(cx: &mut TestAppContext) {
+        let root = std::env::temp_dir().join("qrate-editing-outside-pick");
+        let _ = std::fs::remove_dir_all(&root);
+        let (folder, elsewhere) = (root.join("collection"), root.join("elsewhere"));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let file = elsewhere.join("loose.jpg");
+        std::fs::write(&file, "x").unwrap();
+
+        let state = panel(cx);
+        cx.update(|cx| {
+            settings::project::CurrentProject::set_text(
+                settings::project::FILES_FOLDER_KEY,
+                folder.to_string_lossy().into_owned().into(),
+                cx,
+            );
+        });
+        let window = cx.windows()[0];
+        cx.update_window(window, |_, window, cx| {
+            state.update(cx, |state, cx| {
+                editing::start(state.delegate_mut(), 0, 0, window, cx);
+            });
+        })
+        .unwrap();
+        cx.simulate_path_prompt_response(|_| Some(vec![file.clone()]));
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            assert_eq!(state.read(cx).delegate().row_image(0), Some(file.as_path()));
         });
     }
 

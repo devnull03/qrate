@@ -614,6 +614,7 @@ mod tests {
             &headers,
             &[1],
             &[vec!["One.".into()]],
+            None,
             &[typed.clone(), fixed.clone()],
         )
         .unwrap();
@@ -655,7 +656,7 @@ mod tests {
                 )
             })
             .collect();
-        save_dataset(&path, &headers, &[1], &[vec!["5".into()]], &entries).unwrap();
+        save_dataset(&path, &headers, &[1], &[vec!["5".into()]], None, &entries).unwrap();
 
         let first = page(&path, EntryId::MAX, 2, None).unwrap();
         let (day, time) = local_times(&[first[0].entry.at]).remove(0);
@@ -712,7 +713,7 @@ mod tests {
                 None,
             ),
         ];
-        save_dataset(&path, &headers, &[1], &[vec!["b".into()]], &entries).unwrap();
+        save_dataset(&path, &headers, &[1], &[vec!["b".into()]], None, &entries).unwrap();
 
         let row = page(&path, EntryId::MAX, 10, Some(1)).unwrap();
         assert_eq!(row.iter().map(|l| l.entry.id).collect::<Vec<_>>(), vec![1]);
@@ -771,7 +772,7 @@ mod tests {
                 )
             })
             .collect();
-        save_dataset(&path, &headers, &[1], &[vec!["6".into()]], &log).unwrap();
+        save_dataset(&path, &headers, &[1], &[vec!["6".into()]], None, &log).unwrap();
 
         // The oldest entry of the six, named — the one a retention rule would otherwise reach first.
         set_label(&path, 1, Some("Before ingest")).unwrap();
@@ -820,6 +821,7 @@ mod tests {
             &headers,
             &[1],
             &[vec!["f".into()]],
+            None,
             &[first.clone(), second.clone()],
         )
         .unwrap();

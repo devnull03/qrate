@@ -191,6 +191,12 @@ impl QrateTableDelegate {
         self.visible_depths.get(view).copied().unwrap_or_default()
     }
 
+    pub(crate) fn row_child_count(&self, source: usize) -> usize {
+        self.row_ids
+            .get(source)
+            .map_or(0, |row_id| self.hierarchy.child_count(*row_id))
+    }
+
     pub(crate) fn row_has_children(&self, source: usize) -> bool {
         self.row_ids
             .get(source)
@@ -1572,6 +1578,46 @@ impl QrateTableDelegate {
         self.edit_hierarchy(|hierarchy| hierarchy.move_row(row_id, placement))
     }
 
+    /// Wrap `rows` in a new blank parent that takes the first one's place, as one undo step. A row
+    /// whose ancestor is also picked travels with that ancestor rather than being pulled out of it.
+    pub(crate) fn group_rows(&mut self, rows: &[usize]) -> Result<(), crate::hierarchy::Error> {
+        let Some(&first) = rows.first() else {
+            return Ok(());
+        };
+        let picked = rows
+            .iter()
+            .map(|&row| {
+                self.row_id(row)
+                    .ok_or(crate::hierarchy::Error::UnknownRow(row as i64))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let nested: HashSet<_> = picked
+            .iter()
+            .filter_map(|&id| self.hierarchy.subtree(id).ok())
+            .flat_map(|subtree| subtree.into_iter().skip(1))
+            .collect();
+        self.insert_rows(first, None);
+        let group = self.row_ids[first];
+        for id in picked.into_iter().filter(|id| !nested.contains(id)) {
+            // A fresh, childless parent cannot be a descendant of anything picked.
+            if let Err(error) = self.hierarchy.move_row(id, Placement::ChildOf(group)) {
+                log::warn!(
+                    "Row {id} stayed where it was instead of joining the new group: {error:?}"
+                );
+            }
+        }
+        self.hierarchy.set_expanded(group, true);
+        let structure = self.hierarchy.rows().to_vec();
+        if let Some(Step::RowsAdded {
+            after_structure, ..
+        }) = self.history.last_mut()
+        {
+            *after_structure = structure;
+        }
+        self.recompute_visible();
+        Ok(())
+    }
+
     pub(crate) fn subtree_sources(&self, source: usize) -> Vec<usize> {
         let Some(row_id) = self.row_ids.get(source).copied() else {
             return Vec::new();
@@ -2610,9 +2656,9 @@ mod app_tests {
                     Some("Series/image.jpg")
                 );
                 assert_eq!(delegate.cell(5, 1).map(AsRef::as_ref), Some("image.jpg"));
-                assert_eq!(delegate.undo(), Some(true));
+                assert!(delegate.undo().is_some());
                 assert_eq!(delegate.row_count(), 4);
-                assert_eq!(delegate.redo(), Some(true));
+                assert!(delegate.redo().is_some());
                 assert_eq!(delegate.row_count(), 6);
             });
         });
@@ -2672,7 +2718,7 @@ mod app_tests {
                 assert_eq!(delegate.row_count(), 7);
                 let structure = delegate.row_structure();
                 assert_eq!(structure[6].parent_id, Some(structure[4].row_id));
-                assert_eq!(delegate.undo(), Some(true));
+                assert!(delegate.undo().is_some());
                 assert_eq!(delegate.row_count(), 6);
             });
         });
@@ -2728,6 +2774,36 @@ mod app_tests {
                 };
                 assert_eq!(parent_of(3), Some((Some(1), 0)));
                 assert_eq!(parent_of(4), Some((Some(1), 1)));
+            });
+        });
+    }
+
+    /// Grouping is one gesture, so the new parent and the moves under it undo together.
+    #[gpui::test]
+    fn grouping_rows_adds_one_parent_and_undoes_as_one_step(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.group_rows(&[1, 2]).unwrap();
+                assert_eq!(delegate.row_count(), 5);
+                let group = delegate.row_ids()[1];
+                let parent_of = |delegate: &super::QrateTableDelegate, id| {
+                    delegate
+                        .row_structure()
+                        .iter()
+                        .find(|row| row.row_id == id)
+                        .and_then(|row| row.parent_id)
+                };
+                assert_eq!(parent_of(delegate, 2), Some(group));
+                assert_eq!(parent_of(delegate, 3), Some(group));
+                assert_eq!(parent_of(delegate, group), None);
+                assert_eq!(delegate.row_child_count(1), 2);
+
+                delegate.undo();
+                assert_eq!(delegate.row_count(), 4);
+                assert_eq!(parent_of(delegate, 2), None);
+                assert_eq!(parent_of(delegate, 3), None);
             });
         });
     }
