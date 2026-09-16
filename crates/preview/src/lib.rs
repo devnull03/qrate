@@ -677,7 +677,13 @@ pub fn thumb(path: Option<&Path>, max_edge: u32, cx: &App) -> AnyElement {
 /// ever shows up in a memory profile.
 pub fn source(path: &Path, max_edge: u32, page: usize) -> ImageSource {
     let extension = extension(path).unwrap_or_default();
-    if extension == "svg" || (max_edge == FULL && page == 0 && is_raster(&extension)) {
+    // ponytail: a GIF goes to gpui whole at every size, because only gpui's own decode keeps the
+    // frames that animate it. It skips the thumbnail cache and the memory budget, so a gallery of
+    // large GIFs holds them all; downscale every frame here if that shows up.
+    if extension == "svg"
+        || extension == "gif"
+        || (max_edge == FULL && page == 0 && is_raster(&extension))
+    {
         return ImageSource::Resource(path.to_path_buf().into());
     }
     let key = (path.to_path_buf(), max_edge, page);
@@ -767,6 +773,10 @@ mod tests {
         assert!(native("/f/logo.svg", CARD, 0));
         assert!(native("/f/logo.svg", FULL, 0));
 
+        assert!(
+            native("/f/anim.gif", CARD, 0),
+            "the Details pane animates too"
+        );
         // Capped sizes stay on the ladder — a card wants the shrunk, disk-cached copy.
         assert!(!native("/f/scan.jpg", CARD, 0));
         // Formats gpui cannot read at all, at any size.
