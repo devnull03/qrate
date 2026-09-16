@@ -103,7 +103,13 @@ pub(crate) fn render_cell(
                 };
                 let text = file_ingest::normalized_path(path);
                 window.defer(cx, move |_, cx| {
-                    crate::write_cell(row_ix, col_ix, text.into(), cx)
+                    crate::write_cell(
+                        row_ix,
+                        col_ix,
+                        text.into(),
+                        settings::history::Origin::Typed,
+                        cx,
+                    )
                 });
             })
         })

@@ -22,8 +22,8 @@ pub(crate) enum Error {
 pub(crate) struct Hierarchy {
     rows: Vec<RowStructure>,
     expanded: HashSet<RowId>,
-    /// Rows with at least one child, rebuilt by `normalize` after every structural change.
-    parents: HashSet<RowId>,
+    /// How many children each parent row has, rebuilt by `normalize` after every structural change.
+    parents: HashMap<RowId, usize>,
 }
 
 impl Hierarchy {
@@ -127,8 +127,12 @@ impl Hierarchy {
             .collect();
     }
 
+    pub(crate) fn child_count(&self, row_id: RowId) -> usize {
+        self.parents.get(&row_id).copied().unwrap_or_default()
+    }
+
     pub(crate) fn has_children(&self, row_id: RowId) -> bool {
-        self.parents.contains(&row_id)
+        self.parents.contains_key(&row_id)
     }
 
     pub(crate) fn set_level(&mut self, row_id: RowId, level_key: &str) -> Result<(), Error> {
@@ -141,7 +145,7 @@ impl Hierarchy {
     }
 
     pub(crate) fn expand_all(&mut self) {
-        self.expanded = self.parents.clone();
+        self.expanded = self.parents.keys().copied().collect();
     }
 
     pub(crate) fn collapse_all(&mut self) {
@@ -340,7 +344,10 @@ impl Hierarchy {
         for row in &mut self.rows {
             row.sibling_order = order[&row.row_id];
         }
-        self.parents = self.rows.iter().filter_map(|row| row.parent_id).collect();
+        self.parents.clear();
+        for parent in self.rows.iter().filter_map(|row| row.parent_id) {
+            *self.parents.entry(parent).or_default() += 1;
+        }
     }
 }
 

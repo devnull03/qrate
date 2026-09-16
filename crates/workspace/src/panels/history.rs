@@ -1202,6 +1202,7 @@ mod tests {
             &headers,
             &[1],
             &[vec![(from + count).to_string()]],
+            None,
             &log,
         )
         .unwrap();

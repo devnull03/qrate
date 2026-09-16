@@ -101,6 +101,15 @@ pub(crate) fn render_th(
         .font_semibold()
         .when(editing_col, |th| th.bg(cx.theme().secondary_hover))
         .child(div().flex_1().min_w_0().truncate().child(name))
+        // The header is the one string a column is, so double-clicking it edits that string —
+        // the same gesture that edits a cell.
+        .on_click(cx.listener(move |state, event: &ClickEvent, window, cx| {
+            if event.click_count() < 2 {
+                return;
+            }
+            crate::editing::start_rename(state.delegate_mut(), data_col, window, cx);
+            cx.notify();
+        }))
         .when_some(worst, |th, severity| th.child(note::marker(severity, cx)))
         .when_some(tip, |th, text| {
             th.tooltip(move |window, cx| {

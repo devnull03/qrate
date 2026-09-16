@@ -255,15 +255,13 @@ fn settle(
         let row_ids = state.read(cx).delegate().row_ids().to_vec();
         diagnostics::Diagnostics::align_note_rows(diagnostics::DATASET_MAIN, &row_ids, origin, cx);
     }
-    if changes.is_empty() || history::moves_rows(changes) {
-        persist_structure(state, cx);
-    }
     for change in changes {
         if let Change::ColumnRenamed { before, after } = change {
             follow_rename(before, &after.clone().into(), cx);
         }
     }
     TablePanel::persist_columns(state, cx);
+    sync_project_columns(state, None, cx);
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
     revalidate_now(cx);
     autosave(cx);
@@ -400,6 +398,8 @@ pub enum Structural {
 
 pub enum Arrangement {
     Indent(usize),
+    /// Wrap these source rows in a new parent.
+    Group(Vec<usize>),
     Outdent(usize),
     Reparent {
         row: usize,
@@ -435,6 +435,7 @@ pub fn arrange(op: Arrangement, cx: &mut App) {
     let result = state.update(cx, |state, cx| {
         let result = match op {
             Arrangement::Indent(row) => state.delegate_mut().indent_row(row),
+            Arrangement::Group(rows) => state.delegate_mut().group_rows(&rows),
             Arrangement::Outdent(row) => state.delegate_mut().outdent_row(row),
             Arrangement::Reparent { row, parent } => state.delegate_mut().reparent_row(row, parent),
             Arrangement::Move {
@@ -472,6 +473,21 @@ pub(crate) fn persist_expanded(rows: &[settings::project::RowId], cx: &mut App) 
             .into(),
         cx,
     );
+}
+
+/// Hand the grid's column names to the open project, which is what every other reader of the
+/// column list looks at.
+fn sync_project_columns(
+    state: &Entity<TableState<QrateTableDelegate>>,
+    renamed: Option<&(SharedString, SharedString)>,
+    cx: &mut App,
+) {
+    let delegate = state.read(cx).delegate();
+    let headers = (0..delegate.column_count())
+        .map(|col| delegate.column_name(col).to_string())
+        .collect();
+    let renamed = renamed.map(|(before, after)| (before.as_ref(), after.as_ref()));
+    settings::project::CurrentProject::set_columns(headers, renamed, cx);
 }
 
 /// Apply a shape change to the table and everything keyed off the shape.
@@ -544,7 +560,13 @@ pub fn structural(op: Structural, cx: &mut App) {
             Origin::Structure,
             cx,
         );
-        persist_structure(&state, cx);
+    }
+    if matches!(
+        op,
+        Structural::InsertColumn { .. } | Structural::DeleteColumn { .. }
+    ) || renamed.is_some()
+    {
+        sync_project_columns(&state, renamed.as_ref(), cx);
     }
     if let Some((before, after)) = renamed {
         follow_rename(&before, &after, cx);

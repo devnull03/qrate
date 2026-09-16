@@ -705,6 +705,7 @@ impl TablePanel {
                         diagnostics::Diagnostics::align_note_rows(
                             diagnostics::DATASET_MAIN,
                             &row_ids,
+                            settings::history::Origin::Structure,
                             cx,
                         );
                         settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
