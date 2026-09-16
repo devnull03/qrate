@@ -42,8 +42,9 @@ use crate::app_settings::build_pages;
 use crate::{
     actions::{NewProject, ToggleBottomDock, ToggleLeftDock, ToggleRightDock},
     app_menus::{
-        CopyDebugInfo, OpenAbout, OpenColumnSettings, OpenLogsFolder, OpenPluginsFolder,
-        OpenProjects, OpenSettings, Quit, ReloadPlugins, ReportBug, ReportUxIssue, RequestFeature,
+        CopyDebugInfo, LoadColumnConfig, OpenAbout, OpenColumnSettings, OpenLogsFolder,
+        OpenPluginsFolder, OpenProjects, OpenSettings, Quit, ReloadPlugins, ReportBug,
+        ReportUxIssue, RequestFeature,
     },
     status_items::build_status_bar_registry,
     title_items::build_title_bar_registry,
@@ -290,6 +291,10 @@ impl Render for App {
             // Here rather than globally: the Zotero mapping dialog opens in this window.
             .on_action(cx.listener(|_, action: &export::Export, window, cx| {
                 export::run(action.format, window, cx)
+            }))
+            // Here for the same reason: the dialog opens in this window.
+            .on_action(cx.listener(|_, _: &LoadColumnConfig, window, cx| {
+                project_wizard::open_column_config_dialog(window, cx)
             }))
             .on_action(
                 cx.listener(|_, action: &export::PluginExport, _, cx| {
