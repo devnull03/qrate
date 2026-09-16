@@ -127,6 +127,18 @@ the first batch's series instead of in a new copy of it.
   history step: `Step::RowsAdded` gains a `cells` field carrying those before/after cell values,
   since it already carries before/after structure.
 
+## Status
+
+Steps 1-3 are implemented on `feat/filesystem-collections-plan`. Two things differ from the design
+above, both deliberately:
+
+- **`Update` re-links, it does not re-arrange.** The existing row keeps its place in the hierarchy;
+  only its Filename cell and stored source path follow the file. Moving a catalogued component
+  because its file was dropped again would undo arrangement the archivist did by hand.
+- **The wizard's control appears only when the folder holds a file that several rows name**, which
+  is the one ambiguity project creation cannot settle on its own. A file matching exactly one row
+  always links that row, since that is what a folder-backed project is for.
+
 ## Delivery
 
 Each step is one commit on `feat/filesystem-collections-plan`.
