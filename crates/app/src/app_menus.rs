@@ -20,6 +20,8 @@ actions!(
         /// The same window as `OpenSettings`, opened on the Columns page — the Data menu promises
         /// a column surface, and landing on whatever page was last used does not keep that promise.
         OpenColumnSettings,
+        /// Re-type the open project's columns from a column config file or Sheet.
+        LoadColumnConfig,
         DiscoverPlugins,
         ManagePlugins,
         OpenPluginsFolder,
@@ -193,6 +195,7 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
             disabled: false,
             items: vec![
                 MenuItem::action("Column Settings…", OpenColumnSettings),
+                MenuItem::action("Load Column Config…", LoadColumnConfig),
                 MenuItem::action("Rename Column…", RenameColumn),
                 MenuItem::Separator,
                 MenuItem::action("Delete Row", DeleteRow),

@@ -51,12 +51,6 @@ pub enum ColumnSource {
     SkipForNow,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum LoadConfigTab {
-    File,
-    Sheet,
-}
-
 #[derive(Clone, PartialEq)]
 pub(crate) struct ColumnChoice {
     pub(crate) value: SharedString,
@@ -117,10 +111,9 @@ pub struct ProjectWizard {
     // Columns step
     pub(crate) column_source: ColumnSource,
     pub(crate) show_advanced_mapping: bool,
-    pub(crate) load_config_tab: LoadConfigTab,
-    pub(crate) config_file_path: String,
+    /// Kept once opened, so reopening the dialog shows what was last loaded.
+    pub(crate) config_loader: Option<Entity<crate::column_config::ColumnConfigLoader>>,
     pub(crate) config_preview: Option<ColumnConfigPreview>,
-    pub(crate) config_error: Option<SharedString>,
     pub(crate) title_column: Option<String>,
     pub(crate) file_column: Option<String>,
     pub(crate) title_picker: Entity<ComboboxState<SearchableVec<ColumnChoice>>>,
@@ -268,10 +261,8 @@ impl ProjectWizard {
                 ColumnSource::AutoFromSpreadsheet
             },
             show_advanced_mapping: false,
-            load_config_tab: LoadConfigTab::File,
-            config_file_path: String::new(),
+            config_loader: None,
             config_preview: None,
-            config_error: None,
             title_column: (entry_kind == EntryKind::Blank).then(|| "Title".to_string()),
             file_column: (entry_kind == EntryKind::Blank).then(|| "File".to_string()),
             title_picker,

@@ -44,39 +44,8 @@ fn column_settings(
             continue;
         };
 
-        let mut settings = ColumnSettings {
-            authority: entry.authority.clone(),
-            ..Default::default()
-        };
-        if let Some(on) = entry.spellcheck {
-            settings.spellcheck = on;
-        }
-        if let Some(on) = entry.variant_review {
-            settings.variant_review = on;
-        }
-        // Severity is per producer: the authority names its own, and each plugin's rides in the
-        // `<id>::Severity` column beside its mapping.
-        if let (Some(authority), Some(severity)) =
-            (settings.authority.clone(), entry.authority_severity.clone())
-        {
-            settings.severity.insert(authority, severity);
-        }
-        for (plugin, spec) in &maps {
-            if let Some(cell) = entry.extra.get(&format!("{plugin}::{}", spec.label)) {
-                let chosen: Vec<gpui::SharedString> = cell
-                    .split(';')
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .map(|v| v.to_string().into())
-                    .collect();
-                ColumnMapContributions::put(plugin, spec, &mut settings, &chosen);
-            }
-            if let Some(severity) = entry.extra.get(&format!("{plugin}::Severity")) {
-                settings
-                    .severity
-                    .insert(plugin.to_string(), severity.to_ascii_lowercase());
-            }
-        }
+        let mut settings = ColumnSettings::default();
+        crate::column_config::apply_entry(entry, &maps, &mut settings);
 
         if settings != ColumnSettings::default() {
             map.insert(header.clone(), settings);
