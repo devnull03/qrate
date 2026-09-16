@@ -99,6 +99,9 @@ pub const FILES_FOLDER_KEY: &str = "files_folder";
 /// link is derivable (`data_exchange::google::sheet_url`) and the id is what the Sheets API takes.
 /// Written when the user picks a sheet through Google's chooser, which is also what grants qrate
 /// access to it; storing an id the user typed would name a file the token cannot reach.
+/// What an import does with material the project already holds: skip, update, or add_as_new.
+pub const IMPORT_DUPLICATE_POLICY_KEY: &str = "import_duplicate_policy";
+
 pub const GOOGLE_SHEET_ID_KEY: &str = "google_sheet_id";
 
 pub struct ProjectColumn {

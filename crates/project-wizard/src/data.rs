@@ -111,6 +111,8 @@ pub struct FolderMatch {
     /// turns each one into an otherwise-empty row so the file is in the collection instead of
     /// silently left behind.
     pub extra_files: Vec<String>,
+    /// Files that several rows claim. They are never linked automatically.
+    pub ambiguous_files: usize,
 }
 
 /// Why a files folder was turned down. Each variant carries what the archivist needs to act on
@@ -220,6 +222,7 @@ pub fn inventory_folder(folder: &str, recursive: bool) -> Result<FolderMatch, Fo
         matched_rows: 0,
         total_rows: 0,
         extra_files: list_files(folder, recursive)?,
+        ambiguous_files: 0,
     })
 }
 
@@ -244,6 +247,7 @@ pub fn match_folder(
     let mut matched_rows = 0usize;
     let mut unmatched: Vec<String> = Vec::new();
     let mut used_files: HashSet<usize> = HashSet::new();
+    let mut claims: HashMap<usize, usize> = HashMap::new();
     for row in &preview.rows {
         let hit = row.iter().find_map(|cell| {
             settings::filenames::lookup_keys(cell)
@@ -254,6 +258,9 @@ pub fn match_folder(
             Some(hit) => {
                 matched_rows += 1;
                 used_files.extend(hit);
+                for file in hit {
+                    *claims.entry(*file).or_default() += 1;
+                }
             }
             // The row's first non-empty cell is what a person recognizes the row by, and the
             // value most likely meant to name a file.
@@ -296,6 +303,7 @@ pub fn match_folder(
 
     Ok(FolderMatch {
         matched_rows,
+        ambiguous_files: claims.values().filter(|rows| **rows > 1).count(),
         total_rows: preview.rows.len(),
         extra_files: files
             .into_iter()

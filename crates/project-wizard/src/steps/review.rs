@@ -1,6 +1,8 @@
 //! Stage 5 · Review & Create — every path converges here.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
+
+use file_ingest::duplicates::{DuplicatePolicy, ExistingComponent as Existing, Parent, Resolution};
 
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::description_list::DescriptionList;
@@ -144,15 +146,30 @@ fn project_columns(
     columns
 }
 
-fn append_folder_components(
-    headers: &[String],
-    rows: &mut Vec<Vec<String>>,
-    title_column: Option<&str>,
-    file_column: Option<&str>,
-    folder: &str,
+/// What the Files and Columns steps settled on, as the folder import reads it.
+struct FolderImport<'a> {
+    headers: &'a [String],
+    title_column: Option<&'a str>,
+    file_column: Option<&'a str>,
+    folder: &'a str,
     recursive: bool,
-    description: &settings::description::DescriptionConfig,
+    description: &'a settings::description::DescriptionConfig,
+    policy: DuplicatePolicy,
+}
+
+fn append_folder_components(
+    import: &FolderImport<'_>,
+    rows: &mut Vec<Vec<String>>,
 ) -> Vec<project::RowStructure> {
+    let FolderImport {
+        headers,
+        title_column,
+        file_column,
+        folder,
+        recursive,
+        description,
+        policy,
+    } = *import;
     let Some(file_col) =
         file_column.and_then(|name| headers.iter().position(|header| header == name))
     else {
@@ -179,37 +196,47 @@ fn append_folder_components(
     for warning in &plan.warnings {
         log::warn!("Skipped a path while importing {folder}: {warning:?}");
     }
-    let mut files_by_key: HashMap<String, BTreeSet<usize>> = HashMap::new();
-    for (index, component) in plan.components.iter().enumerate() {
-        if component.kind == file_ingest::EntryKind::File {
-            let path = file_ingest::normalized_path(&component.source_path);
-            for key in settings::filenames::lookup_keys(&path) {
-                files_by_key.entry(key).or_default().insert(index);
-            }
-        }
-    }
-    let claimed: HashMap<usize, usize> = rows
+    // The spreadsheet rows are what this import can already be holding, so they are the existing
+    // components: a file matching one of them links that row instead of adding another.
+    let existing: Vec<Existing> = rows
         .iter()
         .enumerate()
-        .filter_map(|(source, row)| {
-            let matches: Vec<usize> = settings::filenames::lookup_keys(row.get(file_col)?)
-                .iter()
-                .filter_map(|key| files_by_key.get(key))
-                .flatten()
-                .copied()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            (matches.len() == 1).then(|| (matches[0], source))
+        .map(|(source, row)| Existing {
+            key: source as u64,
+            absolute_source: None,
+            filename_keys: row
+                .get(file_col)
+                .map(|value| settings::filenames::lookup_keys(value))
+                .unwrap_or_default(),
         })
         .collect();
+    let resolved =
+        file_ingest::duplicates::resolve(plan, &existing, settings::filenames::keys, policy);
+    if resolved.ambiguous() > 0 {
+        log::info!(
+            "{} file(s) in {folder} are named by more than one row and were left for the archivist",
+            resolved.ambiguous()
+        );
+    }
     let mut next_order: HashMap<Option<project::RowId>, i64> = HashMap::new();
-    let mut planned_rows = Vec::<usize>::with_capacity(plan.components.len());
-    let mut structure: Vec<project::RowStructure> = Vec::with_capacity(plan.components.len());
-    for (component_index, component) in plan.components.into_iter().enumerate() {
+    let mut planned_rows = Vec::<usize>::with_capacity(resolved.plan.components.len());
+    let mut structure: Vec<project::RowStructure> =
+        Vec::with_capacity(resolved.plan.components.len());
+    let parents = resolved.parents.clone();
+    let resolutions = resolved.resolutions.clone();
+    for (component_index, component) in resolved.plan.components.into_iter().enumerate() {
         let source_path = file_ingest::normalized_path(&component.source_path);
-        let existing = claimed.get(&component_index).copied();
-        let source = existing.unwrap_or_else(|| {
+        let claimed = match &resolutions[component_index] {
+            Resolution::Skip { existing } | Resolution::Update { existing } => {
+                Some(*existing as usize)
+            }
+            // Several rows name this file. Only "update" picks one, by sheet order.
+            Resolution::Ambiguous { candidates } => (policy == DuplicatePolicy::Update)
+                .then(|| candidates.first().map(|row| *row as usize))
+                .flatten(),
+            Resolution::Create => None,
+        };
+        let source = claimed.unwrap_or_else(|| {
             let mut row = vec![String::new(); headers.len()];
             if let Some(title_col) = title_col {
                 row[title_col] = component.title.clone();
@@ -221,10 +248,12 @@ fn append_folder_components(
             rows.len() - 1
         });
         planned_rows.push(source);
-        let parent_id = component
-            .parent
-            .and_then(|parent| planned_rows.get(parent))
-            .map(|source| *source as project::RowId + 1);
+        let parent_id = match parents[component_index] {
+            Some(Parent::Planned(parent)) => planned_rows.get(parent).copied(),
+            Some(Parent::Existing(row)) => Some(row as usize),
+            None => None,
+        }
+        .map(|source| source as project::RowId + 1);
         let sibling_order = next_order.entry(parent_id).or_default();
         *sibling_order += 1;
         structure.push(project::RowStructure {
@@ -276,13 +305,16 @@ impl ProjectWizard {
         let description = self.description_config(cx);
         let structure = if !self.skip_files {
             append_folder_components(
-                &headers,
+                &FolderImport {
+                    headers: &headers,
+                    title_column: self.title_column.as_deref(),
+                    file_column: self.file_column.as_deref(),
+                    folder: &self.folder_path,
+                    recursive: self.recurse_subfolders,
+                    description: &description,
+                    policy: self.duplicate_policy,
+                },
                 &mut rows,
-                self.title_column.as_deref(),
-                self.file_column.as_deref(),
-                &self.folder_path,
-                self.recurse_subfolders,
-                &description,
             )
         } else {
             Vec::new()
@@ -338,6 +370,10 @@ impl ProjectWizard {
                     (
                         settings::description::FILE_LEVEL_KEY,
                         description.file_level_key.clone(),
+                    ),
+                    (
+                        settings::project::IMPORT_DUPLICATE_POLICY_KEY,
+                        self.duplicate_policy.key().to_string(),
                     ),
                 ] {
                     if let Err(error) =
@@ -510,7 +546,9 @@ mod tests {
 
     use crate::data::{ColumnConfigEntry, ColumnConfigPreview};
 
-    use super::{append_folder_components, project_columns};
+    use file_ingest::duplicates::DuplicatePolicy;
+
+    use super::{FolderImport, append_folder_components, project_columns};
 
     fn roles(columns: &[crate::project::ProjectColumn]) -> Vec<(&str, ColumnType)> {
         columns
@@ -570,6 +608,43 @@ mod tests {
         );
     }
 
+    /// ASNT-77: two rows naming one file is the archivist's ambiguity to settle, not qrate's.
+    #[test]
+    fn two_rows_naming_one_file_follow_the_chosen_policy() {
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("one.jpg"), "photo").unwrap();
+        let headers: Vec<String> = vec!["Title".into(), "File".into()];
+        let description = settings::description::DescriptionProfile::Rad.defaults();
+        let import = |policy| FolderImport {
+            headers: &headers,
+            title_column: Some("Title"),
+            file_column: Some("File"),
+            folder: folder.path().to_str().unwrap(),
+            recursive: true,
+            description: &description,
+            policy,
+        };
+        let sheet = || {
+            vec![
+                vec!["A".to_string(), "one.jpg".to_string()],
+                vec!["B".to_string(), "one.jpg".to_string()],
+            ]
+        };
+
+        // Neither row is picked: the file arrives as its own row, so nothing is claimed wrongly.
+        let mut rows = sheet();
+        let structure = append_folder_components(&import(DuplicatePolicy::Skip), &mut rows);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(structure.last().unwrap().row_id, 4);
+
+        // "Link the first row" takes the first in spreadsheet order and adds no row for the file.
+        let mut rows = sheet();
+        let structure = append_folder_components(&import(DuplicatePolicy::Update), &mut rows);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(structure.last().unwrap().row_id, 1);
+        assert_eq!(rows[0], ["A", "one.jpg"]);
+    }
+
     #[test]
     fn blank_folder_tree_becomes_archival_component_rows() {
         let folder = tempfile::tempdir().unwrap();
@@ -580,13 +655,16 @@ mod tests {
         let description = settings::description::DescriptionProfile::Rad.defaults();
 
         let structure = append_folder_components(
-            &headers,
+            &FolderImport {
+                headers: &headers,
+                title_column: Some("Title"),
+                file_column: Some("File"),
+                folder: folder.path().to_str().unwrap(),
+                recursive: true,
+                description: &description,
+                policy: DuplicatePolicy::Skip,
+            },
             &mut rows,
-            Some("Title"),
-            Some("File"),
-            folder.path().to_str().unwrap(),
-            true,
-            &description,
         );
 
         assert_eq!(rows.len(), 3);

@@ -6,6 +6,8 @@ use gpui_component::label::Label;
 use gpui_component::text::Text;
 use gpui_component::{ActiveTheme, Disableable, Selectable, Sizable, StyledExt, h_flex, v_flex};
 
+use file_ingest::duplicates::DuplicatePolicy;
+
 use crate::data;
 use crate::wizard::{EntryKind, ProjectWizard};
 
@@ -212,7 +214,70 @@ impl ProjectWizard {
             .when(!self.skip_files, |this| {
                 this.child(self.render_description_profile(cx))
             })
+            // Only worth asking about once the folder actually holds a file more than one row
+            // names; every other import has nothing to decide.
+            .when(
+                !self.skip_files
+                    && self
+                        .folder_match
+                        .as_ref()
+                        .is_some_and(|matched| matched.ambiguous_files > 0),
+                |this| this.child(self.render_duplicate_policy(cx)),
+            )
             .child(self.render_skip_files_toggle(cx))
+    }
+
+    fn render_duplicate_policy(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let ambiguous = self
+            .folder_match
+            .as_ref()
+            .map_or(0, |matched| matched.ambiguous_files);
+        let selected = self.duplicate_policy;
+        v_flex()
+            .gap_2()
+            .pt_2()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(Label::new("Files named by more than one row").text_sm())
+            .child(
+                Label::new(format!(
+                    "{ambiguous} file{} match several rows. qrate never picks for you unless you \
+                     ask it to.",
+                    if ambiguous == 1 { "" } else { "s" }
+                ))
+                .text_sm()
+                .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                h_flex().gap_1().flex_wrap().children(
+                    [
+                        (
+                            DuplicatePolicy::Skip,
+                            "Leave them for me",
+                            "each file becomes its own row",
+                        ),
+                        (
+                            DuplicatePolicy::Update,
+                            "Link the first row",
+                            "in spreadsheet order",
+                        ),
+                        (DuplicatePolicy::AddAsNew, "Add as new rows", "link nothing"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (policy, label, hint))| {
+                        Button::new(("duplicate-policy", index))
+                            .label(label)
+                            .tooltip(hint)
+                            .outline()
+                            .selected(policy == selected)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.duplicate_policy = policy;
+                                cx.notify();
+                            }))
+                    }),
+                ),
+            )
     }
 
     fn render_description_profile(&self, cx: &mut Context<Self>) -> impl IntoElement {
