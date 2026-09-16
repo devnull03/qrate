@@ -98,6 +98,7 @@ pub struct ProjectWizard {
     /// "I'll add files later" — skips folder matching and the whole Link step.
     pub(crate) skip_files: bool,
     pub(crate) description_profile: settings::description::DescriptionProfile,
+    pub(crate) duplicate_policy: file_ingest::duplicates::DuplicatePolicy,
     pub(crate) folder_level_input: Entity<InputState>,
     pub(crate) file_level_input: Entity<InputState>,
 
@@ -248,6 +249,7 @@ impl ProjectWizard {
             folder_error: None,
             skip_files: false,
             description_profile: settings::description::DescriptionProfile::Rad,
+            duplicate_policy: file_ingest::duplicates::DuplicatePolicy::default(),
             folder_level_input,
             file_level_input,
             sheet_link_input,
