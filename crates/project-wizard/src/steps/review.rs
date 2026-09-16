@@ -159,7 +159,7 @@ fn append_folder_components(
         return Vec::new();
     };
     let title_col = title_column.and_then(|name| headers.iter().position(|header| header == name));
-    let Ok(plan) = file_ingest::plan(
+    let plan = match file_ingest::plan(
         std::path::Path::new(folder),
         &file_ingest::PlanOptions {
             recursive,
@@ -167,9 +167,18 @@ fn append_folder_components(
             folder_level_key: &description.folder_level_key,
             file_level_key: &description.file_level_key,
         },
-    ) else {
-        return Vec::new();
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            log::warn!(
+                "The new project was created without rows for the files in {folder}: the folder could not be read ({error:?})"
+            );
+            return Vec::new();
+        }
     };
+    for warning in &plan.warnings {
+        log::warn!("Skipped a path while importing {folder}: {warning:?}");
+    }
     let mut files_by_key: HashMap<String, BTreeSet<usize>> = HashMap::new();
     for (index, component) in plan.components.iter().enumerate() {
         if component.kind == file_ingest::EntryKind::File {
@@ -301,6 +310,12 @@ impl ProjectWizard {
             },
         ) {
             Ok(file) => {
+                log::info!(
+                    "created project {file} from {source}: {} rows, {} arranged components, {} profile",
+                    rows.len(),
+                    structure.len(),
+                    description.profile.key()
+                );
                 if !structure.is_empty()
                     && let Err(error) =
                         project::write_row_structure(std::path::Path::new(&file), &structure)

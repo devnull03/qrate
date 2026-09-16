@@ -160,6 +160,13 @@ impl TablePanel {
                 .and_then(|value| serde_json::from_str(&value.text()).ok())
                 .unwrap_or_default();
             delegate.restore_expanded(&expanded);
+            log::info!(
+                "opened {} with {} rows, {} arranged components, {} profile",
+                project.file.display(),
+                project.data.rows.len(),
+                structure.len(),
+                description.profile.key()
+            );
             Self::apply_saved_layout(&mut delegate, &project.file);
             delegate.set_image_paths(Self::resolve_images(&project.data));
             loaded_project = Some(project.file.clone());
@@ -392,6 +399,12 @@ impl TablePanel {
                     .and_then(|value| serde_json::from_str(&value.text()).ok())
                     .unwrap_or_default();
                 this.loaded_project = Some(file.clone());
+                log::info!(
+                    "loaded {} rows, {} arranged components, {} profile",
+                    rows.len(),
+                    structure.len(),
+                    description.profile.key()
+                );
                 this.state.update(cx, |state, cx| {
                     state.delegate_mut().set_data(&headers, &row_ids, &rows);
                     state
@@ -539,10 +552,18 @@ impl TablePanel {
             )
         });
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(plan) = task.await else {
-                log::warn!("the dropped paths could not be inventoried");
-                return;
+            let plan = match task.await {
+                Ok(plan) => plan,
+                Err(error) => {
+                    log::warn!(
+                        "Nothing was imported: the dropped paths could not be read ({error:?})"
+                    );
+                    return;
+                }
             };
+            for warning in &plan.warnings {
+                log::warn!("Left a dropped path out of the import: {warning:?}");
+            }
             this.update_in(cx, |_this, window, cx| {
                 let files = plan
                     .components
@@ -605,13 +626,14 @@ impl TablePanel {
                             let file_col = file_name
                                 .as_deref()
                                 .and_then(|name| state.delegate().data_col(name));
-                            state.delegate_mut().append_components(
+                            let added = state.delegate_mut().append_components(
                                 &plan,
                                 title_col,
                                 file_col,
                                 None,
                                 files_root.as_deref(),
                             );
+                            log::info!("imported {added} dropped components into the open project");
                             state.refresh(cx);
                             cx.emit(TableChanged);
                             cx.notify();
