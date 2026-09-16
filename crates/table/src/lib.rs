@@ -747,7 +747,12 @@ pub fn save_now(cx: &mut App) {
             state.update(cx, |state, _| {
                 state.delegate_mut().history_saved(history.len())
             });
-            log::debug!("saved {} rows in {:?}", rows.len(), started.elapsed());
+            log::debug!(
+                "saved {} rows and {} arranged components in {:?}",
+                rows.len(),
+                structure.len(),
+                started.elapsed()
+            );
             settings::dirty::clear(settings::dirty::PROJECT_DATA, cx);
         }
         Err(err) => log::error!("failed to save project data: {err}"),

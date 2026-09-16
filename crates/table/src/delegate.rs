@@ -1261,9 +1261,16 @@ impl QrateTableDelegate {
                 true => Placement::Before(neighbour_id),
                 false => Placement::After(neighbour_id),
             };
-            let placed = self.hierarchy.move_row(id, placement);
-            if let (Ok(()), Some(level)) = (placed, level) {
-                let _ = self.hierarchy.set_level(id, &level);
+            match self.hierarchy.move_row(id, placement) {
+                Ok(()) => {
+                    if let Some(level) = level {
+                        let _ = self.hierarchy.set_level(id, &level);
+                    }
+                }
+                Err(error) => log::warn!(
+                    "New row {id} was added at the end of the table instead of beside row {}: {error:?}",
+                    neighbour + 1
+                ),
             }
             self.recompute_visible();
         }
@@ -1369,9 +1376,11 @@ impl QrateTableDelegate {
         let before_structure = self.hierarchy.rows().to_vec();
         let removed_ids: Vec<_> = ats.iter().filter_map(|at| self.row_id(*at)).collect();
         for row_id in removed_ids {
-            let _ = self
-                .hierarchy
-                .delete(row_id, crate::hierarchy::DeleteMode::PromoteChildren);
+            if let Err(error) = self.hierarchy.delete(row_id) {
+                log::warn!(
+                    "Deleted row {row_id} had no archival structure, so its children kept their place: {error:?}"
+                );
+            }
         }
         let removed = self.cut_rows(ats);
         let after_structure = self.hierarchy.rows().to_vec();

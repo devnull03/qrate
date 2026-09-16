@@ -10,12 +10,6 @@ pub(crate) enum Placement {
     Root,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DeleteMode {
-    Subtree,
-    PromoteChildren,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Error {
     UnknownRow(RowId),
@@ -243,36 +237,24 @@ impl Hierarchy {
         self.move_row(row_id, Placement::After(parent))
     }
 
-    pub(crate) fn delete(&mut self, row_id: RowId, mode: DeleteMode) -> Result<Vec<RowId>, Error> {
+    /// Removes one row, leaving its children where it stood. Deleting a whole subtree is the
+    /// caller removing every row in [`subtree`](Self::subtree), which is one undoable row deletion.
+    pub(crate) fn delete(&mut self, row_id: RowId) -> Result<(), Error> {
         let row = self.row(row_id)?.clone();
-        let removed = match mode {
-            DeleteMode::Subtree => {
-                let mut removed = self.descendants(row_id);
-                removed.push(row_id);
-                let removed_set: HashSet<_> = removed.iter().copied().collect();
-                self.rows.retain(|row| !removed_set.contains(&row.row_id));
-                removed
+        let mut siblings = self.children(row.parent_id);
+        let at = siblings.iter().position(|id| *id == row_id).unwrap_or(0);
+        let children = self.children(Some(row_id));
+        siblings.splice(at..=at, children.iter().copied());
+        self.rows.retain(|candidate| candidate.row_id != row_id);
+        for (order, sibling) in siblings.into_iter().enumerate() {
+            if let Ok(sibling) = self.row_mut(sibling) {
+                sibling.parent_id = row.parent_id;
+                sibling.sibling_order = order as i64;
             }
-            DeleteMode::PromoteChildren => {
-                let mut siblings = self.children(row.parent_id);
-                let at = siblings.iter().position(|id| *id == row_id).unwrap_or(0);
-                let children = self.children(Some(row_id));
-                siblings.splice(at..=at, children.iter().copied());
-                self.rows.retain(|candidate| candidate.row_id != row_id);
-                for (order, sibling) in siblings.into_iter().enumerate() {
-                    if let Ok(sibling) = self.row_mut(sibling) {
-                        sibling.parent_id = row.parent_id;
-                        sibling.sibling_order = order as i64;
-                    }
-                }
-                vec![row_id]
-            }
-        };
-        for removed in &removed {
-            self.expanded.remove(removed);
         }
+        self.expanded.remove(&row_id);
         self.normalize();
-        Ok(removed)
+        Ok(())
     }
 
     fn row(&self, row_id: RowId) -> Result<&RowStructure, Error> {
@@ -455,23 +437,11 @@ mod tests {
     }
 
     #[test]
-    fn delete_supports_subtree_and_child_promotion() {
+    fn delete_promotes_children_into_their_parent_s_place() {
         let mut promoted = hierarchy();
-        assert_eq!(
-            promoted.delete(3, DeleteMode::PromoteChildren).unwrap(),
-            [3]
-        );
+        promoted.delete(3).unwrap();
         assert_eq!(promoted.row(4).unwrap().parent_id, Some(1));
         // 4 takes 3's place after 2 rather than joining the end of the list.
         assert_eq!(promoted.children(Some(1)), [2, 4]);
-
-        let mut removed = hierarchy();
-        let removed_ids: HashSet<_> = removed
-            .delete(3, DeleteMode::Subtree)
-            .unwrap()
-            .into_iter()
-            .collect();
-        assert_eq!(removed_ids, HashSet::from([3, 4]));
-        assert!(matches!(removed.row(4), Err(Error::UnknownRow(4))));
     }
 }
