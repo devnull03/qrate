@@ -1,5 +1,5 @@
-//! Right-side status-bar widget: shows the table's selection — `Row N, Col M, K words` for a
-//! cell (word count of its text), `Row N` for a whole-row selection, `Col M` for a whole-column
+//! Right-side status-bar widget: shows the table's selection — `Row N, Col M, K characters` for a
+//! cell (character count of its text), `Row N` for a whole-row selection, `Col M` for a whole-column
 //! selection. Text-only readout — sits leftmost in the right group.
 
 use gpui::*;
@@ -52,12 +52,18 @@ impl CellLocation {
         }
         match state.delegate().selection() {
             Some(Selection::Cell { row, col }) => {
-                let words = state
+                let characters = state
                     .delegate()
                     .cell(row, col)
-                    .map(|t| t.split_whitespace().count())
+                    .map(|t| t.chars().count())
                     .unwrap_or(0);
-                format!("Row {}, Col {}, {} words", row + 1, col + 1, words).into()
+                format!(
+                    "Row {}, Col {}, {} characters",
+                    row + 1,
+                    col + 1,
+                    characters
+                )
+                .into()
             }
             Some(Selection::Row(row)) => format!("Row {}", row + 1).into(),
             Some(Selection::Column(col)) => format!("Col {}", col + 1).into(),
