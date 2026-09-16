@@ -807,15 +807,26 @@ impl QrateTableDelegate {
                     after: after.to_string(),
                 })
                 .collect(),
-            Step::RowsAdded { at, rows, .. } => rows
-                .iter()
-                .enumerate()
-                .map(|(offset, row)| Change::RowAdded {
-                    row: row.id,
-                    position: at + offset,
-                    cells: named(&row.cells),
-                })
-                .collect(),
+            Step::RowsAdded {
+                at, rows, cells, ..
+            } => {
+                let mut changes: Vec<_> = rows
+                    .iter()
+                    .enumerate()
+                    .map(|(offset, row)| Change::RowAdded {
+                        row: row.id,
+                        position: at + offset,
+                        cells: named(&row.cells),
+                    })
+                    .collect();
+                changes.extend(cells.iter().map(|(row, col, before, after)| Change::Cell {
+                    row: row_id(*row),
+                    column: self.column_name(*col).to_string(),
+                    before: before.to_string(),
+                    after: after.to_string(),
+                }));
+                changes
+            }
             Step::RowsRemoved { rows, .. } => rows
                 .iter()
                 .map(|(at, row)| Change::RowRemoved {
@@ -929,6 +940,7 @@ impl QrateTableDelegate {
                 Some(Step::RowsAdded {
                     at,
                     rows,
+                    cells: Vec::new(),
                     before_structure,
                     after_structure,
                 })
@@ -1026,6 +1038,7 @@ impl QrateTableDelegate {
             Step::RowsAdded {
                 at,
                 rows,
+                cells,
                 before_structure,
                 after_structure,
             } => {
@@ -1033,6 +1046,10 @@ impl QrateTableDelegate {
                     self.splice_rows(*at, rows);
                 } else {
                     self.cut_rows(&(*at..at + rows.len()).collect::<Vec<_>>());
+                }
+                for (row, col, before, after) in cells {
+                    let text = if forward { after } else { before };
+                    self.set_cell(*row, *col, text.clone());
                 }
                 self.hierarchy.replace_rows(
                     &self.row_ids,
@@ -1279,6 +1296,7 @@ impl QrateTableDelegate {
             Step::RowsAdded {
                 at,
                 rows,
+                cells: Vec::new(),
                 before_structure,
                 after_structure,
             },
@@ -1286,89 +1304,181 @@ impl QrateTableDelegate {
         );
     }
 
+    /// What the project already holds, for [`file_ingest::duplicates::resolve`]: every row's linked
+    /// file, by stored source path and by the keys its Filename cell can be looked up under.
+    pub(crate) fn existing_components(
+        &self,
+        file_col: Option<usize>,
+        files_root: Option<&Path>,
+    ) -> Vec<file_ingest::duplicates::ExistingComponent> {
+        let sources: HashMap<_, _> = self
+            .hierarchy
+            .rows()
+            .iter()
+            .filter_map(|row| Some((row.row_id, row.source_path.clone()?)))
+            .collect();
+        self.row_ids
+            .iter()
+            .enumerate()
+            .map(|(source, row_id)| {
+                let stored = sources.get(row_id).map(PathBuf::from).map(|path| {
+                    match (path.is_absolute(), files_root) {
+                        (false, Some(root)) => root.join(path),
+                        _ => path,
+                    }
+                });
+                let cell = file_col
+                    .and_then(|col| self.rows.get(source)?.get(col))
+                    .map(|cell| cell.to_string());
+                file_ingest::duplicates::ExistingComponent {
+                    key: *row_id as u64,
+                    absolute_source: stored.or_else(|| {
+                        cell.as_deref()
+                            .map(PathBuf::from)
+                            .filter(|path| path.is_absolute())
+                    }),
+                    filename_keys: cell
+                        .map(|cell| settings::filenames::lookup_keys(&cell))
+                        .unwrap_or_default(),
+                }
+            })
+            .collect()
+    }
+
+    /// Applies a resolved import as one undo step: new components become rows, and a component the
+    /// policy resolved onto an existing row re-links that row rather than copying it.
     pub(crate) fn append_components(
         &mut self,
-        plan: &file_ingest::ImportPlan,
+        resolved: &file_ingest::duplicates::ResolvedPlan,
         title_col: Option<usize>,
         file_col: Option<usize>,
         destination_parent: Option<usize>,
         files_root: Option<&Path>,
     ) -> usize {
-        if plan.components.is_empty() {
+        use file_ingest::duplicates::{Parent, Resolution};
+
+        if resolved.plan.components.is_empty() {
             return 0;
         }
         let at = self.rows.len();
         let before_structure = self.hierarchy.rows().to_vec();
         let destination_parent = destination_parent.and_then(|source| self.row_id(source));
-        let existing_siblings = before_structure
+        let mut next_order = before_structure
             .iter()
             .filter(|row| row.parent_id == destination_parent)
-            .count();
-        let ids: Vec<_> = (0..plan.components.len())
-            .map(|_| self.fresh_row_id())
-            .collect();
-        let rows: Vec<_> = plan
-            .components
-            .iter()
-            .zip(&ids)
-            .map(|(component, id)| {
-                let mut cells = vec![SharedString::default(); self.columns.len()];
-                if let Some(col) = title_col.filter(|col| *col < cells.len()) {
-                    cells[col] = component.title.clone().into();
-                }
-                if component.kind == file_ingest::EntryKind::File
-                    && let Some(col) = file_col.filter(|col| *col < cells.len())
-                {
-                    cells[col] = file_ingest::normalized_path(&component.absolute_path).into();
-                }
-                Row {
-                    id: *id,
-                    cells,
-                    image: (component.kind == file_ingest::EntryKind::File)
-                        .then(|| component.absolute_path.clone()),
-                }
-            })
-            .collect();
+            .count() as i64;
+        let source_path = |component: &file_ingest::PlannedComponent| {
+            file_ingest::normalized_path(
+                files_root
+                    .and_then(|root| component.absolute_path.strip_prefix(root).ok())
+                    .filter(|relative| !relative.as_os_str().is_empty())
+                    .unwrap_or(&component.absolute_path),
+            )
+        };
+
+        // Row ids first: a component's parent may be resolved onto a row the project already has.
+        let mut ids = Vec::with_capacity(resolved.plan.components.len());
+        for resolution in &resolved.resolutions {
+            let id = match resolution {
+                Resolution::Update { existing } | Resolution::Skip { existing } => *existing as i64,
+                _ => self.fresh_row_id(),
+            };
+            ids.push(id);
+        }
+
+        let mut rows = Vec::new();
+        let mut cells = Vec::new();
         let mut after_structure = before_structure.clone();
-        after_structure.extend(
-            plan.components
-                .iter()
-                .enumerate()
-                .map(|(index, component)| settings::project::RowStructure {
-                    row_id: ids[index],
-                    parent_id: component
-                        .parent
-                        .and_then(|parent| ids.get(parent).copied())
-                        .or(destination_parent),
-                    level_key: component.level_key.clone(),
-                    // Top-level components queue after the destination's existing children.
-                    sibling_order: (index + component.parent.map_or(existing_siblings, |_| 0))
-                        as i64,
-                    source_path: Some(file_ingest::normalized_path(
-                        files_root
-                            .and_then(|root| component.absolute_path.strip_prefix(root).ok())
-                            .filter(|relative| !relative.as_os_str().is_empty())
-                            .unwrap_or(&component.absolute_path),
-                    )),
-                    source_kind: Some(match component.kind {
-                        file_ingest::EntryKind::File => settings::project::SourceKind::File,
-                        file_ingest::EntryKind::Directory => {
-                            settings::project::SourceKind::Directory
+        for (index, component) in resolved.plan.components.iter().enumerate() {
+            let is_file = component.kind == file_ingest::EntryKind::File;
+            let parent_id = match resolved.parents[index] {
+                Some(Parent::Planned(parent)) => ids.get(parent).copied(),
+                Some(Parent::Existing(existing)) => Some(existing as i64),
+                None => destination_parent,
+            };
+            match &resolved.resolutions[index] {
+                Resolution::Skip { .. } => continue,
+                Resolution::Update { existing } => {
+                    let Some(source) = self.row_ids.iter().position(|id| *id as u64 == *existing)
+                    else {
+                        continue;
+                    };
+                    // Only the link moves. The metadata on this row is the archivist's.
+                    if is_file
+                        && let Some(col) = file_col
+                        && let Some(before) = self.rows.get(source).and_then(|row| row.get(col))
+                    {
+                        let after = SharedString::from(file_ingest::normalized_path(
+                            &component.absolute_path,
+                        ));
+                        if *before != after {
+                            cells.push((source, col, before.clone(), after));
                         }
-                    }),
-                }),
-        );
+                    }
+                    if let Some(row) = after_structure
+                        .iter_mut()
+                        .find(|row| row.row_id as u64 == *existing)
+                    {
+                        row.source_path = Some(source_path(component));
+                    }
+                }
+                Resolution::Create | Resolution::Ambiguous { .. } => {
+                    let mut new_cells = vec![SharedString::default(); self.columns.len()];
+                    if let Some(col) = title_col.filter(|col| *col < new_cells.len()) {
+                        new_cells[col] = component.title.clone().into();
+                    }
+                    if is_file && let Some(col) = file_col.filter(|col| *col < new_cells.len()) {
+                        new_cells[col] =
+                            file_ingest::normalized_path(&component.absolute_path).into();
+                    }
+                    rows.push(Row {
+                        id: ids[index],
+                        cells: new_cells,
+                        image: is_file.then(|| component.absolute_path.clone()),
+                    });
+                    let order = match component.parent {
+                        Some(_) => index as i64,
+                        None => {
+                            next_order += 1;
+                            next_order - 1
+                        }
+                    };
+                    after_structure.push(settings::project::RowStructure {
+                        row_id: ids[index],
+                        parent_id,
+                        level_key: component.level_key.clone(),
+                        sibling_order: order,
+                        source_path: Some(source_path(component)),
+                        source_kind: Some(match component.kind {
+                            file_ingest::EntryKind::File => settings::project::SourceKind::File,
+                            file_ingest::EntryKind::Directory => {
+                                settings::project::SourceKind::Directory
+                            }
+                        }),
+                    });
+                }
+            }
+        }
+
+        let added = rows.len();
         self.splice_rows(at, &rows);
+        for (row, col, _, after) in &cells {
+            self.set_cell(*row, *col, after.clone());
+        }
         self.hierarchy
             .replace_rows(&self.row_ids, &after_structure, &self.default_level);
         self.recompute_visible();
-        self.history.push(Step::RowsAdded {
-            at,
-            rows,
-            before_structure,
-            after_structure,
-        });
-        plan.components.len()
+        self.record(
+            Step::RowsAdded {
+                at,
+                rows,
+                cells,
+                before_structure,
+                after_structure,
+            },
+            Origin::Structure,
+        );
+        added
     }
 
     /// Delete the rows at `ats` as one undo step, carrying their cells and photos on it.
@@ -2478,15 +2588,16 @@ mod app_tests {
                     ],
                     warnings: Vec::new(),
                 };
+                let root = std::path::Path::new("C:/archive");
                 let delegate = state.delegate_mut();
+                let resolved = file_ingest::duplicates::resolve(
+                    plan,
+                    &delegate.existing_components(Some(0), Some(root)),
+                    settings::filenames::keys,
+                    file_ingest::duplicates::DuplicatePolicy::Skip,
+                );
                 assert_eq!(
-                    delegate.append_components(
-                        &plan,
-                        Some(1),
-                        Some(0),
-                        None,
-                        Some(std::path::Path::new("C:/archive"))
-                    ),
+                    delegate.append_components(&resolved, Some(1), Some(0), None, Some(root)),
                     2
                 );
                 assert_eq!(delegate.row_count(), 6);
@@ -2502,6 +2613,66 @@ mod app_tests {
                 assert_eq!(delegate.undo(), Some(true));
                 assert_eq!(delegate.row_count(), 4);
                 assert_eq!(delegate.redo(), Some(true));
+                assert_eq!(delegate.row_count(), 6);
+            });
+        });
+    }
+
+    /// ASNT-77: a second batch over a folder qrate already holds.
+    #[gpui::test]
+    fn re_dropping_a_folder_adds_only_what_is_new(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let root = std::path::Path::new("C:/archive");
+                let component = |name: &str, kind, parent| file_ingest::PlannedComponent {
+                    title: name.rsplit('/').next().unwrap_or(name).into(),
+                    absolute_path: format!("C:/archive/{name}").into(),
+                    source_path: name.into(),
+                    kind,
+                    parent,
+                    level_key: "item".into(),
+                };
+                let first = file_ingest::ImportPlan {
+                    components: vec![
+                        component("Series", file_ingest::EntryKind::Directory, None),
+                        component("Series/one.jpg", file_ingest::EntryKind::File, Some(0)),
+                    ],
+                    warnings: Vec::new(),
+                };
+                let second = file_ingest::ImportPlan {
+                    components: vec![
+                        component("Series", file_ingest::EntryKind::Directory, None),
+                        component("Series/one.jpg", file_ingest::EntryKind::File, Some(0)),
+                        component("Series/two.jpg", file_ingest::EntryKind::File, Some(0)),
+                    ],
+                    warnings: Vec::new(),
+                };
+                let resolve = |existing: &[file_ingest::duplicates::ExistingComponent], plan| {
+                    file_ingest::duplicates::resolve(
+                        plan,
+                        existing,
+                        settings::filenames::keys,
+                        file_ingest::duplicates::DuplicatePolicy::Skip,
+                    )
+                };
+
+                let delegate = state.delegate_mut();
+                let resolved = resolve(&delegate.existing_components(Some(0), Some(root)), first);
+                delegate.append_components(&resolved, Some(1), Some(0), None, Some(root));
+                assert_eq!(delegate.row_count(), 6);
+
+                let resolved = resolve(&delegate.existing_components(Some(0), Some(root)), second);
+                assert_eq!(resolved.duplicates(), 2);
+                // Only the new photograph arrives, and it joins the series already in the table.
+                assert_eq!(
+                    delegate.append_components(&resolved, Some(1), Some(0), None, Some(root)),
+                    1
+                );
+                assert_eq!(delegate.row_count(), 7);
+                let structure = delegate.row_structure();
+                assert_eq!(structure[6].parent_id, Some(structure[4].row_id));
+                assert_eq!(delegate.undo(), Some(true));
                 assert_eq!(delegate.row_count(), 6);
             });
         });
