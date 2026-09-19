@@ -6,7 +6,7 @@ use std::{
     process::{Command as ProcessCommand, ExitStatus, Stdio},
 };
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory as _, Parser, Subcommand};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -18,7 +18,6 @@ const UNAVAILABLE: i32 = 3;
 #[command(
     name = "qrate",
     version,
-    args_conflicts_with_subcommands = true,
     about = "Launch the qrate desktop application"
 )]
 struct Cli {
@@ -64,11 +63,7 @@ enum AppCommand {
     /// Print the resolved desktop executable path.
     Path,
     /// Launch qrate without opening a project.
-    Launch {
-        /// Wait for the desktop process to exit.
-        #[arg(long)]
-        wait: bool,
-    },
+    Launch,
 }
 
 #[derive(Debug, Subcommand)]
@@ -116,8 +111,22 @@ enum Failure {
     Other(String),
 }
 
+/// `args_conflicts_with_subcommands` would do this, but it also stops a root `--wait` reaching one.
+fn parse_args(
+    args: impl IntoIterator<Item = impl Into<std::ffi::OsString> + Clone>,
+) -> Result<Cli, clap::Error> {
+    let cli = Cli::try_parse_from(args)?;
+    if cli.project.is_some() && cli.command.is_some() {
+        return Err(Cli::command().error(
+            clap::error::ErrorKind::ArgumentConflict,
+            "a project path cannot be combined with a subcommand",
+        ));
+    }
+    Ok(cli)
+}
+
 fn main() {
-    let cli = Cli::parse();
+    let cli = parse_args(std::env::args_os()).unwrap_or_else(|error| error.exit());
     let result = match cli.command {
         Some(Command::Version) => {
             println!("{}", env!("CARGO_PKG_VERSION"));
@@ -133,8 +142,10 @@ fn main() {
             None
         }),
         Some(Command::App {
-            command: AppCommand::Launch { wait },
-        }) => executable().and_then(|executable| launch(&desktop_path(&executable), None, wait)),
+            command: AppCommand::Launch,
+        }) => {
+            executable().and_then(|executable| launch(&desktop_path(&executable), None, cli.wait))
+        }
         Some(Command::Project {
             command: ProjectCommand::Info,
         }) => project_info(),
@@ -423,8 +434,8 @@ mod tests {
     use clap::Parser as _;
 
     use super::{
-        AgentCommand, AppCommand, Cli, Command, Failure, ProjectCommand, accept, agent_request,
-        desktop_path, launch, parse_response, validate_project,
+        AgentCommand, Cli, Command, Failure, ProjectCommand, accept, agent_request, desktop_path,
+        launch, parse_args, parse_response, validate_project,
     };
     use std::path::Path;
 
@@ -448,17 +459,15 @@ mod tests {
         ));
         assert!(cli.wait);
         assert!(Cli::try_parse_from(["qrate", "open"]).is_ok());
-        assert!(Cli::try_parse_from(["qrate", "--wait", "open"]).is_ok());
-        assert!(Cli::try_parse_from(["qrate", "a.qrate", "open", "b.qrate"]).is_err());
+        let cli = Cli::try_parse_from(["qrate", "--wait", "open"]).unwrap();
+        assert!(cli.wait && matches!(cli.command, Some(Command::Open { project: None })));
+        assert!(parse_args(["qrate", "a.qrate", "open", "b.qrate"]).is_err());
         assert!(Cli::try_parse_from(["qrate", "--unknown"]).is_err());
         assert!(Cli::try_parse_from(["qrate", "a.qrate", "b.qrate"]).is_err());
         let cli = Cli::try_parse_from(["qrate", "app", "launch", "--wait"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::App {
-                command: AppCommand::Launch { wait: true }
-            })
-        ));
+        assert!(cli.wait);
+        let cli = Cli::try_parse_from(["qrate", "--wait", "app", "launch"]).unwrap();
+        assert!(cli.wait);
         assert!(Cli::try_parse_from(["qrate", "app", "status"]).is_ok());
         assert!(Cli::try_parse_from(["qrate", "app", "path"]).is_ok());
         let cli = Cli::try_parse_from(["qrate", "project", "info"]).unwrap();
@@ -571,12 +580,12 @@ mod tests {
         let path = std::ffi::OsString::from_vec(b"project with spaces \xff.qrate".to_vec());
         let cli = Cli::try_parse_from([std::ffi::OsString::from("qrate"), path.clone()]).unwrap();
         assert_eq!(cli.project.unwrap().as_os_str(), path);
-        let status = launch(Path::new("/bin/false"), Some(Path::new(&path)), true)
+        let status = launch(Path::new("false"), Some(Path::new(&path)), true)
             .unwrap()
             .unwrap();
         assert_eq!(status.code(), Some(1));
         assert!(
-            launch(Path::new("/bin/true"), None, true)
+            launch(Path::new("true"), None, true)
                 .unwrap()
                 .unwrap()
                 .success()
