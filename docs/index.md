@@ -8,6 +8,7 @@ checks the data against validators, and exports it to the formats other systems 
 - [Projects](projects.md) — create, import, and open a `.qrate` project
 - [The grid](grid.md) — edit cells, search, filter, and undo
 - [Files and photos](files-and-photos.md) — link records to files, and view them
+- [Visual search](visual-search.md) — find records by what their pictures show
 - [Diagnostics](diagnostics.md) — the Problems panel, spelling, and fixes
 - [Columns](columns.md) — column types, authority lists, and per-column settings
 - [Export and Google Sheets](export-and-sync.md) — CSV, JSON-LD, CSL-JSON, ZIP, and Sheets sync

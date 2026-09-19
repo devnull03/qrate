@@ -21,7 +21,14 @@ it. A frozen row or column stays in view while you scroll.
 ## Search and replace
 
 Open search with **Ctrl+F**. Search moves through matching cells in the grid. Open replace
-with **Ctrl+H** to replace one match or all matches at once.
+with **Ctrl+H** to replace one match or all matches at once. The search bar belongs to
+whichever view is showing, so a search carries on when you switch between the grid and the
+gallery.
+
+Two toggles in the search bar look beyond the cells, and both narrow the view to the rows
+they match. The book searches the text inside linked PDFs. The picture searches what the
+linked images show, without using their metadata at all. See
+[Visual search](visual-search.md).
 
 ## Filtering
 
