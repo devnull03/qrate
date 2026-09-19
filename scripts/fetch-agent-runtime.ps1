@@ -5,9 +5,17 @@ param(
 
 $ErrorActionPreference = "Stop"
 $piVersion = "0.84.2"
-$extensionVersion = "0.2.1"
 $piSha256 = "741fc1ae1afecb573ac2888e011188ff446b3940f4aabe1583f60bf55be8a3d0"
-$extensionSha256 = "feb4ce5dcb59f5d936122541b776a85cd9d2541e121b7c47de7c4efb517ed37d"
+# The extension follows its latest release; the checksum is the digest GitHub records for the asset.
+$headers = @{}
+if ($env:GITHUB_TOKEN) { $headers.Authorization = "Bearer $env:GITHUB_TOKEN" }
+$release = Invoke-RestMethod "https://api.github.com/repos/devnull03/qrate-pi-extension/releases/latest" -Headers $headers
+$extensionVersion = $release.tag_name.TrimStart("v")
+$extensionAsset = $release.assets | Where-Object name -eq "qrate-pi-extension-$extensionVersion.tar.gz"
+if (-not $extensionAsset -or $extensionAsset.digest -notmatch '^sha256:') {
+    throw "qrate Pi extension release v$extensionVersion has no checksummed tarball"
+}
+$extensionSha256 = $extensionAsset.digest.Substring(7)
 $runtime = Join-Path ([System.IO.Path]::GetFullPath($Destination)) "agent"
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("qrate-agent-" + [guid]::NewGuid())
 
@@ -33,7 +41,7 @@ try {
     $piArchive = Join-Path $temp "pi.zip"
     $extensionArchive = Join-Path $temp "extension.tar.gz"
     Download-ReleaseAsset "https://github.com/earendil-works/pi/releases/download/v$piVersion/pi-$Platform.zip" $piArchive
-    Download-ReleaseAsset "https://github.com/devnull03/qrate-pi-extension/releases/download/v$extensionVersion/qrate-pi-extension-$extensionVersion.tar.gz" $extensionArchive
+    Download-ReleaseAsset $extensionAsset.browser_download_url $extensionArchive
 
     if ((Get-FileHash $piArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $piSha256) {
         throw "Pi archive checksum did not match v$piVersion"
