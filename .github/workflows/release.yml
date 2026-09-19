@@ -145,6 +145,8 @@ jobs:
           lipo -info libpdfium.dylib || true
 
       - name: Fetch embedded Pi agent
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           chmod +x scripts/fetch-agent-runtime.sh
           ./scripts/fetch-agent-runtime.sh . darwin-universal
@@ -215,6 +217,8 @@ jobs:
 
       - name: Fetch embedded Pi agent
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: ./scripts/fetch-agent-runtime.ps1 -Destination dist/portable
 
       - name: Package zip + NSIS + MSI installers
@@ -265,6 +269,28 @@ jobs:
 
           Remove-Item -Recurse -Force dist/portable
 
+      - name: Check NSIS install, upgrade and uninstall leave PATH exact
+        shell: pwsh
+        run: |
+          $setup = "$PWD\dist\qrate-${{ needs.version.outputs.version }}-setup.exe"
+          $dir = Join-Path $env:RUNNER_TEMP "qrate-install"
+          $bin = "$dir\bin"
+          $unrelated = "C:\qrate-path-sentinel"
+          $key = "HKCU:\Environment"
+          function Entries { @((Get-Item $key).GetValue('Path', '', 'DoNotExpandEnvironmentNames') -split ';' | Where-Object { $_ }) }
+          New-ItemProperty $key Path -Value ((@(Entries) + $unrelated) -join ';') -PropertyType ExpandString -Force | Out-Null
+          foreach ($round in "install", "upgrade") {
+            Start-Process $setup -ArgumentList "/S", "/D=$dir" -Wait
+            $hits = @(Entries | Where-Object { $_ -eq $bin }).Count
+            if ($hits -ne 1) { throw "$round left $hits PATH entries for $bin" }
+            & "$bin\qrate.exe" version
+            if ($LASTEXITCODE -ne 0) { throw "bin\qrate.exe failed after $round" }
+          }
+          # _? runs the uninstaller in place and synchronously instead of from a temp copy.
+          Start-Process "$dir\Uninstall.exe" -ArgumentList "/S", "_?=$dir" -Wait
+          if (Entries | Where-Object { $_ -eq $bin }) { throw "uninstall left $bin on PATH" }
+          if (-not (Entries | Where-Object { $_ -eq $unrelated })) { throw "uninstall removed an unrelated PATH entry" }
+
       - name: Report what shipped
         shell: bash
         run: ls -lh dist/
@@ -307,6 +333,8 @@ jobs:
           cargo build --release -p updater --bin qrate-update-helper
 
       - name: Package tarball
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           chmod +x scripts/fetch-binaries.sh
           ver="${{ needs.version.outputs.version }}"

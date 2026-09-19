@@ -54,6 +54,8 @@ Unicode true
 ; administrator rights, and a per-user install needs none — the all-users option is still on the
 ; install-mode page for anyone who wants it, and MSI is the route for deploying to a whole site.
 !define MULTIUSER_INSTALLMODE_DEFAULT_CURRENTUSER
+; The installer is 32-bit, so plain $PROGRAMFILES would put the 64-bit app in Program Files (x86).
+!define MULTIUSER_USE_PROGRAMFILES64
 !define MULTIUSER_INSTALLMODE_INSTDIR "${APPNAME}"
 !define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_KEY "Software\${APPNAME}"
 !define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_VALUENAME "InstallDir"
