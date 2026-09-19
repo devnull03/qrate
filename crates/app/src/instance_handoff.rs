@@ -12,17 +12,14 @@ pub fn start(target: Option<&str>, sender: async_channel::Sender<String>) -> boo
         log::warn!("could not initialize plugin-link process handoff");
         return true;
     };
+    // One desktop per user: a second would overwrite the first's app-control.json. With no target,
+    // the empty handoff asks the running one to show its launcher.
     if !instance.is_single() {
-        if let Some(target) = target {
-            log::info!("handing startup target to the running qrate instance");
-            if let Err(error) = send(target) {
-                log::error!(
-                    "could not hand the startup target to the running qrate process: {error}"
-                );
-            }
-            return false;
+        log::info!("handing startup target to the running qrate instance");
+        if let Err(error) = send(target.unwrap_or_default()) {
+            log::error!("could not hand the startup target to the running qrate process: {error}");
         }
-        return true;
+        return false;
     }
 
     let Some(inbox) = inbox() else {

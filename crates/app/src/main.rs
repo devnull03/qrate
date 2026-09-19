@@ -654,8 +654,15 @@ fn main() {
             while let Ok(message) = url_receiver.recv().await {
                 match startup::parse(std::ffi::OsStr::new(&message)) {
                     Some(target) => {
-                        cx.update(|cx| open_target(target, cx));
+                        cx.update(|cx| {
+                            // Switching projects drops the open one's table state; persist it first.
+                            if settings::dirty::Dirty::has(settings::dirty::PROJECT_DATA, cx) {
+                                table::save_now(cx);
+                            }
+                            open_target(target, cx)
+                        });
                     }
+                    None if message.is_empty() => cx.update(project_wizard::open_launcher_window),
                     None => log::warn!("ignored a handed-off target qrate cannot open"),
                 }
             }

@@ -6,9 +6,11 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::io::{BufRead, BufReader, Write as _};
+use std::io::{BufRead, BufReader, Read as _, Write as _};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use gpui::{App, SharedString};
@@ -21,6 +23,11 @@ const IO_TIMEOUT: Duration = Duration::from_secs(2);
 /// Enough for a full batch of staged findings, each carrying the cell text it was judged against.
 const MAX_BODY: usize = 256 * 1024;
 const MAX_AGENT_NAME: usize = 48;
+const MAX_LINE: u64 = 8 * 1024;
+const MAX_HEADERS: usize = 64;
+const MAX_CONNECTIONS: usize = 16;
+const MAX_QUEUED_JOBS: usize = 32;
+const MAX_AGENT_NAMES: usize = 256;
 const UNNAMED: &str = "unnamed agent";
 
 /// Whether agents may use the live project. Absent means on; status and project info ignore it.
@@ -52,17 +59,29 @@ pub fn init(cx: &mut App) {
     let Some((listener, token)) = start() else {
         return;
     };
-    let (jobs, inbox) = async_channel::unbounded::<Job>();
+    let (jobs, inbox) = async_channel::bounded::<Job>(MAX_QUEUED_JOBS);
     let spawned = std::thread::Builder::new()
         .name("app-control".into())
         .spawn(move || {
+            let open = Arc::new(AtomicUsize::new(0));
             for stream in listener.incoming() {
                 let (token, jobs) = (token.clone(), jobs.clone());
                 match stream {
+                    Ok(_) if open.load(Ordering::Acquire) >= MAX_CONNECTIONS => {
+                        log::warn!("app control refused a connection: too many already open");
+                    }
                     Ok(stream) => {
-                        let _ = std::thread::Builder::new()
+                        open.fetch_add(1, Ordering::AcqRel);
+                        let slot = open.clone();
+                        let spawned = std::thread::Builder::new()
                             .name("app-control-connection".into())
-                            .spawn(move || serve(stream, &token, &jobs));
+                            .spawn(move || {
+                                serve(stream, &token, &jobs);
+                                slot.fetch_sub(1, Ordering::AcqRel);
+                            });
+                        if spawned.is_err() {
+                            open.fetch_sub(1, Ordering::AcqRel);
+                        }
                     }
                     Err(error) => log::warn!("app control dropped a connection: {error}"),
                 }
@@ -117,7 +136,10 @@ fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()>
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options.open(path)?.write_all(contents)
+    // Renamed into place so the CLI never reads a half-written descriptor.
+    let partial = path.with_extension("json.tmp");
+    options.open(&partial)?.write_all(contents)?;
+    fs::rename(partial, path)
 }
 
 pub fn shutdown() {
@@ -274,7 +296,7 @@ async fn answer_agent(
             }
         };
     cx.update(|cx| {
-        if seen.insert(agent.clone()) {
+        if seen.len() < MAX_AGENT_NAMES && seen.insert(agent.clone()) {
             workspace::record_agent_call(
                 AgentCall {
                     agent: agent.clone(),
@@ -374,23 +396,31 @@ struct RawRequest {
     body: Vec<u8>,
 }
 
+fn read_bounded_line(reader: &mut impl BufRead, line: &mut String) -> Result<usize, &'static str> {
+    let read = reader
+        .by_ref()
+        .take(MAX_LINE)
+        .read_line(line)
+        .map_err(|_| "unreadable_request")?;
+    if read as u64 == MAX_LINE && !line.ends_with('\n') {
+        return Err("request_too_large");
+    }
+    Ok(read)
+}
+
 fn read_request(reader: &mut impl BufRead) -> Result<RawRequest, &'static str> {
     let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .map_err(|_| "unreadable_request")?;
+    read_bounded_line(reader, &mut line)?;
     let mut parts = line.split_whitespace();
     let (Some(method), Some(path)) = (parts.next(), parts.next()) else {
         return Err("malformed_request");
     };
     let (method, path) = (method.to_owned(), path.to_owned());
     let (mut credential, mut agent, mut length) = (None, None, 0usize);
-    loop {
+    for _ in 0..=MAX_HEADERS {
         line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(_) => return Err("unreadable_request"),
+        if read_bounded_line(reader, &mut line)? == 0 {
+            break;
         }
         let Some((name, value)) = line.trim_end().split_once(':') else {
             break;
@@ -404,7 +434,7 @@ fn read_request(reader: &mut impl BufRead) -> Result<RawRequest, &'static str> {
             agent = Some(value.chars().take(MAX_AGENT_NAME).collect());
         }
     }
-    if length > MAX_BODY {
+    if line.contains(':') || length > MAX_BODY {
         return Err("request_too_large");
     }
     let mut body = vec![0; length];
@@ -424,7 +454,7 @@ fn read_request(reader: &mut impl BufRead) -> Result<RawRequest, &'static str> {
 mod tests {
     use std::io::Cursor;
 
-    use super::{MAX_AGENT_NAME, MAX_BODY, read_request};
+    use super::{MAX_AGENT_NAME, MAX_BODY, MAX_HEADERS, MAX_LINE, read_request};
 
     fn request(headers: &str, body: &str) -> Cursor<Vec<u8>> {
         Cursor::new(
@@ -480,5 +510,18 @@ mod tests {
             read_request(&mut oversized).err(),
             Some("request_too_large")
         );
+    }
+
+    #[test]
+    fn oversized_or_endless_headers_are_refused() {
+        let long_line = format!("X-Agent: {}\r\n", "n".repeat(MAX_LINE as usize));
+        let too_many = "X-Pad: 1\r\n".repeat(MAX_HEADERS + 1);
+        for headers in [long_line, too_many] {
+            assert_eq!(
+                read_request(&mut request(&headers, "{}")).err(),
+                Some("request_too_large")
+            );
+        }
+        assert!(read_request(&mut request(&"X-Pad: 1\r\n".repeat(MAX_HEADERS - 3), "{}")).is_ok());
     }
 }
