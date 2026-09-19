@@ -10,20 +10,21 @@ only initializes it, and `ai` remains the provider- and transport-neutral qrate 
 The qrate-specific package lives in the public
 [`devnull03/qrate-pi-extension`](https://github.com/devnull03/qrate-pi-extension) repository. qrate
 pins its v0.1.0 tag and checksum in the runtime-fetch scripts. The package supplies the system
-prompt, live-review skill, typed bridge tools, and permission gates. Keep those concerns there so
+prompt, live-review skill, typed qrate tools, and permission gates. Keep those concerns there so
 they can be tested against Pi without rebuilding the desktop app.
 
-## Why the extension still uses the bridge
+## Why the extension calls the CLI
 
 | Integration | Strength | Cost | Decision |
 |---|---|---|---|
-| Current loopback bridge | Already reads qrate's unsaved in-memory state; revision and `expected` guards are proven | Callers assemble JSON and receive no Pi-native schemas or permission UI | Keep as the canonical app boundary |
-| MCP server | Standard discovery and usable by many agent clients | Adds another transport and process lifecycle while duplicating the bridge contract | Defer until ASNT-98 or another non-Pi client needs discovery |
-| Pi extension over the bridge | Typed native tools, qrate prompt/skill loading, and Pi confirmation UI; independent release cadence | Coupled to Pi's extension API and must track its pinned version | Primary embedded integration |
+| `qrate agent …` | One public JSON contract with exit codes, shared by every agent and script; reads unsaved in-memory state | A process per call (milliseconds, dwarfed by model latency) | The canonical agent boundary |
+| Private `app_control` endpoint | Already in the app | Versioned per release, so a separately released extension would break on internal changes | CLI only |
+| MCP server | Standard discovery for MCP-only clients | Pi has no native MCP; another transport to keep in step | Defer until a client cannot run a command; wrap the same handlers |
 
-The extension is an adapter, not a second source of truth. It rereads `agent-bridge.json` on every
-call and sends the same requests as any external agent. The endpoint now includes
-`"bridge_protocol": 1`; additions must remain backward compatible within that protocol version.
+qrate starts Pi with `QRATE_CLI` pointing at the `qrate-cli` beside the running app and
+`QRATE_AGENT=pi`. The extension runs `$QRATE_CLI agent <command>` with the parameters on stdin, so
+the CLI it talks to always ships with the app it reads. It is an adapter, not a second source of
+truth: it sends exactly what any external agent sends.
 
 ## Provider and credential ownership
 
@@ -46,7 +47,7 @@ Pi keeps its coding tools, but the extension gates risky calls before execution:
 - reads and searches outside the open project ask for confirmation.
 - a missing confirmation UI or unresolved path denies the call.
 
-The qrate bridge remains read-only. `qrate_stage_findings` only publishes drafts for the archivist
+The `qrate agent` commands never change a cell. `qrate_stage_findings` only publishes drafts for the archivist
 to accept in qrate.
 
 ## Updating the pinned runtime

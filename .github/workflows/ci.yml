@@ -39,6 +39,8 @@ jobs:
       - name: Check Unix agent runtime package
         if: runner.os != 'Windows'
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           chmod +x scripts/fetch-agent-runtime.sh
           destination="$RUNNER_TEMP/qrate-agent-runtime"
@@ -57,16 +59,22 @@ jobs:
           fi
           test -x "$destination/agent/pi"
           test -f "$destination/agent/qrate-pi-extension/SYSTEM.md"
+          test -f "$destination/agent/qrate-pi-extension/src/cli.ts"
 
       - name: Check Windows agent runtime package
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           $destination = Join-Path $env:RUNNER_TEMP "qrate-agent-runtime"
           ./scripts/fetch-agent-runtime.ps1 -Destination $destination
           $runtime = Join-Path $destination "agent"
           if (-not (Test-Path (Join-Path $runtime "pi.exe") -PathType Leaf)) {
             throw "Pi executable was not packaged at agent/pi.exe"
+          }
+          if (-not (Test-Path (Join-Path $runtime "qrate-pi-extension/src/cli.ts") -PathType Leaf)) {
+            throw "qrate Pi extension lacks src/cli.ts, which the runtime requires"
           }
           if (-not (Test-Path (Join-Path $runtime "qrate-pi-extension/SYSTEM.md") -PathType Leaf)) {
             throw "qrate Pi extension was not packaged beside the runtime"

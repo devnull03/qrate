@@ -506,11 +506,11 @@ impl AgentTerminal {
             session_dir.display()
         );
         log::debug!(
-            "embedded Pi resources: extension={} (exists={}), endpoint={} (exists={})",
+            "embedded Pi resources: extension={} (exists={}), cli={} (exists={})",
             runtime.extension.display(),
             runtime.extension.is_file(),
-            runtime.endpoint.display(),
-            runtime.endpoint.is_file()
+            runtime.cli.display(),
+            runtime.cli.is_file()
         );
 
         let mut args = runtime.leading_args.clone();
@@ -560,9 +560,10 @@ impl AgentTerminal {
             ),
             ("PI_SKIP_VERSION_CHECK".to_owned(), "1".to_owned()),
             (
-                "QRATE_AGENT_ENDPOINT".to_owned(),
-                runtime.endpoint.to_string_lossy().into_owned(),
+                "QRATE_CLI".to_owned(),
+                runtime.cli.to_string_lossy().into_owned(),
             ),
+            ("QRATE_AGENT".to_owned(), "pi".to_owned()),
             (
                 "QRATE_PROJECT_DIR".to_owned(),
                 cwd.to_string_lossy().into_owned(),

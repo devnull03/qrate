@@ -1,4 +1,4 @@
-//! Protocol v2 between a running qrate app and an external review agent.
+//! The agent contract between a running qrate app and a review agent, reached through `qrate agent`.
 //!
 //! Reads are progressive: a cheap overview, a bounded declarative query, and optional scratch
 //! programs and thumbnails. The only state-changing request publishes draft findings; it never

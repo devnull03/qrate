@@ -10,7 +10,6 @@ use settings::columns::{ColumnSettings, ColumnSettingsMap};
 use crate::data::ColumnConfigPreview;
 use crate::launcher;
 use crate::project;
-use crate::recent;
 use crate::wizard::{ColumnSource, EntryKind, LinkMethod, ProjectWizard, WizardStep};
 
 /// The half of a column config that `__columns` cannot hold: what each column is checked against,
@@ -277,7 +276,6 @@ impl ProjectWizard {
                     self.step = WizardStep::Name;
                     return;
                 }
-                recent::record_opened(name, file, cx);
                 // No success screen — hand off to the main app right away.
                 if let Some(hooks) = cx.try_global::<launcher::LauncherHooks>().copied() {
                     (hooks.open_main_window)(cx);

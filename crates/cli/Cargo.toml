@@ -1,0 +1,14 @@
+[package]
+name = "qrate-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "qrate-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true

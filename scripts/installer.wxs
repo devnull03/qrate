@@ -20,7 +20,7 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <?ifndef Version ?><?define Version = "0.0.0.0" ?><?endif?>
-  <?ifndef SrcExe ?><?define SrcExe = "..\target\release\app.exe" ?><?endif?>
+  <?ifndef SrcExe ?><?define SrcExe = "..\target\release\qrate.exe" ?><?endif?>
   <?ifndef SrcDir ?><?define SrcDir = "..\target\release" ?><?endif?>
   <?ifndef IconFile ?><?define IconFile = "..\assets\icons\app-icon.ico" ?><?endif?>
   <?ifndef HasPdfium ?><?define HasPdfium = 0 ?><?endif?>
@@ -50,7 +50,9 @@
     <Property Id="ARPCOMMENTS" Value="Unsigned build." />
 
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="qrate" />
+      <Directory Id="INSTALLFOLDER" Name="qrate">
+        <Directory Id="CliBinFolder" Name="bin" />
+      </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
       <Directory Id="AppProgramMenuFolder" Name="qrate" />
@@ -65,6 +67,9 @@
           <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="qrate"
                      WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" Advertise="yes" />
         </File>
+      </Component>
+      <Component Id="CliExe" Guid="*">
+        <File Id="QrateCliExe" Source="$(var.SrcDir)\qrate-cli.exe" KeyPath="yes" />
       </Component>
       <Component Id="UpdateHelper" Guid="*">
         <File Id="QrateUpdateHelper" Source="$(var.SrcDir)\qrate-update-helper.exe" KeyPath="yes" />
@@ -101,12 +106,20 @@
       </Component>
       <?endif?>
     </ComponentGroup>
+    <ComponentGroup Id="CliShimFiles" Directory="CliBinFolder">
+      <Component Id="CliShim" Guid="*">
+        <File Id="QrateShimExe" Source="$(var.SrcDir)\bin\qrate.exe" KeyPath="yes" />
+        <Environment Id="CliPath" Name="PATH" Value="[CliBinFolder]" Part="last"
+                     Action="set" System="yes" />
+      </Component>
+    </ComponentGroup>
     <ComponentGroup Id="AgentFiles" Directory="INSTALLFOLDER" Subdirectory="agent">
       <Files Include="$(var.SrcDir)\agent\**" />
     </ComponentGroup>
 
     <Feature Id="Main" Title="qrate" Level="1">
       <ComponentGroupRef Id="AppFiles" />
+      <ComponentGroupRef Id="CliShimFiles" />
       <ComponentGroupRef Id="AgentFiles" />
     </Feature>
 

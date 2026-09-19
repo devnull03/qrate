@@ -11,7 +11,7 @@ pub use viewer::{CloseViewerLayer, Scope as ViewerScope, VIEWER_CONTEXT, open_vi
 
 pub use dock_button::DockToggleButton;
 pub use panel_registry::{BarSide, PANELS, PanelMeta, PanelRegistry, bar_side};
-/// `record` is how the agent bridge in `app` files an entry for the Agent panel to show.
+/// `record` is how `app_control` files an agent call for the Agent panel to show.
 pub use panels::{
     AGENT_FONT_KEY, AGENT_FONT_SIZE_KEY, AGENT_FONT_SIZES, AgentCall, AgentEntry, DETAILS_META,
     record as record_agent_call,

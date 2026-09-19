@@ -4,8 +4,6 @@ set -euo pipefail
 destination="${1:?usage: fetch-agent-runtime.sh <destination> <linux-x64|darwin-universal>}"
 platform="${2:?usage: fetch-agent-runtime.sh <destination> <linux-x64|darwin-universal>}"
 pi_version=0.84.2
-extension_version=0.2.1
-extension_sha=feb4ce5dcb59f5d936122541b776a85cd9d2541e121b7c47de7c4efb517ed37d
 runtime="$(cd "$(dirname "$destination")" && pwd)/$(basename "$destination")/agent"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -35,7 +33,16 @@ case "$platform" in
 esac
 chmod +x "$runtime/pi"
 
-curl -fsSL "https://github.com/devnull03/qrate-pi-extension/releases/download/v$extension_version/qrate-pi-extension-$extension_version.tar.gz" -o "$tmp/extension.tar.gz"
+# The extension follows its latest release; the checksum is the digest GitHub records for the asset.
+command -v jq >/dev/null || { echo "fetch-agent-runtime.sh needs jq" >&2; exit 2; }
+auth=()
+[ -n "${GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
+curl -fsSL ${auth[@]+"${auth[@]}"} https://api.github.com/repos/devnull03/qrate-pi-extension/releases/latest -o "$tmp/extension.json"
+extension_version="$(jq -er '.tag_name | ltrimstr("v")' "$tmp/extension.json")"
+asset="qrate-pi-extension-$extension_version.tar.gz"
+extension_url="$(jq -er --arg name "$asset" '.assets[] | select(.name == $name) | .browser_download_url' "$tmp/extension.json")"
+extension_sha="$(jq -er --arg name "$asset" '.assets[] | select(.name == $name) | .digest | ltrimstr("sha256:")' "$tmp/extension.json")"
+curl -fsSL "$extension_url" -o "$tmp/extension.tar.gz"
 echo "$extension_sha  $tmp/extension.tar.gz" | shasum -a 256 -c -
 tar -xzf "$tmp/extension.tar.gz" -C "$tmp"
 mkdir -p "$runtime/qrate-pi-extension"
