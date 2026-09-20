@@ -677,6 +677,96 @@ pub fn write_notes(
     Ok(())
 }
 
+/// Created on first write, like `__notes`, so opening a project stays read-only. Keyed by the path
+/// as the caller stores it (relative to the files folder where it can be).
+const VISUAL_INDEX_DDL: &str = r#"
+    CREATE TABLE IF NOT EXISTS __visual_index (
+      path   TEXT PRIMARY KEY,
+      len    INTEGER NOT NULL,
+      vector BLOB NOT NULL
+    );
+"#;
+
+/// `__settings` key naming the model that built `__visual_index`. Vectors from different models
+/// cannot be compared, so a mismatch reads as an empty index and the next write clears it.
+const VISUAL_MODEL_KEY: &str = "visual_model";
+
+/// One image's vector: the stored path, the file's length when embedded, and the vector.
+pub type VisualEntry = (String, u64, Vec<f32>);
+
+/// Every vector `model` stored in this project. Empty when there is no index yet, or another model
+/// built it.
+pub fn read_visual_index(path: &Path, model: &str) -> Result<Vec<VisualEntry>> {
+    let conn = open_ro(path)?;
+    let exists: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '__visual_index'",
+        [],
+        |r| r.get(0),
+    )?;
+    let built_by: Option<String> = conn
+        .query_row(
+            "SELECT value FROM __settings WHERE key = ?1",
+            params![VISUAL_MODEL_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if exists == 0 || built_by.as_deref() != Some(model) {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare("SELECT path, len, vector FROM __visual_index")?;
+    let rows = stmt.query_map([], |r| {
+        let bytes: Vec<u8> = r.get(2)?;
+        let vector = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect();
+        Ok((r.get(0)?, r.get::<_, i64>(1)? as u64, vector))
+    })?;
+    rows.collect::<rusqlite::Result<_>>()
+        .context("Read visual index")
+}
+
+/// Store `entries`, replacing any with the same path, in one transaction. Clears what another model
+/// stored first.
+pub fn write_visual_index(path: &Path, model: &str, entries: &[VisualEntry]) -> Result<()> {
+    let mut conn = open_rw(path)?;
+    let tx = conn.transaction()?;
+    tx.execute_batch(VISUAL_INDEX_DDL)
+        .context("Create __visual_index")?;
+    let built_by: Option<String> = tx
+        .query_row(
+            "SELECT value FROM __settings WHERE key = ?1",
+            params![VISUAL_MODEL_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if built_by.as_deref() != Some(model) {
+        tx.execute("DELETE FROM __visual_index", [])
+            .context("Clear another model's vectors")?;
+        tx.execute(
+            "INSERT INTO __settings(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![VISUAL_MODEL_KEY, model],
+        )
+        .context("Record visual model")?;
+    }
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO __visual_index(path, len, vector) VALUES (?1, ?2, ?3)
+             ON CONFLICT(path) DO UPDATE SET len = excluded.len, vector = excluded.vector",
+        )?;
+        for (file, len, vector) in entries {
+            let bytes: Vec<u8> = vector.iter().flat_map(|v| v.to_le_bytes()).collect();
+            stmt.execute(params![file, *len as i64, bytes])
+                .context("Insert vector")?;
+        }
+    }
+    tx.commit().context("Commit visual index")?;
+    Ok(())
+}
+
 /// Debounced background writer for `__settings` values. The dock-layout and
 /// window-bounds observers fire on every drag event; latest value per
 /// (file, key) wins, and one thread serves all project files — no lifecycle
@@ -933,6 +1023,26 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn visual_index_round_trips_and_forgets_another_models_vectors() {
+        let path = tempfile("visual.qrate");
+        blank_project(&path);
+        assert!(read_visual_index(&path, "clip-a").unwrap().is_empty());
+
+        write_visual_index(&path, "clip-a", &[("a.jpg".into(), 6, vec![0.6, 0.8])]).unwrap();
+        write_visual_index(&path, "clip-a", &[("a.jpg".into(), 7, vec![1.0, 0.0])]).unwrap();
+        assert_eq!(
+            read_visual_index(&path, "clip-a").unwrap(),
+            vec![("a.jpg".to_string(), 7, vec![1.0, 0.0])],
+            "a re-embedded file replaces its row"
+        );
+        assert!(read_visual_index(&path, "clip-b").unwrap().is_empty());
+
+        write_visual_index(&path, "clip-b", &[("b.jpg".into(), 1, vec![0.0])]).unwrap();
+        assert_eq!(read_visual_index(&path, "clip-b").unwrap().len(), 1);
+        assert!(read_visual_index(&path, "clip-a").unwrap().is_empty());
     }
 
     /// A project written before notes carried a date and an author must still open, still read its

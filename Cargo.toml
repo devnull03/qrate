@@ -17,13 +17,14 @@ members = [
   "crates/spellcheck",
   "crates/table",
   "crates/updater",
+  "crates/visual-search",
   "crates/window-wrapper",
   "crates/workspace",
 ]
 default-members = ["crates/app"]
 
 [workspace.package]
-version = "0.4.0-beta.2"
+version = "0.5.0-beta.1"
 edition = "2024"
 
 # Dev runtime was crawling on the 2k-row table because unoptimized gpui/text-shaping

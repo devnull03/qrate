@@ -1,6 +1,6 @@
 //! Our own icons in front of `gpui_component_assets`, which is otherwise the only asset source.
-//! Lucide ships no filled panel glyph, so the title bar's "this dock is open" state needs three
-//! SVGs of our own.
+//! The bundled icon set has no filled panel glyphs (the title bar's "this dock is open" state) and
+//! no picture glyph (visual search), so those SVGs are ours, copied from Lucide.
 
 use std::borrow::Cow;
 
@@ -8,7 +8,7 @@ use gpui::{AssetSource, Result, SharedString};
 
 pub struct Assets;
 
-const OWN: [(&str, &str); 4] = [
+const OWN: [(&str, &str); 5] = [
     (
         "icons/history.svg",
         include_str!("../../../assets/icons/history.svg"),
@@ -24,6 +24,10 @@ const OWN: [(&str, &str); 4] = [
     (
         "icons/panel-bottom-filled.svg",
         include_str!("../../../assets/icons/panel-bottom-filled.svg"),
+    ),
+    (
+        "icons/image.svg",
+        include_str!("../../../assets/icons/image.svg"),
     ),
 ];
 

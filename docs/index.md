@@ -8,6 +8,7 @@ checks the data against validators, and exports it to the formats other systems 
 - [Projects](projects.md) — create, import, and open a `.qrate` project
 - [The grid](grid.md) — edit cells, search, filter, and undo
 - [Files and photos](files-and-photos.md) — link records to files, and view them
+- [Visual search](visual-search.md) — find records by what their pictures show
 - [Diagnostics](diagnostics.md) — the Problems panel, spelling, and fixes
 - [Columns](columns.md) — column types, authority lists, and per-column settings
 - [Export and Google Sheets](export-and-sync.md) — CSV, JSON-LD, CSL-JSON, ZIP, and Sheets sync
@@ -15,8 +16,9 @@ checks the data against validators, and exports it to the formats other systems 
 
 ## Plugins
 
-- [Plugins](plugins/index.md) — what a plugin can do, and how to write one
-- [Islandora plugin](plugins/islandora.md) — the first plugin qrate ships with
+- [Plugins](plugins/index.md) — find, install, and manage plugins
+- [Develop plugins](plugins/developing.md) — create, test, and publish a plugin
+- [Islandora plugin](plugins/islandora.md) — use Islandora vocabularies in qrate
 
 ## For contributors
 

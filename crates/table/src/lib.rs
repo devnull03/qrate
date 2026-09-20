@@ -20,6 +20,7 @@ mod note;
 mod panel;
 pub mod photos;
 mod row_index;
+mod visual;
 
 pub use agent::{AGENT_SOURCE, respond_to_agent, respond_to_agent_async};
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};

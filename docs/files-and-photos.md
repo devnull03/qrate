@@ -24,6 +24,10 @@ previews images, documents, audio, and video directly. Click the preview to open
 fullscreen, where you can zoom, pan, page through a multi-page document, and search inside
 it.
 
+The arrows in the bottom-right corner of the fullscreen view move to the file of the
+previous or next row, in the order the view shows them. During a search that means the
+previous or next result.
+
 PDF previews need PDFium and video frame previews need ffmpeg. qrate looks for both beside
 its own executable, then on your system `PATH`. Without them, qrate shows a file-type icon
 instead of a preview, and the rest of the app works as normal.

@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
@@ -74,9 +74,17 @@ pub struct QrateTableDelegate {
     pub(crate) note_editor: Entity<TextareaState>,
     /// Each row's resolved image path, parallel to `rows`. `None` until `TablePanel` resolves it.
     image_paths: Vec<Option<PathBuf>>,
+    /// The text inside linked documents, by path. Filled by `TablePanel` the first time a search
+    /// includes linked files; a file with no text layer holds an empty string so it is not re-read.
+    document_text: HashMap<PathBuf, String>,
     /// View→source row mapping: `visible_rows[view] == source`. The library only ever sees this
     /// narrowed set, so filtering composes with the virtualized render for free.
     visible_rows: Vec<usize>,
+    /// The rows the column filters let through, before a search narrows them. What searches scan,
+    /// so typing more can widen the hits again.
+    filtered_rows: Vec<usize>,
+    /// A visual or linked-file search's hits as source rows, in the order the view shows them.
+    search_rows: Option<Vec<usize>>,
     /// Per-data-column set of *excluded* cell values, parallel to `columns`. Empty = no filter.
     filters: Vec<HashSet<SharedString>>,
     /// Whether each column offers a filter dropdown at all, parallel to `columns`. Off for every
@@ -116,7 +124,10 @@ impl QrateTableDelegate {
             note_edit: None,
             note_editor,
             image_paths: Vec::new(),
+            document_text: HashMap::new(),
             visible_rows: Vec::new(),
+            filtered_rows: Vec::new(),
+            search_rows: None,
             filters: Vec::new(),
             filters_enabled: Vec::new(),
             subdelimiter: SharedString::default(),
@@ -202,7 +213,17 @@ impl QrateTableDelegate {
     }
 
     fn recompute_visible(&mut self) {
-        self.visible_rows = compute_visible_rows(&self.rows, &self.filters, &self.subdelimiter);
+        self.filtered_rows = compute_visible_rows(&self.rows, &self.filters, &self.subdelimiter);
+        self.visible_rows = match &self.search_rows {
+            Some(hits) => {
+                let kept: HashSet<usize> = self.filtered_rows.iter().copied().collect();
+                hits.iter()
+                    .copied()
+                    .filter(|row| kept.contains(row))
+                    .collect()
+            }
+            None => self.filtered_rows.clone(),
+        };
         // `range` is in view coordinates, which this just redefined.
         self.range = None;
     }
@@ -326,13 +347,112 @@ impl QrateTableDelegate {
     /// Cells in the *visible* set matching `needle` under `opts`, as `(view_row, data_col)` in view
     /// order — ready for `set_selected_cell`/`scroll_to_row` after the pinned `+1` on the column.
     pub(crate) fn search_matches(&self, needle: &str, opts: SearchOpts) -> Vec<(usize, usize)> {
-        find_matches(
+        let mut hits = find_matches(
             &self.rows,
             &self.visible_rows,
             self.columns.len(),
             needle,
             opts,
-        )
+        );
+        if opts.files {
+            hits.extend(find_file_matches(
+                &self.rows,
+                &self.visible_rows,
+                &self.image_paths,
+                &self.document_text,
+                needle,
+                opts,
+            ));
+            hits.sort_unstable();
+            hits.dedup();
+        }
+        hits
+    }
+
+    /// Every filtered row with a linked file that `score` can rate, as `(score, source_row,
+    /// data_col)` best first. Ignores any narrowing a previous search applied.
+    pub(crate) fn ranked_rows(
+        &self,
+        score: impl Fn(&Path) -> Option<f32>,
+    ) -> Vec<(f32, usize, usize)> {
+        let mut scored: Vec<(f32, usize, usize)> = self
+            .filtered_rows
+            .iter()
+            .filter_map(|&source| {
+                let path = self.image_paths.get(source)?.as_ref()?;
+                let col = file_column(self.rows.get(source)?, path);
+                Some((score(path)?, source, col))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+        scored
+    }
+
+    /// The filtered rows with a hit for `needle`, in cells or linked files, as source rows in order.
+    /// Ignores any narrowing a previous search applied.
+    pub(crate) fn hit_rows(&self, needle: &str, opts: SearchOpts) -> Vec<usize> {
+        let mut hits = find_matches(
+            &self.rows,
+            &self.filtered_rows,
+            self.columns.len(),
+            needle,
+            opts,
+        );
+        if opts.files {
+            hits.extend(find_file_matches(
+                &self.rows,
+                &self.filtered_rows,
+                &self.image_paths,
+                &self.document_text,
+                needle,
+                opts,
+            ));
+        }
+        let mut rows: Vec<usize> = hits
+            .into_iter()
+            .map(|(at, _)| self.filtered_rows[at])
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+        rows
+    }
+
+    /// Show only `rows`, in that order, until a later call passes `None`. Column filters still apply.
+    /// Returns whether the view changed.
+    pub(crate) fn set_search_rows(&mut self, rows: Option<Vec<usize>>) -> bool {
+        if self.search_rows == rows {
+            return false;
+        }
+        self.search_rows = rows;
+        self.recompute_visible();
+        self.editing = EditState::Idle;
+        true
+    }
+
+    /// Every distinct file the rows link to.
+    pub(crate) fn linked_files(&self) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = self.image_paths.iter().flatten().cloned().collect();
+        files.sort_unstable();
+        files.dedup();
+        files
+    }
+
+    /// Linked documents whose text has not been read yet, each once.
+    pub(crate) fn unread_documents(&self) -> Vec<PathBuf> {
+        let mut unread: Vec<PathBuf> = self
+            .image_paths
+            .iter()
+            .flatten()
+            .filter(|path| preview::has_text(path) && !self.document_text.contains_key(*path))
+            .cloned()
+            .collect();
+        unread.sort_unstable();
+        unread.dedup();
+        unread
+    }
+
+    pub(crate) fn add_document_text(&mut self, texts: Vec<(PathBuf, String)>) {
+        self.document_text.extend(texts);
     }
 
     /// The cell writes replacing `needle` with `replacement` produces, in *source* coordinates and
@@ -386,7 +506,9 @@ impl QrateTableDelegate {
         self.unsaved.clear();
         self.filters = vec![HashSet::new(); self.columns.len()];
         self.filters_enabled = vec![false; self.columns.len()];
-        self.visible_rows = (0..self.rows.len()).collect();
+        self.search_rows = None;
+        self.filtered_rows = (0..self.rows.len()).collect();
+        self.visible_rows = self.filtered_rows.clone();
         // Stale — indexes into the old row set; `TablePanel` re-resolves right after.
         self.image_paths = vec![None; self.rows.len()];
         self.values_generation += 1;
@@ -916,6 +1038,8 @@ impl QrateTableDelegate {
     /// What every row insert or delete invalidates. The view is rebuilt rather than patched: a
     /// filtered view's indices all move, and `recompute_visible` already drops the range for that.
     fn rows_changed(&mut self) {
+        // Hits are source rows, which an insert or delete just shifted.
+        self.search_rows = None;
         self.recompute_visible();
         self.editing = EditState::Idle;
         self.values_generation += 1;
@@ -1329,6 +1453,10 @@ pub(crate) struct SearchOpts {
     pub case: bool,
     pub word: bool,
     pub regex: bool,
+    /// Also match the text inside each row's linked document.
+    pub files: bool,
+    /// Rank rows by how well their linked file matches a description instead of matching text.
+    pub visual: bool,
 }
 
 /// Compile the query into a matcher honoring the toggles. `None` means "match nothing": a blank
@@ -1378,6 +1506,48 @@ fn find_matches(
         }
     }
     hits
+}
+
+/// Rows whose linked document contains `needle`, addressed at the cell that names the file so
+/// stepping to the hit lands where the archivist would look for it.
+fn find_file_matches(
+    rows: &[Vec<SharedString>],
+    visible: &[usize],
+    image_paths: &[Option<PathBuf>],
+    document_text: &HashMap<PathBuf, String>,
+    needle: &str,
+    opts: SearchOpts,
+) -> Vec<(usize, usize)> {
+    let Some(re) = compile_search(needle, opts) else {
+        return Vec::new();
+    };
+    visible
+        .iter()
+        .enumerate()
+        .filter_map(|(view, &source)| {
+            let path = image_paths.get(source)?.as_ref()?;
+            if !re.is_match(document_text.get(path)?) {
+                return None;
+            }
+            Some((view, file_column(rows.get(source)?, path)))
+        })
+        .collect()
+}
+
+/// The column of the cell in `row` that names `path`, so a hit about the file lands where the
+/// archivist would look for it. The first column when no cell names it directly.
+fn file_column(row: &[SharedString], path: &Path) -> usize {
+    let names = path
+        .file_name()
+        .map(|name| settings::filenames::keys(&name.to_string_lossy()))
+        .unwrap_or_default();
+    row.iter()
+        .position(|cell| {
+            settings::filenames::lookup_keys(cell)
+                .iter()
+                .any(|key| names.contains(key))
+        })
+        .unwrap_or(0)
 }
 
 /// Rewrite matches in place: `Regex::replace_all` substitutes only the matched spans, so the rest
@@ -1623,6 +1793,41 @@ mod tests {
         assert_eq!(find_matches(&data, &visible, 2, "ap", opts), vec![(0, 0)]);
     }
 
+    /// A hit inside a linked PDF lands on the cell naming the file; a row whose document lacks the
+    /// query, or that has no document at all, is not reported.
+    #[test]
+    fn find_reaches_into_linked_documents() {
+        let data = rows(&[
+            &["Letter to council", "1920_letter.pdf"],
+            &["Portrait", "1921_portrait.jpg"],
+            &["Minutes", "1922_minutes.pdf"],
+        ]);
+        let paths = vec![
+            Some(PathBuf::from("files/1920_letter.pdf")),
+            Some(PathBuf::from("files/1921_portrait.jpg")),
+            Some(PathBuf::from("files/1922_minutes.pdf")),
+        ];
+        let text = HashMap::from([
+            (
+                PathBuf::from("files/1920_letter.pdf"),
+                "the sawmill on Kitsilano beach".to_string(),
+            ),
+            (
+                PathBuf::from("files/1922_minutes.pdf"),
+                "motion carried".to_string(),
+            ),
+        ]);
+        let opts = SearchOpts {
+            files: true,
+            ..SearchOpts::default()
+        };
+        assert_eq!(
+            find_file_matches(&data, &[0, 1, 2], &paths, &text, "SAWMILL", opts),
+            vec![(0, 1)]
+        );
+        assert!(find_file_matches(&data, &[1, 2], &paths, &text, "sawmill", opts).is_empty());
+    }
+
     #[test]
     fn blank_query_matches_nothing() {
         let data = rows(&[&["a"]]);
@@ -1633,7 +1838,12 @@ mod tests {
     fn search_toggles_case_word_and_regex() {
         let data = rows(&[&["Apple pie"], &["pineapple"]]);
         let all = &[0, 1][..];
-        let opt = |case, word, regex| SearchOpts { case, word, regex };
+        let opt = |case, word, regex| SearchOpts {
+            case,
+            word,
+            regex,
+            ..SearchOpts::default()
+        };
 
         // Match case: "apple" no longer hits the capitalized "Apple pie".
         assert_eq!(
@@ -1707,9 +1917,8 @@ mod tests {
     fn replace_expands_captures_only_in_regex_mode() {
         let data = rows(&[&["Smith, Jane"]]);
         let regex = SearchOpts {
-            case: false,
-            word: false,
             regex: true,
+            ..SearchOpts::default()
         };
         assert_eq!(
             replace_edits(&data, &[0], 1, r"(\w+), (\w+)", "$2 $1", regex, None),
@@ -1979,6 +2188,52 @@ mod app_tests {
                 assert_eq!(delegate.row_ids(), &[1, 2, 3, 4]);
                 assert_eq!(delegate.cell(1, 1).map(|c| c.as_ref()), Some("two"));
                 assert_eq!(delegate.row_image(1), Some("1.jpg".as_ref()));
+            });
+        });
+    }
+
+    /// Visual results come best first, skip rows the index cannot rate, and stop at the limit.
+    #[gpui::test]
+    fn search_rows_reorder_the_view_and_searches_still_see_every_row(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.set_image_paths(vec![
+                    Some("0.jpg".into()),
+                    None,
+                    Some("2.jpg".into()),
+                    Some("3.jpg".into()),
+                ]);
+                let score = |path: &std::path::Path| match path.to_str() {
+                    Some("0.jpg") => Some(0.2),
+                    Some("2.jpg") => Some(0.9),
+                    _ => None,
+                };
+                let rows = |d: &super::QrateTableDelegate| -> Vec<usize> {
+                    d.ranked_rows(score)
+                        .into_iter()
+                        .map(|(_, row, _)| row)
+                        .collect()
+                };
+                assert_eq!(rows(delegate), vec![2, 0]);
+
+                delegate.set_search_rows(Some(vec![2]));
+                assert_eq!(delegate.visible(), &[2]);
+                assert_eq!(
+                    rows(delegate),
+                    vec![2, 0],
+                    "a narrowed view still ranks every row"
+                );
+
+                delegate.set_search_rows(Some(vec![3, 0]));
+                assert_eq!(delegate.visible(), &[3, 0], "hits keep their order");
+                delegate.remove_rows(&[1]);
+                assert_eq!(
+                    delegate.visible(),
+                    &[0, 1, 2],
+                    "a delete drops the stale hits"
+                );
             });
         });
     }

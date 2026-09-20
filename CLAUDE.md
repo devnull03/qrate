@@ -83,6 +83,7 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | `plugin-host` | the Luau runtime that loads and runs plugins |
 | `plugin-api` | the types a plugin sees — see the three-repo rule below |
 | `preview` | turns a linked file into pixels — the format ladder and the thumbnail cache. Native decoders (PDF, video, RAW) belong here so they never reach `table` |
+| `visual-search` | CLIP on the CPU through candle (pure Rust) and its pinned weights download. No gpui — `table::visual` owns the index job, the search bar, and "Find similar items", and stores the vectors in the project's `.qrate` (`__visual_index`). Weights live in `<data dir>/models`, never in the install |
 | `ai` | two halves: `agent.rs` is the *shipped* external-agent contract (see `AGENTS.md`); the rest is traits + Cohere/mock providers for planned AI review/embedding, deliberately unfinished |
 
 ## Project Status Tracking

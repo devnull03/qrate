@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use gpui_base::resize_handle;
 use gpui_component::{
     ActiveTheme, IconName, Sizable, StyledExt as _,
     button::{Button, ButtonVariants},
@@ -27,6 +28,10 @@ use crate::viewer::transport::{self, Transport};
 
 /// Project-scoped height of the details panel's image pane, in pixels.
 const IMAGE_PANE_HEIGHT_KEY: &str = "details_image_height";
+const NOTES_PANE_HEIGHT_KEY: &str = "details_notes_height";
+const HISTORY_PANE_HEIGHT_KEY: &str = "details_history_height";
+const NOTES_OPEN_KEY: &str = "details_notes_open";
+const HISTORY_OPEN_KEY: &str = "details_history_open";
 /// A resize emits on every pointer move. Persist only after the gesture pauses so dragging does not
 /// repeatedly replace `CurrentProject` and wake every observer of it.
 const IMAGE_PANE_PERSIST_DEBOUNCE: Duration = Duration::from_millis(200);
@@ -36,6 +41,21 @@ const ROW_HISTORY_LIMIT: i64 = 50;
 
 /// Height of the Notes sub-panel's header bar, which is the whole of it while collapsed.
 const NOTES_HEADER_H: f32 = 28.;
+
+#[derive(Clone, Copy, PartialEq)]
+enum DetailsSubPane {
+    Notes,
+    History,
+}
+
+#[derive(Clone)]
+struct DragDetailsSubPane(DetailsSubPane);
+
+impl Render for DragDetailsSubPane {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
 
 /// How much of the window the open field editor may span when the panel itself is narrower.
 const EDITOR_MAX_WINDOW_SHARE: f32 = 0.4;
@@ -86,6 +106,9 @@ pub struct DetailsPanel {
     notes_open: bool,
     /// Whether the History sub-panel is expanded, the same way `notes_open` works.
     history_open: bool,
+    notes_height: Pixels,
+    history_height: Pixels,
+    resize_start: Option<(DetailsSubPane, Pixels, Pixels)>,
     /// The front item's saved changes, with the row and file stamp they were read at — `retarget`
     /// runs on every table change, and a query per keystroke would be paid for nothing.
     row_history: Option<(settings::project::RowId, std::time::SystemTime, Vec<Listed>)>,
@@ -148,6 +171,9 @@ impl DetailsPanel {
             stack_hover: false,
             notes_open: true,
             history_open: false,
+            notes_height: px(180.),
+            history_height: px(160.),
+            resize_start: None,
             row_history: None,
             _editor_sub,
             _image_height_task: None,
@@ -354,6 +380,7 @@ impl DetailsPanel {
 
         let open = self.notes_open;
         v_flex()
+            .debug_selector(|| "details-notes-panel".into())
             .size_full()
             .min_h_0()
             .border_t_1()
@@ -383,6 +410,16 @@ impl DetailsPanel {
                             })
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.notes_open = !this.notes_open;
+                                if cx
+                                    .try_global::<settings::project::CurrentProject>()
+                                    .is_some()
+                                {
+                                    settings::project::CurrentProject::set_bool(
+                                        NOTES_OPEN_KEY,
+                                        this.notes_open,
+                                        cx,
+                                    );
+                                }
                                 cx.notify();
                             })),
                     )
@@ -586,6 +623,16 @@ impl DetailsPanel {
                             })
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.history_open = !this.history_open;
+                                if cx
+                                    .try_global::<settings::project::CurrentProject>()
+                                    .is_some()
+                                {
+                                    settings::project::CurrentProject::set_bool(
+                                        HISTORY_OPEN_KEY,
+                                        this.history_open,
+                                        cx,
+                                    );
+                                }
                                 cx.notify();
                             })),
                     )
@@ -741,6 +788,29 @@ impl DetailsPanel {
     }
 
     fn bind(&mut self, cx: &mut Context<Self>) {
+        if let Some(project) = cx.try_global::<settings::project::CurrentProject>() {
+            self.notes_open = project
+                .data
+                .values
+                .get(NOTES_OPEN_KEY)
+                .map(|value| value.bool())
+                .unwrap_or(true);
+            self.history_open = project.get_bool(HISTORY_OPEN_KEY);
+            self.notes_height = project
+                .data
+                .values
+                .get(NOTES_PANE_HEIGHT_KEY)
+                .and_then(|value| value.text().parse::<f32>().ok())
+                .map(px)
+                .unwrap_or(px(180.));
+            self.history_height = project
+                .data
+                .values
+                .get(HISTORY_PANE_HEIGHT_KEY)
+                .and_then(|value| value.text().parse::<f32>().ok())
+                .map(px)
+                .unwrap_or(px(160.));
+        }
         self.state = cx.try_global::<TableStateHandle>().map(|h| h.0.clone());
         self._table_sub = self.state.as_ref().and_then(|w| w.upgrade()).map(|entity| {
             cx.subscribe(&entity, |this, _st, _ev: &TableChanged, cx| {
@@ -1058,22 +1128,8 @@ impl Render for DetailsPanel {
 
         // Built before the field rows below, which borrow `cx` for as long as they stay a lazy
         // iterator — this needs `&mut cx` and cannot wait for them.
-        let notes = (gallery && count > 0).then(|| self.notes_panel(&picked, cx));
+        let notes = (count > 0).then(|| self.notes_panel(&picked, cx));
         let history = (count == 1).then(|| self.history_panel(cx));
-        let history_range = match self.history_open {
-            true => px(80.)..px(360.),
-            false => px(NOTES_HEADER_H)..px(NOTES_HEADER_H),
-        };
-        // Collapsing pins the panel's size range to its header instead of taking it out of the
-        // split. Removing it re-syncs the group — every panel's size is rescaled to the container
-        // when the count changes — so the fields jumped on the way out and the notes came back at
-        // whatever height that rescale had left, not the one they were dragged to. Pinned, the
-        // stored size is never touched, and reopening restores it exactly.
-        let collapsed_h = NOTES_HEADER_H;
-        let notes_range = match self.notes_open {
-            true => px(80.)..px(320.),
-            false => px(collapsed_h)..px(collapsed_h),
-        };
 
         // Hand-built attribute list, not `DescriptionList`/`DataTable`: the fields are fixed pairs,
         // and it reads as a list rather than a second grid — alternating rows carry the structure,
@@ -1179,6 +1235,166 @@ impl Render for DetailsPanel {
             .and_then(|v| v.text().parse::<f32>().ok())
             .unwrap_or(180.);
 
+        let fields = v_flex()
+            .size_full()
+            .min_h_0()
+            .relative()
+            .child({
+                let viewport = self.viewport.clone();
+                canvas(move |bounds, _, _| viewport.set(bounds), |_, _, _, _| {})
+                    .absolute()
+                    .size_full()
+            })
+            .when(count > 1, |list| {
+                list.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px_3()
+                        .pt_2()
+                        .pb_1p5()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("{count} items · shared fields"))
+                        .child("edits apply to all"),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .w_full()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .px_3()
+                    .pt_2()
+                    .pb(px(12.))
+                    .child(
+                        div()
+                            .rounded(cx.theme().radius)
+                            .overflow_hidden()
+                            .children(rows),
+                    ),
+            )
+            .children(self.field_editor(window, cx))
+            .into_any_element();
+
+        let panel = cx.entity().downgrade();
+        let handle = |id: &'static str, pane: DetailsSubPane, height: Pixels| {
+            let panel = panel.clone();
+            resize_handle(id, Axis::Vertical).on_drag(
+                DragDetailsSubPane(pane),
+                move |drag, position, _, cx| {
+                    if let Some(panel) = panel.upgrade() {
+                        panel.update(cx, |this, _| {
+                            this.resize_start = Some((pane, position.y, height));
+                        });
+                    }
+                    cx.new(|_| drag.as_ref().clone())
+                },
+            )
+        };
+
+        let fields_and_notes = match notes {
+            Some(notes) if self.notes_open => v_flex()
+                .size_full()
+                .min_h_0()
+                .child(div().flex_1().min_h(px(80.)).pr_2().child(fields))
+                .child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .h(self.notes_height)
+                        .child(handle(
+                            "details-notes-resize",
+                            DetailsSubPane::Notes,
+                            self.notes_height,
+                        ))
+                        .child(notes),
+                )
+                .into_any_element(),
+            Some(notes) => v_flex()
+                .size_full()
+                .min_h_0()
+                .child(div().flex_1().min_h_0().pr_2().child(fields))
+                .child(div().flex_none().h(px(NOTES_HEADER_H)).child(notes))
+                .into_any_element(),
+            None => fields,
+        };
+
+        let details_content = match history {
+            Some(history) if self.history_open => v_flex()
+                .size_full()
+                .min_h_0()
+                .child(div().flex_1().min_h(px(80.)).child(fields_and_notes))
+                .child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .h(self.history_height)
+                        .child(handle(
+                            "details-history-resize",
+                            DetailsSubPane::History,
+                            self.history_height,
+                        ))
+                        .child(history),
+                )
+                .into_any_element(),
+            Some(history) => v_flex()
+                .size_full()
+                .min_h_0()
+                .child(div().flex_1().min_h_0().child(fields_and_notes))
+                .child(div().flex_none().h(px(NOTES_HEADER_H)).child(history))
+                .into_any_element(),
+            None => fields_and_notes,
+        };
+
+        let details_content = div()
+            .size_full()
+            .min_h_0()
+            .on_drag_move(
+                cx.listener(|this, event: &DragMoveEvent<DragDetailsSubPane>, _, cx| {
+                    let pane = event.drag(cx).0;
+                    let Some((started_pane, start_y, start_height)) = this.resize_start else {
+                        return;
+                    };
+                    if pane != started_pane {
+                        return;
+                    }
+                    let height = (start_height + start_y - event.event.position.y).clamp(
+                        px(80.),
+                        match pane {
+                            DetailsSubPane::Notes => px(320.),
+                            DetailsSubPane::History => px(360.),
+                        },
+                    );
+                    let key = match pane {
+                        DetailsSubPane::Notes => {
+                            this.notes_height = height;
+                            NOTES_PANE_HEIGHT_KEY
+                        }
+                        DetailsSubPane::History => {
+                            this.history_height = height;
+                            HISTORY_PANE_HEIGHT_KEY
+                        }
+                    };
+                    if cx
+                        .try_global::<settings::project::CurrentProject>()
+                        .is_some()
+                    {
+                        settings::project::CurrentProject::set_text(
+                            key,
+                            format!("{}", f32::from(height)).into(),
+                            cx,
+                        );
+                    }
+                    cx.notify();
+                }),
+            )
+            .child(details_content)
+            .into_any_element();
+
         // Own context + tracked focus so Ctrl+Z reaches the grid's history from in here. While the
         // field editor holds focus its own deeper `Input` context wins, which keeps Ctrl+Z as
         // text-undo mid-edit.
@@ -1208,7 +1424,7 @@ impl Render for DetailsPanel {
             }))
             .child(
                 div().size_full().min_h_0().child(
-                    v_resizable("details-split")
+                    v_resizable("details-preview-split")
                         .on_resize({
                             let panel = cx.entity().downgrade();
                             move |state, _, cx| {
@@ -1229,6 +1445,7 @@ impl Render for DetailsPanel {
                                 resizable_panel()
                                     .size(px(image_height))
                                     .size_range(px(80.)..px(600.))
+                                    .flex_none()
                                     .p_3()
                                     // One item is a plain frame. Several are a stack of offset cards
                                     // with the front one live: the bundle keeps a slot per item —
@@ -1338,94 +1555,7 @@ impl Render for DetailsPanel {
                                     }),
                             )
                         })
-                        .child(
-                            // `pr_2` on the panel insets the scrollbar from the resize edge so dragging it doesn't catch.
-                            resizable_panel().pr_2().child(
-                                // This wrapper does not scroll, and that is the whole point: it is the
-                                // rect the floating editor grows within and is clamped to, so a long
-                                // value wraps inside the visible list rather than over the preview or
-                                // the grid. `overflow_y_scrollbar` makes the div it is called on the
-                                // scrolled *content* (auto height, sliding under the viewport), so
-                                // measuring there would hand the editor a rect taller than the panel.
-                                // Same arrangement the grid uses for its cell editor.
-                                // A flex column, not a plain block: the bundle heading below is a
-                                // sibling of the scrolling list, and with `size_full` on both the list
-                                // ran the heading's height past the bottom of the panel and cut its
-                                // last field row in half.
-                                v_flex()
-                                    .size_full()
-                                    .min_h_0()
-                                    .relative()
-                                    .child({
-                                        let viewport = self.viewport.clone();
-                                        canvas(
-                                            move |bounds, _, _| viewport.set(bounds),
-                                            |_, _, _, _| {},
-                                        )
-                                        .absolute()
-                                        .size_full()
-                                    })
-                                    // Says how many items the fields below speak for, and warns that
-                                    // typing into one writes down the whole bundle — before the edit,
-                                    // not after it.
-                                    .when(count > 1, |list| {
-                                        list.child(
-                                            div()
-                                                .flex_none()
-                                                .flex()
-                                                .items_center()
-                                                .justify_between()
-                                                .px_3()
-                                                .pt_2()
-                                                .pb_1p5()
-                                                .text_xs()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(format!("{count} items · shared fields"))
-                                                .child("edits apply to all"),
-                                        )
-                                    })
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .w_full()
-                                            // `min_h_0` overrides flex `min-height: auto` so this scrolls instead of growing past the panel.
-                                            .min_h_0()
-                                            .overflow_y_scrollbar()
-                                            .px_3()
-                                            // Clear of the resize handle above, so the first field
-                                            // doesn't sit flush against it.
-                                            .pt_2()
-                                            .pb(px(12.))
-                                            .child(
-                                                div()
-                                                    .rounded(cx.theme().radius)
-                                                    .overflow_hidden()
-                                                    .children(rows),
-                                            ),
-                                    )
-                                    .children(self.field_editor(window, cx)),
-                            ),
-                        )
-                        // Last, along the bottom: the fields are what the panel is for, and a note is
-                        // commentary on them. Reading order puts the thing before what is said about
-                        // it, and it keeps the fields anchored under the photo as the notes grow.
-                        //
-                        .when_some(notes, |split, notes| {
-                            split.child(
-                                resizable_panel()
-                                    .size(px(180.))
-                                    .size_range(notes_range)
-                                    .child(notes),
-                            )
-                        })
-                        .when_some(history, |split, history| {
-                            split.child(
-                                resizable_panel()
-                                    .size(px(160.))
-                                    .size_range(history_range)
-                                    .child(history),
-                            )
-                        }),
+                        .child(resizable_panel().child(details_content)),
                 ),
             )
             .into_any_element()
@@ -1437,7 +1567,7 @@ mod tests {
     // No `use super::*`: chain-globbing `gpui::*` shadows the built-in `#[test]` and recurses (see CLAUDE.md).
     use std::path::{Path, PathBuf};
 
-    use gpui::{Context, IntoElement, Render, TestAppContext, Window};
+    use gpui::{Context, IntoElement, Render, TestAppContext, Window, px};
 
     use gpui::VisualTestContext;
 
@@ -1541,6 +1671,48 @@ mod tests {
             });
         });
         cx.add_window_view(table::TablePanel::new);
+    }
+
+    #[gpui::test]
+    fn grid_details_show_notes_and_restore_the_subpane_layout(cx: &mut TestAppContext) {
+        project_with_table(cx);
+        let state = cx.update(|cx| {
+            let project = cx.global_mut::<settings::project::CurrentProject>();
+            project
+                .data
+                .values
+                .insert(super::NOTES_OPEN_KEY.into(), settings::Val::Bool(false));
+            project
+                .data
+                .values
+                .insert(super::HISTORY_OPEN_KEY.into(), settings::Val::Bool(true));
+            project.data.values.insert(
+                super::NOTES_PANE_HEIGHT_KEY.into(),
+                settings::Val::Text("210".into()),
+            );
+            project.data.values.insert(
+                super::HISTORY_PANE_HEIGHT_KEY.into(),
+                settings::Val::Text("190".into()),
+            );
+            cx.global::<table::TableStateHandle>()
+                .0
+                .upgrade()
+                .expect("the table panel publishes its state handle")
+        });
+        let (panel, cx) = cx.add_window_view(DetailsPanel::new);
+        state.update(cx, |state, cx| state.set_selected_cell(0, 1, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        panel.read_with(cx, |panel, _| {
+            assert!(!panel.notes_open);
+            assert!(panel.history_open);
+            assert_eq!(panel.notes_height, px(210.));
+            assert_eq!(panel.history_height, px(190.));
+        });
+        assert!(
+            cx.debug_bounds("details-notes-panel").is_some(),
+            "the Notes section is present in the regular grid view"
+        );
     }
 
     /// A bundle reports what its items agree on and counts what they don't, and typing into a
