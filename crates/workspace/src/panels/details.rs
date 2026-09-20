@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_base::resize_handle;
 use gpui_component::{
     ActiveTheme, IconName, Sizable, StyledExt as _,
     button::{Button, ButtonVariants},
@@ -41,21 +40,6 @@ const ROW_HISTORY_LIMIT: i64 = 50;
 
 /// Height of the Notes sub-panel's header bar, which is the whole of it while collapsed.
 const NOTES_HEADER_H: f32 = 28.;
-
-#[derive(Clone, Copy, PartialEq)]
-enum DetailsSubPane {
-    Notes,
-    History,
-}
-
-#[derive(Clone)]
-struct DragDetailsSubPane(DetailsSubPane);
-
-impl Render for DragDetailsSubPane {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        Empty
-    }
-}
 
 /// How much of the window the open field editor may span when the panel itself is narrower.
 const EDITOR_MAX_WINDOW_SHARE: f32 = 0.4;
@@ -108,7 +92,6 @@ pub struct DetailsPanel {
     history_open: bool,
     notes_height: Pixels,
     history_height: Pixels,
-    resize_start: Option<(DetailsSubPane, Pixels, Pixels)>,
     /// The front item's saved changes, with the row and file stamp they were read at — `retarget`
     /// runs on every table change, and a query per keystroke would be paid for nothing.
     row_history: Option<(settings::project::RowId, std::time::SystemTime, Vec<Listed>)>,
@@ -173,7 +156,6 @@ impl DetailsPanel {
             history_open: false,
             notes_height: px(180.),
             history_height: px(160.),
-            resize_start: None,
             row_history: None,
             _editor_sub,
             _image_height_task: None,
@@ -596,6 +578,7 @@ impl DetailsPanel {
 
         let (open, none) = (self.history_open, lines.is_empty());
         v_flex()
+            .debug_selector(|| "details-history-panel".into())
             .size_full()
             .min_h_0()
             .border_t_1()
@@ -1280,40 +1263,38 @@ impl Render for DetailsPanel {
             .children(self.field_editor(window, cx))
             .into_any_element();
 
-        let panel = cx.entity().downgrade();
-        let handle = |id: &'static str, pane: DetailsSubPane, height: Pixels| {
-            let panel = panel.clone();
-            resize_handle(id, Axis::Vertical).on_drag(
-                DragDetailsSubPane(pane),
-                move |drag, position, _, cx| {
-                    if let Some(panel) = panel.upgrade() {
-                        panel.update(cx, |this, _| {
-                            this.resize_start = Some((pane, position.y, height));
-                        });
-                    }
-                    cx.new(|_| drag.as_ref().clone())
-                },
-            )
-        };
-
         let fields_and_notes = match notes {
-            Some(notes) if self.notes_open => v_flex()
-                .size_full()
-                .min_h_0()
-                .child(div().flex_1().min_h(px(80.)).pr_2().child(fields))
-                .child(
-                    div()
-                        .relative()
-                        .flex_none()
-                        .h(self.notes_height)
-                        .child(handle(
-                            "details-notes-resize",
-                            DetailsSubPane::Notes,
-                            self.notes_height,
-                        ))
-                        .child(notes),
-                )
-                .into_any_element(),
+            Some(notes) if self.notes_open => {
+                let panel = cx.entity().downgrade();
+                v_resizable("details-notes-split")
+                    .on_resize(move |state, _, cx| {
+                        let Some(height) = state.read(cx).sizes().get(1).copied() else {
+                            return;
+                        };
+                        if let Some(panel) = panel.upgrade() {
+                            panel.update(cx, |this, _| this.notes_height = height);
+                        }
+                        if cx
+                            .try_global::<settings::project::CurrentProject>()
+                            .is_some()
+                        {
+                            settings::project::CurrentProject::set_text(
+                                NOTES_PANE_HEIGHT_KEY,
+                                format!("{}", f32::from(height)).into(),
+                                cx,
+                            );
+                        }
+                    })
+                    .child(resizable_panel().min_h(px(80.)).pr_2().child(fields))
+                    .child(
+                        resizable_panel()
+                            .size(self.notes_height)
+                            .size_range(px(80.)..px(320.))
+                            .flex_none()
+                            .child(notes),
+                    )
+                    .into_any_element()
+            }
             Some(notes) => v_flex()
                 .size_full()
                 .min_h_0()
@@ -1324,23 +1305,37 @@ impl Render for DetailsPanel {
         };
 
         let details_content = match history {
-            Some(history) if self.history_open => v_flex()
-                .size_full()
-                .min_h_0()
-                .child(div().flex_1().min_h(px(80.)).child(fields_and_notes))
-                .child(
-                    div()
-                        .relative()
-                        .flex_none()
-                        .h(self.history_height)
-                        .child(handle(
-                            "details-history-resize",
-                            DetailsSubPane::History,
-                            self.history_height,
-                        ))
-                        .child(history),
-                )
-                .into_any_element(),
+            Some(history) if self.history_open => {
+                let panel = cx.entity().downgrade();
+                v_resizable("details-history-split")
+                    .on_resize(move |state, _, cx| {
+                        let Some(height) = state.read(cx).sizes().get(1).copied() else {
+                            return;
+                        };
+                        if let Some(panel) = panel.upgrade() {
+                            panel.update(cx, |this, _| this.history_height = height);
+                        }
+                        if cx
+                            .try_global::<settings::project::CurrentProject>()
+                            .is_some()
+                        {
+                            settings::project::CurrentProject::set_text(
+                                HISTORY_PANE_HEIGHT_KEY,
+                                format!("{}", f32::from(height)).into(),
+                                cx,
+                            );
+                        }
+                    })
+                    .child(resizable_panel().min_h(px(80.)).child(fields_and_notes))
+                    .child(
+                        resizable_panel()
+                            .size(self.history_height)
+                            .size_range(px(80.)..px(360.))
+                            .flex_none()
+                            .child(history),
+                    )
+                    .into_any_element()
+            }
             Some(history) => v_flex()
                 .size_full()
                 .min_h_0()
@@ -1349,51 +1344,6 @@ impl Render for DetailsPanel {
                 .into_any_element(),
             None => fields_and_notes,
         };
-
-        let details_content = div()
-            .size_full()
-            .min_h_0()
-            .on_drag_move(
-                cx.listener(|this, event: &DragMoveEvent<DragDetailsSubPane>, _, cx| {
-                    let pane = event.drag(cx).0;
-                    let Some((started_pane, start_y, start_height)) = this.resize_start else {
-                        return;
-                    };
-                    if pane != started_pane {
-                        return;
-                    }
-                    let height = (start_height + start_y - event.event.position.y).clamp(
-                        px(80.),
-                        match pane {
-                            DetailsSubPane::Notes => px(320.),
-                            DetailsSubPane::History => px(360.),
-                        },
-                    );
-                    let key = match pane {
-                        DetailsSubPane::Notes => {
-                            this.notes_height = height;
-                            NOTES_PANE_HEIGHT_KEY
-                        }
-                        DetailsSubPane::History => {
-                            this.history_height = height;
-                            HISTORY_PANE_HEIGHT_KEY
-                        }
-                    };
-                    if cx
-                        .try_global::<settings::project::CurrentProject>()
-                        .is_some()
-                    {
-                        settings::project::CurrentProject::set_text(
-                            key,
-                            format!("{}", f32::from(height)).into(),
-                            cx,
-                        );
-                    }
-                    cx.notify();
-                }),
-            )
-            .child(details_content)
-            .into_any_element();
 
         // Own context + tracked focus so Ctrl+Z reaches the grid's history from in here. While the
         // field editor holds focus its own deeper `Input` context wins, which keeps Ctrl+Z as
@@ -1567,7 +1517,9 @@ mod tests {
     // No `use super::*`: chain-globbing `gpui::*` shadows the built-in `#[test]` and recurses (see CLAUDE.md).
     use std::path::{Path, PathBuf};
 
-    use gpui::{Context, IntoElement, Render, TestAppContext, Window, px};
+    use gpui::{
+        Context, IntoElement, Modifiers, MouseButton, Render, TestAppContext, Window, point, px,
+    };
 
     use gpui::VisualTestContext;
 
@@ -1713,6 +1665,75 @@ mod tests {
             cx.debug_bounds("details-notes-panel").is_some(),
             "the Notes section is present in the regular grid view"
         );
+
+        let history = cx
+            .debug_bounds("details-history-panel")
+            .expect("History is rendered");
+        let start = point(history.center().x, history.top());
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        // The first move crosses GPUI's drag threshold and installs the drag value; the next one
+        // is the resize itself.
+        cx.simulate_mouse_move(
+            point(start.x, start.y - px(5.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(start.x, start.y - px(25.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(start.x, start.y - px(45.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(start.x, start.y - px(45.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                panel.history_height > px(190.),
+                "dragging the painted handle resizes History; height stayed {:?}",
+                panel.history_height
+            );
+        });
+
+        panel.update(cx, |panel, cx| {
+            panel.history_open = false;
+            panel.notes_open = true;
+            cx.notify();
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let notes = cx
+            .debug_bounds("details-notes-panel")
+            .expect("Notes is rendered");
+        let start = point(notes.center().x, notes.top());
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(
+            point(start.x, start.y - px(5.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(start.x, start.y - px(25.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(start.x, start.y - px(25.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                panel.notes_height > px(210.),
+                "dragging the native divider resizes Notes; height stayed {:?}",
+                panel.notes_height
+            );
+        });
     }
 
     /// A bundle reports what its items agree on and counts what they don't, and typing into a
