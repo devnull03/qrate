@@ -2,3 +2,7 @@
 # 16 logical cores, but a full gpui rebuild at -j16 starves the editor and the app.
 # Leaves headroom so the machine stays usable while cargo works.
 jobs = 10
+
+[env]
+# Make Rust artifacts path-independent so zccache can reuse them across worktrees.
+ZCCACHE_PATH_REMAP = "auto"
