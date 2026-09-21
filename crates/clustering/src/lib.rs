@@ -181,12 +181,14 @@ pub fn variant_group_fixes(members: &[GroupMember], cx: &App) -> Vec<GroupFix> {
         .map(|target| {
             let (target, members, delimiter) =
                 (target.clone(), members.to_vec(), delimiter.clone());
-            GroupFix::action(format!("Change all to “{target}”"), move |cx| {
+            let label = format!("Change all to “{target}”");
+            let origin = settings::history::Origin::Fix(label.clone());
+            GroupFix::action(label, move |cx| {
                 let Some(replacements) = replacements_to(&members, &target, &delimiter) else {
                     return;
                 };
                 if let Some(hooks) = cx.try_global::<DiagnosticHooks>().copied() {
-                    (hooks.set_texts)(replacements, cx);
+                    (hooks.set_texts)(replacements, origin.clone(), cx);
                 }
             })
         })
@@ -455,8 +457,8 @@ mod tests {
             cx.set_global(diagnostics::DiagnosticHooks {
                 reveal: |_, _| {},
                 text_at: |_, _| None,
-                set_text: |_, _, _| {},
-                set_texts: |replacements, cx| {
+                set_text: |_, _, _, _| {},
+                set_texts: |replacements, _, cx| {
                     use gpui::BorrowAppContext as _;
                     cx.update_global::<Applied, _>(|applied, _| applied.0 = replacements);
                 },

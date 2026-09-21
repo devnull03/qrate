@@ -21,7 +21,7 @@ use crate::panel_registry::PanelMeta;
 /// Where Agent starts out and what it puts in the status bar.
 pub static AGENT_META: PanelMeta = PanelMeta {
     name: "AgentPanel",
-    icon: IconName::Star,
+    icon: "icons/star.svg",
     label: "Agent",
     default_placement: DockPlacement::Right,
     badge: false,
@@ -270,6 +270,9 @@ fn took(call: &AgentCall) -> SharedString {
 /// Right dock: what the external agent has asked qrate for, and what it got back.
 pub struct AgentPanel {
     focus_handle: FocusHandle,
+    /// Whether this is the panel its dock is showing, which is what [`Self::visible`]
+    /// reports: a dock with one visible panel draws a title bar instead of a tab strip.
+    active: bool,
     view: View,
     scroll: ScrollHandle,
     terminal: agent_runtime::AgentTerminal,
@@ -318,6 +321,7 @@ impl AgentPanel {
         });
         Self {
             focus_handle: cx.focus_handle(),
+            active: false,
             view: View::Terminal,
             scroll: scroll.clone(),
             terminal: Default::default(),
@@ -372,6 +376,16 @@ impl BasePanel for AgentPanel {
     // The library always renders the ⋯ menu button; this just empties it of Close.
     fn closable(&self, _cx: &App) -> bool {
         false
+    }
+
+    fn set_active(&mut self, active: bool, _w: &mut Window, cx: &mut Context<Self>) {
+        self.active = active;
+        cx.notify();
+    }
+
+    // Siblings stay docked and loaded, just unshown: this is what replaces the tab strip.
+    fn visible(&self, _cx: &App) -> bool {
+        self.active
     }
 
     fn zoomable(&self, _cx: &App) -> bool {

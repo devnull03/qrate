@@ -248,6 +248,7 @@ impl ProjectWizard {
                         std::path::Path::new(&file),
                         diagnostics::SOURCE_NOTE,
                         &notes,
+                        &[],
                     ) {
                         log::error!("couldn't save the sheet's notes — {e}");
                     }

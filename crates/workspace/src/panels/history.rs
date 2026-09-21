@@ -1,0 +1,1311 @@
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use gpui::prelude::FluentBuilder as _;
+use gpui::*;
+use gpui_component::dock::{BasePanel, DockPlacement, Panel, PanelEvent};
+use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_component::{
+    ActiveTheme as _, IconName, Sizable as _, VirtualListScrollHandle,
+    button::{Button, ButtonVariants as _},
+    h_flex, v_flex, v_virtual_list,
+};
+use settings::history::{Change, Entry, EntryId, Listed, Origin, ShowCellHistory};
+use settings::project::{CurrentProject, RowId};
+use table::{TableChanged, TableStateHandle};
+
+use crate::BottomDockCrop;
+use crate::panel_registry::PanelMeta;
+
+pub static HISTORY_META: PanelMeta = PanelMeta {
+    name: "HistoryPanel",
+    icon: "icons/history.svg",
+    label: "History",
+    default_placement: DockPlacement::Right,
+    badge: false,
+};
+
+/// How many saved entries one "Load older" brings in.
+const PAGE: i64 = 200;
+
+/// Consecutive edits closer together than this, by the same person and the same means, read as
+/// one burst of work and collapse under one row.
+const BURST_SECS: i64 = 5 * 60;
+
+/// One line of the list, as the virtual list addresses it. Holds indices rather than text: the
+/// whole list is walked every render to place it, but only the rows on screen are ever formatted.
+enum Row {
+    Header(SharedString),
+    /// Into [`HistoryPanel::pending`].
+    Pending(usize),
+    /// Into [`HistoryPanel::view`].
+    Saved {
+        ix: usize,
+        indent: bool,
+    },
+    /// The head of a run of `len` entries in [`HistoryPanel::view`], collapsed under one row.
+    Burst {
+        ix: usize,
+        len: usize,
+    },
+    More,
+}
+
+/// The heights the list places rows by, which are also the heights the rows are given. Measuring
+/// instead would mean building every row to find out how tall it is, which is the whole cost
+/// virtualizing is here to avoid — so a row is told its height rather than asked for it. Change
+/// one of these and change the row it belongs to.
+const HEADER_H: f32 = 28.;
+const ROW_H: f32 = 48.;
+/// The extra line a named version carries above its description.
+const LABEL_H: f32 = 18.;
+/// The box that appears while that name is being typed.
+const NAMING_H: f32 = 28.;
+const MORE_H: f32 = 40.;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Filter {
+    All,
+    Cells,
+    Structure,
+    Notes,
+    Fixes,
+}
+
+impl Filter {
+    const ALL: [Filter; 5] = [
+        Filter::All,
+        Filter::Cells,
+        Filter::Structure,
+        Filter::Notes,
+        Filter::Fixes,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Filter::All => "All changes",
+            Filter::Cells => "Cell edits",
+            Filter::Structure => "Rows and columns",
+            Filter::Notes => "Notes",
+            Filter::Fixes => "Fixes",
+        }
+    }
+
+    fn admits(self, entry: &Entry) -> bool {
+        let any = |f: fn(&Change) -> bool| entry.changes.iter().any(f);
+        match self {
+            Filter::All => true,
+            Filter::Cells => any(|c| matches!(c, Change::Cell { .. })),
+            Filter::Structure => any(|c| !matches!(c, Change::Cell { .. } | Change::Note { .. })),
+            Filter::Notes => any(|c| matches!(c, Change::Note { .. })),
+            Filter::Fixes => matches!(entry.origin, Origin::Fix(_) | Origin::Spelling),
+        }
+    }
+}
+
+/// Every change to the project's data and notes, newest first, with a way back to any of them.
+///
+/// Saved entries are read from the `.qrate` file a page at a time; entries not saved yet come
+/// straight from the table and sit on top, where there is nothing to restore to yet.
+pub struct HistoryPanel {
+    focus_handle: FocusHandle,
+    /// Whether this is the panel its dock is showing, which is what [`Self::visible`]
+    /// reports: a dock with one visible panel draws a title bar instead of a tab strip.
+    active: bool,
+    list_scroll: VirtualListScrollHandle,
+    saved: Vec<Listed>,
+    /// Whether a "Load older" would find anything.
+    more: bool,
+    /// The file and modification time `saved` was read at. Everything that can add an entry
+    /// rewrites the file, so an unchanged stamp means there is nothing new to read.
+    read_at: Option<(PathBuf, SystemTime)>,
+    filter: Filter,
+    named_only: bool,
+    /// Bursts opened up, by the id of their newest entry.
+    expanded: HashSet<EntryId>,
+    /// The entry being named, and the box the name is typed in.
+    naming: Option<(EntryId, Entity<InputState>, Subscription)>,
+    /// One cell to show the changes of, as its row and every name its column has had.
+    cell: Option<(RowId, Vec<String>)>,
+    /// What the list is showing, rebuilt each render: the flattened rows, the saved entries they
+    /// index into once filtered and narrowed, and the entries not on disk yet with the meta line
+    /// each needs. On `self` rather than in `render` because the virtual list draws a range of
+    /// them later, from a callback that is handed the panel and nothing else.
+    list: Rc<Vec<Row>>,
+    view: Rc<Vec<Listed>>,
+    pending: Rc<Vec<(Entry, String)>>,
+    _cell_sub: Subscription,
+    _handle_sub: Subscription,
+    _table_sub: Option<Subscription>,
+    _notes_sub: Subscription,
+    _crop_sub: Subscription,
+}
+
+impl HistoryPanel {
+    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut this = Self {
+            focus_handle: cx.focus_handle(),
+            active: false,
+            list_scroll: VirtualListScrollHandle::new(),
+            saved: Vec::new(),
+            more: false,
+            read_at: None,
+            filter: Filter::All,
+            named_only: false,
+            expanded: HashSet::new(),
+            naming: None,
+            cell: None,
+            list: Rc::default(),
+            view: Rc::default(),
+            pending: Rc::default(),
+            _cell_sub: cx.observe_global::<ShowCellHistory>(|this: &mut Self, cx| {
+                this.show_cell(cx);
+            }),
+            _handle_sub: cx.observe_global::<TableStateHandle>(|this: &mut Self, cx| {
+                this.bind(cx);
+                cx.notify();
+            }),
+            _table_sub: None,
+            // Notes are written the moment they change, without the table hearing about it.
+            _notes_sub: cx.observe_global::<diagnostics::Diagnostics>(|this: &mut Self, cx| {
+                this.reload(false, cx);
+            }),
+            _crop_sub: cx.observe_global::<BottomDockCrop>(|_this: &mut Self, cx| cx.notify()),
+        };
+        this.bind(cx);
+        this
+    }
+
+    fn bind(&mut self, cx: &mut Context<Self>) {
+        self._table_sub = cx
+            .try_global::<TableStateHandle>()
+            .and_then(|h| h.0.upgrade())
+            .map(|entity| {
+                cx.subscribe(&entity, |this, _state, _event: &TableChanged, cx| {
+                    this.reload(false, cx);
+                    cx.notify();
+                })
+            });
+        self.reload(false, cx);
+    }
+
+    /// Re-read the saved history if the project file has changed since it was last read. `force`
+    /// re-reads regardless, for this panel's own writes.
+    fn reload(&mut self, force: bool, cx: &mut Context<Self>) {
+        let Some(file) = cx.try_global::<CurrentProject>().map(|p| p.file.clone()) else {
+            self.saved.clear();
+            self.read_at = None;
+            return;
+        };
+        let stamp = std::fs::metadata(&file)
+            .and_then(|m| m.modified())
+            .unwrap_or(UNIX_EPOCH);
+        let fresh = Some((file.clone(), stamp));
+        if !force && self.read_at == fresh {
+            return;
+        }
+        // The log is append-only, so a refresh nothing asked for only has to look at the newest
+        // page: everything below it is already what it will ever be. Re-reading every page the
+        // reader had loaded made each note they wrote cost more the further back they had paged.
+        // A forced reload still re-reads the lot, which is what a rename or a clear needs.
+        let limit = match force {
+            true => PAGE.max(self.saved.len() as i64),
+            false => PAGE,
+        };
+        let row = self.cell.as_ref().map(|(row, _)| *row);
+        match settings::history::page(&file, EntryId::MAX, limit, row) {
+            Ok(page) => {
+                // Pages the re-read didn't reach, kept rather than dropped — otherwise an
+                // unforced refresh would silently collapse the list back to one page.
+                let cutoff = page.last().map_or(EntryId::MAX, |listed| listed.entry.id);
+                let older = self
+                    .saved
+                    .iter()
+                    .position(|listed| listed.entry.id < cutoff)
+                    .map(|ix| self.saved.split_off(ix))
+                    .unwrap_or_default();
+                if older.is_empty() {
+                    self.more = page.len() as i64 == limit;
+                }
+                self.saved = page;
+                self.saved.extend(older);
+            }
+            Err(err) => log::error!("couldn't read the project history: {err}"),
+        }
+        self.read_at = fresh;
+        cx.notify();
+    }
+
+    /// Narrow the list to the cell the grid asked about. Its column's former names come from both
+    /// halves of the log, unsaved renames being the newest.
+    fn show_cell(&mut self, cx: &mut Context<Self>) {
+        let (Some(request), Some(file)) = (
+            cx.try_global::<ShowCellHistory>(),
+            cx.try_global::<CurrentProject>().map(|p| p.file.clone()),
+        ) else {
+            return;
+        };
+        let unsaved: Vec<(String, String)> = cx
+            .try_global::<TableStateHandle>()
+            .and_then(|h| h.0.upgrade())
+            .map(|state| {
+                state
+                    .read(cx)
+                    .delegate()
+                    .unsaved_history()
+                    .iter()
+                    .rev()
+                    .flat_map(|e| e.changes.iter().rev())
+                    .filter_map(|c| match c {
+                        Change::ColumnRenamed { before, after } => {
+                            Some((before.clone(), after.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let saved = settings::history::renames(&file).unwrap_or_else(|err| {
+            log::error!("couldn't read column renames from the project history: {err}");
+            Vec::new()
+        });
+        let names = settings::history::former_names(
+            &request.column,
+            unsaved
+                .iter()
+                .chain(&saved)
+                .map(|(b, a)| (b.as_str(), a.as_str())),
+        );
+        self.cell = Some((request.row, names));
+        self.filter = Filter::All;
+        self.named_only = false;
+        self.saved.clear();
+        self.reload(true, cx);
+    }
+
+    fn load_older(&mut self, cx: &mut Context<Self>) {
+        let (Some(file), Some(last)) = (
+            cx.try_global::<CurrentProject>().map(|p| p.file.clone()),
+            self.saved.last().map(|l| l.entry.id),
+        ) else {
+            return;
+        };
+        let row = self.cell.as_ref().map(|(row, _)| *row);
+        match settings::history::page(&file, last, PAGE, row) {
+            Ok(page) => {
+                self.more = page.len() as i64 == PAGE;
+                self.saved.extend(page);
+            }
+            Err(err) => log::error!("couldn't read older project history: {err}"),
+        }
+        cx.notify();
+    }
+
+    fn start_naming(&mut self, id: EntryId, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self
+            .saved
+            .iter()
+            .find(|l| l.entry.id == id)
+            .and_then(|l| l.label.clone())
+            .unwrap_or_default();
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Name this version")
+                .default_value(current)
+        });
+        input.update(cx, |input, cx| input.focus(window, cx));
+        let sub = cx.subscribe_in(
+            &input,
+            window,
+            |this, input, event: &InputEvent, _window, cx| match event {
+                InputEvent::PressEnter { .. } => {
+                    let name = input.read(cx).value().trim().to_string();
+                    if let Some((id, _, _)) = this.naming.take() {
+                        this.name(id, (!name.is_empty()).then_some(name.as_str()), cx);
+                    }
+                }
+                InputEvent::Blur => {
+                    this.naming = None;
+                    cx.notify();
+                }
+                _ => {}
+            },
+        );
+        self.naming = Some((id, input, sub));
+        cx.notify();
+    }
+
+    fn name(&mut self, id: EntryId, label: Option<&str>, cx: &mut Context<Self>) {
+        if let Some(file) = cx.try_global::<CurrentProject>().map(|p| p.file.clone())
+            && let Err(err) = settings::history::set_label(&file, id, label)
+        {
+            log::error!("couldn't name history entry #{id}: {err}");
+        }
+        self.reload(true, cx);
+    }
+
+    /// Ask before putting the whole project back, saying how much that reverses.
+    fn confirm_restore(listed: &Listed, window: &mut Window, cx: &mut App) {
+        let Some(file) = cx.try_global::<CurrentProject>().map(|p| p.file.clone()) else {
+            return;
+        };
+        let since = settings::history::entries_after(&file, listed.entry.id)
+            .map(|entries| entries.iter().map(|e| e.changes.len()).sum::<usize>())
+            .unwrap_or_default()
+            + cx.try_global::<TableStateHandle>()
+                .and_then(|h| h.0.upgrade())
+                .map_or(0, |state| {
+                    let delegate = state.read(cx).delegate();
+                    delegate
+                        .unsaved_history()
+                        .iter()
+                        .map(|e| e.changes.len())
+                        .sum()
+                });
+        let id = listed.entry.id;
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!(
+                "Restore the project to {} at {}?",
+                day_label(&listed.day, listed.days_ago),
+                listed.time
+            ),
+            Some(&format!(
+                "{since} change{} made since will be reversed. The restore is added to the history, and Undo takes it back.",
+                if since == 1 { "" } else { "s" }
+            )),
+            &["Restore", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |cx| {
+            if answer.await == Ok(0) {
+                cx.update(|cx| table::restore_to(id, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn confirm_clear(panel: WeakEntity<Self>, window: &mut Window, cx: &mut App) {
+        let answer = window.prompt(
+            PromptLevel::Critical,
+            "Clear this project's history?",
+            Some("Every recorded change is forgotten and nothing before now can be restored. The data itself is not changed."),
+            &["Clear History", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            cx.update(|cx| {
+                if let Some(file) = cx.try_global::<CurrentProject>().map(|p| p.file.clone())
+                    && let Err(err) = settings::history::clear(&file)
+                {
+                    log::error!("couldn't clear the project history: {err}");
+                }
+                panel.update(cx, |this, cx| this.reload(true, cx)).ok();
+            });
+        })
+        .detach();
+    }
+}
+
+/// `entry` cut down to what it did to one cell — its value, its notes, its row coming or going — or
+/// `None` when it did nothing there. Borrowed untouched when there is no cell to narrow to.
+fn narrowed<'a>(entry: &'a Entry, cell: Option<&(RowId, Vec<String>)>) -> Option<Cow<'a, Entry>> {
+    let Some((row, names)) = cell else {
+        return Some(Cow::Borrowed(entry));
+    };
+    let named = |column: &str| names.iter().any(|name| name == column);
+    let changes: Vec<Change> = entry
+        .changes
+        .iter()
+        .filter(|change| match change {
+            Change::Cell { row: r, column, .. } => r == row && named(column),
+            Change::Note { row: r, column, .. } => {
+                *r == Some(*row) && column.as_deref().is_none_or(named)
+            }
+            Change::RowAdded { row: r, .. } | Change::RowRemoved { row: r, .. } => r == row,
+            _ => false,
+        })
+        .cloned()
+        .collect();
+    (!changes.is_empty()).then(|| {
+        Cow::Owned(Entry {
+            changes,
+            ..entry.clone()
+        })
+    })
+}
+
+/// `3 Sep 2026`, from a `YYYY-MM-DD` day.
+fn date_label(day: &str) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let mut parts = day.split('-');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(y), Some(m), Some(d)) => {
+            let month = m
+                .parse::<usize>()
+                .ok()
+                .and_then(|m| MONTHS.get(m.checked_sub(1)?));
+            format!("{} {} {y}", d.trim_start_matches('0'), month.unwrap_or(&m))
+        }
+        _ => day.into(),
+    }
+}
+
+/// What a day's header says: `Today`, `Yesterday`, or the date.
+fn day_label(day: &str, days_ago: i64) -> String {
+    match days_ago {
+        0 => "Today".into(),
+        1 => "Yesterday".into(),
+        _ => date_label(day),
+    }
+}
+
+/// When one change was made: `3 Sep 2026, 14:02`.
+pub(crate) fn when(day: &str, time: &str) -> String {
+    format!("{}, {time}", date_label(day))
+}
+
+/// One line saying what an entry did, in the grid's current terms: rows by the number the `#`
+/// column shows now, and a row that has since gone as exactly that.
+fn describe(entry: &Entry, rows: &HashMap<RowId, usize>) -> String {
+    let row = |id: &RowId| {
+        rows.get(id)
+            .map_or_else(|| "a deleted row".to_string(), |p| format!("row {}", p + 1))
+    };
+    let quote = |text: &str| match text.chars().count() {
+        0 => "(empty)".to_string(),
+        n if n > 40 => format!("“{}…”", text.chars().take(40).collect::<String>()),
+        _ => format!("“{text}”"),
+    };
+    let count = |n: usize, one: &str, many: &str| match n {
+        1 => format!("1 {one}"),
+        n => format!("{n} {many}"),
+    };
+    let changes = &entry.changes;
+    match changes.as_slice() {
+        [
+            Change::Cell {
+                row: id,
+                column,
+                before,
+                after,
+            },
+        ] => format!(
+            "{column}, {}: {} → {}",
+            row(id),
+            quote(before),
+            quote(after)
+        ),
+        [Change::ColumnAdded { column, .. }] => format!("Added column {}", quote(column)),
+        [Change::ColumnRemoved { column, .. }] => format!("Deleted column {}", quote(column)),
+        [Change::ColumnRenamed { before, after }] => {
+            format!("Renamed column {} to {}", quote(before), quote(after))
+        }
+        [Change::ColumnMoved { column, .. }] => format!("Moved column {}", quote(column)),
+        [
+            Change::Note {
+                row: id,
+                column,
+                before,
+                after,
+            },
+        ] => {
+            let what = match (before, after) {
+                (None, _) => "Added a note",
+                (_, None) => "Removed a note",
+                _ => "Edited a note",
+            };
+            match (id, column) {
+                (Some(id), Some(column)) => format!("{what} on {column}, {}", row(id)),
+                (Some(id), None) => format!("{what} on {}", row(id)),
+                (None, Some(column)) => format!("{what} on column {column}"),
+                (None, None) => format!("{what} on the project"),
+            }
+        }
+        _ if changes.iter().all(|c| matches!(c, Change::Cell { .. })) => {
+            let mut columns: Vec<&str> = Vec::new();
+            for change in changes {
+                if let Change::Cell { column, .. } = change
+                    && !columns.contains(&column.as_str())
+                {
+                    columns.push(column);
+                }
+            }
+            let named = match columns.len() {
+                n if n > 3 => format!("{} and {} more", columns[..3].join(", "), n - 3),
+                _ => columns.join(", "),
+            };
+            format!("{} in {named}", count(changes.len(), "cell", "cells"))
+        }
+        _ if changes.iter().all(|c| matches!(c, Change::RowAdded { .. })) => {
+            format!("Added {}", count(changes.len(), "row", "rows"))
+        }
+        _ if changes
+            .iter()
+            .all(|c| matches!(c, Change::RowRemoved { .. })) =>
+        {
+            format!("Deleted {}", count(changes.len(), "row", "rows"))
+        }
+        _ => count(changes.len(), "change", "changes"),
+    }
+}
+
+impl Focusable for HistoryPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl EventEmitter<PanelEvent> for HistoryPanel {}
+
+impl BasePanel for HistoryPanel {
+    fn panel_name(&self) -> &'static str {
+        "HistoryPanel"
+    }
+
+    fn closable(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn set_active(&mut self, active: bool, _w: &mut Window, cx: &mut Context<Self>) {
+        self.active = active;
+        cx.notify();
+    }
+
+    // Siblings stay docked and loaded, just unshown: this is what replaces the tab strip.
+    fn visible(&self, _cx: &App) -> bool {
+        self.active
+    }
+
+    fn zoomable(&self, _cx: &App) -> bool {
+        true
+    }
+}
+
+impl Panel for HistoryPanel {
+    fn title(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from("History")
+    }
+
+    fn title_suffix(
+        &mut self,
+        _w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        let panel = cx.entity().downgrade();
+        let (filter, named_only) = (self.filter, self.named_only);
+        Some(
+            h_flex().gap_1().items_center().child(
+                Button::new("history-filter")
+                    .ghost()
+                    .xsmall()
+                    .label(if named_only {
+                        "Named versions"
+                    } else {
+                        filter.label()
+                    })
+                    .dropdown_menu({
+                        let panel = panel.clone();
+                        move |menu: PopupMenu, _window, _cx| {
+                            let menu = Filter::ALL.into_iter().fold(menu, |menu, pick| {
+                                let panel = panel.clone();
+                                menu.item(
+                                    PopupMenuItem::new(pick.label())
+                                        .checked(!named_only && pick == filter)
+                                        .on_click(move |_, _, cx| {
+                                            panel
+                                                .update(cx, |this, cx| {
+                                                    this.filter = pick;
+                                                    this.named_only = false;
+                                                    cx.notify();
+                                                })
+                                                .ok();
+                                        }),
+                                )
+                            });
+                            let panel = panel.clone();
+                            menu.separator().item(
+                                PopupMenuItem::new("Named versions")
+                                    .checked(named_only)
+                                    .on_click(move |_, _, cx| {
+                                        panel
+                                            .update(cx, |this, cx| {
+                                                this.named_only = !this.named_only;
+                                                cx.notify();
+                                            })
+                                            .ok();
+                                    }),
+                            )
+                        }
+                    }),
+            ),
+        )
+    }
+
+    /// The tab bar already draws one ⋯ menu, and builds it from whichever panel its dock is
+    /// showing — so History’s own items belong there rather than in a second button beside it.
+    fn dropdown_menu(
+        &mut self,
+        menu: PopupMenu,
+        _w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let panel = cx.entity().downgrade();
+        menu.item(
+            PopupMenuItem::new("Clear History…")
+                .on_click(move |_, window, cx| Self::confirm_clear(panel.clone(), window, cx)),
+        )
+    }
+}
+
+impl HistoryPanel {
+    /// How tall the list places a row, which is also the height the row is given — see the
+    /// constants above.
+    fn row_size(&self, row: &Row) -> Size<Pixels> {
+        let height = match row {
+            Row::Header(_) => HEADER_H,
+            Row::More => MORE_H,
+            Row::Pending(_) | Row::Burst { .. } => ROW_H,
+            Row::Saved { ix, .. } => match self.view.get(*ix) {
+                None => ROW_H,
+                Some(listed) => {
+                    let naming = self
+                        .naming
+                        .as_ref()
+                        .is_some_and(|(id, _, _)| *id == listed.entry.id);
+                    ROW_H
+                        + if listed.label.is_some() { LABEL_H } else { 0. }
+                        + if naming { NAMING_H } else { 0. }
+                }
+            },
+        };
+        size(px(0.), px(height))
+    }
+
+    /// One row of the list, built only when it is on screen. `AnyElement` because the arms are
+    /// different elements, which is the case the crate's style note allows it for.
+    fn draw_row(
+        &self,
+        row: &Row,
+        positions: &HashMap<RowId, usize>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme();
+        let (muted, border, hover_bg, accent) = (
+            theme.muted_foreground,
+            theme.border,
+            theme.secondary_hover,
+            theme.accent_foreground,
+        );
+        let panel = cx.entity().downgrade();
+        let height = self.row_size(row).height;
+
+        // ponytail: always offered, since gpui cannot tell us whether the text was cut
+        let clipped = |text: String| {
+            div()
+                .id("text")
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(text.clone())
+                .tooltip(move |window, cx| {
+                    gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
+                })
+        };
+        let meta = |entry: &Entry, when: String| {
+            [Some(entry.origin.label()), entry.author.clone(), Some(when)]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ")
+        };
+
+        match row {
+            Row::Header(text) => div()
+                .h(height)
+                .px_2()
+                .pt_2()
+                .pb_1()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(muted)
+                .child(text.clone())
+                .into_any_element(),
+
+            Row::More => div()
+                .h(height)
+                .p_2()
+                .child(
+                    Button::new("history-older")
+                        .ghost()
+                        .small()
+                        .label("Load Older Changes")
+                        .on_click(cx.listener(|this, _, _, cx| this.load_older(cx))),
+                )
+                .into_any_element(),
+
+            Row::Pending(ix) => {
+                let Some((entry, at)) = self.pending.get(*ix) else {
+                    return div().into_any_element();
+                };
+                v_flex()
+                    .id(ElementId::NamedInteger(
+                        "history-unsaved".into(),
+                        *ix as u64,
+                    ))
+                    .h(height)
+                    .w_full()
+                    .gap_0p5()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(border)
+                    .hover(|row| row.bg(hover_bg))
+                    .when(matches!(entry.origin, Origin::Undo | Origin::Redo), |row| {
+                        row.opacity(0.6)
+                    })
+                    .child(clipped(describe(entry, positions)).text_sm())
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(meta(entry, at.clone())),
+                    )
+                    .into_any_element()
+            }
+
+            Row::Saved { ix, indent } => {
+                let Some(listed) = self.view.get(*ix) else {
+                    return div().into_any_element();
+                };
+                let entry = &listed.entry;
+                let id = entry.id;
+                let naming = self
+                    .naming
+                    .as_ref()
+                    .filter(|(being_named, _, _)| *being_named == id)
+                    .map(|(_, input, _)| input.clone());
+                let actions = {
+                    let listed = listed.clone();
+                    let panel = panel.clone();
+                    move |menu: PopupMenu, _window: &mut Window, _cx: &mut Context<PopupMenu>| {
+                        let single = match listed.entry.changes.as_slice() {
+                            [
+                                Change::Cell {
+                                    row,
+                                    column,
+                                    before,
+                                    ..
+                                },
+                            ] => Some((*row, column.clone(), before.clone())),
+                            _ => None,
+                        };
+                        let (restore, name, unname) =
+                            (listed.clone(), panel.clone(), panel.clone());
+                        let labelled = listed.label.is_some();
+                        menu.item(PopupMenuItem::new("Restore Project to Here…").on_click(
+                            move |_, window, cx| Self::confirm_restore(&restore, window, cx),
+                        ))
+                        .when_some(single, |menu, (row, column, before)| {
+                            menu.item(PopupMenuItem::new("Restore This Value").on_click(
+                                move |_, _, cx| {
+                                    table::restore_value(
+                                        row,
+                                        &column,
+                                        before.clone().into(),
+                                        id,
+                                        cx,
+                                    )
+                                },
+                            ))
+                        })
+                        .separator()
+                        .item(PopupMenuItem::new("Name This Version…").on_click(
+                            move |_, window, cx| {
+                                name.update(cx, |this, cx| this.start_naming(id, window, cx))
+                                    .ok();
+                            },
+                        ))
+                        .when(labelled, |menu| {
+                            menu.item(PopupMenuItem::new("Remove Name").on_click(
+                                move |_, _, cx| {
+                                    unname.update(cx, |this, cx| this.name(id, None, cx)).ok();
+                                },
+                            ))
+                        })
+                    }
+                };
+                v_flex()
+                    .id(ElementId::NamedInteger("history-entry".into(), id as u64))
+                    .h(height)
+                    .w_full()
+                    .gap_0p5()
+                    .px_2()
+                    .py_1()
+                    .when(*indent, |row| row.pl_6())
+                    .border_b_1()
+                    .border_color(border)
+                    .hover(|row| row.bg(hover_bg))
+                    .when(matches!(entry.origin, Origin::Undo | Origin::Redo), |row| {
+                        row.opacity(0.6)
+                    })
+                    .when_some(listed.label.clone(), |row, label| {
+                        row.child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(accent)
+                                .child(label),
+                        )
+                    })
+                    .when_some(naming, |row, input| row.child(Input::new(&input).xsmall()))
+                    .child(clipped(describe(entry, positions)).text_sm())
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(meta(entry, when(&listed.day, &listed.time))),
+                    )
+                    .context_menu(actions)
+                    .into_any_element()
+            }
+
+            Row::Burst { ix, len } => {
+                let (Some(head), Some(last)) = (self.view.get(*ix), self.view.get(ix + len - 1))
+                else {
+                    return div().into_any_element();
+                };
+                let id = head.entry.id;
+                let open = self.expanded.contains(&id);
+                let summary = Entry {
+                    changes: self.view[*ix..ix + len]
+                        .iter()
+                        .flat_map(|listed| listed.entry.changes.iter().cloned())
+                        .collect(),
+                    ..head.entry.clone()
+                };
+                h_flex()
+                    .id(ElementId::NamedInteger("history-burst".into(), id as u64))
+                    .h(height)
+                    .w_full()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(border)
+                    .hover(|row| row.bg(hover_bg))
+                    .cursor_pointer()
+                    .on_click(move |_, _, cx| {
+                        panel
+                            .update(cx, |this, cx| {
+                                if !this.expanded.remove(&id) {
+                                    this.expanded.insert(id);
+                                }
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .child(
+                        gpui_component::Icon::new(match open {
+                            true => IconName::ChevronDown,
+                            false => IconName::ChevronRight,
+                        })
+                        .xsmall()
+                        .text_color(muted),
+                    )
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .gap_0p5()
+                            .child(
+                                clipped(format!("{len} edits · {}", describe(&summary, positions)))
+                                    .text_sm(),
+                            )
+                            .child(div().text_xs().text_color(muted).child(meta(
+                                &head.entry,
+                                format!("{}, {}–{}", date_label(&head.day), last.time, head.time),
+                            ))),
+                    )
+                    .into_any_element()
+            }
+        }
+    }
+}
+
+impl Render for HistoryPanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (muted, border) = (theme.muted_foreground, theme.border);
+        let crop = cx.try_global::<BottomDockCrop>().map_or(px(0.), |c| c.0);
+
+        let (positions, unsaved): (HashMap<RowId, usize>, Vec<Entry>) = cx
+            .try_global::<TableStateHandle>()
+            .and_then(|h| h.0.upgrade())
+            .map(|state| {
+                let delegate = state.read(cx).delegate();
+                (
+                    delegate
+                        .row_ids()
+                        .iter()
+                        .enumerate()
+                        .map(|(p, id)| (*id, p))
+                        .collect(),
+                    delegate.unsaved_history().to_vec(),
+                )
+            })
+            .unwrap_or_default();
+        let (filter, named_only) = (self.filter, self.named_only);
+        let admits = |entry: &Entry, label: bool| {
+            if named_only {
+                label
+            } else {
+                filter.admits(entry)
+            }
+        };
+
+        let cell = self.cell.as_ref();
+        let unsaved: Vec<Entry> = unsaved
+            .iter()
+            .rev()
+            .filter_map(|e| narrowed(e, cell).map(Cow::into_owned))
+            .filter(|e| admits(e, false))
+            .collect();
+        // One call rather than one per row: it reads the clock once for the batch.
+        let ats: Vec<i64> = unsaved.iter().map(|entry| entry.at).collect();
+        let times = settings::history::local_times(&ats);
+        let pending: Vec<(Entry, String)> = unsaved
+            .into_iter()
+            .enumerate()
+            .map(|(ix, entry)| {
+                let at = times.get(ix).map_or_else(
+                    || "not saved".to_string(),
+                    |(day, time)| format!("{}, not saved", when(day, time)),
+                );
+                (entry, at)
+            })
+            .collect();
+        let view: Vec<Listed> = self
+            .saved
+            .iter()
+            .filter_map(|l| match narrowed(&l.entry, cell)? {
+                Cow::Borrowed(_) => Some(Cow::Borrowed(l)),
+                Cow::Owned(entry) => Some(Cow::Owned(Listed { entry, ..l.clone() })),
+            })
+            .filter(|l| admits(&l.entry, l.label.is_some()))
+            .map(Cow::into_owned)
+            .collect();
+        let cell_label = cell.map(|(row, names)| {
+            let at = positions
+                .get(row)
+                .map_or_else(|| "a deleted row".to_string(), |p| format!("row {}", p + 1));
+            format!("{}, {at}", names[0])
+        });
+
+        // Flattened to one addressable line per row. Bursts — runs of adjacent, unnamed entries by
+        // one person, one means, one day — are found here and referred to by where they start.
+        let mut list: Vec<Row> = Vec::new();
+        if !pending.is_empty() {
+            list.push(Row::Header("Not saved yet".into()));
+            list.extend((0..pending.len()).map(Row::Pending));
+        }
+        let mut day: Option<String> = None;
+        let mut ix = 0;
+        while ix < view.len() {
+            let head = &view[ix];
+            let mut len = 1;
+            while let Some(next) = view.get(ix + len) {
+                let prev = &view[ix + len - 1];
+                let joins = prev.label.is_none()
+                    && next.label.is_none()
+                    && prev.day == next.day
+                    && prev.entry.author == next.entry.author
+                    && prev.entry.origin == next.entry.origin
+                    && matches!(
+                        next.entry.origin,
+                        Origin::Typed | Origin::Details | Origin::Paste | Origin::Clear
+                    )
+                    && prev.entry.at - next.entry.at <= BURST_SECS;
+                if !joins {
+                    break;
+                }
+                len += 1;
+            }
+            if day.as_deref() != Some(head.day.as_str()) {
+                day = Some(head.day.clone());
+                list.push(Row::Header(day_label(&head.day, head.days_ago).into()));
+            }
+            match len {
+                1 => list.push(Row::Saved { ix, indent: false }),
+                _ => {
+                    let open = self.expanded.contains(&head.entry.id);
+                    list.push(Row::Burst { ix, len });
+                    if open {
+                        list.extend((ix..ix + len).map(|ix| Row::Saved { ix, indent: true }));
+                    }
+                }
+            }
+            ix += len;
+        }
+        if self.more && !named_only {
+            list.push(Row::More);
+        }
+
+        let empty = pending.is_empty() && view.is_empty();
+        self.pending = Rc::new(pending);
+        self.view = Rc::new(view);
+        self.list = Rc::new(list);
+        let sizes = Rc::new(
+            self.list
+                .iter()
+                .map(|row| self.row_size(row))
+                .collect::<Vec<_>>(),
+        );
+
+        v_flex()
+            .size_full()
+            .track_focus(&self.focus_handle)
+            .id("history-panel")
+            .role(Role::Group)
+            .aria_label("History")
+            .when_some(cell_label, |panel, label| {
+                panel.child(
+                    h_flex()
+                        .flex_none()
+                        .gap_1()
+                        .items_center()
+                        .px_2()
+                        .py_1()
+                        .border_b_1()
+                        .border_color(border)
+                        .child(
+                            div()
+                                .id("history-cell")
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_xs()
+                                .child(format!("Changes to {label}"))
+                                .tooltip(move |window, cx| {
+                                    gpui_component::tooltip::Tooltip::new(format!(
+                                        "Changes to {label}"
+                                    ))
+                                    .build(window, cx)
+                                }),
+                        )
+                        .child(
+                            Button::new("history-cell-clear")
+                                .icon(IconName::Close)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Show every change")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.cell = None;
+                                    this.saved.clear();
+                                    this.reload(true, cx);
+                                })),
+                        ),
+                )
+            })
+            .when(empty, |panel| {
+                panel.child(div().p_3().text_sm().text_color(muted).child(
+                    match (cx.has_global::<CurrentProject>(), named_only) {
+                        (false, _) => "Open a project to see its history.",
+                        (true, true) => "No named versions yet. Right-click a change to name it.",
+                        (true, false) => {
+                            "No changes yet. Every edit to this project's data and notes will be listed here."
+                        }
+                    },
+                ))
+            })
+            .when(!empty, |panel| {
+                panel
+                    .child(
+                        v_virtual_list(cx.entity(), "history-list", sizes, {
+                            let positions = Rc::new(positions);
+                            move |this, range, _window, cx| {
+                                let list = this.list.clone();
+                                list[range]
+                                    .iter()
+                                    .map(|row| this.draw_row(row, &positions, cx))
+                                    .collect::<Vec<_>>()
+                            }
+                        })
+                        .pr_2()
+                        .pb(px(8.) + crop)
+                        .track_scroll(&self.list_scroll),
+                    )
+                    .child(gpui_component::scroll::Scrollbar::vertical(
+                        &self.list_scroll,
+                    ))
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Never `use super::*` here: the parent has `use gpui::*` in scope.
+    use super::{HistoryPanel, PAGE, day_label, describe, narrowed};
+    use gpui::TestAppContext;
+    use settings::history::{Change, Entry, Origin};
+    use std::collections::HashMap;
+
+    /// A project holding `entries` changes to one row, and the panel pointed at it.
+    fn project_with(name: &str, entries: usize) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("qrate-history-panel-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(name);
+        let _ = std::fs::remove_file(&path);
+        let headers = vec!["Title".to_string()];
+        settings::project::create_project_file(
+            &path,
+            &settings::project::ProjectSpec {
+                name: "H",
+                source: "CSV",
+                headers: &headers,
+                rows: &[vec!["one".to_string()]],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        append(&path, 0, entries);
+        path
+    }
+
+    /// `count` more entries on top of whatever the file already holds.
+    fn append(path: &std::path::Path, from: usize, count: usize) {
+        let headers = vec!["Title".to_string()];
+        let log: Vec<Entry> = (from..from + count)
+            .map(|n| {
+                Entry::new(
+                    Origin::Typed,
+                    vec![Change::Cell {
+                        row: 1,
+                        column: "Title".into(),
+                        before: n.to_string(),
+                        after: (n + 1).to_string(),
+                    }],
+                    None,
+                )
+            })
+            .collect();
+        settings::project::save_dataset(
+            path,
+            &headers,
+            &[1],
+            &[vec![(from + count).to_string()]],
+            &log,
+        )
+        .unwrap();
+    }
+
+    /// An unforced refresh re-reads only the newest page, so it must splice that page onto the
+    /// older ones already loaded rather than replacing them — otherwise writing a note would
+    /// collapse the list back to one page under whoever had paged through a long history.
+    #[gpui::test]
+    fn a_refresh_keeps_the_pages_the_reader_already_loaded(cx: &mut TestAppContext) {
+        let extra = 5;
+        let total = PAGE as usize + extra;
+        let path = project_with("merge.qrate", total);
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(settings::SettingsPersistence::default());
+            cx.set_global(settings::project::CurrentProject {
+                file: path.clone(),
+                data: settings::project::load_project_file(&path).unwrap(),
+            });
+        });
+
+        let (panel, cx) = cx.add_window_view(HistoryPanel::new);
+        cx.run_until_parked();
+
+        panel.update(cx, |this, _| {
+            assert_eq!(this.saved.len(), PAGE as usize, "one page to begin with");
+            assert!(this.more, "and more behind it");
+        });
+
+        cx.update(|_, cx| panel.update(cx, |this, cx| this.load_older(cx)));
+        panel.update(cx, |this, _| {
+            assert_eq!(this.saved.len(), total, "the rest paged in");
+            assert!(!this.more, "nothing left behind it");
+        });
+
+        // A write the panel didn't ask about — a note, in real use — moves the file's stamp and
+        // so gets past the freshness guard.
+        append(&path, total, 1);
+        cx.update(|_, cx| panel.update(cx, |this, cx| this.reload(false, cx)));
+        panel.update(cx, |this, _| {
+            assert_eq!(
+                this.saved.len(),
+                total + 1,
+                "the new entry arrives and the older pages stay"
+            );
+            let ids: Vec<_> = this.saved.iter().map(|l| l.entry.id).collect();
+            let mut descending = ids.clone();
+            descending.sort_by(|a, b| b.cmp(a));
+            descending.dedup();
+            assert_eq!(ids, descending, "still newest first, with nothing doubled");
+        });
+    }
+
+    /// Narrowed to one cell, an entry keeps that cell's edits under any name its column has had,
+    /// its row's notes and its row coming or going — and nothing about the cells beside it.
+    #[test]
+    fn a_cell_keeps_its_own_changes_under_any_former_name() {
+        let cell = |row, column: &str| Change::Cell {
+            row,
+            column: column.into(),
+            before: "a".into(),
+            after: "b".into(),
+        };
+        let entry = Entry::new(
+            Origin::Paste,
+            vec![cell(1, "Name"), cell(1, "Date"), cell(2, "Name")],
+            None,
+        );
+        let names = (1, vec!["Title".to_string(), "Name".to_string()]);
+        let kept = narrowed(&entry, Some(&names)).unwrap();
+        assert_eq!(kept.changes, vec![cell(1, "Name")]);
+        let elsewhere = Entry::new(Origin::Typed, vec![cell(2, "Date")], None);
+        assert!(narrowed(&elsewhere, Some(&names)).is_none());
+    }
+
+    #[test]
+    fn days_read_as_a_person_would_say_them() {
+        assert_eq!(day_label("2026-09-13", 0), "Today");
+        assert_eq!(day_label("2026-09-12", 1), "Yesterday");
+        assert_eq!(day_label("2026-09-03", 10), "3 Sep 2026");
+        assert_eq!(super::when("2026-09-03", "14:02"), "3 Sep 2026, 14:02");
+    }
+
+    /// A row is named by the number the grid shows for it now, not by where it was when edited.
+    #[test]
+    fn a_cell_edit_names_its_row_as_the_grid_numbers_it_now() {
+        let cell = |row, before: &str, after: &str| Change::Cell {
+            row,
+            column: "Title".into(),
+            before: before.into(),
+            after: after.into(),
+        };
+        let rows = HashMap::from([(7, 2)]);
+        let one = Entry::new(Origin::Typed, vec![cell(7, "", "Harbour")], None);
+        assert_eq!(describe(&one, &rows), "Title, row 3: (empty) → “Harbour”");
+        let gone = Entry::new(Origin::Typed, vec![cell(9, "a", "b")], None);
+        assert_eq!(describe(&gone, &rows), "Title, a deleted row: “a” → “b”");
+        let many = Entry::new(
+            Origin::Paste,
+            vec![cell(7, "a", "b"), cell(9, "c", "d")],
+            None,
+        );
+        assert_eq!(describe(&many, &rows), "2 cells in Title");
+    }
+}

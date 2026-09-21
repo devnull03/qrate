@@ -20,6 +20,7 @@ use std::path::PathBuf;
 
 use gpui::{App, Global, Hsla, SharedString};
 use gpui_component::ActiveTheme as _;
+use settings::history::{Change, Entry, Origin};
 
 /// The one dataset a project can hold today. `__notes` keys by name so a second sheet is new
 /// rows rather than a new table.
@@ -442,6 +443,7 @@ impl Diagnostics {
             return;
         }
         let filed = Self::filed_now(cx);
+        let logged = Self::note_entry(&location, None, Some(&message), Origin::Typed, cx);
         let this = cx.default_global::<Self>();
         this.items.push(Diagnostic {
             location,
@@ -452,7 +454,7 @@ impl Diagnostics {
             filed,
         });
         this.reindex();
-        this.persist();
+        this.persist(&logged);
     }
 
     /// Stamp for a note being filed right now: today's date from the project file's own clock, and
@@ -462,33 +464,53 @@ impl Diagnostics {
             .try_global::<settings::project::CurrentProject>()
             .and_then(|p| settings::project::today(&p.file))
             .map(SharedString::from);
-        // Guarded: a note can be filed before the settings globals exist (early startup, tests),
-        // and an unsigned note is a far better outcome than a panic mid-keystroke.
-        let author = match cx.has_global::<settings::AppSettings>() {
-            false => None,
-            true => match settings::effective_text(settings::NOTE_AUTHOR_KEY, cx) {
-                author if author.trim().is_empty() => None,
-                author => Some(author),
-            },
-        };
+        let author = settings::history::author(cx).map(SharedString::from);
         (date.is_some() || author.is_some()).then_some(Filed { date, author })
+    }
+
+    /// The log entry for one note going from `before` to `after`. Empty when nothing changed, or
+    /// when no project is open to log it in.
+    fn note_entry(
+        location: &Location,
+        before: Option<&SharedString>,
+        after: Option<&SharedString>,
+        origin: Origin,
+        cx: &App,
+    ) -> Vec<Entry> {
+        if before == after || location.dataset != DATASET_MAIN {
+            return Vec::new();
+        }
+        let change = Change::Note {
+            row: location.row_id,
+            column: location.column.as_ref().map(|c| c.to_string()),
+            before: before.map(|b| b.to_string()),
+            after: after.map(|a| a.to_string()),
+        };
+        vec![Entry::new(
+            origin,
+            vec![change],
+            settings::history::author(cx),
+        )]
     }
 
     /// Attach a note here, replacing any note already at this location; an empty `message` deletes
     /// it. Writes straight through to `__notes` — this is a deliberate keystroke, not the hot path
     /// the debounced setting writer exists for.
-    pub fn set_note(location: Location, message: SharedString, cx: &mut App) {
-        // Keeps the original filing stamp: correcting a transcription is not re-observing the
-        // item, and re-dating it to today would erase when the observation was actually made.
-        let filed = Self::notes_at(
+    pub fn set_note(location: Location, message: SharedString, origin: Origin, cx: &mut App) {
+        let (before, filed) = Self::notes_at(
             &location.dataset,
             location.row,
             location.column.as_deref(),
             cx,
         )
         .next()
-        .and_then(|d| d.filed.clone())
-        .or_else(|| Self::filed_now(cx));
+        .map(|d| (Some(d.message.clone()), d.filed.clone()))
+        .unwrap_or_default();
+        let after = (!message.trim().is_empty()).then_some(&message);
+        let logged = Self::note_entry(&location, before.as_ref(), after, origin, cx);
+        // Keeps the original filing stamp: correcting a transcription is not re-observing the
+        // item, and re-dating it to today would erase when the observation was actually made.
+        let filed = filed.or_else(|| Self::filed_now(cx));
         let this = cx.default_global::<Self>();
         this.items
             .retain(|d| d.source != Source::Note || d.location != location);
@@ -503,12 +525,18 @@ impl Diagnostics {
             });
         }
         this.reindex();
-        this.persist();
+        this.persist(&logged);
     }
 
     /// Rebind authored notes to the current source positions after a structural edit or its undo.
     /// Their stable ids decide ownership; positions are only the live UI address.
-    pub fn align_note_rows(dataset: &str, row_ids: &[settings::project::RowId], cx: &mut App) {
+    pub fn align_note_rows(
+        dataset: &str,
+        row_ids: &[settings::project::RowId],
+        origin: Origin,
+        cx: &mut App,
+    ) {
+        let author = settings::history::author(cx);
         let positions: HashMap<_, _> = row_ids
             .iter()
             .copied()
@@ -517,6 +545,7 @@ impl Diagnostics {
             .collect();
         let this = cx.default_global::<Self>();
         let mut changed = false;
+        let mut dropped = Vec::new();
         this.items.retain_mut(|item| {
             if item.location.dataset != dataset || item.source != Source::Note {
                 return true;
@@ -526,6 +555,12 @@ impl Diagnostics {
             };
             let Some(source) = positions.get(&row_id).copied() else {
                 changed = true;
+                dropped.push(Change::Note {
+                    row: Some(row_id),
+                    column: item.location.column.as_ref().map(|c| c.to_string()),
+                    before: Some(item.message.to_string()),
+                    after: None,
+                });
                 return false;
             };
             changed |= item.location.row != Some(source);
@@ -533,8 +568,12 @@ impl Diagnostics {
             true
         });
         if changed {
+            let logged = match dropped.is_empty() {
+                true => Vec::new(),
+                false => vec![Entry::new(origin, dropped, author)],
+            };
             this.reindex();
-            this.persist();
+            this.persist(&logged);
         }
     }
 
@@ -546,12 +585,12 @@ impl Diagnostics {
                 item.location.column = Some(after.clone());
             }
         }
-        this.persist();
+        this.persist(&[]);
     }
 
     /// Write every authored note back to `__notes`, replacing what was there. Computed findings
     /// are never persisted — they are recomputed on open and a stored copy would go stale.
-    fn persist(&self) {
+    fn persist(&self, history: &[Entry]) {
         // No open project (tests, early startup) leaves the change in memory only.
         let Some(file) = self.loaded.as_ref() else {
             return;
@@ -577,7 +616,7 @@ impl Diagnostics {
                     .and_then(|f| f.author.as_ref().map(SharedString::to_string)),
             })
             .collect();
-        if let Err(err) = settings::project::write_notes(file, SOURCE_NOTE, &notes) {
+        if let Err(err) = settings::project::write_notes(file, SOURCE_NOTE, &notes, history) {
             log::error!("failed to save notes: {err}");
         }
     }
@@ -646,9 +685,9 @@ pub struct DiagnosticHooks {
     pub text_at: fn(&Location, &App) -> Option<SharedString>,
     /// Write text back to a location and revalidate. The other half of [`Self::text_at`], and the
     /// reason a panel row can offer the same corrections a cell does.
-    pub set_text: fn(&Location, SharedString, &mut App),
+    pub set_text: fn(&Location, SharedString, Origin, &mut App),
     /// Apply a group resolution as one undoable edit and one validation pass.
-    pub set_texts: fn(Vec<(Location, SharedString)>, &mut App),
+    pub set_texts: fn(Vec<(Location, SharedString)>, Origin, &mut App),
     /// Re-run validation after a resolution changes validator settings instead of cell text.
     pub revalidate: fn(&mut App),
 }
@@ -662,6 +701,7 @@ mod tests {
     // emits, recursing until rustc's stack overflows.
     use crate::{DATASET_MAIN, Diagnostic, Diagnostics, Filed, Location, Severity, Source, init};
     use gpui::{App, SharedString, TestAppContext};
+    use settings::history::Origin;
     use settings::project::{CurrentProject, ProjectData, ProjectSpec, StoredNote};
 
     /// The row index is a second copy of the truth in `items`, so every mutation has to rebuild
@@ -691,11 +731,11 @@ mod tests {
                 row_id: None,
                 column: Some("Title".into()),
             };
-            Diagnostics::set_note(location.clone(), "hand written".into(), cx);
+            Diagnostics::set_note(location.clone(), "hand written".into(), Origin::Typed, cx);
             assert_eq!(at_00(cx), 2, "the note joins the validator's finding");
 
             // An empty message deletes the note, which shifts every later index in `items`.
-            Diagnostics::set_note(location, "".into(), cx);
+            Diagnostics::set_note(location, "".into(), Origin::Typed, cx);
             assert_eq!(at_00(cx), 1);
 
             // Republishing nothing is how a validator clears itself.
@@ -787,7 +827,12 @@ mod tests {
             cx.default_global::<Diagnostics>().items[0].filed = original.clone();
 
             // set_note collapses to one and keeps that stamp.
-            Diagnostics::set_note(cell, "verso inscription, in pencil".into(), cx);
+            Diagnostics::set_note(
+                cell,
+                "verso inscription, in pencil".into(),
+                Origin::Typed,
+                cx,
+            );
             let notes = filed(cx);
             assert_eq!(notes.len(), 1, "a correction replaces rather than adds");
             assert_eq!(notes[0].0, "verso inscription, in pencil");
@@ -858,6 +903,7 @@ mod tests {
                     author: None,
                 },
             ],
+            &[],
         )
         .unwrap();
 
@@ -940,12 +986,12 @@ mod tests {
             });
             init(cx);
 
-            Diagnostics::set_note(cell.clone(), "first".into(), cx);
-            Diagnostics::set_note(whole_row.clone(), "row wide".into(), cx);
+            Diagnostics::set_note(cell.clone(), "first".into(), Origin::Typed, cx);
+            Diagnostics::set_note(whole_row.clone(), "row wide".into(), Origin::Typed, cx);
             assert_eq!(Diagnostics::all(cx).len(), 2);
 
             // Same location again replaces rather than stacking.
-            Diagnostics::set_note(cell.clone(), "second".into(), cx);
+            Diagnostics::set_note(cell.clone(), "second".into(), Origin::Typed, cx);
             assert_eq!(Diagnostics::all(cx).len(), 2);
             assert_eq!(
                 Diagnostics::note_at(DATASET_MAIN, Some(3), Some("Title"), cx),
@@ -973,7 +1019,7 @@ mod tests {
             );
 
             // An empty message deletes the note and leaves the validator's entry standing.
-            Diagnostics::set_note(cell.clone(), "   ".into(), cx);
+            Diagnostics::set_note(cell.clone(), "   ".into(), Origin::Typed, cx);
             assert_eq!(
                 Diagnostics::note_at(DATASET_MAIN, Some(3), Some("Title"), cx),
                 None
@@ -1000,10 +1046,15 @@ mod tests {
                 row_id: Some(row_id),
                 column: Some("Title".into()),
             };
-            Diagnostics::set_note(note(1, 10), "ten".into(), cx);
-            Diagnostics::set_note(note(3, 20), "twenty".into(), cx);
+            Diagnostics::set_note(note(1, 10), "ten".into(), Origin::Typed, cx);
+            Diagnostics::set_note(note(3, 20), "twenty".into(), Origin::Typed, cx);
 
-            Diagnostics::align_note_rows(DATASET_MAIN, &[99, 10, 11, 12, 20], cx);
+            Diagnostics::align_note_rows(
+                DATASET_MAIN,
+                &[99, 10, 11, 12, 20],
+                Origin::Structure,
+                cx,
+            );
             assert_eq!(
                 Diagnostics::note_at(DATASET_MAIN, Some(1), Some("Title"), cx),
                 Some("ten".into())
@@ -1013,7 +1064,7 @@ mod tests {
                 Some("twenty".into())
             );
 
-            Diagnostics::align_note_rows(DATASET_MAIN, &[99, 11, 12, 20], cx);
+            Diagnostics::align_note_rows(DATASET_MAIN, &[99, 11, 12, 20], Origin::Structure, cx);
             assert_eq!(
                 Diagnostics::all(cx).len(),
                 1,

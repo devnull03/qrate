@@ -13,6 +13,7 @@ use gpui_component::{
 use serde::{Deserialize, Serialize};
 
 use diagnostics::{DATASET_MAIN, Location};
+use settings::history::{Change, Entry, EntryId, Origin};
 
 use crate::history::{Cells, Col, History, Row, Step};
 use crate::{cell, editing::EditState, filter, row_index};
@@ -99,6 +100,9 @@ pub struct QrateTableDelegate {
     /// Undo/redo stack for cell edits and shape changes alike, so a delete and the typing before
     /// it come back in the order they went in.
     history: History,
+    /// Log entries for changes not yet saved. They reach the `.qrate` file with the data they
+    /// describe, and are dropped with it when a project is closed without saving.
+    unsaved: Vec<Entry>,
     /// How many leading data columns are frozen. A count in *display* order, not a set of keys:
     /// the library's fixed region is always the leading columns, and moving a column in or out of
     /// it is how a sheet re-freezes. Zero means only the pinned `#` column stays put.
@@ -129,6 +133,7 @@ impl QrateTableDelegate {
             subdelimiter: SharedString::default(),
             values_generation: 0,
             history: History::default(),
+            unsaved: Vec::new(),
             frozen: 0,
         }
     }
@@ -479,15 +484,7 @@ impl QrateTableDelegate {
         row_ids: &[settings::project::RowId],
         rows: &[Vec<String>],
     ) {
-        self.columns = headers
-            .iter()
-            .map(|h| {
-                Column::new(h.clone(), h.clone())
-                    .width(px(120.))
-                    .resizable(true)
-                    .movable(true)
-            })
-            .collect();
+        self.columns = headers.iter().map(|h| new_column(h.clone())).collect();
         self.rows = rows
             .iter()
             .map(|r| r.iter().map(|c| SharedString::from(c.clone())).collect())
@@ -506,6 +503,7 @@ impl QrateTableDelegate {
         self.editing = EditState::Idle;
         // Recorded edits index into the outgoing dataset.
         self.history = History::default();
+        self.unsaved.clear();
         self.filters = vec![HashSet::new(); self.columns.len()];
         self.filters_enabled = vec![false; self.columns.len()];
         self.search_rows = None;
@@ -641,7 +639,7 @@ impl QrateTableDelegate {
     /// through here — inline commit, diagnostic fix, paste, bulk fill — so none of them carries
     /// undo logic of its own. Cells whose text is unchanged are dropped, so a commit that typed
     /// nothing doesn't consume an undo.
-    pub(crate) fn apply_edit(&mut self, cells: Cells) -> bool {
+    pub(crate) fn apply_edit(&mut self, cells: Cells, origin: Origin) -> bool {
         let mut edit = Vec::with_capacity(cells.len());
         for (row, col, after) in cells {
             let Some(before) = self.cell(row, col).cloned() else {
@@ -654,30 +652,246 @@ impl QrateTableDelegate {
             edit.push((row, col, before, after));
         }
         let changed = !edit.is_empty();
-        self.history.push(Step::Cells(edit));
+        self.record(Step::Cells(edit), origin);
         changed
     }
 
-    /// Reverse the last recorded step. The answer says whether it moved rows; `None` means there
-    /// was nothing to undo.
-    pub(crate) fn undo(&mut self) -> Option<bool> {
+    /// Push a step that has just been applied onto the undo stack, and log it.
+    fn record(&mut self, step: Step, origin: Origin) {
+        let changes = self.changes(&step);
+        self.log(origin, changes);
+        self.history.push(step);
+    }
+
+    fn log(&mut self, origin: Origin, changes: Vec<Change>) {
+        if !changes.is_empty() {
+            self.unsaved.push(Entry::new(origin, changes, None));
+        }
+    }
+
+    /// What a step did, by row id and column name. Read against the grid as it stands just after
+    /// the step, which is the only state its indices are guaranteed to mean anything in.
+    fn changes(&self, step: &Step) -> Vec<Change> {
+        let row_id = |row: usize| self.row_ids.get(row).copied().unwrap_or_default();
+        let named = |cells: &[SharedString]| {
+            self.columns
+                .iter()
+                .zip(cells)
+                .map(|(c, text)| (c.name.to_string(), text.to_string()))
+                .collect()
+        };
+        let by_row = |col: &Col| {
+            self.row_ids
+                .iter()
+                .zip(&col.cells)
+                .map(|(id, text)| (*id, text.to_string()))
+                .collect()
+        };
+        match step {
+            Step::Cells(cells) => cells
+                .iter()
+                .map(|(row, col, before, after)| Change::Cell {
+                    row: row_id(*row),
+                    column: self.column_name(*col).to_string(),
+                    before: before.to_string(),
+                    after: after.to_string(),
+                })
+                .collect(),
+            Step::RowsAdded { at, rows } => rows
+                .iter()
+                .enumerate()
+                .map(|(offset, row)| Change::RowAdded {
+                    row: row.id,
+                    position: at + offset,
+                    cells: named(&row.cells),
+                })
+                .collect(),
+            Step::RowsRemoved(rows) => rows
+                .iter()
+                .map(|(at, row)| Change::RowRemoved {
+                    row: row.id,
+                    position: *at,
+                    cells: named(&row.cells),
+                })
+                .collect(),
+            Step::ColumnAdded { at, col } => vec![Change::ColumnAdded {
+                column: col.column.name.to_string(),
+                position: *at,
+                cells: by_row(col),
+            }],
+            Step::ColumnRemoved { at, col } => vec![Change::ColumnRemoved {
+                column: col.column.name.to_string(),
+                position: *at,
+                cells: by_row(col),
+            }],
+            Step::Renamed { before, after, .. } => vec![Change::ColumnRenamed {
+                before: before.to_string(),
+                after: after.to_string(),
+            }],
+            Step::ColumnMoved { from, to } => vec![Change::ColumnMoved {
+                column: self.column_name(*to).to_string(),
+                from: *from,
+                to: *to,
+            }],
+            // A batch's steps are read one by one, each in its own state, as they are replayed.
+            Step::Batch(_) => Vec::new(),
+        }
+    }
+
+    /// Reverse the last recorded step, and log that as its own entry. `None` when there was
+    /// nothing to undo; otherwise what the undo changed.
+    pub(crate) fn undo(&mut self) -> Option<Vec<Change>> {
         let step = self.history.undo()?;
-        let rows_changed = matches!(step, Step::RowsAdded { .. } | Step::RowsRemoved(_));
-        self.replay(&step, false);
-        Some(rows_changed)
+        Some(self.replay_logged(&step, false, Origin::Undo))
     }
 
     /// [`undo`](Self::undo)'s mirror.
-    pub(crate) fn redo(&mut self) -> Option<bool> {
+    pub(crate) fn redo(&mut self) -> Option<Vec<Change>> {
         let step = self.history.redo()?;
-        let rows_changed = matches!(step, Step::RowsAdded { .. } | Step::RowsRemoved(_));
-        self.replay(&step, true);
-        Some(rows_changed)
+        Some(self.replay_logged(&step, true, Origin::Redo))
+    }
+
+    fn replay_logged(&mut self, step: &Step, forward: bool, origin: Origin) -> Vec<Change> {
+        let mut changes = Vec::new();
+        self.replay(step, forward, &mut changes);
+        self.log(origin, changes.clone());
+        changes
+    }
+
+    /// Put the grid back the way `changes` say, by identity rather than position: the log's
+    /// positions are only where to put a row or column back. Everything applied lands as one undo
+    /// step and one log entry. A change that no longer fits — its row already gone, its column
+    /// renamed out from under it — is skipped. Notes are not the grid's to apply.
+    pub(crate) fn restore(&mut self, changes: &[Change], to: EntryId) -> Vec<Change> {
+        let mut steps = Vec::new();
+        let mut applied = Vec::new();
+        for change in changes {
+            match self.apply_change(change) {
+                Some(step) => {
+                    applied.extend(self.changes(&step));
+                    steps.push(step);
+                }
+                None => log::warn!("restore skipped a change that no longer fits: {change:?}"),
+            }
+        }
+        self.log(Origin::Restore(to), applied.clone());
+        self.history.push(Step::Batch(steps));
+        self.editing = EditState::Idle;
+        applied
+    }
+
+    fn apply_change(&mut self, change: &Change) -> Option<Step> {
+        let find = |ids: &[settings::project::RowId], row| ids.iter().position(|id| *id == row);
+        match change {
+            Change::Cell {
+                row, column, after, ..
+            } => {
+                let (r, c) = (find(&self.row_ids, *row)?, self.data_col(column)?);
+                let before = self.cell(r, c)?.clone();
+                let after = SharedString::from(after.clone());
+                self.set_cell(r, c, after.clone());
+                Some(Step::Cells(vec![(r, c, before, after)]))
+            }
+            Change::RowAdded {
+                row,
+                position,
+                cells,
+            } => {
+                if find(&self.row_ids, *row).is_some() {
+                    return None;
+                }
+                let text = |name: &SharedString| {
+                    cells
+                        .iter()
+                        .find(|(column, _)| column == name.as_ref())
+                        .map(|(_, text)| SharedString::from(text.clone()))
+                        .unwrap_or_default()
+                };
+                let rows = vec![Row {
+                    id: *row,
+                    cells: self.columns.iter().map(|c| text(&c.name)).collect(),
+                    image: None,
+                }];
+                let at = (*position).min(self.rows.len());
+                self.splice_rows(at, &rows);
+                Some(Step::RowsAdded { at, rows })
+            }
+            Change::RowRemoved { row, .. } => {
+                let at = find(&self.row_ids, *row)?;
+                Some(Step::RowsRemoved(self.cut_rows(&[at])))
+            }
+            Change::ColumnAdded {
+                column,
+                position,
+                cells,
+            } => {
+                if self.data_col(column).is_some() {
+                    return None;
+                }
+                let col = Col {
+                    column: new_column(column.clone()),
+                    cells: self
+                        .row_ids
+                        .iter()
+                        .map(|id| {
+                            cells
+                                .iter()
+                                .find(|(row, _)| row == id)
+                                .map(|(_, text)| SharedString::from(text.clone()))
+                                .unwrap_or_default()
+                        })
+                        .collect(),
+                    excluded: HashSet::new(),
+                    filter_enabled: false,
+                };
+                let at = (*position).min(self.columns.len());
+                self.splice_column(at, &col);
+                Some(Step::ColumnAdded { at, col })
+            }
+            Change::ColumnRemoved { column, .. } => {
+                let at = self.data_col(column)?;
+                let col = self.cut_column(at)?;
+                Some(Step::ColumnRemoved { at, col })
+            }
+            Change::ColumnRenamed { before, after } => {
+                let col = self.data_col(before)?;
+                if self.data_col(after).is_some() {
+                    return None;
+                }
+                self.set_column_name(col, after.clone().into());
+                Some(Step::Renamed {
+                    col,
+                    before: before.clone().into(),
+                    after: after.clone().into(),
+                })
+            }
+            Change::ColumnMoved { column, to, .. } => {
+                let from = self.data_col(column)?;
+                let to = (*to).min(self.columns.len() - 1);
+                self.shift_column(from, to);
+                Some(Step::ColumnMoved { from, to })
+            }
+            Change::Note { .. } => None,
+        }
+    }
+
+    /// The log entries made since the last save, oldest first.
+    pub fn unsaved_history(&self) -> &[Entry] {
+        &self.unsaved
+    }
+
+    /// Forget the first `count` unsaved entries — they have just been written.
+    pub(crate) fn history_saved(&mut self, count: usize) {
+        self.unsaved.drain(..count.min(self.unsaved.len()));
     }
 
     /// Apply one side of a recorded step without re-recording it — going through `apply_edit` here
-    /// would make undo its own undoable action and the stack would never drain.
-    fn replay(&mut self, step: &Step, forward: bool) {
+    /// would make undo its own undoable action and the stack would never drain. What it changed is
+    /// added to `changes`, each step read in the state it was written against.
+    fn replay(&mut self, step: &Step, forward: bool, changes: &mut Vec<Change>) {
+        if !forward {
+            changes.extend(self.changes(step).iter().rev().map(Change::inverse));
+        }
         match step {
             Step::Cells(cells) => {
                 for (row, col, before, after) in cells {
@@ -718,6 +932,20 @@ impl QrateTableDelegate {
             Step::Renamed { col, before, after } => {
                 self.set_column_name(*col, if forward { after } else { before }.clone());
             }
+            Step::ColumnMoved { from, to } => match forward {
+                true => self.shift_column(*from, *to),
+                false => self.shift_column(*to, *from),
+            },
+            Step::Batch(steps) => match forward {
+                true => steps.iter().for_each(|s| self.replay(s, true, changes)),
+                false => steps
+                    .iter()
+                    .rev()
+                    .for_each(|s| self.replay(s, false, changes)),
+            },
+        }
+        if forward {
+            changes.extend(self.changes(step));
         }
         // An open edit would commit over what was just restored.
         self.editing = EditState::Idle;
@@ -857,20 +1085,20 @@ impl QrateTableDelegate {
         let id = self.fresh_row_id();
         let rows = vec![Row { id, cells, image }];
         self.splice_rows(at, &rows);
-        self.history.push(Step::RowsAdded { at, rows });
+        self.record(Step::RowsAdded { at, rows }, Origin::Structure);
     }
 
     /// Delete the rows at `ats` as one undo step, carrying their cells and photos on it.
     pub(crate) fn remove_rows(&mut self, ats: &[usize]) {
         let removed = self.cut_rows(ats);
-        self.history.push(Step::RowsRemoved(removed));
+        self.record(Step::RowsRemoved(removed), Origin::Structure);
     }
 
     pub(crate) fn row_id(&self, source: usize) -> Option<settings::project::RowId> {
         self.row_ids.get(source).copied()
     }
 
-    pub(crate) fn row_ids(&self) -> &[settings::project::RowId] {
+    pub fn row_ids(&self) -> &[settings::project::RowId] {
         &self.row_ids
     }
 
@@ -887,16 +1115,13 @@ impl QrateTableDelegate {
     pub(crate) fn insert_column(&mut self, at: usize) -> SharedString {
         let name = self.fresh_column_name();
         let col = Col {
-            column: Column::new(name.clone(), name.clone())
-                .width(px(120.))
-                .resizable(true)
-                .movable(true),
+            column: new_column(name.clone()),
             cells: vec![SharedString::default(); self.rows.len()],
             excluded: HashSet::new(),
             filter_enabled: false,
         };
         self.splice_column(at, &col);
-        self.history.push(Step::ColumnAdded { at, col });
+        self.record(Step::ColumnAdded { at, col }, Origin::Structure);
         name
     }
 
@@ -905,7 +1130,7 @@ impl QrateTableDelegate {
         let Some(col) = self.cut_column(at) else {
             return;
         };
-        self.history.push(Step::ColumnRemoved { at, col });
+        self.record(Step::ColumnRemoved { at, col }, Origin::Structure);
     }
 
     /// Rename a column, which re-keys it — the caller moves its stored settings to match. `false`
@@ -918,12 +1143,37 @@ impl QrateTableDelegate {
             return false;
         }
         self.set_column_name(col, name.clone());
-        self.history.push(Step::Renamed {
-            col,
-            before,
-            after: name,
-        });
+        self.record(
+            Step::Renamed {
+                col,
+                before,
+                after: name,
+            },
+            Origin::Structure,
+        );
         true
+    }
+
+    /// Move the column at `from` to `to`, its cells and filter with it; row order is untouched.
+    fn shift_column(&mut self, from: usize, to: usize) {
+        if from >= self.columns.len() || to >= self.columns.len() {
+            return;
+        }
+        let col = self.columns.remove(from);
+        self.columns.insert(to, col);
+        move_col(&mut self.rows, from, to);
+        self.values_generation += 1;
+        if from < self.filters.len() && to < self.filters.len() {
+            let f = self.filters.remove(from);
+            self.filters.insert(to, f);
+        }
+        if from < self.filters_enabled.len() && to < self.filters_enabled.len() {
+            let e = self.filters_enabled.remove(from);
+            self.filters_enabled.insert(to, e);
+        }
+        // An in-flight edit and the shift-click range both index into the old column order.
+        self.editing = EditState::Idle;
+        self.range = None;
     }
 
     /// The name *and* the key, which are the same string — see [`Self::column_key`].
@@ -1146,6 +1396,15 @@ fn move_col(rows: &mut [Vec<SharedString>], from: usize, to: usize) {
             row.insert(to, cell);
         }
     }
+}
+
+/// A fresh grid column under `name`, which is both its label and its key.
+fn new_column(name: impl Into<SharedString>) -> Column {
+    let name = name.into();
+    Column::new(name.clone(), name)
+        .width(px(120.))
+        .resizable(true)
+        .movable(true)
 }
 
 /// A cell's filterable values: the whole cell, or its sub-delimited parts when a delimiter is set.
@@ -1410,23 +1669,8 @@ impl TableDelegate for QrateTableDelegate {
         if from >= self.columns.len() || to >= self.columns.len() {
             return;
         }
-        let col = self.columns.remove(from);
-        self.columns.insert(to, col);
-        move_col(&mut self.rows, from, to);
-        self.values_generation += 1;
-        // The column's filter (and whether it has one) moves with it; row order is untouched.
-        if from < self.filters.len() && to < self.filters.len() {
-            let f = self.filters.remove(from);
-            self.filters.insert(to, f);
-        }
-        if from < self.filters_enabled.len() && to < self.filters_enabled.len() {
-            let e = self.filters_enabled.remove(from);
-            self.filters_enabled.insert(to, e);
-        }
-        // An in-flight edit indexes into the old column order — drop it, and the recorded ones too.
-        self.editing = EditState::Idle;
-        self.range = None;
-        self.history = History::default();
+        self.shift_column(from, to);
+        self.record(Step::ColumnMoved { from, to }, Origin::Structure);
     }
 }
 
@@ -1704,9 +1948,11 @@ mod tests {
 #[cfg(test)]
 mod app_tests {
     // Never `use super::*` here — see the note on `note.rs`'s test module.
+    use crate::history::{Step, moves_rows};
     use crate::{TablePanel, TableStateHandle};
     use gpui::{Entity, TestAppContext};
     use gpui_component::table::{ColumnFixed, TableDelegate as _, TableState};
+    use settings::history::{Change, Origin};
 
     fn project() -> settings::project::CurrentProject {
         settings::project::CurrentProject {
@@ -1938,7 +2184,7 @@ mod app_tests {
                 assert_eq!(delegate.row_image(1), None, "the new row has no photo");
                 assert_eq!(delegate.row_image(2), Some("1.jpg".as_ref()));
 
-                assert_eq!(delegate.undo(), Some(true));
+                assert!(delegate.undo().is_some_and(|c| moves_rows(&c)));
                 assert_eq!(delegate.row_ids(), &[1, 2, 3, 4]);
                 assert_eq!(delegate.cell(1, 1).map(|c| c.as_ref()), Some("two"));
                 assert_eq!(delegate.row_image(1), Some("1.jpg".as_ref()));
@@ -2009,7 +2255,7 @@ mod app_tests {
                 };
                 assert_eq!(names(delegate), vec!["two", "four"]);
 
-                assert_eq!(delegate.undo(), Some(true));
+                assert!(delegate.undo().is_some_and(|c| moves_rows(&c)));
                 assert_eq!(delegate.row_ids(), &[1, 2, 3, 4]);
                 assert_eq!(names(delegate), vec!["one", "two", "three", "four"]);
                 assert_eq!(delegate.undo(), None, "one step, not two");
@@ -2037,13 +2283,13 @@ mod app_tests {
                     None,
                 );
                 assert_eq!(edits.len(), 2);
-                delegate.apply_edit(edits);
+                delegate.apply_edit(edits, Origin::Typed);
                 assert_eq!(
                     media(delegate),
                     vec!["Film", "Videotape", "Videotape", "Film"]
                 );
 
-                assert_eq!(delegate.undo(), Some(false));
+                assert!(delegate.undo().is_some_and(|c| !moves_rows(&c)));
                 assert_eq!(media(delegate), vec!["Film", "Video", "Video", "Film"]);
                 assert_eq!(delegate.undo(), None, "one step, not two");
             });
@@ -2058,13 +2304,13 @@ mod app_tests {
         cx.update(|cx| {
             state.update(cx, |state, _| {
                 let delegate = state.delegate_mut();
-                delegate.apply_edit(vec![(3, 1, "edited".into())]);
+                delegate.apply_edit(vec![(3, 1, "edited".into())], Origin::Typed);
                 delegate.remove_rows(&[0]);
                 // "four" is row 2 now, and its edit was recorded against row 3.
                 assert_eq!(delegate.cell(2, 1).map(|c| c.as_ref()), Some("edited"));
 
-                assert_eq!(delegate.undo(), Some(true));
-                assert_eq!(delegate.undo(), Some(false));
+                assert!(delegate.undo().is_some_and(|c| moves_rows(&c)));
+                assert!(delegate.undo().is_some_and(|c| !moves_rows(&c)));
                 assert_eq!(delegate.cell(3, 1).map(|c| c.as_ref()), Some("four"));
             });
         });
@@ -2085,7 +2331,7 @@ mod app_tests {
                 assert_eq!(delegate.column_name(0), "Title");
                 assert_eq!(delegate.cell(0, 0).map(|c| c.as_ref()), Some("one"));
 
-                assert_eq!(delegate.undo(), Some(false));
+                assert!(delegate.undo().is_some_and(|c| !moves_rows(&c)));
                 assert_eq!(delegate.column_name(0), "Medium");
                 assert_eq!(delegate.cell(3, 0).map(|c| c.as_ref()), Some("Film"));
                 assert!(delegate.column_filter_enabled(0));
@@ -2110,7 +2356,7 @@ mod app_tests {
                 assert!(delegate.rename_column(1, "Date".into()));
                 assert_eq!(delegate.column_key(1), "Date");
 
-                assert_eq!(delegate.undo(), Some(false));
+                assert!(delegate.undo().is_some_and(|c| !moves_rows(&c)));
                 assert_eq!(delegate.column_name(1), "Column 3");
             });
         });
@@ -2152,6 +2398,73 @@ mod app_tests {
 
                 delegate.set_frozen(0);
                 assert_eq!(delegate.column(1, cx).fixed, None);
+            });
+        });
+    }
+
+    /// The log is complete enough to walk back: undoing every change made after an entry, newest
+    /// first and by identity, lands on exactly the grid that entry left — through deletes, renames
+    /// and moves that shuffle every position the early changes were written against. The restore
+    /// is one more entry, and one undo takes it back.
+    #[gpui::test]
+    fn restoring_to_an_entry_reproduces_the_grid_it_left(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.apply_edit(vec![(1, 1, "TWO".into())], Origin::Typed);
+                let checkpoint = delegate.dataset_snapshot();
+                let kept = delegate.unsaved_history().len();
+
+                delegate.remove_rows(&[0]);
+                delegate.insert_column(1);
+                delegate.rename_column(0, "Format".into());
+                delegate.shift_column(0, 2);
+                delegate.record(Step::ColumnMoved { from: 0, to: 2 }, Origin::Structure);
+                delegate.apply_edit(vec![(2, 2, "4".into())], Origin::Paste);
+                delegate.insert_rows(0, Some(1));
+                let head = delegate.dataset_snapshot();
+
+                let undo: Vec<Change> = delegate.unsaved_history()[kept..]
+                    .iter()
+                    .rev()
+                    .flat_map(|e| e.changes.iter().rev().map(Change::inverse))
+                    .collect();
+                let applied = delegate.restore(&undo, 7);
+                assert_eq!(applied.len(), undo.len(), "every change still fits");
+                assert_eq!(delegate.dataset_snapshot(), checkpoint);
+                assert_eq!(
+                    delegate.unsaved_history().last().map(|e| e.origin.clone()),
+                    Some(Origin::Restore(7))
+                );
+
+                assert!(delegate.undo().is_some());
+                assert_eq!(delegate.dataset_snapshot(), head);
+            });
+        });
+    }
+
+    /// Undo and redo are entries in their own right, and say what they put back.
+    #[gpui::test]
+    fn undo_is_logged_as_the_inverse_of_what_it_reverses(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.apply_edit(vec![(3, 1, "FOUR".into())], Origin::Typed);
+                delegate.undo();
+                let log = delegate.unsaved_history();
+                assert_eq!(log.len(), 2);
+                assert_eq!(log[1].origin, Origin::Undo);
+                assert_eq!(
+                    log[1].changes,
+                    vec![Change::Cell {
+                        row: 4,
+                        column: "Title".into(),
+                        before: "FOUR".into(),
+                        after: "four".into(),
+                    }]
+                );
             });
         });
     }

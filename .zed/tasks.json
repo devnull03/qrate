@@ -54,6 +54,11 @@
     "use_new_terminal": true
   },
   {
+    "label": "zccache status",
+    "command": "zccache status",
+    "reveal": "always"
+  },
+  {
     "label": "lazygit",
     "command": "lazygit"
   }

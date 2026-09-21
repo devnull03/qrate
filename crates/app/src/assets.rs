@@ -8,7 +8,11 @@ use gpui::{AssetSource, Result, SharedString};
 
 pub struct Assets;
 
-const OWN: [(&str, &str); 4] = [
+const OWN: [(&str, &str); 5] = [
+    (
+        "icons/history.svg",
+        include_str!("../../../assets/icons/history.svg"),
+    ),
     (
         "icons/panel-left-filled.svg",
         include_str!("../../../assets/icons/panel-left-filled.svg"),
@@ -56,6 +60,12 @@ mod tests {
         assert!(
             assets
                 .load("icons/panel-left-filled.svg")
+                .unwrap()
+                .is_some_and(|svg| svg.starts_with(b"<svg"))
+        );
+        assert!(
+            assets
+                .load("icons/history.svg")
                 .unwrap()
                 .is_some_and(|svg| svg.starts_with(b"<svg"))
         );

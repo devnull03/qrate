@@ -97,6 +97,7 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
             )
             .group(saving_group(cx))
             .group(notes_group(cx))
+            .group(history_group(cx))
             .group(previews_group(cx)),
         columns_page(cx),
         project_page(cx),
@@ -153,15 +154,30 @@ fn divided_group(cx: &App) -> SettingGroup {
         .border_color(cx.theme().border)
 }
 
-/// Who a filed note is attributed to. Lives beside the table's own preferences because a note is
-/// filed from the grid, and the name signing it is the archivist's, not the project's.
+/// Who a filed note and a recorded change are attributed to. Lives beside the table's own
+/// preferences because both are made from the grid, and the name signing them is the archivist's.
 fn notes_group(cx: &App) -> SettingGroup {
     divided_group(cx).title("Notes").item(
         Setting::Text {
             key: settings::NOTE_AUTHOR_KEY,
-            label: "Attribute notes to",
-            description: "Initials or a name, recorded on each note you file. Leave it empty to \
-                          file notes with a date and no author.",
+            label: "Attribute notes and changes to",
+            description: "Initials or a name, recorded on each note you file and each change in \
+                          the project history. Leave it empty to record them with a date and no \
+                          author.",
+        }
+        .into_item(cx),
+    )
+}
+
+/// How much of the change log a project keeps. Set per project as well as app-wide, because the
+/// answer belongs to the collection being catalogued rather than to the machine.
+fn history_group(cx: &App) -> SettingGroup {
+    divided_group(cx).title("History").item(
+        Setting::Dropdown {
+            key: settings::history::HISTORY_LIMIT_KEY,
+            label: "Changes to keep",
+            description: "The change log is an audit trail and keeps everything unless you say \n                          otherwise. A limit drops the oldest changes when the project is opened; \n                          named versions are never dropped.",
+            options: settings::history::HISTORY_LIMITS,
         }
         .into_item(cx),
     )

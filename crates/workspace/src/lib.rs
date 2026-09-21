@@ -29,8 +29,7 @@ use settings::AppSettings;
 
 use diagnostics::ProblemsPanel;
 
-use crate::panel_registry::PROBLEMS_META;
-use crate::panels::{AGENT_META, AgentPanel, DetailsPanel};
+use crate::panels::{AgentPanel, DetailsPanel, HistoryPanel};
 use crate::views::ViewsPanel;
 
 /// Settings key under which the serialized [`DockAreaState`] is persisted —
@@ -88,6 +87,8 @@ pub struct Workspace {
     _layout_sub: Subscription,
     /// Re-renders to mount/unmount the image viewer overlay when it opens or closes.
     _viewer_sub: Subscription,
+    /// Brings the History panel forward when the grid asks it to show a cell's changes.
+    _history_sub: Subscription,
 }
 
 impl Workspace {
@@ -101,15 +102,11 @@ impl Workspace {
             let weak = ctx.dock_area();
             panel_handle(cx.new(|cx| ViewsPanel::new(weak, window, cx)))
         });
-        register_panel(cx, "DetailsPanel", |_ctx, window, cx| {
-            panel_handle(cx.new(|cx| DetailsPanel::new(window, cx)))
-        });
-        register_panel(cx, "AgentPanel", |_ctx, window, cx| {
-            panel_handle(cx.new(|cx| AgentPanel::new(window, cx)))
-        });
-        register_panel(cx, "ProblemsPanel", |_ctx, window, cx| {
-            panel_handle(cx.new(|cx| ProblemsPanel::new(window, cx)))
-        });
+        for meta in PANELS {
+            register_panel(cx, meta.name, move |_ctx, window, cx| {
+                build_panel(meta.name, window, cx)
+            });
+        }
 
         // The appearance is a separate object in 0.6, installed as the area's renderer. The
         // handle it hands back is how its settings are reached afterwards.
@@ -122,20 +119,10 @@ impl Workspace {
             let centre = cx.new(|cx| ViewsPanel::new(weak.clone(), window, cx));
             // Which dock each panel starts in is the panel's own declaration, so they're built
             // as a flat list and grouped by it rather than one `set_*_dock` call apiece.
-            let panels: [(&PanelMeta, Arc<dyn BasePanelView>); 3] = [
-                (
-                    &DETAILS_META,
-                    panel_handle(cx.new(|cx| DetailsPanel::new(window, cx))),
-                ),
-                (
-                    &PROBLEMS_META,
-                    panel_handle(cx.new(|cx| ProblemsPanel::new(window, cx))),
-                ),
-                (
-                    &AGENT_META,
-                    panel_handle(cx.new(|cx| AgentPanel::new(window, cx))),
-                ),
-            ];
+            let panels: Vec<(&PanelMeta, Arc<dyn BasePanelView>)> = PANELS
+                .iter()
+                .map(|meta| (*meta, build_panel(meta.name, window, cx)))
+                .collect();
 
             dock_area.update(cx, |area, cx| {
                 // `tabs`, not a bare panel: a bare centre has no title bar at all — and the title
@@ -176,6 +163,7 @@ impl Workspace {
         // toggle arrows. A skin setting in 0.6, so it survives `load` without being reapplied.
         skin.set_toggle_button_visible(false, cx);
 
+        Self::adopt_new_panels(&dock_area, window, cx);
         // Saved layouts from older builds may contain arrangements qrate no longer permits.
         PanelRegistry::enforce_edge_tabs(&dock_area, window, cx);
         // Whichever path ran above built the panels; this is what learns where they landed.
@@ -200,11 +188,21 @@ impl Workspace {
         );
 
         let _viewer_sub = cx.observe_global::<viewer::ActiveViewer>(|_this, cx| cx.notify());
+        let _history_sub = cx.observe_global_in::<settings::history::ShowCellHistory>(
+            window,
+            |this, window, cx| {
+                let name = crate::panels::HISTORY_META.name;
+                if !PanelRegistry::visible(name, &this.dock_area, cx) {
+                    PanelRegistry::toggle(name, &this.dock_area, window, cx);
+                }
+            },
+        );
 
         Self {
             dock_area,
             _layout_sub,
             _viewer_sub,
+            _history_sub,
         }
     }
 
@@ -260,10 +258,32 @@ impl Workspace {
     /// so nothing else re-triggers `restore_layout` for the newly opened project.
     pub fn reload_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if Self::restore_layout(&self.dock_area, window, cx) {
+            Self::adopt_new_panels(&self.dock_area, window, cx);
             // `load` rebuilt every panel from its saved name, so the old entries are orphans.
             PanelRegistry::sync(&self.dock_area, cx);
             PanelRegistry::focus_frontmost(DockPlacement::Center, &self.dock_area, window, cx);
         }
+    }
+
+    /// Give a panel that a saved layout predates its default dock, so a new panel reaches people
+    /// who already arranged theirs without throwing that arrangement away.
+    fn adopt_new_panels(dock_area: &Entity<DockArea>, window: &mut Window, cx: &mut App) {
+        PanelRegistry::sync(dock_area, cx);
+        let missing: Vec<&PanelMeta> = PANELS
+            .iter()
+            .filter(|meta| PanelRegistry::placement(meta.name, cx).is_none())
+            .copied()
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        dock_area.update(cx, |area, cx| {
+            for meta in missing {
+                let view = build_panel(meta.name, window, cx);
+                area.add_panel_view(view, meta.default_placement, None, window, cx);
+            }
+        });
+        PanelRegistry::sync(dock_area, cx);
     }
 
     /// Applies a previously saved dock arrangement, returning `true` if one was loaded. `false`
@@ -317,6 +337,17 @@ impl Workspace {
                 false
             }
         })
+    }
+}
+
+/// A fresh dockable panel by its registered name. The one list of constructors, shared by layout
+/// restore, the default layout, and adopting a panel a saved layout predates.
+fn build_panel(name: &str, window: &mut Window, cx: &mut App) -> Arc<dyn BasePanelView> {
+    match name {
+        "DetailsPanel" => panel_handle(cx.new(|cx| DetailsPanel::new(window, cx))),
+        "ProblemsPanel" => panel_handle(cx.new(|cx| ProblemsPanel::new(window, cx))),
+        "HistoryPanel" => panel_handle(cx.new(|cx| HistoryPanel::new(window, cx))),
+        _ => panel_handle(cx.new(|cx| AgentPanel::new(window, cx))),
     }
 }
 
@@ -783,6 +814,55 @@ mod tests {
         cx.dispatch_action(gpui_component::dock::ToggleZoom);
         cx.run_until_parked();
         assert!(!cx.read(|cx| dock_area.read(cx).is_zoomed()));
+    }
+
+    /// The edge docks show one panel at a time, and `Panel::visible` is what collapses the tab
+    /// strip into a title bar — so exactly one of the two right-dock panels may answer yes.
+    #[gpui::test]
+    fn only_the_panel_a_dock_is_showing_reports_itself_visible(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(settings::SettingsPersistence::default());
+        });
+        let (workspace, cx) = cx.add_window_view(Workspace::new);
+        let dock_area = cx.update(|_, cx| workspace.read(cx).dock_area.clone());
+        cx.run_until_parked();
+
+        let shown = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                PanelRegistry::entries(cx)
+                    .iter()
+                    .filter(|entry| {
+                        entry.placement == DockPlacement::Right && entry.view.visible(cx)
+                    })
+                    .map(|entry| entry.meta.name)
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        let first = shown(cx);
+        assert_eq!(
+            first.len(),
+            1,
+            "the right dock shows one panel, not a strip of tabs"
+        );
+
+        let hidden = cx
+            .update(|_, cx| {
+                PanelRegistry::entries(cx)
+                    .iter()
+                    .find(|entry| {
+                        entry.placement == DockPlacement::Right && entry.meta.name != first[0]
+                    })
+                    .map(|entry| entry.meta.name)
+            })
+            .expect("Agent and History both dock right");
+
+        cx.update(|window, cx| PanelRegistry::toggle(hidden, &dock_area, window, cx));
+        cx.run_until_parked();
+
+        assert_eq!(shown(cx), vec![hidden], "showing one puts its sibling away");
     }
 
     /// The real thing, lifted out of a project whose left dock came back with an "Unnamed" tab

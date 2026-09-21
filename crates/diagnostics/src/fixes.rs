@@ -17,6 +17,7 @@ use gpui_component::WindowExt as _;
 use gpui_component::button::Button;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::notification::Notification;
+use settings::history::Origin;
 use settings::project::RowId;
 
 use crate::{Diagnostic, DiagnosticHooks, Diagnostics, Location, SpellActions};
@@ -52,11 +53,13 @@ impl GroupFix {
         label: impl Into<SharedString>,
         replacements: Vec<(Location, SharedString)>,
     ) -> Self {
+        let label = label.into();
+        let origin = Origin::Fix(label.to_string());
         Self {
-            label: label.into(),
+            label,
             apply: Rc::new(move |cx| {
                 if let Some(hooks) = cx.try_global::<DiagnosticHooks>().copied() {
-                    (hooks.set_texts)(replacements.clone(), cx);
+                    (hooks.set_texts)(replacements.clone(), origin.clone(), cx);
                 }
             }),
         }
@@ -216,19 +219,20 @@ pub fn finding_menu(
     text: Option<&SharedString>,
     menu: PopupMenu,
     cx: &mut Context<PopupMenu>,
-    apply: impl Fn(SharedString, &mut App) + Clone + 'static,
+    apply: impl Fn(SharedString, Origin, &mut App) + Clone + 'static,
 ) -> PopupMenu {
     let source = finding.source.key();
     let subject = finding.group.as_ref().and_then(|g| g.subject.clone());
     let mut menu = menu;
     if let Some(text) = text {
-        let fix = |menu: PopupMenu, label: SharedString, replacement: SharedString| {
-            let apply = apply.clone();
-            menu.item(
-                PopupMenuItem::new(menu_label(&label))
-                    .on_click(move |_, _, cx| apply(replacement.clone(), cx)),
-            )
-        };
+        let fix =
+            |menu: PopupMenu, label: SharedString, replacement: SharedString, origin: Origin| {
+                let apply = apply.clone();
+                menu.item(
+                    PopupMenuItem::new(menu_label(&label))
+                        .on_click(move |_, _, cx| apply(replacement.clone(), origin.clone(), cx)),
+                )
+            };
         if source == "spell"
             && let Some(actions) = cx.try_global::<SpellActions>().copied()
         {
@@ -237,7 +241,12 @@ pub fn finding_menu(
             for (word, suggestions) in &found {
                 for suggestion in suggestions {
                     let fixed = text.replace(word.as_ref(), suggestion.as_ref());
-                    menu = fix(menu, format!("{word} → {suggestion}").into(), fixed.into());
+                    menu = fix(
+                        menu,
+                        format!("{word} → {suggestion}").into(),
+                        fixed.into(),
+                        Origin::Spelling,
+                    );
                 }
             }
             menu = menu.separator();
@@ -256,7 +265,8 @@ pub fn finding_menu(
             cx,
         );
         for found in offered {
-            menu = fix(menu, found.label, found.replacement);
+            let origin = Origin::Fix(found.label.to_string());
+            menu = fix(menu, found.label, found.replacement, origin);
         }
     }
     let menu = with_source_actions(&source, menu, cx);
@@ -463,8 +473,8 @@ mod tests {
             cx.set_global(DiagnosticHooks {
                 reveal: |_, _| {},
                 text_at: |_, _| None,
-                set_text: |_, _, _| {},
-                set_texts: |replacements, cx| {
+                set_text: |_, _, _, _| {},
+                set_texts: |replacements, _, cx| {
                     use gpui::BorrowAppContext as _;
                     cx.update_global::<Applied, _>(|applied, _| applied.0 = replacements);
                 },

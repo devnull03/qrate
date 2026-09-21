@@ -13,6 +13,7 @@ use gpui_component::{
 };
 
 use plugin_api::{CommandContext, PluginHooks, Suggestions};
+use settings::history::Origin;
 
 use crate::{
     TableStateHandle,
@@ -212,7 +213,12 @@ impl TablePanel {
                     let Some(location) = state.delegate_mut().note_edit.take() else {
                         return;
                     };
-                    diagnostics::Diagnostics::set_note(location, message, cx);
+                    diagnostics::Diagnostics::set_note(
+                        location,
+                        message,
+                        settings::history::Origin::Typed,
+                        cx,
+                    );
                     cx.notify();
                 });
                 if by_enter {
@@ -224,7 +230,7 @@ impl TablePanel {
         let _table_sub = cx.subscribe_in(
             &state,
             window,
-            |_this, state, event: &TableEvent, window, cx| {
+            |this, state, event: &TableEvent, window, cx| {
                 match event {
                     TableEvent::SelectCell(row, col) if *col == row_index::COL_IX => {
                         let view = *row;
@@ -314,7 +320,11 @@ impl TablePanel {
                         state.update(cx, |s, _| s.delegate_mut().set_column_widths(widths));
                         Self::persist_columns(state, cx);
                     }
-                    TableEvent::MoveColumn(..) => Self::persist_columns(state, cx),
+                    TableEvent::MoveColumn(..) => {
+                        Self::persist_columns(state, cx);
+                        settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+                        this.schedule_autosave(cx);
+                    }
                     _ => {}
                 }
                 state.update(cx, |_, cx| cx.emit(TableChanged));
@@ -680,7 +690,7 @@ impl TablePanel {
         if all {
             log::info!("replace all: rewrote {} cells", cells.len());
         }
-        self.write_cells(cells, cx);
+        self.write_cells(cells, Origin::ReplaceAll, cx);
         // The rewritten cell stops matching, so everything after it shifts down one — holding the
         // index still is what lands us on the next match (Zed's replace-and-advance).
         let at = self.search_ix;
@@ -807,13 +817,13 @@ impl TablePanel {
 
     /// Commit a batch of cell writes as one undoable step, then do everything a committed edit
     /// does. The single path cut, paste and bulk fill all take.
-    fn write_cells(&mut self, cells: Cells, cx: &mut Context<Self>) {
+    fn write_cells(&mut self, cells: Cells, origin: Origin, cx: &mut Context<Self>) {
         if cells.is_empty() {
             return;
         }
         self.state.update(cx, |state, cx| {
             let files = crate::names_a_file(state.delegate(), &cells, cx);
-            state.delegate_mut().apply_edit(cells);
+            state.delegate_mut().apply_edit(cells, origin);
             if files {
                 photos::refresh(state, cx);
             }
@@ -842,7 +852,7 @@ impl TablePanel {
         for row in rows {
             blanked.extend(cols.clone().map(|col| (row, col, SharedString::default())));
         }
-        self.write_cells(blanked, cx);
+        self.write_cells(blanked, Origin::Clear, cx);
     }
 
     /// Paste the clipboard over the selection. One clipboard value across a multi-cell selection
@@ -869,7 +879,7 @@ impl TablePanel {
             );
         }
         let cells = paste_cells(&block, &rows, cols, &reach);
-        self.write_cells(cells, cx);
+        self.write_cells(cells, Origin::Paste, cx);
     }
 
     /// Apply the project's saved column layout — order, widths, and how many columns are frozen —
@@ -1464,6 +1474,7 @@ mod tests {
     // Never `use super::*` here — the parent's `use gpui::*` would shadow `#[test]`.
     use diagnostics::{DATASET_MAIN, Diagnostic, Diagnostics, Location, Severity, Source};
     use gpui::{SharedString, TestAppContext};
+    use settings::history::Origin;
 
     fn wrote(cells: &[(usize, usize, SharedString)]) -> Vec<(usize, usize, &str)> {
         cells.iter().map(|(r, c, v)| (*r, *c, v.as_ref())).collect()
@@ -1527,7 +1538,13 @@ mod tests {
             assert_eq!(Diagnostics::all(cx).len(), 2);
             let location = Location::cell(DATASET_MAIN, 0, None, "Title");
             let fix = clustering::variant_fixes(&location, "Agnès Varda", None, cx).remove(0);
-            crate::write_cell(0, 0, fix.replacement, cx);
+            crate::write_cell(
+                0,
+                0,
+                fix.replacement,
+                Origin::Fix(fix.label.to_string()),
+                cx,
+            );
             Diagnostics::all(cx)[0].group.clone()
         });
         cx.run_until_parked();
@@ -1538,7 +1555,12 @@ mod tests {
                 "Varda, Agnès"
             );
             panel.state.update(cx, |state, _| {
-                assert_eq!(state.delegate_mut().undo(), Some(false));
+                assert!(
+                    state
+                        .delegate_mut()
+                        .undo()
+                        .is_some_and(|c| !crate::history::moves_rows(&c))
+                );
                 assert_eq!(
                     state.delegate_mut().undo(),
                     None,
@@ -1583,12 +1605,18 @@ mod tests {
                         "fixed".into(),
                     ),
                 ],
+                Origin::Fix("Use fixed".into()),
                 cx,
             );
             assert_eq!(panel.state.read(cx).delegate().cell(0, 0).unwrap(), "fixed");
             assert_eq!(panel.state.read(cx).delegate().cell(1, 0).unwrap(), "fixed");
             panel.state.update(cx, |state, _| {
-                assert_eq!(state.delegate_mut().undo(), Some(false));
+                assert!(
+                    state
+                        .delegate_mut()
+                        .undo()
+                        .is_some_and(|c| !crate::history::moves_rows(&c))
+                );
                 assert_eq!(state.delegate_mut().undo(), None);
                 assert_eq!(state.delegate().cell(0, 0).unwrap(), "one");
                 assert_eq!(state.delegate().cell(1, 0).unwrap(), "two");
