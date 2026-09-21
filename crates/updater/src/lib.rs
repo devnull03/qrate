@@ -98,13 +98,14 @@ pub enum InstallKind {
     WindowsNsis,
     WindowsPortable,
     WindowsMsi,
+    WindowsStore,
     MacosBundle,
     LinuxTar,
 }
 
 impl InstallKind {
     pub fn self_managed(self) -> bool {
-        !matches!(self, Self::WindowsMsi)
+        !matches!(self, Self::WindowsMsi | Self::WindowsStore)
     }
 }
 
@@ -490,6 +491,9 @@ fn run_job_with(
             InstallKind::MacosBundle => apply_macos(&job, updates, launch),
             InstallKind::LinuxTar => apply_tar(&job, updates, launch),
             InstallKind::WindowsMsi => bail!("MSI installations are administrator-managed"),
+            InstallKind::WindowsStore => {
+                bail!("Microsoft Store installations update through the Store")
+            }
         }
     })();
     if let Err(error) = &result {
@@ -925,9 +929,18 @@ mod tests {
     }
 
     #[test]
-    fn msi_installations_are_never_self_managed() {
+    fn externally_managed_installations_are_never_self_managed() {
         assert!(!InstallKind::WindowsMsi.self_managed());
+        assert!(!InstallKind::WindowsStore.self_managed());
         assert!(InstallKind::WindowsNsis.self_managed());
+    }
+
+    #[test]
+    fn install_kinds_serialize_as_kebab_case() {
+        assert_eq!(
+            serde_json::to_value(InstallKind::WindowsStore).unwrap(),
+            serde_json::json!("windows-store")
+        );
     }
 
     #[test]

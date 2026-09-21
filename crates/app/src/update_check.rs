@@ -79,6 +79,9 @@ fn initial_status(development_build: bool, kind: Option<InstallKind>) -> UpdateS
         (false, Some(InstallKind::WindowsMsi)) => {
             UpdateStatus::Disabled("Updates are managed by your administrator".into())
         }
+        (false, Some(InstallKind::WindowsStore)) => {
+            UpdateStatus::Disabled("Updates are managed by the Microsoft Store".into())
+        }
         (false, Some(_)) => UpdateStatus::Idle,
         (false, None) => {
             UpdateStatus::Disabled("This source or unmarked build updates manually".into())
