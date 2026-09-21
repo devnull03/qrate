@@ -660,4 +660,36 @@ mod tests {
         assert_eq!(edit("a", "b").inverse(), edit("b", "a"));
         assert_eq!(moved.inverse().inverse(), moved);
     }
+
+    /// A page fetches every entry's changes in one query and hands each entry its own back. Two
+    /// entries, each with several changes, is the arrangement that catches a distribution that
+    /// mixes them up or loses the order they were written in — which a restore reads as the wrong
+    /// value to put back.
+    #[test]
+    fn a_page_keeps_each_entrys_changes_together_and_in_order() {
+        let path = project("change-order.qrate");
+        let headers = vec!["Title".to_string()];
+        let first = Entry::new(
+            Origin::Paste,
+            vec![edit("a", "b"), edit("b", "c"), edit("c", "d")],
+            None,
+        );
+        let second = Entry::new(Origin::Typed, vec![edit("d", "e"), edit("e", "f")], None);
+        save_dataset(
+            &path,
+            &headers,
+            &[1],
+            &[vec!["f".into()]],
+            &[first.clone(), second.clone()],
+        )
+        .unwrap();
+
+        let listed = page(&path, EntryId::MAX, 10, None).unwrap();
+        let changes: Vec<_> = listed
+            .iter()
+            .map(|listed| listed.entry.changes.clone())
+            .collect();
+        // Newest first, so the second entry leads.
+        assert_eq!(changes, vec![second.changes, first.changes]);
+    }
 }
