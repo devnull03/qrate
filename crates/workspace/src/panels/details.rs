@@ -585,10 +585,7 @@ impl DetailsPanel {
             false => Vec::new(),
             true => {
                 let ats: Vec<i64> = unsaved.iter().map(|entry| entry.at).collect();
-                let times = settings::history::local_times(&ats).unwrap_or_else(|err| {
-                    log::error!("couldn't read the local time of unsaved changes: {err}");
-                    Vec::new()
-                });
+                let times = settings::history::local_times(&ats);
                 unsaved
                     .iter()
                     .enumerate()

@@ -54,6 +54,9 @@ anyhow = "1"
 # Reads xlsx/xlsm/xlsb/xls/ods through one API, so the wizard gains every desktop
 # spreadsheet format for the price of one extension match.
 calamine = { version = "0.31", features = ["dates"] }
+# Already in the tree through calamine, with `clock` on — so the change log converts its
+# timestamps to local time in Rust rather than borrowing an in-memory SQLite for the calendar.
+chrono = "0.4"
 csv = "1.3"
 # SPIKE: gpui-kit 0.6. Upstream moved off zed's git repo onto the crates.io `gpui-pre*`
 # snapshot, so these are renamed packages rather than new names in our source — every

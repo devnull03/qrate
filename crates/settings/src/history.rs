@@ -15,6 +15,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
+use chrono::{DateTime, Local, NaiveDate, TimeZone as _};
 use gpui::App;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
@@ -314,15 +315,38 @@ pub fn entries_after(path: &Path, after: EntryId) -> Result<Vec<Entry>> {
         .collect())
 }
 
-/// Each of `ats` (unix seconds) as a local `(YYYY-MM-DD, HH:MM)` — the same clock [`page`] reads
-/// saved entries by, for changes that have not reached a file yet.
-pub fn local_times(ats: &[i64]) -> Result<Vec<(String, String)>> {
-    let conn = Connection::open_in_memory()?;
-    let mut stmt = conn.prepare(
-        "SELECT date(?1, 'unixepoch', 'localtime'), strftime('%H:%M', ?1, 'unixepoch', 'localtime')",
-    )?;
+/// A unix timestamp as the History panel reads it: the local day, the local time, and how many
+/// whole days back that day is from `today`.
+///
+/// `today` is handed in because a page converts hundreds of these, reading the clock is the
+/// expensive half, and the answer only changes at midnight.
+fn parts(at: i64, today: NaiveDate) -> (String, String, i64) {
+    // An hour that a clock change repeated resolves to its first reading rather than refusing to
+    // be a time at all; one that a clock change skipped has no local reading, so it is shown as
+    // the UTC it was recorded as instead of not being shown.
+    let when = match Local.timestamp_opt(at, 0).earliest() {
+        Some(when) => when.naive_local(),
+        None => DateTime::from_timestamp(at, 0)
+            .unwrap_or_default()
+            .naive_utc(),
+    };
+    (
+        when.format("%Y-%m-%d").to_string(),
+        when.format("%H:%M").to_string(),
+        (today - when.date()).num_days(),
+    )
+}
+
+/// Each of `ats` (unix seconds) as a local `(YYYY-MM-DD, HH:MM)`, for changes that have not
+/// reached a file yet. Entries read out of a file are converted by [`select`] as they are read,
+/// through the same [`parts`], so the two agree about what day a change was made on.
+pub fn local_times(ats: &[i64]) -> Vec<(String, String)> {
+    let today = Local::now().date_naive();
     ats.iter()
-        .map(|at| Ok(stmt.query_row([at], |r| Ok((r.get(0)?, r.get(1)?)))?))
+        .map(|at| {
+            let (day, time, _) = parts(*at, today);
+            (day, time)
+        })
         .collect()
 }
 
@@ -363,31 +387,25 @@ fn select(path: &Path, filter: &str, bound: &[&dyn rusqlite::ToSql]) -> Result<V
     if exists == 0 {
         return Ok(Vec::new());
     }
-    let local = "date(at, 'unixepoch', 'localtime')";
+    // The clock is read once for the whole page rather than per row, which is what the three
+    // `localtime` columns this query used to carry amounted to.
+    let today = Local::now().date_naive();
     let mut listed = conn
         .prepare(&format!(
-            "SELECT id, at, author, origin, label, {local}, strftime('%H:%M', at, 'unixepoch', 'localtime'),
-                    CAST(julianday(date('now', 'localtime')) - julianday({local}) AS INTEGER)
-             FROM __history WHERE {filter}"
+            "SELECT id, at, author, origin, label FROM __history WHERE {filter}"
         ))?
         .query_map(bound, |r| {
             Ok((
-                (
-                    r.get::<_, EntryId>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, String>(3)?,
-                ),
-                (
-                    r.get::<_, Option<String>>(4)?,
-                    r.get::<_, String>(5)?,
-                    r.get::<_, String>(6)?,
-                    r.get::<_, i64>(7)?,
-                ),
+                r.get::<_, EntryId>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
             ))
         })?
         .map(|row| {
-            let ((id, at, author, origin), (label, day, time, days_ago)) = row?;
+            let (id, at, author, origin, label) = row?;
+            let (day, time, days_ago) = parts(at, today);
             Ok(Listed {
                 entry: Entry {
                     id,
@@ -640,7 +658,7 @@ mod tests {
         save_dataset(&path, &headers, &[1], &[vec!["5".into()]], &entries).unwrap();
 
         let first = page(&path, EntryId::MAX, 2, None).unwrap();
-        let (day, time) = local_times(&[first[0].entry.at]).unwrap().remove(0);
+        let (day, time) = local_times(&[first[0].entry.at]).remove(0);
         assert_eq!(
             (day.as_str(), time.as_str()),
             (first[0].day.as_str(), first[0].time.as_str())
@@ -715,6 +733,25 @@ mod tests {
         };
         assert_eq!(edit("a", "b").inverse(), edit("b", "a"));
         assert_eq!(moved.inverse().inverse(), moved);
+    }
+
+    /// The History panel splits a day on `-` to name the month and prints the time straight
+    /// through, so the shape these come back in is load-bearing even though the values are
+    /// whatever the machine's own clock and zone say. SQLite used to guarantee it; now that both
+    /// a saved entry and an unsaved one are converted by the same Rust, nothing else would catch
+    /// the format drifting.
+    #[test]
+    fn a_local_timestamp_keeps_the_shape_the_panel_parses() {
+        let (day, time) = local_times(&[1_700_000_000]).remove(0);
+        assert_eq!(day.len(), 10, "expected YYYY-MM-DD, got {day}");
+        let fields: Vec<&str> = day.split('-').collect();
+        assert_eq!(fields.len(), 3, "expected YYYY-MM-DD, got {day}");
+        assert!(
+            fields.iter().all(|f| f.chars().all(|c| c.is_ascii_digit())),
+            "expected YYYY-MM-DD, got {day}"
+        );
+        assert_eq!(time.len(), 5, "expected HH:MM, got {time}");
+        assert_eq!(&time[2..3], ":", "expected HH:MM, got {time}");
     }
 
     /// Retention keeps the newest entries and spares every named one, however old. A name is the

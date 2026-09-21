@@ -978,13 +978,9 @@ impl Render for HistoryPanel {
             .filter_map(|e| narrowed(e, cell).map(Cow::into_owned))
             .filter(|e| admits(e, false))
             .collect();
-        // The times come back in one call rather than one per row, because every one of these is
-        // a query and the list below only formats what is on screen.
+        // One call rather than one per row: it reads the clock once for the batch.
         let ats: Vec<i64> = unsaved.iter().map(|entry| entry.at).collect();
-        let times = settings::history::local_times(&ats).unwrap_or_else(|err| {
-            log::error!("couldn't read the local time of unsaved changes: {err}");
-            Vec::new()
-        });
+        let times = settings::history::local_times(&ats);
         let pending: Vec<(Entry, String)> = unsaved
             .into_iter()
             .enumerate()
