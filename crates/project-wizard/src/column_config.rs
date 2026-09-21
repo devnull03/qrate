@@ -55,6 +55,14 @@ impl ColumnConfigLoader {
         };
     }
 
+    fn load_path(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        let path = path.to_string_lossy().to_string();
+        let result = data::load_column_config(&path, &self.headers);
+        self.file_path = path;
+        self.loaded(result.map_err(|error| error.message()));
+        cx.notify();
+    }
+
     fn browse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -68,10 +76,7 @@ impl ColumnConfigLoader {
             {
                 let path = path.to_string_lossy().to_string();
                 this.update(cx, |this, cx| {
-                    let result = data::load_column_config(&path, &this.headers);
-                    this.file_path = path;
-                    this.loaded(result.map_err(|error| error.message()));
-                    cx.notify();
+                    this.load_path(std::path::Path::new(&path), cx);
                 })
                 .ok();
             }
@@ -79,26 +84,27 @@ impl ColumnConfigLoader {
         .detach();
     }
 
-    /// A Sheet's headers become the config, one Text column each.
-    // move to the background executor if it ever drags.
     fn check_sheet(&mut self, cx: &mut Context<Self>) {
         let link = self.sheet_link.read(cx).value().to_string();
-        let result = data_exchange::fetch_sheet(&link)
-            .map(data_exchange::SpreadsheetPreview::from)
-            .map(|preview| ColumnConfigPreview {
-                entries: preview
-                    .headers
-                    .into_iter()
-                    .map(|name| ColumnConfigEntry {
-                        name,
-                        data_type: "Text".into(),
-                        ..Default::default()
-                    })
-                    .collect(),
+        let headers = self.headers.clone();
+        let fetch = cx
+            .background_executor()
+            .spawn(async move { data_exchange::fetch_sheet(&link) });
+        cx.spawn(async move |this, cx| {
+            let result = fetch
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|sheet| {
+                    data::parse_column_config(sheet.headers, sheet.rows, &headers)
+                        .map_err(|error| error.message())
+                });
+            this.update(cx, |this, cx| {
+                this.loaded(result);
+                cx.notify();
             })
-            .map_err(|error| error.to_string());
-        self.loaded(result);
-        cx.notify();
+            .ok();
+        })
+        .detach();
     }
 }
 
@@ -169,6 +175,17 @@ impl Render for ColumnConfigLoader {
         };
 
         v_flex()
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary_hover))
+            .on_drop(
+                cx.listener(|this, paths: &ExternalPaths, _, cx| match paths.paths() {
+                    [path] if path.is_file() => this.load_path(path, cx),
+                    _ => {
+                        this.preview = None;
+                        this.error = Some("Drop one supported column config file.".into());
+                        cx.notify();
+                    }
+                }),
+            )
             .gap_3()
             .child(tabs)
             .child(body)
@@ -198,6 +215,19 @@ pub(crate) fn mapping(
     config: Option<&ColumnConfigPreview>,
     cx: &App,
 ) -> AnyElement {
+    let headers = if headers.is_empty() {
+        config
+            .map(|config| {
+                config
+                    .entries
+                    .iter()
+                    .map(|entry| entry.name.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    } else {
+        headers.to_vec()
+    };
     v_flex()
         .gap_1()
         .child(

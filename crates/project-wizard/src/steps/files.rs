@@ -1,6 +1,7 @@
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::alert::Alert;
 use gpui_component::button::Button;
+use gpui_component::checkbox::Checkbox;
 use gpui_component::input::Input;
 use gpui_component::label::Label;
 use gpui_component::text::Text;
@@ -94,8 +95,63 @@ impl ProjectWizard {
     }
 
     pub(crate) fn set_folder_path(&mut self, path: String, _cx: &mut Context<Self>) {
+        self.import_paths = vec![std::path::PathBuf::from(&path)];
         self.folder_path = path;
         self.revalidate_folder();
+    }
+
+    pub(crate) fn set_import_paths(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        _cx: &mut Context<Self>,
+    ) {
+        if self.entry_kind != EntryKind::Blank {
+            if paths.len() == 1 && paths[0].is_dir() {
+                self.set_folder_path(paths[0].to_string_lossy().into_owned(), _cx);
+            } else {
+                self.folder_error = Some(
+                    "Multiple files and folders can start a blank project; choose one files folder for a spreadsheet-backed project."
+                        .into(),
+                );
+            }
+            return;
+        }
+        let Ok(mut plan) = file_ingest::plan_paths(
+            &paths,
+            &file_ingest::PlanOptions {
+                recursive: self.recurse_subfolders,
+                include_root: self.include_root_folder,
+                ..Default::default()
+            },
+        ) else {
+            self.folder_error = Some("Those files or folders couldn't be read.".into());
+            return;
+        };
+        let folder_path = match paths.as_slice() {
+            [path] if path.is_dir() => path.to_string_lossy().into_owned(),
+            _ => {
+                for component in &mut plan.components {
+                    component.source_path = component.absolute_path.clone();
+                }
+                String::new()
+            }
+        };
+        let extra_files = plan
+            .components
+            .iter()
+            .filter(|component| component.kind == file_ingest::EntryKind::File)
+            .map(|component| component.title.clone())
+            .collect();
+        self.import_paths = paths;
+        self.folder_path = folder_path;
+        self.folder_plan = Some(plan);
+        self.folder_match = Some(data::FolderMatch {
+            matched_rows: 0,
+            total_rows: 0,
+            extra_files,
+            ambiguous_files: 0,
+        });
+        self.folder_error = None;
     }
 
     pub(crate) fn revalidate_folder(&mut self) {
@@ -119,14 +175,36 @@ impl ProjectWizard {
             Some(Ok(m)) => {
                 self.folder_match = Some(m);
                 self.folder_error = None;
+                self.refresh_folder_plan();
             }
             Some(Err(e)) => {
                 self.folder_match = None;
+                self.folder_plan = None;
                 self.folder_error = Some(e.message().into());
             }
             None => {
                 self.folder_match = None;
+                self.folder_plan = None;
                 self.folder_error = None;
+            }
+        }
+    }
+
+    fn refresh_folder_plan(&mut self) {
+        self.folder_plan = file_ingest::plan_paths(
+            &self.import_paths,
+            &file_ingest::PlanOptions {
+                recursive: self.recurse_subfolders,
+                include_root: self.include_root_folder,
+                ..Default::default()
+            },
+        )
+        .ok();
+        if self.folder_path.is_empty()
+            && let Some(plan) = &mut self.folder_plan
+        {
+            for component in &mut plan.components {
+                component.source_path = component.absolute_path.clone();
             }
         }
     }
@@ -195,7 +273,9 @@ impl ProjectWizard {
             })
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 let paths = paths.paths();
-                if paths.len() == 1 && paths[0].is_dir() {
+                if this.entry_kind == EntryKind::Blank {
+                    this.set_import_paths(paths.to_vec(), cx);
+                } else if paths.len() == 1 && paths[0].is_dir() {
                     this.set_folder_path(paths[0].to_string_lossy().into_owned(), cx);
                 } else if this.entry_kind == EntryKind::LocalFile
                     && paths.len() == 1
@@ -212,7 +292,24 @@ impl ProjectWizard {
             }))
             .child(body)
             .when(!self.skip_files, |this| {
-                this.child(self.render_description_profile(cx))
+                this.child(
+                    Checkbox::new("include-root-folder")
+                        .label("Create a row for the selected files folder")
+                        .checked(self.include_root_folder)
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            this.include_root_folder = *checked;
+                            this.refresh_folder_plan();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Label::new(
+                        "Leave this off when the folder only contains this project's material.",
+                    )
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground),
+                )
+                .child(self.render_description_profile(cx))
             })
             // Only worth asking about once the folder actually holds a file more than one row
             // names; every other import has nothing to decide.
@@ -418,6 +515,7 @@ impl ProjectWizard {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let selected = self.import_paths.len();
         v_flex()
             .gap_3()
             .child(div().text_lg().font_semibold().child("Add your files"))
@@ -427,6 +525,17 @@ impl ProjectWizard {
                     .text_color(cx.theme().muted_foreground),
             )
             .child(self.folder_field("browse-folder-blank", true, cx))
+            .when(self.folder_path.is_empty() && selected > 0, |files| {
+                files.child(inline_message(
+                    "selected-import-paths",
+                    format!(
+                        "Selected {selected} file{} or folder{}.",
+                        if selected == 1 { "" } else { "s" },
+                        if selected == 1 { "" } else { "s" }
+                    ),
+                    MsgKind::Success,
+                ))
+            })
     }
 
     fn render_local_files(

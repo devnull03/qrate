@@ -106,6 +106,9 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
                 MenuItem::Separator,
                 MenuItem::action("Open Projects…", OpenProjects),
                 MenuItem::action("Save", Save),
+                MenuItem::Separator,
+                MenuItem::action("Import Files or Folders…", table::ImportFiles),
+                MenuItem::action("Relink Missing Files…", table::RelinkMissingFiles),
                 MenuItem::submenu(Menu {
                     name: "Export".into(),
                     disabled: false,
