@@ -350,6 +350,9 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
 /// Bottom dock: every open problem, filtered by severity and source, click to jump to it.
 pub struct ProblemsPanel {
     focus_handle: FocusHandle,
+    /// Whether this is the panel its dock is showing, which is what [`Self::visible`]
+    /// reports: a dock with one visible panel draws a title bar instead of a tab strip.
+    active: bool,
     filter: Filter,
     /// Sources unchecked in the multi-select filter. Empty means all diagnostic sources.
     excluded_sources: BTreeSet<SharedString>,
@@ -374,6 +377,7 @@ impl ProblemsPanel {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
+            active: false,
             filter: Filter::All,
             excluded_sources: BTreeSet::new(),
             sources: Rc::default(),
@@ -535,6 +539,16 @@ impl BasePanel for ProblemsPanel {
     // The library always renders the ⋯ menu button; this just empties it of Close.
     fn closable(&self, _cx: &App) -> bool {
         false
+    }
+
+    fn set_active(&mut self, active: bool, _w: &mut Window, cx: &mut Context<Self>) {
+        self.active = active;
+        cx.notify();
+    }
+
+    // Siblings stay docked and loaded, just unshown: this is what replaces the tab strip.
+    fn visible(&self, _cx: &App) -> bool {
+        self.active
     }
 
     fn zoomable(&self, _cx: &App) -> bool {

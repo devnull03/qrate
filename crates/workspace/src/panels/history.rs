@@ -82,6 +82,9 @@ impl Filter {
 /// straight from the table and sit on top, where there is nothing to restore to yet.
 pub struct HistoryPanel {
     focus_handle: FocusHandle,
+    /// Whether this is the panel its dock is showing, which is what [`Self::visible`]
+    /// reports: a dock with one visible panel draws a title bar instead of a tab strip.
+    active: bool,
     scroll: ScrollHandle,
     saved: Vec<Listed>,
     /// Whether a "Load older" would find anything.
@@ -108,6 +111,7 @@ impl HistoryPanel {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
+            active: false,
             scroll: ScrollHandle::new(),
             saved: Vec::new(),
             more: false,
@@ -512,6 +516,16 @@ impl BasePanel for HistoryPanel {
         false
     }
 
+    fn set_active(&mut self, active: bool, _w: &mut Window, cx: &mut Context<Self>) {
+        self.active = active;
+        cx.notify();
+    }
+
+    // Siblings stay docked and loaded, just unshown: this is what replaces the tab strip.
+    fn visible(&self, _cx: &App) -> bool {
+        self.active
+    }
+
     fn zoomable(&self, _cx: &App) -> bool {
         true
     }
@@ -530,65 +544,65 @@ impl Panel for HistoryPanel {
         let panel = cx.entity().downgrade();
         let (filter, named_only) = (self.filter, self.named_only);
         Some(
-            h_flex()
-                .gap_1()
-                .items_center()
-                .child(
-                    Button::new("history-filter")
-                        .ghost()
-                        .xsmall()
-                        .label(if named_only {
-                            "Named versions"
-                        } else {
-                            filter.label()
-                        })
-                        .dropdown_menu({
-                            let panel = panel.clone();
-                            move |menu: PopupMenu, _window, _cx| {
-                                let menu = Filter::ALL.into_iter().fold(menu, |menu, pick| {
-                                    let panel = panel.clone();
-                                    menu.item(
-                                        PopupMenuItem::new(pick.label())
-                                            .checked(!named_only && pick == filter)
-                                            .on_click(move |_, _, cx| {
-                                                panel
-                                                    .update(cx, |this, cx| {
-                                                        this.filter = pick;
-                                                        this.named_only = false;
-                                                        cx.notify();
-                                                    })
-                                                    .ok();
-                                            }),
-                                    )
-                                });
+            h_flex().gap_1().items_center().child(
+                Button::new("history-filter")
+                    .ghost()
+                    .xsmall()
+                    .label(if named_only {
+                        "Named versions"
+                    } else {
+                        filter.label()
+                    })
+                    .dropdown_menu({
+                        let panel = panel.clone();
+                        move |menu: PopupMenu, _window, _cx| {
+                            let menu = Filter::ALL.into_iter().fold(menu, |menu, pick| {
                                 let panel = panel.clone();
-                                menu.separator().item(
-                                    PopupMenuItem::new("Named versions")
-                                        .checked(named_only)
+                                menu.item(
+                                    PopupMenuItem::new(pick.label())
+                                        .checked(!named_only && pick == filter)
                                         .on_click(move |_, _, cx| {
                                             panel
                                                 .update(cx, |this, cx| {
-                                                    this.named_only = !this.named_only;
+                                                    this.filter = pick;
+                                                    this.named_only = false;
                                                     cx.notify();
                                                 })
                                                 .ok();
                                         }),
                                 )
-                            }
-                        }),
-                )
-                .child(
-                    Button::new("history-more")
-                        .icon(IconName::Ellipsis)
-                        .ghost()
-                        .xsmall()
-                        .dropdown_menu(move |menu: PopupMenu, _window, _cx| {
+                            });
                             let panel = panel.clone();
-                            menu.item(PopupMenuItem::new("Clear History…").on_click(
-                                move |_, window, cx| Self::confirm_clear(panel.clone(), window, cx),
-                            ))
-                        }),
-                ),
+                            menu.separator().item(
+                                PopupMenuItem::new("Named versions")
+                                    .checked(named_only)
+                                    .on_click(move |_, _, cx| {
+                                        panel
+                                            .update(cx, |this, cx| {
+                                                this.named_only = !this.named_only;
+                                                cx.notify();
+                                            })
+                                            .ok();
+                                    }),
+                            )
+                        }
+                    }),
+            ),
+        )
+    }
+
+    /// The tab bar already draws one ⋯ menu, and builds it from whichever panel its dock is
+    /// showing — so History’s own items belong there rather than in a second button beside it.
+    fn dropdown_menu(
+        &mut self,
+        menu: PopupMenu,
+        _w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let panel = cx.entity().downgrade();
+        menu.item(
+            PopupMenuItem::new("Clear History…")
+                .on_click(move |_, window, cx| Self::confirm_clear(panel.clone(), window, cx)),
         )
     }
 }

@@ -816,6 +816,55 @@ mod tests {
         assert!(!cx.read(|cx| dock_area.read(cx).is_zoomed()));
     }
 
+    /// The edge docks show one panel at a time, and `Panel::visible` is what collapses the tab
+    /// strip into a title bar — so exactly one of the two right-dock panels may answer yes.
+    #[gpui::test]
+    fn only_the_panel_a_dock_is_showing_reports_itself_visible(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(settings::SettingsPersistence::default());
+        });
+        let (workspace, cx) = cx.add_window_view(Workspace::new);
+        let dock_area = cx.update(|_, cx| workspace.read(cx).dock_area.clone());
+        cx.run_until_parked();
+
+        let shown = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                PanelRegistry::entries(cx)
+                    .iter()
+                    .filter(|entry| {
+                        entry.placement == DockPlacement::Right && entry.view.visible(cx)
+                    })
+                    .map(|entry| entry.meta.name)
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        let first = shown(cx);
+        assert_eq!(
+            first.len(),
+            1,
+            "the right dock shows one panel, not a strip of tabs"
+        );
+
+        let hidden = cx
+            .update(|_, cx| {
+                PanelRegistry::entries(cx)
+                    .iter()
+                    .find(|entry| {
+                        entry.placement == DockPlacement::Right && entry.meta.name != first[0]
+                    })
+                    .map(|entry| entry.meta.name)
+            })
+            .expect("Agent and History both dock right");
+
+        cx.update(|window, cx| PanelRegistry::toggle(hidden, &dock_area, window, cx));
+        cx.run_until_parked();
+
+        assert_eq!(shown(cx), vec![hidden], "showing one puts its sibling away");
+    }
+
     /// The real thing, lifted out of a project whose left dock came back with an "Unnamed" tab
     /// beside Details on every launch: an empty `TabPanel` sitting in a tab slot, and an
     /// `active_index` of 1 that points past the end once it is gone.
