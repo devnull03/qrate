@@ -40,6 +40,24 @@ const ROW_HISTORY_LIMIT: i64 = 50;
 
 /// Height of the Notes sub-panel's header bar, which is the whole of it while collapsed.
 const NOTES_HEADER_H: f32 = 28.;
+/// What a collapsed sub-panel occupies: its header, plus the rule the section draws above it.
+const SECTION_STRIP_H: f32 = NOTES_HEADER_H + 1.;
+/// The least height a sub-panel, or the field list above it, is worth showing in.
+const SECTION_MIN_H: f32 = 80.;
+
+/// What a sub-panel costs the height above it — nothing when the selection has none to show, its
+/// header strip while collapsed, its own floor while open.
+///
+/// The splits nest, so every pane's floor is the sum of what its pane holds. Written once here
+/// because a floor computed independently of its contents is what let History be dragged over
+/// Notes: the pane shrank to a minimum its own children could not fit in, and they overflowed it.
+fn section_footprint(shown: bool, open: bool) -> f32 {
+    match (shown, open) {
+        (false, _) => 0.,
+        (true, false) => SECTION_STRIP_H,
+        (true, true) => SECTION_MIN_H,
+    }
+}
 
 /// How much of the window the open field editor may span when the panel itself is narrower.
 const EDITOR_MAX_WINDOW_SHARE: f32 = 0.4;
@@ -63,6 +81,9 @@ pub static DETAILS_META: PanelMeta = PanelMeta {
 /// label/value list, per the main-workspace design.
 pub struct DetailsPanel {
     focus_handle: FocusHandle,
+    /// Whether this is the panel its dock is showing, which is what [`Self::visible`]
+    /// reports: a dock with one visible panel draws a title bar instead of a tab strip.
+    active: bool,
     /// Live table state, read for the selected row.
     state: Option<WeakEntity<TableState<QrateTableDelegate>>>,
     /// Re-binds `state` whenever `TablePanel` publishes a new table (project reload, dock
@@ -144,6 +165,7 @@ impl DetailsPanel {
         );
         let mut this = Self {
             focus_handle: cx.focus_handle(),
+            active: false,
             state: None,
             _handle_sub,
             _table_sub: None,
@@ -829,6 +851,16 @@ impl BasePanel for DetailsPanel {
         false
     }
 
+    fn set_active(&mut self, active: bool, _w: &mut Window, cx: &mut Context<Self>) {
+        self.active = active;
+        cx.notify();
+    }
+
+    // Siblings stay docked and loaded, just unshown: this is what replaces the tab strip.
+    fn visible(&self, _cx: &App) -> bool {
+        self.active
+    }
+
     fn zoomable(&self, _cx: &App) -> bool {
         true
     }
@@ -1113,6 +1145,8 @@ impl Render for DetailsPanel {
         // iterator — this needs `&mut cx` and cannot wait for them.
         let notes = (count > 0).then(|| self.notes_panel(&picked, cx));
         let history = (count == 1).then(|| self.history_panel(cx));
+        let notes_floor = section_footprint(notes.is_some(), self.notes_open);
+        let history_floor = section_footprint(history.is_some(), self.history_open);
 
         // Hand-built attribute list, not `DescriptionList`/`DataTable`: the fields are fixed pairs,
         // and it reads as a list rather than a second grid — alternating rows carry the structure,
@@ -1285,11 +1319,19 @@ impl Render for DetailsPanel {
                             );
                         }
                     })
-                    .child(resizable_panel().min_h(px(80.)).pr_2().child(fields))
+                    // `size_range`, not `min_h`: the resizer's drag clamp reads the range, and the
+                    // panel overwrites a caller's `min_h` with the range's start on every render —
+                    // so a floor written as `min_h` binds nothing at either end.
+                    .child(
+                        resizable_panel()
+                            .size_range(px(SECTION_MIN_H)..Pixels::MAX)
+                            .pr_2()
+                            .child(fields),
+                    )
                     .child(
                         resizable_panel()
                             .size(self.notes_height)
-                            .size_range(px(80.)..px(320.))
+                            .size_range(px(SECTION_MIN_H)..px(320.))
                             .flex_none()
                             .child(notes),
                     )
@@ -1299,7 +1341,13 @@ impl Render for DetailsPanel {
                 .size_full()
                 .min_h_0()
                 .child(div().flex_1().min_h_0().pr_2().child(fields))
-                .child(div().flex_none().h(px(NOTES_HEADER_H)).child(notes))
+                .child(
+                    div()
+                        .flex_none()
+                        .h(px(SECTION_STRIP_H))
+                        .overflow_hidden()
+                        .child(notes),
+                )
                 .into_any_element(),
             None => fields,
         };
@@ -1326,11 +1374,18 @@ impl Render for DetailsPanel {
                             );
                         }
                     })
-                    .child(resizable_panel().min_h(px(80.)).child(fields_and_notes))
+                    // The floor carries Notes with it: this pane holds the fields *and* whatever
+                    // Notes is currently taking, so stopping at the fields' own floor is what let
+                    // the History handle be dragged up over the Notes header.
+                    .child(
+                        resizable_panel()
+                            .size_range(px(SECTION_MIN_H + notes_floor)..Pixels::MAX)
+                            .child(fields_and_notes),
+                    )
                     .child(
                         resizable_panel()
                             .size(self.history_height)
-                            .size_range(px(80.)..px(360.))
+                            .size_range(px(SECTION_MIN_H)..px(360.))
                             .flex_none()
                             .child(history),
                     )
@@ -1340,7 +1395,13 @@ impl Render for DetailsPanel {
                 .size_full()
                 .min_h_0()
                 .child(div().flex_1().min_h_0().child(fields_and_notes))
-                .child(div().flex_none().h(px(NOTES_HEADER_H)).child(history))
+                .child(
+                    div()
+                        .flex_none()
+                        .h(px(SECTION_STRIP_H))
+                        .overflow_hidden()
+                        .child(history),
+                )
                 .into_any_element(),
             None => fields_and_notes,
         };
@@ -1373,7 +1434,10 @@ impl Render for DetailsPanel {
                 }
             }))
             .child(
-                div().size_full().min_h_0().child(
+                // Clipped at the panel's own edge: the floors below are what keep the sections
+                // apart, and this is what makes a floor that is still wrong read as a truncated
+                // section rather than two of them drawn over each other.
+                div().size_full().min_h_0().overflow_hidden().child(
                     v_resizable("details-preview-split")
                         .on_resize({
                             let panel = cx.entity().downgrade();
@@ -1505,7 +1569,15 @@ impl Render for DetailsPanel {
                                     }),
                             )
                         })
-                        .child(resizable_panel().child(details_content)),
+                        // Same sum one level up: dragging the photo down may not push the fields,
+                        // Notes and History below the height the three of them need.
+                        .child(
+                            resizable_panel()
+                                .size_range(
+                                    px(SECTION_MIN_H + notes_floor + history_floor)..Pixels::MAX,
+                                )
+                                .child(details_content),
+                        ),
                 ),
             )
             .into_any_element()
