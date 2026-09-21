@@ -167,12 +167,31 @@ impl HistoryPanel {
         if !force && self.read_at == fresh {
             return;
         }
-        let limit = PAGE.max(self.saved.len() as i64);
+        // The log is append-only, so a refresh nothing asked for only has to look at the newest
+        // page: everything below it is already what it will ever be. Re-reading every page the
+        // reader had loaded made each note they wrote cost more the further back they had paged.
+        // A forced reload still re-reads the lot, which is what a rename or a clear needs.
+        let limit = match force {
+            true => PAGE.max(self.saved.len() as i64),
+            false => PAGE,
+        };
         let row = self.cell.as_ref().map(|(row, _)| *row);
         match settings::history::page(&file, EntryId::MAX, limit, row) {
             Ok(page) => {
-                self.more = page.len() as i64 == limit;
+                // Pages the re-read didn't reach, kept rather than dropped — otherwise an
+                // unforced refresh would silently collapse the list back to one page.
+                let cutoff = page.last().map_or(EntryId::MAX, |listed| listed.entry.id);
+                let older = self
+                    .saved
+                    .iter()
+                    .position(|listed| listed.entry.id < cutoff)
+                    .map(|ix| self.saved.split_off(ix))
+                    .unwrap_or_default();
+                if older.is_empty() {
+                    self.more = page.len() as i64 == limit;
+                }
                 self.saved = page;
+                self.saved.extend(older);
             }
             Err(err) => log::error!("couldn't read the project history: {err}"),
         }
@@ -987,9 +1006,109 @@ impl Render for HistoryPanel {
 #[cfg(test)]
 mod tests {
     // Never `use super::*` here: the parent has `use gpui::*` in scope.
-    use super::{day_label, describe, narrowed};
+    use super::{HistoryPanel, PAGE, day_label, describe, narrowed};
+    use gpui::TestAppContext;
     use settings::history::{Change, Entry, Origin};
     use std::collections::HashMap;
+
+    /// A project holding `entries` changes to one row, and the panel pointed at it.
+    fn project_with(name: &str, entries: usize) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("qrate-history-panel-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(name);
+        let _ = std::fs::remove_file(&path);
+        let headers = vec!["Title".to_string()];
+        settings::project::create_project_file(
+            &path,
+            &settings::project::ProjectSpec {
+                name: "H",
+                source: "CSV",
+                headers: &headers,
+                rows: &[vec!["one".to_string()]],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        append(&path, 0, entries);
+        path
+    }
+
+    /// `count` more entries on top of whatever the file already holds.
+    fn append(path: &std::path::Path, from: usize, count: usize) {
+        let headers = vec!["Title".to_string()];
+        let log: Vec<Entry> = (from..from + count)
+            .map(|n| {
+                Entry::new(
+                    Origin::Typed,
+                    vec![Change::Cell {
+                        row: 1,
+                        column: "Title".into(),
+                        before: n.to_string(),
+                        after: (n + 1).to_string(),
+                    }],
+                    None,
+                )
+            })
+            .collect();
+        settings::project::save_dataset(
+            path,
+            &headers,
+            &[1],
+            &[vec![(from + count).to_string()]],
+            &log,
+        )
+        .unwrap();
+    }
+
+    /// An unforced refresh re-reads only the newest page, so it must splice that page onto the
+    /// older ones already loaded rather than replacing them — otherwise writing a note would
+    /// collapse the list back to one page under whoever had paged through a long history.
+    #[gpui::test]
+    fn a_refresh_keeps_the_pages_the_reader_already_loaded(cx: &mut TestAppContext) {
+        let extra = 5;
+        let total = PAGE as usize + extra;
+        let path = project_with("merge.qrate", total);
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(settings::SettingsPersistence::default());
+            cx.set_global(settings::project::CurrentProject {
+                file: path.clone(),
+                data: settings::project::load_project_file(&path).unwrap(),
+            });
+        });
+
+        let (panel, cx) = cx.add_window_view(HistoryPanel::new);
+        cx.run_until_parked();
+
+        panel.update(cx, |this, _| {
+            assert_eq!(this.saved.len(), PAGE as usize, "one page to begin with");
+            assert!(this.more, "and more behind it");
+        });
+
+        cx.update(|_, cx| panel.update(cx, |this, cx| this.load_older(cx)));
+        panel.update(cx, |this, _| {
+            assert_eq!(this.saved.len(), total, "the rest paged in");
+            assert!(!this.more, "nothing left behind it");
+        });
+
+        // A write the panel didn't ask about — a note, in real use — moves the file's stamp and
+        // so gets past the freshness guard.
+        append(&path, total, 1);
+        cx.update(|_, cx| panel.update(cx, |this, cx| this.reload(false, cx)));
+        panel.update(cx, |this, _| {
+            assert_eq!(
+                this.saved.len(),
+                total + 1,
+                "the new entry arrives and the older pages stay"
+            );
+            let ids: Vec<_> = this.saved.iter().map(|l| l.entry.id).collect();
+            let mut descending = ids.clone();
+            descending.sort_by(|a, b| b.cmp(a));
+            descending.dedup();
+            assert_eq!(ids, descending, "still newest first, with nothing doubled");
+        });
+    }
 
     /// Narrowed to one cell, an entry keeps that cell's edits under any name its column has had,
     /// its row's notes and its row coming or going — and nothing about the cells beside it.

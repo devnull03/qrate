@@ -576,29 +576,54 @@ impl DetailsPanel {
                 })
                 .collect::<Vec<Line>>()
         };
-        let ats: Vec<i64> = unsaved.iter().map(|entry| entry.at).collect();
-        let times = settings::history::local_times(&ats).unwrap_or_else(|err| {
-            log::error!("couldn't read the local time of unsaved changes: {err}");
-            Vec::new()
-        });
-        let lines: Vec<Line> = unsaved
-            .iter()
-            .enumerate()
-            .rev()
-            .flat_map(|(ix, entry)| {
-                let when = times.get(ix).map_or_else(
-                    || "not saved yet".to_string(),
-                    |(day, time)| format!("{}, not saved yet", super::history::when(day, time)),
-                );
-                lines_of(entry, None, when)
-            })
-            .chain(saved.iter().flat_map(|listed| {
-                let when = super::history::when(&listed.day, &listed.time);
-                lines_of(&listed.entry, Some(listed.entry.id), when)
-            }))
-            .collect();
+        // Collapsed, this section is a header strip, and the only thing it still has to know is
+        // whether anything sits behind it. Building every line to answer that formatted the whole
+        // of the item's history on every frame of a panel showing none of it — and the history is
+        // the part of this file that grows without limit.
+        let open = self.history_open;
+        let lines: Vec<Line> = match open {
+            false => Vec::new(),
+            true => {
+                let ats: Vec<i64> = unsaved.iter().map(|entry| entry.at).collect();
+                let times = settings::history::local_times(&ats).unwrap_or_else(|err| {
+                    log::error!("couldn't read the local time of unsaved changes: {err}");
+                    Vec::new()
+                });
+                unsaved
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .flat_map(|(ix, entry)| {
+                        let when = times.get(ix).map_or_else(
+                            || "not saved yet".to_string(),
+                            |(day, time)| {
+                                format!("{}, not saved yet", super::history::when(day, time))
+                            },
+                        );
+                        lines_of(entry, None, when)
+                    })
+                    .chain(saved.iter().flat_map(|listed| {
+                        let when = super::history::when(&listed.day, &listed.time);
+                        lines_of(&listed.entry, Some(listed.entry.id), when)
+                    }))
+                    .collect()
+            }
+        };
 
-        let (open, none) = (self.history_open, lines.is_empty());
+        // `saved` is already the entries that touch this item, so it answers for itself; the
+        // unsaved ones are not filtered and have to be asked.
+        let none = match open {
+            true => lines.is_empty(),
+            false => {
+                saved.is_empty()
+                    && !unsaved.iter().any(|entry| {
+                        entry
+                            .changes
+                            .iter()
+                            .any(|change| change.key().0 == Some(row_id))
+                    })
+            }
+        };
         v_flex()
             .debug_selector(|| "details-history-panel".into())
             .size_full()

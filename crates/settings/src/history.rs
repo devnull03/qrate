@@ -10,6 +10,7 @@
 //! `project::save_dataset` and `project::write_notes`), so the log never claims a change the file
 //! doesn't hold.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -183,8 +184,9 @@ impl Change {
         }
     }
 
-    /// The row and column this change is looked up by.
-    fn key(&self) -> (Option<RowId>, Option<&str>) {
+    /// The row and column a change concerns, which is how a reader asks whether it is about the
+    /// item they are looking at without formatting it first.
+    pub fn key(&self) -> (Option<RowId>, Option<&str>) {
         match self {
             Change::Cell { row, column, .. } => (Some(*row), Some(column)),
             Change::RowAdded { row, .. } | Change::RowRemoved { row, .. } => (Some(*row), None),
@@ -258,6 +260,7 @@ const HISTORY_DDL: &str = r#"
       change      TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS __history_changes_cell ON __history_changes(row_id, column_name);
+    CREATE INDEX IF NOT EXISTS __history_changes_entry ON __history_changes(entry_id, seq);
 "#;
 
 /// Write `entries` on `conn`, inside whatever transaction the caller holds.
@@ -400,13 +403,37 @@ fn select(path: &Path, filter: &str, bound: &[&dyn rusqlite::ToSql]) -> Result<V
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let mut changes =
-        conn.prepare("SELECT change FROM __history_changes WHERE entry_id = ?1 ORDER BY seq")?;
+    // One query for the whole page's changes rather than one per entry. Per entry, each lookup
+    // was a scan of `__history_changes` — a table that grows with the project, not with the page —
+    // so reading 200 entries cost 200 scans of everything ever edited.
+    //
+    // The id list is interpolated because rusqlite binds no arrays without `rarray`; every value
+    // is an `EntryId` this function just read out of the same table, so there is no text here to
+    // escape.
+    let mut changes: HashMap<EntryId, Vec<Change>> = HashMap::new();
+    if !listed.is_empty() {
+        let ids = listed
+            .iter()
+            .map(|listed| listed.entry.id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT entry_id, change FROM __history_changes
+             WHERE entry_id IN ({ids}) ORDER BY entry_id, seq"
+        ))?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, EntryId>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, change) = row?;
+            changes
+                .entry(id)
+                .or_default()
+                .push(serde_json::from_str(&change).context("Read history change")?);
+        }
+    }
     for listed in &mut listed {
-        listed.entry.changes = changes
-            .query_map([listed.entry.id], |r| r.get::<_, String>(0))?
-            .map(|c| serde_json::from_str(&c?).context("Read history change"))
-            .collect::<Result<_>>()?;
+        listed.entry.changes = changes.remove(&listed.entry.id).unwrap_or_default();
     }
     Ok(listed)
 }
