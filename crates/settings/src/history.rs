@@ -461,6 +461,62 @@ pub fn renames(path: &Path) -> Result<Vec<(String, String)>> {
     .collect()
 }
 
+/// How many entries a project keeps. Unset — or anything that isn't a positive number — keeps
+/// every one, which is the default: this log is an audit trail, so nothing goes unless asked.
+pub const HISTORY_LIMIT_KEY: &str = "history_limit";
+
+/// What the Settings window offers for [`HISTORY_LIMIT_KEY`].
+pub const HISTORY_LIMITS: &[(&str, &str)] = &[
+    ("", "Keep everything (default)"),
+    ("50000", "Keep the newest 50,000"),
+    ("10000", "Keep the newest 10,000"),
+    ("1000", "Keep the newest 1,000"),
+];
+
+/// The retention rule in force for the open project, or `None` to keep everything.
+pub fn limit(cx: &App) -> Option<i64> {
+    if !cx.has_global::<crate::AppSettings>() {
+        return None;
+    }
+    crate::effective_text(HISTORY_LIMIT_KEY, cx)
+        .parse::<i64>()
+        .ok()
+        .filter(|keep| *keep > 0)
+}
+
+/// Drop all but the newest `keep` entries, sparing every named version. Returns how many went.
+///
+/// A name is the archivist saying this entry matters, so a rule set to bound a file's size does
+/// not quietly take those with it — which is also why the count a caller logs can be lower than
+/// the number over the limit.
+pub fn prune(path: &Path, keep: i64) -> Result<usize> {
+    let conn = crate::project::open_rw(path)?;
+    let exists: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '__history'",
+        [],
+        |r| r.get(0),
+    )?;
+    if exists == 0 {
+        return Ok(0);
+    }
+    // Named entries are spared twice over: they are never in the doomed set, and they still count
+    // towards the newest `keep`, so turning a rule on cannot cost more than the number it names.
+    let doomed = "SELECT id FROM __history WHERE label IS NULL
+                  AND id NOT IN (SELECT id FROM __history ORDER BY id DESC LIMIT ?1)";
+    conn.execute(
+        &format!("DELETE FROM __history_changes WHERE entry_id IN ({doomed})"),
+        [keep],
+    )
+    .context("Prune history changes")?;
+    let gone = conn
+        .execute(
+            &format!("DELETE FROM __history WHERE id IN ({doomed})"),
+            [keep],
+        )
+        .context("Prune history entries")?;
+    Ok(gone)
+}
+
 /// Name an entry — "Before Islandora ingest" — or, with `None`, take the name away again.
 pub fn set_label(path: &Path, id: EntryId, label: Option<&str>) -> Result<()> {
     crate::project::open_rw(path)?
@@ -487,7 +543,7 @@ pub fn clear(path: &Path) -> Result<()> {
 mod tests {
     use super::{
         Change, Entry, EntryId, Origin, clear, entries_after, former_names, local_times, page,
-        renames, set_label,
+        prune, renames, set_label,
     };
     use crate::project::{ProjectSpec, create_project_file, save_dataset, write_notes};
 
@@ -659,6 +715,53 @@ mod tests {
         };
         assert_eq!(edit("a", "b").inverse(), edit("b", "a"));
         assert_eq!(moved.inverse().inverse(), moved);
+    }
+
+    /// Retention keeps the newest entries and spares every named one, however old. A name is the
+    /// archivist marking that entry as the one to come back to, so a rule set to bound a file's
+    /// size must not be what takes it away — and the changes of a dropped entry go with it rather
+    /// than being left behind pointing at an id that no longer exists.
+    #[test]
+    fn pruning_keeps_the_newest_and_never_a_named_version() {
+        let path = project("prune.qrate");
+        let headers = vec!["Title".to_string()];
+        let log: Vec<Entry> = (0..6)
+            .map(|n| {
+                Entry::new(
+                    Origin::Typed,
+                    vec![edit(&n.to_string(), &(n + 1).to_string())],
+                    None,
+                )
+            })
+            .collect();
+        save_dataset(&path, &headers, &[1], &[vec!["6".into()]], &log).unwrap();
+
+        // The oldest entry of the six, named — the one a retention rule would otherwise reach first.
+        set_label(&path, 1, Some("Before ingest")).unwrap();
+
+        let gone = prune(&path, 2).unwrap();
+        assert_eq!(gone, 3, "six, less the newest two, less the named one");
+
+        let kept = page(&path, EntryId::MAX, 10, None).unwrap();
+        let ids: Vec<_> = kept.iter().map(|l| l.entry.id).collect();
+        assert_eq!(
+            ids,
+            vec![6, 5, 1],
+            "the newest two, and the named one below them"
+        );
+        assert_eq!(
+            kept[2].label.as_deref(),
+            Some("Before ingest"),
+            "kept because it is named, not because it is recent"
+        );
+        // Every surviving entry still has its own changes, and no dropped entry left any behind.
+        assert!(
+            kept.iter().all(|l| l.entry.changes.len() == 1),
+            "a pruned entry takes its changes with it"
+        );
+
+        // Nothing over the limit left to drop.
+        assert_eq!(prune(&path, 2).unwrap(), 0);
     }
 
     /// A page fetches every entry's changes in one query and hands each entry its own back. Two

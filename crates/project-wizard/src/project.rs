@@ -48,6 +48,19 @@ pub fn open_project(file: &Path, cx: &mut gpui::App) -> anyhow::Result<String> {
     };
     let name = project.display_name();
     cx.set_global(project);
+    // Retention is applied on open rather than as entries are written: the History panel holds
+    // the page it last read, and pruning underneath it would leave the list pointing at entries
+    // that are no longer there.
+    if let Some(keep) = settings::history::limit(cx) {
+        match settings::history::prune(file, keep) {
+            Ok(0) => {}
+            Ok(gone) => log::info!("pruned {gone} history entries over the {keep} kept"),
+            Err(err) => log::warn!(
+                "couldn't apply this project's history retention, so its log still holds \
+                 everything: {err}"
+            ),
+        }
+    }
     Ok(name)
 }
 
