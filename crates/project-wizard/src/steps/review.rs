@@ -6,7 +6,9 @@ use file_ingest::duplicates::{DuplicatePolicy, ExistingComponent as Existing, Pa
 
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::description_list::DescriptionList;
-use gpui_component::{Sizable, StyledExt, v_flex};
+use gpui_component::label::Label;
+use gpui_component::scroll::ScrollableElement;
+use gpui_component::{ActiveTheme, Sizable, StyledExt, h_flex, v_flex};
 
 use plugin_api::ColumnMapContributions;
 use settings::columns::{ColumnSettings, ColumnSettingsMap};
@@ -115,13 +117,100 @@ fn project_columns(
     columns
 }
 
+fn hierarchy_preview(plan: &file_ingest::ImportPlan, cx: &App) -> AnyElement {
+    const MAX_VISIBLE: usize = 100;
+    let files = plan
+        .components
+        .iter()
+        .filter(|component| component.kind == file_ingest::EntryKind::File)
+        .count();
+    let folders = plan.components.len() - files;
+    let mut depths = Vec::with_capacity(plan.components.len());
+    for component in &plan.components {
+        depths.push(component.parent.map_or(0, |parent| depths[parent] + 1));
+    }
+
+    v_flex()
+        .gap_2()
+        .child(div().font_semibold().child("Hierarchy preview"))
+        .child(
+            Label::new(format!(
+                "{} component{} · {files} file{} · {folders} folder{}",
+                plan.components.len(),
+                if plan.components.len() == 1 { "" } else { "s" },
+                if files == 1 { "" } else { "s" },
+                if folders == 1 { "" } else { "s" },
+            ))
+            .text_sm()
+            .text_color(cx.theme().muted_foreground),
+        )
+        .child(
+            v_flex()
+                .max_h(px(280.))
+                .overflow_y_scrollbar()
+                .rounded_md()
+                .border_1()
+                .border_color(cx.theme().border)
+                .children(
+                    plan.components
+                        .iter()
+                        .zip(depths)
+                        .take(MAX_VISIBLE)
+                        .enumerate()
+                        .map(|(index, (component, depth))| {
+                            h_flex()
+                                .gap_2()
+                                .px_2()
+                                .py_1()
+                                .pl(px(8. + depth as f32 * 18.))
+                                .when(index > 0, |row| {
+                                    row.border_t_1().border_color(cx.theme().border)
+                                })
+                                .child(
+                                    Label::new(match component.kind {
+                                        file_ingest::EntryKind::Directory => "Folder",
+                                        file_ingest::EntryKind::File => "File",
+                                    })
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground),
+                                )
+                                .child(Label::new(component.title.clone()).text_sm())
+                        }),
+                )
+                .when(plan.components.len() > MAX_VISIBLE, |tree| {
+                    tree.child(
+                        Label::new(format!(
+                            "… and {} more components",
+                            plan.components.len() - MAX_VISIBLE
+                        ))
+                        .px_2()
+                        .py_1()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground),
+                    )
+                }),
+        )
+        .when(!plan.warnings.is_empty(), |preview| {
+            preview.child(
+                Label::new(format!(
+                    "{} path warning{} will be skipped.",
+                    plan.warnings.len(),
+                    if plan.warnings.len() == 1 { "" } else { "s" }
+                ))
+                .text_sm()
+                .text_color(cx.theme().warning),
+            )
+        })
+        .into_any_element()
+}
+
 /// What the Files and Columns steps settled on, as the folder import reads it.
 struct FolderImport<'a> {
     headers: &'a [String],
     title_column: Option<&'a str>,
     file_column: Option<&'a str>,
     folder: &'a str,
-    recursive: bool,
+    plan: &'a file_ingest::ImportPlan,
     description: &'a settings::description::DescriptionConfig,
     policy: DuplicatePolicy,
 }
@@ -135,7 +224,7 @@ fn append_folder_components(
         title_column,
         file_column,
         folder,
-        recursive,
+        plan,
         description,
         policy,
     } = *import;
@@ -145,23 +234,14 @@ fn append_folder_components(
         return Vec::new();
     };
     let title_col = title_column.and_then(|name| headers.iter().position(|header| header == name));
-    let plan = match file_ingest::plan(
-        std::path::Path::new(folder),
-        &file_ingest::PlanOptions {
-            recursive,
-            include_root: true,
-            folder_level_key: &description.folder_level_key,
-            file_level_key: &description.file_level_key,
-        },
-    ) {
-        Ok(plan) => plan,
-        Err(error) => {
-            log::warn!(
-                "The new project was created without rows for the files in {folder}: the folder could not be read ({error:?})"
-            );
-            return Vec::new();
+    let mut plan = plan.clone();
+    for component in &mut plan.components {
+        component.level_key = match component.kind {
+            file_ingest::EntryKind::Directory => &description.folder_level_key,
+            file_ingest::EntryKind::File => &description.file_level_key,
         }
-    };
+        .clone();
+    }
     for warning in &plan.warnings {
         log::warn!("Skipped a path while importing {folder}: {warning:?}");
     }
@@ -254,10 +334,10 @@ impl ProjectWizard {
             LinkMethod::ExactFilename => "exact filename",
             LinkMethod::CustomPattern => "custom pattern",
         });
-        let spreadsheet_headers = self.spreadsheet_headers();
+        let spreadsheet_headers = self.effective_headers();
         let columns = project_columns(
             &spreadsheet_headers,
-            self.config_preview.as_ref(),
+            self.selected_config(),
             self.title_column.as_deref().unwrap_or_default(),
             self.file_column.as_deref().unwrap_or_default(),
         );
@@ -273,13 +353,20 @@ impl ProjectWizard {
         // being noticed only when someone counts the folder.
         let description = self.description_config(cx);
         let structure = if !self.skip_files {
+            let Some(plan) = self.folder_plan.as_ref() else {
+                self.name_error = Some(
+                    "The files preview is no longer available — choose the folder again".into(),
+                );
+                self.step = WizardStep::Files;
+                return;
+            };
             append_folder_components(
                 &FolderImport {
                     headers: &headers,
                     title_column: self.title_column.as_deref(),
                     file_column: self.file_column.as_deref(),
                     folder: &self.folder_path,
-                    recursive: self.recurse_subfolders,
+                    plan,
                     description: &description,
                     policy: self.duplicate_policy,
                 },
@@ -384,7 +471,7 @@ impl ProjectWizard {
                 // Everything in the column config that `__columns` has no room for. Written before
                 // the project is opened, so the first validation run already sees it. Non-fatal for
                 // the same reason the notes above are.
-                let settings = column_settings(&headers, self.config_preview.as_ref(), cx);
+                let settings = column_settings(&headers, self.selected_config(), cx);
                 if !settings.is_empty() {
                     match serde_json::to_string(&settings) {
                         Ok(json) => {
@@ -462,23 +549,18 @@ impl ProjectWizard {
                 })
             })
             .flatten();
-        let column_count = self
-            .config_preview
-            .as_ref()
-            .map(|c| c.entries.len())
-            .unwrap_or_else(|| self.spreadsheet_headers().len());
+        let column_count = self.effective_headers().len();
         let columns_line = {
-            let source_desc = if self.entry_kind == EntryKind::Blank {
-                "Required Title and File columns"
-            } else {
-                match self.column_source {
-                    ColumnSource::AutoFromSpreadsheet => "Auto-matched from spreadsheet",
-                    ColumnSource::LoadFromFileOrSheet => "Loaded from file/Sheet",
-                    ColumnSource::SkipForNow => "Set up later",
-                }
+            let source_desc = match self.column_source {
+                ColumnSource::AutoFromSpreadsheet => "Auto-matched from spreadsheet",
+                ColumnSource::LoadFromFileOrSheet => "Loaded from file/Sheet",
+                ColumnSource::DefaultBlank => "Default Title and File columns",
             };
             format!("{source_desc} · {column_count} columns")
         };
+        let folder_plan = (!self.skip_files)
+            .then_some(self.folder_plan.as_ref())
+            .flatten();
 
         v_flex()
             .gap_3()
@@ -504,6 +586,9 @@ impl ProjectWizard {
                     // Blank projects go through Columns too, so always show it.
                     .item("Columns", columns_line, 1),
             )
+            .when_some(folder_plan, |review, plan| {
+                review.child(hierarchy_preview(plan, cx))
+            })
         // The shared wizard footer supplies the "Create Project" (Next) and
         // "← Back" controls — see `ProjectWizard::render_footer`.
     }
@@ -584,12 +669,13 @@ mod tests {
         std::fs::write(folder.path().join("one.jpg"), "photo").unwrap();
         let headers: Vec<String> = vec!["Title".into(), "File".into()];
         let description = settings::description::DescriptionProfile::Rad.defaults();
+        let plan = file_ingest::plan(folder.path(), &file_ingest::PlanOptions::default()).unwrap();
         let import = |policy| FolderImport {
             headers: &headers,
             title_column: Some("Title"),
             file_column: Some("File"),
             folder: folder.path().to_str().unwrap(),
-            recursive: true,
+            plan: &plan,
             description: &description,
             policy,
         };
@@ -622,6 +708,7 @@ mod tests {
         let headers = vec!["Title".into(), "File".into()];
         let mut rows = Vec::new();
         let description = settings::description::DescriptionProfile::Rad.defaults();
+        let plan = file_ingest::plan(folder.path(), &file_ingest::PlanOptions::default()).unwrap();
 
         let structure = append_folder_components(
             &FolderImport {
@@ -629,7 +716,7 @@ mod tests {
                 title_column: Some("Title"),
                 file_column: Some("File"),
                 folder: folder.path().to_str().unwrap(),
-                recursive: true,
+                plan: &plan,
                 description: &description,
                 policy: DuplicatePolicy::Skip,
             },
@@ -643,5 +730,40 @@ mod tests {
         assert_eq!(structure[2].parent_id, Some(2));
         assert_eq!(structure[1].level_key, "series");
         assert_eq!(structure[2].level_key, "item");
+    }
+
+    #[test]
+    fn excluding_the_selected_root_starts_with_its_children() {
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::create_dir(folder.path().join("series")).unwrap();
+        std::fs::write(folder.path().join("series").join("one.jpg"), "photo").unwrap();
+        let headers = vec!["Title".into(), "File".into()];
+        let description = settings::description::DescriptionProfile::Rad.defaults();
+        let plan = file_ingest::plan(
+            folder.path(),
+            &file_ingest::PlanOptions {
+                include_root: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut rows = Vec::new();
+
+        let structure = append_folder_components(
+            &FolderImport {
+                headers: &headers,
+                title_column: Some("Title"),
+                file_column: Some("File"),
+                folder: folder.path().to_str().unwrap(),
+                plan: &plan,
+                description: &description,
+                policy: DuplicatePolicy::Skip,
+            },
+            &mut rows,
+        );
+
+        assert_eq!(rows, [["series", ""], ["one.jpg", "series/one.jpg"]]);
+        assert_eq!(structure[0].parent_id, None);
+        assert_eq!(structure[1].parent_id, Some(1));
     }
 }

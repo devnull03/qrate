@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use gpui::*;
 use gpui_component::{
-    IconName, Sizable, Size,
+    ActiveTheme, IconName, Sizable, Size,
     button::Button,
     h_flex,
     input::{Input, InputState},
@@ -45,12 +45,22 @@ impl RenderOnce for PathPickerApp {
         };
 
         let on_pick = Arc::clone(&self.on_pick);
+        let on_drop = Arc::clone(&self.on_pick);
 
         let field_size = self.field_size;
 
         h_flex()
             .gap_2()
             .w_full()
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary_hover))
+            .on_drop(move |paths: &ExternalPaths, _, cx| {
+                let [path] = paths.paths() else {
+                    return;
+                };
+                if (files && path.is_file()) || (directories && path.is_dir()) {
+                    on_drop(path.to_string_lossy().into_owned().into(), cx);
+                }
+            })
             .child(
                 div().flex_1().min_w(px(0.)).child(
                     Input::new(&self.input)

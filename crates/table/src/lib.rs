@@ -31,10 +31,14 @@ pub use editor::editor_box;
 pub use note::{Target as MenuTarget, menu as context_menu};
 pub use panel::{
     Clear, CollapseAll, Copy, Cut, DeleteColumn, DeleteRow, DeleteSubtree, Deselect, DuplicateRow,
-    EditCell, ExpandAll, GRID_CONTEXT, IndentRow, InsertColumnLeft, InsertColumnRight, InsertNote,
-    InsertRowAbove, InsertRowBelow, OutdentRow, Paste, Redo, RenameColumn, Replace, Search,
-    TablePanel, Undo, UnfreezeColumns,
+    EditCell, ExpandAll, GRID_CONTEXT, ImportFiles, IndentRow, InsertColumnLeft, InsertColumnRight,
+    InsertNote, InsertRowAbove, InsertRowBelow, OutdentRow, Paste, Redo, RelinkMissingFiles,
+    RenameColumn, Replace, Search, TablePanel, Undo, UnfreezeColumns,
 };
+
+/// Global command handle for import entry points outside the centre table, such as Details.
+pub struct TablePanelHandle(pub WeakEntity<TablePanel>);
+impl Global for TablePanelHandle {}
 
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
 pub const TABLE_STRIPES_KEY: &str = "table_stripes";

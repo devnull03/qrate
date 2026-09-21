@@ -24,7 +24,10 @@ use gpui_component::{
     tab::{Tab, TabBar},
     v_flex,
 };
-use table::{QrateTableDelegate, Replace, Search, TableChanged, TablePanel, TableStateHandle};
+use table::{
+    ImportFiles, QrateTableDelegate, RelinkMissingFiles, Replace, Search, TableChanged, TablePanel,
+    TableStateHandle,
+};
 
 use crate::ViewerScope;
 
@@ -373,6 +376,20 @@ impl Render for ViewsPanel {
             .id("views-panel")
             .role(Role::Group)
             .aria_label("Views")
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary_hover))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.table.update(cx, |table, cx| {
+                    table.import_external_paths(paths.paths().to_vec(), window, cx)
+                })
+            }))
+            .on_action(cx.listener(|this, _: &ImportFiles, window, cx| {
+                this.table
+                    .update(cx, |table, cx| table.choose_import_paths(window, cx))
+            }))
+            .on_action(cx.listener(|this, _: &RelinkMissingFiles, window, cx| {
+                this.table
+                    .update(cx, |table, cx| table.choose_files_root(window, cx))
+            }))
             // The find bar lives above whichever view is showing, so its keys are handled here too.
             .on_action(cx.listener(|this, _: &Search, window, cx| {
                 this.table

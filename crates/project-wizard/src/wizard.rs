@@ -48,7 +48,7 @@ pub enum ColumnSource {
     AutoFromSpreadsheet,
     LoadFromFileOrSheet,
     /// Blank projects have no spreadsheet to derive columns from — defer setup.
-    SkipForNow,
+    DefaultBlank,
 }
 
 #[derive(Clone, PartialEq)]
@@ -87,7 +87,10 @@ pub struct ProjectWizard {
     pub(crate) spreadsheet_preview: Option<SpreadsheetPreview>,
     pub(crate) local_error: Option<SharedString>,
     pub(crate) folder_path: String,
+    pub(crate) import_paths: Vec<std::path::PathBuf>,
     pub(crate) folder_match: Option<FolderMatch>,
+    /// The exact hierarchy shown on Review and consumed by project creation.
+    pub(crate) folder_plan: Option<file_ingest::ImportPlan>,
     pub(crate) folder_error: Option<SharedString>,
     /// "I'll add files later" — skips folder matching and the whole Link step.
     pub(crate) skip_files: bool,
@@ -107,6 +110,8 @@ pub struct ProjectWizard {
     pub(crate) show_advanced_pattern: bool,
     /// Look for filenames in subfolders too, not just directly in the files folder.
     pub(crate) recurse_subfolders: bool,
+    /// Whether the selected files root is itself an archival component.
+    pub(crate) include_root_folder: bool,
 
     // Columns step
     pub(crate) column_source: ColumnSource,
@@ -136,6 +141,36 @@ fn required_columns(title: Option<&str>, file: Option<&str>) -> Result<(), &'sta
         return Err("Title and File must use different columns");
     }
     Ok(())
+}
+
+fn steps_for(entry_kind: EntryKind, skip_files: bool) -> Vec<(&'static str, WizardStep)> {
+    let mut items = vec![("Name", WizardStep::Name), ("Files", WizardStep::Files)];
+    if !(skip_files || entry_kind == EntryKind::Blank) {
+        items.push(("Link", WizardStep::Link));
+    }
+    items.push(("Columns", WizardStep::Columns));
+    items.push(("Create", WizardStep::Review));
+    items
+}
+
+fn effective_headers_for(
+    entry_kind: EntryKind,
+    column_source: ColumnSource,
+    spreadsheet_headers: Vec<String>,
+    config: Option<&ColumnConfigPreview>,
+) -> Vec<String> {
+    if entry_kind == EntryKind::Blank && column_source == ColumnSource::LoadFromFileOrSheet {
+        return config
+            .map(|preview| {
+                preview
+                    .entries
+                    .iter()
+                    .map(|entry| entry.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    spreadsheet_headers
 }
 impl ProjectWizard {
     pub fn new(entry_kind: EntryKind, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -238,7 +273,9 @@ impl ProjectWizard {
             spreadsheet_preview: None,
             local_error: None,
             folder_path: String::new(),
+            import_paths: Vec::new(),
             folder_match: None,
+            folder_plan: None,
             folder_error: None,
             skip_files: false,
             description_profile: settings::description::DescriptionProfile::Rad,
@@ -254,9 +291,10 @@ impl ProjectWizard {
             // On by default: `table::photos` resolves rows against the whole tree, so an
             // off-by-default check would report fewer matches than the app will actually find.
             recurse_subfolders: true,
+            include_root_folder: false,
             // Blank has no spreadsheet to auto-derive columns from.
             column_source: if entry_kind == EntryKind::Blank {
-                ColumnSource::SkipForNow
+                ColumnSource::DefaultBlank
             } else {
                 ColumnSource::AutoFromSpreadsheet
             },
@@ -311,6 +349,22 @@ impl ProjectWizard {
                 .unwrap_or_default(),
             EntryKind::Blank => vec!["Title".into(), "File".into()],
         }
+    }
+
+    /// Headers that the project being created will actually contain.
+    pub(crate) fn effective_headers(&self) -> Vec<String> {
+        effective_headers_for(
+            self.entry_kind,
+            self.column_source,
+            self.spreadsheet_headers(),
+            self.config_preview.as_ref(),
+        )
+    }
+
+    pub(crate) fn selected_config(&self) -> Option<&ColumnConfigPreview> {
+        (self.column_source == ColumnSource::LoadFromFileOrSheet)
+            .then_some(self.config_preview.as_ref())
+            .flatten()
     }
 
     /// The Link step is skipped when there's no folder to link against
@@ -403,9 +457,7 @@ impl ProjectWizard {
     /// Shared by the manual Next click and the auto-advance after a
     /// just-succeeded sheet check (see `steps/files.rs::check_sheet_link`).
     pub(crate) fn advance_past_files(&mut self) {
-        self.step = if self.entry_kind == EntryKind::Blank {
-            WizardStep::Review
-        } else if self.skips_link() {
+        self.step = if self.skips_link() {
             WizardStep::Columns
         } else {
             WizardStep::Link
@@ -413,15 +465,7 @@ impl ProjectWizard {
     }
 
     fn breadcrumb_items(&self) -> Vec<(&'static str, WizardStep)> {
-        let mut items = vec![("Name", WizardStep::Name), ("Files", WizardStep::Files)];
-        if !self.skips_link() {
-            items.push(("Link", WizardStep::Link));
-        }
-        if self.entry_kind != EntryKind::Blank {
-            items.push(("Columns", WizardStep::Columns));
-        }
-        items.push(("Create", WizardStep::Review));
-        items
+        steps_for(self.entry_kind, self.skip_files)
     }
 
     fn step_index(&self) -> usize {
@@ -469,7 +513,6 @@ impl ProjectWizard {
                     WizardStep::Link
                 }
             }
-            (EntryKind::Blank, WizardStep::Review) => WizardStep::Files,
             (_, WizardStep::Review) => WizardStep::Columns,
         };
         cx.notify();
@@ -610,6 +653,20 @@ pub(crate) fn open_project_wizard_seeded(
     folder: Option<String>,
     cx: &mut App,
 ) {
+    open_project_wizard_seeded_paths(
+        entry_kind,
+        spreadsheet,
+        folder.map(std::path::PathBuf::from).into_iter().collect(),
+        cx,
+    );
+}
+
+pub(crate) fn open_project_wizard_seeded_paths(
+    entry_kind: EntryKind,
+    spreadsheet: Option<String>,
+    paths: Vec<std::path::PathBuf>,
+    cx: &mut App,
+) {
     let bounds = Bounds::centered(None, size(px(560.0), px(680.0)), cx);
     let window_options = WindowOptions {
         titlebar: Some(TitleBar::title_bar_options()),
@@ -626,8 +683,8 @@ pub(crate) fn open_project_wizard_seeded(
             if let Some(path) = spreadsheet {
                 wizard.set_local_path(path, cx);
             }
-            if let Some(path) = folder {
-                wizard.set_folder_path(path, cx);
+            if !paths.is_empty() {
+                wizard.set_import_paths(paths, cx);
             }
             wizard
         });
@@ -688,7 +745,10 @@ pub(crate) fn option_card(
 
 #[cfg(test)]
 mod tests {
-    use crate::wizard::required_columns;
+    use crate::data::{ColumnConfigEntry, ColumnConfigPreview};
+    use crate::wizard::{
+        ColumnSource, EntryKind, WizardStep, effective_headers_for, required_columns, steps_for,
+    };
 
     #[test]
     fn columns_step_requires_two_distinct_roles() {
@@ -696,5 +756,47 @@ mod tests {
         assert!(required_columns(None, Some("File")).is_err());
         assert!(required_columns(Some("Title"), None).is_err());
         assert!(required_columns(Some("Same"), Some("Same")).is_err());
+    }
+
+    #[test]
+    fn blank_projects_visit_columns_before_review() {
+        let steps: Vec<_> = steps_for(EntryKind::Blank, false)
+            .into_iter()
+            .map(|(_, step)| step)
+            .collect();
+        assert_eq!(
+            steps,
+            vec![
+                WizardStep::Name,
+                WizardStep::Files,
+                WizardStep::Columns,
+                WizardStep::Review
+            ]
+        );
+    }
+
+    #[test]
+    fn blank_config_entries_become_dataset_headers() {
+        let config = ColumnConfigPreview {
+            entries: vec![
+                ColumnConfigEntry {
+                    name: "Object Name".into(),
+                    ..Default::default()
+                },
+                ColumnConfigEntry {
+                    name: "Digital Path".into(),
+                    ..Default::default()
+                },
+            ],
+        };
+        assert_eq!(
+            effective_headers_for(
+                EntryKind::Blank,
+                ColumnSource::LoadFromFileOrSheet,
+                vec!["Title".into(), "File".into()],
+                Some(&config),
+            ),
+            ["Object Name", "Digital Path"]
+        );
     }
 }

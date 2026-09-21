@@ -129,9 +129,58 @@ impl Launcher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if paths.len() != 1 {
-            self.error = Some("Drop one project, spreadsheet, or folder at a time here.".into());
-            cx.notify();
+        if paths.is_empty() {
+            return;
+        }
+        let is_project = |path: &std::path::Path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("qrate"))
+        };
+        if paths.len() > 1 && paths.iter().any(|path| is_project(path)) {
+            let project = paths.iter().find(|path| is_project(path)).cloned();
+            let material: Vec<_> = paths
+                .iter()
+                .filter(|path| !is_project(path))
+                .cloned()
+                .collect();
+            let answer = window.prompt(
+                PromptLevel::Info,
+                "Open a project or import material?",
+                Some("A project file and import material were dropped together."),
+                &["Open project", "Start project from material", "Cancel"],
+                cx,
+            );
+            cx.spawn_in(window, async move |this, cx| {
+                match answer.await.unwrap_or(2) {
+                    0 => {
+                        if let Some(project) = project {
+                            this.update_in(cx, |this, window, cx| {
+                                this.open_project_file(
+                                    project.to_string_lossy().into_owned(),
+                                    window,
+                                    cx,
+                                )
+                            })
+                            .ok();
+                        }
+                    }
+                    1 if !material.is_empty() => {
+                        this.update_in(cx, |_, window, cx| {
+                            wizard::open_project_wizard_seeded_paths(
+                                EntryKind::Blank,
+                                None,
+                                material,
+                                cx,
+                            );
+                            window.remove_window();
+                        })
+                        .ok();
+                    }
+                    _ => {}
+                }
+            })
+            .detach();
             return;
         }
         let path = &paths[0];
@@ -140,24 +189,21 @@ impl Launcher {
             .and_then(|extension| extension.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if extension == "qrate" {
+        if paths.len() == 1 && extension == "qrate" {
             self.open_project_file(path.to_string_lossy().into_owned(), window, cx);
             return;
         }
-        if path.is_dir() {
-            wizard::open_project_wizard_seeded(
-                EntryKind::Blank,
-                None,
-                Some(path.to_string_lossy().into_owned()),
-                cx,
-            );
+        if paths.len() == 1 && path.is_dir() {
+            wizard::open_project_wizard_seeded_paths(EntryKind::Blank, None, paths.to_vec(), cx);
             window.remove_window();
             return;
         }
-        if matches!(
-            extension.as_str(),
-            "csv" | "tsv" | "xlsx" | "xlsm" | "xlsb" | "xls" | "ods"
-        ) {
+        if paths.len() == 1
+            && matches!(
+                extension.as_str(),
+                "csv" | "tsv" | "xlsx" | "xlsm" | "xlsb" | "xls" | "ods"
+            )
+        {
             wizard::open_project_wizard_seeded(
                 EntryKind::LocalFile,
                 Some(path.to_string_lossy().into_owned()),
@@ -167,8 +213,13 @@ impl Launcher {
             window.remove_window();
             return;
         }
-        self.error = Some("Drop a .qrate project, supported spreadsheet, or folder.".into());
-        cx.notify();
+        if paths.iter().all(|path| path.is_file() || path.is_dir()) {
+            wizard::open_project_wizard_seeded_paths(EntryKind::Blank, None, paths.to_vec(), cx);
+            window.remove_window();
+        } else {
+            self.error = Some("One or more dropped paths no longer exist.".into());
+            cx.notify();
+        }
     }
 }
 

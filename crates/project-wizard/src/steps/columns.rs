@@ -62,11 +62,7 @@ fn inferred_required_column(
 }
 impl ProjectWizard {
     fn inferred_required_column(&self, kind: settings::columns::ColumnType) -> Option<String> {
-        inferred_required_column(
-            &self.spreadsheet_headers(),
-            self.config_preview.as_ref(),
-            kind,
-        )
+        inferred_required_column(&self.effective_headers(), self.selected_config(), kind)
     }
 
     fn prefill_required_columns(&mut self) {
@@ -95,7 +91,7 @@ impl ProjectWizard {
             value: "".into(),
             label: "Choose a column…".into(),
         })
-        .chain(self.spreadsheet_headers().into_iter().map(|header| {
+        .chain(self.effective_headers().into_iter().map(|header| {
             let label: SharedString = header.clone().into();
             ColumnChoice {
                 value: header.into(),
@@ -176,7 +172,11 @@ impl ProjectWizard {
             })
     }
     fn open_load_config_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let headers = self.spreadsheet_headers();
+        let headers = if self.entry_kind == EntryKind::Blank {
+            Vec::new()
+        } else {
+            self.spreadsheet_headers()
+        };
         let loader = match &self.config_loader {
             // The spreadsheet may have changed since, and a config is checked against its headers.
             Some(loader) => {
@@ -219,7 +219,7 @@ impl ProjectWizard {
         // Title and File are picked above, in the required-columns section. Listing them here too
         // showed each one twice with two different answers — the picker's and the config's.
         let headers: Vec<String> = self
-            .spreadsheet_headers()
+            .effective_headers()
             .into_iter()
             .filter(|h| {
                 ![self.title_column.as_deref(), self.file_column.as_deref()]
@@ -228,7 +228,7 @@ impl ProjectWizard {
                     .any(|chosen| chosen == h)
             })
             .collect();
-        let config = self.config_preview.clone();
+        let config = self.selected_config().cloned();
         let open = self.show_advanced_mapping;
 
         Collapsible::new()
@@ -275,7 +275,7 @@ impl ProjectWizard {
         let is_blank = self.entry_kind == EntryKind::Blank;
         let auto_selected = self.column_source == ColumnSource::AutoFromSpreadsheet;
         let load_selected = self.column_source == ColumnSource::LoadFromFileOrSheet;
-        let skip_selected = self.column_source == ColumnSource::SkipForNow;
+        let skip_selected = self.column_source == ColumnSource::DefaultBlank;
 
         v_flex()
             .gap_3()
@@ -296,6 +296,7 @@ impl ProjectWizard {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.column_source = ColumnSource::AutoFromSpreadsheet;
+                        this.reset_required_column_defaults();
                         cx.notify();
                     })),
                 )
@@ -316,19 +317,22 @@ impl ProjectWizard {
                 el.child(
                     option_card(
                         "col-skip",
-                        "Skip — set up columns later",
-                        "Start empty; add columns in project settings whenever you're ready.",
+                        "Use default Title and File columns",
+                        "Start with qrate's two required columns. You can add more later.",
                         skip_selected,
                         cx,
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.column_source = ColumnSource::SkipForNow;
+                        this.column_source = ColumnSource::DefaultBlank;
+                        this.reset_required_column_defaults();
                         cx.notify();
                     })),
                 )
             })
             .child(self.render_required_columns(window, cx))
-            .child(self.render_advanced_mapping(cx))
+            .when(load_selected, |el| {
+                el.child(self.render_advanced_mapping(cx))
+            })
             .child(
                 Label::new("You can always adjust this later in project settings.")
                     .text_sm()

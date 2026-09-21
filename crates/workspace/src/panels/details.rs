@@ -19,7 +19,7 @@ use gpui_component::{
 };
 use preview::{can_preview, thumb};
 use settings::history::{Change, EntryId, Listed, Origin};
-use table::{QrateTableDelegate, TableChanged, TableStateHandle};
+use table::{QrateTableDelegate, TableChanged, TablePanelHandle, TableStateHandle};
 
 use crate::BottomDockCrop;
 use crate::panel_registry::PanelMeta;
@@ -1133,6 +1133,19 @@ impl Render for DetailsPanel {
             // is empty — the multi-select gesture is the one thing here nobody discovers by luck.
             return div()
                 .size_full()
+                .drag_over::<ExternalPaths>(|style, _, _, cx| {
+                    style.bg(cx.theme().secondary_hover)
+                })
+                .on_drop(|paths: &ExternalPaths, window, cx| {
+                    if let Some(table) = cx
+                        .try_global::<TablePanelHandle>()
+                        .and_then(|handle| handle.0.upgrade())
+                    {
+                        table.update(cx, |table, cx| {
+                            table.import_external_paths(paths.paths().to_vec(), window, cx)
+                        });
+                    }
+                })
                 .flex()
                 .flex_col()
                 .items_center()
@@ -1433,6 +1446,17 @@ impl Render for DetailsPanel {
         // text-undo mid-edit.
         div()
             .size_full()
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary_hover))
+            .on_drop(|paths: &ExternalPaths, window, cx| {
+                if let Some(table) = cx
+                    .try_global::<TablePanelHandle>()
+                    .and_then(|handle| handle.0.upgrade())
+                {
+                    table.update(cx, |table, cx| {
+                        table.import_external_paths(paths.paths().to_vec(), window, cx)
+                    });
+                }
+            })
             // The whole panel gives the bottom-strip crop back at once, rather than each scrolling
             // region padding itself: the split below sizes its panes against whatever height it is
             // handed, so a panel that grew 29px when the bottom dock closed re-scaled the image

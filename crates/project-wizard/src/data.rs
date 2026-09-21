@@ -413,6 +413,14 @@ pub fn load_column_config(
         _ => ColumnConfigError::Io("it isn't a CSV, TSV, Excel or ODS file we can read".into()),
     })?;
 
+    parse_column_config(headers, records, against_headers)
+}
+
+pub(crate) fn parse_column_config(
+    headers: Vec<String>,
+    records: Vec<Vec<String>>,
+    against_headers: &[String],
+) -> Result<ColumnConfigPreview, ColumnConfigError> {
     let at = |wanted: &str| headers.iter().position(|h| h.eq_ignore_ascii_case(wanted));
     let (name_ix, type_ix) = (at("Column Name"), at("Data Type"));
     let (desc_ix, authority_ix) = (at("Description"), at("Authority"));
@@ -656,6 +664,30 @@ mod tests {
             load_column_config(unrelated.to_str().unwrap(), &headers),
             Err(ColumnConfigError::NoMatch)
         ));
+        let blank_preview = load_column_config(unrelated.to_str().unwrap(), &[]).unwrap();
+        assert_eq!(blank_preview.entries[0].name, "Something Else");
+    }
+
+    #[test]
+    fn fetched_sheet_rows_use_the_same_column_config_shape_as_a_file() {
+        let preview = parse_column_config(
+            vec![
+                "Column Name".into(),
+                "Data Type".into(),
+                "Description".into(),
+            ],
+            vec![vec![
+                "Object Name".into(),
+                "Title".into(),
+                "Shown in the table".into(),
+            ]],
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(preview.entries[0].name, "Object Name");
+        assert_eq!(preview.entries[0].data_type, "Title");
+        assert_eq!(preview.entries[0].description, "Shown in the table");
     }
 
     /// A synonym is stored canonically so validators match one spelling; a type this build does

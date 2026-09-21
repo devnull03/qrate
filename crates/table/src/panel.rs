@@ -68,7 +68,9 @@ actions!(
         CollapseAll,
         IndentRow,
         OutdentRow,
-        DeleteSubtree
+        DeleteSubtree,
+        ImportFiles,
+        RelinkMissingFiles
     ]
 );
 
@@ -482,7 +484,7 @@ impl TablePanel {
             }
         });
 
-        Self {
+        let panel = Self {
             focus_handle: cx.focus_handle(),
             state,
             loaded_project,
@@ -510,7 +512,9 @@ impl TablePanel {
             _replace_sub,
             _autosave_task: None,
             _revalidate_task: None,
-        }
+        };
+        cx.set_global(crate::TablePanelHandle(cx.entity().downgrade()));
+        panel
     }
 
     /// Re-run the validators once the edits stop, rather than inside the commit.
@@ -526,7 +530,7 @@ impl TablePanel {
         }));
     }
 
-    fn import_external_paths(
+    pub fn import_external_paths(
         &mut self,
         paths: Vec<std::path::PathBuf>,
         window: &mut Window,
@@ -717,6 +721,62 @@ impl TablePanel {
                 .detach();
             })
             .ok();
+        })
+        .detach();
+    }
+
+    pub fn choose_import_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: true,
+            prompt: Some("Choose files or folders to import".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = receiver.await
+                && !paths.is_empty()
+            {
+                this.update_in(cx, |this, window, cx| {
+                    this.import_external_paths(paths, window, cx)
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    pub fn choose_files_root(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose the folder that contains this project's files".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = receiver.await
+                && let Some(folder) = paths.first()
+            {
+                let folder = folder.to_string_lossy().into_owned();
+                this.update(cx, |this, cx| {
+                    settings::project::CurrentProject::set_text(
+                        settings::project::FILES_FOLDER_KEY,
+                        folder.into(),
+                        cx,
+                    );
+                    let image_paths = cx
+                        .try_global::<settings::project::CurrentProject>()
+                        .map(|project| Self::resolve_images(&project.data))
+                        .unwrap_or_default();
+                    this.state.update(cx, |state, cx| {
+                        state.delegate_mut().set_image_paths(image_paths);
+                        state.refresh(cx);
+                        cx.notify();
+                    });
+                    crate::revalidate_now(cx);
+                    cx.notify();
+                })
+                .ok();
+            }
         })
         .detach();
     }
@@ -1635,6 +1695,14 @@ impl Render for TablePanel {
                 if let Some((rows, _)) = this.structural_target(cx) {
                     crate::arrange(crate::Arrangement::DeleteSubtree(rows[0]), cx);
                 }
+            }))
+            .on_action(
+                cx.listener(|this, _: &ImportFiles, window, cx| {
+                    this.choose_import_paths(window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &RelinkMissingFiles, window, cx| {
+                this.choose_files_root(window, cx)
             }))
             .on_action(cx.listener(|this, _: &InsertRowAbove, _, cx| {
                 this.structural(|rows, _| crate::Structural::InsertRow { at: rows[0] }, cx)
