@@ -13,6 +13,7 @@
     // The adapter splits the build: dist/client is the static tree, dist/server
     // is the Worker.
     "directory": "./dist/client",
+    "run_worker_first": ["/feedback", "/feedback/", "/api/feedback"],
     // Astro emits get-started.html (build.format: 'file'), so /get-started is
     // served directly with no redirect.
     "html_handling": "auto-trailing-slash",
