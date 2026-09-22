@@ -209,7 +209,8 @@ impl Hierarchy {
             Placement::Before(target) | Placement::After(target) => {
                 self.ensure_target(row_id, target)?;
                 let target_row = self.row(target)?;
-                let siblings = self.children(target_row.parent_id);
+                let mut siblings = self.children(target_row.parent_id);
+                siblings.retain(|id| *id != row_id);
                 let target_at = siblings.iter().position(|id| *id == target).unwrap_or(0);
                 (
                     target_row.parent_id,
@@ -421,6 +422,16 @@ mod tests {
         );
         assert_eq!(hierarchy.row(4).unwrap().parent_id, Some(3));
         assert_eq!(hierarchy.rows().len(), 5);
+    }
+
+    #[test]
+    fn moving_a_row_down_lands_beside_its_target() {
+        for placement in [Placement::After(5), Placement::Before(3)] {
+            let mut hierarchy = hierarchy();
+            hierarchy.move_row(3, Placement::Root).unwrap();
+            hierarchy.move_row(1, placement).unwrap();
+            assert_eq!(hierarchy.children(None), [5, 1, 3]);
+        }
     }
 
     #[test]
