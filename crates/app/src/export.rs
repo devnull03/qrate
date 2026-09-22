@@ -36,6 +36,7 @@ struct ExportGrid {
 #[derive(Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 pub enum ExportFormat {
     Csv,
+    Xlsx,
     JsonLd,
     Csl,
     Zip,
@@ -62,8 +63,9 @@ const MAX_PLUGIN_EXPORT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Menu order. Each entry is the label and the filename the save dialog offers; the Sheets target
 /// never touches disk, so it has no name to suggest.
-pub const EXPORT_FORMATS: [(ExportFormat, &str, Option<&str>); 6] = [
+pub const EXPORT_FORMATS: [(ExportFormat, &str, Option<&str>); 7] = [
     (ExportFormat::Csv, "CSV…", Some("export.csv")),
+    (ExportFormat::Xlsx, "Excel (.xlsx)…", Some("export.xlsx")),
     (ExportFormat::JsonLd, "JSON-LD…", Some("export.jsonld")),
     (ExportFormat::Csl, "Zotero (CSL-JSON)…", Some("export.json")),
     (ExportFormat::Zip, "ZIP Archive…", Some("export.zip")),
@@ -338,6 +340,7 @@ fn save_as(
         };
         let result = match format {
             ExportFormat::Csv => export::write_csv(&path, &headers, &rows),
+            ExportFormat::Xlsx => export::write_xlsx(&path, &headers, &rows),
             ExportFormat::JsonLd => export::write_json(
                 &path,
                 &export::jsonld_hierarchy_value(&headers, &row_ids, &rows, &structure),

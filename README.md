@@ -23,7 +23,7 @@ Collection data rarely lives in just one place. A spreadsheet names an object, a
 - **See the records and the material together.** Link by filename or a pattern, browse a gallery of thumbnails, and preview images, documents, audio, and video alongside each record.
 - **Find pictures by what they show.** Optional visual search ranks linked images, PDF pages, and video frames against a plain description, or against another record's picture. The model downloads once and runs on your own machine.
 - **Catch problems while you work.** Check spelling, date formats, file links, headings, and selected authority sources. Review a proposed whole-cell correction before applying it.
-- **Take your data where it needs to go.** Export CSV, JSON-LD, CSL-JSON, or a ZIP archive. Google Sheets export and sync are available when you choose to enable them.
+- **Take your data where it needs to go.** Export CSV, Excel, JSON-LD, CSL-JSON, or a ZIP archive. Google Sheets export and sync are available when you choose to enable them.
 - **Use AI with a human in control.** An optional local agent can review the open project and stage findings in the Problems panel. It cannot change a cell; you decide what to accept.
 
 ## A typical workflow

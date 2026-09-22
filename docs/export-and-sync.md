@@ -5,6 +5,7 @@
 Export the project from the **File** menu as one of:
 
 - **CSV**
+- **Excel (.xlsx)**, with cell values kept as text so identifiers and dates stay unchanged.
 - **JSON-LD**
 - **CSL-JSON**
 - **A ZIP archive**, which bundles the exported data with the linked files it points to.

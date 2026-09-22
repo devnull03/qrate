@@ -19,9 +19,13 @@ thiserror = "2"
 # xl/comments*.xml (hand-rolling xlsx value parsing / XML entity decoding is the
 # flimsy trap we avoid).
 calamine = "0.26"
+rust_xlsxwriter = "0.99.1"
 zip.workspace = true
 quick-xml = "0.37"
 # PKCE for the Google sign-in: a SHA-256 challenge, url-safe base64, and an OS-random verifier.
 base64 = "0.22"
 sha2 = "0.10"
 getrandom = "0.3"
+
+[dev-dependencies]
+tempfile.workspace = true

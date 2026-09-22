@@ -1756,10 +1756,12 @@ dependencies = [
  "log",
  "quick-xml 0.37.5",
  "reqwest",
+ "rust_xlsxwriter",
  "serde",
  "serde_json",
  "settings",
  "sha2",
+ "tempfile",
  "thiserror 2.0.18",
  "zip 2.4.2",
 ]
@@ -7157,6 +7159,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust_xlsxwriter"
+version = "0.99.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34f2d2cda7223168a14fb86bc7411dbc3379bd7d49749ecc53b91ed98585b6b0"
+dependencies = [
+ "zip 8.6.0",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11280,6 +11291,20 @@ dependencies = [
  "indexmap",
  "memchr",
  "typed-path",
+]
+
+[[package]]
+name = "zip"
+version = "8.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "typed-path",
+ "zopfli",
 ]
 
 [[package]]

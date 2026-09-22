@@ -1,4 +1,4 @@
-//! Writing the open project back out: CSV, JSON-LD, Zotero's CSL-JSON, or a ZIP of all three
+//! Writing the open project back out: CSV, Excel, JSON-LD, Zotero's CSL-JSON, or a ZIP of all three
 //! plus the images.
 //!
 //! Everything here takes the grid as plain `headers` + `rows` — the same pair
@@ -20,6 +20,10 @@ pub enum ExportError {
     Io(#[from] std::io::Error),
     #[error("We couldn't write the spreadsheet — {0}")]
     Csv(#[from] csv::Error),
+    #[error("We couldn't write the Excel workbook — {0}")]
+    Xlsx(#[from] rust_xlsxwriter::XlsxError),
+    #[error("The grid cannot fit in one Excel worksheet")]
+    XlsxGridLimit,
     #[error("We couldn't build the archive — {0}")]
     Zip(#[from] zip::result::ZipError),
 }
@@ -43,6 +47,31 @@ fn csv_bytes(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, csv::E
 
 pub fn write_csv(path: &Path, headers: &[String], rows: &[Vec<String>]) -> Result<(), ExportError> {
     Ok(File::create(path)?.write_all(&csv_bytes(headers, rows)?)?)
+}
+
+/// Write every cell as text so Excel preserves identifiers, dates, and leading zeroes exactly.
+pub fn write_xlsx(
+    path: &Path,
+    headers: &[String],
+    rows: &[Vec<String>],
+) -> Result<(), ExportError> {
+    if headers.len() > 16_384 || rows.len() > 1_048_575 || rows.iter().any(|row| row.len() > 16_384)
+    {
+        return Err(ExportError::XlsxGridLimit);
+    }
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let sheet = workbook.add_worksheet();
+    sheet.set_name("Catalog")?;
+    for (col, header) in headers.iter().enumerate() {
+        sheet.write_string(0, col as u16, header)?;
+    }
+    for (row, cells) in rows.iter().enumerate() {
+        for (col, value) in cells.iter().enumerate() {
+            sheet.write_string((row + 1) as u32, col as u16, value)?;
+        }
+    }
+    workbook.save(path)?;
+    Ok(())
 }
 
 pub fn write_json(path: &Path, value: &Value) -> Result<(), ExportError> {
@@ -323,7 +352,7 @@ fn safe_archive_path(source: &str) -> Option<String> {
 mod tests {
     use super::{
         ArchiveFile, CslMapping, csl_items, derive_csl_mapping, jsonld_hierarchy_value,
-        project_structure_columns, write_zip,
+        project_structure_columns, write_xlsx, write_zip,
     };
     use settings::columns::ColumnType;
 
@@ -338,6 +367,25 @@ mod tests {
             ["2", "Second photo", "", ""].map(String::from).to_vec(),
         ];
         (headers, rows)
+    }
+
+    #[test]
+    fn xlsx_round_trip_keeps_identifiers_and_dates_as_text() {
+        use calamine::{DataType as _, Reader as _};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("catalog.xlsx");
+        write_xlsx(
+            &path,
+            &["ID".into(), "Date".into()],
+            &[vec!["00123".into(), "2026-09-22".into()]],
+        )
+        .unwrap();
+        let mut workbook = calamine::open_workbook_auto(&path).unwrap();
+        let range = workbook.worksheet_range_at(0).unwrap().unwrap();
+        assert_eq!(range.get((0, 0)).unwrap().get_string(), Some("ID"));
+        assert_eq!(range.get((1, 0)).unwrap().get_string(), Some("00123"));
+        assert_eq!(range.get((1, 1)).unwrap().get_string(), Some("2026-09-22"));
     }
 
     #[test]

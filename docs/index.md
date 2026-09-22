@@ -11,7 +11,7 @@ checks the data against validators, and exports it to the formats other systems 
 - [Visual search](visual-search.md) — find records by what their pictures show
 - [Diagnostics](diagnostics.md) — the Problems panel, spelling, and fixes
 - [Columns](columns.md) — column types, authority lists, and per-column settings
-- [Export and Google Sheets](export-and-sync.md) — CSV, JSON-LD, CSL-JSON, ZIP, and Sheets sync
+- [Export and Google Sheets](export-and-sync.md) — CSV, Excel, JSON-LD, CSL-JSON, ZIP, and Sheets sync
 - [The Agent panel](agent-panel.md) — how a local AI agent reads a project
 
 ## Plugins
