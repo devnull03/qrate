@@ -85,6 +85,22 @@
           </RegistryKey>
         </RegistryKey>
       </Component>
+      <Component Id="QrateProjectFile" Guid="*" Permanent="yes">
+        <RegistryKey Root="HKLM" Key="Software\Classes\.qrate">
+          <RegistryValue Type="string" Value="qrate.Project" KeyPath="yes" />
+        </RegistryKey>
+      </Component>
+      <Component Id="QrateProjectType" Guid="*">
+        <RegistryKey Root="HKLM" Key="Software\Classes\qrate.Project">
+          <RegistryValue Type="string" Value="qrate project" />
+          <RegistryKey Key="DefaultIcon">
+            <RegistryValue Type="string" Value="[#QrateExe],0" />
+          </RegistryKey>
+          <RegistryKey Key="shell\open\command">
+            <RegistryValue Type="string" Value="&quot;[#QrateExe]&quot; &quot;%1&quot;" />
+          </RegistryKey>
+        </RegistryKey>
+      </Component>
 
       <!-- Preview sidecars — see scripts/fetch-binaries.sh. Both are optional at runtime (the
            preview tiers fall back to a type icon without them); HasPdfium/HasFfmpeg only guard

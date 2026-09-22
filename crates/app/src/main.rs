@@ -518,6 +518,14 @@ fn main() {
     // First, so failures in GPUI platform construction and startup still reach the log file.
     logging::init();
     log::info!("site origin: {}", site::url("/"));
+    let initial_project = std::env::args_os()
+        .skip(1)
+        .map(std::path::PathBuf::from)
+        .find(|path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("qrate"))
+        });
     let initial_link = std::env::args()
         .find(|argument| argument.starts_with("qrate://"))
         .filter(|link| {
@@ -676,6 +684,23 @@ fn main() {
 
         match initial_link {
             Some(link) if open_install_link(&link, cx) => {}
+            _ if initial_project.as_ref().is_some_and(
+                |path| match project_wizard::open_project(path, cx) {
+                    Ok(name) => {
+                        project_wizard::record_opened(
+                            name,
+                            path.to_string_lossy().into_owned(),
+                            cx,
+                        );
+                        open_main_window(cx);
+                        true
+                    }
+                    Err(error) => {
+                        log::error!("could not open project {}: {error:#}", path.display());
+                        false
+                    }
+                },
+            ) => {}
             // The launcher is the normal startup window; it opens the main window or the wizard.
             _ => project_wizard::open_launcher_window(cx),
         }

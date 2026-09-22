@@ -137,6 +137,13 @@ Section "Install"
   WriteRegStr SHCTX "Software\Classes\qrate\DefaultIcon" "" "$INSTDIR\${EXENAME},0"
   WriteRegStr SHCTX "Software\Classes\qrate\shell\open\command" "" '"$INSTDIR\${EXENAME}" "%1"'
 
+  ; A project file opens in qrate and uses the icon embedded in the installed executable.
+  WriteRegStr SHCTX "Software\Classes\.qrate" "" "qrate.Project"
+  WriteRegStr SHCTX "Software\Classes\qrate.Project" "" "qrate project"
+  WriteRegStr SHCTX "Software\Classes\qrate.Project\DefaultIcon" "" "$INSTDIR\${EXENAME},0"
+  WriteRegStr SHCTX "Software\Classes\qrate.Project\shell\open\command" "" '"$INSTDIR\${EXENAME}" "%1"'
+  System::Call 'Shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+
   ; Uninstaller + Add/Remove Programs entry. SHCTX is HKLM for an all-users install, HKCU for a
   ; per-user one — set by MULTIUSER_INIT to match the mode picked above.
   WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -173,6 +180,8 @@ Section "un.qrate" SEC_UNAPP
   Delete "$SMPROGRAMS\${APPNAME}.lnk"
   Delete "$DESKTOP\${APPNAME}.lnk"
   DeleteRegKey SHCTX "Software\Classes\qrate"
+  DeleteRegKey SHCTX "Software\Classes\qrate.Project"
+  System::Call 'Shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
   DeleteRegKey SHCTX "${UNINSTKEY}"
   DeleteRegKey SHCTX "Software\${APPNAME}"
 

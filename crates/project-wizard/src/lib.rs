@@ -13,4 +13,6 @@ pub mod wizard;
 
 pub use column_config::open_column_config_dialog;
 pub use launcher::{LauncherHooks, open_launcher_window};
+pub use project::open_project;
+pub use recent::record_opened;
 pub use wizard::{EntryKind, open_project_wizard};
