@@ -113,6 +113,7 @@ pub struct QrateTableDelegate {
     /// Log entries for changes not yet saved. They reach the `.qrate` file with the data they
     /// describe, and are dropped with it when a project is closed without saving.
     unsaved: Vec<Entry>,
+    stamped_history: usize,
     /// How many leading data columns are frozen. A count in *display* order, not a set of keys:
     /// the library's fixed region is always the leading columns, and moving a column in or out of
     /// it is how a sheet re-freezes. Zero means only the pinned `#` column stays put.
@@ -147,6 +148,7 @@ impl QrateTableDelegate {
             values_generation: 0,
             history: History::default(),
             unsaved: Vec::new(),
+            stamped_history: 0,
             frozen: 0,
         }
     }
@@ -604,6 +606,7 @@ impl QrateTableDelegate {
         // Recorded edits index into the outgoing dataset.
         self.history = History::default();
         self.unsaved.clear();
+        self.stamped_history = 0;
         self.filters = vec![HashSet::new(); self.columns.len()];
         self.filters_enabled = vec![false; self.columns.len()];
         self.search_rows = None;
@@ -1022,9 +1025,18 @@ impl QrateTableDelegate {
         &self.unsaved
     }
 
+    pub(crate) fn stamp_pending_author(&mut self, author: Option<String>) {
+        for entry in &mut self.unsaved[self.stamped_history..] {
+            entry.author = author.clone();
+        }
+        self.stamped_history = self.unsaved.len();
+    }
+
     /// Forget the first `count` unsaved entries — they have just been written.
     pub(crate) fn history_saved(&mut self, count: usize) {
-        self.unsaved.drain(..count.min(self.unsaved.len()));
+        let count = count.min(self.unsaved.len());
+        self.unsaved.drain(..count);
+        self.stamped_history = self.stamped_history.saturating_sub(count);
     }
 
     /// Apply one side of a recorded step without re-recording it — going through `apply_edit` here
@@ -3270,6 +3282,28 @@ mod app_tests {
     }
 
     /// Undo and redo are entries in their own right, and say what they put back.
+    #[gpui::test]
+    fn history_keeps_the_author_from_each_edit(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.apply_edit(vec![(1, 1, "First".into())], Origin::Typed);
+                delegate.stamp_pending_author(Some("Avery".into()));
+                delegate.apply_edit(vec![(1, 1, "Second".into())], Origin::Typed);
+                delegate.stamp_pending_author(Some("Blair".into()));
+                assert_eq!(
+                    delegate.unsaved_history()[0].author.as_deref(),
+                    Some("Avery")
+                );
+                assert_eq!(
+                    delegate.unsaved_history()[1].author.as_deref(),
+                    Some("Blair")
+                );
+            });
+        });
+    }
+
     #[gpui::test]
     fn undo_is_logged_as_the_inverse_of_what_it_reverses(cx: &mut TestAppContext) {
         let state = table(cx);

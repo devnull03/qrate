@@ -21,6 +21,7 @@ impl BarRegistry for TitleBarRegistry {
 #[derive(IntoElement, Default)]
 pub struct AppTitleBar {
     title: SharedString,
+    author: SharedString,
     dirty: bool,
 }
 
@@ -28,12 +29,18 @@ impl AppTitleBar {
     pub fn new(title: impl Into<SharedString>) -> Self {
         Self {
             title: title.into(),
+            author: SharedString::default(),
             dirty: false,
         }
     }
 
     pub fn dirty(mut self, dirty: bool) -> Self {
         self.dirty = dirty;
+        self
+    }
+
+    pub fn author(mut self, author: impl Into<SharedString>) -> Self {
+        self.author = author.into();
         self
     }
 }
@@ -71,7 +78,12 @@ impl RenderOnce for AppTitleBar {
                     })
                     .when(!self.title.is_empty(), |this| {
                         this.child(self.title.clone())
-                    }),
+                    })
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("· Author: {}", self.author)),
+                    ),
             )
             .child(
                 gpui_component::h_flex()

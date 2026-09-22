@@ -241,8 +241,12 @@ pub fn author(cx: &App) -> Option<String> {
     if !cx.has_global::<crate::AppSettings>() {
         return None;
     }
-    let author = crate::effective_text(crate::NOTE_AUTHOR_KEY, cx);
-    (!author.trim().is_empty()).then(|| author.to_string())
+    let author = crate::AppSettings::get(cx)
+        .values
+        .get(crate::NOTE_AUTHOR_KEY)
+        .map(|value| value.text())
+        .unwrap_or_default();
+    (!author.trim().is_empty()).then(|| author.trim().to_string())
 }
 
 const HISTORY_DDL: &str = r#"

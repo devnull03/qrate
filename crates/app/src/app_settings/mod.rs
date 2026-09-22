@@ -50,6 +50,29 @@ fn revalidate_authority_setting(cx: &mut App) {
 pub fn build_pages(cx: &App) -> Vec<SettingPage> {
     let mut pages = vec![
         SettingPage::new("Application")
+            .description("Settings for this user on this computer, across all projects.")
+            .group(divided_group(cx).title("Identity").item(
+                SettingItem::new(
+                    "Author name",
+                    SettingField::input(
+                        |cx: &App| {
+                            settings::AppSettings::get(cx)
+                                .values
+                                .get(settings::NOTE_AUTHOR_KEY)
+                                .map(|value| value.text())
+                                .unwrap_or_default()
+                        },
+                        |name: SharedString, cx: &mut App| {
+                            settings::AppSettings::set_text(settings::NOTE_AUTHOR_KEY, name, cx)
+                        },
+                    ),
+                )
+                .description(
+                    "Shown in the project window and recorded on new notes and history entries. \
+                     Stored for this user on this computer; leave blank to omit attribution.",
+                )
+                .layout(Axis::Vertical),
+            ))
             .group(
                 divided_group(cx).title("Appearance").item(SettingItem::new(
                     "Theme",
@@ -96,7 +119,6 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                 ),
             )
             .group(saving_group(cx))
-            .group(notes_group(cx))
             .group(history_group(cx))
             .group(previews_group(cx)),
         columns_page(cx),
@@ -152,21 +174,6 @@ fn divided_group(cx: &App) -> SettingGroup {
     SettingGroup::new()
         .border_b_1()
         .border_color(cx.theme().border)
-}
-
-/// Who a filed note and a recorded change are attributed to. Lives beside the table's own
-/// preferences because both are made from the grid, and the name signing them is the archivist's.
-fn notes_group(cx: &App) -> SettingGroup {
-    divided_group(cx).title("Notes").item(
-        Setting::Text {
-            key: settings::NOTE_AUTHOR_KEY,
-            label: "Attribute notes and changes to",
-            description: "Initials or a name, recorded on each note you file and each change in \
-                          the project history. Leave it empty to record them with a date and no \
-                          author.",
-        }
-        .into_item(cx),
-    )
 }
 
 /// How much of the change log a project keeps. Set per project as well as app-wide, because the

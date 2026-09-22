@@ -785,6 +785,7 @@ impl TablePanel {
     /// short debounce (the default), or leave it for Ctrl+S / quit. The default and any unset/
     /// unrecognized value both mean "timed".
     fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
+        crate::stamp_pending_author(cx);
         match settings::effective_text(settings::AUTOSAVE_KEY, cx).as_ref() {
             "off" => {}
             "immediate" => crate::save_now(cx),

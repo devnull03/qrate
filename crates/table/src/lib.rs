@@ -122,9 +122,23 @@ pub fn revalidate_now(cx: &mut App) {
 /// menu click is one deliberate change. That also keeps the pending write off `TablePanel`, which
 /// none of these free functions can reach.
 fn autosave(cx: &mut App) {
+    stamp_pending_author(cx);
     if settings::effective_text(settings::AUTOSAVE_KEY, cx).as_ref() != "off" {
         save_now(cx);
     }
+}
+
+pub(crate) fn stamp_pending_author(cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+    else {
+        return;
+    };
+    let author = settings::history::author(cx);
+    state.update(cx, |state, _| {
+        state.delegate_mut().stamp_pending_author(author)
+    });
 }
 
 /// Commit `text` into a cell, mark the project dirty, and re-run validation — everything a
@@ -733,6 +747,7 @@ pub fn selected_context(plugin: &SharedString, cx: &App) -> CommandContext {
 /// on the calling thread — qrate's grids are small enough that a full rewrite stays well under a
 /// frame; move it onto the background executor if large projects ever stutter here.
 pub fn save_now(cx: &mut App) {
+    stamp_pending_author(cx);
     let Some(file) = cx
         .try_global::<settings::project::CurrentProject>()
         .map(|p| p.file.clone())
@@ -746,19 +761,11 @@ pub fn save_now(cx: &mut App) {
         return;
     };
     let started = std::time::Instant::now();
-    let author = settings::history::author(cx);
     let (headers, row_ids, rows, structure, history) = {
         let delegate = state.read(cx).delegate();
         let (headers, row_ids, rows) = delegate.dataset_snapshot();
         let structure = delegate.row_structure().to_vec();
-        let history = delegate
-            .unsaved_history()
-            .iter()
-            .map(|entry| settings::history::Entry {
-                author: author.clone(),
-                ..entry.clone()
-            })
-            .collect::<Vec<_>>();
+        let history = delegate.unsaved_history().to_vec();
         (headers, row_ids, rows, structure, history)
     };
     match settings::project::save_dataset(

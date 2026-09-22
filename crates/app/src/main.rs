@@ -163,6 +163,7 @@ pub struct App {
     /// Repaints the title bar's unsaved-changes dot when the dirty set changes. `dirty::mark`/
     /// `clear` mutate the global, so this fires on every edit and every save.
     _dirty_sub: Subscription,
+    _settings_sub: Subscription,
 }
 
 impl App {
@@ -235,6 +236,7 @@ impl App {
         set_main_window_title(window, cx);
 
         let _dirty_sub = cx.observe_global::<settings::dirty::Dirty>(|_, cx| cx.notify());
+        let _settings_sub = cx.observe_global::<AppSettings>(|_, cx| cx.notify());
 
         let focus_handle = cx.focus_handle();
         if window.focused(cx).is_none() {
@@ -247,6 +249,7 @@ impl App {
             focus_handle,
             _main_window_bounds_sub,
             _dirty_sub,
+            _settings_sub,
         }
     }
 
@@ -310,6 +313,7 @@ impl Render for App {
                                 .map(|p| p.display_name())
                                 .unwrap_or_default(),
                         )
+                        .author(settings::history::author(cx).unwrap_or_else(|| "Not set".into()))
                         // Only cell data (gated by autosave/Ctrl+S) can be genuinely unsaved;
                         // column layout/settings auto-persist via the debounced writer, so `any()`
                         // would light the dot forever for those (nothing clears them until quit).

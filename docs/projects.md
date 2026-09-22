@@ -26,5 +26,6 @@ The launcher lists recent projects. Pick one to open it, or browse to any `.qrat
 ## Project settings
 
 **Settings ▸ Project** holds settings scoped to this one project: the linked-files folder,
-column configuration, and plugin settings. **Settings ▸ App** holds settings that apply to
-every project you open, such as the interface theme.
+column configuration, and plugin settings. **Settings ▸ Application** holds settings that apply
+to every project you open. Set **Application ▸ Identity ▸ Author name** to sign new notes and
+history entries; the active name appears in the project window.
