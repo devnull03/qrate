@@ -1499,6 +1499,59 @@ impl QrateTableDelegate {
         added
     }
 
+    /// Append spreadsheet values as one undoable step, preserving the project's existing columns.
+    pub(crate) fn append_spreadsheet_rows(&mut self, values: Vec<Vec<SharedString>>) -> usize {
+        if values.is_empty() {
+            return 0;
+        }
+        let at = self.rows.len();
+        let before_structure = self.hierarchy.rows().to_vec();
+        let mut next_order = before_structure
+            .iter()
+            .filter(|row| row.parent_id.is_none())
+            .map(|row| row.sibling_order)
+            .max()
+            .unwrap_or(-1)
+            .saturating_add(1);
+        let mut after_structure = before_structure.clone();
+        let rows: Vec<_> = values
+            .into_iter()
+            .map(|cells| {
+                let id = self.fresh_row_id();
+                after_structure.push(settings::project::RowStructure {
+                    row_id: id,
+                    parent_id: None,
+                    level_key: self.default_level.clone(),
+                    sibling_order: next_order,
+                    source_path: None,
+                    source_kind: None,
+                });
+                next_order = next_order.saturating_add(1);
+                Row {
+                    id,
+                    cells,
+                    image: None,
+                }
+            })
+            .collect();
+        let added = rows.len();
+        self.splice_rows(at, &rows);
+        self.hierarchy
+            .replace_rows(&self.row_ids, &after_structure, &self.default_level);
+        self.recompute_visible();
+        self.record(
+            Step::RowsAdded {
+                at,
+                rows,
+                cells: Vec::new(),
+                before_structure,
+                after_structure,
+            },
+            Origin::Import,
+        );
+        added
+    }
+
     /// Delete the rows at `ats` as one undo step, carrying their cells and photos on it.
     pub(crate) fn remove_rows(&mut self, ats: &[usize]) {
         let before_structure = self.hierarchy.rows().to_vec();
@@ -3149,6 +3202,32 @@ mod app_tests {
                 assert!(delegate.undo().is_some_and(|c| moves_rows(&c)));
                 assert!(delegate.undo().is_some_and(|c| !moves_rows(&c)));
                 assert_eq!(delegate.cell(3, 1).map(|c| c.as_ref()), Some("four"));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn spreadsheet_rows_append_as_one_undoable_import(cx: &mut TestAppContext) {
+        let state = table(cx);
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                assert_eq!(
+                    delegate.append_spreadsheet_rows(vec![
+                        vec!["Photograph".into(), "five".into()],
+                        vec!["Film".into(), "six".into()],
+                    ]),
+                    2
+                );
+                assert_eq!(delegate.cell(4, 1).map(|cell| cell.as_ref()), Some("five"));
+                assert_eq!(delegate.cell(5, 1).map(|cell| cell.as_ref()), Some("six"));
+                assert_eq!(
+                    delegate.unsaved.last().map(|entry| &entry.origin),
+                    Some(&Origin::Import)
+                );
+                assert!(delegate.undo().is_some_and(|changes| moves_rows(&changes)));
+                assert_eq!(delegate.row_ids().len(), 4);
+                assert_eq!(delegate.undo(), None);
             });
         });
     }

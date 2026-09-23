@@ -8,6 +8,7 @@ pub mod export;
 pub mod google;
 pub mod preview;
 pub mod sheet;
+pub mod spreadsheet;
 
 pub use preview::{PreviewNote, SpreadsheetError, SpreadsheetPreview};
 pub use sheet::{CellNote, SheetData, SheetSyncError, a1_to_index, fetch_sheet};

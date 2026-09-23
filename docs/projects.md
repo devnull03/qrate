@@ -23,6 +23,13 @@ The launcher offers three ways to start:
 
 The launcher lists recent projects. Pick one to open it, or browse to any `.qrate` file.
 
+## Add spreadsheet rows to an open project
+
+Choose **File ▸ Import Spreadsheet…** and select a CSV, TSV, Excel, or OpenDocument file.
+qrate matches the first row's headers to existing column names, ignoring case and surrounding
+spaces. It shows any unmatched source columns before you confirm. Confirming appends the data
+rows to the current project as one change you can undo; existing rows and columns stay in place.
+
 ## Project settings
 
 **Settings ▸ Project** holds settings scoped to this one project: the linked-files folder,

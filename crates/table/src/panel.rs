@@ -28,6 +28,39 @@ use crate::{
 
 const COLUMN_LAYOUT_KEY: &str = "table_columns";
 
+fn map_spreadsheet_headers(
+    source: &[String],
+    destination: &[String],
+) -> Result<(Vec<Option<usize>>, Vec<String>), String> {
+    let mut used = std::collections::HashSet::new();
+    let mut skipped = Vec::new();
+    let mut mapping = Vec::with_capacity(source.len());
+    for header in source {
+        let target = destination
+            .iter()
+            .position(|name| name.trim().eq_ignore_ascii_case(header.trim()));
+        if let Some(target) = target {
+            if !used.insert(target) {
+                return Err(format!(
+                    "More than one source column matches '{}'.",
+                    destination[target]
+                ));
+            }
+        } else {
+            skipped.push(if header.trim().is_empty() {
+                "(blank header)".into()
+            } else {
+                header.clone()
+            });
+        }
+        mapping.push(target);
+    }
+    if used.is_empty() {
+        return Err("No source headers match columns in this project.".into());
+    }
+    Ok((mapping, skipped))
+}
+
 pub(crate) const FROZEN_COLUMNS_KEY: &str = "table_frozen_columns";
 
 /// Push the settings the delegate caches into it. Called wherever either store changes, since the
@@ -70,6 +103,7 @@ actions!(
         OutdentRow,
         DeleteSubtree,
         ImportFiles,
+        ImportSpreadsheet,
         RelinkMissingFiles
     ]
 );
@@ -741,6 +775,157 @@ impl TablePanel {
                 })
                 .ok();
             }
+        })
+        .detach();
+    }
+
+    pub fn choose_import_spreadsheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Choose an Excel, CSV, TSV, or ODS file to append".into()),
+        });
+        let project_file = cx
+            .global::<settings::project::CurrentProject>()
+            .file
+            .clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let display = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            let task = cx.background_executor().spawn(async move {
+                data_exchange::spreadsheet::read_grid(&path.to_string_lossy())
+            });
+            let grid = task.await;
+            this.update_in(cx, |this, window, cx| {
+                if cx.global::<settings::project::CurrentProject>().file != project_file {
+                    return;
+                }
+                let (headers, rows) = match grid {
+                    Ok(grid) => grid,
+                    Err(error) => {
+                        let detail = error.message();
+                        let _ = window.prompt(
+                            PromptLevel::Warning,
+                            "Could not import spreadsheet",
+                            Some(&detail),
+                            &["OK"],
+                            cx,
+                        );
+                        return;
+                    }
+                };
+                if headers.iter().all(|header| header.trim().is_empty()) || rows.is_empty() {
+                    let _ = window.prompt(
+                        PromptLevel::Warning,
+                        "Nothing to import",
+                        Some("The file needs a header row and at least one data row."),
+                        &["OK"],
+                        cx,
+                    );
+                    return;
+                }
+                let destination = {
+                    let state = this.state.read(cx);
+                    let delegate = state.delegate();
+                    (0..delegate.column_count())
+                        .map(|col| delegate.column_name(col).to_string())
+                        .collect::<Vec<_>>()
+                };
+                let (mapping, skipped) = match map_spreadsheet_headers(&headers, &destination) {
+                    Ok(mapping) => mapping,
+                    Err(message) => {
+                        let _ = window.prompt(
+                            PromptLevel::Warning,
+                            "Could not import spreadsheet",
+                            Some(&message),
+                            &["OK"],
+                            cx,
+                        );
+                        return;
+                    }
+                };
+                let matched = mapping.iter().filter(|column| column.is_some()).count();
+                let detail = format!(
+                    "Append {} row{} from {display}? {matched} column{} match.{}",
+                    rows.len(),
+                    if rows.len() == 1 { "" } else { "s" },
+                    if matched == 1 { "" } else { "s" },
+                    if skipped.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" Skipping unmatched columns: {}.", skipped.join(", "))
+                    }
+                );
+                let answer = window.prompt(
+                    PromptLevel::Info,
+                    "Import spreadsheet",
+                    Some(&detail),
+                    &["Import", "Cancel"],
+                    cx,
+                );
+                cx.spawn_in(window, async move |this, cx| {
+                    if answer.await != Ok(0) {
+                        return;
+                    }
+                    this.update(cx, |this, cx| {
+                        if cx.global::<settings::project::CurrentProject>().file != project_file {
+                            return;
+                        }
+                        let current_headers = {
+                            let state = this.state.read(cx);
+                            let delegate = state.delegate();
+                            (0..delegate.column_count())
+                                .map(|col| delegate.column_name(col).to_string())
+                                .collect::<Vec<_>>()
+                        };
+                        if current_headers != destination {
+                            return;
+                        }
+                        let values = rows
+                            .into_iter()
+                            .map(|source| {
+                                let mut cells = vec![SharedString::default(); destination.len()];
+                                for (from, to) in mapping.iter().enumerate() {
+                                    if let Some(to) = to {
+                                        cells[*to] =
+                                            source.get(from).cloned().unwrap_or_default().into();
+                                    }
+                                }
+                                cells
+                            })
+                            .collect();
+                        this.state.update(cx, |state, cx| {
+                            state.delegate_mut().append_spreadsheet_rows(values);
+                            photos::refresh(state, cx);
+                            state.refresh(cx);
+                            cx.emit(TableChanged);
+                            cx.notify();
+                        });
+                        let row_ids = this.state.read(cx).delegate().row_ids().to_vec();
+                        diagnostics::Diagnostics::align_note_rows(
+                            diagnostics::DATASET_MAIN,
+                            &row_ids,
+                            Origin::Import,
+                            cx,
+                        );
+                        settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+                        this.schedule_revalidate(cx);
+                        this.schedule_autosave(cx);
+                    })
+                    .ok();
+                })
+                .detach();
+            })
+            .ok();
         })
         .detach();
     }
@@ -1702,6 +1887,9 @@ impl Render for TablePanel {
                     this.choose_import_paths(window, cx)
                 }),
             )
+            .on_action(cx.listener(|this, _: &ImportSpreadsheet, window, cx| {
+                this.choose_import_spreadsheet(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &RelinkMissingFiles, window, cx| {
                 this.choose_files_root(window, cx)
             }))
@@ -1829,6 +2017,19 @@ mod tests {
     use diagnostics::{DATASET_MAIN, Diagnostic, Diagnostics, Location, Severity, Source};
     use gpui::{SharedString, TestAppContext};
     use settings::history::Origin;
+
+    #[test]
+    fn spreadsheet_headers_map_by_name_and_reject_ambiguous_sources() {
+        let destination = vec!["Title".into(), "Digital ID".into()];
+        let source = vec![" digital id ".into(), "Extra".into(), "TITLE".into()];
+        let (mapping, skipped) = super::map_spreadsheet_headers(&source, &destination).unwrap();
+        assert_eq!(mapping, vec![Some(1), None, Some(0)]);
+        assert_eq!(skipped, vec!["Extra"]);
+        assert!(
+            super::map_spreadsheet_headers(&["Title".into(), "title".into()], &destination)
+                .is_err()
+        );
+    }
 
     fn wrote(cells: &[(usize, usize, SharedString)]) -> Vec<(usize, usize, &str)> {
         cells.iter().map(|(r, c, v)| (*r, *c, v.as_ref())).collect()

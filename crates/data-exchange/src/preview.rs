@@ -1,6 +1,6 @@
 //! The shape every importer produces: headers, rows, and whatever notes the source carried.
 //!
-//! A local CSV (read by `project_wizard::data`) and a fetched Google Sheet both land here, so the
+//! A local spreadsheet (read by `spreadsheet`) and a fetched Google Sheet both land here, so the
 //! wizard's folder-matching and column-config steps only ever see one type.
 
 use crate::sheet::{SheetData, a1_to_index};

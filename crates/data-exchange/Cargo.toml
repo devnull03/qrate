@@ -18,7 +18,7 @@ thiserror = "2"
 # metadata). calamine reads the values; zip + quick-xml pull notes out of
 # xl/comments*.xml (hand-rolling xlsx value parsing / XML entity decoding is the
 # flimsy trap we avoid).
-calamine = "0.26"
+calamine.workspace = true
 rust_xlsxwriter = "0.99.1"
 zip.workspace = true
 quick-xml = "0.37"

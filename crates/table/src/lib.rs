@@ -31,9 +31,9 @@ pub use editor::editor_box;
 pub use note::{Target as MenuTarget, menu as context_menu};
 pub use panel::{
     Clear, CollapseAll, Copy, Cut, DeleteColumn, DeleteRow, DeleteSubtree, Deselect, DuplicateRow,
-    EditCell, ExpandAll, GRID_CONTEXT, ImportFiles, IndentRow, InsertColumnLeft, InsertColumnRight,
-    InsertNote, InsertRowAbove, InsertRowBelow, OutdentRow, Paste, Redo, RelinkMissingFiles,
-    RenameColumn, Replace, Search, TablePanel, Undo, UnfreezeColumns,
+    EditCell, ExpandAll, GRID_CONTEXT, ImportFiles, ImportSpreadsheet, IndentRow, InsertColumnLeft,
+    InsertColumnRight, InsertNote, InsertRowAbove, InsertRowBelow, OutdentRow, Paste, Redo,
+    RelinkMissingFiles, RenameColumn, Replace, Search, TablePanel, Undo, UnfreezeColumns,
 };
 
 /// Global command handle for import entry points outside the centre table, such as Details.

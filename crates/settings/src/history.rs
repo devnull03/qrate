@@ -38,6 +38,8 @@ pub enum Origin {
     Fix(String),
     /// Rows or columns added, removed, renamed, or moved.
     Structure,
+    /// Rows appended from a local spreadsheet.
+    Import,
     Undo,
     Redo,
     /// Put back by restoring the project, or a single value, to this entry.
@@ -56,6 +58,7 @@ impl Origin {
             Origin::Spelling => "Spelling fix".into(),
             Origin::Fix(fix) => format!("Fix: {fix}"),
             Origin::Structure => "Rows and columns".into(),
+            Origin::Import => "Spreadsheet import".into(),
             Origin::Undo => "Undo".into(),
             Origin::Redo => "Redo".into(),
             Origin::Restore(id) => format!("Restored to #{id}"),

@@ -108,6 +108,7 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
                 MenuItem::action("Save", Save),
                 MenuItem::Separator,
                 MenuItem::action("Import Files or Folders…", table::ImportFiles),
+                MenuItem::action("Import Spreadsheet…", table::ImportSpreadsheet),
                 MenuItem::action("Relink Missing Files…", table::RelinkMissingFiles),
                 MenuItem::submenu(Menu {
                     name: "Export".into(),

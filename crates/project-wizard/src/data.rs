@@ -6,76 +6,11 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
-use calamine::{Data, Reader, open_workbook_auto};
 use data_exchange::{SpreadsheetError, SpreadsheetPreview};
 use settings::columns::ColumnType;
 
-/// Headers plus rows, however the file spells them. Both the import preview and the column-config
-/// loader read through here, so a config written as a workbook loads like a CSV one.
-fn read_grid(path: &str) -> Result<(Vec<String>, Vec<Vec<String>>), SpreadsheetError> {
-    let p = Path::new(path);
-    let ext = p
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
-
-    match ext.as_str() {
-        "csv" | "tsv" => {
-            let mut rdr = csv::ReaderBuilder::new()
-                .has_headers(true)
-                .flexible(true)
-                .delimiter(if ext == "tsv" { b'\t' } else { b',' })
-                .from_path(p)
-                .map_err(|e| SpreadsheetError::Io(e.to_string()))?;
-            let headers = rdr
-                .headers()
-                .map_err(|e| SpreadsheetError::Io(e.to_string()))?
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-            let mut rows = Vec::new();
-            for result in rdr.records() {
-                let record = result.map_err(|e| SpreadsheetError::Io(e.to_string()))?;
-                rows.push(record.iter().map(|s| s.to_string()).collect());
-            }
-            Ok((headers, rows))
-        }
-        "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" => {
-            let mut wb = open_workbook_auto(p).map_err(|e| SpreadsheetError::Io(e.to_string()))?;
-            // First tab, matching how a fetched Google Sheet is taken.
-            let name = wb
-                .sheet_names()
-                .first()
-                .cloned()
-                .ok_or(SpreadsheetError::Empty)?;
-            let range = wb
-                .worksheet_range(&name)
-                .map_err(|e| SpreadsheetError::Io(e.to_string()))?;
-            let mut grid = range.rows().map(|r| r.iter().map(cell_text).collect());
-            let headers = grid.next().unwrap_or_default();
-            Ok((headers, grid.collect()))
-        }
-        _ => Err(SpreadsheetError::UnsupportedFormat),
-    }
-}
-
-/// A cell as the archivist sees it in Excel. Dates are the reason this isn't `to_string()` —
-/// `Data`'s own Display prints a date as the serial number underneath it.
-fn cell_text(cell: &Data) -> String {
-    match cell {
-        Data::Empty => String::new(),
-        Data::DateTime(dt) => match dt.as_datetime() {
-            Some(dt) if dt.time() == Default::default() => dt.format("%Y-%m-%d").to_string(),
-            Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
-            None => dt.as_f64().to_string(),
-        },
-        other => other.to_string(),
-    }
-}
-
 pub fn load_spreadsheet_preview(path: &str) -> Result<SpreadsheetPreview, SpreadsheetError> {
-    let (headers, rows) = read_grid(path)?;
+    let (headers, rows) = data_exchange::spreadsheet::read_grid(path)?;
 
     if headers.iter().all(|h| h.trim().is_empty()) {
         return Err(SpreadsheetError::Empty);
@@ -408,7 +343,7 @@ pub fn load_column_config(
     path: &str,
     against_headers: &[String],
 ) -> Result<ColumnConfigPreview, ColumnConfigError> {
-    let (headers, records) = read_grid(path).map_err(|e| match e {
+    let (headers, records) = data_exchange::spreadsheet::read_grid(path).map_err(|e| match e {
         SpreadsheetError::Io(m) => ColumnConfigError::Io(m),
         _ => ColumnConfigError::Io("it isn't a CSV, TSV, Excel or ODS file we can read".into()),
     })?;
