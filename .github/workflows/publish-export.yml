@@ -1,0 +1,54 @@
+name: Publish qrate-export
+
+on:
+  push:
+    branches: [dev]
+    paths: ['crates/qrate-export/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency: publish-export
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@devnull03'
+      - name: Check package version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="qrate-export") | .version')"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if npm view "@devnull03/qrate-export@$version" version > "$RUNNER_TEMP/package-version" 2> "$RUNNER_TEMP/package-error"; then
+            echo "::notice::@devnull03/qrate-export@$version is already on GitHub Packages; bump the crate version to publish."
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+          elif grep -q 'E404' "$RUNNER_TEMP/package-error"; then
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+          else
+            cat "$RUNNER_TEMP/package-error" >&2
+            exit 1
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.version.outputs.skip == 'false'
+        run: cargo install wasm-pack --locked
+      - if: steps.version.outputs.skip == 'false'
+        run: wasm-pack build crates/qrate-export --release --target web --scope devnull03 -- --features wasm
+      - if: steps.version.outputs.skip == 'false'
+        run: npm publish crates/qrate-export/pkg --registry https://npm.pkg.github.com
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
