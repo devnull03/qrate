@@ -1,7 +1,7 @@
-//! File ▸ Export: ask where it goes, then hand the grid to `data_exchange::export`.
+//! File ▸ Export: ask where it goes, then hand the grid to `qrate_export`.
 //!
 //! Everything the writers need is read out of `cx` before any dialog opens, so the spawned task
-//! only carries plain values. The formats themselves live in `data-exchange`; what's here is the
+//! only carries plain values. The formats themselves live in `qrate-export`; what's here is the
 //! action, the save dialog, and the CSL field-mapping picker.
 
 use std::cell::RefCell;
@@ -9,7 +9,6 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use data_exchange::export::{self, ArchiveFile, CSL_FIELDS, CslMapping};
 use gpui::{
     Action, App, AppContext as _, ClickEvent, IntoElement, ParentElement, SharedString, Styled,
     Window,
@@ -18,6 +17,7 @@ use gpui_component::button::Button;
 use gpui_component::dialog::DialogButtonProps;
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::{Sizable as _, WindowExt as _, h_flex};
+use qrate_export::export::{self, ArchiveFile, CSL_FIELDS, CslMapping, ExportComponent};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use settings::columns::ColumnType;
@@ -30,7 +30,7 @@ struct ExportGrid {
     headers: Vec<String>,
     row_ids: Vec<settings::project::RowId>,
     rows: Vec<Vec<String>>,
-    structure: Vec<settings::project::RowStructure>,
+    structure: Vec<ExportComponent>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -226,6 +226,15 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
             (row_ids, state.delegate().row_structure().to_vec())
         })
         .unwrap_or_default();
+    let structure: Vec<ExportComponent> = structure
+        .into_iter()
+        .map(|item| ExportComponent {
+            row_id: item.row_id,
+            parent_id: item.parent_id,
+            level_key: item.level_key,
+            source_path: item.source_path,
+        })
+        .collect();
     let declared: Vec<_> = project
         .data
         .columns
@@ -238,13 +247,13 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
         })
         .collect();
     let description = settings::description::DescriptionConfig::from_values(&project.data.values);
+    let levels: Vec<_> = description
+        .levels
+        .iter()
+        .map(|level| (level.key.clone(), level.label.clone()))
+        .collect();
     export::project_structure_columns(
-        &headers,
-        &row_ids,
-        &mut rows,
-        &structure,
-        &declared,
-        &description,
+        &headers, &row_ids, &mut rows, &structure, &declared, &levels,
     );
 
     if is_google(format) {
@@ -370,7 +379,7 @@ fn ask_csl_mapping(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let declared: Vec<(String, ColumnType)> = cx
+    let declared: Vec<(String, String)> = cx
         .try_global::<CurrentProject>()
         .map(|project| {
             headers
@@ -381,7 +390,7 @@ fn ask_csl_mapping(
                         .columns
                         .iter()
                         .find(|c| &c.name == name)
-                        .map(|c| ColumnType::from_declared(&c.data_type))
+                        .map(|c| c.data_type.clone())
                         .unwrap_or_default();
                     (name.clone(), kind)
                 })

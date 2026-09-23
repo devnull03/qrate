@@ -292,7 +292,13 @@ pub(crate) fn append(conn: &Connection, entries: &[Entry]) -> Result<()> {
         for (seq, c) in e.changes.iter().enumerate() {
             let (row, column) = c.key();
             change
-                .execute(params![id, seq, row, column, serde_json::to_string(c)?])
+                .execute(params![
+                    id,
+                    seq as i64,
+                    row,
+                    column,
+                    serde_json::to_string(c)?
+                ])
                 .context("Insert history change")?;
         }
     }

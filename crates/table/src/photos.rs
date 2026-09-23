@@ -11,109 +11,56 @@
 //! prepare_ingest.py`), which solves the identical problem for the same source data.
 
 use settings::columns::ColumnType;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-/// Every file under `folder`, found recursively, keyed by relative path and lowercased filename.
-/// The shared inventory preserves paths for duplicate basenames; the basename keys retain the
-/// tolerant matching used by existing projects.
-fn index_files(folder: &Path) -> HashMap<String, PathBuf> {
-    let mut index = HashMap::new();
-    let Ok(inventory) = file_ingest::scan(folder, true) else {
-        return index;
-    };
-    for entry in inventory.files() {
-        let Some(name) = entry.path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let path = entry.path.clone();
-        let relative = file_ingest::normalized_path(&entry.relative_path).to_lowercase();
-        index.insert(relative, path.clone());
-        // Two batches can hold the same filename. Keeping the first by path rather than the first
-        // walked means the same row shows the same picture on every launch.
-        index
-            .entry(name.to_lowercase())
-            .and_modify(|kept| {
-                if path < *kept {
-                    *kept = path.clone();
-                }
-            })
-            .or_insert(path);
-    }
-    index
-}
-
-/// A recursive index of `folder`'s files, queryable by every name a file answers to
-/// ([`settings::filenames::keys`]) — the same rule `project_wizard::data::match_folder` accepts
-/// the folder with, resolved per file instead of only counting matches.
+/// The disk walk stays in the table; the shared crate owns matching and tie-breaking.
 pub struct PhotoIndex {
-    by_key: HashMap<String, PathBuf>,
+    inner: qrate_export::PhotoIndex,
+    root: PathBuf,
 }
 
 impl PhotoIndex {
-    /// Builds the index by walking `folder` recursively. An empty index (not an error) if
-    /// `folder` doesn't exist or isn't readable — a missing/stale files folder degrades every
-    /// row to "no image" rather than failing the whole project load.
     pub fn build(folder: &str) -> Self {
-        let mut by_key: HashMap<String, PathBuf> = HashMap::new();
-        for (name, path) in index_files(Path::new(folder)) {
-            for key in settings::filenames::keys(&name) {
-                // An item id keys every one of its parts; keeping the first by name makes the
-                // Details panel show part 001 rather than whichever the walk reached first.
-                by_key
-                    .entry(key)
-                    .and_modify(|kept| {
-                        if path < *kept {
-                            *kept = path.clone();
-                        }
-                    })
-                    .or_insert_with(|| path.clone());
-            }
+        let root = PathBuf::from(folder);
+        let paths = file_ingest::scan(&root, true)
+            .map(|inventory| {
+                inventory
+                    .files()
+                    .map(|entry| entry.relative_path.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Self {
+            inner: qrate_export::PhotoIndex::from_paths(paths),
+            root,
         }
-        Self { by_key }
     }
 
     pub(crate) fn resolve_cell(&self, cell: &str) -> Option<PathBuf> {
-        let direct = PathBuf::from(cell);
-        if direct.is_absolute() && direct.is_file() {
-            return Some(direct);
-        }
-        settings::filenames::lookup_keys(cell)
-            .iter()
-            .find_map(|key| self.by_key.get(key).cloned())
+        self.inner.resolve_cell(cell).map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                self.root.join(path)
+            }
+        })
     }
 
-    /// The image path for `row`'s cells, if any cell names a file this index found. Checks the
-    /// columns the project *declares* as filenames first — those are what `file_links` reports
-    /// against, and a picture resolved from some other cell while the declared one is reported
-    /// broken is the disagreement people notice — then a "file"/"filename" header (the shape of
-    /// the CA CSVs this was built against), then every cell, matching `match_folder`'s tolerance
-    /// for spreadsheets with neither.
     fn resolve_row(
         &self,
         headers: &[String],
         declared: &[String],
         row: &[String],
     ) -> Option<PathBuf> {
-        let file_col = headers
-            .iter()
-            .position(|h| declared.iter().any(|d| d == h))
-            .or_else(|| {
-                headers.iter().position(|h| {
-                    let h = h.trim().to_lowercase();
-                    h == "file" || h == "filename"
-                })
-            });
-        if let Some(hit) = file_col
-            .and_then(|ix| row.get(ix))
-            .and_then(|c| self.resolve_cell(c))
-        {
-            return Some(hit);
-        }
-        row.iter().find_map(|c| self.resolve_cell(c))
+        self.inner.resolve_row(headers, declared, row).map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                self.root.join(path)
+            }
+        })
     }
 }
-
 /// The columns a project declares as holding a filename. Previews resolve against these before
 /// guessing, so they judge the same cell the Problems panel reports on.
 pub fn declared_file_columns(data: &settings::project::ProjectData) -> Vec<String> {
@@ -169,6 +116,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
+    use std::path::Path;
 
     fn tempdir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join("qrate-photos-test").join(name);

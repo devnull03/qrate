@@ -32,16 +32,12 @@ use std::time::Duration;
 const COLUMN_NOTES_WRITE_PREFIX: &str = "column_notes:";
 
 use anyhow::{Context as _, Result};
+use qrate_export::{QRATE_APPLICATION_ID, QRATE_SCHEMA_VERSION};
 use rusqlite::{Connection, OptionalExtension as _, params};
-
-/// `PRAGMA application_id` value so `file`-style tools can recognize `.qrate`.
-const QRATE_APPLICATION_ID: i32 = 1097887558;
-const QRATE_SCHEMA_VERSION: i32 = 4;
 
 /// Private identity of one `dataset_main` row. Unlike the source index shown in the `#` column,
 /// this value survives inserts, deletes, and save/reload cycles.
 pub type RowId = i64;
-type LoadedDataset = (Vec<String>, Vec<RowId>, Vec<Vec<String>>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceKind {
@@ -433,7 +429,7 @@ pub fn load_project_file(path: &Path) -> Result<ProjectData> {
     }
     drop(stmt);
 
-    let (headers, row_ids, rows) = load_dataset(&conn)?;
+    let (headers, row_ids, rows) = qrate_export::read_dataset(&conn)?;
     Ok(ProjectData {
         name,
         columns,
@@ -442,52 +438,6 @@ pub fn load_project_file(path: &Path) -> Result<ProjectData> {
         row_ids,
         values,
     })
-}
-
-/// Reads `dataset_main` (headers from the table's own columns, then all rows).
-/// A project without one (blank) yields empty vecs.
-fn load_dataset(conn: &Connection) -> Result<LoadedDataset> {
-    let exists: i64 = conn.query_row(
-        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'dataset_main'",
-        [],
-        |r| r.get(0),
-    )?;
-    if exists == 0 {
-        return Ok((Vec::new(), Vec::new(), Vec::new()));
-    }
-
-    let mut info =
-        conn.prepare("SELECT name FROM pragma_table_info('dataset_main') ORDER BY cid")?;
-    let headers: Vec<String> = info
-        .query_map([], |row| row.get::<_, String>(0))?
-        .filter_map(|name| match name {
-            Ok(name) if name != "_row_id" && name != "_row_order" => Some(Ok(name)),
-            Ok(_) => None,
-            Err(err) => Some(Err(err)),
-        })
-        .collect::<rusqlite::Result<_>>()?;
-    drop(info);
-    let projection = std::iter::once(quote_identifier("_row_id"))
-        .chain(headers.iter().map(|header| quote_identifier(header)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {projection} FROM dataset_main ORDER BY _row_order"
-    ))?;
-    let n = headers.len();
-    let mut row_ids = Vec::new();
-    let mut rows = Vec::new();
-    let mut query = stmt.query([])?;
-    while let Some(row) = query.next()? {
-        row_ids.push(row.get(0)?);
-        let mut cells = Vec::with_capacity(n);
-        for i in 0..n {
-            // Cells are written as TEXT, but be tolerant of NULLs.
-            cells.push(row.get::<_, Option<String>>(i + 1)?.unwrap_or_default());
-        }
-        rows.push(cells);
-    }
-    Ok((headers, row_ids, rows))
 }
 
 /// Reads the optional hierarchy without upgrading an older project. Rows missing from this table
@@ -740,7 +690,7 @@ pub fn today(path: &Path) -> Option<String> {
 }
 
 /// Every stored note. A file written before `__notes` existed yields an empty vec, the same
-/// tolerance [`load_dataset`] gives a blank project's missing `dataset_main`.
+/// tolerance [`qrate_export::read_dataset`] gives a blank project's missing `dataset_main`.
 pub fn read_notes(path: &Path) -> Result<Vec<StoredNote>> {
     let conn = open_ro(path)?;
     let exists: i64 = conn.query_row(
@@ -1482,6 +1432,16 @@ mod tests {
 
         // Full read-back path (what opening a project uses).
         let data = load_project_file(&path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        let shared = qrate_export::read_dataset(&conn).unwrap();
+        assert_eq!(
+            shared,
+            (
+                data.headers.clone(),
+                data.row_ids.clone(),
+                data.rows.clone()
+            )
+        );
         assert_eq!(data.name, "Test Project");
         assert_eq!(data.headers, vec!["Digital ID", "Title"]);
         assert_eq!(data.rows.len(), 2);

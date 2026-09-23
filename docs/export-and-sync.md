@@ -13,6 +13,8 @@ Export the project from the **File** menu as one of:
 Export always reads every row, regardless of any active filter. See
 [The grid](grid.md#filtering).
 
+No qrate installed? [Convert a project in your browser](https://qrate.dvnl.work/convert).
+
 ## Google Sheets
 
 Google Sheets export and sync is off by default. Turn it on in **Settings ▸ Google**. Until

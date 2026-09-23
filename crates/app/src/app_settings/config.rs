@@ -31,7 +31,7 @@ pub fn export(cx: &mut App) {
     let receiver = cx.prompt_for_new_path(&directory, Some("column_config.csv"));
     cx.spawn(async move |_cx| {
         if let Ok(Ok(Some(path))) = receiver.await
-            && let Err(err) = data_exchange::export::write_csv(&path, &headers, &rows)
+            && let Err(err) = qrate_export::export::write_csv(&path, &headers, &rows)
         {
             log::error!("could not export the column config to {path:?}: {err}");
         }

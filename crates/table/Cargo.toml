@@ -17,6 +17,7 @@ data-exchange = { path = "../data-exchange" }
 file-ingest = { path = "../file-ingest" }
 plugin-api = { path = "../plugin-api" }
 settings = { path = "../settings" }
+qrate-export = { path = "../qrate-export" }
 plugin-host = { path = "../plugin-host" }
 preview = { path = "../preview" }
 visual-search = { path = "../visual-search" }

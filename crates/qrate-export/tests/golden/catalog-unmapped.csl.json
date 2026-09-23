@@ -1,0 +1,12 @@
+[
+  {
+    "type": "document",
+    "id": "row-0",
+    "note": "Digital ID: 1\nTitle: First photo\nTaken: 1943\nNotes: on loan"
+  },
+  {
+    "type": "document",
+    "id": "row-1",
+    "note": "Digital ID: 2\nTitle: Second photo"
+  }
+]

@@ -9,8 +9,8 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::ColumnType;
 use serde_json::{Map, Value, json};
-use settings::columns::ColumnType;
 use thiserror::Error;
 use zip::write::SimpleFileOptions;
 
@@ -34,8 +34,16 @@ pub struct ArchiveFile {
     pub source_path: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExportComponent {
+    pub row_id: i64,
+    pub parent_id: Option<i64>,
+    pub level_key: String,
+    pub source_path: Option<String>,
+}
+
 /// The grid as CSV: the header row, then every row in table order.
-fn csv_bytes(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, csv::Error> {
+pub fn csv_bytes(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, csv::Error> {
     let mut writer = csv::Writer::from_writer(Vec::new());
     writer.write_record(headers)?;
     for row in rows {
@@ -50,11 +58,7 @@ pub fn write_csv(path: &Path, headers: &[String], rows: &[Vec<String>]) -> Resul
 }
 
 /// Write every cell as text so Excel preserves identifiers, dates, and leading zeroes exactly.
-pub fn write_xlsx(
-    path: &Path,
-    headers: &[String],
-    rows: &[Vec<String>],
-) -> Result<(), ExportError> {
+pub fn xlsx_bytes(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, ExportError> {
     if headers.len() > 16_384 || rows.len() > 1_048_575 || rows.iter().any(|row| row.len() > 16_384)
     {
         return Err(ExportError::XlsxGridLimit);
@@ -62,16 +66,25 @@ pub fn write_xlsx(
     let mut workbook = rust_xlsxwriter::Workbook::new();
     let sheet = workbook.add_worksheet();
     sheet.set_name("Catalog")?;
+    let bold = rust_xlsxwriter::Format::new().set_bold();
     for (col, header) in headers.iter().enumerate() {
-        sheet.write_string(0, col as u16, header)?;
+        sheet.write_string_with_format(0, col as u16, header, &bold)?;
     }
     for (row, cells) in rows.iter().enumerate() {
         for (col, value) in cells.iter().enumerate() {
             sheet.write_string((row + 1) as u32, col as u16, value)?;
         }
     }
-    workbook.save(path)?;
-    Ok(())
+    sheet.set_freeze_panes(1, 0)?;
+    Ok(workbook.save_to_buffer()?)
+}
+
+pub fn write_xlsx(
+    path: &Path,
+    headers: &[String],
+    rows: &[Vec<String>],
+) -> Result<(), ExportError> {
+    Ok(std::fs::write(path, xlsx_bytes(headers, rows)?)?)
 }
 
 pub fn write_json(path: &Path, value: &Value) -> Result<(), ExportError> {
@@ -81,11 +94,11 @@ pub fn write_json(path: &Path, value: &Value) -> Result<(), ExportError> {
 /// Fills user-declared archival projection columns without adding columns to the dataset.
 pub fn project_structure_columns(
     headers: &[String],
-    row_ids: &[settings::project::RowId],
+    row_ids: &[i64],
     rows: &mut [Vec<String>],
-    structure: &[settings::project::RowStructure],
+    structure: &[ExportComponent],
     columns: &[(String, ColumnType)],
-    description: &settings::description::DescriptionConfig,
+    description: &[(String, String)],
 ) {
     let by_id: std::collections::HashMap<_, _> = structure
         .iter()
@@ -105,9 +118,8 @@ pub fn project_structure_columns(
         })
         .unwrap_or_default();
     let level_labels: std::collections::HashMap<_, _> = description
-        .levels
         .iter()
-        .map(|level| (level.key.as_str(), level.label.as_str()))
+        .map(|(key, label)| (key.as_str(), label.as_str()))
         .collect();
     for (source, row) in rows.iter_mut().enumerate() {
         let Some(component) = row_ids.get(source).and_then(|id| by_id.get(id)) else {
@@ -150,9 +162,9 @@ pub fn project_structure_columns(
 /// component `@id` and, when it has a parent, an `isPartOf` whole-part link.
 pub fn jsonld_hierarchy_value(
     headers: &[String],
-    row_ids: &[settings::project::RowId],
+    row_ids: &[i64],
     rows: &[Vec<String>],
-    structure: &[settings::project::RowStructure],
+    structure: &[ExportComponent],
 ) -> Value {
     let structure: std::collections::HashMap<_, _> =
         structure.iter().map(|item| (item.row_id, item)).collect();
@@ -192,14 +204,15 @@ pub const CSL_FIELDS: [&str; 5] = ["id", "title", "author", "issued", "URL"];
 
 /// A first guess from the declared column types, which is what the mapping dialog opens on.
 /// `columns` is every header paired with the type the project declares for it.
-pub fn derive_csl_mapping(columns: &[(String, ColumnType)]) -> CslMapping {
+pub fn derive_csl_mapping(columns: &[(String, String)]) -> CslMapping {
     let mut mapping = CslMapping::new();
     fn put(mapping: &mut CslMapping, field: &str, header: &str) {
         mapping
             .entry(field.to_string())
             .or_insert(header.to_owned());
     }
-    for (header, kind) in columns {
+    for (header, declared) in columns {
+        let kind = ColumnType::from_declared(declared);
         match kind {
             ColumnType::Title => {
                 mapping.insert("title".to_string(), header.clone());
@@ -276,12 +289,30 @@ pub fn csl_items(headers: &[String], rows: &[Vec<String>], mapping: &CslMapping)
 pub fn write_zip(
     path: &Path,
     headers: &[String],
-    row_ids: &[settings::project::RowId],
+    row_ids: &[i64],
     rows: &[Vec<String>],
-    structure: &[settings::project::RowStructure],
+    structure: &[ExportComponent],
     images: &[ArchiveFile],
 ) -> Result<(), ExportError> {
-    let mut zip = zip::ZipWriter::new(File::create(path)?);
+    zip_to(
+        File::create(path)?,
+        headers,
+        row_ids,
+        rows,
+        structure,
+        images,
+    )
+}
+
+pub fn zip_to(
+    writer: impl std::io::Write + std::io::Seek,
+    headers: &[String],
+    row_ids: &[i64],
+    rows: &[Vec<String>],
+    structure: &[ExportComponent],
+    images: &[ArchiveFile],
+) -> Result<(), ExportError> {
+    let mut zip = zip::ZipWriter::new(writer);
     let text = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     // Photos are already compressed; deflating a JPEG spends CPU to save nothing.
     let binary = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
@@ -316,12 +347,12 @@ pub fn write_zip(
             if let Some(ext) = image.path.extension().and_then(|e| e.to_str()) {
                 renamed = format!("{renamed}.{ext}");
             }
-            name = file_ingest::normalized_path(&parent.join(renamed));
+            name = parent.join(renamed).to_string_lossy().replace('\\', "/");
         }
-        match std::fs::read(&image.path) {
-            Ok(bytes) => {
+        match File::open(&image.path) {
+            Ok(mut file) => {
                 zip.start_file(format!("files/{name}"), binary)?;
-                zip.write_all(&bytes)?;
+                std::io::copy(&mut file, &mut zip)?;
             }
             Err(err) => log::warn!(
                 "left {} out of the export archive: {err}",
@@ -345,16 +376,16 @@ fn safe_archive_path(source: &str) -> Option<String> {
             _ => None,
         })
         .collect();
-    (!safe.as_os_str().is_empty()).then(|| file_ingest::normalized_path(&safe))
+    (!safe.as_os_str().is_empty()).then(|| safe.to_string_lossy().replace('\\', "/"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ArchiveFile, CslMapping, csl_items, derive_csl_mapping, jsonld_hierarchy_value,
-        project_structure_columns, write_xlsx, write_zip,
+        ArchiveFile, CslMapping, ExportComponent, csl_items, derive_csl_mapping,
+        jsonld_hierarchy_value, project_structure_columns, write_xlsx, write_zip,
     };
-    use settings::columns::ColumnType;
+    use crate::ColumnType;
 
     fn grid() -> (Vec<String>, Vec<Vec<String>>) {
         let headers = ["Digital ID", "Title", "Taken", "Notes"]
@@ -367,6 +398,15 @@ mod tests {
             ["2", "Second photo", "", ""].map(String::from).to_vec(),
         ];
         (headers, rows)
+    }
+
+    #[test]
+    fn csv_golden_keeps_header_and_row_order() {
+        let (headers, rows) = grid();
+        assert_eq!(
+            super::csv_bytes(&headers, &rows).unwrap(),
+            b"Digital ID,Title,Taken,Notes\n1,First photo,1943,on loan\n2,Second photo,,\n"
+        );
     }
 
     #[test]
@@ -386,12 +426,31 @@ mod tests {
         assert_eq!(range.get((0, 0)).unwrap().get_string(), Some("ID"));
         assert_eq!(range.get((1, 0)).unwrap().get_string(), Some("00123"));
         assert_eq!(range.get((1, 1)).unwrap().get_string(), Some("2026-09-22"));
+        use std::io::Read as _;
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
+        let mut workbook_xml = String::new();
+        archive
+            .by_name("xl/workbook.xml")
+            .unwrap()
+            .read_to_string(&mut workbook_xml)
+            .unwrap();
+        assert!(workbook_xml.contains("name=\"Catalog\""));
+        let mut sheet_xml = String::new();
+        archive
+            .by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_string(&mut sheet_xml)
+            .unwrap();
+        assert!(sheet_xml.contains("ySplit=\"1\""));
     }
 
     #[test]
     fn jsonld_keeps_column_order_and_drops_empty_cells() {
         let (headers, rows) = grid();
         let doc = jsonld_hierarchy_value(&headers, &[1, 2], &rows, &[]);
+        let golden: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/golden/catalog.jsonld")).unwrap();
+        assert_eq!(doc, golden);
         let graph = doc["@graph"].as_array().unwrap();
         assert_eq!(graph.len(), 2);
         assert_eq!(
@@ -406,21 +465,17 @@ mod tests {
     fn jsonld_exports_archival_whole_part_relationships() {
         let (headers, rows) = grid();
         let structure = [
-            settings::project::RowStructure {
+            ExportComponent {
                 row_id: 10,
                 parent_id: None,
                 level_key: "series".into(),
-                sibling_order: 0,
                 source_path: None,
-                source_kind: None,
             },
-            settings::project::RowStructure {
+            ExportComponent {
                 row_id: 11,
                 parent_id: Some(10),
                 level_key: "item".into(),
-                sibling_order: 0,
                 source_path: None,
-                source_kind: None,
             },
         ];
         let graph = jsonld_hierarchy_value(&headers, &[10, 11], &rows, &structure);
@@ -454,21 +509,17 @@ mod tests {
             ],
         ];
         let structure = [
-            settings::project::RowStructure {
+            ExportComponent {
                 row_id: 10,
                 parent_id: None,
                 level_key: "series".into(),
-                sibling_order: 0,
                 source_path: Some("Photographs".into()),
-                source_kind: None,
             },
-            settings::project::RowStructure {
+            ExportComponent {
                 row_id: 11,
                 parent_id: Some(10),
                 level_key: "item".into(),
-                sibling_order: 0,
                 source_path: Some("Photographs/one.jpg".into()),
-                source_kind: None,
             },
         ];
         project_structure_columns(
@@ -482,7 +533,10 @@ mod tests {
                 ("Parent".into(), ColumnType::ParentComponent),
                 ("Path".into(), ColumnType::SourcePath),
             ],
-            &settings::description::DescriptionProfile::Rad.defaults(),
+            &[
+                ("series".into(), "Series".into()),
+                ("item".into(), "Item".into()),
+            ],
         );
         assert_eq!(
             rows[1],
@@ -496,12 +550,17 @@ mod tests {
     fn csl_maps_declared_types_and_keeps_the_rest_as_a_note() {
         let (headers, rows) = grid();
         let mapping = derive_csl_mapping(&[
-            ("Digital ID".into(), ColumnType::Identifier),
-            ("Notes".into(), ColumnType::Text),
-            ("Title".into(), ColumnType::Title),
-            ("Taken".into(), ColumnType::Date),
+            ("Digital ID".into(), "Identifier".into()),
+            ("Notes".into(), "Text".into()),
+            ("Title".into(), "Title".into()),
+            ("Taken".into(), "Date".into()),
+            ("Link".into(), "Url".into()),
         ]);
+        assert_eq!(mapping.get("URL").map(String::as_str), Some("Link"));
         let items = csl_items(&headers, &rows, &mapping);
+        let golden: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/golden/catalog.csl.json")).unwrap();
+        assert_eq!(items, golden);
 
         assert_eq!(items[0]["id"], "1");
         assert_eq!(items[0]["title"], "First photo");
@@ -517,6 +576,10 @@ mod tests {
     fn an_unmapped_id_falls_back_to_the_row_number() {
         let (headers, rows) = grid();
         let items = csl_items(&headers, &rows, &CslMapping::new());
+        let golden: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/golden/catalog-unmapped.csl.json"))
+                .unwrap();
+        assert_eq!(items, golden);
         assert_eq!(items[0]["id"], "row-0");
         assert_eq!(items[1]["id"], "row-1");
     }

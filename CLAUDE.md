@@ -75,7 +75,8 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | `window-wrapper` | shared window chrome: title bar, status bar, the window registry |
 | `settings` | `AppSettings` (user-wide) and `.qrate` (per project), column config, plugin settings |
 | `project-wizard` | new/open project flow, recent projects, the launcher |
-| `data-exchange` | import/export — CSV/JSON-LD/CSL-JSON/ZIP, Google Sheets, preview |
+| `data-exchange` | spreadsheet and Google Sheets imports, desktop Google Sheets integration, preview |
+| `qrate-export` | shared project reader and CSV/Excel/JSON-LD/CSL-JSON/ZIP writers; optional browser WASM API |
 | `diagnostics` | the validator, spelling checks, fixes, and the problems panel |
 | `checks` | date and authority validators, registered by `app` through the `diagnostics` crate |
 | `spellcheck` | dictionary catalogue behind `diagnostics::spelling` |

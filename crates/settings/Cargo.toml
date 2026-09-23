@@ -11,5 +11,6 @@ dirs.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 rusqlite.workspace = true
+qrate-export = { path = "../qrate-export" }
 serde.workspace = true
 serde_json.workspace = true

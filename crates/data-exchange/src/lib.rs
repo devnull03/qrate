@@ -1,10 +1,8 @@
-//! Everything that moves a collection across qrate's boundary: fetching a Google Sheet in,
-//! writing CSV / JSON-LD / CSL-JSON / a ZIP archive out, and creating a Sheet in the user's Drive.
+//! Imports and desktop Google Sheets integration.
 //!
 //! Nothing here touches gpui. Callers read the grid and pick a path, then hand this crate plain
-//! values — which is what keeps the parsers and writers testable without a window.
+//! values, keeping the parsers testable without a window.
 
-pub mod export;
 pub mod google;
 pub mod preview;
 pub mod sheet;

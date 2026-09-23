@@ -1,0 +1,14 @@
+[
+  {
+    "type": "document",
+    "id": "1",
+    "title": "First photo",
+    "issued": { "raw": "1943" },
+    "note": "Notes: on loan"
+  },
+  {
+    "type": "document",
+    "id": "2",
+    "title": "Second photo"
+  }
+]

@@ -1,5 +1,6 @@
 # rust
 /target
+/crates/qrate-export/pkg
 
 # Packaging output, plus the runtime binaries scripts/fetch-binaries.sh drops beside a build.
 /dist

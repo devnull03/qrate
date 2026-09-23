@@ -1,0 +1,17 @@
+{
+  "@context": { "@vocab": "https://schema.org/" },
+  "@graph": [
+    {
+      "Digital ID": "1",
+      "Title": "First photo",
+      "Taken": "1943",
+      "Notes": "on loan",
+      "@id": "urn:qrate:component:1"
+    },
+    {
+      "Digital ID": "2",
+      "Title": "Second photo",
+      "@id": "urn:qrate:component:2"
+    }
+  ]
+}

@@ -813,24 +813,24 @@ impl TablePanel {
                     Ok(grid) => grid,
                     Err(error) => {
                         let detail = error.message();
-                        let _ = window.prompt(
+                        drop(window.prompt(
                             PromptLevel::Warning,
                             "Could not import spreadsheet",
                             Some(&detail),
                             &["OK"],
                             cx,
-                        );
+                        ));
                         return;
                     }
                 };
                 if headers.iter().all(|header| header.trim().is_empty()) || rows.is_empty() {
-                    let _ = window.prompt(
+                    drop(window.prompt(
                         PromptLevel::Warning,
                         "Nothing to import",
                         Some("The file needs a header row and at least one data row."),
                         &["OK"],
                         cx,
-                    );
+                    ));
                     return;
                 }
                 let destination = {
@@ -843,13 +843,13 @@ impl TablePanel {
                 let (mapping, skipped) = match map_spreadsheet_headers(&headers, &destination) {
                     Ok(mapping) => mapping,
                     Err(message) => {
-                        let _ = window.prompt(
+                        drop(window.prompt(
                             PromptLevel::Warning,
                             "Could not import spreadsheet",
                             Some(&message),
                             &["OK"],
                             cx,
-                        );
+                        ));
                         return;
                     }
                 };

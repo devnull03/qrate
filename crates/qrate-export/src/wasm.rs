@@ -1,0 +1,224 @@
+//! Browser adapter for the shared project reader and format writers.
+
+use std::io::Cursor;
+
+use rusqlite::{Connection, MAIN_DB, OptionalExtension};
+use wasm_bindgen::prelude::*;
+
+use crate::export::{CslMapping, ExportComponent};
+use crate::{ColumnType, QRATE_APPLICATION_ID, QRATE_SCHEMA_VERSION, read_dataset};
+
+#[derive(serde::Deserialize)]
+struct DescriptionLevel {
+    key: String,
+    label: String,
+}
+
+fn error(code: &str, detail: impl std::fmt::Display) -> JsError {
+    JsError::new(&format!("{code}: {detail}"))
+}
+
+#[wasm_bindgen]
+pub struct Project {
+    name: Option<String>,
+    headers: Vec<String>,
+    row_ids: Vec<i64>,
+    rows: Vec<Vec<String>>,
+    structure: Vec<ExportComponent>,
+    types: Vec<(String, String)>,
+    mapping: Option<CslMapping>,
+}
+
+#[wasm_bindgen]
+impl Project {
+    pub fn open(bytes: Vec<u8>) -> Result<Project, JsError> {
+        if !bytes.starts_with(b"SQLite format 3\0") {
+            return Err(error("not-qrate", "not a SQLite file"));
+        }
+        let mut conn = Connection::open_in_memory().map_err(|e| error("corrupt", e))?;
+        let len = bytes.len();
+        conn.deserialize_read_exact(MAIN_DB, Cursor::new(bytes), len, true)
+            .map_err(|e| error("corrupt", e))?;
+        let pragma = |name: &str| -> Result<i32, JsError> {
+            conn.pragma_query_value(None, name, |row| row.get(0))
+                .map_err(|e| error("corrupt", e))
+        };
+        if pragma("application_id")? != QRATE_APPLICATION_ID {
+            return Err(error("not-qrate", "application_id does not match"));
+        }
+        if pragma("user_version")? > QRATE_SCHEMA_VERSION {
+            return Err(error("newer", "saved by a newer qrate"));
+        }
+        let (headers, row_ids, mut rows) = read_dataset(&conn).map_err(|e| error("corrupt", e))?;
+        if rows.is_empty() {
+            return Err(error("empty", "no dataset rows"));
+        }
+        let setting = |key: &str| -> Result<Option<String>, JsError> {
+            conn.query_row(
+                "SELECT value FROM __settings WHERE key = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| error("corrupt", e))
+        };
+        let declared: Vec<(String, String)> = conn
+            .prepare("SELECT name, data_type FROM __columns")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect()
+            })
+            .map_err(|e| error("corrupt", e))?;
+        let types: Vec<(String, String)> = headers
+            .iter()
+            .map(|header| {
+                let ty = declared
+                    .iter()
+                    .find(|(name, _)| name == header)
+                    .map(|(_, ty)| ty.clone())
+                    .unwrap_or_default();
+                (header.clone(), ty)
+            })
+            .collect();
+        let structure_exists: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='__row_structure'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| error("corrupt", e))?;
+        let structure = if structure_exists == 0 {
+            Vec::new()
+        } else {
+            conn.prepare("SELECT row_id, parent_id, level_key, source_path FROM __row_structure")
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| {
+                        Ok(ExportComponent {
+                            row_id: row.get(0)?,
+                            parent_id: row.get(1)?,
+                            level_key: row.get(2)?,
+                            source_path: row.get(3)?,
+                        })
+                    })?
+                    .collect()
+                })
+                .map_err(|e| error("corrupt", e))?
+        };
+        let profile = setting("description_profile")?.unwrap_or_default();
+        let levels = setting("description_levels")?
+            .and_then(|raw| serde_json::from_str::<Vec<DescriptionLevel>>(&raw).ok())
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(|item| (item.key, item.label))
+                    .collect()
+            })
+            .unwrap_or_else(|| default_levels(&profile));
+        let kinds = types
+            .iter()
+            .map(|(name, ty)| (name.clone(), ColumnType::from_declared(ty)))
+            .collect::<Vec<_>>();
+        crate::project_structure_columns(
+            &headers, &row_ids, &mut rows, &structure, &kinds, &levels,
+        );
+        let mapping = setting("csl_mapping")?.and_then(|raw| serde_json::from_str(&raw).ok());
+        Ok(Project {
+            name: setting("name")?.filter(|value| !value.trim().is_empty()),
+            headers,
+            row_ids,
+            rows,
+            structure,
+            types,
+            mapping,
+        })
+    }
+
+    pub fn name(&self) -> Option<String> {
+        self.name.clone()
+    }
+    pub fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+    pub fn headers(&self) -> Vec<String> {
+        self.headers.clone()
+    }
+    pub fn preview(&self, n: usize) -> JsValue {
+        serde_wasm_bindgen::to_value(&self.rows[..n.min(self.rows.len())]).unwrap_or(JsValue::NULL)
+    }
+    pub fn csl_fields() -> Vec<String> {
+        crate::CSL_FIELDS
+            .iter()
+            .map(|field| field.to_string())
+            .collect()
+    }
+    pub fn csl_default(&self) -> JsValue {
+        use serde::Serialize as _;
+        self.mapping
+            .clone()
+            .unwrap_or_else(|| crate::derive_csl_mapping(&self.types))
+            .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+            .unwrap_or(JsValue::NULL)
+    }
+    pub fn to_csv(&self) -> Result<Vec<u8>, JsError> {
+        crate::csv_bytes(&self.headers, &self.rows).map_err(|e| error("write", e))
+    }
+    pub fn to_xlsx(&self) -> Result<Vec<u8>, JsError> {
+        crate::xlsx_bytes(&self.headers, &self.rows).map_err(|e| error("write", e))
+    }
+    pub fn to_jsonld(&self) -> Result<Vec<u8>, JsError> {
+        serde_json::to_vec_pretty(&crate::jsonld_hierarchy_value(
+            &self.headers,
+            &self.row_ids,
+            &self.rows,
+            &self.structure,
+        ))
+        .map_err(|e| error("write", e))
+    }
+    pub fn to_csl(&self, mapping: JsValue) -> Result<Vec<u8>, JsError> {
+        let mapping: CslMapping =
+            serde_wasm_bindgen::from_value(mapping).map_err(|e| error("mapping", e))?;
+        serde_json::to_vec_pretty(&crate::csl_items(&self.headers, &self.rows, &mapping))
+            .map_err(|e| error("write", e))
+    }
+    pub fn sheet_values(&self) -> JsValue {
+        let mut values = vec![&self.headers];
+        values.extend(self.rows.iter());
+        serde_wasm_bindgen::to_value(&values).unwrap_or(JsValue::NULL)
+    }
+}
+
+fn default_levels(profile: &str) -> Vec<(String, String)> {
+    let labels: &[(&str, &str)] = match profile.trim().to_ascii_lowercase().as_str() {
+        "dacs" => &[
+            ("collection", "Collection"),
+            ("record_group", "Record group"),
+            ("series", "Series"),
+            ("subseries", "Subseries"),
+            ("file", "File"),
+            ("item", "Item"),
+        ],
+        "isadg" | "isad(g)" => &[
+            ("fonds", "Fonds"),
+            ("subfonds", "Sub-fonds"),
+            ("series", "Series"),
+            ("subseries", "Sub-series"),
+            ("file", "File"),
+            ("item", "Item"),
+        ],
+        "ric" => &[("record_set", "Record set"), ("record", "Record")],
+        "custom" => &[("group", "Group"), ("item", "Item")],
+        _ => &[
+            ("fonds", "Fonds"),
+            ("collection", "Collection"),
+            ("sous_fonds", "Sous-fonds"),
+            ("series", "Series"),
+            ("subseries", "Subseries"),
+            ("file", "File"),
+            ("item", "Item"),
+        ],
+    };
+    labels
+        .iter()
+        .map(|(key, label)| ((*key).into(), (*label).into()))
+        .collect()
+}
