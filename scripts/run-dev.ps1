@@ -10,6 +10,7 @@ $protocolKey = "HKCU\Software\Classes\qrate"
 $protocolBackup = Join-Path ([System.IO.Path]::GetTempPath()) "qrate-protocol-$([guid]::NewGuid()).reg"
 $hadProtocolHandler = Test-Path "HKCU:\Software\Classes\qrate"
 $keepProtocolBackup = $false
+. "$PSScriptRoot\register-dev-project.ps1"
 
 Push-Location $root
 try {
@@ -32,15 +33,23 @@ try {
     }
     & "$PSScriptRoot\register-dev-protocol.ps1" -Executable $app
     try {
+        $projectRegistration = Register-DevProject -Executable $app
         & $app @AppArguments
     }
     finally {
-        & "$PSScriptRoot\register-dev-protocol.ps1" -Unregister
-        if ($hadProtocolHandler) {
-            & reg.exe import $protocolBackup | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                $keepProtocolBackup = $true
-                Write-Warning "Could not restore the previous qrate:// handler from $protocolBackup"
+        try {
+            if ($projectRegistration) {
+                Unregister-DevProject $projectRegistration
+            }
+        }
+        finally {
+            & "$PSScriptRoot\register-dev-protocol.ps1" -Unregister
+            if ($hadProtocolHandler) {
+                & reg.exe import $protocolBackup | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    $keepProtocolBackup = $true
+                    Write-Warning "Could not restore the previous qrate:// handler from $protocolBackup"
+                }
             }
         }
     }

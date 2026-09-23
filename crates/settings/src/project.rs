@@ -693,26 +693,7 @@ pub fn today(path: &Path) -> Option<String> {
 /// tolerance [`qrate_export::read_dataset`] gives a blank project's missing `dataset_main`.
 pub fn read_notes(path: &Path) -> Result<Vec<StoredNote>> {
     let conn = open_ro(path)?;
-    let exists: i64 = conn.query_row(
-        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '__notes'",
-        [],
-        |r| r.get(0),
-    )?;
-    if exists == 0 {
-        return Ok(Vec::new());
-    }
-
-    // A file written before notes carried provenance has neither column, and `write_notes` only
-    // adds them when it next saves. Named in the projection so the read works either way.
-    let provenance: i64 = conn.query_row(
-        "SELECT count(*) FROM pragma_table_info('__notes') WHERE name = 'created_at'",
-        [],
-        |r| r.get(0),
-    )?;
-    let columns = match provenance {
-        0 => "NULL AS created_at, NULL AS author",
-        _ => "created_at, author",
-    };
+    let notes = qrate_export::read_project_notes(&conn)?;
     let row_positions: HashMap<RowId, usize> = if conn.query_row(
         "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'dataset_main'",
         [],
@@ -727,30 +708,24 @@ pub fn read_notes(path: &Path) -> Result<Vec<StoredNote>> {
             .map(|(source, id)| id.map(|id| (id, source)))
             .collect::<rusqlite::Result<_>>()?
     };
-    let mut stmt = conn.prepare(&format!(
-        "SELECT dataset, row_ix, column_name, severity, message, {columns} FROM __notes"
-    ))?;
-    let iter = stmt.query_map([], |r| {
-        let dataset: String = r.get(0)?;
-        let row_id: Option<RowId> = r.get(1)?;
-        Ok(StoredNote {
-            row: match dataset.as_str() {
+    Ok(notes
+        .into_iter()
+        .map(|note| StoredNote {
+            row: match note.dataset.as_str() {
                 "dataset_main" if !row_positions.is_empty() => {
-                    row_id.and_then(|id| row_positions.get(&id).copied())
+                    note.row_id.and_then(|id| row_positions.get(&id).copied())
                 }
-                _ => row_id.map(|id| id as usize),
+                _ => note.row_id.map(|id| id as usize),
             },
-            dataset,
-            row_id,
-            column: r.get(2)?,
-            severity: r.get(3)?,
-            message: r.get(4)?,
-            created_at: r.get(5)?,
-            author: r.get(6)?,
+            dataset: note.dataset,
+            row_id: note.row_id,
+            column: note.column,
+            severity: note.severity,
+            message: note.message,
+            created_at: note.created_at,
+            author: note.author,
         })
-    })?;
-    iter.collect::<rusqlite::Result<Vec<_>>>()
-        .context("Read notes")
+        .collect())
 }
 
 /// Replaces everything `source` previously stored, in one transaction — the same

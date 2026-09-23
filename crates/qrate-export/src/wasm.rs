@@ -27,6 +27,7 @@ pub struct Project {
     structure: Vec<ExportComponent>,
     types: Vec<(String, String)>,
     mapping: Option<CslMapping>,
+    sheet_notes: Vec<crate::SheetNote>,
 }
 
 #[wasm_bindgen]
@@ -62,10 +63,10 @@ impl Project {
             .optional()
             .map_err(|e| error("corrupt", e))
         };
-        let declared: Vec<(String, String)> = conn
-            .prepare("SELECT name, data_type FROM __columns")
+        let declared: Vec<(String, String, String)> = conn
+            .prepare("SELECT name, data_type, COALESCE(notes, '') FROM __columns")
             .and_then(|mut stmt| {
-                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
                     .collect()
             })
             .map_err(|e| error("corrupt", e))?;
@@ -74,8 +75,8 @@ impl Project {
             .map(|header| {
                 let ty = declared
                     .iter()
-                    .find(|(name, _)| name == header)
-                    .map(|(_, ty)| ty.clone())
+                    .find(|(name, _, _)| name == header)
+                    .map(|(_, ty, _)| ty.clone())
                     .unwrap_or_default();
                 (header.clone(), ty)
             })
@@ -121,6 +122,12 @@ impl Project {
         crate::project_structure_columns(
             &headers, &row_ids, &mut rows, &structure, &kinds, &levels,
         );
+        let project_notes = crate::read_project_notes(&conn).map_err(|e| error("corrupt", e))?;
+        let column_notes = declared
+            .iter()
+            .map(|(name, _, notes)| (name.clone(), notes.clone()))
+            .collect::<Vec<_>>();
+        let sheet_notes = crate::sheet_notes(&headers, &row_ids, &column_notes, &project_notes);
         let mapping = setting("csl_mapping")?.and_then(|raw| serde_json::from_str(&raw).ok());
         Ok(Project {
             name: setting("name")?.filter(|value| !value.trim().is_empty()),
@@ -130,6 +137,7 @@ impl Project {
             structure,
             types,
             mapping,
+            sheet_notes,
         })
     }
 
@@ -163,7 +171,8 @@ impl Project {
         crate::csv_bytes(&self.headers, &self.rows).map_err(|e| error("write", e))
     }
     pub fn to_xlsx(&self) -> Result<Vec<u8>, JsError> {
-        crate::xlsx_bytes(&self.headers, &self.rows).map_err(|e| error("write", e))
+        crate::xlsx_bytes(&self.headers, &self.rows, &self.sheet_notes)
+            .map_err(|e| error("write", e))
     }
     pub fn to_jsonld(&self) -> Result<Vec<u8>, JsError> {
         serde_json::to_vec_pretty(&crate::jsonld_hierarchy_value(
@@ -184,6 +193,13 @@ impl Project {
         let mut values = vec![&self.headers];
         values.extend(self.rows.iter());
         serde_wasm_bindgen::to_value(&values).unwrap_or(JsValue::NULL)
+    }
+
+    pub fn sheet_note_requests(&self, sheet_id: i32) -> JsValue {
+        use serde::Serialize as _;
+        crate::sheet_note_request_body(i64::from(sheet_id), &self.sheet_notes)
+            .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+            .unwrap_or(JsValue::NULL)
     }
 }
 

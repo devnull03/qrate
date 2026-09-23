@@ -18,6 +18,7 @@ use gpui_component::dialog::DialogButtonProps;
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::{Sizable as _, WindowExt as _, h_flex};
 use qrate_export::export::{self, ArchiveFile, CSL_FIELDS, CslMapping, ExportComponent};
+use qrate_export::{ProjectNote, SheetNote};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use settings::columns::ColumnType;
@@ -31,6 +32,7 @@ struct ExportGrid {
     row_ids: Vec<settings::project::RowId>,
     rows: Vec<Vec<String>>,
     structure: Vec<ExportComponent>,
+    notes: Vec<SheetNote>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -255,6 +257,32 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
     export::project_structure_columns(
         &headers, &row_ids, &mut rows, &structure, &declared, &levels,
     );
+    let stored_notes = match settings::project::read_notes(&file) {
+        Ok(notes) => notes,
+        Err(err) => {
+            log::error!("could not read project notes for export: {err:#}");
+            return;
+        }
+    };
+    let project_notes = stored_notes
+        .into_iter()
+        .map(|note| ProjectNote {
+            dataset: note.dataset,
+            row_id: note.row_id,
+            column: note.column,
+            severity: note.severity,
+            message: note.message,
+            created_at: note.created_at,
+            author: note.author,
+        })
+        .collect::<Vec<_>>();
+    let column_notes = project
+        .data
+        .columns
+        .iter()
+        .map(|column| (column.name.clone(), column.notes.clone()))
+        .collect::<Vec<_>>();
+    let notes = qrate_export::sheet_notes(&headers, &row_ids, &column_notes, &project_notes);
 
     if is_google(format) {
         // A project that already knows its spreadsheet refills that one; otherwise "Sync" asks
@@ -270,7 +298,7 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
             (_, Some(id)) => SheetTarget::Existing(id),
             (_, None) => SheetTarget::Choose,
         };
-        return to_google_sheet(title, headers, rows, target, window, cx);
+        return to_google_sheet(title, headers, rows, notes, target, window, cx);
     }
     if format == ExportFormat::Csl {
         return ask_csl_mapping(file, headers, rows, window, cx);
@@ -311,6 +339,7 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
             row_ids,
             rows,
             structure,
+            notes,
         },
         images,
         CslMapping::new(),
@@ -333,6 +362,7 @@ fn save_as(
         row_ids,
         rows,
         structure,
+        notes,
     } = grid;
     let directory = project_file
         .parent()
@@ -349,7 +379,7 @@ fn save_as(
         };
         let result = match format {
             ExportFormat::Csv => export::write_csv(&path, &headers, &rows),
-            ExportFormat::Xlsx => export::write_xlsx(&path, &headers, &rows),
+            ExportFormat::Xlsx => export::write_xlsx(&path, &headers, &rows, &notes),
             ExportFormat::JsonLd => export::write_json(
                 &path,
                 &export::jsonld_hierarchy_value(&headers, &row_ids, &rows, &structure),
@@ -476,6 +506,7 @@ fn ask_csl_mapping(
                         row_ids: Vec::new(),
                         rows: rows.clone(),
                         structure: Vec::new(),
+                        notes: Vec::new(),
                     },
                     Vec::new(),
                     mapping,
@@ -503,6 +534,7 @@ fn to_google_sheet(
     title: String,
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
+    notes: Vec<SheetNote>,
     target: SheetTarget,
     _window: &mut Window,
     cx: &mut App,
@@ -527,16 +559,14 @@ fn to_google_sheet(
         let sheet = cx
             .background_spawn(async move {
                 match chosen {
-                    Some(id) => {
-                        data_exchange::google::write_values(&token.access, &id, &headers, &rows)
-                            .map(|()| (id, None))
-                    }
+                    Some(id) => fill_google_sheet(&token.access, &id, &headers, &rows, &notes)
+                        .map(|()| (id, None)),
                     None => data_exchange::google::create_sheet(
                         &token.access,
                         &format!("{title} — qrate"),
                     )
                     .and_then(|(id, url)| {
-                        data_exchange::google::write_values(&token.access, &id, &headers, &rows)
+                        fill_google_sheet(&token.access, &id, &headers, &rows, &notes)
                             .map(|()| (id, Some(url)))
                     }),
                 }
@@ -561,6 +591,22 @@ fn to_google_sheet(
         }
     })
     .detach();
+}
+
+fn fill_google_sheet(
+    token: &str,
+    id: &str,
+    headers: &[String],
+    rows: &[Vec<String>],
+    notes: &[SheetNote],
+) -> Result<(), data_exchange::google::GoogleError> {
+    data_exchange::google::write_values(token, id, headers, rows)?;
+    if notes.is_empty() {
+        return Ok(());
+    }
+    let sheet_id = data_exchange::google::first_tab_id(token, id)?;
+    let body = qrate_export::sheet_note_request_body(sheet_id, notes);
+    data_exchange::google::batch_update(token, id, &body)
 }
 
 /// Start Google authentication from Settings without requiring an export as the trigger.

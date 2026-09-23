@@ -359,6 +359,62 @@ pub fn write_values(
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct SheetProperties {
+    #[serde(rename = "sheetId")]
+    id: i64,
+}
+
+#[derive(Deserialize)]
+struct Sheet {
+    properties: SheetProperties,
+}
+
+#[derive(Deserialize)]
+struct SheetList {
+    sheets: Vec<Sheet>,
+}
+
+/// Notes use the numeric ID of the first tab; it is not necessarily zero on an existing sheet.
+pub fn first_tab_id(token: &str, spreadsheet_id: &str) -> Result<i64, GoogleError> {
+    let response = client()?
+        .get(format!(
+            "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
+        ))
+        .bearer_auth(token)
+        .query(&[("fields", "sheets(properties(sheetId))")])
+        .send()?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(GoogleError::NoAccess);
+    }
+    let sheets: SheetList = response.error_for_status()?.json()?;
+    sheets
+        .sheets
+        .first()
+        .map(|sheet| sheet.properties.id)
+        .ok_or_else(|| GoogleError::Denied("The spreadsheet has no tab to receive notes".into()))
+}
+
+/// Apply the shared note requests after values.update; its field mask leaves values untouched.
+pub fn batch_update(
+    token: &str,
+    spreadsheet_id: &str,
+    body: &serde_json::Value,
+) -> Result<(), GoogleError> {
+    let response = client()?
+        .post(format!(
+            "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate"
+        ))
+        .bearer_auth(token)
+        .json(body)
+        .send()?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(GoogleError::NoAccess);
+    }
+    response.error_for_status()?;
+    Ok(())
+}
+
 /// The link a stored spreadsheet id points at.
 pub fn sheet_url(spreadsheet_id: &str) -> String {
     format!("https://docs.google.com/spreadsheets/d/{spreadsheet_id}")

@@ -5,6 +5,7 @@ use rusqlite::Connection;
 pub mod columns;
 pub mod export;
 pub mod filenames;
+pub mod notes;
 pub mod photos;
 #[cfg(feature = "wasm")]
 pub mod wasm;
@@ -14,6 +15,7 @@ pub use export::{
     ArchiveFile, CSL_FIELDS, CslMapping, ExportComponent, csl_items, csv_bytes, derive_csl_mapping,
     jsonld_hierarchy_value, project_structure_columns, xlsx_bytes, zip_to,
 };
+pub use notes::{ProjectNote, SheetNote, read_project_notes, sheet_note_request_body, sheet_notes};
 pub use photos::PhotoIndex;
 
 pub const QRATE_APPLICATION_ID: i32 = 1097887558;

@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::ColumnType;
+use crate::{ColumnType, SheetNote};
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 use zip::write::SimpleFileOptions;
@@ -58,7 +58,11 @@ pub fn write_csv(path: &Path, headers: &[String], rows: &[Vec<String>]) -> Resul
 }
 
 /// Write every cell as text so Excel preserves identifiers, dates, and leading zeroes exactly.
-pub fn xlsx_bytes(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, ExportError> {
+pub fn xlsx_bytes(
+    headers: &[String],
+    rows: &[Vec<String>],
+    notes: &[SheetNote],
+) -> Result<Vec<u8>, ExportError> {
     if headers.len() > 16_384 || rows.len() > 1_048_575 || rows.iter().any(|row| row.len() > 16_384)
     {
         return Err(ExportError::XlsxGridLimit);
@@ -75,6 +79,9 @@ pub fn xlsx_bytes(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, E
             sheet.write_string((row + 1) as u32, col as u16, value)?;
         }
     }
+    for note in notes {
+        sheet.insert_note(note.row, note.col, &rust_xlsxwriter::Note::new(&note.text))?;
+    }
     sheet.set_freeze_panes(1, 0)?;
     Ok(workbook.save_to_buffer()?)
 }
@@ -83,8 +90,9 @@ pub fn write_xlsx(
     path: &Path,
     headers: &[String],
     rows: &[Vec<String>],
+    notes: &[SheetNote],
 ) -> Result<(), ExportError> {
-    Ok(std::fs::write(path, xlsx_bytes(headers, rows)?)?)
+    Ok(std::fs::write(path, xlsx_bytes(headers, rows, notes)?)?)
 }
 
 pub fn write_json(path: &Path, value: &Value) -> Result<(), ExportError> {
@@ -419,6 +427,11 @@ mod tests {
             &path,
             &["ID".into(), "Date".into()],
             &[vec!["00123".into(), "2026-09-22".into()]],
+            &[crate::SheetNote {
+                row: 1,
+                col: 1,
+                text: "circa".into(),
+            }],
         )
         .unwrap();
         let mut workbook = calamine::open_workbook_auto(&path).unwrap();
@@ -442,6 +455,14 @@ mod tests {
             .read_to_string(&mut sheet_xml)
             .unwrap();
         assert!(sheet_xml.contains("ySplit=\"1\""));
+        let mut comments_xml = String::new();
+        archive
+            .by_name("xl/comments1.xml")
+            .unwrap()
+            .read_to_string(&mut comments_xml)
+            .unwrap();
+        assert!(comments_xml.contains("ref=\"B2\""));
+        assert!(comments_xml.contains("circa"));
     }
 
     #[test]
