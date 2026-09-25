@@ -227,13 +227,18 @@ pub fn fetch_and_stage(
         .next()
         .context("artifact URL has no filename")?;
     let final_path = dir.join(filename);
+    let staged = || StagedUpdate {
+        envelope: envelope.clone(),
+        path: final_path.clone(),
+        version: manifest.version.clone(),
+        release_notes_url: manifest.release_notes_url.clone(),
+    };
+    if staged_is_verified(&final_path, &artifact) {
+        return Ok(Some(staged()));
+    }
     if final_path.exists() && verify_artifact(&final_path, &artifact).is_ok() {
-        return Ok(Some(StagedUpdate {
-            envelope,
-            path: final_path,
-            version: manifest.version,
-            release_notes_url: manifest.release_notes_url,
-        }));
+        remember_verified(&final_path, &artifact);
+        return Ok(Some(staged()));
     }
 
     let partial = final_path.with_extension("partial");
@@ -245,6 +250,9 @@ pub fn fetch_and_stage(
         );
     }
     let mut output = fs::File::create(&partial)?;
+    // Hashed as it arrives, so the ~100 MB is read once — from the network — rather than again
+    // from disk once it has landed.
+    let mut hasher = Sha256::new();
     let mut received = 0_u64;
     let mut reported_percent = None;
     let mut buffer = [0_u8; 64 * 1024];
@@ -255,6 +263,7 @@ pub fn fetch_and_stage(
         }
         received += read as u64;
         ensure!(received <= artifact.size, "download exceeded signed size");
+        hasher.update(&buffer[..read]);
         output.write_all(&buffer[..read])?;
         let percent = received.saturating_mul(100) / artifact.size;
         if reported_percent != Some(percent) {
@@ -263,14 +272,55 @@ pub fn fetch_and_stage(
         }
     }
     output.sync_all()?;
-    verify_artifact(&partial, &artifact)?;
+    drop(output);
+    ensure!(received == artifact.size, "download size mismatch");
+    ensure!(
+        format!("{:x}", hasher.finalize()).eq_ignore_ascii_case(&artifact.sha256),
+        "download checksum mismatch"
+    );
     fs::rename(&partial, &final_path)?;
+    remember_verified(&final_path, &artifact);
     Ok(Some(StagedUpdate {
         envelope,
         path: final_path,
         version: manifest.version,
         release_notes_url: manifest.release_notes_url,
     }))
+}
+
+/// The staged artifact this process last verified: where it is, its digest, and the length and
+/// modification time it had then. The update check polls, and re-hashing an unchanged ~100 MB
+/// installer on every poll cost a full read of it each time. Installing verifies it again anyway.
+#[cfg(feature = "client")]
+static VERIFIED: std::sync::Mutex<Option<(PathBuf, String, u64, std::time::SystemTime)>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(feature = "client")]
+fn staged_stamp(path: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let meta = fs::metadata(path).ok()?;
+    Some((meta.len(), meta.modified().ok()?))
+}
+
+#[cfg(feature = "client")]
+fn remember_verified(path: &Path, artifact: &UpdateArtifact) {
+    if let (Some((len, modified)), Ok(mut verified)) = (staged_stamp(path), VERIFIED.lock()) {
+        *verified = Some((path.to_path_buf(), artifact.sha256.clone(), len, modified));
+    }
+}
+
+#[cfg(feature = "client")]
+fn staged_is_verified(path: &Path, artifact: &UpdateArtifact) -> bool {
+    let Ok(verified) = VERIFIED.lock() else {
+        return false;
+    };
+    matches!(
+        (&*verified, staged_stamp(path)),
+        (Some((at, digest, len, modified)), Some(now))
+            if at == path
+                && digest.eq_ignore_ascii_case(&artifact.sha256)
+                && *len == artifact.size
+                && (*len, *modified) == now
+    )
 }
 
 /// Channel, ordering, and artifact rules on an already-verified manifest.

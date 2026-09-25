@@ -13,6 +13,7 @@
 
 use std::fmt::Write as _;
 use std::fs::{self, File};
+use std::io::BufWriter;
 use std::panic;
 use std::path::{Path, PathBuf};
 
@@ -60,7 +61,11 @@ pub fn init() {
             let _ = fs::rename(&path, dir.join("qrate.old.log"));
         }
         if let Ok(file) = File::create(&path) {
-            sinks.push(WriteLogger::new(LevelFilter::Debug, config, file));
+            sinks.push(WriteLogger::new(
+                LevelFilter::Debug,
+                config,
+                BufWriter::new(file),
+            ));
         }
     }
 
@@ -75,6 +80,7 @@ pub fn init() {
             "panic: {info}\n{}",
             std::backtrace::Backtrace::force_capture()
         );
+        log::logger().flush();
         previous(info);
     }));
 
@@ -107,26 +113,22 @@ fn logged_by_gpui(target: &str) -> bool {
     target.starts_with("gpui") || target.is_empty()
 }
 
-fn is_accessibility_focus_noise(record: &Record) -> bool {
-    if !logged_by_gpui(record.target()) {
-        return false;
-    }
-    let message = record.args().to_string();
-    message.starts_with("a11y: focused element") || message.starts_with("Sending a11y tree update")
+fn is_accessibility_focus_noise(record: &Record, message: &str) -> bool {
+    logged_by_gpui(record.target())
+        && (message.starts_with("a11y: focused element")
+            || message.starts_with("Sending a11y tree update"))
 }
 
-fn is_window_teardown(record: &Record) -> bool {
-    if record.level() != Level::Error || !logged_by_gpui(record.target()) {
-        return false;
-    }
-    let message = record.args().to_string();
-    message == "window not found" || message.starts_with("Invalid window handle")
-}
-
-fn is_missing_dxgi_debug_layer(record: &Record) -> bool {
+fn is_window_teardown(record: &Record, message: &str) -> bool {
     record.level() == Level::Error
         && logged_by_gpui(record.target())
-        && record.args().to_string().starts_with(
+        && (message == "window not found" || message.starts_with("Invalid window handle"))
+}
+
+fn is_missing_dxgi_debug_layer(record: &Record, message: &str) -> bool {
+    record.level() == Level::Error
+        && logged_by_gpui(record.target())
+        && message.starts_with(
             "The application requested an operation that depends on an SDK component that is missing or mismatched.",
         )
 }
@@ -140,24 +142,43 @@ impl Log for QuietGpuiNoise {
         self.0.flush();
     }
 
+    /// Formats the record once, here, and hands every sink the finished text, so a message's
+    /// arguments are rendered once however many sinks and filters read it. The file is buffered,
+    /// so a warning or an error flushes it: those are the lines a crash report cannot lose.
     fn log(&self, record: &Record) {
-        if is_accessibility_focus_noise(record) {
+        if !self.0.enabled(record.metadata()) {
             return;
         }
-        if is_window_teardown(record) || is_missing_dxgi_debug_layer(record) {
-            self.0.log(
-                &Record::builder()
-                    .level(Level::Debug)
-                    .target(record.target())
-                    .module_path(record.module_path())
-                    .file(record.file())
-                    .line(record.line())
-                    .args(*record.args())
-                    .build(),
-            );
+        let formatted;
+        let message = match record.args().as_str() {
+            Some(message) => message,
+            None => {
+                formatted = record.args().to_string();
+                formatted.as_str()
+            }
+        };
+        if is_accessibility_focus_noise(record, message) {
             return;
         }
-        self.0.log(record);
+        let level = match is_window_teardown(record, message)
+            || is_missing_dxgi_debug_layer(record, message)
+        {
+            true => Level::Debug,
+            false => record.level(),
+        };
+        self.0.log(
+            &Record::builder()
+                .level(level)
+                .target(record.target())
+                .module_path(record.module_path())
+                .file(record.file())
+                .line(record.line())
+                .args(format_args!("{message}"))
+                .build(),
+        );
+        if level <= Level::Warn {
+            self.0.flush();
+        }
     }
 }
 
@@ -238,6 +259,7 @@ fn gib(bytes: u64) -> String {
 }
 
 fn log_tail(lines: usize) -> String {
+    log::logger().flush();
     let Some(text) = log_path().and_then(|path| fs::read_to_string(path).ok()) else {
         return "(no log file)".into();
     };
@@ -383,6 +405,7 @@ mod tests {
                     .target(target)
                     .args(format_args!("{message}"))
                     .build(),
+                message,
             )
         };
         let error = log::Level::Error;
@@ -422,6 +445,7 @@ mod tests {
                     .target(target)
                     .args(format_args!("{message}"))
                     .build(),
+                message,
             )
         };
         let error = log::Level::Error;
@@ -457,6 +481,7 @@ mod tests {
                     .target(target)
                     .args(format_args!("{message}"))
                     .build(),
+                message,
             )
         };
 

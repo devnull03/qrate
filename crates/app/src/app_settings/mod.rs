@@ -539,6 +539,11 @@ fn plugin_item(id: SharedString, spec: SettingSpec) -> SettingItem {
     }
 }
 
+/// What the last "Clear cache" press did, shown beside the button.
+struct CacheCleared(SharedString);
+
+impl Global for CacheCleared {}
+
 /// Autosave as a toggle plus, when on, the method. Both edit the one `AUTOSAVE_KEY` the table reads
 /// (`off`/`timed`/`immediate`): the switch is off iff the value is `off`, so an unset value reads as
 /// on. The method row only exists while autosave is on — the Settings window observes settings
@@ -550,16 +555,55 @@ fn previews_group(cx: &App) -> SettingGroup {
     divided_group(cx).title("Previews").item(
         SettingItem::new(
             "Cached thumbnails",
-            SettingField::element(|_opts: &_, _window: &mut _, _cx: &mut _| {
-                Button::new("clear-preview-cache")
-                    .small()
-                    .label("Clear cache")
-                    .on_click(|_, _, _| match preview::cache::clear() {
-                        Ok(count) => log::info!("cleared {count} cached preview thumbnails"),
-                        Err(err) => {
-                            log::error!("could not clear the preview thumbnail cache: {err}");
-                        }
-                    })
+            SettingField::element(|_opts: &_, _window: &mut _, cx: &mut App| {
+                let outcome = cx.try_global::<CacheCleared>().map(|it| it.0.clone());
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .children(outcome.map(|outcome| {
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(outcome)
+                    }))
+                    .child(
+                        Button::new("clear-preview-cache")
+                            .small()
+                            .label("Clear cache")
+                            .on_click(|_, _, cx| {
+                                cx.set_global(CacheCleared("Clearing…".into()));
+                                let clear = cx.background_spawn(async { preview::cache::clear() });
+                                cx.spawn(async move |cx| {
+                                    let outcome = match clear.await {
+                                        Ok(cleared) => {
+                                            log::info!(
+                                                "cleared {} cached preview thumbnails",
+                                                cleared.thumbnails
+                                            );
+                                            format!(
+                                                "Cleared {} thumbnail{}, {}",
+                                                cleared.thumbnails,
+                                                if cleared.thumbnails == 1 { "" } else { "s" },
+                                                preview::file_size(cleared.bytes)
+                                            )
+                                        }
+                                        Err(err) => {
+                                            log::error!(
+                                                "could not clear the preview thumbnail cache: {err}"
+                                            );
+                                            format!("Could not clear the cache: {err}")
+                                        }
+                                    };
+                                    cx.update(|cx| {
+                                        cx.set_global(CacheCleared(outcome.into()));
+                                        cx.refresh_windows();
+                                    });
+                                })
+                                .detach();
+                                cx.refresh_windows();
+                            })
+                            .into_any_element(),
+                    )
                     .into_any_element()
             }),
         )
@@ -942,9 +986,41 @@ where
     _sub: Subscription,
 }
 
-/// Whether one column has the property a [`column_picker`] is over, and how to set it.
-type ReadsColumn = Rc<dyn Fn(&ColumnItem, &App) -> bool>;
-type WritesColumn = Rc<dyn Fn(&ColumnItem, bool, &mut App)>;
+/// Which of the columns have the property a [`column_picker`] is over, read once per build.
+type ReadsColumns = Rc<dyn Fn(&[ColumnItem], &App) -> HashSet<SharedString>>;
+/// Set it on or off for every column the picker changed, as one write.
+type WritesColumns = Rc<dyn Fn(&[(&ColumnItem, bool)], &mut App)>;
+
+/// A [`column_picker`] over one flag of the column settings: read from one parse of the settings,
+/// written back as one update however many columns changed.
+fn settings_flag(
+    get: fn(&columns::ColumnSettings) -> bool,
+    put: fn(&mut columns::ColumnSettings, bool),
+) -> (ReadsColumns, WritesColumns) {
+    let reads = Rc::new(
+        move |items: &[ColumnItem], cx: &App| -> HashSet<SharedString> {
+            let stored = columns::shared(cx);
+            let default = columns::ColumnSettings::default();
+            items
+                .iter()
+                .filter(|c| get(stored.get(c.key.as_ref()).unwrap_or(&default)))
+                .map(|c| c.key.clone())
+                .collect()
+        },
+    );
+    let writes = Rc::new(move |changes: &[(&ColumnItem, bool)], cx: &mut App| {
+        let mut map = columns::load(cx);
+        for (column, want) in changes {
+            put(map.entry(column.key.to_string()).or_default(), *want);
+        }
+        let Ok(json) = serde_json::to_string(&map) else {
+            return;
+        };
+        CurrentProject::set_text(columns::COLUMN_SETTINGS_KEY, json.into(), cx);
+        settings::dirty::mark(settings::dirty::COLUMN_SETTINGS, cx);
+    });
+    (reads, writes)
+}
 
 /// One data column, as the pickers on the Columns page list it. The value is the stable `c{ix}`
 /// key, not the display name, so two columns sharing a header stay distinct.
@@ -1330,10 +1406,7 @@ fn columns_page(cx: &App) -> SettingPage {
                     column_picker(
                         "filtered-columns",
                         picked.clone(),
-                        Rc::new(|c: &ColumnItem, cx: &App| columns::get(&c.key, cx).filter_enabled),
-                        Rc::new(|c: &ColumnItem, on: bool, cx: &mut App| {
-                            columns::update(&c.key, |s| s.filter_enabled = on, cx);
-                        }),
+                        settings_flag(|s| s.filter_enabled, |s, on| s.filter_enabled = on),
                         window,
                         cx,
                     )
@@ -1351,10 +1424,7 @@ fn columns_page(cx: &App) -> SettingPage {
                 column_picker(
                     "spellchecked-columns",
                     picked.clone(),
-                    Rc::new(|c: &ColumnItem, cx: &App| columns::get(&c.key, cx).spellcheck),
-                    Rc::new(|c: &ColumnItem, on: bool, cx: &mut App| {
-                        columns::update(&c.key, |s| s.spellcheck = on, cx);
-                    }),
+                    settings_flag(|s| s.spellcheck, |s, on| s.spellcheck = on),
                     window,
                     cx,
                 )
@@ -1371,10 +1441,7 @@ fn columns_page(cx: &App) -> SettingPage {
                 column_picker(
                     "variant-reviewed-columns",
                     variant_columns.clone(),
-                    Rc::new(|c: &ColumnItem, cx: &App| columns::get(&c.key, cx).variant_review),
-                    Rc::new(|c: &ColumnItem, on: bool, cx: &mut App| {
-                        columns::update(&c.key, |s| s.variant_review = on, cx);
-                    }),
+                    settings_flag(|s| s.variant_review, |s, on| s.variant_review = on),
                     window,
                     cx,
                 )
@@ -1657,11 +1724,40 @@ fn data_types_group(headers: Vec<ColumnItem>, cx: &App) -> SettingGroup {
                 column_picker(
                     ty.as_str(),
                     headers.clone(),
-                    Rc::new(move |c: &ColumnItem, cx: &App| declared_type(&c.name, cx) == ty),
-                    Rc::new(move |c: &ColumnItem, want: bool, cx: &mut App| {
-                        let ty = if want { ty } else { columns::ColumnType::Text };
-                        CurrentProject::set_column_type(&c.name, ty.as_str(), cx);
-                    }),
+                    (
+                        Rc::new(
+                            move |items: &[ColumnItem], cx: &App| -> HashSet<SharedString> {
+                                let declared: HashMap<&str, &str> = cx
+                                    .try_global::<CurrentProject>()
+                                    .map(|p| {
+                                        p.data
+                                            .columns
+                                            .iter()
+                                            .map(|c| (c.name.as_str(), c.data_type.as_str()))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                items
+                                    .iter()
+                                    .filter(|c| {
+                                        declared
+                                            .get(c.name.as_ref())
+                                            .map_or(columns::ColumnType::Text, |declared| {
+                                                columns::ColumnType::from_declared(declared)
+                                            })
+                                            == ty
+                                    })
+                                    .map(|c| c.key.clone())
+                                    .collect()
+                            },
+                        ),
+                        Rc::new(move |changes: &[(&ColumnItem, bool)], cx: &mut App| {
+                            for (column, want) in changes {
+                                let ty = if *want { ty } else { columns::ColumnType::Text };
+                                CurrentProject::set_column_type(&column.name, ty.as_str(), cx);
+                            }
+                        }),
+                    ),
                     window,
                     cx,
                 )
@@ -1669,16 +1765,6 @@ fn data_types_group(headers: Vec<ColumnItem>, cx: &App) -> SettingGroup {
         ));
     }
     group
-}
-
-/// A column's declared type, read from `__columns` by name. Unconfigured and unrecognised both read
-/// as `Text` — the same tolerance [`columns::ColumnType::from_declared`] gives everywhere else.
-fn declared_type(name: &str, cx: &App) -> columns::ColumnType {
-    cx.try_global::<CurrentProject>()
-        .and_then(|p| p.data.columns.iter().find(|c| c.name == name))
-        .map_or(columns::ColumnType::Text, |c| {
-            columns::ColumnType::from_declared(&c.data_type)
-        })
 }
 
 /// What the open project itself holds, as opposed to how the grid draws it. The files folder was
@@ -1939,8 +2025,7 @@ fn picker_label(selected: &[SharedString]) -> SharedString {
 fn column_picker(
     id: &'static str,
     headers: Vec<ColumnItem>,
-    on: ReadsColumn,
-    set: WritesColumn,
+    (on, set): (ReadsColumns, WritesColumns),
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -1961,12 +2046,18 @@ fn column_picker(
                 let Some(current) = cx.try_global::<CurrentProject>().map(column_items) else {
                     return;
                 };
-                for column in current {
-                    let want = values.contains(&column.key);
-                    if on(&column, cx) != want {
-                        set(&column, want, cx);
-                    }
+                let chosen = on(&current, cx);
+                let changes: Vec<(&ColumnItem, bool)> = current
+                    .iter()
+                    .filter_map(|column| {
+                        let want = values.contains(&column.key);
+                        (chosen.contains(&column.key) != want).then_some((column, want))
+                    })
+                    .collect();
+                if changes.is_empty() {
+                    return;
                 }
+                set(&changes, cx);
                 // A validator reads these settings, so its published findings are stale the
                 // moment one changes — and only a run replaces them.
                 table::revalidate_now(cx);
@@ -1977,9 +2068,10 @@ fn column_picker(
         cx,
     );
 
+    let chosen = on(&headers, cx);
     let picked: Vec<SharedString> = headers
         .iter()
-        .filter(|c| on(c, cx))
+        .filter(|c| chosen.contains(&c.key))
         .map(|c| c.key.clone())
         .collect();
     sync_selection(&state, &headers, &picked, window, cx);

@@ -32,6 +32,49 @@ pub(crate) enum MsgKind {
     Error,
 }
 
+/// A files folder checked against the spreadsheet: the match summary and the rows it plans.
+type FolderOutcome =
+    Result<(data::FolderMatch, Option<file_ingest::ImportPlan>), data::FolderError>;
+
+/// Everything a folder check reads, compared when its answer lands to tell whether the wizard
+/// still wants it. The spreadsheet stands in as its headers and row count.
+#[derive(Clone, PartialEq)]
+struct FolderCheck {
+    folder: String,
+    import_paths: Vec<std::path::PathBuf>,
+    recursive: bool,
+    include_root: bool,
+    rows: Option<(Vec<String>, usize)>,
+}
+
+impl FolderCheck {
+    /// One scan of the folder, used for both the match and the plan. Blocks on the file system.
+    fn run(&self, preview: Option<&data_exchange::SpreadsheetPreview>) -> FolderOutcome {
+        let inventory = data::scan_folder(&self.folder, self.recursive)?;
+        let files = data::file_names(&inventory);
+        let matched = match preview {
+            Some(preview) => data::match_files(preview, files, &self.folder, self.recursive)?,
+            None => data::FolderMatch {
+                matched_rows: 0,
+                total_rows: 0,
+                extra_files: files,
+                ambiguous_files: 0,
+            },
+        };
+        let options = file_ingest::PlanOptions {
+            recursive: self.recursive,
+            include_root: self.include_root,
+            ..Default::default()
+        };
+        let root = std::path::Path::new(&self.folder);
+        let plan = match self.import_paths.as_slice() {
+            [only] if only == root => Some(file_ingest::plan_inventory(root, inventory, &options)),
+            paths => file_ingest::plan_paths(paths, &options).ok(),
+        };
+        Ok((matched, plan))
+    }
+}
+
 impl ProjectWizard {
     fn browse_for_local_file(&mut self, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
@@ -77,35 +120,50 @@ impl ProjectWizard {
         .detach();
     }
 
-    pub(crate) fn set_local_path(&mut self, path: String, _cx: &mut Context<Self>) {
-        self.local_path = path;
-        match data::load_spreadsheet_preview(&self.local_path) {
-            Ok(preview) => {
-                self.spreadsheet_preview = Some(preview);
-                self.local_error = None;
-            }
-            Err(e) => {
-                self.local_error = Some(e.message().into());
-                self.spreadsheet_preview = None;
-            }
-        }
-        self.revalidate_folder();
+    /// Read the chosen spreadsheet off the UI thread. Until it lands neither a preview nor an error
+    /// is set, which the step shows as "Reading the spreadsheet…" and which blocks Next.
+    pub(crate) fn set_local_path(&mut self, path: String, cx: &mut Context<Self>) {
+        self.local_path = path.clone();
+        self.spreadsheet_preview = None;
+        self.local_error = None;
+        let read = cx.background_spawn({
+            let path = path.clone();
+            async move { data::load_spreadsheet_preview(&path) }
+        });
+        cx.spawn(async move |this, cx| {
+            let read = read.await;
+            this.update(cx, |this, cx| {
+                // A newer choice is already being read; this answer is for a file nobody wants.
+                if this.local_path != path {
+                    return;
+                }
+                match read {
+                    Ok(preview) => this.spreadsheet_preview = Some(preview),
+                    Err(e) => this.local_error = Some(e.message().into()),
+                }
+                this.revalidate_folder_in_background(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        self.revalidate_folder_in_background(cx);
     }
 
-    pub(crate) fn set_folder_path(&mut self, path: String, _cx: &mut Context<Self>) {
+    pub(crate) fn set_folder_path(&mut self, path: String, cx: &mut Context<Self>) {
         self.import_paths = vec![std::path::PathBuf::from(&path)];
         self.folder_path = path;
-        self.revalidate_folder();
+        self.revalidate_folder_in_background(cx);
     }
 
     pub(crate) fn set_import_paths(
         &mut self,
         paths: Vec<std::path::PathBuf>,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         if self.entry_kind != EntryKind::Blank {
             if paths.len() == 1 && paths[0].is_dir() {
-                self.set_folder_path(paths[0].to_string_lossy().into_owned(), _cx);
+                self.set_folder_path(paths[0].to_string_lossy().into_owned(), cx);
             } else {
                 self.folder_error = Some(
                     "Multiple files and folders can start a blank project; choose one files folder for a spreadsheet-backed project."
@@ -114,66 +172,90 @@ impl ProjectWizard {
             }
             return;
         }
-        let Ok(mut plan) = file_ingest::plan_paths(
-            &paths,
-            &file_ingest::PlanOptions {
-                recursive: self.recurse_subfolders,
-                include_root: self.include_root_folder,
-                ..Default::default()
-            },
-        ) else {
-            self.folder_error = Some("Those files or folders couldn't be read.".into());
-            return;
-        };
-        let folder_path = match paths.as_slice() {
-            [path] if path.is_dir() => path.to_string_lossy().into_owned(),
-            _ => {
-                for component in &mut plan.components {
-                    component.source_path = component.absolute_path.clone();
-                }
-                String::new()
-            }
-        };
-        let extra_files = plan
-            .components
-            .iter()
-            .filter(|component| component.kind == file_ingest::EntryKind::File)
-            .map(|component| component.title.clone())
-            .collect();
-        self.import_paths = paths;
-        self.folder_path = folder_path;
-        self.folder_plan = Some(plan);
-        self.folder_match = Some(data::FolderMatch {
-            matched_rows: 0,
-            total_rows: 0,
-            extra_files,
-            ambiguous_files: 0,
-        });
-        self.folder_error = None;
-    }
-
-    pub(crate) fn revalidate_folder(&mut self) {
-        if self.folder_path.is_empty() {
-            self.folder_match = None;
-            self.folder_error = None;
+        if let [path] = paths.as_slice()
+            && path.is_dir()
+        {
+            self.set_folder_path(path.to_string_lossy().into_owned(), cx);
             return;
         }
-        let result = match self.entry_kind {
-            EntryKind::LocalFile | EntryKind::Sheet => {
-                self.spreadsheet_preview.as_ref().map(|preview| {
-                    data::match_folder(preview, &self.folder_path, self.recurse_subfolders)
-                })
-            }
-            EntryKind::Blank => Some(data::inventory_folder(
-                &self.folder_path,
-                self.recurse_subfolders,
-            )),
+        self.import_paths = paths.clone();
+        self.folder_path.clear();
+        self.folder_plan = None;
+        self.folder_match = None;
+        self.folder_error = None;
+        self.folder_check_generation = self.folder_check_generation.wrapping_add(1);
+        let generation = self.folder_check_generation;
+        let options = file_ingest::PlanOptions {
+            recursive: self.recurse_subfolders,
+            include_root: self.include_root_folder,
+            ..Default::default()
         };
-        match result {
-            Some(Ok(m)) => {
-                self.folder_match = Some(m);
+        let scan = cx.background_spawn({
+            let paths = paths.clone();
+            async move { file_ingest::plan_paths(&paths, &options) }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = scan.await;
+            this.update(cx, |this, cx| {
+                if this.folder_check_generation != generation || this.import_paths != paths {
+                    return;
+                }
+                match result {
+                    Ok(mut plan) => {
+                        for component in &mut plan.components {
+                            component.source_path = component.absolute_path.clone();
+                        }
+                        let extra_files = plan
+                            .components
+                            .iter()
+                            .filter(|component| component.kind == file_ingest::EntryKind::File)
+                            .map(|component| component.title.clone())
+                            .collect();
+                        this.folder_plan = Some(plan);
+                        this.folder_match = Some(data::FolderMatch {
+                            matched_rows: 0,
+                            total_rows: 0,
+                            extra_files,
+                            ambiguous_files: 0,
+                        });
+                    }
+                    Err(_) => {
+                        this.folder_error = Some("Those files or folders couldn't be read.".into());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// What a folder check depends on, `None` when there is nothing to check yet: no folder, or a
+    /// spreadsheet-backed project whose spreadsheet has not been read.
+    fn folder_check(&self) -> Option<FolderCheck> {
+        let spreadsheet = self.entry_kind != EntryKind::Blank;
+        if self.folder_path.is_empty() || (spreadsheet && self.spreadsheet_preview.is_none()) {
+            return None;
+        }
+        Some(FolderCheck {
+            folder: self.folder_path.clone(),
+            import_paths: self.import_paths.clone(),
+            recursive: self.recurse_subfolders,
+            include_root: self.include_root_folder,
+            rows: self
+                .spreadsheet_preview
+                .as_ref()
+                .filter(|_| spreadsheet)
+                .map(|preview| (preview.headers.clone(), preview.rows.len())),
+        })
+    }
+
+    fn apply_folder_check(&mut self, outcome: Option<FolderOutcome>) {
+        match outcome {
+            Some(Ok((matched, plan))) => {
+                self.folder_match = Some(matched);
+                self.folder_plan = plan;
                 self.folder_error = None;
-                self.refresh_folder_plan();
             }
             Some(Err(e)) => {
                 self.folder_match = None;
@@ -188,23 +270,39 @@ impl ProjectWizard {
         }
     }
 
-    fn refresh_folder_plan(&mut self) {
-        self.folder_plan = file_ingest::plan_paths(
-            &self.import_paths,
-            &file_ingest::PlanOptions {
-                recursive: self.recurse_subfolders,
-                include_root: self.include_root_folder,
-                ..Default::default()
-            },
-        )
-        .ok();
-        if self.folder_path.is_empty()
-            && let Some(plan) = &mut self.folder_plan
-        {
-            for component in &mut plan.components {
-                component.source_path = component.absolute_path.clone();
-            }
-        }
+    /// Scan the files folder once, match it against the spreadsheet and plan its rows from that
+    /// same scan, all off the UI thread. Until the answer lands neither a match nor an error is
+    /// set, which the step shows as "Checking the folder…"; an answer for inputs that have since
+    /// changed is dropped, since the check they started is already on its way.
+    pub(crate) fn revalidate_folder_in_background(&mut self, cx: &mut Context<Self>) {
+        self.folder_check_generation = self.folder_check_generation.wrapping_add(1);
+        let generation = self.folder_check_generation;
+        self.apply_folder_check(None);
+        let Some(check) = self.folder_check() else {
+            return;
+        };
+        let preview = check
+            .rows
+            .is_some()
+            .then(|| self.spreadsheet_preview.clone())
+            .flatten();
+        let run = cx.background_spawn({
+            let check = check.clone();
+            async move { check.run(preview.as_ref()) }
+        });
+        cx.spawn(async move |this, cx| {
+            let outcome = run.await;
+            this.update(cx, |this, cx| {
+                if this.folder_check_generation == generation
+                    && this.folder_check().as_ref() == Some(&check)
+                {
+                    this.apply_folder_check(Some(outcome));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(crate) fn check_sheet_link(&mut self, auto_advance: bool, cx: &mut Context<Self>) {
@@ -234,7 +332,7 @@ impl ProjectWizard {
                             this.spreadsheet_preview = None;
                         }
                     }
-                    this.revalidate_folder();
+                    this.revalidate_folder_in_background(cx);
                     cx.notify();
                     auto_advance && this.can_advance(cx).is_ok()
                 })
@@ -286,6 +384,10 @@ impl ProjectWizard {
         let description_profile = self.description_profile;
         let duplicate_policy = self.duplicate_policy;
         let dimmed = self.skip_files;
+        let checking = !self.import_paths.is_empty()
+            && self.folder_match.is_none()
+            && self.folder_error.is_none()
+            && (self.entry_kind == EntryKind::Blank || self.spreadsheet_preview.is_some());
 
         let body = v_flex()
             .gap_3()
@@ -321,6 +423,12 @@ impl ProjectWizard {
                             .into_any_element(),
                             (None, Some(e)) => {
                                 inline_message("local-status", e.clone(), MsgKind::Error)
+                                    .into_any_element()
+                            }
+                            (None, None) if !self.local_path.is_empty() => {
+                                Label::new("Reading the spreadsheet…")
+                                    .text_sm()
+                                    .text_color(muted)
                                     .into_any_element()
                             }
                             (None, None) => div().into_any_element(),
@@ -426,6 +534,10 @@ impl ProjectWizard {
                             inline_message("folder-status", e.clone(), MsgKind::Error)
                                 .into_any_element()
                         }
+                        (None, None) if checking => Label::new("Checking the folder…")
+                            .text_sm()
+                            .text_color(muted)
+                            .into_any_element(),
                         (None, None) => div().into_any_element(),
                     }),
             )
@@ -477,7 +589,13 @@ impl ProjectWizard {
                         .checked(self.include_root_folder)
                         .on_click(cx.listener(|this, checked: &bool, _, cx| {
                             this.include_root_folder = *checked;
-                            this.refresh_folder_plan();
+                            if !this.import_paths.is_empty() {
+                                if this.folder_path.is_empty() {
+                                    this.set_import_paths(this.import_paths.clone(), cx);
+                                } else {
+                                    this.revalidate_folder_in_background(cx);
+                                }
+                            }
                             cx.notify();
                         })),
                 )

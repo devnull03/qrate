@@ -48,7 +48,7 @@ impl ProjectWizard {
                     .checked(self.recurse_subfolders)
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
                         this.recurse_subfolders = *checked;
-                        this.revalidate_folder();
+                        this.revalidate_folder_in_background(cx);
                         cx.notify();
                     })),
             )

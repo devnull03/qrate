@@ -208,7 +208,44 @@ impl ViewsPanel {
             .state
             .as_ref()
             .and_then(|state| state.upgrade())
-            .map(|state| cx.subscribe(&state, |_this, _state, _: &TableChanged, cx| cx.notify()));
+            .map(|state| {
+                cx.subscribe(&state, |this, _state, _: &TableChanged, cx| {
+                    this.follow_selection(cx);
+                    cx.notify();
+                })
+            });
+        self.follow_selection(cx);
+    }
+
+    /// Scroll the gallery to the selected card when the selection has moved to another one. Runs
+    /// on a table change rather than per frame, because finding a row's place in the view is a
+    /// scan of every visible row.
+    fn follow_selection(&mut self, cx: &mut Context<Self>) {
+        if self.view != ViewMode::Gallery {
+            return;
+        }
+        let cursor = self
+            .state
+            .as_ref()
+            .and_then(WeakEntity::upgrade)
+            .and_then(|state| {
+                let delegate = state.read(cx).delegate();
+                match delegate.selection()? {
+                    table::Selection::Cell { row, .. } | table::Selection::Row(row) => {
+                        delegate.view_row(row)
+                    }
+                    table::Selection::Column(_) => None,
+                }
+            });
+        if cursor == self.gallery_followed {
+            return;
+        }
+        self.gallery_followed = cursor;
+        let cols = self.thumb.read(cx).value().start().round() as usize;
+        if let Some(view) = cursor {
+            self.gallery_scroll
+                .scroll_to_item(view / cols.max(1), ScrollStrategy::Nearest);
+        }
     }
 
     /// The view switcher: one segmented tab per mode, the same control the Settings window's
@@ -259,6 +296,8 @@ fn switch(panel: &Entity<ViewsPanel>, mode: ViewMode, window: &mut Window, cx: &
         (this.view != mode).then(|| {
             let leaving = this.view;
             this.view = mode;
+            this.gallery_followed = None;
+            this.follow_selection(cx);
             cx.notify();
             (leaving, this.dock_area.clone())
         })
@@ -439,23 +478,6 @@ impl Render for ViewsPanel {
                         ViewMode::Gallery => {
                             let state = self.state.as_ref().and_then(WeakEntity::upgrade);
                             let cols = self.thumb.read(cx).value().start().round() as usize;
-                            let cursor = state.as_ref().and_then(|state| {
-                                let delegate = state.read(cx).delegate();
-                                match delegate.selection()? {
-                                    table::Selection::Cell { row, .. }
-                                    | table::Selection::Row(row) => delegate.view_row(row),
-                                    table::Selection::Column(_) => None,
-                                }
-                            });
-                            if cursor != self.gallery_followed {
-                                self.gallery_followed = cursor;
-                                if let Some(view) = cursor {
-                                    self.gallery_scroll.scroll_to_item(
-                                        view / cols.max(1),
-                                        ScrollStrategy::Nearest,
-                                    );
-                                }
-                            }
                             gallery::render(
                                 state,
                                 self.body_width,

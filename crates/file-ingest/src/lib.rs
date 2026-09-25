@@ -110,7 +110,16 @@ pub fn scan(root: &Path, recursive: bool) -> Result<Inventory, Error> {
 
 /// Produces a side-effect-free component tree suitable for an import preview.
 pub fn plan(root: &Path, options: &PlanOptions<'_>) -> Result<ImportPlan, Error> {
-    let inventory = scan(root, options.recursive)?;
+    Ok(plan_inventory(
+        root,
+        scan(root, options.recursive)?,
+        options,
+    ))
+}
+
+/// [`plan`] over an inventory already taken of `root`, so a caller that also matches the files
+/// against something walks the folder once.
+pub fn plan_inventory(root: &Path, inventory: Inventory, options: &PlanOptions<'_>) -> ImportPlan {
     let root_offset = usize::from(options.include_root);
     let mut components = Vec::with_capacity(inventory.entries.len() + root_offset);
     if options.include_root {
@@ -140,10 +149,10 @@ pub fn plan(root: &Path, options: &PlanOptions<'_>) -> Result<ImportPlan, Error>
             .to_string(),
         }
     }));
-    Ok(ImportPlan {
+    ImportPlan {
         components,
         warnings: inventory.warnings,
-    })
+    }
 }
 
 /// Plans one or more dropped files and directories as independent root components.
@@ -206,18 +215,18 @@ fn visit(
             return;
         }
     };
-    let mut paths: Vec<_> = entries
+    // The type comes with the directory listing on every platform, so no entry is stat'ed again
+    // except a symlink, whose target has to be asked about.
+    let mut paths: Vec<(PathBuf, fs::FileType)> = entries
         .filter_map(Result::ok)
-        .map(|entry| entry.path())
+        .filter_map(|entry| Some((entry.path(), entry.file_type().ok()?)))
         .collect();
-    paths.sort_by(|left, right| {
-        let (left, right) = (relative_string(root, left), relative_string(root, right));
-        left.to_lowercase()
-            .cmp(&right.to_lowercase())
-            .then_with(|| left.cmp(&right))
+    paths.sort_by_cached_key(|(path, _)| {
+        let relative = relative_string(root, path);
+        (relative.to_lowercase(), relative)
     });
 
-    for path in paths {
+    for (path, file_type) in paths {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
@@ -225,16 +234,17 @@ fn visit(
             continue;
         }
 
-        let Ok(file_type) = fs::symlink_metadata(&path).map(|meta| meta.file_type()) else {
-            continue;
+        let (is_dir, is_file) = match file_type.is_symlink() {
+            true => (path.is_dir(), path.is_file()),
+            false => (file_type.is_dir(), file_type.is_file()),
         };
-        if file_type.is_symlink() && path.is_dir() {
+        if file_type.is_symlink() && is_dir {
             inventory
                 .warnings
                 .push(Warning::DirectorySymlinkSkipped(path));
             continue;
         }
-        if path.is_dir() {
+        if is_dir {
             if recursive {
                 let index = inventory.entries.len();
                 inventory.entries.push(Entry {
@@ -245,7 +255,7 @@ fn visit(
                 });
                 visit(root, &path, Some(index), true, inventory);
             }
-        } else if path.is_file() {
+        } else if is_file {
             inventory.entries.push(Entry {
                 relative_path: path.strip_prefix(root).unwrap_or(&path).to_path_buf(),
                 path,
@@ -342,6 +352,39 @@ mod tests {
             .map(|entry| normalized_path(&entry.relative_path))
             .collect();
         assert_eq!(paths, ["A.jpg", "z.jpg"]);
+    }
+
+    /// Folders sort among files by their whole relative path, case folded, and a case-only tie
+    /// falls back to the exact bytes so two scans of one folder always agree.
+    #[test]
+    fn ordering_folds_case_across_folders_and_breaks_ties_exactly() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("a_dir")).unwrap();
+        fs::write(root.path().join("a_dir").join("x.jpg"), "x").unwrap();
+        fs::write(root.path().join("b.jpg"), "b").unwrap();
+        fs::write(root.path().join("A.jpg"), "a").unwrap();
+        let paths = |root: &std::path::Path| -> Vec<String> {
+            scan(root, true)
+                .unwrap()
+                .entries
+                .iter()
+                .map(|entry| normalized_path(&entry.relative_path))
+                .collect()
+        };
+        assert_eq!(
+            paths(root.path()),
+            ["A.jpg", "a_dir", "a_dir/x.jpg", "b.jpg"]
+        );
+
+        // Only a case-sensitive file system can hold both spellings at once.
+        fs::write(root.path().join("same.jpg"), "lower").unwrap();
+        fs::write(root.path().join("Same.jpg"), "upper").unwrap();
+        let listed = paths(root.path());
+        if listed.iter().any(|path| path == "same.jpg") && listed.iter().any(|p| p == "Same.jpg") {
+            let upper = listed.iter().position(|p| p == "Same.jpg").unwrap();
+            let lower = listed.iter().position(|p| p == "same.jpg").unwrap();
+            assert_eq!(lower, upper + 1, "exact bytes break the tie: {listed:?}");
+        }
     }
 
     #[test]

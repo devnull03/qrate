@@ -51,22 +51,27 @@ pub struct Transport {
     /// The position poll. Held rather than detached: it must die with its host, or it outlives the
     /// recording it was following.
     tick: Option<Task<()>>,
+    /// Reads the length and artwork. Held so a transport dropped mid-probe cancels it.
+    _probe: Task<()>,
+}
+
+/// The scrubber for a recording `length` long. A step of a second: the resolution anyone scrubbing
+/// a two-hour interview works at, and what the readout beside it shows.
+fn scrubber(length: Option<Duration>) -> SliderState {
+    let seconds = length.map_or(0., |length| length.as_secs_f64() as f32);
+    SliderState::new().min(0.).max(seconds.max(1.)).step(1.)
 }
 
 impl Transport {
     /// Build a transport for `path`, or `None` if that file is not a recording.
     ///
-    /// Both the length and the artwork question open the file, so both are asked once here — they
-    /// cannot change while the transport is up.
+    /// The length and the artwork both open the file, so they are probed once, off the UI thread;
+    /// until that lands the bar can play but not scrub. Neither can change while the transport is up.
     pub fn new<V: Host>(path: PathBuf, cx: &mut Context<V>) -> Option<Self> {
         if !preview::has_audio(&path) {
             return None;
         }
-        let length = preview::playback::duration(&path);
-        let seconds = length.map_or(0., |length| length.as_secs_f64() as f32);
-        // A step of a second: the resolution anyone scrubbing a two-hour interview works at, and
-        // what the readout beside it shows.
-        let slider = cx.new(|_| SliderState::new().min(0.).max(seconds.max(1.)).step(1.));
+        let slider = cx.new(|_| scrubber(None));
 
         // Detached because the slider is owned by the host and cannot outlive it.
         cx.subscribe(&slider, |this: &mut V, _, event: &SliderEvent, cx| {
@@ -88,15 +93,45 @@ impl Transport {
         })
         .detach();
 
+        let probe = cx.background_spawn({
+            let path = path.clone();
+            async move {
+                (
+                    preview::playback::duration(&path),
+                    preview::has_cover(&path),
+                )
+            }
+        });
+        let probe = cx.spawn({
+            let path = path.clone();
+            async move |this: WeakEntity<V>, cx: &mut AsyncApp| {
+                let (length, art) = probe.await;
+                this.update(cx, |this, cx| {
+                    let Some(transport) = this.transport().filter(|it| it.path == path) else {
+                        return;
+                    };
+                    transport.length = length;
+                    transport.art = art;
+                    transport
+                        .slider
+                        .clone()
+                        .update(cx, |slider, _| *slider = scrubber(length));
+                    cx.notify();
+                })
+                .ok();
+            }
+        });
+
         Some(Self {
-            path: path.clone(),
-            length,
-            art: preview::has_cover(&path),
+            path,
+            length: None,
+            art: false,
             at: Duration::ZERO,
             playing: false,
             scrubbing: false,
             slider,
             tick: None,
+            _probe: probe,
         })
     }
 

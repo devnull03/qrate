@@ -1,7 +1,7 @@
 //! Real spreadsheet parsing and folder-matching logic used by the Files, Link, and
 //! Columns steps. A local file (CSV/TSV or an Excel/ODS workbook) and a Google Sheet fetched by
 //! `data-exchange` both become a [`SpreadsheetPreview`], so they run through the same
-//! [`match_folder`] path from here on.
+//! [`match_files`] path from here on.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -115,10 +115,12 @@ impl FolderError {
     }
 }
 
-/// Every filename under `folder`. `recursive` walks subfolders too — collections nest
-/// inconsistently, and `table::photos` already resolves rows against the whole tree, so the
-/// wizard's check has to be able to look as deep as the app will.
-pub fn list_files(folder: &str, recursive: bool) -> Result<Vec<String>, FolderError> {
+/// Walk `folder` once, with every refusal turned into what the archivist is told. The inventory
+/// serves both the match ([`file_names`]) and the import plan, so neither walks it again.
+/// `recursive` walks subfolders too — collections nest inconsistently, and `table::photos`
+/// already resolves rows against the whole tree, so the wizard's check has to be able to look as
+/// deep as the app will.
+pub fn scan_folder(folder: &str, recursive: bool) -> Result<file_ingest::Inventory, FolderError> {
     let dir = Path::new(folder);
     let inventory = file_ingest::scan(dir, recursive).map_err(|error| match error {
         file_ingest::Error::NotDirectory => {
@@ -137,41 +139,34 @@ pub fn list_files(folder: &str, recursive: bool) -> Result<Vec<String>, FolderEr
     for warning in &inventory.warnings {
         log::warn!("Files folder scan warning for {folder}: {warning:?}");
     }
-    // Relative paths keep same-named files in separate subfolders distinct. Filename matching
-    // still accepts them because `settings::filenames` reads the path tail as one of its keys.
-    let files: Vec<_> = inventory
-        .files()
-        .map(|entry| file_ingest::normalized_path(&entry.relative_path))
-        .collect();
     log::debug!(
         "Files folder {folder}: {} file(s) found (recursive: {recursive})",
-        files.len()
+        inventory.files().count()
     );
-    Ok(files)
+    Ok(inventory)
 }
 
-/// Every file in a folder-backed blank project is new collection material, so all of them become
-/// otherwise-empty rows rather than being matched against spreadsheet rows that do not exist.
-pub fn inventory_folder(folder: &str, recursive: bool) -> Result<FolderMatch, FolderError> {
-    Ok(FolderMatch {
-        matched_rows: 0,
-        total_rows: 0,
-        extra_files: list_files(folder, recursive)?,
-        ambiguous_files: 0,
-    })
+/// Every file in `inventory`, by its path below the folder. Relative paths keep same-named files
+/// in separate subfolders distinct; filename matching still accepts them because
+/// `settings::filenames` reads the path tail as one of its keys.
+pub fn file_names(inventory: &file_ingest::Inventory) -> Vec<String> {
+    inventory
+        .files()
+        .map(|entry| file_ingest::normalized_path(&entry.relative_path))
+        .collect()
 }
 
-/// Matches spreadsheet rows against files in `folder` by looking for any cell whose value names a
-/// file there — by filename, filename stem, or the id a multi-part item's files are built from
-/// ([`settings::filenames::keys`], the same rule `table::photos` resolves rows with once the
+/// Matches spreadsheet rows against `files`, listed from `folder`, by looking for any cell whose
+/// value names one — by filename, filename stem, or the id a multi-part item's files are built
+/// from ([`settings::filenames::keys`], the same rule `table::photos` resolves rows with once the
 /// project is open). Summarized here for the Files step's inline validation; the Link step's
 /// "match by exact filename" shows the same numbers.
-pub fn match_folder(
+pub fn match_files(
     preview: &SpreadsheetPreview,
+    files: Vec<String>,
     folder: &str,
     recursive: bool,
 ) -> Result<FolderMatch, FolderError> {
-    let files = list_files(folder, recursive)?;
     let mut by_key: HashMap<String, Vec<usize>> = HashMap::new();
     for (ix, name) in files.iter().enumerate() {
         for key in settings::filenames::keys(name) {
@@ -421,6 +416,18 @@ pub(crate) fn parse_column_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn list_files(folder: &str, recursive: bool) -> Result<Vec<String>, FolderError> {
+        Ok(file_names(&scan_folder(folder, recursive)?))
+    }
+
+    fn match_folder(
+        preview: &SpreadsheetPreview,
+        folder: &str,
+        recursive: bool,
+    ) -> Result<FolderMatch, FolderError> {
+        match_files(preview, list_files(folder, recursive)?, folder, recursive)
+    }
     use std::fs;
     use std::io::Write;
 
@@ -494,11 +501,9 @@ mod tests {
         fs::write(dir.join("one.jpg"), "x").unwrap();
         fs::write(dir.join("batch").join("two.png"), "x").unwrap();
 
-        let mut inventory = inventory_folder(dir.to_str().unwrap(), true).unwrap();
-        inventory.extra_files.sort();
-        assert_eq!(inventory.matched_rows, 0);
-        assert_eq!(inventory.total_rows, 0);
-        assert_eq!(inventory.extra_files, ["batch/two.png", "one.jpg"]);
+        let mut files = list_files(dir.to_str().unwrap(), true).unwrap();
+        files.sort();
+        assert_eq!(files, ["batch/two.png", "one.jpg"]);
     }
 
     #[test]

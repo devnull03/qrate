@@ -332,17 +332,26 @@ pub fn create_sheet(token: &str, title: &str) -> Result<(String, String), Google
     Ok((created.id, created.url))
 }
 
-/// Fill a spreadsheet's first tab, replacing what is there. Works for one qrate just created and
-/// for one the user chose through the Picker — those are the only two it can reach.
+/// Fill a spreadsheet's first tab, replacing everything that is there. Works for one qrate just
+/// created and for one the user chose through the Picker — those are the only two it can reach.
+///
+/// The new values are written first. Only after that succeeds are stale rows and columns cleared,
+/// so a failed write cannot leave the old spreadsheet empty.
 pub fn write_values(
     token: &str,
     spreadsheet_id: &str,
     headers: &[String],
     rows: &[Vec<String>],
 ) -> Result<(), GoogleError> {
-    let mut values: Vec<&[String]> = vec![headers];
-    values.extend(rows.iter().map(Vec::as_slice));
-    // No sheet name in the range: "A1" alone means the first tab, whose title is localised.
+    // No sheet name in these ranges: a bare range means the first tab, whose title is localised.
+    let width = headers.len();
+    let mut values = Vec::with_capacity(rows.len() + 1);
+    values.push(headers.to_vec());
+    for row in rows {
+        let mut cells = row.clone();
+        cells.resize(width, String::new());
+        values.push(cells);
+    }
     let response = client()?
         .put(format!(
             "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/A1?valueInputOption=RAW"
@@ -350,13 +359,70 @@ pub fn write_values(
         .bearer_auth(token)
         .json(&serde_json::json!({ "values": values }))
         .send()?;
-    // `drive.file` answers 404, not 403, for a file the token was never granted — so the plain
-    // status is indistinguishable from a deleted sheet and has to be named for the user.
+    reached(response)?;
+
+    let tail = format!("A{}:ZZZ", rows.len() + 2);
+    clear_values(token, spreadsheet_id, &tail)?;
+    if width < 18_278 {
+        let excess_columns = format!("{}:ZZZ", column_label(width + 1));
+        clear_values(token, spreadsheet_id, &excess_columns)?;
+    }
+    Ok(())
+}
+
+fn clear_values(token: &str, spreadsheet_id: &str, range: &str) -> Result<(), GoogleError> {
+    let response = client()?
+        .post(format!(
+            "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{range}:clear"
+        ))
+        .bearer_auth(token)
+        .json(&serde_json::json!({}))
+        .send()?;
+    reached(response)
+}
+
+fn column_label(mut index: usize) -> String {
+    let mut letters = String::new();
+    while index > 0 {
+        index -= 1;
+        letters.insert(0, (b'A' + (index % 26) as u8) as char);
+        index /= 26;
+    }
+    letters
+}
+
+/// `drive.file` answers 404, not 403, for a file the token was never granted — so the plain status
+/// is indistinguishable from a deleted sheet and has to be named for the user.
+fn reached(response: reqwest::blocking::Response) -> Result<(), GoogleError> {
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(GoogleError::NoAccess);
     }
     response.error_for_status()?;
     Ok(())
+}
+
+/// The title of the spreadsheet, for asking before it is overwritten.
+pub fn sheet_title(token: &str, spreadsheet_id: &str) -> Result<String, GoogleError> {
+    #[derive(Deserialize)]
+    struct Titled {
+        properties: Title,
+    }
+    #[derive(Deserialize)]
+    struct Title {
+        title: String,
+    }
+    let response = client()?
+        .get(format!(
+            "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
+        ))
+        .bearer_auth(token)
+        .query(&[("fields", "properties(title)")])
+        .send()?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(GoogleError::NoAccess);
+    }
+    let titled: Titled = response.error_for_status()?.json()?;
+    Ok(titled.properties.title)
 }
 
 #[derive(Deserialize)]
@@ -408,11 +474,7 @@ pub fn batch_update(
         .bearer_auth(token)
         .json(body)
         .send()?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(GoogleError::NoAccess);
-    }
-    response.error_for_status()?;
-    Ok(())
+    reached(response)
 }
 
 /// The link a stored spreadsheet id points at.

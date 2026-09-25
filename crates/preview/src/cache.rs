@@ -34,6 +34,10 @@ const CAP: u64 = 2 * 1024 * 1024 * 1024;
 pub fn dir() -> Option<PathBuf> {
     static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
+        #[cfg(test)]
+        let dir =
+            std::env::temp_dir().join(format!("qrate-preview-cache-tests-{}", std::process::id()));
+        #[cfg(not(test))]
         let dir = dirs::cache_dir()?.join("qrate").join("thumbnails");
         fs::create_dir_all(&dir).ok()?;
         Some(dir)
@@ -63,6 +67,26 @@ pub fn key(path: &Path, max_edge: u32, page: usize) -> Option<String> {
 pub fn read(key: &str) -> Option<RgbaImage> {
     let bytes = fs::read(dir()?.join(key)).ok()?;
     Some(image::load_from_memory(&bytes).ok()?.to_rgba8())
+}
+
+/// How many pages the file behind `key` has, if [`write_pages`] recorded it with the thumbnail.
+pub fn read_pages(key: &str) -> Option<usize> {
+    fs::read_to_string(dir()?.join(format!("{key}.pages")))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Record the page count beside the thumbnail `key` names, so a relaunch knows it without opening
+/// the file. Failure costs a recount next launch, so it is only logged.
+pub fn write_pages(key: &str, pages: usize) {
+    let Some(dir) = dir() else {
+        return;
+    };
+    if let Err(err) = fs::write(dir.join(format!("{key}.pages")), pages.to_string()) {
+        log::warn!("could not cache a page count, it will be counted again next launch: {err}");
+    }
 }
 
 /// Store `image` as `key`. Failure is logged and ignored — an unwritable cache directory should
@@ -163,19 +187,40 @@ pub fn prune(dir: &Path, cap: u64) {
     log::info!("preview cache was over {cap} bytes; dropped {dropped} of the oldest entries");
 }
 
-/// Delete every cached rendering. Returns how many entries went, for the message the caller shows.
-pub fn clear() -> std::io::Result<usize> {
+/// What [`clear`] removed: how many thumbnails, and how many bytes in all, sidecars included.
+#[derive(Debug, Default, PartialEq)]
+pub struct Cleared {
+    pub thumbnails: usize,
+    pub bytes: u64,
+}
+
+/// Delete every cached rendering and what was stored beside it, for the message the caller shows.
+/// Walks the whole directory, so call it off the UI thread.
+pub fn clear() -> std::io::Result<Cleared> {
     let Some(dir) = dir() else {
-        return Ok(0);
+        return Ok(Cleared::default());
     };
-    let mut removed = 0;
+    clear_in(&dir)
+}
+
+fn clear_in(dir: &Path) -> std::io::Result<Cleared> {
+    let mut cleared = Cleared::default();
     for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_file() && fs::remove_file(&path).is_ok() {
-            removed += 1;
+        let entry = entry?;
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let path = entry.path();
+        if !meta.is_file() || fs::remove_file(&path).is_err() {
+            continue;
+        }
+        cleared.bytes += meta.len();
+        // Thumbnails are the bare keys; the text and page-count sidecars carry an extension.
+        if path.extension().is_none() {
+            cleared.thumbnails += 1;
         }
     }
-    Ok(removed)
+    Ok(cleared)
 }
 
 #[cfg(test)]

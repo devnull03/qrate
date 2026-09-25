@@ -131,13 +131,24 @@ pub struct HistoryPanel {
     naming: Option<(EntryId, Entity<InputState>, Subscription)>,
     /// One cell to show the changes of, as its row and every name its column has had.
     cell: Option<(RowId, Vec<String>)>,
-    /// What the list is showing, rebuilt each render: the flattened rows, the saved entries they
-    /// index into once filtered and narrowed, and the entries not on disk yet with the meta line
-    /// each needs. On `self` rather than in `render` because the virtual list draws a range of
-    /// them later, from a callback that is handed the panel and nothing else.
+    /// What the list is showing, rebuilt by [`Self::rebuild`] whenever `stale`: the flattened rows,
+    /// the saved entries they index into once filtered and narrowed, the entries not on disk yet
+    /// with the meta line each needs, and each grid row's position. On `self` because the virtual
+    /// list draws a range of them later, from a callback that is handed the panel and nothing else.
     list: Rc<Vec<Row>>,
+    sizes: Rc<Vec<Size<Pixels>>>,
     view: Rc<Vec<Listed>>,
     pending: Rc<Vec<(Entry, String)>>,
+    positions: Rc<HashMap<RowId, usize>>,
+    stale: bool,
+    /// What the unsaved log and the grid's rows looked like at the last rebuild, so a table change
+    /// that touched neither (a selection, a scroll) costs nothing here.
+    table_stamp: Option<(usize, i64, usize, usize, u64)>,
+    /// A forced reload still in flight, so a plain one queued behind it does not downgrade it.
+    forcing: bool,
+    _reading: Task<()>,
+    _paging: Task<()>,
+    _renaming: Task<()>,
     _cell_sub: Subscription,
     _handle_sub: Subscription,
     _table_sub: Option<Subscription>,
@@ -160,8 +171,16 @@ impl HistoryPanel {
             naming: None,
             cell: None,
             list: Rc::default(),
+            sizes: Rc::default(),
             view: Rc::default(),
             pending: Rc::default(),
+            positions: Rc::default(),
+            stale: true,
+            table_stamp: None,
+            forcing: false,
+            _reading: Task::ready(()),
+            _paging: Task::ready(()),
+            _renaming: Task::ready(()),
             _cell_sub: cx.observe_global::<ShowCellHistory>(|this: &mut Self, cx| {
                 this.show_cell(cx);
             }),
@@ -185,29 +204,43 @@ impl HistoryPanel {
             .try_global::<TableStateHandle>()
             .and_then(|h| h.0.upgrade())
             .map(|entity| {
-                cx.subscribe(&entity, |this, _state, _event: &TableChanged, cx| {
+                cx.subscribe(&entity, |this, state, _event: &TableChanged, cx| {
+                    let delegate = state.read(cx).delegate();
+                    let unsaved = delegate.unsaved_history();
+                    let stamp = Some((
+                        unsaved.len(),
+                        unsaved.last().map_or(0, |entry| entry.at),
+                        unsaved.last().map_or(0, |entry| entry.changes.len()),
+                        delegate.row_ids().len(),
+                        delegate.values_generation(),
+                    ));
+                    if this.table_stamp == stamp {
+                        return;
+                    }
+                    this.table_stamp = stamp;
+                    this.stale = true;
                     this.reload(false, cx);
                     cx.notify();
                 })
             });
+        self.table_stamp = None;
+        self.stale = true;
         self.reload(false, cx);
     }
 
     /// Re-read the saved history if the project file has changed since it was last read. `force`
-    /// re-reads regardless, for this panel's own writes.
+    /// re-reads regardless, for this panel's own writes. The stat and the read both run off the UI
+    /// thread; a newer call replaces one still in flight.
     fn reload(&mut self, force: bool, cx: &mut Context<Self>) {
         let Some(file) = cx.try_global::<CurrentProject>().map(|p| p.file.clone()) else {
             self.saved.clear();
             self.read_at = None;
+            self.stale = true;
+            self._reading = Task::ready(());
             return;
         };
-        let stamp = std::fs::metadata(&file)
-            .and_then(|m| m.modified())
-            .unwrap_or(UNIX_EPOCH);
-        let fresh = Some((file.clone(), stamp));
-        if !force && self.read_at == fresh {
-            return;
-        }
+        let force = force || self.forcing;
+        self.forcing = force;
         // The log is append-only, so a refresh nothing asked for only has to look at the newest
         // page: everything below it is already what it will ever be. Re-reading every page the
         // reader had loaded made each note they wrote cost more the further back they had paged.
@@ -217,27 +250,52 @@ impl HistoryPanel {
             false => PAGE,
         };
         let row = self.cell.as_ref().map(|(row, _)| *row);
-        match settings::history::page(&file, EntryId::MAX, limit, row) {
-            Ok(page) => {
-                // Pages the re-read didn't reach, kept rather than dropped — otherwise an
-                // unforced refresh would silently collapse the list back to one page.
-                let cutoff = page.last().map_or(EntryId::MAX, |listed| listed.entry.id);
-                let older = self
-                    .saved
-                    .iter()
-                    .position(|listed| listed.entry.id < cutoff)
-                    .map(|ix| self.saved.split_off(ix))
-                    .unwrap_or_default();
-                if older.is_empty() {
-                    self.more = page.len() as i64 == limit;
-                }
-                self.saved = page;
-                self.saved.extend(older);
+        let read_at = self.read_at.clone();
+        let read = cx.background_spawn(async move {
+            let stamp = std::fs::metadata(&file)
+                .and_then(|m| m.modified())
+                .unwrap_or(UNIX_EPOCH);
+            let fresh = (file.clone(), stamp);
+            if !force && read_at.as_ref() == Some(&fresh) {
+                return None;
             }
-            Err(err) => log::error!("couldn't read the project history: {err}"),
-        }
-        self.read_at = fresh;
-        cx.notify();
+            Some((
+                fresh,
+                settings::history::page(&file, EntryId::MAX, limit, row),
+            ))
+        });
+        self._reading = cx.spawn(async move |this, cx| {
+            let read = read.await;
+            this.update(cx, |this, cx| {
+                this.forcing = false;
+                let Some((fresh, page)) = read else {
+                    return;
+                };
+                match page {
+                    Ok(page) => {
+                        // Pages the re-read didn't reach, kept rather than dropped — otherwise an
+                        // unforced refresh would silently collapse the list back to one page.
+                        let cutoff = page.last().map_or(EntryId::MAX, |listed| listed.entry.id);
+                        let older = this
+                            .saved
+                            .iter()
+                            .position(|listed| listed.entry.id < cutoff)
+                            .map(|ix| this.saved.split_off(ix))
+                            .unwrap_or_default();
+                        if older.is_empty() {
+                            this.more = page.len() as i64 == limit;
+                        }
+                        this.saved = page;
+                        this.saved.extend(older);
+                    }
+                    Err(err) => log::error!("couldn't read the project history: {err}"),
+                }
+                this.read_at = Some(fresh);
+                this.stale = true;
+                cx.notify();
+            })
+            .ok();
+        });
     }
 
     /// Narrow the list to the cell the grid asked about. Its column's former names come from both
@@ -269,22 +327,41 @@ impl HistoryPanel {
                     .collect()
             })
             .unwrap_or_default();
-        let saved = settings::history::renames(&file).unwrap_or_else(|err| {
-            log::error!("couldn't read column renames from the project history: {err}");
-            Vec::new()
-        });
-        let names = settings::history::former_names(
-            &request.column,
-            unsaved
-                .iter()
-                .chain(&saved)
-                .map(|(b, a)| (b.as_str(), a.as_str())),
-        );
-        self.cell = Some((request.row, names));
+        let (row, column) = (request.row, request.column.clone());
+        self.cell = Some((row, vec![column.clone()]));
         self.filter = Filter::All;
         self.named_only = false;
         self.saved.clear();
+        self.stale = true;
         self.reload(true, cx);
+        let read = cx.background_spawn(async move {
+            let saved = settings::history::renames(&file).unwrap_or_else(|err| {
+                log::error!("couldn't read column renames from the project history: {err}");
+                Vec::new()
+            });
+            settings::history::former_names(
+                &column,
+                unsaved
+                    .iter()
+                    .chain(&saved)
+                    .map(|(before, after)| (before.as_str(), after.as_str())),
+            )
+        });
+        self._renaming = cx.spawn(async move |this, cx| {
+            let names = read.await;
+            this.update(cx, |this, cx| {
+                if this
+                    .cell
+                    .as_ref()
+                    .is_some_and(|(current, _)| *current == row)
+                {
+                    this.cell = Some((row, names));
+                    this.stale = true;
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
     }
 
     fn load_older(&mut self, cx: &mut Context<Self>) {
@@ -295,14 +372,25 @@ impl HistoryPanel {
             return;
         };
         let row = self.cell.as_ref().map(|(row, _)| *row);
-        match settings::history::page(&file, last, PAGE, row) {
-            Ok(page) => {
-                self.more = page.len() as i64 == PAGE;
-                self.saved.extend(page);
-            }
-            Err(err) => log::error!("couldn't read older project history: {err}"),
-        }
-        cx.notify();
+        let read =
+            cx.background_spawn(async move { settings::history::page(&file, last, PAGE, row) });
+        self._paging = cx.spawn(async move |this, cx| {
+            let page = read.await;
+            this.update(cx, |this, cx| {
+                match page {
+                    // A reload that landed meanwhile may already hold these entries.
+                    Ok(page) if this.saved.last().map(|l| l.entry.id) == Some(last) => {
+                        this.more = page.len() as i64 == PAGE;
+                        this.saved.extend(page);
+                    }
+                    Ok(_) => {}
+                    Err(err) => log::error!("couldn't read older project history: {err}"),
+                }
+                this.stale = true;
+                cx.notify();
+            })
+            .ok();
+        });
     }
 
     fn start_naming(&mut self, id: EntryId, window: &mut Window, cx: &mut Context<Self>) {
@@ -325,17 +413,20 @@ impl HistoryPanel {
                 InputEvent::PressEnter { .. } => {
                     let name = input.read(cx).value().trim().to_string();
                     if let Some((id, _, _)) = this.naming.take() {
+                        this.stale = true;
                         this.name(id, (!name.is_empty()).then_some(name.as_str()), cx);
                     }
                 }
                 InputEvent::Blur => {
                     this.naming = None;
+                    this.stale = true;
                     cx.notify();
                 }
                 _ => {}
             },
         );
         self.naming = Some((id, input, sub));
+        self.stale = true;
         cx.notify();
     }
 
@@ -626,6 +717,7 @@ impl Panel for HistoryPanel {
                                                 .update(cx, |this, cx| {
                                                     this.filter = pick;
                                                     this.named_only = false;
+                                                    this.stale = true;
                                                     cx.notify();
                                                 })
                                                 .ok();
@@ -640,6 +732,7 @@ impl Panel for HistoryPanel {
                                         panel
                                             .update(cx, |this, cx| {
                                                 this.named_only = !this.named_only;
+                                                this.stale = true;
                                                 cx.notify();
                                             })
                                             .ok();
@@ -909,6 +1002,7 @@ impl HistoryPanel {
                                 if !this.expanded.remove(&id) {
                                     this.expanded.insert(id);
                                 }
+                                this.stale = true;
                                 cx.notify();
                             })
                             .ok();
@@ -940,11 +1034,20 @@ impl HistoryPanel {
     }
 }
 
-impl Render for HistoryPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let (muted, border) = (theme.muted_foreground, theme.border);
-        let crop = cx.try_global::<BottomDockCrop>().map_or(px(0.), |c| c.0);
+impl HistoryPanel {
+    /// Rebuild what the list shows from the saved pages, the table's unsaved log and the current
+    /// filter. Runs when one of those changed, never per frame.
+    fn rebuild(&mut self, cx: &mut Context<Self>) {
+        self.stale = false;
+        let (filter, named_only) = (self.filter, self.named_only);
+        let admits = |entry: &Entry, label: bool| {
+            if named_only {
+                label
+            } else {
+                filter.admits(entry)
+            }
+        };
+        let cell = self.cell.as_ref();
 
         let (positions, unsaved): (HashMap<RowId, usize>, Vec<Entry>) = cx
             .try_global::<TableStateHandle>()
@@ -958,26 +1061,17 @@ impl Render for HistoryPanel {
                         .enumerate()
                         .map(|(p, id)| (*id, p))
                         .collect(),
-                    delegate.unsaved_history().to_vec(),
+                    delegate
+                        .unsaved_history()
+                        .iter()
+                        .rev()
+                        .filter_map(|e| narrowed(e, cell))
+                        .filter(|e| admits(e, false))
+                        .map(Cow::into_owned)
+                        .collect(),
                 )
             })
             .unwrap_or_default();
-        let (filter, named_only) = (self.filter, self.named_only);
-        let admits = |entry: &Entry, label: bool| {
-            if named_only {
-                label
-            } else {
-                filter.admits(entry)
-            }
-        };
-
-        let cell = self.cell.as_ref();
-        let unsaved: Vec<Entry> = unsaved
-            .iter()
-            .rev()
-            .filter_map(|e| narrowed(e, cell).map(Cow::into_owned))
-            .filter(|e| admits(e, false))
-            .collect();
         // One call rather than one per row: it reads the clock once for the batch.
         let ats: Vec<i64> = unsaved.iter().map(|entry| entry.at).collect();
         let times = settings::history::local_times(&ats);
@@ -1002,12 +1096,6 @@ impl Render for HistoryPanel {
             .filter(|l| admits(&l.entry, l.label.is_some()))
             .map(Cow::into_owned)
             .collect();
-        let cell_label = cell.map(|(row, names)| {
-            let at = positions
-                .get(row)
-                .map_or_else(|| "a deleted row".to_string(), |p| format!("row {}", p + 1));
-            format!("{}, {at}", names[0])
-        });
 
         // Flattened to one addressable line per row. Bursts — runs of adjacent, unnamed entries by
         // one person, one means, one day — are found here and referred to by where they start.
@@ -1058,16 +1146,32 @@ impl Render for HistoryPanel {
             list.push(Row::More);
         }
 
-        let empty = pending.is_empty() && view.is_empty();
         self.pending = Rc::new(pending);
         self.view = Rc::new(view);
+        self.positions = Rc::new(positions);
+        self.sizes = Rc::new(list.iter().map(|row| self.row_size(row)).collect());
         self.list = Rc::new(list);
-        let sizes = Rc::new(
-            self.list
-                .iter()
-                .map(|row| self.row_size(row))
-                .collect::<Vec<_>>(),
-        );
+    }
+}
+
+impl Render for HistoryPanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.stale {
+            self.rebuild(cx);
+        }
+        let theme = cx.theme();
+        let (muted, border) = (theme.muted_foreground, theme.border);
+        let crop = cx.try_global::<BottomDockCrop>().map_or(px(0.), |c| c.0);
+        let named_only = self.named_only;
+        let cell_label = self.cell.as_ref().map(|(row, names)| {
+            let at = self
+                .positions
+                .get(row)
+                .map_or_else(|| "a deleted row".to_string(), |p| format!("row {}", p + 1));
+            format!("{}, {at}", names[0])
+        });
+        let empty = self.pending.is_empty() && self.view.is_empty();
+        let sizes = self.sizes.clone();
 
         v_flex()
             .size_full()
@@ -1110,6 +1214,7 @@ impl Render for HistoryPanel {
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.cell = None;
                                     this.saved.clear();
+                                    this.stale = true;
                                     this.reload(true, cx);
                                 })),
                         ),
@@ -1129,16 +1234,18 @@ impl Render for HistoryPanel {
             .when(!empty, |panel| {
                 panel
                     .child(
-                        v_virtual_list(cx.entity(), "history-list", sizes, {
-                            let positions = Rc::new(positions);
+                        v_virtual_list(
+                            cx.entity(),
+                            "history-list",
+                            sizes,
                             move |this, range, _window, cx| {
-                                let list = this.list.clone();
+                                let (list, positions) = (this.list.clone(), this.positions.clone());
                                 list[range]
                                     .iter()
                                     .map(|row| this.draw_row(row, &positions, cx))
                                     .collect::<Vec<_>>()
-                            }
-                        })
+                            },
+                        )
                         .pr_2()
                         .pb(px(8.) + crop)
                         .track_scroll(&self.list_scroll),
@@ -1235,6 +1342,7 @@ mod tests {
         });
 
         cx.update(|_, cx| panel.update(cx, |this, cx| this.load_older(cx)));
+        cx.run_until_parked();
         panel.update(cx, |this, _| {
             assert_eq!(this.saved.len(), total, "the rest paged in");
             assert!(!this.more, "nothing left behind it");
@@ -1244,6 +1352,7 @@ mod tests {
         // so gets past the freshness guard.
         append(&path, total, 1);
         cx.update(|_, cx| panel.update(cx, |this, cx| this.reload(false, cx)));
+        cx.run_until_parked();
         panel.update(cx, |this, _| {
             assert_eq!(
                 this.saved.len(),

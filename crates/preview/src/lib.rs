@@ -17,10 +17,9 @@ mod native;
 mod pdf;
 pub mod playback;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::SystemTime;
+use std::sync::{Arc, Mutex};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -54,9 +53,7 @@ const FULL_FALLBACK: u32 = 2048;
 /// How much decoded image data may stay resident. gpui's asset cache never evicts on its own, so
 /// without a ceiling a scroll through a large collection retains every thumbnail it passes.
 ///
-/// ponytail: one global budget, least recently drawn first, and a linear scan of the held entries
-/// per drawn card. The scan is a few thousand path comparisons a frame at this budget; index the
-/// deque by key if the budget is ever raised much.
+/// ponytail: one global budget, least recently drawn first.
 const BUDGET: usize = 192 * 1024 * 1024;
 
 /// Formats the `image` crate decodes for us directly — gpui's own list minus AVIF, which
@@ -135,10 +132,12 @@ pub fn placeholder_icon(path: Option<&Path>) -> IconName {
 /// is eviction — see [`retain`].
 pub struct Preview;
 
+/// File, size cap, and where in it: the page for a document, whole seconds in for a video. Zero
+/// for everything else, which has only one thing to show.
+type Key = (PathBuf, u32, usize);
+
 impl Asset for Preview {
-    /// File, size cap, and where in it: the page for a document, whole seconds in for a video.
-    /// Zero for everything else, which has only one thing to show.
-    type Source = (PathBuf, u32, usize);
+    type Source = Key;
     type Output = Option<Arc<RenderImage>>;
 
     fn load(
@@ -154,47 +153,46 @@ impl Asset for Preview {
     }
 }
 
-/// How many pages this file has. One for everything that is not a document, so a caller can show
-/// page controls whenever this is greater than one without knowing which tier answered.
+/// Page counts learned by whoever last opened each file: the thumbnail loader, from the disk cache
+/// or a fresh count, and the viewer. Read by the gallery per card per frame, so it touches no disk.
 ///
-/// Memoized, because the gallery asks this of every visible card on every frame it draws and the
-/// answer costs a PDFium load or a walk through a TIFF's image list. Keyed by path and mtime, so a
-/// file replaced on disk is re-counted rather than answered from a stale entry.
-///
-/// The extension is checked *before* the memo, because building the key stats the file: a
-/// photograph can only ever answer one, and paying a syscall per card per frame to look that up was
-/// most of a scrolling gallery's filesystem traffic. Only the two formats that can hold more than
-/// one page reach the cache at all.
-///
-/// ponytail: unbounded map — one `usize` per file ever previewed, which even a six-figure
-/// collection keeps in the low megabytes. Give it the byte budget `thumb` uses if that stops being
-/// true.
+/// ponytail: unbounded — one `usize` per multi-page file ever previewed.
+static PAGES: std::sync::LazyLock<Mutex<HashMap<PathBuf, usize>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// How many pages this file was last seen to have, without opening it. `None` until a thumbnail or
+/// the viewer has loaded it, and for every format that only ever has one page.
+pub fn known_pages(path: &Path) -> Option<usize> {
+    PAGES.lock().ok()?.get(path).copied()
+}
+
+fn learn_pages(path: &Path, pages: usize) {
+    if let Ok(mut known) = PAGES.lock() {
+        known.insert(path.to_path_buf(), pages);
+    }
+}
+
+/// The counter for the formats that can hold more than one page, `None` for every other.
+fn pager(path: &Path) -> Option<fn(&Path) -> usize> {
+    match extension(path).as_deref() {
+        Some(extension) if pdf::handles(extension) => {
+            Some(|path| pdf::page_count(path).unwrap_or(1))
+        }
+        Some("tif" | "tiff") => Some(tiff_pages),
+        _ => None,
+    }
+}
+
+/// How many pages this file has, counted now. One for everything that is not a document, so a
+/// caller can show page controls whenever this is greater than one without knowing which tier
+/// answered. Opens the file, so run it off the UI thread; the answer is also kept for
+/// [`known_pages`].
 pub fn page_count(path: &Path) -> usize {
-    /// A file's identity for counting purposes: where it is and when it last changed.
-    type Stamp = (PathBuf, Option<SystemTime>);
-    static COUNTS: std::sync::OnceLock<std::sync::Mutex<HashMap<Stamp, usize>>> =
-        std::sync::OnceLock::new();
-
-    let count: fn(&Path) -> usize = match extension(path).as_deref() {
-        Some(extension) if pdf::handles(extension) => |path| pdf::page_count(path).unwrap_or(1),
-        Some("tif" | "tiff") => tiff_pages,
-        _ => return 1,
+    let Some(count) = pager(path) else {
+        return 1;
     };
-
-    let key: Stamp = (
-        path.to_path_buf(),
-        std::fs::metadata(path).and_then(|m| m.modified()).ok(),
-    );
-    let counts = COUNTS.get_or_init(Default::default);
-    if let Ok(counts) = counts.lock()
-        && let Some(&pages) = counts.get(&key)
-    {
-        return pages;
-    }
     let pages = count(path);
-    if let Ok(mut counts) = counts.lock() {
-        counts.insert(key, pages);
-    }
+    learn_pages(path, pages);
     pages
 }
 
@@ -284,7 +282,7 @@ pub fn describe(path: &Path) -> Option<String> {
 
 /// `2.4 MB`. Powers of 1024 with the unit names every file manager on the three platforms shows,
 /// and whole bytes below a kilobyte — "0.3 KB" reads as a rounding of something, not as a stub.
-fn file_size(bytes: u64) -> String {
+pub fn file_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut size = bytes as f64;
     let mut unit = 0;
@@ -423,6 +421,20 @@ pub fn thumbnail_pixels(path: &Path, max_edge: u32, page: usize) -> Option<image
         }
     };
 
+    // The cover of a document is where its length is learned, beside the picture and under the
+    // same path+mtime key, so a changed file is counted again and an unchanged one never is.
+    if page == 0
+        && let Some(key) = &key
+        && let Some(count) = pager(path)
+    {
+        let pages = cache::read_pages(key).unwrap_or_else(|| {
+            let pages = count(path);
+            cache::write_pages(key, pages);
+            pages
+        });
+        learn_pages(path, pages);
+    }
+
     Some(scaled)
 }
 
@@ -519,7 +531,11 @@ fn downscale(image: image::DynamicImage, max_edge: u32) -> image::RgbaImage {
 /// `Arc` going away.
 #[derive(Default)]
 struct Live {
-    entries: VecDeque<((PathBuf, u32, usize), Arc<RenderImage>)>,
+    /// Keyed by the tick of each image's latest draw, so the first entry is the oldest.
+    entries: BTreeMap<u64, (Key, Arc<RenderImage>)>,
+    /// Where each held image sits in `entries`, so a redraw finds it without a scan.
+    ticks: HashMap<Key, u64>,
+    tick: u64,
     bytes: usize,
     /// Whether a [`release`] is already queued for the next frame.
     releasing: bool,
@@ -544,21 +560,25 @@ fn cost(image: &RenderImage) -> usize {
 /// `budget` is a parameter rather than reading [`BUDGET`] directly so a test can drive eviction
 /// with a handful of small images instead of allocating its way past the real ceiling.
 fn retain(
-    source: &(PathBuf, u32, usize),
+    source: &Key,
     image: &Arc<RenderImage>,
     budget: usize,
     window: &mut Window,
     cx: &mut App,
 ) {
     let live = cx.default_global::<Live>();
-    match live.entries.iter().position(|(key, _)| key == source) {
-        Some(at) => {
-            if let Some(entry) = live.entries.remove(at) {
-                live.entries.push_back(entry);
+    live.tick += 1;
+    let tick = live.tick;
+    match live.ticks.get_mut(source) {
+        Some(held) => {
+            if let Some(entry) = live.entries.remove(held) {
+                live.entries.insert(tick, entry);
             }
+            *held = tick;
         }
         None => {
-            live.entries.push_back((source.clone(), image.clone()));
+            live.ticks.insert(source.clone(), tick);
+            live.entries.insert(tick, (source.clone(), image.clone()));
             live.bytes += cost(image);
         }
     }
@@ -577,9 +597,10 @@ fn release(budget: usize, window: &mut Window, cx: &mut App) {
     let mut released = Vec::new();
     // Never the most recent entry, or a single oversized image would thrash forever.
     while live.bytes > budget && live.entries.len() > 1 {
-        let Some((key, image)) = live.entries.pop_front() else {
+        let Some((_, (key, image))) = live.entries.pop_first() else {
             break;
         };
+        live.ticks.remove(&key);
         live.bytes = live.bytes.saturating_sub(cost(&image));
         released.push((key, image));
     }
@@ -714,14 +735,14 @@ mod tests {
 
     use crate::{can_preview, placeholder_icon, thumb};
 
-    /// The gallery asks this of every visible card on every frame, so the answer has to be cached —
-    /// but cached on the file as it is *now*, or a re-scanned document keeps reporting its old
-    /// length forever. Writing more pages into the same path must change the answer.
+    /// The gallery reads a document's length per card per frame, so it has to be learned where the
+    /// cover is drawn and kept beside the thumbnail — surviving a relaunch, yet counted again once
+    /// the file on disk is rewritten with a different number of pages.
     #[test]
-    fn a_page_count_is_reused_until_the_file_itself_changes() {
-        use crate::page_count;
+    fn a_page_count_is_cached_with_the_thumbnail_until_the_file_changes() {
+        use crate::{CARD, cache, known_pages, thumbnail_pixels};
 
-        let path = std::env::temp_dir().join("qrate-page-count-memo.tif");
+        let path = std::env::temp_dir().join("qrate-page-count-cache.tif");
         let write = |pages: usize| {
             let file = std::fs::File::create(&path).unwrap();
             let mut encoder =
@@ -737,13 +758,42 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1100));
         };
 
-        write(1);
-        assert_eq!(page_count(&path), 1);
-        assert_eq!(page_count(&path), 1, "second ask comes from the memo");
+        let forget = || {
+            crate::PAGES.lock().unwrap().remove(&path);
+        };
 
-        // Re-scanned at three pages: the stale entry must not survive the rewrite.
+        write(2);
+        forget();
+        assert_eq!(known_pages(&path), None, "unknown until something opens it");
+        thumbnail_pixels(&path, CARD, 0).expect("decodes");
+        assert_eq!(known_pages(&path), Some(2), "the loader learned it");
+        let key = cache::key(&path, CARD, 0).expect("readable");
+        assert_eq!(
+            cache::read_pages(&key),
+            Some(2),
+            "and stored it with the thumbnail"
+        );
+
+        // A relaunch: nothing in memory, the cached count is read back without recounting.
+        forget();
+        cache::write_pages(&key, 7);
+        thumbnail_pixels(&path, CARD, 0).expect("cache hit");
+        assert_eq!(known_pages(&path), Some(7), "answered from the disk cache");
+
+        // Re-scanned at three pages: a new key, so the stale count cannot be served.
         write(3);
-        assert_eq!(page_count(&path), 3, "a changed file is counted again");
+        thumbnail_pixels(&path, CARD, 0).expect("decodes");
+        assert_eq!(
+            known_pages(&path),
+            Some(3),
+            "a changed file is counted again"
+        );
+
+        let dir = cache::dir().expect("cache dir");
+        for key in [key, cache::key(&path, CARD, 0).unwrap()] {
+            let _ = std::fs::remove_file(dir.join(&key));
+            let _ = std::fs::remove_file(dir.join(format!("{key}.pages")));
+        }
         std::fs::remove_file(&path).ok();
     }
 
@@ -1074,7 +1124,13 @@ mod tests {
             );
 
             // Drawn again, so it is no longer the least recently drawn.
-            let first = cx.global::<crate::Live>().entries[0].clone();
+            let first = cx
+                .global::<crate::Live>()
+                .entries
+                .first_key_value()
+                .unwrap()
+                .1
+                .clone();
             crate::retain(&first.0, &first.1, budget, window, cx);
 
             crate::release(budget, window, cx);
@@ -1085,7 +1141,12 @@ mod tests {
                 live.bytes
             );
             assert_eq!(live.entries.len(), 3, "older images were released");
-            let kept: Vec<PathBuf> = live.entries.iter().map(|(key, _)| key.0.clone()).collect();
+            let kept: Vec<PathBuf> = live
+                .entries
+                .values()
+                .map(|(key, _)| key.0.clone())
+                .collect();
+            assert_eq!(live.ticks.len(), 3, "the index forgets what was released");
             assert_eq!(
                 kept,
                 ["/f/6.png", "/f/7.png", "/f/0.png"].map(PathBuf::from),
@@ -1094,7 +1155,7 @@ mod tests {
 
             // Re-registering something already held must not double-count it: this runs on every
             // frame a card is drawn, so a leak here would evict the whole cache within seconds.
-            let held = live.entries.back().expect("non-empty").clone();
+            let held = live.entries.last_key_value().expect("non-empty").1.clone();
             let before = cx.global::<crate::Live>().bytes;
             crate::retain(&held.0, &held.1, budget, window, cx);
             assert_eq!(cx.global::<crate::Live>().bytes, before);

@@ -116,6 +116,12 @@ pub struct DetailsPanel {
     /// The front item's saved changes, with the row and file stamp they were read at — `retarget`
     /// runs on every table change, and a query per keystroke would be paid for nothing.
     row_history: Option<(settings::project::RowId, std::time::SystemTime, Vec<Listed>)>,
+    row_history_loading: Option<(settings::project::RowId, PathBuf)>,
+    /// The read behind `row_history`, replaced (and so cancelled) by the next one.
+    _row_history_task: Option<Task<()>>,
+    /// [`shared_fields`] for the selection it was built from. Cleared on every table change, which
+    /// is the only way a value can change, so a scroll or a hover never rebuilds it.
+    fields: Option<(Vec<usize>, Rc<Vec<(SharedString, SharedString, bool)>>)>,
     /// Commits the open field on Enter or when the editor loses focus.
     _editor_sub: Subscription,
     /// Pending image-pane height write. Replacing the task cancels its timer, coalescing an entire
@@ -133,6 +139,8 @@ pub struct DetailsPanel {
     /// `preview::describe` of the selected file, taken once per selection. It stats the file, and
     /// `render` runs on every scroll tick — asking per frame put a syscall in the scroll path.
     caption: Option<String>,
+    /// The stat behind `caption`, off the UI thread.
+    _caption_task: Option<Task<()>>,
     /// What `transport` and `caption` were built from. `retarget` runs on every table change, so
     /// without it a keystroke in the grid would re-stat the file.
     file: Option<PathBuf>,
@@ -179,12 +187,16 @@ impl DetailsPanel {
             notes_height: px(180.),
             history_height: px(160.),
             row_history: None,
+            row_history_loading: None,
+            _row_history_task: None,
+            fields: None,
             _editor_sub,
             _image_height_task: None,
             anchor: Rc::default(),
             viewport: Rc::new(Cell::new(Bounds::default())),
             transport: None,
             caption: None,
+            _caption_task: None,
             file: None,
         };
         this.bind(cx);
@@ -229,36 +241,41 @@ impl DetailsPanel {
 
     /// The item the preview is showing: the stack's front card. Clamped rather than remembered, so
     /// stepping to the fifth of five and then selecting two doesn't leave the preview blank.
-    fn front(&self, cx: &App) -> Option<usize> {
-        let picked = self.picked(cx);
+    fn front(&self, picked: &[usize]) -> Option<usize> {
         picked
             .get(self.stack.min(picked.len().checked_sub(1)?))
             .copied()
-    }
-
-    /// The file the front item links to, which is both what the preview frame draws and what the
-    /// transport would play.
-    fn selected_file(&self, cx: &App) -> Option<PathBuf> {
-        let state = self.state.as_ref()?.upgrade()?;
-        let row = self.front(cx)?;
-        state
-            .read(cx)
-            .delegate()
-            .row_image(row)
-            .map(Path::to_path_buf)
     }
 
     /// Point the transport at whatever is selected now. A no-op while the selection stays on the
     /// same file — this runs on every table change, and rebuilding would re-probe the file and
     /// throw away the position on every keystroke in the grid.
     fn retarget(&mut self, cx: &mut Context<Self>) {
-        self.load_row_history(cx);
-        let path = self.selected_file(cx);
+        self.fields = None;
+        let picked = self.picked(cx);
+        let front = self.front(&picked);
+        self.load_row_history(front, cx);
+        let path = front.and_then(|row| {
+            let state = self.state.as_ref()?.upgrade()?;
+            let delegate = state.read(cx).delegate();
+            delegate.row_image(row).map(Path::to_path_buf)
+        });
         if self.file == path {
             return;
         }
         self.file = path.clone();
-        self.caption = path.as_deref().and_then(preview::describe);
+        self.caption = None;
+        self._caption_task = path.clone().map(|path| {
+            let describe = cx.background_spawn(async move { preview::describe(&path) });
+            cx.spawn(async move |this, cx| {
+                let caption = describe.await;
+                this.update(cx, |this, cx| {
+                    this.caption = caption;
+                    cx.notify();
+                })
+                .ok();
+            })
+        });
         // Whatever was playing belonged to the row being left. Leaving it running would narrate
         // one item while the panel details another.
         if self.transport.is_some() {
@@ -267,9 +284,10 @@ impl DetailsPanel {
         self.transport = path.and_then(|path| Transport::new(path, cx));
     }
 
-    /// Re-read the front item's history when the item or the project file has changed since.
-    fn load_row_history(&mut self, cx: &mut Context<Self>) {
-        let row = self.front(cx).and_then(|row| {
+    /// Re-read the front item's history, off the UI thread, when the item or the project file has
+    /// changed since. A new item shows its unsaved changes at once and its saved ones on arrival.
+    fn load_row_history(&mut self, front: Option<usize>, cx: &mut Context<Self>) {
+        let row = front.and_then(|row| {
             let state = self.state.as_ref()?.upgrade()?;
             state.read(cx).delegate().row_ids().get(row).copied()
         });
@@ -278,24 +296,47 @@ impl DetailsPanel {
             .map(|p| p.file.clone());
         let (Some(row), Some(file)) = (row, file) else {
             self.row_history = None;
+            self.row_history_loading = None;
+            self._row_history_task = None;
             return;
         };
-        let stamp = std::fs::metadata(&file)
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::UNIX_EPOCH);
-        if self
-            .row_history
-            .as_ref()
-            .is_some_and(|(r, s, _)| *r == row && *s == stamp)
-        {
+        if self.row_history_loading.as_ref() == Some(&(row, file.clone())) {
             return;
         }
-        let listed = settings::history::page(&file, EntryId::MAX, ROW_HISTORY_LIMIT, Some(row))
-            .unwrap_or_else(|err| {
-                log::error!("couldn't read the selected row's history: {err}");
-                Vec::new()
-            });
-        self.row_history = Some((row, stamp, listed));
+        let known = self
+            .row_history
+            .as_ref()
+            .filter(|(r, _, _)| *r == row)
+            .map(|(_, stamp, _)| *stamp);
+        if known.is_none() {
+            self.row_history = Some((row, std::time::UNIX_EPOCH, Vec::new()));
+        }
+        self.row_history_loading = Some((row, file.clone()));
+        let read = cx.background_spawn(async move {
+            let stamp = std::fs::metadata(&file)
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            if known == Some(stamp) {
+                return None;
+            }
+            let listed = settings::history::page(&file, EntryId::MAX, ROW_HISTORY_LIMIT, Some(row))
+                .unwrap_or_else(|err| {
+                    log::error!("couldn't read the selected row's history: {err}");
+                    Vec::new()
+                });
+            Some((stamp, listed))
+        });
+        self._row_history_task = Some(cx.spawn(async move |this, cx| {
+            let result = read.await;
+            this.update(cx, |this, cx| {
+                this.row_history_loading = None;
+                if let Some((stamp, listed)) = result {
+                    this.row_history = Some((row, stamp, listed));
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
     }
 
     /// Open `header`'s field for editing, seeded with its current text. The column is resolved by
@@ -500,12 +541,10 @@ impl DetailsPanel {
             return div().into_any_element();
         };
         let row_id = *row_id;
-        let unsaved: Vec<_> = self
-            .state
+        let state = self.state.as_ref().and_then(|w| w.upgrade());
+        let unsaved: &[settings::history::Entry] = state
             .as_ref()
-            .and_then(|w| w.upgrade())
-            .map(|state| state.read(cx).delegate().unsaved_history().to_vec())
-            .unwrap_or_default();
+            .map_or(&[], |state| state.read(cx).delegate().unsaved_history());
         let theme = cx.theme();
         let (muted, border, background, radius) = (
             theme.muted_foreground,
@@ -1106,12 +1145,20 @@ fn shared_fields(
 impl Render for DetailsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let picked = self.picked(cx);
-        let front = self.front(cx);
+        let front = self.front(&picked);
         let count = picked.len();
         let selection = self.state.as_ref().and_then(|w| w.upgrade()).map(|s| {
             let delegate = s.read(cx).delegate();
             let image = front.and_then(|row| delegate.row_image(row).map(Path::to_path_buf));
-            (shared_fields(delegate, &picked), image)
+            let fields = match &self.fields {
+                Some((built_for, fields)) if *built_for == picked => fields.clone(),
+                _ => {
+                    let fields = Rc::new(shared_fields(delegate, &picked));
+                    self.fields = Some((picked.clone(), fields.clone()));
+                    fields
+                }
+            };
+            (fields, image)
         });
 
         // Compact: this dock is one the user drags narrow, and the full-width scrubber would push
@@ -1187,97 +1234,101 @@ impl Render for DetailsPanel {
         // and it reads as a list rather than a second grid — alternating rows carry the structure,
         // no borders.
         let editing_col = self.editing.as_ref().map(|(_, col, _)| *col);
-        let rows = fields.into_iter().enumerate().map(|(ix, (k, v, mixed))| {
-            // Guarded on `editing_col`: `data_col` is a linear scan of every column, and this runs
-            // per row on every render — including the scroll ticks that dirty the whole panel.
-            let open = editing_col.is_some()
-                && self
-                    .state
-                    .as_ref()
-                    .and_then(|w| w.upgrade())
-                    .and_then(|s| s.read(cx).delegate().data_col(&k))
-                    == editing_col;
-            div()
-                .flex()
-                .items_start()
-                .when(ix % 2 == 1, |r| r.bg(cx.theme().muted.opacity(0.4)))
-                .child(
-                    // Both columns are shares of the panel's width, not fixed pixels: this dock
-                    // resizes, and a fixed label column either wastes half a wide panel or crushes
-                    // the values in a narrow one.
-                    div()
-                        .w(relative(0.35))
-                        .flex_shrink_0()
-                        .px_2()
-                        .py_1p5()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(k.clone()),
-                )
-                // Plain text rather than `TextView`, which parses markdown/html and mangles raw
-                // metadata. Click opens the floating editor over it; copy is Ctrl+C once it's open.
-                // `min_w_0` overrides flex `min-width: auto` so the value wraps instead of
-                // overflowing right.
-                .child(
-                    div()
-                        .id(ix)
-                        .flex_1()
-                        .min_w_0()
-                        // Positions the measuring canvas below against this field, not against
-                        // whatever ancestor happens to be positioned.
-                        .relative()
-                        .px_2()
-                        .py_1p5()
-                        .cursor_text()
-                        // `text_ellipsis` is what puts the … on the last kept line; `line_clamp`
-                        // alone would cut the text off mid-word with nothing to say it had.
-                        .line_clamp(VALUE_LINE_CLAMP)
-                        .text_ellipsis()
-                        // A mixed field shows what the items disagree about but seeds the editor
-                        // empty: `Mixed (3 values)` is a summary, and committing it as text would
-                        // write that literal string onto every item.
-                        .when(mixed, |value| {
-                            value.italic().text_color(cx.theme().muted_foreground)
-                        })
-                        .on_click(cx.listener({
-                            let (k, seed) = (
-                                k.clone(),
-                                if mixed {
-                                    SharedString::default()
-                                } else {
-                                    v.clone()
-                                },
-                            );
-                            move |this, _, window, cx| this.edit_field(&k, &seed, window, cx)
-                        }))
-                        .child(v)
-                        // The editor floats over the field rather than replacing it in the row, so
-                        // it can grow past the row's width — the grid's editor, same box.
-                        .when(open, |value| {
-                            let anchor = self.anchor.clone();
-                            value.child(
-                                canvas(
-                                    move |bounds, window, cx| {
-                                        if anchor.replace(Some(bounds)).is_none() {
-                                            // Read on the *next* render, and nothing else schedules
-                                            // one. Deferred because `Window::refresh` is a no-op
-                                            // while a frame is drawing — which is when this runs.
-                                            window.defer(cx, |window, _| window.refresh());
-                                        }
+        let rows = fields
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(ix, (k, v, mixed))| {
+                // Guarded on `editing_col`: `data_col` is a linear scan of every column, and this runs
+                // per row on every render — including the scroll ticks that dirty the whole panel.
+                let open = editing_col.is_some()
+                    && self
+                        .state
+                        .as_ref()
+                        .and_then(|w| w.upgrade())
+                        .and_then(|s| s.read(cx).delegate().data_col(&k))
+                        == editing_col;
+                div()
+                    .flex()
+                    .items_start()
+                    .when(ix % 2 == 1, |r| r.bg(cx.theme().muted.opacity(0.4)))
+                    .child(
+                        // Both columns are shares of the panel's width, not fixed pixels: this dock
+                        // resizes, and a fixed label column either wastes half a wide panel or crushes
+                        // the values in a narrow one.
+                        div()
+                            .w(relative(0.35))
+                            .flex_shrink_0()
+                            .px_2()
+                            .py_1p5()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(k.clone()),
+                    )
+                    // Plain text rather than `TextView`, which parses markdown/html and mangles raw
+                    // metadata. Click opens the floating editor over it; copy is Ctrl+C once it's open.
+                    // `min_w_0` overrides flex `min-width: auto` so the value wraps instead of
+                    // overflowing right.
+                    .child(
+                        div()
+                            .id(ix)
+                            .flex_1()
+                            .min_w_0()
+                            // Positions the measuring canvas below against this field, not against
+                            // whatever ancestor happens to be positioned.
+                            .relative()
+                            .px_2()
+                            .py_1p5()
+                            .cursor_text()
+                            // `text_ellipsis` is what puts the … on the last kept line; `line_clamp`
+                            // alone would cut the text off mid-word with nothing to say it had.
+                            .line_clamp(VALUE_LINE_CLAMP)
+                            .text_ellipsis()
+                            // A mixed field shows what the items disagree about but seeds the editor
+                            // empty: `Mixed (3 values)` is a summary, and committing it as text would
+                            // write that literal string onto every item.
+                            .when(mixed, |value| {
+                                value.italic().text_color(cx.theme().muted_foreground)
+                            })
+                            .on_click(cx.listener({
+                                let (k, seed) = (
+                                    k.clone(),
+                                    if mixed {
+                                        SharedString::default()
+                                    } else {
+                                        v.clone()
                                     },
-                                    |_, _, _, _| {},
+                                );
+                                move |this, _, window, cx| this.edit_field(&k, &seed, window, cx)
+                            }))
+                            .child(v)
+                            // The editor floats over the field rather than replacing it in the row, so
+                            // it can grow past the row's width — the grid's editor, same box.
+                            .when(open, |value| {
+                                let anchor = self.anchor.clone();
+                                value.child(
+                                    canvas(
+                                        move |bounds, window, cx| {
+                                            if anchor.replace(Some(bounds)).is_none() {
+                                                // Read on the *next* render, and nothing else schedules
+                                                // one. Deferred because `Window::refresh` is a no-op
+                                                // while a frame is drawing — which is when this runs.
+                                                window.defer(cx, |window, _| window.refresh());
+                                            }
+                                        },
+                                        |_, _, _, _| {},
+                                    )
+                                    .absolute()
+                                    // `top_0`/`left_0` are load-bearing: an absolute element with no
+                                    // insets takes a *static* position after its in-flow siblings, so
+                                    // without them this measures a rect one line below the value text
+                                    // and the box opens under the field it edits.
+                                    .top_0()
+                                    .left_0()
+                                    .size_full(),
                                 )
-                                .absolute()
-                                // `top_0`/`left_0` are load-bearing: an absolute element with no
-                                // insets takes a *static* position after its in-flow siblings, so
-                                // without them this measures a rect one line below the value text
-                                // and the box opens under the field it edits.
-                                .top_0()
-                                .left_0()
-                                .size_full(),
-                            )
-                        }),
-                )
-        });
+                            }),
+                    )
+            });
 
         // Split so the image stays put while only the fields scroll, with a drag handle to trade heights.
         // `.size()` is the initial size only — once dragged, `ResizableState` owns it, so re-reading restores.

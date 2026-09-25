@@ -91,7 +91,7 @@ fn card(
         .find(|value| !value.is_empty())
         .unwrap_or_default();
     let selected = delegate.is_row_selected(source);
-    let pages = path.as_deref().map_or(1, preview::page_count);
+    let pages = path.as_deref().and_then(preview::known_pages).unwrap_or(1);
     let notes =
         diagnostics::Diagnostics::notes_in_row(diagnostics::DATASET_MAIN, source, cx).count();
 
