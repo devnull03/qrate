@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
@@ -173,12 +173,12 @@ struct Row {
     message: SharedString,
     source: SharedString,
     source_key: SharedString,
-    finding: Diagnostic,
+    finding: Rc<Diagnostic>,
     ignored: bool,
-    location: Location,
     group: Option<String>,
     count: usize,
-    members: Vec<RowMember>,
+    /// Shared by a group's header and every form nested under it.
+    members: Rc<[RowMember]>,
     depth: usize,
 }
 
@@ -197,8 +197,8 @@ fn group_id(d: &Diagnostic) -> Option<String> {
 /// Joins a group id to one observed form. `group_id` is `Debug` output, which escapes it.
 const FORM_SEPARATOR: char = '\u{1f}';
 
-fn subject(d: &Diagnostic) -> Option<SharedString> {
-    d.group.as_ref().and_then(|group| group.subject.clone())
+fn subject(d: &Diagnostic) -> Option<&SharedString> {
+    d.group.as_ref().and_then(|group| group.subject.as_ref())
 }
 
 fn occurrence(d: &Diagnostic, depth: usize) -> Row {
@@ -225,12 +225,11 @@ fn occurrence(d: &Diagnostic, depth: usize) -> Row {
             _ => d.source.label(),
         },
         source_key: d.source.key(),
-        finding: d.clone(),
+        finding: Rc::new(d.clone()),
         ignored: false,
-        location: d.location.clone(),
         group: None,
         count: 1,
-        members: Vec::new(),
+        members: Rc::from([]),
         depth,
     }
 }
@@ -240,7 +239,7 @@ fn occurrence(d: &Diagnostic, depth: usize) -> Row {
 fn push_group(
     rows: &mut Vec<Row>,
     found: &[&Diagnostic],
-    cluster: &[RowMember],
+    cluster: &Rc<[RowMember]>,
     id: String,
     message: SharedString,
     depth: usize,
@@ -263,7 +262,7 @@ fn push_group(
         message,
         group: Some(id.clone()),
         count: found.len(),
-        members: cluster.to_vec(),
+        members: cluster.clone(),
         ..occurrence(found[0], depth)
     });
     if !open {
@@ -282,8 +281,10 @@ fn push_group(
 }
 
 /// Atomic findings stay in the store; only this flat, virtualized view collapses them.
-fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row> {
-    items.sort_by(|a, b| {
+fn project(items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row> {
+    let mut items: Vec<(&Diagnostic, Option<String>)> =
+        items.into_iter().map(|d| (d, group_id(d))).collect();
+    items.sort_by(|(a, _), (b, _)| {
         (
             a.severity,
             &a.location.dataset,
@@ -297,48 +298,57 @@ fn project(mut items: Vec<&Diagnostic>, expanded: &BTreeSet<String>) -> Vec<Row>
                 &b.location.column,
             ))
     });
-    let mut groups: BTreeMap<String, Vec<&Diagnostic>> = BTreeMap::new();
-    for d in &items {
-        if let Some(id) = group_id(d) {
-            groups.entry(id).or_default().push(d);
+    let mut groups: HashMap<String, Vec<&Diagnostic>> = HashMap::new();
+    let mut keep = Vec::with_capacity(items.len());
+    for (d, id) in &items {
+        keep.push(match id {
+            None => true,
+            Some(id) => match groups.get_mut(id) {
+                Some(members) => {
+                    members.push(*d);
+                    false
+                }
+                None => {
+                    groups.insert(id.clone(), vec![*d]);
+                    true
+                }
+            },
+        });
+    }
+    let mut keep = keep.into_iter();
+    items.retain(|_| keep.next().unwrap_or(true));
+    fn headline<'a>(d: &'a Diagnostic, id: &Option<String>) -> &'a SharedString {
+        match (id, &d.group) {
+            (Some(_), Some(group)) => &group.summary,
+            _ => &d.message,
         }
     }
-    let mut emitted = BTreeSet::new();
-    items.retain(|d| group_id(d).is_none_or(|id| emitted.insert(id)));
-    items.sort_by_cached_key(|d| {
-        (
-            d.severity,
-            if group_id(d).is_some() {
-                d.group.as_ref().expect("group metadata").summary.clone()
-            } else {
-                d.message.clone()
-            },
-            group_id(d),
-        )
+    items.sort_by(|(a, a_id), (b, b_id)| {
+        (a.severity, headline(a, a_id), a_id).cmp(&(b.severity, headline(b, b_id), b_id))
     });
     let mut rows = Vec::new();
-    for d in items {
-        let Some(id) = group_id(d) else {
+    for (d, id) in items {
+        let Some(id) = id else {
             rows.push(occurrence(d, 0));
             continue;
         };
         let Some(mut members) = groups.remove(&id) else {
             continue;
         };
-        members.sort_by_cached_key(|d| {
-            (
-                subject(d),
-                d.message.clone(),
-                d.location.row,
-                d.location.column.clone(),
-            )
+        members.sort_by(|a, b| {
+            (subject(a), &a.message, a.location.row, &a.location.column).cmp(&(
+                subject(b),
+                &b.message,
+                b.location.row,
+                &b.location.column,
+            ))
         });
-        let cluster: Vec<_> = members
+        let cluster: Rc<[RowMember]> = members
             .iter()
             .map(|member| RowMember {
                 location: member.location.clone(),
                 message: member.message.clone(),
-                subject: subject(member),
+                subject: subject(member).cloned(),
             })
             .collect();
         let summary = d.group.as_ref().expect("group metadata").summary.clone();
@@ -353,6 +363,8 @@ pub struct ProblemsPanel {
     /// Whether this is the panel its dock is showing, which is what [`Self::visible`]
     /// reports: a dock with one visible panel draws a title bar instead of a tab strip.
     active: bool,
+    /// The store changed while this panel was not shown; the rows are rebuilt when it is.
+    stale: bool,
     filter: Filter,
     /// Sources unchecked in the multi-select filter. Empty means all diagnostic sources.
     excluded_sources: BTreeSet<SharedString>,
@@ -378,6 +390,7 @@ impl ProblemsPanel {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             active: false,
+            stale: false,
             filter: Filter::All,
             excluded_sources: BTreeSet::new(),
             sources: Rc::default(),
@@ -387,8 +400,11 @@ impl ProblemsPanel {
             show_ignored: false,
             ignored_count: 0,
             _sub: cx.observe_global::<Diagnostics>(|this, cx| {
-                this.refresh(cx);
-                cx.notify();
+                this.stale = true;
+                if this.active {
+                    this.refresh(cx);
+                    cx.notify();
+                }
             }),
         };
         this.refresh(cx);
@@ -399,11 +415,12 @@ impl ProblemsPanel {
     /// and the tab counts have to agree — a tab reading "Errors (12)" over a list of two is worse
     /// than no count at all.
     fn admits_source(&self, d: &crate::Diagnostic) -> bool {
-        !self.excluded_sources.contains(&d.source.label())
+        self.excluded_sources.is_empty() || !self.excluded_sources.contains(&d.source.label())
     }
 
     fn refresh(&mut self, cx: &App) {
         let started = std::time::Instant::now();
+        self.stale = false;
         let mut sources: Vec<SharedString> = Diagnostics::all(cx)
             .iter()
             .filter(|d| d.source != Source::Note)
@@ -425,13 +442,15 @@ impl ProblemsPanel {
         let ignored = Diagnostics::ignored(cx);
         self.ignored_count = ignored.len();
         self.show_ignored &= self.ignored_count > 0;
-        let live: BTreeSet<_> = Diagnostics::all(cx)
-            .iter()
-            .chain(ignored)
-            .filter_map(group_id)
-            .collect();
-        self.expanded
-            .retain(|id| live.contains(id.split(FORM_SEPARATOR).next().unwrap_or_default()));
+        if !self.expanded.is_empty() {
+            let live: BTreeSet<_> = Diagnostics::all(cx)
+                .iter()
+                .chain(ignored)
+                .filter_map(group_id)
+                .collect();
+            self.expanded
+                .retain(|id| live.contains(id.split(FORM_SEPARATOR).next().unwrap_or_default()));
+        }
         let admitted = |d: &&Diagnostic| self.filter.admits(d) && self.admits_source(d);
         let visible = Diagnostics::all(cx).iter().filter(admitted).collect();
         let mut rows = project(visible, &self.expanded);
@@ -475,6 +494,9 @@ impl BasePanel for ProblemsPanel {
 
     fn set_active(&mut self, active: bool, _w: &mut Window, cx: &mut Context<Self>) {
         self.active = active;
+        if active && self.stale {
+            self.refresh(cx);
+        }
         cx.notify();
     }
 
@@ -654,7 +676,7 @@ impl Render for ProblemsPanel {
                             .iter()
                             .zip(range)
                             .map(|(r, ix)| {
-                                let location = r.location.clone();
+                                let location = r.finding.location.clone();
                                 let group = r.group.clone();
                                 let group_members = r.members.clone();
                                 let source_key = r.source_key.clone();
@@ -824,11 +846,11 @@ impl Render for ProblemsPanel {
                                                 .map(|member| Diagnostic {
                                                     location: member.location.clone(),
                                                     message: member.message.clone(),
-                                                    ..finding.clone()
+                                                    ..(*finding).clone()
                                                 })
                                                 .collect()
                                         } else {
-                                            vec![finding.clone()]
+                                            vec![(*finding).clone()]
                                         };
                                         if ignored {
                                             return menu.item(
@@ -977,7 +999,7 @@ mod tests {
         let open = super::project(items.iter().collect(), &expanded);
         assert_eq!(open.len(), 101);
         for (row, occurrence) in open[1..].iter().enumerate() {
-            assert_eq!(occurrence.location.row, Some(row));
+            assert_eq!(occurrence.finding.location.row, Some(row));
             assert_eq!(occurrence.depth, 1);
             assert!(occurrence.group.is_none());
         }

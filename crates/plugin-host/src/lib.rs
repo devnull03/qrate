@@ -17,14 +17,15 @@ pub use plugin::{Env, LuaPlugin, PERMISSION_NET, PackageDescriptor, Writes};
 // So the Settings window can render a plugin's knobs without depending on `plugin-api` directly.
 pub use plugin_api::{SettingKind, SettingScope, SettingSpec};
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use diagnostics::{
-    AsyncValidators, ColumnSnapshot, ColumnValidator as _, DATASET_MAIN, Diagnostics, Source,
-    Validators,
+    AsyncValidators, ColumnSnapshot, ColumnValidator as _, DATASET_MAIN, Diagnostic, Diagnostics,
+    Source, Validators,
 };
 use gpui::{App, AppContext as _, Global, SharedString, Subscription, Task};
 use plugin_api::{
@@ -47,6 +48,9 @@ const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(120);
 #[derive(Default)]
 struct Plugins {
     loaded: Vec<Arc<LuaPlugin>>,
+    validated:
+        Arc<Mutex<HashMap<SharedString, HashMap<SharedString, (u64, u64, Vec<Diagnostic>)>>>>,
+    published: HashMap<SharedString, Vec<(SharedString, u64, u64)>>,
     /// Dropping this cancels the publish that would have followed, so assigning a fresh run is the
     /// whole staleness scheme — the same trick `TablePanel`'s autosave task uses.
     run: Option<Task<()>>,
@@ -140,6 +144,12 @@ pub fn reload(cx: &mut App) {
     let previous = {
         let plugins = cx.default_global::<Plugins>();
         plugins.run = None;
+        plugins.published.clear();
+        plugins
+            .validated
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
         std::mem::take(&mut plugins.loaded)
     };
     for plugin in previous {
@@ -301,9 +311,10 @@ pub fn listing(cx: &App) -> Vec<Listing> {
 /// rule, just later — which is invisible to the Problems panel and the squiggle, since both read
 /// the store rather than the run.
 fn validate_async(columns: &[ColumnSnapshot], cx: &mut App) {
-    let plugins = cx
-        .try_global::<Plugins>()
-        .map_or(Vec::new(), |plugins| plugins.loaded.clone());
+    let (plugins, validated) = cx.try_global::<Plugins>().map_or_else(
+        || (Vec::new(), Arc::default()),
+        |plugins| (plugins.loaded.clone(), plugins.validated.clone()),
+    );
     if plugins.is_empty() {
         return;
     }
@@ -325,21 +336,51 @@ fn validate_async(columns: &[ColumnSnapshot], cx: &mut App) {
                     .iter()
                     .map(|plugin| {
                         let name = plugin.name();
-                        let items = columns
+                        let revision = plugin.revision();
+                        let covered: Vec<_> = columns
                             .iter()
-                            .flat_map(|column| {
-                                let found = plugin.validate(
-                                    &column.info(),
-                                    diagnostics::ColumnValues::new(
-                                        &column.values,
-                                        &column.subdelimiter,
-                                    ),
-                                );
-                                diagnostics::address(name.clone(), column, found)
-                            })
+                            .map(|column| (column.name.clone(), column.revision, revision))
                             .collect();
+                        let mut previous = validated
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .get(&name)
+                            .cloned()
+                            .unwrap_or_default();
+                        previous
+                            .retain(|name, _| columns.iter().any(|column| &column.name == name));
+                        let mut items = Vec::new();
+                        for column in &columns {
+                            let found = match previous.get(&column.name) {
+                                Some((at, by, found))
+                                    if *at == column.revision && *by == revision =>
+                                {
+                                    found.clone()
+                                }
+                                _ => {
+                                    let found = plugin.validate(
+                                        &column.info(),
+                                        diagnostics::ColumnValues::new(
+                                            &column.values,
+                                            &column.subdelimiter,
+                                        ),
+                                    );
+                                    let found = diagnostics::address(name.clone(), column, found);
+                                    previous.insert(
+                                        column.name.clone(),
+                                        (column.revision, revision, found.clone()),
+                                    );
+                                    found
+                                }
+                            };
+                            items.extend(found);
+                        }
+                        validated
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(name.clone(), previous);
                         flush_storage(plugin);
-                        (name, items, plugin.take_bar_updates())
+                        (name, covered, items, plugin.take_bar_updates())
                     })
                     .collect::<Vec<_>>()
             })
@@ -353,10 +394,16 @@ fn validate_async(columns: &[ColumnSnapshot], cx: &mut App) {
             started.elapsed()
         );
         cx.update(|cx| {
-            for (name, items, updates) in found {
-                Diagnostics::set(&Source::Validator(name.clone()), DATASET_MAIN, items, cx);
+            let mut batch = Vec::with_capacity(found.len());
+            for (name, covered, items, updates) in found {
                 apply_bar_updates(&name, updates, cx);
+                let plugins = cx.default_global::<Plugins>();
+                if plugins.published.get(&name) != Some(&covered) {
+                    plugins.published.insert(name.clone(), covered);
+                    batch.push((Source::Validator(name), items));
+                }
             }
+            Diagnostics::set_many(DATASET_MAIN, batch, cx);
         });
     });
     cx.default_global::<Plugins>().run = Some(task);
@@ -566,11 +613,15 @@ pub fn refresh_scoped(cx: &mut App) {
         .try_global::<Plugins>()
         .map_or(Vec::new(), |plugins| plugins.loaded.clone());
     let subdelimiter = settings::effective_text(settings::FILTER_SUBDELIMITER_KEY, cx);
+    let (project, user) = (
+        settings::plugins::stored_project(cx),
+        settings::plugins::stored_user(cx),
+    );
     for plugin in plugins {
         let name = plugin.name();
         plugin.set_scoped(
-            settings::plugins::project(&name, cx),
-            settings::plugins::user(&name, cx),
+            project.get(name.as_ref()).cloned().unwrap_or(Json::Null),
+            user.get(name.as_ref()).cloned().unwrap_or(Json::Null),
         );
         plugin.set_app_settings(subdelimiter.clone());
     }

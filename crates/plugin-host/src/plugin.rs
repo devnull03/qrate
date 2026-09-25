@@ -164,6 +164,7 @@ pub struct LuaPlugin {
     /// plugin has no `App` to read it from, and a plugin that split cells differently from the
     /// grid would disagree with what the user can see.
     app: Mutex<SharedString>,
+    settings_revision: std::sync::atomic::AtomicU64,
     /// A load failure is kept rather than dropped, so a broken plugin can still report itself.
     state: Result<Loaded, String>,
 }
@@ -183,6 +184,7 @@ impl LuaPlugin {
             state: build(id, source, &env, &shared).map_err(|err| err.to_string()),
             scoped: Mutex::new((Json::Null, Json::Null)),
             app: Mutex::new(SharedString::default()),
+            settings_revision: std::sync::atomic::AtomicU64::new(0),
             shared,
         }
     }
@@ -314,13 +316,23 @@ impl LuaPlugin {
 
     /// Replace the project- and user-scope copies after something wrote to them.
     pub fn set_scoped(&self, project: Json, user: Json) {
-        *self.scoped.lock().unwrap() = (project, user);
+        let mut scoped = self.scoped.lock().unwrap();
+        if scoped.0 != project || scoped.1 != user {
+            *scoped = (project, user);
+            self.settings_revision
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     /// Everything the app decides about how cells are read, which is not the plugin's to store —
     /// currently the sub-delimiter, so a plugin splits a cell the same way the table does.
     pub fn set_app_settings(&self, subdelimiter: SharedString) {
-        *self.app.lock().unwrap() = subdelimiter;
+        let mut app = self.app.lock().unwrap();
+        if *app != subdelimiter {
+            *app = subdelimiter;
+            self.settings_revision
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     /// Run a contributed menu command and return what it wants stored.
@@ -500,6 +512,11 @@ impl ColumnValidator for LuaPlugin {
             .ok()
             .and_then(|loaded| loaded.name.clone())
             .unwrap_or_else(|| self.id.clone())
+    }
+
+    fn revision(&self) -> u64 {
+        self.settings_revision
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn validate(
@@ -896,13 +913,10 @@ fn install_qrate(lua: &Lua, id: &str, env: &Env, shared: &Shared) -> mlua::Resul
         let (storage, id) = (shared.storage.clone(), id.to_string());
         move |lua, key: String| {
             let storage = storage.lock().unwrap();
-            let value = storage.0.get(&key).cloned().unwrap_or(Json::Null);
-            let what = format!("storage.get({key}) over {} entries", entries(&value));
+            let value = storage.0.get(&key).unwrap_or(&Json::Null);
+            let what = format!("storage.get({key}) over {} entries", entries(value));
             timed(&id, &what, || {
-                lua.to_value_with(
-                    &value,
-                    SerializeOptions::new().serialize_unit_to_null(false),
-                )
+                lua.to_value_with(value, SerializeOptions::new().serialize_unit_to_null(false))
             })
         }
     })?;

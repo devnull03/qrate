@@ -11,9 +11,9 @@
 //! ranges while the client owns the URI. That is what lets a validator live in its own crate
 //! knowing nothing about datasets, projects, or the table.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use gpui::{App, AppContext as _, Global, SharedString};
@@ -23,14 +23,20 @@ use crate::{DATASET_MAIN, Diagnostic, DiagnosticGroup, Diagnostics, Location, Se
 
 /// One column's whole input, owned. A validator that runs later — off the UI thread, after this
 /// run's borrows are gone — needs the data to outlive the call, which [`ColumnInfo`] cannot do.
+///
+/// Cheap to clone: a column that did not change since the previous run shares that run's values
+/// and settings, and keeps its `revision`.
 #[derive(Clone)]
 pub struct ColumnSnapshot {
     pub name: SharedString,
     pub data_type: SharedString,
-    pub settings: ColumnSettings,
-    pub values: Vec<SharedString>,
+    pub settings: Arc<ColumnSettings>,
+    pub values: Arc<[SharedString]>,
     pub subdelimiter: SharedString,
-    pub row_ids: std::sync::Arc<[settings::project::RowId]>,
+    pub row_ids: Arc<[settings::project::RowId]>,
+    /// Equal across two runs only when every field above is, so a producer can reuse what it
+    /// found in this column last time.
+    pub revision: u64,
 }
 
 impl ColumnSnapshot {
@@ -176,8 +182,14 @@ pub trait ColumnValidator: Send + Sync + 'static {
     /// Must be stable across runs and unique across validators.
     fn name(&self) -> SharedString;
 
-    /// Clear snapshot-bound state, including columns removed since the previous run.
-    fn begin_run(&self) {}
+    /// Drop snapshot-bound state for columns not in `columns`. Only changed columns are validated
+    /// again, so state for the others must survive.
+    fn begin_run(&self, _columns: &[SharedString]) {}
+
+    /// Changes when this validator would answer differently for an unchanged column.
+    fn revision(&self) -> u64 {
+        0
+    }
 
     /// Check one column top to bottom. `values` is every row's text for this column, in source-row
     /// order, so the returned index *is* the row. Returning nothing means the column is clean —
@@ -228,26 +240,46 @@ impl Global for SpellActions {}
 
 const SLOW_PUBLISH: Duration = Duration::from_millis(16);
 
+/// Column name → the column revision and validator revision a finding set was made for.
+type Found = HashMap<SharedString, (u64, u64, Vec<Diagnostic>)>;
+
+/// `(column, column revision, validator revision)` for every column one publish covered.
+type Covered = Vec<(SharedString, u64, u64)>;
+
+struct Registered {
+    validator: Arc<dyn ColumnValidator>,
+    /// Reused for every column whose revision is unchanged, so an edit re-checks one column.
+    found: Arc<Mutex<Found>>,
+    /// What the store holds for this validator. A run covering the same thing publishes nothing,
+    /// which spares every observer of the store a refresh.
+    published: Covered,
+}
+
 /// Every registered validator. Filled by `app` at startup, which is the only place that knows
 /// where validators come from.
 #[derive(Default)]
 pub struct Validators {
-    registered: Vec<Arc<dyn ColumnValidator>>,
+    registered: Vec<Registered>,
     /// Bumped by every run and removal, so a pass that finishes after a newer one started — or
     /// after its validator was dropped — publishes nothing.
     generation: Arc<AtomicU64>,
     /// Held for a whole background pass: validators keep per-run state (`begin_run`), which two
     /// interleaved passes would mix.
     running: Arc<Mutex<()>>,
+    /// The previous run's snapshot, which the next one compares against column by column.
+    snapshot: Option<Arc<[ColumnSnapshot]>>,
+    revisions: u64,
 }
 
 impl Global for Validators {}
 
 impl Validators {
     pub fn register(validator: Box<dyn ColumnValidator>, cx: &mut App) {
-        cx.default_global::<Self>()
-            .registered
-            .push(Arc::from(validator));
+        cx.default_global::<Self>().registered.push(Registered {
+            validator: Arc::from(validator),
+            found: Arc::default(),
+            published: Vec::new(),
+        });
     }
 
     /// Drop a validator and clear what it published. Publishing an empty set is the only
@@ -262,16 +294,20 @@ impl Validators {
         );
         let this = cx.default_global::<Self>();
         this.generation.fetch_add(1, Ordering::SeqCst);
-        this.registered.retain(|v| &v.name() != name);
+        this.registered.retain(|r| &r.validator.name() != name);
     }
 
-    /// Run every validator over every column and publish the results.
+    /// Run every validator over every changed column and publish the results.
     ///
     /// `columns` pairs each column's settings key with its header name (today the same string,
     /// kept as a pair so a validator never has to know that), in the same
     /// order as each row's cells. One [`Diagnostics::set`] per validator, carrying every column it
     /// flagged, so the replace-by-source rule makes the run self-invalidating: a fixed cell
     /// disappears because the next run simply doesn't report it.
+    ///
+    /// A column whose text, settings, type and rows all match the previous run keeps its
+    /// [`ColumnSnapshot::revision`], and each validator reuses what it found there. Renaming,
+    /// adding, removing or reordering a column, or any change of row ids, re-checks every column.
     ///
     /// Only the snapshot is taken on the UI thread. The checking runs on the background executor
     /// and lands a moment later; a newer run supersedes one that has not landed yet.
@@ -282,10 +318,12 @@ impl Validators {
         cx: &mut App,
     ) {
         Diagnostics::set_row_ids(row_ids, cx);
-        let row_ids: Arc<[_]> = row_ids.into();
-        let validators = cx
-            .try_global::<Self>()
-            .map_or_else(Vec::new, |v| v.registered.clone());
+        let validators: Vec<_> = cx.try_global::<Self>().map_or_else(Vec::new, |v| {
+            v.registered
+                .iter()
+                .map(|r| (r.validator.clone(), r.found.clone()))
+                .collect()
+        });
         // Copied out because running one hands `cx` back mutably, and a fn pointer is cheap.
         let deferred: Vec<_> = cx
             .try_global::<AsyncValidators>()
@@ -296,33 +334,88 @@ impl Validators {
         }
 
         let started = Instant::now();
-        let settings = settings::columns::load(cx);
+        let (previous, mut revisions) = cx
+            .try_global::<Self>()
+            .map_or((None, 0), |v| (v.snapshot.clone(), v.revisions));
+        let previous: Arc<[ColumnSnapshot]> = previous
+            .filter(|before| {
+                before.len() == columns.len()
+                    && before
+                        .iter()
+                        .zip(columns)
+                        .all(|(column, (_, name))| column.name == *name)
+                    && before
+                        .first()
+                        .is_none_or(|column| *column.row_ids == *row_ids)
+            })
+            .unwrap_or_else(|| Arc::from([]));
+        let row_ids: Arc<[_]> = previous
+            .first()
+            .map_or_else(|| row_ids.into(), |column| column.row_ids.clone());
+        let settings = settings::columns::shared(cx);
         let subdelimiter = if cx.has_global::<settings::AppSettings>() {
             settings::effective_text(settings::FILTER_SUBDELIMITER_KEY, cx)
         } else {
             SharedString::default()
         };
         let project = cx.try_global::<settings::project::CurrentProject>();
-        let blank = ColumnSettings::default();
+        let (blank, empty) = (ColumnSettings::default(), SharedString::default());
+        let same = |a: &SharedString, b: &SharedString| {
+            (a.as_ptr() == b.as_ptr() && a.len() == b.len()) || a == b
+        };
         // Transposed once, not once per validator: every validator wants the same column-major
         // view, and rebuilding it per validator is the whole sheet cloned again for each.
-        let snapshot: Vec<ColumnSnapshot> = columns
+        let snapshot: Arc<[ColumnSnapshot]> = columns
             .iter()
             .enumerate()
-            .map(|(ix, (key, name))| ColumnSnapshot {
-                name: name.clone(),
-                data_type: project
+            .map(|(ix, (key, name))| {
+                let before = previous.get(ix);
+                let data_type = project
                     .and_then(|p| p.data.columns.iter().find(|c| c.name == name.as_ref()))
-                    .map_or_else(SharedString::default, |c| c.data_type.clone().into()),
-                settings: settings.get(key.as_ref()).unwrap_or(&blank).clone(),
-                values: rows
-                    .iter()
-                    .map(|r| r.get(ix).cloned().unwrap_or_default())
-                    .collect(),
-                subdelimiter: subdelimiter.clone(),
-                row_ids: row_ids.clone(),
+                    .map_or_else(SharedString::default, |c| c.data_type.clone().into());
+                let wanted = settings.get(key.as_ref()).unwrap_or(&blank);
+                let cells = || rows.iter().map(|r| r.get(ix).unwrap_or(&empty));
+                let values = match before {
+                    Some(before)
+                        if before.values.len() == rows.len()
+                            && cells().zip(before.values.iter()).all(|(a, b)| same(a, b)) =>
+                    {
+                        before.values.clone()
+                    }
+                    _ => cells().cloned().collect(),
+                };
+                let column_settings = match before {
+                    Some(before) if *before.settings == *wanted => before.settings.clone(),
+                    _ => Arc::new(wanted.clone()),
+                };
+                let revision = match before {
+                    Some(before)
+                        if Arc::ptr_eq(&before.values, &values)
+                            && Arc::ptr_eq(&before.settings, &column_settings)
+                            && before.data_type == data_type
+                            && before.subdelimiter == subdelimiter =>
+                    {
+                        before.revision
+                    }
+                    _ => {
+                        revisions += 1;
+                        revisions
+                    }
+                };
+                ColumnSnapshot {
+                    name: name.clone(),
+                    data_type,
+                    settings: column_settings,
+                    values,
+                    subdelimiter: subdelimiter.clone(),
+                    row_ids: row_ids.clone(),
+                    revision,
+                }
             })
             .collect();
+        let this = cx.default_global::<Self>();
+        this.snapshot = Some(snapshot.clone());
+        this.revisions = revisions;
 
         for (name, run) in deferred {
             let step = Instant::now();
@@ -344,42 +437,57 @@ impl Validators {
         let latest = this.generation.clone();
         let running = this.running.clone();
         let current = move || latest.load(Ordering::SeqCst) == generation;
+        let names: Vec<SharedString> = snapshot.iter().map(|c| c.name.clone()).collect();
         cx.spawn(async move |cx| {
             let still_current = current.clone();
             let found = cx
                 .background_spawn(async move {
-                    let _pass = running
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let _pass = running.lock().unwrap_or_else(PoisonError::into_inner);
                     if !still_current() {
                         return None;
                     }
                     let started = Instant::now();
                     let found: Vec<_> = validators
                         .iter()
-                        .map(|validator| {
+                        .map(|(validator, found)| {
                             let step = Instant::now();
-                            validator.begin_run();
-                            let items: Vec<_> = snapshot
-                                .iter()
-                                .flat_map(|column| {
-                                    address(
-                                        validator.name(),
-                                        column,
-                                        validator.validate(
-                                            &column.info(),
-                                            ColumnValues::new(&column.values, &column.subdelimiter),
-                                        ),
-                                    )
-                                })
-                                .collect();
+                            let name = validator.name();
+                            validator.begin_run(&names);
+                            let revision = validator.revision();
+                            let mut found = found.lock().unwrap_or_else(PoisonError::into_inner);
+                            found.retain(|column, _| names.contains(column));
+                            let (mut items, mut covered, mut checked) =
+                                (Vec::new(), Vec::with_capacity(snapshot.len()), 0);
+                            for column in snapshot.iter() {
+                                covered.push((column.name.clone(), column.revision, revision));
+                                if let Some((_, _, cached)) = found.get(&column.name).filter(
+                                    |(at, by, _)| *at == column.revision && *by == revision,
+                                ) {
+                                    items.extend(cached.iter().cloned());
+                                    continue;
+                                }
+                                checked += 1;
+                                let fresh = address(
+                                    name.clone(),
+                                    column,
+                                    validator.validate(
+                                        &column.info(),
+                                        ColumnValues::new(&column.values, &column.subdelimiter),
+                                    ),
+                                );
+                                items.extend(fresh.iter().cloned());
+                                found.insert(
+                                    column.name.clone(),
+                                    (column.revision, revision, fresh),
+                                );
+                            }
                             log::debug!(
-                                "validator {:?}: {} findings in {:?}",
-                                validator.name(),
+                                "validator {name:?}: {} findings, {checked} of {} columns checked in {:?}",
                                 items.len(),
+                                snapshot.len(),
                                 step.elapsed()
                             );
-                            (validator.name(), items)
+                            (name, covered, items)
                         })
                         .collect();
                     log::debug!(
@@ -397,9 +505,22 @@ impl Validators {
                     return;
                 }
                 let started = Instant::now();
-                for (name, items) in found {
-                    Diagnostics::set(&Source::Validator(name), DATASET_MAIN, items, cx);
-                }
+                let this = cx.default_global::<Self>();
+                let batch: Vec<_> = found
+                    .into_iter()
+                    .filter_map(|(name, covered, items)| {
+                        let entry = this
+                            .registered
+                            .iter_mut()
+                            .find(|r| r.validator.name() == name)?;
+                        if entry.published == covered {
+                            return None;
+                        }
+                        entry.published = covered;
+                        Some((Source::Validator(name), items))
+                    })
+                    .collect();
+                Diagnostics::set_many(DATASET_MAIN, batch, cx);
                 let elapsed = started.elapsed();
                 if elapsed >= SLOW_PUBLISH {
                     log::warn!("publishing validation blocked the UI thread for {elapsed:?}");
@@ -635,6 +756,72 @@ mod tests {
         });
     }
 
+    /// Counts the columns it is asked about, so a test can see which ones a run checked again.
+    struct Counting(std::sync::Arc<AtomicUsize>);
+
+    impl ColumnValidator for Counting {
+        fn name(&self) -> SharedString {
+            "counting".into()
+        }
+
+        fn validate(
+            &self,
+            column: &ColumnInfo,
+            values: crate::ColumnValues<'_>,
+        ) -> Vec<super::ColumnFinding> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            values
+                .iter()
+                .filter(|value| value.raw == "bad")
+                .map(|value| {
+                    let message = SharedString::from(format!("bad in {}", column.name));
+                    (value.row, Severity::Error, message).into()
+                })
+                .collect()
+        }
+    }
+
+    #[gpui::test]
+    fn an_edit_checks_only_the_column_it_touched(cx: &mut TestAppContext) {
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        cx.update(|cx| Validators::register(Box::new(Counting(calls.clone())), cx));
+        run(cx, &grid().1);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let edited: Vec<Vec<SharedString>> = vec![
+            vec!["ok".into(), "ok".into()],
+            vec!["bad".into(), "ok".into()],
+        ];
+        run(cx, &edited);
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "only Format changed");
+        cx.update(|cx| {
+            let all = Diagnostics::all(cx);
+            assert_eq!(all.len(), 1, "Title's reused finding is still published");
+            assert_eq!(all[0].location.column.as_deref(), Some("Title"));
+        });
+
+        run(cx, &edited);
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "nothing changed");
+
+        let renamed: [(SharedString, SharedString); 2] = [
+            ("c0".into(), "Caption".into()),
+            ("c1".into(), "Format".into()),
+        ];
+        cx.update(|cx| Validators::run(&renamed, &edited, &[], cx));
+        cx.run_until_parked();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            5,
+            "a rename checks every column"
+        );
+        cx.update(|cx| {
+            assert_eq!(
+                Diagnostics::all(cx)[0].location.column.as_deref(),
+                Some("Caption")
+            );
+        });
+    }
+
     /// A deferred producer publishes through the hook rather than the registry — so an empty
     /// registry must not skip the run, or nothing validates in the shipping app.
     #[gpui::test]
@@ -662,10 +849,11 @@ mod tests {
         crate::ColumnSnapshot {
             name: "Photographer".into(),
             data_type: "Text".into(),
-            settings,
-            values: vec!["Aderman, Ray".into()],
+            settings: settings.into(),
+            values: ["Aderman, Ray".into()].into(),
             subdelimiter: SharedString::default(),
             row_ids: [1].into(),
+            revision: 1,
         }
     }
 

@@ -13,7 +13,8 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use diagnostics::{
     ColumnInfo, ColumnValidator, ColumnValues, GroupFix, GroupMember, Misspelling, Severity,
@@ -72,6 +73,11 @@ pub struct SpellCheck {
     /// Read once at load, so changing it takes a restart — the same deal the language gets, and
     /// for the same reason: [`ColumnValidator::validate`] is handed no context to re-read from.
     ignore_capitalized: bool,
+    /// Words accepted while a run held the dictionaries, taught at the start of the next run so
+    /// the UI thread never waits on a column being checked.
+    learned: Arc<Mutex<Vec<String>>>,
+    /// Bumped whenever a word is taught, since that changes answers for unchanged columns.
+    revision: Arc<AtomicU64>,
 }
 
 impl Global for SpellCheck {}
@@ -115,7 +121,9 @@ impl DictionarySet {
             }
         }
         if changed && let Ok(checked) = self.checked.get_mut() {
-            checked.clear();
+            let folded = |text: &str| text.replace('’', "'").to_lowercase();
+            let word = folded(word);
+            checked.retain(|value, _| !folded(value).contains(&word));
         }
         changed
     }
@@ -356,7 +364,34 @@ impl SpellCheck {
                 checked: Default::default(),
             })),
             ignore_capitalized,
+            learned: Arc::default(),
+            revision: Arc::default(),
         })
+    }
+
+    /// Teach `word` now if no run is reading the dictionaries, else queue it for the next run.
+    /// Returns whether it was accepted, which a queued word is assumed to be.
+    fn learn(&self, word: &str) -> bool {
+        match self.dictionaries.try_write() {
+            Ok(mut dictionaries) => {
+                let changed = dictionaries.learn(word);
+                if changed {
+                    self.revision.fetch_add(1, Ordering::SeqCst);
+                }
+                changed
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                self.learned
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(word.to_owned());
+                true
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                log::error!("the dictionary is poisoned, so \"{word}\" was not added");
+                false
+            }
+        }
     }
 }
 
@@ -409,17 +444,12 @@ fn custom_words() -> Vec<String> {
 /// Teach the dictionary `word` and append it to the user's file. Returns whether anything
 /// changed, so the caller knows whether a revalidation is worth running.
 pub fn add_word(word: &str, cx: &mut App) -> bool {
-    let Some(this) = cx.try_global::<SpellCheck>().cloned() else {
+    let Some(this) = cx.try_global::<SpellCheck>() else {
         return false;
     };
-    let Ok(mut dictionaries) = this.dictionaries.write() else {
-        log::error!("the dictionary is poisoned, so \"{word}\" was not added");
-        return false;
-    };
-    if !dictionaries.learn(word) {
+    if !this.learn(word) {
         return false;
     }
-    drop(dictionaries);
 
     if let Some(path) = custom_dictionary_path() {
         let appended = std::fs::create_dir_all(path.parent().unwrap_or(&path)).and_then(|()| {
@@ -627,6 +657,28 @@ impl ColumnValidator for SpellCheck {
         SPELLING_VALIDATOR_NAME.into()
     }
 
+    fn begin_run(&self, _columns: &[SharedString]) {
+        let learned =
+            std::mem::take(&mut *self.learned.lock().unwrap_or_else(PoisonError::into_inner));
+        if learned.is_empty() {
+            return;
+        }
+        let Ok(mut dictionaries) = self.dictionaries.write() else {
+            return;
+        };
+        let mut changed = false;
+        for word in &learned {
+            changed |= dictionaries.learn(word);
+        }
+        if changed {
+            self.revision.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn revision(&self) -> u64 {
+        self.revision.load(Ordering::SeqCst)
+    }
+
     fn validate(
         &self,
         column: &ColumnInfo,
@@ -712,6 +764,8 @@ mod tests {
                 checked: Default::default(),
             })),
             ignore_capitalized,
+            learned: Default::default(),
+            revision: Default::default(),
         }
     }
 
@@ -938,6 +992,41 @@ mod tests {
                 .learn("betacam")
         );
         assert!(findings(&spell, "", &defaults, &cell).is_empty());
+    }
+
+    /// A run holds the dictionaries for a whole column, so a word accepted meanwhile waits for the
+    /// next run instead of blocking the UI thread — and that run's answers change with it.
+    #[test]
+    fn a_word_learned_during_a_run_is_taught_by_the_next_one() {
+        let spell = dictionary();
+        let defaults = ColumnSettings::default();
+        let cell = ["shot on betacam"];
+        let running = spell.dictionaries.read().expect("uncontended");
+        assert!(spell.learn("betacam"), "queued rather than refused");
+        drop(running);
+        assert_eq!(findings(&spell, "", &defaults, &cell).len(), 1);
+
+        let before = spell.revision();
+        spell.begin_run(&[]);
+        assert!(spell.revision() > before, "cached answers are stale");
+        assert!(findings(&spell, "", &defaults, &cell).is_empty());
+    }
+
+    /// Learning a word forgets only the cached verdicts that could mention it.
+    #[test]
+    fn learning_a_word_keeps_unrelated_cached_verdicts() {
+        let spell = dictionary();
+        findings(
+            &spell,
+            "",
+            &ColumnSettings::default(),
+            &["shot on Betacam", "I did recieve the reel"],
+        );
+        assert!(spell.learn("betacam"));
+        let dictionaries = spell.dictionaries.read().expect("uncontended");
+        let checked = dictionaries.checked.lock().expect("uncontended");
+        assert!(!checked.contains_key("shot on Betacam"));
+        assert!(checked.contains_key("I did recieve the reel"));
     }
 
     /// The names rule. No word list holds every filmmaker, town, and studio, so the only general

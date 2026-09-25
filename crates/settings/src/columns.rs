@@ -13,8 +13,9 @@
 //! on purpose, so undoing the delete brings its preferences back with it.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
-use gpui::App;
+use gpui::{App, SharedString};
 use serde::{Deserialize, Serialize};
 
 use crate::dirty;
@@ -118,9 +119,33 @@ pub fn load(cx: &App) -> ColumnSettingsMap {
     )
 }
 
+/// [`load`] for readers, parsed once per distinct blob. Validation reads it per run and per
+/// publish, and the blob changes only when a setting does.
+pub fn shared(cx: &App) -> Arc<ColumnSettingsMap> {
+    static PARSED: Mutex<Option<(SharedString, Arc<ColumnSettingsMap>)>> = Mutex::new(None);
+    let raw = cx
+        .try_global::<CurrentProject>()
+        .and_then(|project| project.data.values.get(COLUMN_SETTINGS_KEY))
+        .map(|value| value.text())
+        .unwrap_or_default();
+    let mut parsed = PARSED.lock().unwrap_or_else(PoisonError::into_inner);
+    match parsed.as_ref() {
+        Some((seen, map))
+            if (seen.as_ptr() == raw.as_ptr() && seen.len() == raw.len()) || *seen == raw =>
+        {
+            map.clone()
+        }
+        _ => {
+            let map = Arc::new(parse(Some(&raw)));
+            *parsed = Some((raw, map.clone()));
+            map
+        }
+    }
+}
+
 /// One column's settings, all-defaults if it was never added.
 pub fn get(col_key: &str, cx: &App) -> ColumnSettings {
-    load(cx).get(col_key).cloned().unwrap_or_default()
+    shared(cx).get(col_key).cloned().unwrap_or_default()
 }
 
 /// The master filter switch (default on — see [`COLUMN_FILTERS_ENABLED_KEY`]).

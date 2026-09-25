@@ -199,12 +199,22 @@ impl Diagnostic {
         let Some(settings) = columns.get(column) else {
             return false;
         };
-        let (source, key) = (source.to_string(), self.ignore_key().to_string());
-        self.location.row_id.is_some_and(|id| {
-            settings
-                .ignored_occurrences
-                .contains(&(source.clone(), key.clone(), id))
-        }) || settings.ignored_diagnostics.contains(&(source, key))
+        let occurrence = self
+            .location
+            .row_id
+            .filter(|_| !settings.ignored_occurrences.is_empty());
+        if occurrence.is_none() && settings.ignored_diagnostics.is_empty() {
+            return false;
+        }
+        let key = (source.to_string(), self.ignore_key().to_string());
+        if let Some(id) = occurrence {
+            let key = (key.0, key.1, id);
+            if settings.ignored_occurrences.contains(&key) {
+                return true;
+            }
+            return settings.ignored_diagnostics.contains(&(key.0, key.1));
+        }
+        settings.ignored_diagnostics.contains(&key)
     }
 }
 
@@ -282,9 +292,34 @@ impl Diagnostics {
     /// before (LSP `publishDiagnostics`). A re-run that finds nothing clears its own stale
     /// entries, so resolving a problem is just republishing without it. Computed notes become
     /// warnings because the Notes tab belongs to authored notes.
-    pub fn set(source: &Source, dataset: &str, mut items: Vec<Diagnostic>, cx: &mut App) {
-        let columns = settings::columns::load(cx);
+    pub fn set(source: &Source, dataset: &str, items: Vec<Diagnostic>, cx: &mut App) {
+        let columns = settings::columns::shared(cx);
         let this = cx.default_global::<Self>();
+        this.replace(source, dataset, items, &columns);
+        this.reindex();
+    }
+
+    /// [`Self::set`] for several sources at once, indexed and observed once. An empty batch leaves
+    /// the store untouched, so observers are not woken for a run that changed nothing.
+    pub fn set_many(dataset: &str, batch: Vec<(Source, Vec<Diagnostic>)>, cx: &mut App) {
+        if batch.is_empty() {
+            return;
+        }
+        let columns = settings::columns::shared(cx);
+        let this = cx.default_global::<Self>();
+        for (source, items) in batch {
+            this.replace(&source, dataset, items, &columns);
+        }
+        this.reindex();
+    }
+
+    fn replace(
+        &mut self,
+        source: &Source,
+        dataset: &str,
+        mut items: Vec<Diagnostic>,
+        columns: &settings::columns::ColumnSettingsMap,
+    ) {
         for diagnostic in &mut items {
             if diagnostic.source == Source::Note {
                 continue;
@@ -296,21 +331,31 @@ impl Diagnostics {
                 diagnostic.location.row_id = diagnostic
                     .location
                     .row
-                    .and_then(|row| this.row_ids.get(row).copied());
+                    .and_then(|row| self.row_ids.get(row).copied());
             }
         }
-        let (ignored, items): (Vec<_>, Vec<_>) =
-            items.into_iter().partition(|d| d.is_ignored(&columns));
+        let ignoring = columns.values().any(|settings| {
+            !settings.ignored_diagnostics.is_empty() || !settings.ignored_occurrences.is_empty()
+        });
+        let (ignored, items): (Vec<_>, Vec<_>) = match ignoring {
+            true => items.into_iter().partition(|d| d.is_ignored(columns)),
+            false => (Vec::new(), items),
+        };
         let stale = |d: &Diagnostic| &d.source == source && d.location.dataset == dataset;
-        this.items.retain(|d| !stale(d));
-        this.items.extend(items);
-        this.ignored.retain(|d| !stale(d));
-        this.ignored.extend(ignored);
-        this.reindex();
+        self.items.retain(|d| !stale(d));
+        self.items.extend(items);
+        self.ignored.retain(|d| !stale(d));
+        self.ignored.extend(ignored);
     }
 
     /// Record the stable row ids a validation run addressed, so its findings can carry them.
     pub fn set_row_ids(row_ids: &[settings::project::RowId], cx: &mut App) {
+        if cx
+            .try_global::<Self>()
+            .is_some_and(|this| this.row_ids == row_ids)
+        {
+            return;
+        }
         cx.default_global::<Self>().row_ids = row_ids.to_vec();
     }
 

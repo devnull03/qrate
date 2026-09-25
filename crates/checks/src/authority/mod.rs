@@ -35,12 +35,13 @@ fn encode(value: &str) -> String {
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use diagnostics::{
-    ColumnFinding, ColumnSnapshot, DATASET_MAIN, DiagnosticGroup, DiagnosticHooks, Diagnostics,
-    Fix, FixProviders, GroupFix, Location, Severity, Source, SourceActions,
+    ColumnFinding, ColumnSnapshot, DATASET_MAIN, Diagnostic, DiagnosticGroup, Diagnostics, Fix,
+    FixProviders, GroupFix, Location, Severity, Source, SourceActions,
 };
 use gpui::{App, AppContext as _, Global, SharedString, Task};
 
@@ -49,6 +50,10 @@ use source::AuthoritySource;
 /// Wait for typing to stop before calling out. Longer than the plugin host's debounce because
 /// this leaves the machine.
 const DEBOUNCE: Duration = Duration::from_millis(400);
+
+/// How long a source's answers settle before its cache file is rewritten. A first pass over a
+/// sheet lands a batch every few hundred milliseconds, and each write is the whole file.
+const WRITE_DELAY: Duration = Duration::from_secs(2);
 
 /// Terms looked up per run. The rest are picked up by the next run, so a freshly imported sheet
 /// of ten thousand subjects resolves over several passes instead of one long stall — the same
@@ -75,73 +80,106 @@ pub struct Verdict {
     pub suggestions: Vec<String>,
 }
 
+/// One source's verdicts by lowercased term. Shared so a pending file write holds the map
+/// without copying it on the UI thread.
+type Verdicts = Arc<HashMap<String, Verdict>>;
+
+/// Column name → the column revision and cache epoch its findings were made for.
+type Published = HashMap<SharedString, (u64, u64, Vec<Diagnostic>)>;
+
 /// Every verdict this machine has been told, by source name then lowercased term.
 ///
 /// Lives beside the other caches in the data dir, never in the `.qrate` file: a verdict is about
 /// what a server said, and a project file is a thing people commit and hand to each other.
 #[derive(Default)]
 struct Cache {
-    terms: HashMap<String, HashMap<String, Verdict>>,
+    terms: HashMap<String, Verdicts>,
     scopes: HashMap<String, String>,
     failures: HashMap<String, String>,
     /// Terms a request is out for, per source, so an overlapping run never asks for them twice.
     pending: HashMap<String, HashSet<String>>,
     /// Terms whose request failed, per source, with when they may be asked again.
     unanswered: HashMap<String, HashMap<String, Instant>>,
+    /// Whether the files on disk have been read. Nothing is asked of a server before they are.
     loaded: bool,
+    load: Option<Task<()>>,
     /// Keeps the in-flight run alive; dropping it cancels, which is what a newer run wants.
     run: Option<Task<()>>,
+    /// The newest run's columns, which an answer or a finished load is published against.
+    last: Option<Rc<Run>>,
+    /// Bumped whenever a verdict or failure changes, which is what stales [`Self::published`].
+    epochs: HashMap<String, u64>,
+    published: HashMap<&'static str, Published>,
+    writes: HashMap<String, Task<()>>,
 }
 
 impl Global for Cache {}
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct StoredCache {
+struct StoredCache<T> {
     scope: String,
-    terms: HashMap<String, Verdict>,
+    terms: T,
 }
 
 fn cache_path(source: &str) -> Option<PathBuf> {
     settings::data_dir().map(|dir| dir.join("authority").join(format!("{source}.json")))
 }
 
-/// Read every source's cache off disk once per launch. An unreadable file reads as nothing
-/// cached, which is always safe: a cache that cannot be read is one that gets refilled.
+/// Read every source's cache off disk once per launch, off the UI thread. An unreadable file
+/// reads as nothing cached, which is always safe: a cache that cannot be read is one that gets
+/// refilled.
 fn ensure_loaded(cx: &mut App) {
-    if cx.default_global::<Cache>().loaded {
+    let cache = cx.default_global::<Cache>();
+    if cache.loaded || cache.load.is_some() {
         return;
     }
-    let mut terms = HashMap::new();
-    let mut scopes = HashMap::new();
-    for name in source::NAMES {
-        let Some(path) = cache_path(name) else {
-            continue;
-        };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if let Ok(stored) = serde_json::from_str::<StoredCache>(&text) {
-            scopes.insert(name.to_string(), stored.scope);
-            terms.insert(name.to_string(), stored.terms);
-        } else if let Ok(stored) =
-            serde_json::from_str::<HashMap<String, (bool, Vec<String>)>>(&text)
-        {
-            scopes.insert(name.to_string(), name.to_string());
-            terms.insert(
-                name.to_string(),
-                stored
+    let read = cx.background_executor().spawn(async { read_caches() });
+    let task = cx.spawn(async move |cx| {
+        let stored = read.await;
+        cx.update(|cx| {
+            let cache = cx.default_global::<Cache>();
+            for (name, scope, terms) in stored {
+                if cache
+                    .scopes
+                    .get(&name)
+                    .is_some_and(|current| *current != scope)
+                {
+                    continue;
+                }
+                cache.scopes.insert(name.clone(), scope);
+                *cache.epochs.entry(name.clone()).or_default() += 1;
+                let held = Arc::make_mut(cache.terms.entry(name).or_default());
+                for (term, verdict) in terms {
+                    held.entry(term).or_insert(verdict);
+                }
+            }
+            cache.loaded = true;
+            resume(cx);
+        });
+    });
+    cx.default_global::<Cache>().load = Some(task);
+}
+
+fn read_caches() -> Vec<(String, String, HashMap<String, Verdict>)> {
+    source::NAMES
+        .iter()
+        .filter_map(|name| {
+            let text = std::fs::read_to_string(cache_path(name)?).ok()?;
+            if let Ok(stored) = serde_json::from_str::<StoredCache<HashMap<_, _>>>(&text) {
+                return Some((name.to_string(), stored.scope, stored.terms));
+            }
+            if let Ok(stored) = serde_json::from_str::<HashMap<String, (bool, Vec<String>)>>(&text)
+            {
+                let terms = stored
                     .into_iter()
                     .map(|(term, (known, suggestions))| (term, Verdict { known, suggestions }))
-                    .collect(),
-            );
-        } else {
+                    .collect();
+                return Some((name.to_string(), name.to_string(), terms));
+            }
             log::warn!("discarding the unreadable {name} cache");
-        }
-    }
-    let cache = cx.default_global::<Cache>();
-    cache.terms = terms;
-    cache.scopes = scopes;
-    cache.loaded = true;
+            None
+        })
+        .collect()
 }
 
 fn write_cache(source: &str, scope: &str, verdicts: &HashMap<String, Verdict>) {
@@ -150,7 +188,7 @@ fn write_cache(source: &str, scope: &str, verdicts: &HashMap<String, Verdict>) {
     };
     let stored = StoredCache {
         scope: scope.to_owned(),
-        terms: verdicts.clone(),
+        terms: verdicts,
     };
     let written = path
         .parent()
@@ -165,11 +203,40 @@ fn write_cache(source: &str, scope: &str, verdicts: &HashMap<String, Verdict>) {
     }
 }
 
+/// Write `source`'s verdicts once they stop arriving. Replacing the task restarts the wait.
+fn schedule_write(source: String, cx: &mut App) {
+    let task = cx.spawn({
+        let source = source.clone();
+        async move |cx| {
+            cx.background_executor().timer(WRITE_DELAY).await;
+            let Some((scope, verdicts)) = cx.update(|cx| {
+                let cache = cx.try_global::<Cache>()?;
+                Some((
+                    cache.scopes.get(&source)?.clone(),
+                    cache.terms.get(&source)?.clone(),
+                ))
+            }) else {
+                return;
+            };
+            cx.background_spawn(async move { write_cache(&source, &scope, &verdicts) })
+                .await;
+        }
+    });
+    cx.default_global::<Cache>().writes.insert(source, task);
+}
+
 /// One source's share of a run.
 struct Job {
     source: Box<dyn AuthoritySource>,
     scope: String,
     columns: Vec<ColumnSnapshot>,
+}
+
+/// Everything a run's follow-ups need once the snapshot that started it is gone.
+struct Run {
+    jobs: Vec<Job>,
+    subdelimiter: String,
+    config: source::Config,
 }
 
 /// Split a cell into the values it actually holds. Archival subject and name columns are commonly
@@ -206,21 +273,18 @@ pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
             .filter(|c| c.settings.authority.as_deref() == Some(name))
             .cloned()
             .collect();
-        // Nothing points at this authority: publish nothing, which also clears what it said
-        // before a column stopped naming it.
-        if mine.is_empty() {
-            Diagnostics::set(
-                &Source::Validator(name.into()),
-                DATASET_MAIN,
-                Vec::new(),
-                cx,
-            );
-            continue;
-        }
-        // Configured but unusable — say why once and skip it, rather than spending a request per
-        // term to be refused and reporting the refusals as bad data.
-        if let Some(why) = source.unavailable() {
-            log::warn!("{name} is not checking {} column(s): {why}", mine.len());
+        // Nothing points at this authority, or it is configured but unusable: publish nothing,
+        // which also clears what it said before. An unusable one says why once, rather than
+        // spending a request per term to be refused and reporting the refusals as bad data.
+        let unusable = match mine.is_empty() {
+            true => None,
+            false => source.unavailable(),
+        };
+        if mine.is_empty() || unusable.is_some() {
+            if let Some(why) = unusable {
+                log::warn!("{name} is not checking {} column(s): {why}", mine.len());
+            }
+            cx.default_global::<Cache>().published.remove(name);
             Diagnostics::set(
                 &Source::Validator(name.into()),
                 DATASET_MAIN,
@@ -237,6 +301,7 @@ pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
             cache.terms.remove(name);
             cache.failures.remove(name);
             cache.unanswered.remove(name);
+            *cache.epochs.entry(name.into()).or_default() += 1;
         }
         jobs.push(Job {
             source,
@@ -246,38 +311,70 @@ pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
     }
 
     if jobs.is_empty() {
+        cx.default_global::<Cache>().last = None;
         return;
     }
+    let run = Rc::new(Run {
+        jobs,
+        subdelimiter,
+        config,
+    });
     // Everything already cached is published before any request goes out, so a reopened project
     // shows what it knew immediately instead of after a round trip.
-    publish(&jobs, &subdelimiter, cx);
+    publish(&run, cx);
 
     let task = cx.spawn(async move |cx| {
         cx.background_executor().timer(DEBOUNCE).await;
-        let asked = cx.update(|cx| claim(&jobs, &subdelimiter, cx));
-        if asked.is_empty() {
-            return;
-        }
-        // Detached: a newer run cancels the debounce, never answers a request already paid for.
-        cx.spawn(async move |cx| {
-            let fetched = cx
-                .background_spawn(async move {
-                    let sources = source::all(&config);
-                    asked
-                        .into_iter()
-                        .filter_map(|(name, scope, terms)| {
-                            let source = sources.iter().find(|s| s.name() == name)?;
-                            let result = lookup_all(source.as_ref(), &terms);
-                            Some((name, scope, terms, result))
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .await;
-            cx.update(|cx| store(fetched, cx));
-        })
-        .detach();
+        cx.update(fetch_next);
     });
-    cx.default_global::<Cache>().run = Some(task);
+    let cache = cx.default_global::<Cache>();
+    cache.last = Some(run);
+    cache.run = Some(task);
+}
+
+/// Republish the newest run against what the cache now knows, and ask for the next batch.
+fn resume(cx: &mut App) {
+    if let Some(run) = cx
+        .try_global::<Cache>()
+        .and_then(|cache| cache.last.clone())
+    {
+        publish(&run, cx);
+        fetch_next(cx);
+    }
+}
+
+/// Claim the newest run's next batch of terms and look them up off the UI thread.
+fn fetch_next(cx: &mut App) {
+    let Some(run) = cx
+        .try_global::<Cache>()
+        .filter(|cache| cache.loaded)
+        .and_then(|cache| cache.last.clone())
+    else {
+        return;
+    };
+    let asked = claim(&run.jobs, &run.subdelimiter, cx);
+    if asked.is_empty() {
+        return;
+    }
+    let config = run.config.clone();
+    // Detached: a newer run cancels the debounce, never answers a request already paid for.
+    cx.spawn(async move |cx| {
+        let fetched = cx
+            .background_spawn(async move {
+                let sources = source::all(&config);
+                asked
+                    .into_iter()
+                    .filter_map(|(name, scope, terms)| {
+                        let source = sources.iter().find(|s| s.name() == name)?;
+                        let result = lookup_all(source.as_ref(), &terms);
+                        Some((name, scope, terms, result))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await;
+        cx.update(|cx| store(fetched, cx));
+    })
+    .detach();
 }
 
 /// Each source's next [`PER_RUN`] distinct terms that nothing is cached, pending, or waiting to
@@ -317,8 +414,9 @@ fn claim(jobs: &[Job], subdelimiter: &str, cx: &mut App) -> Vec<(String, String,
         .collect()
 }
 
-/// Cache what came back, then revalidate so the answers publish against the sheet as it is now —
-/// which also claims the next batch, until every term has an answer.
+/// Cache what came back, then publish it against the newest run — which also claims the next
+/// batch, until every term has an answer. Only this producer re-runs; the rest of validation has
+/// nothing new to say.
 fn store(fetched: Vec<(String, String, Vec<String>, LookupBatch)>, cx: &mut App) {
     let mut answered = false;
     for (name, scope, asked, result) in fetched {
@@ -341,86 +439,114 @@ fn store(fetched: Vec<(String, String, Vec<String>, LookupBatch)>, cx: &mut App)
             log::warn!("{name} checks paused: {failure}");
             cache.failures.insert(name.clone(), failure);
             answered = true;
+            *cache.epochs.entry(name.clone()).or_default() += 1;
         }
         if result.verdicts.is_empty() {
             continue;
         }
         answered = true;
-        let for_source = cache.terms.entry(name.clone()).or_default();
-        for_source.extend(result.verdicts);
-        let snapshot = for_source.clone();
-        cx.background_executor()
-            .spawn(async move { write_cache(&name, &scope, &snapshot) })
-            .detach();
+        Arc::make_mut(cache.terms.entry(name.clone()).or_default()).extend(result.verdicts);
+        *cache.epochs.entry(name.clone()).or_default() += 1;
+        schedule_write(name, cx);
     }
-    if answered && let Some(hooks) = cx.try_global::<DiagnosticHooks>().copied() {
-        (hooks.revalidate)(cx);
+    if answered {
+        resume(cx);
     }
 }
 
 /// Turn what the cache knows into findings, for every job. A term nothing is cached for is not
 /// reported — it has not been checked yet, which is not the same as being wrong.
-fn publish(jobs: &[Job], subdelimiter: &str, cx: &mut App) {
-    for job in jobs {
+///
+/// A column is re-read only when it or the cache changed since it was last published, and a
+/// source whose every column is unchanged is not republished at all.
+fn publish(run: &Run, cx: &mut App) {
+    let cache = cx.default_global::<Cache>();
+    let mut published = std::mem::take(&mut cache.published);
+    let empty = Verdicts::default();
+    let mut batch = Vec::new();
+    for job in &run.jobs {
         let name = job.source.name();
-        let empty = HashMap::new();
-        let cache = cx.try_global::<Cache>();
-        let cached = cache
-            .and_then(|cache| cache.terms.get(name))
-            .unwrap_or(&empty);
-        let failure = cache.and_then(|cache| cache.failures.get(name));
+        let mut before = published.remove(name).unwrap_or_default();
+        let unchanged = before.len() == job.columns.len();
+        let cached = cache.terms.get(name).unwrap_or(&empty);
+        let failure = cache.failures.get(name);
+        let epoch = cache.epochs.get(name).copied().unwrap_or_default();
+        let mut now = Published::new();
+        let mut items = Vec::new();
+        let mut reused = 0;
+        for column in &job.columns {
+            let found = match before.remove(&column.name) {
+                Some((revision, at_epoch, found))
+                    if revision == column.revision && at_epoch == epoch =>
+                {
+                    reused += 1;
+                    found
+                }
+                _ => findings(job, column, cached, failure, &run.subdelimiter),
+            };
+            items.extend(found.iter().cloned());
+            now.insert(column.name.clone(), (column.revision, epoch, found));
+        }
+        published.insert(name, now);
+        if !(unchanged && reused == job.columns.len()) {
+            batch.push((Source::Validator(name.into()), items));
+        }
+    }
+    cache.published = published;
+    Diagnostics::set_many(DATASET_MAIN, batch, cx);
+}
 
-        let items: Vec<_> = job
-            .columns
-            .iter()
-            .flat_map(|column| {
-                let mut found: Vec<_> = column
-                    .values
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(row, cell)| {
-                        let mut seen = HashSet::new();
-                        values_in(cell, subdelimiter)
-                            .into_iter()
-                            .filter_map(move |value| {
-                                let key = value.to_lowercase();
-                                if !seen.insert(key.clone()) {
-                                    return None;
-                                }
-                                cached.get(&key).filter(|verdict| !verdict.known)?;
-                                let message: SharedString = job.source.rejection(&value).into();
-                                Some(ColumnFinding {
-                                    row: Some(row),
-                                    severity: Severity::Error,
-                                    message: message.clone(),
-                                    group: Some(DiagnosticGroup {
-                                        key: key.into(),
-                                        summary: message,
-                                        subject: Some(value.into()),
-                                    }),
-                                })
-                            })
-                    })
-                    .collect();
-                if let Some(failure) = failure {
-                    let message: SharedString =
-                        format!("{name} could not check this column: {failure}").into();
-                    found.push(ColumnFinding {
-                        row: None,
-                        severity: Severity::Warning,
+/// One column's findings from one source, addressed.
+fn findings(
+    job: &Job,
+    column: &ColumnSnapshot,
+    cached: &HashMap<String, Verdict>,
+    failure: Option<&String>,
+    subdelimiter: &str,
+) -> Vec<Diagnostic> {
+    let name = job.source.name();
+    let mut found: Vec<_> = column
+        .values
+        .iter()
+        .enumerate()
+        .flat_map(|(row, cell)| {
+            let mut seen = HashSet::new();
+            values_in(cell, subdelimiter)
+                .into_iter()
+                .filter_map(move |value| {
+                    let key = value.to_lowercase();
+                    if !seen.insert(key.clone()) {
+                        return None;
+                    }
+                    cached.get(&key).filter(|verdict| !verdict.known)?;
+                    let message: SharedString = job.source.rejection(&value).into();
+                    Some(ColumnFinding {
+                        row: Some(row),
+                        severity: Severity::Error,
                         message: message.clone(),
                         group: Some(DiagnosticGroup {
-                            key: "authority unavailable".into(),
+                            key: key.into(),
                             summary: message,
-                            subject: None,
+                            subject: Some(value.into()),
                         }),
-                    });
-                }
-                diagnostics::address(name.into(), column, found)
-            })
-            .collect();
-        Diagnostics::set(&Source::Validator(name.into()), DATASET_MAIN, items, cx);
+                    })
+                })
+        })
+        .collect();
+    if let Some(failure) = failure {
+        let message: SharedString = format!("{name} could not check this column: {failure}").into();
+        found.push(ColumnFinding {
+            row: None,
+            severity: Severity::Warning,
+            message: message.clone(),
+            group: Some(DiagnosticGroup {
+                key: "authority unavailable".into(),
+                summary: message,
+                subject: None,
+            }),
+        });
     }
+    diagnostics::address(name.into(), column, found)
 }
 
 struct LookupBatch {
@@ -626,6 +752,7 @@ fn refresh(name: &str, only_failure: bool, cx: &mut App) {
     cache.unanswered.remove(name);
     if !only_failure {
         cache.terms.remove(name);
+        cache.writes.remove(name);
         if let Some(path) = cache_path(name)
             && let Err(err) = std::fs::remove_file(&path)
             && err.kind() != std::io::ErrorKind::NotFound
@@ -636,9 +763,8 @@ fn refresh(name: &str, only_failure: bool, cx: &mut App) {
             );
         }
     }
-    if let Some(hooks) = cx.try_global::<DiagnosticHooks>().copied() {
-        (hooks.revalidate)(cx);
-    }
+    *cache.epochs.entry(name.into()).or_default() += 1;
+    resume(cx);
 }
 
 /// Wire the authority check in. Reached through [`crate::init`].
@@ -669,9 +795,10 @@ mod tests {
                 settings: Default::default(),
                 values: ["Vancouver", "vancouver", "Vancouver; Paris", "Surrey"]
                     .map(Into::into)
-                    .to_vec(),
+                    .into(),
                 subdelimiter: ";".into(),
                 row_ids: std::sync::Arc::new([]),
+                revision: 1,
             }],
         };
         cx.update(|cx| {
@@ -680,7 +807,7 @@ mod tests {
             cache
                 .scopes
                 .insert("GeoNames".into(), "GeoNames:archivist".into());
-            cache.terms.entry("GeoNames".into()).or_default().insert(
+            std::sync::Arc::make_mut(cache.terms.entry("GeoNames".into()).or_default()).insert(
                 "surrey".into(),
                 Verdict {
                     known: true,
@@ -705,7 +832,7 @@ mod tests {
             cache
                 .failures
                 .insert("GeoNames".into(), "credits spent".into());
-            cache.terms.entry("GeoNames".into()).or_default().insert(
+            std::sync::Arc::make_mut(cache.terms.entry("GeoNames".into()).or_default()).insert(
                 "paris".into(),
                 Verdict {
                     known: true,

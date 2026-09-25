@@ -7,17 +7,21 @@ use diagnostics::{
 };
 use gpui::{App, Global, SharedString};
 use settings::columns::ColumnType;
-use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 pub const VALUE_VARIANTS_NAME: &str = "value variants";
 const SLOW_CLUSTERING: Duration = Duration::from_millis(250);
-type Candidates = BTreeMap<(String, usize), (SharedString, Vec<(SharedString, SharedString)>)>;
+/// Column → row → the cell text its fixes were built from, and each `(observed, replacement)`.
+type Candidates =
+    HashMap<String, BTreeMap<usize, (SharedString, Vec<(SharedString, SharedString)>)>>;
 
 #[derive(Clone, Default)]
 pub struct ValueVariants {
+    /// Read by the fix menu on the UI thread, so a column's share is built apart and swapped in.
     candidates: Arc<RwLock<Candidates>>,
+    tokens: Arc<Mutex<core::TokenCache>>,
 }
 impl Global for ValueVariants {}
 
@@ -26,42 +30,49 @@ impl ColumnValidator for ValueVariants {
         VALUE_VARIANTS_NAME.into()
     }
 
-    fn begin_run(&self) {
+    fn begin_run(&self, columns: &[SharedString]) {
         if let Ok(mut candidates) = self.candidates.write() {
-            candidates.clear();
+            candidates.retain(|name, _| columns.iter().any(|column| column.as_ref() == name));
         }
     }
 
     fn validate(&self, column: &ColumnInfo, values: ColumnValues<'_>) -> Vec<ColumnFinding> {
         let started = Instant::now();
-        let Ok(mut candidates) = self.candidates.write() else {
-            return Vec::new();
-        };
-        candidates.retain(|(name, _), _| name != column.name);
         if !column.settings.variant_review
             || !ColumnType::from_declared(column.data_type).is_prose()
         {
+            if let Ok(mut candidates) = self.candidates.write() {
+                candidates.remove(column.name);
+            }
             return Vec::new();
         }
         let mut findings = Vec::new();
+        let mut found: BTreeMap<usize, (SharedString, Vec<(SharedString, SharedString)>)> =
+            BTreeMap::new();
         let mut logical_values = 0;
         let logical = values
             .iter()
             .flat_map(|cell| cell.parts().map(move |value| (cell.row, value)))
             .inspect(|_| logical_values += 1);
-        let comparison = core::compare_indexed(logical);
+        let comparison = core::compare_indexed(
+            logical,
+            &mut self.tokens.lock().unwrap_or_else(PoisonError::into_inner),
+        );
+        let distinct = &column.settings.distinct_variants;
         let pairs: Vec<_> = comparison
             .pairs
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|pair| {
-                !column
-                    .settings
-                    .distinct_variants
-                    .contains(&ordered_pair(&pair.left.displayed, &pair.right.displayed))
+                distinct.is_empty()
+                    || !distinct.contains(&ordered_pair(
+                        &comparison.values[pair.left].displayed,
+                        &comparison.values[pair.right].displayed,
+                    ))
             })
             .collect();
         let pair_count = pairs.len();
-        let clusters = core::clusters(pairs);
+        let clusters = core::clusters(&comparison.values, &pairs);
         let cluster_count = clusters.len();
         for cluster in clusters {
             let reasons = cluster.reasons.join(", ");
@@ -85,8 +96,8 @@ impl ColumnValidator for ValueVariants {
                         else {
                             continue;
                         };
-                        candidates
-                            .entry((column.name.to_owned(), row))
+                        found
+                            .entry(row)
                             .or_insert_with(|| (values.raw()[row].clone(), Vec::new()))
                             .1
                             .push((value.displayed.clone().into(), replacement));
@@ -103,12 +114,18 @@ impl ColumnValidator for ValueVariants {
                 }
             }
         }
+        if let Ok(mut candidates) = self.candidates.write() {
+            match found.is_empty() {
+                true => candidates.remove(column.name),
+                false => candidates.insert(column.name.to_owned(), found),
+            };
+        }
         let elapsed = started.elapsed();
         log::debug!(
             "clustered column {:?}: {} rows, {logical_values} logical values, {} distinct values, {} candidate pairs, {pair_count} matches, {cluster_count} clusters, {} findings in {elapsed:?}",
             column.name,
             values.raw().len(),
-            comparison.distinct_values,
+            comparison.values.len(),
             comparison.candidate_pairs,
             findings.len(),
         );
@@ -117,7 +134,7 @@ impl ColumnValidator for ValueVariants {
                 "slow value clustering in column {:?}: {} rows, {logical_values} logical values, {} distinct values, {} candidate pairs, {pair_count} matches, {cluster_count} clusters, {} findings in {elapsed:?}",
                 column.name,
                 values.raw().len(),
-                comparison.distinct_values,
+                comparison.values.len(),
                 comparison.candidate_pairs,
                 findings.len(),
             );
@@ -148,7 +165,8 @@ pub fn variant_fixes(location: &Location, text: &str, subject: Option<&str>, cx:
     let Ok(candidates) = variants.candidates.read() else {
         return Vec::new();
     };
-    let Some((expected, alternatives)) = candidates.get(&(column.to_owned(), row)) else {
+    let Some((expected, alternatives)) = candidates.get(column).and_then(|rows| rows.get(&row))
+    else {
         return Vec::new();
     };
     if expected.as_ref() != text {
@@ -312,7 +330,7 @@ mod tests {
                 "Varda, Agnès"
             );
             assert!(variant_fixes(&location, "changed", None, cx).is_empty());
-            cx.global::<ValueVariants>().begin_run();
+            cx.global::<ValueVariants>().begin_run(&[]);
             assert!(variant_fixes(&location, "Agnès Varda", None, cx).is_empty());
         });
     }
@@ -341,7 +359,7 @@ mod tests {
             finding.severity == Severity::Warning && !finding.message.contains('|')
         }));
         let candidates = variants.candidates.read().unwrap();
-        let (expected, replacements) = &candidates[&("Creator".to_owned(), 0)];
+        let (expected, replacements) = &candidates["Creator"][&0];
         assert_eq!(expected, "Busson, Carl W.|Dhillon, Baltej Singh");
         assert!(
             replacements
@@ -353,6 +371,34 @@ mod tests {
                 .iter()
                 .any(|(_, replacement)| replacement == "Busson, Carl W.|Baltej Singh Dhillon")
         );
+    }
+
+    /// Only changed columns are clustered again, so a run keeps the fixes of every column it lists.
+    #[test]
+    fn a_run_keeps_fixes_for_the_columns_still_present() {
+        let variants = ValueVariants::default();
+        let settings = ColumnSettings {
+            variant_review: true,
+            ..Default::default()
+        };
+        let values: [gpui::SharedString; 2] = ["Agnès Varda".into(), "Varda, Agnès".into()];
+        for name in ["Creator", "Director"] {
+            let info = ColumnInfo {
+                name,
+                data_type: "Text",
+                settings: &settings,
+            };
+            assert_eq!(
+                variants
+                    .validate(&info, ColumnValues::new(&values, ""))
+                    .len(),
+                2
+            );
+        }
+        variants.begin_run(&["Director".into()]);
+        let candidates = variants.candidates.read().unwrap();
+        assert!(candidates.contains_key("Director"));
+        assert!(!candidates.contains_key("Creator"));
     }
 
     #[test]

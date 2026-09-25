@@ -35,7 +35,8 @@ fn parse(raw: Option<&str>) -> PluginSettingsMap {
         .unwrap_or_default()
 }
 
-fn stored_user(cx: &App) -> PluginSettingsMap {
+/// Every plugin's user-wide object, parsed once for a caller visiting every plugin.
+pub fn stored_user(cx: &App) -> PluginSettingsMap {
     let raw = cx
         .try_global::<AppSettings>()
         .and_then(|s| s.values.get(PLUGIN_SETTINGS_KEY))
@@ -43,7 +44,8 @@ fn stored_user(cx: &App) -> PluginSettingsMap {
     parse(raw.as_deref())
 }
 
-fn stored_project(cx: &App) -> PluginSettingsMap {
+/// Every plugin's object for the open project, parsed once for a caller visiting every plugin.
+pub fn stored_project(cx: &App) -> PluginSettingsMap {
     let raw = cx
         .try_global::<CurrentProject>()
         .and_then(|p| p.data.values.get(PLUGIN_SETTINGS_KEY))
