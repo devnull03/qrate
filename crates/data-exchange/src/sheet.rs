@@ -149,6 +149,7 @@ pub fn fetch_sheet(link: &str) -> Result<SheetData, SheetSyncError> {
 fn parse_xlsx_rows(
     bytes: &[u8],
 ) -> Result<(Vec<String>, Vec<Vec<String>>, (u32, u32)), SheetSyncError> {
+    use crate::spreadsheet::cell_text;
     use calamine::{Reader, Xlsx};
 
     let mut wb: Xlsx<std::io::Cursor<&[u8]>> =
@@ -163,11 +164,9 @@ fn parse_xlsx_rows(
     let mut iter = range.rows();
     let headers = iter
         .next()
-        .map(|r| r.iter().map(|c| c.to_string()).collect())
+        .map(|r| r.iter().map(cell_text).collect())
         .unwrap_or_default();
-    let rows = iter
-        .map(|r| r.iter().map(|c| c.to_string()).collect())
-        .collect();
+    let rows = iter.map(|r| r.iter().map(cell_text).collect()).collect();
     Ok((headers, rows, origin))
 }
 

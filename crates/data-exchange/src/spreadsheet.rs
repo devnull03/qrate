@@ -55,7 +55,7 @@ pub fn read_grid(path: &str) -> Result<(Vec<String>, Vec<Vec<String>>), Spreadsh
     }
 }
 
-fn cell_text(cell: &Data) -> String {
+pub(crate) fn cell_text(cell: &Data) -> String {
     match cell {
         Data::Empty => String::new(),
         Data::DateTime(value) => match value.as_datetime() {

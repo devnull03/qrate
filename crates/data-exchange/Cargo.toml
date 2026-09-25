@@ -4,12 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-log.workspace = true
 csv.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-settings = { path = "../settings" }
-file-ingest = { path = "../file-ingest" }
 # blocking, not async: gpui's executor isn't a tokio reactor, so we run the
 # one-shot fetch on the background executor with the blocking client.
 reqwest = { version = "0.12", features = ["blocking", "json"] }
@@ -28,3 +25,4 @@ getrandom = "0.3"
 
 [dev-dependencies]
 tempfile.workspace = true
+rust_xlsxwriter = "0.99.1"
