@@ -825,7 +825,72 @@ fn spelling_group(cx: &App) -> SettingGroup {
             SettingItem::new(
                 "Language",
                 SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
-                    language_picker(window, cx)
+                    // Rows carry download state, so `picker` rebuilds the list as downloads finish.
+                    let rows = language_rows(cx);
+                    let state = picker(
+                        |pickers| &mut pickers.language,
+                        LANGUAGE.to_string(),
+                        rows.clone(),
+                        PickerKind {
+                            multiple: true,
+                            searchable: true,
+                        },
+                        |values: &[SharedString], cx: &mut App| {
+                            spellcheck::retain_wanted_downloads(values, cx);
+                            let listing = spellcheck::catalogue::listing();
+                            let state_of = |code: &str| {
+                                listing
+                                    .iter()
+                                    .find(|((c, _, _), _)| *c == code)
+                                    .map(|(_, state)| *state)
+                            };
+                            let mut codes: Vec<String> = spellcheck::languages(cx)
+                                .into_iter()
+                                .filter(|code| values.iter().any(|v| v.as_ref() == code))
+                                .collect();
+                            for value in values {
+                                match state_of(value) {
+                                    Some(spellcheck::catalogue::State::Available) => {
+                                        spellcheck::start_download(
+                                            value.clone(),
+                                            crate::register_spell_checker,
+                                            cx,
+                                        )
+                                    }
+                                    Some(_) if !codes.iter().any(|c| c == value.as_ref()) => {
+                                        codes.push(value.to_string())
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if codes != spellcheck::languages(cx) {
+                                spellcheck::set_languages(&codes, cx);
+                                crate::register_spell_checker(cx);
+                            }
+                        },
+                        window,
+                        cx,
+                    );
+                    let chosen: Vec<SharedString> = spellcheck::languages(cx)
+                        .into_iter()
+                        .map(SharedString::from)
+                        .collect();
+                    sync_selection(&state, &rows, &chosen, window, cx);
+                    let label = picker_label(
+                        &chosen
+                            .iter()
+                            .filter_map(|code| rows.iter().find(|row| &row.code == code))
+                            .map(|row| row.name.clone())
+                            .collect::<Vec<_>>(),
+                    );
+
+                    Combobox::new(&state)
+                        .small()
+                        .menu_width(px(320.))
+                        .menu_max_h(px(360.))
+                        .search_placeholder("Search languages…")
+                        .render_trigger(move |_ctx, _, _| div().child(label.clone()))
+                        .into_any_element()
                 }),
             )
             .description(
@@ -1217,80 +1282,6 @@ where
     state
 }
 
-/// The language list, in the shape a phone's language screen uses: everything available, each row
-/// saying whether it is already here or a download away, and one tap doing whichever applies.
-///
-/// Ticking a language that isn't here yet starts its download, and it joins the checked languages
-/// once it lands. Nothing undoes the tick by hand — the selection re-syncs from the setting on the
-/// next render. The first language picked is the preferred regional spelling.
-fn language_picker(window: &mut Window, cx: &mut App) -> AnyElement {
-    use spellcheck::catalogue::State;
-
-    // The catalogue is fixed, but download state is not, so the rows change under the picker and
-    // `picker` rebuilds its list — which is how a finished download stops showing its arrow.
-    let rows = language_rows(cx);
-    let state = picker(
-        |pickers| &mut pickers.language,
-        LANGUAGE.to_string(),
-        rows.clone(),
-        PickerKind {
-            multiple: true,
-            searchable: true,
-        },
-        |values: &[SharedString], cx: &mut App| {
-            spellcheck::retain_wanted_downloads(values, cx);
-            let listing = spellcheck::catalogue::listing();
-            let state_of = |code: &str| {
-                listing
-                    .iter()
-                    .find(|((c, _, _), _)| *c == code)
-                    .map(|(_, state)| *state)
-            };
-            let mut codes: Vec<String> = spellcheck::languages(cx)
-                .into_iter()
-                .filter(|code| values.iter().any(|v| v.as_ref() == code))
-                .collect();
-            for value in values {
-                match state_of(value) {
-                    Some(State::Available) => {
-                        spellcheck::start_download(value.clone(), crate::register_spell_checker, cx)
-                    }
-                    Some(_) if !codes.iter().any(|c| c == value.as_ref()) => {
-                        codes.push(value.to_string())
-                    }
-                    _ => {}
-                }
-            }
-            if codes != spellcheck::languages(cx) {
-                spellcheck::set_languages(&codes, cx);
-                crate::register_spell_checker(cx);
-            }
-        },
-        window,
-        cx,
-    );
-    let chosen: Vec<SharedString> = spellcheck::languages(cx)
-        .into_iter()
-        .map(SharedString::from)
-        .collect();
-    sync_selection(&state, &rows, &chosen, window, cx);
-    let label = picker_label(
-        &chosen
-            .iter()
-            .filter_map(|code| rows.iter().find(|row| &row.code == code))
-            .map(|row| row.name.clone())
-            .collect::<Vec<_>>(),
-    );
-
-    Combobox::new(&state)
-        .small()
-        .menu_width(px(320.))
-        .menu_max_h(px(360.))
-        .search_placeholder("Search languages…")
-        .render_trigger(move |_ctx, _, _| div().child(label.clone()))
-        .into_any_element()
-}
-
 /// Per-column filters, project-scoped. A master switch gates the feature; when on, a multi-select
 /// picker chooses which columns show a filter dropdown (a picked column *is* a filter-enabled one —
 /// selection and `filter_enabled` are the same thing now). Built from `&App` because the columns
@@ -1611,43 +1602,39 @@ fn descriptions_group(project: &CurrentProject, headers: &[ColumnItem], cx: &App
         group = group.item(SettingItem::new(
             "Add a description",
             SettingField::element(move |_opts: &_, window: &mut _, cx: &mut _| {
-                description_picker(missing.clone(), window, cx)
+                let state = picker(
+                    |pickers| &mut pickers.descriptions,
+                    "add-description".into(),
+                    missing.clone(),
+                    PickerKind {
+                        multiple: false,
+                        searchable: false,
+                    },
+                    |values: &[SharedString], cx: &mut App| {
+                        let Some(column) = values.first().filter(|value| !value.is_empty()) else {
+                            return;
+                        };
+                        let Some(file) = cx
+                            .try_global::<CurrentProject>()
+                            .map(|project| project.file.clone())
+                        else {
+                            return;
+                        };
+                        cx.default_global::<Pickers>()
+                            .description_rows
+                            .insert((file, column.to_string()));
+                    },
+                    window,
+                    cx,
+                );
+                Combobox::new(&state)
+                    .small()
+                    .placeholder("Choose a column…")
+                    .into_any_element()
             }),
         ));
     }
     group
-}
-
-fn description_picker(options: Vec<OptionItem>, window: &mut Window, cx: &mut App) -> AnyElement {
-    let state = picker(
-        |pickers| &mut pickers.descriptions,
-        "add-description".into(),
-        options,
-        PickerKind {
-            multiple: false,
-            searchable: false,
-        },
-        |values: &[SharedString], cx: &mut App| {
-            let Some(column) = values.first().filter(|value| !value.is_empty()) else {
-                return;
-            };
-            let Some(file) = cx
-                .try_global::<CurrentProject>()
-                .map(|project| project.file.clone())
-            else {
-                return;
-            };
-            cx.default_global::<Pickers>()
-                .description_rows
-                .insert((file, column.to_string()));
-        },
-        window,
-        cx,
-    );
-    Combobox::new(&state)
-        .small()
-        .placeholder("Choose a column…")
-        .into_any_element()
 }
 
 /// What each column holds, as one picker per type. Inverted from the obvious row-per-column shape

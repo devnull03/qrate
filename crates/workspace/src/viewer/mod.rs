@@ -30,15 +30,7 @@ use gpui_component::{
 use crate::viewer::find::Find;
 use crate::viewer::transport::Transport;
 
-// `CloseViewerLayer` is Escape while a viewer is open: the find panel if it is showing, else the
-// viewer itself.
-//
-// An action rather than a key handled in `Viewer`'s `on_key_down`, because gpui resolves every
-// matching *binding* before it runs a single key listener — so a listener can never outrank a
-// binding, however deep it sits. The centre-scoped viewer is mounted inside `ViewsPanel`, whose
-// context binds Escape to `Deselect`; as a listener the viewer's own Escape was unreachable there
-// and the key dropped the row selection instead of closing the overlay. As a binding in the deeper
-// `VIEWER_CONTEXT` it sorts first, and its handler stops the dispatch.
+// Escape while a viewer is open: closes the find panel if it is showing, else the viewer.
 actions!(qrate, [CloseViewerLayer]);
 
 /// Key context of the viewer overlay. Deeper than `ViewsPanel`'s and the workspace's, which is what
@@ -463,6 +455,7 @@ impl Render for Viewer {
         // type icon, which is a picture of nothing. The transport takes the middle of the page
         // instead of hugging the bottom edge of a blank rectangle.
         let bare = self.transport.as_ref().is_some_and(|it| !it.art);
+        // Uncapped so zoom reaches real detail; video stays capped since only capped frames cache.
         let cap = if self.video {
             preview::PANE
         } else {
@@ -552,13 +545,7 @@ impl Render for Viewer {
                     .with_state(&self.split)
                     .child(
                         resizable_panel().child(
-                            // Padding is the only sizing input: the file `Contain`-fits the padded
-                            // content area at zoom 1, so it scales with the window/dock instead of
-                            // a fixed fraction.
-                            //
-                            // Pan and zoom live here rather than on the whole overlay: a press in
-                            // the find panel is not the start of a drag across the page, and a
-                            // scroll over a list of matches is not a zoom.
+                            // Padding is the only sizing input; pan/zoom stay off the find panel.
                             div()
                                 .size_full()
                                 .p_8()
@@ -608,17 +595,7 @@ impl Render for Viewer {
                                         .items_center()
                                         .justify_center()
                                         .children((!bare).then(|| {
-                                            // `flex_shrink_0` keeps `relative(zoom)` past 1;
-                                            // `relative` + `left`/`top` pan it.
-                                            //
-                                            // `FULL`, so zooming in reaches the file's real detail
-                                            // rather than magnifying a thumbnail — this is the one
-                                            // place that asks for no cap, and for an image it is
-                                            // the original file gpui draws, not our copy.
-                                            //
-                                            // A video is capped instead: only a capped render is
-                                            // cached, and re-running ffmpeg for every position
-                                            // somebody scrubs back over is the whole cost here.
+                                            // `flex_shrink_0` keeps `relative(zoom)` past 1.
                                             img(preview::source(&self.path, cap, page))
                                                 .flex_shrink_0()
                                                 .relative()
@@ -666,15 +643,7 @@ impl Render for Viewer {
                             .child(details)
                     })),
             )
-            // The bottom-centre slot: page controls for a document, the transport for a recording,
-            // the scrubber for a video. Never two — no file is two of those things — so the one
-            // pill carries whichever applies.
-            //
-            // Page controls appear for a one-page document too. "Page 1 of 1" is what tells you
-            // this is a PDF at all rather than a picture of a page, which is otherwise invisible.
-            // `pages > 1` is not a substitute for `document` — it is the case `document` cannot
-            // cover: a multi-image TIFF is a stack of pictures, not a document, and it still has
-            // pages to turn.
+            // Bottom pill: page controls (even for 1 page, or a TIFF stack), transport or scrubber.
             .when(
                 self.document
                     || self.pages > 1

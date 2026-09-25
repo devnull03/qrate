@@ -167,7 +167,7 @@ impl Launcher {
                     }
                     1 if !material.is_empty() => {
                         this.update_in(cx, |_, window, cx| {
-                            wizard::open_project_wizard_seeded_paths(
+                            wizard::open_project_wizard_seeded(
                                 EntryKind::Blank,
                                 None,
                                 material,
@@ -194,7 +194,7 @@ impl Launcher {
             return;
         }
         if paths.len() == 1 && path.is_dir() {
-            wizard::open_project_wizard_seeded_paths(EntryKind::Blank, None, paths.to_vec(), cx);
+            wizard::open_project_wizard_seeded(EntryKind::Blank, None, paths.to_vec(), cx);
             window.remove_window();
             return;
         }
@@ -207,14 +207,14 @@ impl Launcher {
             wizard::open_project_wizard_seeded(
                 EntryKind::LocalFile,
                 Some(path.to_string_lossy().into_owned()),
-                None,
+                Vec::new(),
                 cx,
             );
             window.remove_window();
             return;
         }
         if paths.iter().all(|path| path.is_file() || path.is_dir()) {
-            wizard::open_project_wizard_seeded_paths(EntryKind::Blank, None, paths.to_vec(), cx);
+            wizard::open_project_wizard_seeded(EntryKind::Blank, None, paths.to_vec(), cx);
             window.remove_window();
         } else {
             self.error = Some("One or more dropped paths no longer exist.".into());

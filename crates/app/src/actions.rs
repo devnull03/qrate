@@ -101,14 +101,8 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // Backspace deleting *text* while the cell editor or the find bar holds focus.
         KeyBinding::new("backspace", table::Clear, Some(table::GRID_CONTEXT)),
         KeyBinding::new("delete", table::Clear, Some(table::GRID_CONTEXT)),
-        // Escape drops the selection — what the Details panel used to spend a button on. It is the
-        // *last* thing Escape can mean, so it is scoped to the three places a selection is visible
-        // rather than bound globally, and anything that answers Escape with "close me" has to
-        // outrank it from a deeper context.
-        //
-        // Deeper context, not a deeper key handler: gpui resolves every matching binding before it
-        // runs one `on_key_down` listener, so a listener loses to a binding no matter where it
-        // sits. That is what left the gallery's viewer unable to close — see `CloseViewerLayer`.
+        // Escape deselects as a last resort. gpui runs bindings before any key listener, so
+        // anything that closes on Escape must bind it in a deeper context (`CloseViewerLayer`).
         KeyBinding::new("escape", table::Deselect, Some(table::GRID_CONTEXT)),
         KeyBinding::new(
             "escape",

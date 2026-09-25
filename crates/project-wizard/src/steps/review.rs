@@ -117,93 +117,6 @@ fn project_columns(
     columns
 }
 
-fn hierarchy_preview(plan: &file_ingest::ImportPlan, cx: &App) -> AnyElement {
-    const MAX_VISIBLE: usize = 100;
-    let files = plan
-        .components
-        .iter()
-        .filter(|component| component.kind == file_ingest::EntryKind::File)
-        .count();
-    let folders = plan.components.len() - files;
-    let mut depths = Vec::with_capacity(plan.components.len());
-    for component in &plan.components {
-        depths.push(component.parent.map_or(0, |parent| depths[parent] + 1));
-    }
-
-    v_flex()
-        .gap_2()
-        .child(div().font_semibold().child("Hierarchy preview"))
-        .child(
-            Label::new(format!(
-                "{} component{} · {files} file{} · {folders} folder{}",
-                plan.components.len(),
-                if plan.components.len() == 1 { "" } else { "s" },
-                if files == 1 { "" } else { "s" },
-                if folders == 1 { "" } else { "s" },
-            ))
-            .text_sm()
-            .text_color(cx.theme().muted_foreground),
-        )
-        .child(
-            v_flex()
-                .max_h(px(280.))
-                .overflow_y_scrollbar()
-                .rounded_md()
-                .border_1()
-                .border_color(cx.theme().border)
-                .children(
-                    plan.components
-                        .iter()
-                        .zip(depths)
-                        .take(MAX_VISIBLE)
-                        .enumerate()
-                        .map(|(index, (component, depth))| {
-                            h_flex()
-                                .gap_2()
-                                .px_2()
-                                .py_1()
-                                .pl(px(8. + depth as f32 * 18.))
-                                .when(index > 0, |row| {
-                                    row.border_t_1().border_color(cx.theme().border)
-                                })
-                                .child(
-                                    Label::new(match component.kind {
-                                        file_ingest::EntryKind::Directory => "Folder",
-                                        file_ingest::EntryKind::File => "File",
-                                    })
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground),
-                                )
-                                .child(Label::new(component.title.clone()).text_sm())
-                        }),
-                )
-                .when(plan.components.len() > MAX_VISIBLE, |tree| {
-                    tree.child(
-                        Label::new(format!(
-                            "… and {} more components",
-                            plan.components.len() - MAX_VISIBLE
-                        ))
-                        .px_2()
-                        .py_1()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground),
-                    )
-                }),
-        )
-        .when(!plan.warnings.is_empty(), |preview| {
-            preview.child(
-                Label::new(format!(
-                    "{} path warning{} will be skipped.",
-                    plan.warnings.len(),
-                    if plan.warnings.len() == 1 { "" } else { "s" }
-                ))
-                .text_sm()
-                .text_color(cx.theme().warning),
-            )
-        })
-        .into_any_element()
-}
-
 /// What the Files and Columns steps settled on, as the folder import reads it.
 struct FolderImport<'a> {
     headers: &'a [String],
@@ -587,10 +500,95 @@ impl ProjectWizard {
                     .item("Columns", columns_line, 1),
             )
             .when_some(folder_plan, |review, plan| {
-                review.child(hierarchy_preview(plan, cx))
+                const MAX_VISIBLE: usize = 100;
+                let files = plan
+                    .components
+                    .iter()
+                    .filter(|component| component.kind == file_ingest::EntryKind::File)
+                    .count();
+                let folders = plan.components.len() - files;
+                let mut depths = Vec::with_capacity(plan.components.len());
+                for component in &plan.components {
+                    depths.push(component.parent.map_or(0, |parent| depths[parent] + 1));
+                }
+                review.child(
+                    v_flex()
+                        .gap_2()
+                        .child(div().font_semibold().child("Hierarchy preview"))
+                        .child(
+                            Label::new(format!(
+                                "{} component{} · {files} file{} · {folders} folder{}",
+                                plan.components.len(),
+                                if plan.components.len() == 1 { "" } else { "s" },
+                                if files == 1 { "" } else { "s" },
+                                if folders == 1 { "" } else { "s" },
+                            ))
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground),
+                        )
+                        .child(
+                            v_flex()
+                                .max_h(px(280.))
+                                .overflow_y_scrollbar()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .children(
+                                    plan.components
+                                        .iter()
+                                        .zip(depths)
+                                        .take(MAX_VISIBLE)
+                                        .enumerate()
+                                        .map(|(index, (component, depth))| {
+                                            h_flex()
+                                                .gap_2()
+                                                .px_2()
+                                                .py_1()
+                                                .pl(px(8. + depth as f32 * 18.))
+                                                .when(index > 0, |row| {
+                                                    row.border_t_1().border_color(cx.theme().border)
+                                                })
+                                                .child(
+                                                    Label::new(match component.kind {
+                                                        file_ingest::EntryKind::Directory => {
+                                                            "Folder"
+                                                        }
+                                                        file_ingest::EntryKind::File => "File",
+                                                    })
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground),
+                                                )
+                                                .child(
+                                                    Label::new(component.title.clone()).text_sm(),
+                                                )
+                                        }),
+                                )
+                                .when(plan.components.len() > MAX_VISIBLE, |tree| {
+                                    tree.child(
+                                        Label::new(format!(
+                                            "… and {} more components",
+                                            plan.components.len() - MAX_VISIBLE
+                                        ))
+                                        .px_2()
+                                        .py_1()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground),
+                                    )
+                                }),
+                        )
+                        .when(!plan.warnings.is_empty(), |preview| {
+                            preview.child(
+                                Label::new(format!(
+                                    "{} path warning{} will be skipped.",
+                                    plan.warnings.len(),
+                                    if plan.warnings.len() == 1 { "" } else { "s" }
+                                ))
+                                .text_sm()
+                                .text_color(cx.theme().warning),
+                            )
+                        }),
+                )
             })
-        // The shared wizard footer supplies the "Create Project" (Next) and
-        // "← Back" controls — see `ProjectWizard::render_footer`.
     }
 }
 

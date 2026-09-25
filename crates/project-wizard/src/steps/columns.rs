@@ -61,18 +61,18 @@ fn inferred_required_column(
         })
 }
 impl ProjectWizard {
-    fn inferred_required_column(&self, kind: settings::columns::ColumnType) -> Option<String> {
-        inferred_required_column(&self.effective_headers(), self.selected_config(), kind)
-    }
-
     fn prefill_required_columns(&mut self) {
-        if self.title_column.is_none() {
-            self.title_column = self.inferred_required_column(settings::columns::ColumnType::Title);
+        if self.title_column.is_some() && self.file_column.is_some() {
+            return;
         }
-        if self.file_column.is_none() {
-            self.file_column =
-                self.inferred_required_column(settings::columns::ColumnType::Filename);
-        }
+        let headers = self.effective_headers();
+        let config = self.selected_config();
+        let title =
+            inferred_required_column(&headers, config, settings::columns::ColumnType::Title);
+        let file =
+            inferred_required_column(&headers, config, settings::columns::ColumnType::Filename);
+        self.title_column = self.title_column.take().or(title);
+        self.file_column = self.file_column.take().or(file);
     }
 
     fn reset_required_column_defaults(&mut self) {
@@ -81,96 +81,6 @@ impl ProjectWizard {
         self.prefill_required_columns();
     }
 
-    fn render_required_columns(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        self.prefill_required_columns();
-        let choices: Vec<ColumnChoice> = std::iter::once(ColumnChoice {
-            value: "".into(),
-            label: "Choose a column…".into(),
-        })
-        .chain(self.effective_headers().into_iter().map(|header| {
-            let label: SharedString = header.clone().into();
-            ColumnChoice {
-                value: header.into(),
-                label,
-            }
-        }))
-        .collect();
-        if self.required_column_choices != choices {
-            self.title_picker.update(cx, |state, cx| {
-                state.set_items(SearchableVec::new(choices.clone()), window, cx);
-            });
-            self.file_picker.update(cx, |state, cx| {
-                state.set_items(SearchableVec::new(choices.clone()), window, cx);
-            });
-            self.required_column_choices = choices.clone();
-        }
-        sync_required_picker(
-            &self.title_picker,
-            &choices,
-            self.title_column.as_deref(),
-            window,
-            cx,
-        );
-        sync_required_picker(
-            &self.file_picker,
-            &choices,
-            self.file_column.as_deref(),
-            window,
-            cx,
-        );
-        let missing = self.title_column.as_deref().unwrap_or_default().is_empty()
-            || self.file_column.as_deref().unwrap_or_default().is_empty();
-
-        v_flex()
-            .gap_2()
-            .p_3()
-            .rounded_md()
-            .border_1()
-            .border_color(if missing {
-                cx.theme().warning
-            } else {
-                cx.theme().border
-            })
-            .child(div().font_semibold().child("Required columns"))
-            .child(
-                Label::new("Choose the title shown for each row and the file linked to it.")
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground),
-            )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(Label::new("Title column").text_sm())
-                    .child(
-                        Combobox::new(&self.title_picker)
-                            .small()
-                            .w_full()
-                            .placeholder("Choose a column…"),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(Label::new("File column").text_sm())
-                    .child(
-                        Combobox::new(&self.file_picker)
-                            .small()
-                            .w_full()
-                            .placeholder("Choose a column…"),
-                    ),
-            )
-            .when(missing, |block| {
-                block.child(inline_message(
-                    "required-columns-error",
-                    "Choose both required columns to continue.",
-                    MsgKind::Error,
-                ))
-            })
-    }
     fn open_load_config_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let headers = if self.entry_kind == EntryKind::Blank {
             Vec::new()
@@ -215,58 +125,6 @@ impl ProjectWizard {
         });
     }
 
-    fn render_advanced_mapping(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Title and File are picked above, in the required-columns section. Listing them here too
-        // showed each one twice with two different answers — the picker's and the config's.
-        let headers: Vec<String> = self
-            .effective_headers()
-            .into_iter()
-            .filter(|h| {
-                ![self.title_column.as_deref(), self.file_column.as_deref()]
-                    .iter()
-                    .flatten()
-                    .any(|chosen| chosen == h)
-            })
-            .collect();
-        let config = self.selected_config().cloned();
-        let open = self.show_advanced_mapping;
-
-        Collapsible::new()
-            .open(open)
-            .child(
-                v_flex()
-                    .id("advanced-mapping-toggle")
-                    .cursor_pointer()
-                    .gap_1()
-                    .p_2p5()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        Label::new(if open {
-                            "▾ Advanced: column mapping (optional)"
-                        } else {
-                            "▸ Advanced: column mapping (optional)"
-                        })
-                        .text_sm(),
-                    )
-                    .when(!open, |el| {
-                        el.child(
-                            Label::new(
-                                "We matched your columns automatically. Only open this if something looks off.",
-                            )
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground),
-                        )
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_advanced_mapping = !this.show_advanced_mapping;
-                        cx.notify();
-                    })),
-            )
-            .content(div().mt_2().child(mapping(&headers, config.as_ref(), cx)))
-    }
-
     pub(crate) fn render_columns_step(
         &mut self,
         window: &mut Window,
@@ -276,6 +134,46 @@ impl ProjectWizard {
         let auto_selected = self.column_source == ColumnSource::AutoFromSpreadsheet;
         let load_selected = self.column_source == ColumnSource::LoadFromFileOrSheet;
         let skip_selected = self.column_source == ColumnSource::DefaultBlank;
+
+        self.prefill_required_columns();
+        let choices: Vec<ColumnChoice> = std::iter::once(ColumnChoice {
+            value: "".into(),
+            label: "Choose a column…".into(),
+        })
+        .chain(self.effective_headers().into_iter().map(|header| {
+            let label: SharedString = header.clone().into();
+            ColumnChoice {
+                value: header.into(),
+                label,
+            }
+        }))
+        .collect();
+        if self.required_column_choices != choices {
+            self.title_picker.update(cx, |state, cx| {
+                state.set_items(SearchableVec::new(choices.clone()), window, cx);
+            });
+            self.file_picker.update(cx, |state, cx| {
+                state.set_items(SearchableVec::new(choices.clone()), window, cx);
+            });
+            self.required_column_choices = choices.clone();
+        }
+        sync_required_picker(
+            &self.title_picker,
+            &choices,
+            self.title_column.as_deref(),
+            window,
+            cx,
+        );
+        sync_required_picker(
+            &self.file_picker,
+            &choices,
+            self.file_column.as_deref(),
+            window,
+            cx,
+        );
+        let missing = self.title_column.as_deref().unwrap_or_default().is_empty()
+            || self.file_column.as_deref().unwrap_or_default().is_empty();
+        let advanced_open = self.show_advanced_mapping;
 
         v_flex()
             .gap_3()
@@ -329,9 +227,102 @@ impl ProjectWizard {
                     })),
                 )
             })
-            .child(self.render_required_columns(window, cx))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .p_3()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(if missing {
+                        cx.theme().warning
+                    } else {
+                        cx.theme().border
+                    })
+                    .child(div().font_semibold().child("Required columns"))
+                    .child(
+                        Label::new("Choose the title shown for each row and the file linked to it.")
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(Label::new("Title column").text_sm())
+                            .child(
+                                Combobox::new(&self.title_picker)
+                                    .small()
+                                    .w_full()
+                                    .placeholder("Choose a column…"),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(Label::new("File column").text_sm())
+                            .child(
+                                Combobox::new(&self.file_picker)
+                                    .small()
+                                    .w_full()
+                                    .placeholder("Choose a column…"),
+                            ),
+                    )
+                    .when(missing, |block| {
+                        block.child(inline_message(
+                            "required-columns-error",
+                            "Choose both required columns to continue.",
+                            MsgKind::Error,
+                        ))
+                    }),
+            )
             .when(load_selected, |el| {
-                el.child(self.render_advanced_mapping(cx))
+                // Title and File are already picked above, so the mapping leaves them out.
+                let headers: Vec<String> = self
+                    .effective_headers()
+                    .into_iter()
+                    .filter(|h| {
+                        ![self.title_column.as_deref(), self.file_column.as_deref()]
+                            .iter()
+                            .flatten()
+                            .any(|chosen| chosen == h)
+                    })
+                    .collect();
+                let config = self.selected_config().cloned();
+                el.child(
+                    Collapsible::new()
+                        .open(advanced_open)
+                        .child(
+                            v_flex()
+                                .id("advanced-mapping-toggle")
+                                .cursor_pointer()
+                                .gap_1()
+                                .p_2p5()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    Label::new(if advanced_open {
+                                        "▾ Advanced: column mapping (optional)"
+                                    } else {
+                                        "▸ Advanced: column mapping (optional)"
+                                    })
+                                    .text_sm(),
+                                )
+                                .when(!advanced_open, |el| {
+                                    el.child(
+                                        Label::new(
+                                            "We matched your columns automatically. Only open this if something looks off.",
+                                        )
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground),
+                                    )
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.show_advanced_mapping = !this.show_advanced_mapping;
+                                    cx.notify();
+                                })),
+                        )
+                        .content(div().mt_2().child(mapping(&headers, config.as_ref(), cx))),
+                )
             })
             .child(
                 Label::new("You can always adjust this later in project settings.")

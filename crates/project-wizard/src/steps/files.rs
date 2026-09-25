@@ -33,7 +33,7 @@ pub(crate) enum MsgKind {
 }
 
 impl ProjectWizard {
-    fn browse_for_local_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn browse_for_local_file(&mut self, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -53,10 +53,9 @@ impl ProjectWizard {
             }
         })
         .detach();
-        let _ = window;
     }
 
-    fn browse_for_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn browse_for_folder(&mut self, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -76,7 +75,6 @@ impl ProjectWizard {
             }
         })
         .detach();
-        let _ = window;
     }
 
     pub(crate) fn set_local_path(&mut self, path: String, _cx: &mut Context<Self>) {
@@ -257,14 +255,195 @@ impl ProjectWizard {
 
     pub(crate) fn render_files_step(
         &mut self,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let body = match self.entry_kind {
-            EntryKind::LocalFile => self.render_local_files(window, cx).into_any_element(),
-            EntryKind::Sheet => self.render_sheet_files(window, cx).into_any_element(),
-            EntryKind::Blank => self.render_blank_files(window, cx).into_any_element(),
+        let muted = cx.theme().muted_foreground;
+        let border = cx.theme().border;
+        let path_box = |text: String| {
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .px_2()
+                .py_1p5()
+                .rounded_md()
+                .border_1()
+                .border_color(border)
+                .text_sm()
+                .text_color(muted)
+                .child(text)
         };
+        let (title, browse_id) = match self.entry_kind {
+            EntryKind::LocalFile => ("Choose your spreadsheet & files", "browse-folder"),
+            EntryKind::Sheet => ("Connect your Google Sheet", "browse-folder-sheet"),
+            EntryKind::Blank => ("Add your files", "browse-folder-blank"),
+        };
+        let selected = self.import_paths.len();
+        let ambiguous = self
+            .folder_match
+            .as_ref()
+            .map_or(0, |matched| matched.ambiguous_files);
+        let description_profile = self.description_profile;
+        let duplicate_policy = self.duplicate_policy;
+        let dimmed = self.skip_files;
+
+        let body = v_flex()
+            .gap_3()
+            .child(div().text_lg().font_semibold().child(title))
+            .child(match self.entry_kind {
+                EntryKind::LocalFile => {
+                    v_flex()
+                        .gap_1()
+                        .child(Label::new("Spreadsheet (CSV, Excel, ODS)").text_sm())
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(path_box(if self.local_path.is_empty() {
+                                    "Choose a spreadsheet file…".to_string()
+                                } else {
+                                    self.local_path.clone()
+                                }))
+                                .child(
+                                    Button::new("browse-local")
+                                        .label("Browse…")
+                                        .outline()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.browse_for_local_file(cx)
+                                        })),
+                                ),
+                        )
+                        .child(match (&self.spreadsheet_preview, &self.local_error) {
+                            (Some(p), _) => inline_message(
+                                "local-status",
+                                format!("{} rows, {} columns found", p.rows.len(), p.headers.len()),
+                                MsgKind::Success,
+                            )
+                            .into_any_element(),
+                            (None, Some(e)) => {
+                                inline_message("local-status", e.clone(), MsgKind::Error)
+                                    .into_any_element()
+                            }
+                            (None, None) => div().into_any_element(),
+                        })
+                        .into_any_element()
+                }
+                EntryKind::Sheet => v_flex()
+                    .gap_1()
+                    .child(Label::new("Sheet link").text_sm())
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(Input::new(&self.sheet_link_input).flex_1())
+                            .child(
+                                Button::new("check-sheet")
+                                    .label("Check")
+                                    .outline()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.check_sheet_link(false, cx)
+                                    })),
+                            ),
+                    )
+                    .child(match (&self.sheet_check, &self.sheet_error) {
+                        (Some(c), _) => inline_message(
+                            "sheet-status",
+                            format!(
+                                "Found \"{}\" — {} rows{}",
+                                c.title,
+                                c.row_count,
+                                if c.used_first_tab {
+                                    " (using the first tab, 'Sheet1')"
+                                } else {
+                                    ""
+                                }
+                            ),
+                            MsgKind::Success,
+                        )
+                        .into_any_element(),
+                        (None, Some(e)) => {
+                            inline_message("sheet-status", e.clone(), MsgKind::Error)
+                                .into_any_element()
+                        }
+                        (None, None) => div().into_any_element(),
+                    })
+                    .into_any_element(),
+                EntryKind::Blank => {
+                    Label::new("Point qrate at a folder of files, or skip and add them later.")
+                        .text_sm()
+                        .text_color(muted)
+                        .into_any_element()
+                }
+            })
+            .child(
+                v_flex()
+                    .gap_1()
+                    .when(dimmed, |el| el.opacity(0.4))
+                    .child(Label::new("Files folder").text_sm())
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(path_box(if self.folder_path.is_empty() {
+                                "Choose your files folder…".to_string()
+                            } else {
+                                self.folder_path.clone()
+                            }))
+                            .child(
+                                Button::new(browse_id)
+                                    .label("Browse…")
+                                    .outline()
+                                    .disabled(dimmed)
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.browse_for_folder(cx)),
+                                    ),
+                            ),
+                    )
+                    .child(match (&self.folder_match, &self.folder_error) {
+                        (Some(m), _) if self.entry_kind == EntryKind::Blank => inline_message(
+                            "folder-status",
+                            format!(
+                                "{} file{} will become table rows",
+                                m.extra_files.len(),
+                                if m.extra_files.len() == 1 { "" } else { "s" },
+                            ),
+                            MsgKind::Success,
+                        )
+                        .into_any_element(),
+                        (Some(m), _) if m.matched_rows == m.total_rows => inline_message(
+                            "folder-status",
+                            format!("{} of {} files matched", m.matched_rows, m.total_rows),
+                            MsgKind::Success,
+                        )
+                        .into_any_element(),
+                        (Some(m), _) => inline_message(
+                            "folder-status",
+                            format!(
+                                "Matched {} of {} files — review mismatches",
+                                m.matched_rows, m.total_rows
+                            ),
+                            MsgKind::Warning,
+                        )
+                        .into_any_element(),
+                        (None, Some(e)) => {
+                            inline_message("folder-status", e.clone(), MsgKind::Error)
+                                .into_any_element()
+                        }
+                        (None, None) => div().into_any_element(),
+                    }),
+            )
+            .when(
+                self.entry_kind == EntryKind::Blank && self.folder_path.is_empty() && selected > 0,
+                |files| {
+                    files.child(inline_message(
+                        "selected-import-paths",
+                        format!(
+                            "Selected {selected} file{} or folder{}.",
+                            if selected == 1 { "" } else { "s" },
+                            if selected == 1 { "" } else { "s" }
+                        ),
+                        MsgKind::Success,
+                    ))
+                },
+            );
+
         v_flex()
             .id("files-drop-area")
             .gap_3()
@@ -307,389 +486,145 @@ impl ProjectWizard {
                         "Leave this off when the folder only contains this project's material.",
                     )
                     .text_sm()
-                    .text_color(cx.theme().muted_foreground),
+                    .text_color(muted),
                 )
-                .child(self.render_description_profile(cx))
-            })
-            // Only worth asking about once the folder actually holds a file more than one row
-            // names; every other import has nothing to decide.
-            .when(
-                !self.skip_files
-                    && self
-                        .folder_match
-                        .as_ref()
-                        .is_some_and(|matched| matched.ambiguous_files > 0),
-                |this| this.child(self.render_duplicate_policy(cx)),
-            )
-            .child(self.render_skip_files_toggle(cx))
-    }
-
-    fn render_duplicate_policy(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let ambiguous = self
-            .folder_match
-            .as_ref()
-            .map_or(0, |matched| matched.ambiguous_files);
-        let selected = self.duplicate_policy;
-        v_flex()
-            .gap_2()
-            .pt_2()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(Label::new("Files named by more than one row").text_sm())
-            .child(
-                Label::new(format!(
-                    "{ambiguous} file{} match several rows. qrate never picks for you unless you \
-                     ask it to.",
-                    if ambiguous == 1 { "" } else { "s" }
-                ))
-                .text_sm()
-                .text_color(cx.theme().muted_foreground),
-            )
-            .child(
-                h_flex().gap_1().flex_wrap().children(
-                    [
-                        (
-                            DuplicatePolicy::Skip,
-                            "Leave them for me",
-                            "each file becomes its own row",
-                        ),
-                        (
-                            DuplicatePolicy::Update,
-                            "Link the first row",
-                            "in spreadsheet order",
-                        ),
-                        (DuplicatePolicy::AddAsNew, "Add as new rows", "link nothing"),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (policy, label, hint))| {
-                        Button::new(("duplicate-policy", index))
-                            .label(label)
-                            .tooltip(hint)
-                            .outline()
-                            .selected(policy == selected)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.duplicate_policy = policy;
-                                cx.notify();
-                            }))
-                    }),
-                ),
-            )
-    }
-
-    fn render_description_profile(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let selected = self.description_profile;
-        v_flex()
-            .gap_2()
-            .pt_2()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(Label::new("Archival description standard").text_sm())
-            .child(
-                Label::new(
-                    "Folder and file rows become archival components using this vocabulary.",
-                )
-                .text_sm()
-                .text_color(cx.theme().muted_foreground),
-            )
-            .child(
-                h_flex().gap_1().flex_wrap().children(
-                    settings::description::DescriptionProfile::ALL
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, profile)| {
-                            Button::new(("description-profile", index))
-                                .label(profile.label())
-                                .outline()
-                                .selected(profile == selected)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.description_profile = profile;
-                                    let defaults = profile.defaults();
-                                    let folder_label = defaults
-                                        .levels
-                                        .iter()
-                                        .find(|level| level.key == defaults.folder_level_key)
-                                        .map(|level| level.label.as_str())
-                                        .unwrap_or("Group");
-                                    let file_label = defaults
-                                        .levels
-                                        .iter()
-                                        .find(|level| level.key == defaults.file_level_key)
-                                        .map(|level| level.label.as_str())
-                                        .unwrap_or("Item");
-                                    this.folder_level_input.update(cx, |input, cx| {
-                                        input.set_value(folder_label, window, cx)
-                                    });
-                                    this.file_level_input.update(cx, |input, cx| {
-                                        input.set_value(file_label, window, cx)
-                                    });
-                                    cx.notify();
-                                }))
-                        }),
-                ),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .gap_1()
-                            .child(Label::new("Folders are called").text_sm())
-                            .child(Input::new(&self.folder_level_input)),
-                    )
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .gap_1()
-                            .child(Label::new("Files are called").text_sm())
-                            .child(Input::new(&self.file_level_input)),
-                    ),
-            )
-    }
-
-    fn folder_field(
-        &self,
-        browse_id: &'static str,
-        show_status: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let folder_display = if self.folder_path.is_empty() {
-            "Choose your files folder…".to_string()
-        } else {
-            self.folder_path.clone()
-        };
-        let dimmed = self.skip_files;
-        let status = show_status.then(|| self.render_folder_status());
-        v_flex()
-            .gap_1()
-            .when(dimmed, |el| el.opacity(0.4))
-            .child(Label::new("Files folder").text_sm())
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .px_2()
-                            .py_1p5()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(folder_display),
-                    )
-                    .child(
-                        Button::new(browse_id)
-                            .label("Browse…")
-                            .outline()
-                            .disabled(dimmed)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.browse_for_folder(window, cx)
-                            })),
-                    ),
-            )
-            .children(status)
-    }
-
-    fn render_skip_files_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let checked = self.skip_files;
-        h_flex()
-            .id("skip-files-toggle")
-            .gap_1()
-            .cursor_pointer()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(if checked { "☑" } else { "☐" })
-            .child("I'll add a files folder later — skips the linking step")
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.skip_files = !this.skip_files;
-                cx.notify();
-            }))
-    }
-
-    fn render_blank_files(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let selected = self.import_paths.len();
-        v_flex()
-            .gap_3()
-            .child(div().text_lg().font_semibold().child("Add your files"))
-            .child(
-                Label::new("Point qrate at a folder of files, or skip and add them later.")
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground),
-            )
-            .child(self.folder_field("browse-folder-blank", true, cx))
-            .when(self.folder_path.is_empty() && selected > 0, |files| {
-                files.child(inline_message(
-                    "selected-import-paths",
-                    format!(
-                        "Selected {selected} file{} or folder{}.",
-                        if selected == 1 { "" } else { "s" },
-                        if selected == 1 { "" } else { "s" }
-                    ),
-                    MsgKind::Success,
-                ))
-            })
-    }
-
-    fn render_local_files(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let path_display = if self.local_path.is_empty() {
-            "Choose a spreadsheet file…".to_string()
-        } else {
-            self.local_path.clone()
-        };
-
-        v_flex()
-            .gap_3()
-            .child(
-                div()
-                    .text_lg()
-                    .font_semibold()
-                    .child("Choose your spreadsheet & files"),
-            )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(Label::new("Spreadsheet (CSV, Excel, ODS)").text_sm())
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .px_2()
-                                    .py_1p5()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(path_display),
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .pt_2()
+                        .border_t_1()
+                        .border_color(border)
+                        .child(Label::new("Archival description standard").text_sm())
+                        .child(
+                            Label::new(
+                                "Folder and file rows become archival components using this vocabulary.",
                             )
-                            .child(
-                                Button::new("browse-local")
-                                    .label("Browse…")
-                                    .outline()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.browse_for_local_file(window, cx)
-                                    })),
-                            ),
-                    )
-                    .child(match (&self.spreadsheet_preview, &self.local_error) {
-                        (Some(p), _) => inline_message(
-                            "local-status",
-                            format!("{} rows, {} columns found", p.rows.len(), p.headers.len()),
-                            MsgKind::Success,
+                            .text_sm()
+                            .text_color(muted),
                         )
-                        .into_any_element(),
-                        (None, Some(e)) => {
-                            inline_message("local-status", e.clone(), MsgKind::Error)
-                                .into_any_element()
-                        }
-                        (None, None) => div().into_any_element(),
-                    }),
-            )
-            .child(self.folder_field("browse-folder", true, cx))
-    }
-
-    fn render_sheet_files(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        v_flex()
-            .gap_3()
+                        .child(
+                            h_flex().gap_1().flex_wrap().children(
+                                settings::description::DescriptionProfile::ALL
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(index, profile)| {
+                                        Button::new(("description-profile", index))
+                                            .label(profile.label())
+                                            .outline()
+                                            .selected(profile == description_profile)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.description_profile = profile;
+                                                let defaults = profile.defaults();
+                                                let label_for = |key: &str, fallback| {
+                                                    defaults
+                                                        .levels
+                                                        .iter()
+                                                        .find(|level| level.key == key)
+                                                        .map_or(fallback, |level| {
+                                                            level.label.clone()
+                                                        })
+                                                };
+                                                let folder_label = label_for(
+                                                    &defaults.folder_level_key,
+                                                    "Group".to_string(),
+                                                );
+                                                let file_label = label_for(
+                                                    &defaults.file_level_key,
+                                                    "Item".to_string(),
+                                                );
+                                                this.folder_level_input.update(cx, |input, cx| {
+                                                    input.set_value(folder_label, window, cx)
+                                                });
+                                                this.file_level_input.update(cx, |input, cx| {
+                                                    input.set_value(file_label, window, cx)
+                                                });
+                                                cx.notify();
+                                            }))
+                                    }),
+                            ),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .gap_1()
+                                        .child(Label::new("Folders are called").text_sm())
+                                        .child(Input::new(&self.folder_level_input)),
+                                )
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .gap_1()
+                                        .child(Label::new("Files are called").text_sm())
+                                        .child(Input::new(&self.file_level_input)),
+                                ),
+                        ),
+                )
+            })
+            .when(!self.skip_files && ambiguous > 0, |this| {
+                this.child(
+                    v_flex()
+                        .gap_2()
+                        .pt_2()
+                        .border_t_1()
+                        .border_color(border)
+                        .child(Label::new("Files named by more than one row").text_sm())
+                        .child(
+                            Label::new(format!(
+                                "{ambiguous} file{} match several rows. qrate never picks for you unless you \
+                                 ask it to.",
+                                if ambiguous == 1 { "" } else { "s" }
+                            ))
+                            .text_sm()
+                            .text_color(muted),
+                        )
+                        .child(
+                            h_flex().gap_1().flex_wrap().children(
+                                [
+                                    (
+                                        DuplicatePolicy::Skip,
+                                        "Leave them for me",
+                                        "each file becomes its own row",
+                                    ),
+                                    (
+                                        DuplicatePolicy::Update,
+                                        "Link the first row",
+                                        "in spreadsheet order",
+                                    ),
+                                    (DuplicatePolicy::AddAsNew, "Add as new rows", "link nothing"),
+                                ]
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, (policy, label, hint))| {
+                                    Button::new(("duplicate-policy", index))
+                                        .label(label)
+                                        .tooltip(hint)
+                                        .outline()
+                                        .selected(policy == duplicate_policy)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.duplicate_policy = policy;
+                                            cx.notify();
+                                        }))
+                                }),
+                            ),
+                        ),
+                )
+            })
             .child(
-                div()
-                    .text_lg()
-                    .font_semibold()
-                    .child("Connect your Google Sheet"),
-            )
-            .child(
-                v_flex()
+                h_flex()
+                    .id("skip-files-toggle")
                     .gap_1()
-                    .child(Label::new("Sheet link").text_sm())
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(Input::new(&self.sheet_link_input).flex_1())
-                            .child(
-                                Button::new("check-sheet")
-                                    .label("Check")
-                                    .outline()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.check_sheet_link(false, cx)
-                                    })),
-                            ),
-                    )
-                    .child(match (&self.sheet_check, &self.sheet_error) {
-                        (Some(c), _) => inline_message(
-                            "sheet-status",
-                            format!(
-                                "Found \"{}\" — {} rows{}",
-                                c.title,
-                                c.row_count,
-                                if c.used_first_tab {
-                                    " (using the first tab, 'Sheet1')"
-                                } else {
-                                    ""
-                                }
-                            ),
-                            MsgKind::Success,
-                        )
-                        .into_any_element(),
-                        (None, Some(e)) => {
-                            inline_message("sheet-status", e.clone(), MsgKind::Error)
-                                .into_any_element()
-                        }
-                        (None, None) => div().into_any_element(),
-                    }),
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(if self.skip_files { "☑" } else { "☐" })
+                    .child("I'll add a files folder later — skips the linking step")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.skip_files = !this.skip_files;
+                        cx.notify();
+                    })),
             )
-            .child(self.folder_field("browse-folder-sheet", true, cx))
-    }
-
-    fn render_folder_status(&self) -> AnyElement {
-        match (&self.folder_match, &self.folder_error) {
-            (Some(m), _) if self.entry_kind == EntryKind::Blank => inline_message(
-                "folder-status",
-                format!(
-                    "{} file{} will become table rows",
-                    m.extra_files.len(),
-                    if m.extra_files.len() == 1 { "" } else { "s" },
-                ),
-                MsgKind::Success,
-            )
-            .into_any_element(),
-            (Some(m), _) if m.matched_rows == m.total_rows => inline_message(
-                "folder-status",
-                format!("{} of {} files matched", m.matched_rows, m.total_rows),
-                MsgKind::Success,
-            )
-            .into_any_element(),
-            (Some(m), _) => inline_message(
-                "folder-status",
-                format!(
-                    "Matched {} of {} files — review mismatches",
-                    m.matched_rows, m.total_rows
-                ),
-                MsgKind::Warning,
-            )
-            .into_any_element(),
-            (None, Some(e)) => {
-                inline_message("folder-status", e.clone(), MsgKind::Error).into_any_element()
-            }
-            (None, None) => div().into_any_element(),
-        }
     }
 }

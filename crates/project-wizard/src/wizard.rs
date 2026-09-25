@@ -464,38 +464,6 @@ impl ProjectWizard {
         };
     }
 
-    fn breadcrumb_items(&self) -> Vec<(&'static str, WizardStep)> {
-        steps_for(self.entry_kind, self.skip_files)
-    }
-
-    fn step_index(&self) -> usize {
-        self.breadcrumb_items()
-            .iter()
-            .position(|(_, s)| *s == self.step)
-            .unwrap_or(0)
-    }
-
-    /// Only a step already completed is clickable — jumping *forward* would skip the validation
-    /// `can_advance` runs on the way out of each step.
-    fn render_breadcrumb(&self, cx: &Context<Self>) -> impl IntoElement {
-        let items = self.breadcrumb_items();
-        let current_ix = self.step_index();
-        Stepper::new("wizard-steps")
-            .small()
-            .selected_index(current_ix)
-            .items(
-                items
-                    .iter()
-                    .map(|(label, _)| StepperItem::new().child(*label)),
-            )
-            .on_click(cx.listener(move |this, ix: &usize, _window, cx| {
-                if let Some((_, step)) = items.get(*ix).filter(|_| *ix < current_ix) {
-                    this.step = *step;
-                    cx.notify();
-                }
-            }))
-    }
-
     pub(crate) fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.step = match (self.entry_kind, self.step) {
             (_, WizardStep::Name) => {
@@ -606,8 +574,24 @@ impl Render for ProjectWizard {
             WizardStep::Review => self.render_review_step(window, cx).into_any_element(),
         };
 
+        let steps = steps_for(self.entry_kind, self.skip_files);
+        let current_ix = steps.iter().position(|(_, s)| *s == self.step).unwrap_or(0);
+        // Only completed steps are clickable: jumping forward would skip `can_advance`.
+        let breadcrumb = Stepper::new("wizard-steps")
+            .small()
+            .selected_index(current_ix)
+            .items(
+                steps
+                    .iter()
+                    .map(|(label, _)| StepperItem::new().child(*label)),
+            )
+            .on_click(cx.listener(move |this, ix: &usize, _window, cx| {
+                if let Some((_, step)) = steps.get(*ix).filter(|_| *ix < current_ix) {
+                    this.step = *step;
+                    cx.notify();
+                }
+            }));
         // Shared scaffold: pinned breadcrumb, scrolling body, pinned footer; each step supplies only `body`.
-        let breadcrumb = self.render_breadcrumb(cx).into_any_element();
         let footer = self.render_footer(cx).into_any_element();
 
         v_flex()
@@ -644,24 +628,10 @@ impl Render for ProjectWizard {
 }
 
 pub fn open_project_wizard(entry_kind: EntryKind, cx: &mut App) {
-    open_project_wizard_seeded(entry_kind, None, None, cx);
+    open_project_wizard_seeded(entry_kind, None, Vec::new(), cx);
 }
 
 pub(crate) fn open_project_wizard_seeded(
-    entry_kind: EntryKind,
-    spreadsheet: Option<String>,
-    folder: Option<String>,
-    cx: &mut App,
-) {
-    open_project_wizard_seeded_paths(
-        entry_kind,
-        spreadsheet,
-        folder.map(std::path::PathBuf::from).into_iter().collect(),
-        cx,
-    );
-}
-
-pub(crate) fn open_project_wizard_seeded_paths(
     entry_kind: EntryKind,
     spreadsheet: Option<String>,
     paths: Vec<std::path::PathBuf>,

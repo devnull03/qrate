@@ -34,15 +34,7 @@ impl LauncherBar {
 
 impl Render for LauncherBar {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        // The full menu bar belongs to a window with a project in it — File, Edit and Insert have
-        // nothing to act on here. What's left is one menu, and the word already in the title bar is
-        // its label, so the bar gains a menu without gaining a word.
-        //
-        // One menu with submenus rather than the main window's row of them: `AppMenuBar` is what
-        // holds the shared "a menu is open" state that makes hovering a sibling switch to it, and
-        // it can only read the app-wide menu list, which is the main window's. A submenu opens on
-        // hover from inside the one menu, which is the same gesture without the second list.
-        // Button styling matches `AppMenuBar`'s own, so both windows' menus read alike.
+        // One menu with submenus, since `AppMenuBar` can only show the main window's menu list.
         h_flex()
             .w_full()
             .items_center()

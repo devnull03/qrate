@@ -402,74 +402,6 @@ impl ProblemsPanel {
         !self.excluded_sources.contains(&d.source.label())
     }
 
-    fn source_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sources = self.sources.clone();
-        let excluded = self.excluded_sources.clone();
-        let panel = cx.entity();
-        let state = window.use_keyed_state("problems-source-filter", cx, |window, cx| {
-            ComboboxState::new(
-                CheckList::<SourceItem>::new(Vec::new()),
-                Vec::new(),
-                window,
-                cx,
-            )
-            .multiple(true)
-            .searchable(false)
-        });
-        window.use_keyed_state("problems-source-sub", cx, |_window, cx| {
-            SourceFilterSub(cx.subscribe(&state, move |_, _, event, cx| {
-                let ComboboxEvent::Change(kept) = event else {
-                    return;
-                };
-                panel.update(cx, |this, cx| {
-                    this.excluded_sources = this
-                        .sources
-                        .iter()
-                        .filter(|source| !kept.contains(source))
-                        .cloned()
-                        .collect();
-                    this.refresh(cx);
-                    cx.notify();
-                });
-            }))
-        });
-        let cached = window.use_keyed_state("problems-source-items", cx, |_, _| Vec::new());
-        if cached.read(cx).as_slice() != sources.as_slice() {
-            state.update(cx, |state, cx| {
-                state.set_items(
-                    CheckList::new(sources.iter().cloned().map(SourceItem).collect()),
-                    window,
-                    cx,
-                );
-            });
-            cached.update(cx, |cached, _| *cached = sources.to_vec());
-        }
-        let kept: Vec<_> = sources
-            .iter()
-            .filter(|source| !excluded.contains(*source))
-            .cloned()
-            .collect();
-        let selected = state.read(cx).selected_values();
-        if selected.len() != kept.len() || !kept.iter().all(|source| selected.contains(source)) {
-            state.update(cx, |state, cx| {
-                state.set_selected_indices(
-                    sources
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(ix, source)| {
-                            (!excluded.contains(source)).then_some(IndexPath::new(ix))
-                        })
-                        .collect::<Vec<_>>(),
-                    window,
-                    cx,
-                );
-            });
-        }
-        div().w_48().pr_1().when(sources.len() > 1, |element| {
-            element.child(Combobox::new(&state).placeholder("Filter sources").small())
-        })
-    }
-
     fn refresh(&mut self, cx: &App) {
         let started = std::time::Instant::now();
         let mut sources: Vec<SharedString> = Diagnostics::all(cx)
@@ -568,6 +500,72 @@ impl Render for ProblemsPanel {
         let panel_handle = cx.entity();
         let expanded = self.expanded.clone();
         let muted = cx.theme().muted_foreground;
+        let source_filter = (self.filter != Filter::Notes).then(|| {
+            let sources = self.sources.clone();
+            let excluded = self.excluded_sources.clone();
+            let panel = cx.entity();
+            let state = window.use_keyed_state("problems-source-filter", cx, |window, cx| {
+                ComboboxState::new(
+                    CheckList::<SourceItem>::new(Vec::new()),
+                    Vec::new(),
+                    window,
+                    cx,
+                )
+                .multiple(true)
+                .searchable(false)
+            });
+            window.use_keyed_state("problems-source-sub", cx, |_window, cx| {
+                SourceFilterSub(cx.subscribe(&state, move |_, _, event, cx| {
+                    let ComboboxEvent::Change(kept) = event else {
+                        return;
+                    };
+                    panel.update(cx, |this, cx| {
+                        this.excluded_sources = this
+                            .sources
+                            .iter()
+                            .filter(|source| !kept.contains(source))
+                            .cloned()
+                            .collect();
+                        this.refresh(cx);
+                        cx.notify();
+                    });
+                }))
+            });
+            let cached = window.use_keyed_state("problems-source-items", cx, |_, _| Vec::new());
+            if cached.read(cx).as_slice() != sources.as_slice() {
+                state.update(cx, |state, cx| {
+                    state.set_items(
+                        CheckList::new(sources.iter().cloned().map(SourceItem).collect()),
+                        window,
+                        cx,
+                    );
+                });
+                cached.update(cx, |cached, _| *cached = sources.to_vec());
+            }
+            let kept: Vec<_> = sources
+                .iter()
+                .filter(|source| !excluded.contains(*source))
+                .cloned()
+                .collect();
+            let selected = state.read(cx).selected_values();
+            if selected.len() != kept.len() || !kept.iter().all(|source| selected.contains(source))
+            {
+                state.update(cx, |state, cx| {
+                    state.set_selected_indices(
+                        sources
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(ix, source)| {
+                                (!excluded.contains(source)).then_some(IndexPath::new(ix))
+                            })
+                            .collect::<Vec<_>>(),
+                        window,
+                        cx,
+                    );
+                });
+            }
+            state
+        });
 
         v_flex()
             .size_full()
@@ -606,7 +604,7 @@ impl Render for ProblemsPanel {
                                 cx.notify();
                             })),
                     )
-                    .when(self.filter != Filter::Notes, |bar| {
+                    .when_some(source_filter, |bar, state| {
                         bar.child(
                             h_flex()
                                 .items_center()
@@ -625,7 +623,16 @@ impl Render for ProblemsPanel {
                                             })),
                                     )
                                 })
-                                .child(self.source_menu(window, cx)),
+                                .child(div().w_48().pr_1().when(
+                                    self.sources.len() > 1,
+                                    |element| {
+                                        element.child(
+                                            Combobox::new(&state)
+                                                .placeholder("Filter sources")
+                                                .small(),
+                                        )
+                                    },
+                                )),
                         )
                     }),
             )
