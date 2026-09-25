@@ -81,32 +81,18 @@ impl Project {
                 (header.clone(), ty)
             })
             .collect();
-        let structure_exists: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='__row_structure'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| error("corrupt", e))?;
-        let structure = if structure_exists == 0 {
-            Vec::new()
-        } else {
-            conn.prepare("SELECT row_id, parent_id, level_key, source_path FROM __row_structure")
-                .and_then(|mut stmt| {
-                    stmt.query_map([], |row| {
-                        Ok(ExportComponent {
-                            row_id: row.get(0)?,
-                            parent_id: row.get(1)?,
-                            level_key: row.get(2)?,
-                            source_path: row.get(3)?,
-                        })
-                    })?
-                    .collect()
-                })
-                .map_err(|e| error("corrupt", e))?
-        };
+        let structure: Vec<ExportComponent> = crate::read_row_structure(&conn)
+            .map_err(|e| error("corrupt", e))?
+            .into_iter()
+            .map(|item| ExportComponent {
+                row_id: item.row_id,
+                parent_id: item.parent_id,
+                level_key: item.level_key,
+                source_path: item.source_path,
+            })
+            .collect();
         let profile = setting("description_profile")?.unwrap_or_default();
-        let levels = setting("description_levels")?
+        let levels: Vec<(String, String)> = setting("description_levels")?
             .and_then(|raw| serde_json::from_str::<Vec<DescriptionLevel>>(&raw).ok())
             .map(|items| {
                 items
@@ -114,7 +100,12 @@ impl Project {
                     .map(|item| (item.key, item.label))
                     .collect()
             })
-            .unwrap_or_else(|| default_levels(&profile));
+            .unwrap_or_else(|| {
+                crate::description::profile_levels(&profile)
+                    .iter()
+                    .map(|(key, label)| ((*key).into(), (*label).into()))
+                    .collect()
+            });
         let kinds = types
             .iter()
             .map(|(name, ty)| (name.clone(), ColumnType::from_declared(ty)))
@@ -201,40 +192,4 @@ impl Project {
             .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
             .unwrap_or(JsValue::NULL)
     }
-}
-
-fn default_levels(profile: &str) -> Vec<(String, String)> {
-    let labels: &[(&str, &str)] = match profile.trim().to_ascii_lowercase().as_str() {
-        "dacs" => &[
-            ("collection", "Collection"),
-            ("record_group", "Record group"),
-            ("series", "Series"),
-            ("subseries", "Subseries"),
-            ("file", "File"),
-            ("item", "Item"),
-        ],
-        "isadg" | "isad(g)" => &[
-            ("fonds", "Fonds"),
-            ("subfonds", "Sub-fonds"),
-            ("series", "Series"),
-            ("subseries", "Sub-series"),
-            ("file", "File"),
-            ("item", "Item"),
-        ],
-        "ric" => &[("record_set", "Record set"), ("record", "Record")],
-        "custom" => &[("group", "Group"), ("item", "Item")],
-        _ => &[
-            ("fonds", "Fonds"),
-            ("collection", "Collection"),
-            ("sous_fonds", "Sous-fonds"),
-            ("series", "Series"),
-            ("subseries", "Subseries"),
-            ("file", "File"),
-            ("item", "Item"),
-        ],
-    };
-    labels
-        .iter()
-        .map(|(key, label)| ((*key).into(), (*label).into()))
-        .collect()
 }

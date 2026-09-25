@@ -392,12 +392,7 @@ pub fn former_names<'a>(
 
 fn select(path: &Path, filter: &str, bound: &[&dyn rusqlite::ToSql]) -> Result<Vec<Listed>> {
     let conn = crate::project::open_ro(path)?;
-    let exists: i64 = conn.query_row(
-        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '__history'",
-        [],
-        |r| r.get(0),
-    )?;
-    if exists == 0 {
+    if !qrate_export::table_exists(&conn, "__history")? {
         return Ok(Vec::new());
     }
     // The clock is read once for the whole page rather than per row, which is what the three
@@ -437,22 +432,13 @@ fn select(path: &Path, filter: &str, bound: &[&dyn rusqlite::ToSql]) -> Result<V
     // One query for the whole page's changes rather than one per entry. Per entry, each lookup
     // was a scan of `__history_changes` — a table that grows with the project, not with the page —
     // so reading 200 entries cost 200 scans of everything ever edited.
-    //
-    // The id list is interpolated because rusqlite binds no arrays without `rarray`; every value
-    // is an `EntryId` this function just read out of the same table, so there is no text here to
-    // escape.
     let mut changes: HashMap<EntryId, Vec<Change>> = HashMap::new();
     if !listed.is_empty() {
-        let ids = listed
-            .iter()
-            .map(|listed| listed.entry.id.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
         let mut stmt = conn.prepare(&format!(
             "SELECT entry_id, change FROM __history_changes
-             WHERE entry_id IN ({ids}) ORDER BY entry_id, seq"
+             WHERE entry_id IN (SELECT id FROM __history WHERE {filter}) ORDER BY entry_id, seq"
         ))?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map(bound, |r| {
             Ok((r.get::<_, EntryId>(0)?, r.get::<_, String>(1)?))
         })?;
         for row in rows {
@@ -472,12 +458,7 @@ fn select(path: &Path, filter: &str, bound: &[&dyn rusqlite::ToSql]) -> Result<V
 /// Every column rename in the log as `(before, after)`, newest first — what [`former_names`] follows.
 pub fn renames(path: &Path) -> Result<Vec<(String, String)>> {
     let conn = crate::project::open_ro(path)?;
-    let exists: i64 = conn.query_row(
-        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '__history_changes'",
-        [],
-        |r| r.get(0),
-    )?;
-    if exists == 0 {
+    if !qrate_export::table_exists(&conn, "__history_changes")? {
         return Ok(Vec::new());
     }
     conn.prepare(
@@ -522,12 +503,7 @@ pub fn limit(cx: &App) -> Option<i64> {
 /// the number over the limit.
 pub fn prune(path: &Path, keep: i64) -> Result<usize> {
     let conn = crate::project::open_rw(path)?;
-    let exists: i64 = conn.query_row(
-        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '__history'",
-        [],
-        |r| r.get(0),
-    )?;
-    if exists == 0 {
+    if !qrate_export::table_exists(&conn, "__history")? {
         return Ok(0);
     }
     // Named entries are spared twice over: they are never in the doomed set, and they still count

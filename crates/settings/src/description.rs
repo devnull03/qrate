@@ -43,45 +43,15 @@ impl DescriptionProfile {
     }
 
     pub fn parse(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "dacs" => Self::Dacs,
-            "isadg" | "isad(g)" => Self::Isadg,
-            "ric" => Self::Ric,
-            "custom" => Self::Custom,
-            _ => Self::Rad,
-        }
+        let key = qrate_export::description::profile_key(value);
+        Self::ALL
+            .into_iter()
+            .find(|profile| profile.key() == key)
+            .unwrap_or_default()
     }
 
     pub fn defaults(self) -> DescriptionConfig {
-        let names: &[(&str, &str)] = match self {
-            Self::Rad => &[
-                ("fonds", "Fonds"),
-                ("collection", "Collection"),
-                ("sous_fonds", "Sous-fonds"),
-                ("series", "Series"),
-                ("subseries", "Subseries"),
-                ("file", "File"),
-                ("item", "Item"),
-            ],
-            Self::Dacs => &[
-                ("collection", "Collection"),
-                ("record_group", "Record group"),
-                ("series", "Series"),
-                ("subseries", "Subseries"),
-                ("file", "File"),
-                ("item", "Item"),
-            ],
-            Self::Isadg => &[
-                ("fonds", "Fonds"),
-                ("subfonds", "Sub-fonds"),
-                ("series", "Series"),
-                ("subseries", "Sub-series"),
-                ("file", "File"),
-                ("item", "Item"),
-            ],
-            Self::Ric => &[("record_set", "Record set"), ("record", "Record")],
-            Self::Custom => &[("group", "Group"), ("item", "Item")],
-        };
+        let names = qrate_export::description::profile_levels(self.key());
         let levels = names
             .iter()
             .enumerate()

@@ -32,47 +32,13 @@ use std::time::Duration;
 const COLUMN_NOTES_WRITE_PREFIX: &str = "column_notes:";
 
 use anyhow::{Context as _, Result};
-use qrate_export::{QRATE_APPLICATION_ID, QRATE_SCHEMA_VERSION};
+use qrate_export::{QRATE_APPLICATION_ID, QRATE_SCHEMA_VERSION, table_exists};
+pub use qrate_export::{RowStructure, SourceKind};
 use rusqlite::{Connection, OptionalExtension as _, params};
 
 /// Private identity of one `dataset_main` row. Unlike the source index shown in the `#` column,
 /// this value survives inserts, deletes, and save/reload cycles.
 pub type RowId = i64;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SourceKind {
-    File,
-    Directory,
-}
-
-impl SourceKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::File => "file",
-            Self::Directory => "directory",
-        }
-    }
-
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "file" => Some(Self::File),
-            "directory" => Some(Self::Directory),
-            _ => None,
-        }
-    }
-}
-
-/// Private arrangement metadata for one archival component. None of these values becomes a
-/// visible dataset column unless the user explicitly maps it during export.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RowStructure {
-    pub row_id: RowId,
-    pub parent_id: Option<RowId>,
-    pub level_key: String,
-    pub sibling_order: i64,
-    pub source_path: Option<String>,
-    pub source_kind: Option<SourceKind>,
-}
 
 const ROW_STRUCTURE_DDL: &str = r#"
     CREATE TABLE IF NOT EXISTS __row_structure (
@@ -444,38 +410,7 @@ pub fn load_project_file(path: &Path) -> Result<ProjectData> {
 /// are ungrouped roots, so v3 and partially arranged projects remain usable.
 pub fn read_row_structure(path: &Path) -> Result<Vec<RowStructure>> {
     let conn = open_ro(path)?;
-    if !table_exists(&conn, "__row_structure")? {
-        return Ok(Vec::new());
-    }
-    read_row_structure_from(&conn)
-}
-
-fn read_row_structure_from(conn: &Connection) -> Result<Vec<RowStructure>> {
-    let mut stmt = conn.prepare(
-        "SELECT row_id, parent_id, level_key, sibling_order, source_path, source_kind
-         FROM __row_structure ORDER BY parent_id, sibling_order, row_id",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        let source_kind: Option<String> = row.get(5)?;
-        Ok(RowStructure {
-            row_id: row.get(0)?,
-            parent_id: row.get(1)?,
-            level_key: row.get(2)?,
-            sibling_order: row.get(3)?,
-            source_path: row.get(4)?,
-            source_kind: source_kind.as_deref().and_then(SourceKind::parse),
-        })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .context("Read row structure")
-}
-
-fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
-    Ok(conn.query_row(
-        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
-        params![name],
-        |row| row.get::<_, i64>(0),
-    )? != 0)
+    qrate_export::read_row_structure(&conn).context("Read row structure")
 }
 
 /// Replaces the hierarchy in one transaction. This is the lazy v3-to-v4 migration point: opening
@@ -575,10 +510,6 @@ pub fn delete_setting(path: &Path, key: &str) -> Result<()> {
 /// Upserts one column's declared type. A column the project was created without — a spreadsheet
 /// header nobody configured — gets a row, which is what lets a type be set on any column the table
 /// shows rather than only the ones the wizard wrote.
-pub fn write_column_type(path: &Path, name: &str, data_type: &str) -> Result<()> {
-    write_column_types(path, name, data_type, &[])
-}
-
 fn write_column_types(path: &Path, name: &str, data_type: &str, cleared: &[String]) -> Result<()> {
     let mut conn = open_rw(path)?;
     let transaction = conn.transaction().context("Begin column type update")?;
@@ -694,12 +625,7 @@ pub fn today(path: &Path) -> Option<String> {
 pub fn read_notes(path: &Path) -> Result<Vec<StoredNote>> {
     let conn = open_ro(path)?;
     let notes = qrate_export::read_project_notes(&conn)?;
-    let row_positions: HashMap<RowId, usize> = if conn.query_row(
-        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'dataset_main'",
-        [],
-        |row| row.get::<_, i64>(0),
-    )? == 0
-    {
+    let row_positions: HashMap<RowId, usize> = if !table_exists(&conn, "dataset_main")? {
         HashMap::new()
     } else {
         let mut ids = conn.prepare("SELECT _row_id FROM dataset_main ORDER BY _row_order")?;
@@ -791,11 +717,7 @@ pub type VisualEntry = (String, u64, Vec<f32>);
 /// built it.
 pub fn read_visual_index(path: &Path, model: &str) -> Result<Vec<VisualEntry>> {
     let conn = open_ro(path)?;
-    let exists: i64 = conn.query_row(
-        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '__visual_index'",
-        [],
-        |r| r.get(0),
-    )?;
+    let exists = table_exists(&conn, "__visual_index")?;
     let built_by: Option<String> = conn
         .query_row(
             "SELECT value FROM __settings WHERE key = ?1",
@@ -803,7 +725,7 @@ pub fn read_visual_index(path: &Path, model: &str) -> Result<Vec<VisualEntry>> {
             |r| r.get(0),
         )
         .optional()?;
-    if exists == 0 || built_by.as_deref() != Some(model) {
+    if !exists || built_by.as_deref() != Some(model) {
         return Ok(Vec::new());
     }
     let mut stmt = conn.prepare("SELECT path, len, vector FROM __visual_index")?;
@@ -1045,7 +967,7 @@ pub fn save_dataset(
     let had_structure = table_exists(&conn, "__row_structure")?;
     let structure = match structure {
         Some(structure) => structure.to_vec(),
-        None if had_structure => read_row_structure_from(&conn)?,
+        None if had_structure => qrate_export::read_row_structure(&conn)?,
         None => Vec::new(),
     };
     let structure = retained_row_structure(structure, row_ids);
@@ -1326,8 +1248,8 @@ mod tests {
         )
         .unwrap();
 
-        write_column_type(&path, "Digital ID", "Filename").unwrap();
-        write_column_type(&path, "Taken", "Date").unwrap();
+        write_column_types(&path, "Digital ID", "Filename", &[]).unwrap();
+        write_column_types(&path, "Taken", "Date", &[]).unwrap();
         write_column_notes(&path, "Digital ID", "the master scan filename").unwrap();
         write_column_notes(&path, "Taken", "capture date").unwrap();
 

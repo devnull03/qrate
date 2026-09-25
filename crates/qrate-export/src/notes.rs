@@ -26,15 +26,7 @@ pub struct SheetNote {
 
 /// Older projects may not have a notes table or provenance columns yet.
 pub fn read_project_notes(conn: &Connection) -> rusqlite::Result<Vec<ProjectNote>> {
-    let exists: bool = conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='__notes'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?
-        .is_some();
-    if !exists {
+    if !crate::table_exists(conn, "__notes")? {
         return Ok(Vec::new());
     }
     let provenance: bool = conn

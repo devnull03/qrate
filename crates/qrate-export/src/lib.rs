@@ -3,6 +3,7 @@
 use rusqlite::Connection;
 
 pub mod columns;
+pub mod description;
 pub mod export;
 pub mod filenames;
 pub mod notes;
@@ -24,12 +25,7 @@ pub type LoadedDataset = (Vec<String>, Vec<i64>, Vec<Vec<String>>);
 /// Reads `dataset_main` (headers from the table's own columns, then all rows).
 /// A project without one (blank) yields empty vecs.
 pub fn read_dataset(conn: &Connection) -> rusqlite::Result<LoadedDataset> {
-    let exists: i64 = conn.query_row(
-        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'dataset_main'",
-        [],
-        |r| r.get(0),
-    )?;
-    if exists == 0 {
+    if !table_exists(conn, "dataset_main")? {
         return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
 
@@ -69,4 +65,72 @@ pub fn read_dataset(conn: &Connection) -> rusqlite::Result<LoadedDataset> {
 
 fn quote_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+pub fn table_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [name],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|count| count != 0)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceKind {
+    File,
+    Directory,
+}
+
+impl SourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Directory => "directory",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "file" => Some(Self::File),
+            "directory" => Some(Self::Directory),
+            _ => None,
+        }
+    }
+}
+
+/// Private arrangement metadata for one archival component. None of these values becomes a
+/// visible dataset column unless the user explicitly maps it during export.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowStructure {
+    pub row_id: i64,
+    pub parent_id: Option<i64>,
+    pub level_key: String,
+    pub sibling_order: i64,
+    pub source_path: Option<String>,
+    pub source_kind: Option<SourceKind>,
+}
+
+/// Reads `__row_structure` in sibling order. A project without one (flat, or older than v4)
+/// yields an empty list: every row is an ungrouped root.
+pub fn read_row_structure(conn: &Connection) -> rusqlite::Result<Vec<RowStructure>> {
+    if !table_exists(conn, "__row_structure")? {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT row_id, parent_id, level_key, sibling_order, source_path, source_kind
+         FROM __row_structure ORDER BY parent_id, sibling_order, row_id",
+    )?;
+    stmt.query_map([], |row| {
+        let source_kind: Option<String> = row.get(5)?;
+        Ok(RowStructure {
+            row_id: row.get(0)?,
+            parent_id: row.get(1)?,
+            level_key: row.get(2)?,
+            sibling_order: row.get(3)?,
+            source_path: row.get(4)?,
+            source_kind: source_kind.as_deref().and_then(SourceKind::parse),
+        })
+    })?
+    .collect()
 }
