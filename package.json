@@ -19,6 +19,7 @@
     "@tailwindcss/vite": "^4.3.3",
     "astro": "^7.2.2",
     "marked": "^15.0.0",
+    "qrate-export": "file:../worktrees/qrate-export-spike/qrate-export-0.0.0-spike.2.tgz",
     "semver": "^7.7.2",
     "starlight-llms-txt": "^0.11.0",
     "starlight-mcp": "^0.2.0",
