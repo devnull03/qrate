@@ -16,8 +16,9 @@ bridge. It can only read data and stage findings that you accept or ignore.
 
 ## Start Pi
 
-Open a project, then open **Agent ▸ Terminal**. qrate resumes the Pi session for that project. Use
-**New** for a clean session, **Stop** to end the process, or **Restart** to resume it.
+Open a project, then open **Agent ▸ Terminal**. qrate resumes the Pi session for that project. Click
+the **+** button (**New Pi session**) for a clean session. Right-click it for **Stop**, which ends
+the process, or **Restart**, which resumes the session.
 
 The first time, type `/login openrouter` and follow Pi's sign-in flow. Your credential is stored by
 Pi in qrate's private Pi profile; qrate does not read or store it. Pi starts with OpenRouter and the
@@ -35,16 +36,16 @@ An entry has up to six parts:
 | --- | --- |
 | `+2:07` | Time since the first entry of this session, in minutes and seconds. Not a clock time. |
 | `claude-code` | The name the agent gave itself. See [Names are not proof](#names-are-not-proof). |
-| `rows` | The method the agent called, or `connected` / `disconnected`. |
-| `3 row(s)` | What the agent asked for. Absent for a method that takes no parameters. |
-| `3 rows` | What qrate answered, or why it refused. |
+| `query` | The method the agent called, or `connected` / `disconnected`. |
+| `AllRows, max 20` | What the agent asked for. Absent for a method that takes no parameters. |
+| `20 returned, 180 remaining` | What qrate answered, or why it refused. |
 | `4ms` | How long qrate took to answer. |
 
 ## The three kinds of entry
 
 **An answered call** shows its result in grey. The result is a size, never your data:
-`1893 rows × 32 columns`, `3 rows`, `12 diagnostics`. qrate never puts cell contents in
-this list.
+`1893 rows × 32 columns`, `20 returned, 180 remaining`, `2 staged, 0 stale`. qrate never
+puts cell contents in this list.
 
 **A refused call** shows its reason in red. Read these first. Common reasons:
 
@@ -53,7 +54,8 @@ this list.
 | `forbidden` | The caller sent a wrong token or no token. qrate makes a new token at each launch. |
 | `malformed_request` | The caller sent a method or a parameter the protocol does not have. |
 | `project_unavailable` | No project is open. |
-| `too_many_rows`, `invalid_search_limit`, `too_many_findings` | The caller asked for more than one call permits. |
+| `invalid_query_limit`, `too_many_query_fields`, `too_many_thumbnails`, `too_many_findings` | The caller asked for more than one call permits. |
+| `stale_cursor` | The project changed since the revision the caller named, so it has to read again. |
 
 **A connect or disconnect** shows in blue. The protocol has no session: each call is one
 request, one answer, and a closed socket. qrate infers both events. `connected` is the
@@ -66,13 +68,13 @@ silence from that name.
 `2 staged, 1 stale`.
 
 - **Staged** findings go to the Problems panel, beside your own validators' findings. A
-  finding that proposes a new value also adds it to that cell's right-click **Fixes**
-  menu.
+  finding that proposes a new value also offers it under that finding in the cell's
+  right-click **Problems** menu.
 - **Stale** findings are dropped. A finding is stale when the cell no longer holds the
   text the agent read. This stops a correction to text nobody reviewed.
 
 Staged findings are never written to the `.qrate` file. They are gone when you close the
-project. A proposal changes a cell only after you click it in the Fixes menu.
+project. A proposal changes a cell only after you click it in the Problems menu.
 
 ## Names are not proof
 

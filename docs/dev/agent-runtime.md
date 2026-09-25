@@ -9,7 +9,7 @@ only initializes it, and `ai` remains the provider- and transport-neutral qrate 
 
 The qrate-specific package lives in the public
 [`devnull03/qrate-pi-extension`](https://github.com/devnull03/qrate-pi-extension) repository. qrate
-pins its v0.1.0 tag and checksum in the runtime-fetch scripts. The package supplies the system
+pins its v0.2.1 tag and checksum in the runtime-fetch scripts. The package supplies the system
 prompt, live-review skill, typed bridge tools, and permission gates. Keep those concerns there so
 they can be tested against Pi without rebuilding the desktop app.
 
@@ -23,7 +23,7 @@ they can be tested against Pi without rebuilding the desktop app.
 
 The extension is an adapter, not a second source of truth. It rereads `agent-bridge.json` on every
 call and sends the same requests as any external agent. The endpoint now includes
-`"bridge_protocol": 1`; additions must remain backward compatible within that protocol version.
+`"bridge_protocol": 2`; additions must remain backward compatible within that protocol version.
 
 ## Provider and credential ownership
 

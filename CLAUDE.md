@@ -76,6 +76,8 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | `settings` | `AppSettings` (user-wide) and `.qrate` (per project), column config, plugin settings |
 | `project-wizard` | new/open project flow, recent projects, the launcher |
 | `data-exchange` | spreadsheet and Google Sheets imports, desktop Google Sheets integration, preview |
+| `file-ingest` | filesystem inventory and duplicate resolution for folder-backed projects and live imports. Only lists paths and decides duplicates; never maps columns or touches a project |
+| `updater` | signed update manifests, install provenance, and the `qrate-update-helper` binary that applies an update after qrate exits |
 | `qrate-export` | shared project reader and CSV/Excel/JSON-LD/CSL-JSON/ZIP writers; optional browser WASM API |
 | `diagnostics` | the validator, spelling checks, fixes, and the problems panel |
 | `checks` | date and authority validators, registered by `app` through the `diagnostics` crate |
@@ -83,6 +85,7 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | `clustering` | pure value-pair matching, value-variant diagnostics, and cell fixes |
 | `plugin-host` | the Luau runtime that loads and runs plugins |
 | `plugin-api` | the types a plugin sees — see the three-repo rule below |
+| `plugin-package` | verifies, installs, updates, and removes plugin release packages (manifest, catalog signature, receipts) |
 | `preview` | turns a linked file into pixels — the format ladder and the thumbnail cache. Native decoders (PDF, video, RAW) belong here so they never reach `table` |
 | `visual-search` | CLIP on the CPU through candle (pure Rust) and its pinned weights download. No gpui — `table::visual` owns the index job, the search bar, and "Find similar items", and stores the vectors in the project's `.qrate` (`__visual_index`). Weights live in `<data dir>/models`, never in the install |
 | `ai` | two halves: `agent.rs` is the *shipped* external-agent contract (see `AGENTS.md`); the rest is traits + Cohere/mock providers for planned AI review/embedding, deliberately unfinished |
@@ -99,7 +102,7 @@ Each task page has two collapsible sections worth reading before starting work:
 
 The hub also has a **Document Hub** database (design docs, specs) linked from tasks via `Related docs` — check it for additional context when a task references a doc that isn't fully explained inline.
 
-`notion-query-data-sources` in SQL mode works on this workspace and is the fastest way to read the tracker — a single-data-source query returns all rows in one call, no pagination. Multi-data-source queries are the Enterprise-gated ones. Use `notion-fetch` on a task URL when you need its page content (the agent instructions and memory log live in the body, not in properties).
+Read the tracker through the local `notion` MCP server (the hosted connector is blocked): `API-query-data-source` on the Tasks Tracker returns rows 100 at a time, so follow `next_cursor`. Use `API-retrieve-page-markdown` on a task page when you need its content (the agent instructions and memory log live in the body, not in properties).
 
 ### Creating tasks
 

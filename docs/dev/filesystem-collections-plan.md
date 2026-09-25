@@ -18,10 +18,14 @@ The release name is **Filesystem Collections**. The user-facing release line is:
 
 ## Implementation status
 
-- In progress: shared filesystem inventory, relative-path preservation, and adoption by project
-  creation and open-project file resolution.
-- Pending: schema version 4, hierarchical table behavior, import preview, drop surfaces, and
-  interchange contracts.
+- Shipped on `main`: the shared filesystem inventory (`crates/file-ingest`), row structure and
+  description profiles, the hierarchical table (collapsible groups, group/indent/outdent, row
+  drag, undo, remembered expansion), folder-tree project creation, structural column roles,
+  drop surfaces on the launcher, wizard, table, gallery, and Filename cells, duplicate handling
+  (`import-duplicates-plan.md`), and interchange (JSON-LD `isPartOf`, source paths in ZIP
+  archives, structure in mapped columns).
+- Not built: the two sorting modes, the "include descendants of matching components" filter
+  option, and the add-as-children/add-as-siblings choice when dropping files on a row.
 
 ## Archival model
 

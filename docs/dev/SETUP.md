@@ -15,9 +15,9 @@ release, since a release depends on several pieces being configured ahead of tim
 
 > Branch features off `main` and land them back on `main` directly.
 
-Workspace crates (versions are inherited from `[workspace.package].version`):
-`crates/app` (binary `app`), `crates/ai`, `crates/settings`,
-`crates/window-wrapper`.
+Workspace crates live under `crates/` and inherit `[workspace.package].version` (except
+`qrate-export`); the binary is `crates/app` (`app`). The crate map in `CLAUDE.md` says what
+each one holds.
 
 ---
 
@@ -104,27 +104,35 @@ produce nothing visible.
    - macOS: Gatekeeper quarantine (`xattr -dr com.apple.quarantine ...`).
    To sign later you'd add secrets (Apple Developer ID cert + notarization creds,
    a Windows code-signing cert) and signing steps in `release.yml`. None exist yet,
-   so no secrets are required to build today.
+   so no code-signing secrets are required today. This is separate from the update
+   signing key in step 6.
 
 5. **Google credentials.** Actions secrets, mapped into the `QRATE_*` build vars by
    `release.yml` — nothing else needs editing. Only one of the three is required:
 
    | Secret | Needed? |
    |---|---|
-   | `GOOGLE_CONFIG_TOKEN` | **Yes.** Without it the binary sends an empty bearer, the credential endpoint answers 401, and a fresh install can never sign in at all. |
+   | `QRATE_GOOGLE_CONFIG_TOKEN` | **Yes.** Without it the binary sends an empty bearer, the credential endpoint answers 401, and a fresh install can never sign in at all. |
    | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Optional. The live pair comes from the endpoint at runtime; these are only the last rung, for a first-ever sign-in while **our** endpoint is down but Google is up. |
 
    Rotating the Cloud project does not need a release — that is the whole point of
    the endpoint (`site-oauth-handoff.md`).
 
+6. **Update signing key.** The `release` job signs `update-manifest.json` with
+   `QRATE_UPDATE_SIGNING_KEY`, a secret of the `release-signing` environment.
+   `scripts/provision-update-key.sh` generates the Ed25519 pair once, patches the public
+   half into `crates/updater` and the site's feed route, and stores the private half in
+   that environment. Without it, the release job cannot sign the manifest the in-app updater
+   trusts.
+
 ---
 
 ## 4. CI/CD pipelines
 
-Five workflows cover CI, build caches, releases, and site deployment.
+Six workflows cover CI, build caches, releases, the export package, and site deployment.
 
 ### `ci.yml` — quality gate
-- **Triggers:** push to `dev`; PRs targeting `dev` or `main`.
+- **Triggers:** push to `dev`; PRs targeting `dev` or `main`; manual `workflow_dispatch`.
 - **Does:** on Windows, macOS, and Linux, runs `cargo fmt --check`,
   `cargo clippy … -D warnings`, and `cargo nextest`. Cancels superseded runs to save minutes.
 - **Cache:** restores dependency artifacts that `warm-ci-cache.yml` saved on `main`. It does not save
@@ -149,11 +157,28 @@ Five workflows cover CI, build caches, releases, and site deployment.
     separate runners with per-target caches); a `bundle-macos` job then `lipo`s them
     into a universal `.app` → `.dmg` (`scripts/bundle-mac.sh`).
   - Windows: `.exe` → portable `*-x86_64.zip` + NSIS `*-setup.exe`
-    (`scripts/installer.nsi`). The job derives a numeric `VIProductVersion`
-    (`X.X.X.X`) from the tag, so semver pre-releases (e.g. `0.1.0-alpha.1`) package
-    cleanly instead of tripping NSIS's strict version format.
-- **Publishes:** a **DRAFT** release with the artifacts + `SHA256SUMS.txt`. It does
-  **not** set the pre-release flag — you choose that when you publish (§5).
+    (`scripts/installer.nsi`) + per-machine WiX `*-x86_64.msi` (`scripts/installer.wxs`).
+    The job derives a numeric `VIProductVersion` (`X.X.X.X`) from the tag, so semver
+    pre-releases (e.g. `0.1.0-alpha.1`) package cleanly instead of tripping NSIS's strict
+    version format.
+  - Linux: binary + `.desktop` + icon in a `*-x86_64-linux.tar.gz`.
+  - Every platform also builds the `qrate-update-helper` binary and bundles PDFium and the
+    pinned Pi agent (`docs/dev/agent-runtime.md`); Windows bundles ffmpeg too.
+- **Publishes:** a **DRAFT** release with the artifacts, `SHA256SUMS.txt`, and the signed
+  `update-manifest.json`. A version with a `-` suffix (e.g. `0.5.0-beta.1`) is marked as a
+  pre-release automatically.
+
+### `warm-release-cache.yml` — release dependency cache
+- **Trigger:** `Cargo.lock` or the toolchain changes on `main`, every third day on a schedule,
+  or manually.
+- **Does:** saves the dependency caches `release.yml` restores on `main`, because a tag run can
+  only read caches from its own ref or the default branch.
+
+### `publish-export.yml` — the `qrate-export` WASM package
+- **Trigger:** a push to `dev` that touches `crates/qrate-export`, or manually.
+- **Does:** builds `crates/qrate-export` with `wasm-pack` (`--features wasm`) and publishes it
+  to GitHub Packages as `@devnull03/qrate-export`. It skips the publish when that crate version
+  is already there, so bump `crates/qrate-export`'s version to release a new package.
 
 ### Building the site — Cloudflare Workers Builds (on `site`)
 `qrate.dvnl.work` is served by a Cloudflare Worker, which Cloudflare rebuilds on
@@ -192,15 +217,16 @@ tag vX.Y.Z ─▶ release.yml (build dmg/zip/exe) ─▶ DRAFT release
 1. **Land the code** on `main` (push your feature branch to `main`). Run
    `cargo fmt`/`clippy`/`test` locally first — direct pushes skip CI (§4).
 2. **Bump the version** in `Cargo.toml` `[workspace.package].version` (inherited by
-   all crates), and sync the lockfile (any cargo build updates the member versions
-   in `Cargo.lock`). Commit to `main`.
+   every crate except `qrate-export`, which versions its npm package on its own), and sync
+   the lockfile (any cargo build updates the member versions in `Cargo.lock`). Commit to `main`.
 3. **Tag and push** — the tag must match the version exactly:
    ```sh
    git tag v0.1.0
    git push origin v0.1.0
    ```
 4. **Wait for `release.yml`** to finish; it leaves a **draft** release with the
-   `.dmg`, `.zip`, `-setup.exe`, and `SHA256SUMS.txt`.
+   `.dmg`, `.zip`, `-setup.exe`, `.msi`, `.tar.gz`, `SHA256SUMS.txt`, and
+   `update-manifest.json`.
 5. **Publish the draft** (Releases → edit the draft → *Publish release*). This is
    when the release becomes visible to the API and to the site.
 6. Publishing fires `redeploy-site-on-release.yml` → the site rebuilds with the new
@@ -211,10 +237,10 @@ tag vX.Y.Z ─▶ release.yml (build dmg/zip/exe) ─▶ DRAFT release
   tag `v0.1.0-alpha.1` (the version guard requires the match — `0.1.0-alpha.1`
   is a valid Cargo version). The Windows installer's numeric version is derived
   automatically (§4), so the `-alpha.N` suffix needs no manual handling.
-- When publishing the draft, **check "Set as a pre-release"** (API `prerelease: true`).
-  The site renders it with a **"Pre-release"** badge and never awards it the
-  **"Latest"** badge — "Latest" only goes to the newest *stable* (non-pre-release)
-  release.
+- `release.yml` already marks such a draft as a pre-release (API `prerelease: true`); leave
+  "Set as a pre-release" checked when you publish it. The site renders it with a
+  **"Pre-release"** badge and never awards it the **"Latest"** badge — "Latest" only goes
+  to the newest *stable* (non-pre-release) release.
 - Drafts are hidden from the public API, so an in-progress release never leaks to
   the site until you publish it.
 

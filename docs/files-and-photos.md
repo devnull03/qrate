@@ -6,16 +6,21 @@ row's file by matching it against that folder every time you open the project.
 
 ## Linking a row to a file
 
-Set the files folder in **Settings ▸ Project**. qrate then matches each row to a file by
-one of two rules:
+Set the files folder in **Settings ▸ Project**. qrate then matches each row to a file
+through the column set to the `Filename` type (see [Columns](columns.md)), by one of two
+rules chosen when the project is created:
 
-- **Exact filename.** A column value that matches a file's name, such as an identifier
-  column, links that row to that file.
-- **Your own pattern.** Configure a column as the `Filename` type to control which column
-  and which matching rule qrate uses. See [Columns](columns.md).
+- **Exact filename.** A `Filename` cell that matches a file's name links that row to that
+  file.
+- **Custom pattern.** A pattern such as `{id}_*.jpg` matches files that do not share an
+  exact name with the cell.
+
+To link one row by hand, drop a file onto its `Filename` cell. To add new files as rows, see
+[Add files to an open project](projects.md#add-files-to-an-open-project).
 
 If a linked file cannot be found, for example because the files folder moved or the file
-was renamed, qrate reports it as a diagnostic. See [Diagnostics](diagnostics.md).
+was renamed, qrate reports it as a diagnostic. See [Diagnostics](diagnostics.md). If the
+whole folder moved, choose **File ▸ Relink Missing Files…** and pick its new location.
 
 ## Viewing a file
 
@@ -29,10 +34,12 @@ previous or next row, in the order the view shows them. During a search that mea
 previous or next result.
 
 PDF previews need PDFium and video frame previews need ffmpeg. qrate looks for both beside
-its own executable, then on your system `PATH`. Without them, qrate shows a file-type icon
-instead of a preview, and the rest of the app works as normal.
+its own executable, then on your system `PATH`. Every release download includes PDFium, and
+the Windows downloads also include ffmpeg; on macOS and Linux, install ffmpeg yourself.
+Without them, qrate shows a file-type icon instead of a preview, and the rest of the app
+works as normal.
 
 ## Gallery view
 
-Switch to the gallery from the view menu to browse a collection as thumbnails instead of a
-grid. See [The grid](grid.md#gallery-view).
+Switch to the gallery with **View ▸ Switch View ▸ Gallery** to browse a collection as
+thumbnails instead of a grid. See [The grid](grid.md#gallery-view).

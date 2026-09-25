@@ -1,7 +1,7 @@
 # Islandora plugin
 
 Islandora is an open-source repository platform that libraries and archives use to publish digital
-collections. An Islandora site keeps its controlled vocabularies — subjects, genres, names — as
+collections. An Islandora site keeps its controlled vocabularies (subjects, genres, names) as
 taxonomies.
 
 The Islandora plugin connects a qrate column to those vocabularies. It checks each value against
@@ -22,8 +22,8 @@ narrow a vocabulary, so the plugin stays quiet until the second character.
 **It accepts several vocabularies for one column.** A value passes if any one of the mapped
 vocabularies holds it. This suits a column that draws from more than one list.
 
-**It splits a cell the same way qrate does.** The plugin uses the sub-delimiter from
-**Settings ▸ Project ▸ Columns**, so a multi-value cell means the same thing to the check as to
+**It splits a cell the same way qrate does.** The plugin uses the value separator from
+**Settings ▸ Columns ▸ Multi-value cells**, so a multi-value cell means the same thing to the check as to
 the column filter. A blank part of a cell is not an error. Missing data is a different check.
 
 **It downloads nothing.** The plugin asks the server which of a batch of values the server
@@ -45,8 +45,9 @@ Open the [Islandora plugin page](https://qrate.dvnl.work/plugins/org.islandora.v
 select **Open in qrate**. qrate opens a review screen for the official catalog release. Review the
 source, version, package hash, and requested permissions. Then select **Install**.
 
-If you installed qrate from source, the button does not open qrate. Use the Discover Plugins
-command and select Islandora instead.
+If you run qrate from source, the button does not open qrate, because only installed builds
+register `qrate://` links. On Windows, `scripts/register-dev-protocol.ps1` registers a debug
+build; otherwise, use the manual install below.
 
 You can also open the install screen directly:
 [Open Islandora in qrate](qrate://plugin/install?source=registry&id=org.islandora.vocabularies).
@@ -84,8 +85,8 @@ write the same value.
 | Password | This computer | The password for that account. qrate keeps it out of the project file. |
 | Vocabulary names | The project | Comma-separated machine names, for example `subject, genre`. Use this only if the site will not list its vocabularies. |
 
-The plugin has no sub-delimiter setting of its own. It uses the one in
-**Settings ▸ Project ▸ Columns**.
+The plugin has no separator setting of its own. It uses the value separator in
+**Settings ▸ Columns ▸ Multi-value cells**.
 
 ## The status bar item
 
@@ -94,9 +95,9 @@ it.
 
 Click the item to test the connection. The item then shows one of these:
 
-- `Islandora ✓` in green — the site answered.
-- `Islandora ✗` in red — the site did not answer. The log holds the reason.
-- `Islandora no server set` in red — the **Islandora server** setting is empty.
+- `Islandora ✓` in green: the site answered.
+- `Islandora ✗` in red: the site did not answer. The log holds the reason.
+- `Islandora no server set` in red: the **Islandora server** setting is empty.
 
 After a refresh, the item shows how many vocabularies the plugin found.
 
@@ -104,8 +105,8 @@ After a refresh, the item shows how many vocabularies the plugin found.
 
 Right-click a column header for two more commands:
 
-- **Refresh Islandora vocabularies** — read the list of vocabularies from the site again.
-- **Forget cached Islandora terms** — discard the stored verdicts for the mapped vocabularies. Use
+- **Refresh Islandora vocabularies**: read the list of vocabularies from the site again.
+- **Forget cached Islandora terms**: discard the stored verdicts for the mapped vocabularies. Use
   this after somebody adds a term on the site, so qrate asks again instead of trusting an old
   answer.
 
@@ -124,6 +125,6 @@ mapping tool finds nothing. You have three ways forward:
 
 ## Related pages
 
-- [Diagnostics](../diagnostics.md) — the Problems panel, where the plugin reports what it finds.
-- [Columns](../columns.md) — column types and the sub-delimiter.
-- [Plugins](index.md) — what a plugin can do, and how to write one.
+- [Diagnostics](../diagnostics.md): the Problems panel, where the plugin reports what it finds.
+- [Columns](../columns.md): column types and the value separator.
+- [Plugins](index.md): what a plugin can do, and how to write one.

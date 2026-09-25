@@ -9,8 +9,8 @@ qrate reads the plugins directory at startup. Open it with **Plugins ▸ Plugins
 
 qrate accepts two layouts:
 
-- `my-plugin.lua` — a single file.
-- `my-plugin/init.lua` — a folder. `init.lua` can `require` other `.lua` files in that folder.
+- `my-plugin.lua`: a single file.
+- `my-plugin/init.lua`: a folder. `init.lua` can `require` other `.lua` files in that folder.
 
 The name on disk is the plugin identity. qrate stores its settings, enable switch, and permission
 grants under that name. Do not rename a plugin folder after qrate stores data for it.
@@ -97,6 +97,7 @@ registry lists it.
 | One call into Lua | 2 seconds |
 | HTTP requests | 120 per minute, per plugin |
 | One HTTP request | 10 seconds |
+| One export call | 10 seconds |
 
 qrate warns in the log when a call takes more than 150 ms. qrate calls `validate` after every edit.
 Put slow work in a command or use a plugin cache.

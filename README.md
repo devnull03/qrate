@@ -10,7 +10,7 @@ qrate helps archives, libraries, museums, researchers, and small collection team
 
 [Download qrate](https://github.com/devnull03/qrate/releases) · [Read the user guide](docs/index.md) · [Contribute](CONTRIBUTING.md)
 
-> **Early release:** qrate is currently `0.4.0-beta.2`. Keep backups of important collections and report reproducible problems in an issue.
+> **Early release:** qrate is currently `0.5.0-beta.1`. Keep backups of important collections and report reproducible problems in an issue.
 
 ## Why qrate
 
@@ -19,16 +19,17 @@ Collection data rarely lives in just one place. A spreadsheet names an object, a
 ![Diagram comparing a disconnected cataloguing toolchain with qrate's unified workspace for metadata, media, diagnostics, and authorities.](docs/assets/final-report/toolchain.png)
 
 - **Keep ownership of your work.** Each project is a portable `.qrate` SQLite file; linked media remains where you keep it. qrate does not require an account or a hosted service.
-- **Describe collections with less friction.** Import CSV, Excel, or OpenDocument spreadsheets with their folders. You can also start from a Google Sheet. Edit, search, filter, copy and paste, undo changes, and tailor columns to the collection.
+- **Describe collections with less friction.** Import CSV, Excel, or OpenDocument spreadsheets with their folders, or start from a Google Sheet. Append more spreadsheet rows to an open project later. Edit, search, filter, copy and paste, undo changes, and tailor columns to the collection.
+- **Keep the arrangement.** Start from a folder tree and qrate turns its folders and files into nested archival components, labelled with RAD, DACS, ISAD(G), or Records in Contexts levels. Group, indent, and drag rows to rearrange them.
 - **See the records and the material together.** Link by filename or a pattern, browse a gallery of thumbnails, and preview images, documents, audio, and video alongside each record.
 - **Find pictures by what they show.** Optional visual search ranks linked images, PDF pages, and video frames against a plain description, or against another record's picture. The model downloads once and runs on your own machine.
 - **Catch problems while you work.** Check spelling, date formats, file links, headings, and selected authority sources. Review a proposed whole-cell correction before applying it.
-- **Take your data where it needs to go.** Export CSV, Excel, JSON-LD, CSL-JSON, or a ZIP archive. Google Sheets export and sync are available when you choose to enable them.
+- **Take your data where it needs to go.** Export CSV, Excel, JSON-LD, CSL-JSON, or a ZIP archive; Excel keeps your notes as cell comments. Google Sheets export and sync are available when you choose to enable them.
 - **Use AI with a human in control.** An optional local agent can review the open project and stage findings in the Problems panel. It cannot change a cell; you decide what to accept.
 
 ## A typical workflow
 
-1. Create a blank project or import a CSV, Excel, OpenDocument spreadsheet, or Google Sheet.
+1. Create a project from a folder of files, a CSV, Excel, or OpenDocument spreadsheet, or a Google Sheet, or start blank.
 2. Describe and organize records in the grid; configure the fields that matter to your collection.
 3. Link supporting photos, scans, recordings, or video, then inspect them from the record.
 4. Use the Problems panel to review data-quality checks and proposed corrections.
@@ -54,7 +55,9 @@ Collection data rarely lives in just one place. A spreadsheet names an object, a
 
 Download the installer or portable build for your platform from [GitHub Releases](https://github.com/devnull03/qrate/releases). Release assets are available for Windows, macOS, and Linux. Releases are currently unsigned, so Windows SmartScreen or macOS Gatekeeper may ask for confirmation the first time you open qrate.
 
-PDF preview support is included in release builds. For video previews and some less-common image formats, install `ffmpeg` and make it available on your system `PATH`.
+PDF preview support is included in release builds. Video previews and some less-common image formats need `ffmpeg`. The Windows downloads include it; on macOS and Linux, install `ffmpeg` and make it available on your system `PATH`.
+
+qrate can check for signed updates and download them in the background. It installs one only when you choose **Restart to update**. Turn this off in **Settings ▸ Application ▸ Updates**.
 
 ## Your data and privacy
 
@@ -62,19 +65,19 @@ A `.qrate` file stores the collection grid, settings, notes, and project metadat
 
 Visual search is off until you download its model, and it runs entirely on your machine: no image and no search text is sent anywhere. The model is stored with qrate's data, and each project keeps its own index inside its `.qrate` file.
 
-qrate works without an account. Google Sheets integration is off until you enable it in **Settings ▸ Google**; sign-in happens on your machine, and qrate only accesses sheets it creates or you select. Plugins run locally—install them only from sources you trust.
+qrate works without an account. Google Sheets integration is off until you enable it in **Settings ▸ Google**; sign-in happens on your machine, and qrate only accesses sheets it creates or you select. Plugins run locally, so install them only from sources you trust.
 
 ## Learn more
 
-- [Projects](docs/projects.md) — create, import, and open projects
-- [The grid](docs/grid.md) — edit, search, filter, and undo
-- [Files and photos](docs/files-and-photos.md) — link and view collection material
-- [Visual search](docs/visual-search.md) — find records by what their pictures show
-- [Diagnostics](docs/diagnostics.md) — checks, problems, and fixes
-- [Columns](docs/columns.md) — types, authority lists, and project settings
-- [Export and Google Sheets](docs/export-and-sync.md) — move data in and out
-- [Agent panel](docs/agent-panel.md) — review data with an optional local agent
-- [Plugins](docs/plugins/index.md) — discover, install, or write extensions
+- [Projects](docs/projects.md): create, import, open, and add to projects
+- [The grid](docs/grid.md): edit, group, search, filter, and undo
+- [Files and photos](docs/files-and-photos.md): link and view collection material
+- [Visual search](docs/visual-search.md): find records by what their pictures show
+- [Diagnostics](docs/diagnostics.md): checks, problems, and fixes
+- [Columns](docs/columns.md): types, authority lists, and project settings
+- [Export and Google Sheets](docs/export-and-sync.md): move data in and out
+- [Agent panel](docs/agent-panel.md): review data with an optional local agent
+- [Plugins](docs/plugins/index.md): discover, install, or write extensions
 
 ## Contributing
 
