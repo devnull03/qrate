@@ -30,6 +30,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 const COLUMN_NOTES_WRITE_PREFIX: &str = "column_notes:";
+const COLUMN_TYPE_WRITE_PREFIX: &str = "column_type:";
 
 use anyhow::{Context as _, Result};
 use qrate_export::{QRATE_APPLICATION_ID, QRATE_SCHEMA_VERSION, table_exists};
@@ -126,17 +127,14 @@ impl CurrentProject {
     }
 
     /// Drops this project's own value for `key`, so reads fall back to the user-wide default.
-    /// Synchronous rather than queued: it has to win against any write [`queue_write`] still holds
-    /// for the same key, and clearing an override is one deliberate click.
+    /// Queued like a write to the same key, so whichever came last wins.
     pub fn clear(key: &str, cx: &mut gpui::App) {
         let file = {
             let p = cx.global_mut::<Self>();
             p.data.values.remove(key);
             p.file.clone()
         };
-        if let Err(err) = delete_setting(&file, key) {
-            log::error!("failed to clear project setting {key}: {err}");
-        }
+        queue(&file, key, None, cx);
     }
 
     /// Sets a project-scoped text value. See [`set_bool`](Self::set_bool).
@@ -170,9 +168,8 @@ impl CurrentProject {
         }
         project.data.headers = headers;
     }
-    /// Declares a column's type, updating the cache validators read and writing `__columns`.
-    /// Synchronous rather than queued: [`ProjectSettingsWriter`] is keyed by `__settings` key and
-    /// this is another table, and picking a type is one deliberate click, not a drag.
+    /// Declares a column's type, updating the cache validators read and queueing the `__columns`
+    /// write — the column that held a single-holder type before gives it up in the same batch.
     pub fn set_column_type(name: &str, data_type: &str, cx: &mut gpui::App) {
         let kind = crate::columns::ColumnType::from_declared(data_type);
         let single_holder = matches!(
@@ -202,9 +199,13 @@ impl CurrentProject {
             }
             (p.file.clone(), cleared)
         };
-        if let Err(err) = write_column_types(&file, name, data_type, &cleared) {
-            log::error!("failed to save the type of column {name}: {err}");
+        for cleared in cleared {
+            let key = format!("{COLUMN_TYPE_WRITE_PREFIX}{cleared}");
+            let text = crate::columns::ColumnType::Text.as_str().to_string();
+            queue(&file, &key, Some(text), cx);
         }
+        let key = format!("{COLUMN_TYPE_WRITE_PREFIX}{name}");
+        queue(&file, &key, Some(data_type.to_string()), cx);
         crate::dirty::mark(crate::dirty::COLUMN_SETTINGS, cx);
     }
 
@@ -488,60 +489,53 @@ pub fn read_setting(path: &Path, key: &str) -> Result<Option<String>> {
 /// layout, window bounds — per drag event) should go through
 /// [`queue_write`] instead so the UI thread never blocks on file I/O.
 pub fn write_setting(path: &Path, key: &str, value: &str) -> Result<()> {
-    let conn = open_rw(path)?;
-    conn.execute(
-        "INSERT INTO __settings(key, value) VALUES (?1, ?2)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![key, value],
-    )
-    .context("Upsert setting")?;
-    Ok(())
+    write_queued(&open_rw(path)?, key, Some(value))
 }
 
-/// Removes one `__settings` row. A key with no row is already what this asks for, so it is not an
-/// error.
-pub fn delete_setting(path: &Path, key: &str) -> Result<()> {
-    let conn = open_rw(path)?;
-    conn.execute("DELETE FROM __settings WHERE key = ?1", params![key])
-        .context("Delete setting")?;
-    Ok(())
-}
-
-/// Upserts one column's declared type. A column the project was created without — a spreadsheet
-/// header nobody configured — gets a row, which is what lets a type be set on any column the table
-/// shows rather than only the ones the wizard wrote.
-fn write_column_types(path: &Path, name: &str, data_type: &str, cleared: &[String]) -> Result<()> {
-    let mut conn = open_rw(path)?;
-    let transaction = conn.transaction().context("Begin column type update")?;
-    for cleared_name in cleared {
-        transaction
+/// One queued write, on `conn`. `None` removes a `__settings` key — a key with no row is already
+/// what that asks for. A column notes or column type key upserts only that half of the column's
+/// `__columns` row, and gives a column the project was created without a row of its own.
+fn write_queued(conn: &Connection, key: &str, value: Option<&str>) -> Result<()> {
+    let text = crate::columns::ColumnType::Text.as_str();
+    let notes = key.strip_prefix(COLUMN_NOTES_WRITE_PREFIX);
+    let data_type = key.strip_prefix(COLUMN_TYPE_WRITE_PREFIX);
+    match (notes, data_type, value) {
+        (Some(column), _, notes) => conn
             .execute(
-                "UPDATE __columns SET data_type = ?2 WHERE name = ?1",
-                params![cleared_name, crate::columns::ColumnType::Text.as_str()],
+                "INSERT INTO __columns(name, data_type, notes) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(name) DO UPDATE SET notes = excluded.notes",
+                params![column, text, notes.unwrap_or_default()],
             )
-            .context("Clear unique column type")?;
-    }
-    transaction
-        .execute(
-            "INSERT INTO __columns(name, data_type, notes) VALUES (?1, ?2, NULL)
-             ON CONFLICT(name) DO UPDATE SET data_type = excluded.data_type",
-            params![name, data_type],
-        )
-        .context("Upsert column type")?;
-    transaction.commit().context("Commit column type update")?;
+            .context("Upsert column description"),
+        (None, Some(column), data_type) => conn
+            .execute(
+                "INSERT INTO __columns(name, data_type, notes) VALUES (?1, ?2, NULL)
+                 ON CONFLICT(name) DO UPDATE SET data_type = excluded.data_type",
+                params![column, data_type.unwrap_or(text)],
+            )
+            .context("Upsert column type"),
+        (None, None, Some(value)) => conn
+            .execute(
+                "INSERT INTO __settings(key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .context("Upsert setting"),
+        (None, None, None) => conn
+            .execute("DELETE FROM __settings WHERE key = ?1", params![key])
+            .context("Delete setting"),
+    }?;
     Ok(())
 }
 
-/// Upserts one column's description without disturbing its declared type.
-pub fn write_column_notes(path: &Path, name: &str, notes: &str) -> Result<()> {
-    let conn = open_rw(path)?;
-    conn.execute(
-        "INSERT INTO __columns(name, data_type, notes) VALUES (?1, ?2, ?3)
-         ON CONFLICT(name) DO UPDATE SET notes = excluded.notes",
-        params![name, crate::columns::ColumnType::Text.as_str(), notes],
-    )
-    .context("Upsert column description")?;
-    Ok(())
+/// Every write queued for one file, over one connection in one transaction.
+fn write_batch(path: &Path, writes: &[(String, Option<String>)]) -> Result<()> {
+    let mut conn = open_rw(path)?;
+    let tx = conn.transaction().context("Begin settings update")?;
+    for (key, value) in writes {
+        write_queued(&tx, key, value.as_deref())?;
+    }
+    tx.commit().context("Commit settings update")
 }
 
 /// Re-key a column's declared type and description to its new name. `__columns` is keyed by name,
@@ -786,16 +780,18 @@ pub fn write_visual_index(path: &Path, model: &str, entries: &[VisualEntry]) -> 
 /// window-bounds observers fire on every drag event; latest value per
 /// (file, key) wins, and one thread serves all project files — no lifecycle
 /// to manage on project switch, since the path travels with each entry.
-/// Mirrors `db::SettingsWriter`.
+/// Mirrors `db::SettingsWriter`. A `None` value is a removal, queued like any write.
 #[derive(Clone)]
 pub struct ProjectSettingsWriter {
-    pending: Arc<Mutex<HashMap<(PathBuf, String), String>>>,
+    pending: Arc<Mutex<Pending>>,
     wake: mpsc::Sender<()>,
 }
 
+type Pending = HashMap<(PathBuf, String), Option<String>>;
+
 impl ProjectSettingsWriter {
     pub fn start() -> Self {
-        let pending: Arc<Mutex<HashMap<(PathBuf, String), String>>> = Arc::default();
+        let pending: Arc<Mutex<Pending>> = Arc::default();
         let (wake, rx) = mpsc::channel::<()>();
         let map = pending.clone();
         std::thread::spawn(move || {
@@ -812,7 +808,7 @@ impl ProjectSettingsWriter {
         Self { pending, wake }
     }
 
-    pub fn enqueue(&self, file: &Path, key: &str, value: String) {
+    pub fn enqueue(&self, file: &Path, key: &str, value: Option<String>) {
         if let Ok(mut map) = self.pending.lock() {
             map.insert((file.to_path_buf(), key.to_string()), value);
         }
@@ -825,23 +821,24 @@ impl ProjectSettingsWriter {
         Self::write_pending(&self.pending);
     }
 
-    fn write_pending(pending: &Mutex<HashMap<(PathBuf, String), String>>) {
+    fn write_pending(pending: &Mutex<Pending>) {
         let drained: Vec<_> = match pending.lock() {
             Ok(mut map) => map.drain().collect(),
             Err(_) => return,
         };
+        let mut by_file: HashMap<PathBuf, Vec<(String, Option<String>)>> = HashMap::new();
         for ((file, key), value) in drained {
-            if let Err(err) = write_queued(&file, &key, &value) {
-                log::error!("failed to save project setting {key}: {err}");
+            by_file.entry(file).or_default().push((key, value));
+        }
+        for (file, writes) in by_file {
+            if let Err(err) = write_batch(&file, &writes) {
+                log::error!(
+                    "failed to save {} project settings to {}: {err:#}",
+                    writes.len(),
+                    file.display()
+                );
             }
         }
-    }
-}
-
-fn write_queued(file: &Path, key: &str, value: &str) -> Result<()> {
-    match key.strip_prefix(COLUMN_NOTES_WRITE_PREFIX) {
-        Some(column) => write_column_notes(file, column, value),
-        None => write_setting(file, key, value),
     }
 }
 
@@ -856,14 +853,19 @@ impl gpui::Global for ProjectPersistence {}
 /// Queues a debounced project-setting write; falls back to a synchronous
 /// write when the writer global isn't set (tests, early startup).
 pub fn queue_write(file: &Path, key: &str, value: &str, cx: &gpui::App) {
+    queue(file, key, Some(value.to_string()), cx);
+}
+
+/// [`queue_write`] for any queued operation, removals included.
+fn queue(file: &Path, key: &str, value: Option<String>, cx: &gpui::App) {
     let writer = cx
         .try_global::<ProjectPersistence>()
         .and_then(|p| p.writer.clone());
     match writer {
-        Some(w) => w.enqueue(file, key, value.to_string()),
+        Some(w) => w.enqueue(file, key, value),
         None => {
-            if let Err(err) = write_queued(file, key, value) {
-                log::error!("failed to save project setting {key}: {err}");
+            if let Err(err) = write_batch(file, &[(key.to_string(), value)]) {
+                log::error!("failed to save project setting {key}: {err:#}");
             }
         }
     }
@@ -873,11 +875,11 @@ pub fn queue_write(file: &Path, key: &str, value: &str, cx: &gpui::App) {
 /// (flexible CSV) are padded/truncated to the header count. Manages no transaction of its own —
 /// the caller wraps it, so the create and the inserts commit together (and, on a re-save,
 /// atomically with the preceding drop).
-fn create_and_fill_dataset(
+fn create_and_fill_dataset<S: AsRef<str>>(
     conn: &Connection,
-    headers: &[String],
+    headers: &[S],
     row_ids: Option<&[RowId]>,
-    rows: &[Vec<String>],
+    rows: &[Vec<S>],
 ) -> Result<()> {
     if row_ids.is_some_and(|ids| ids.len() != rows.len()) {
         anyhow::bail!("row id count does not match dataset row count");
@@ -894,45 +896,59 @@ fn create_and_fill_dataset(
     ))
     .context("Create dataset_main")?;
 
-    let first_value = usize::from(row_ids.is_some()) + 2;
+    let mut stmt = conn
+        .prepare(&row_insert_sql(&idents, row_ids.is_some()))
+        .context("Prepare row insert")?;
+    for (ix, row) in rows.iter().enumerate() {
+        insert_row(
+            &mut stmt,
+            row_ids.map(|ids| ids[ix]),
+            ix as i64,
+            row,
+            idents.len(),
+        )?;
+    }
+    Ok(())
+}
+
+fn row_insert_sql(idents: &[String], with_id: bool) -> String {
+    let first_value = usize::from(with_id) + 2;
     let placeholders: Vec<String> = (first_value..first_value + idents.len())
         .map(|i| format!("?{i}"))
         .collect();
-    let insert_columns = match row_ids {
-        Some(_) => format!("_row_id, _row_order, {}", idents.join(", ")),
-        None => format!("_row_order, {}", idents.join(", ")),
-    };
-    let insert_sql = format!(
-        "INSERT INTO dataset_main ({}) VALUES ({})",
-        insert_columns,
-        match row_ids {
-            Some(_) => format!("?1, ?2, {}", placeholders.join(", ")),
-            None => format!("?1, {}", placeholders.join(", ")),
-        }
-    );
-    let mut stmt = conn.prepare(&insert_sql).context("Prepare row insert")?;
-    let empty = String::new();
-    for (ix, row) in rows.iter().enumerate() {
-        let order = ix as i64;
-        let padded: Vec<&String> = (0..idents.len())
-            .map(|i| row.get(i).unwrap_or(&empty))
-            .collect();
-        match row_ids {
-            Some(ids) => stmt
-                .execute(rusqlite::params_from_iter(
-                    std::iter::once(&ids[ix] as &dyn rusqlite::ToSql)
-                        .chain(std::iter::once(&order as &dyn rusqlite::ToSql))
-                        .chain(padded.into_iter().map(|cell| cell as &dyn rusqlite::ToSql)),
-                ))
-                .context("Insert row")?,
-            None => stmt
-                .execute(rusqlite::params_from_iter(
-                    std::iter::once(&order as &dyn rusqlite::ToSql)
-                        .chain(padded.into_iter().map(|cell| cell as &dyn rusqlite::ToSql)),
-                ))
-                .context("Insert row")?,
-        };
+    match with_id {
+        true => format!(
+            "INSERT INTO dataset_main (_row_id, _row_order, {}) VALUES (?1, ?2, {})",
+            idents.join(", "),
+            placeholders.join(", ")
+        ),
+        false => format!(
+            "INSERT INTO dataset_main (_row_order, {}) VALUES (?1, {})",
+            idents.join(", "),
+            placeholders.join(", ")
+        ),
     }
+}
+
+/// One row through [`row_insert_sql`]'s statement, padded or cut to `width` cells.
+fn insert_row<S: AsRef<str>>(
+    stmt: &mut rusqlite::Statement<'_>,
+    row_id: Option<RowId>,
+    order: i64,
+    row: &[S],
+    width: usize,
+) -> Result<()> {
+    let cells: Vec<&str> = (0..width)
+        .map(|i| row.get(i).map_or("", |cell| cell.as_ref()))
+        .collect();
+    let mut values: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(width + 2);
+    if let Some(id) = &row_id {
+        values.push(id);
+    }
+    values.push(&order);
+    values.extend(cells.iter().map(|cell| cell as &dyn rusqlite::ToSql));
+    stmt.execute(rusqlite::params_from_iter(values))
+        .context("Write row")?;
     Ok(())
 }
 
@@ -946,9 +962,8 @@ fn write_dataset(conn: &Connection, headers: &[String], rows: &[Vec<String>]) ->
 
 /// Rewrites `dataset_main` from the in-memory rows — the whole table, in one transaction, so a
 /// crash mid-save leaves the previous version intact (an uncommitted transaction rolls back when
-/// the connection drops). `headers`/`rows` must be in the project's *original* column order: the
-/// `.qrate` schema keeps a fixed physical column order, and the separately-saved column layout
-/// maps that to display order. A blank project (no headers, no `dataset_main`) is a no-op.
+/// the connection drops). `headers`/`rows` are written in the order given, which becomes the
+/// file's physical column order. A blank project (no headers, no `dataset_main`) is a no-op.
 ///
 /// `structure` is the live hierarchy, written in the same transaction as the rows it names;
 /// `None` keeps whatever hierarchy the file already holds.
@@ -963,24 +978,139 @@ pub fn save_dataset(
     if headers.is_empty() {
         return Ok(());
     }
-    let mut conn = open_rw(path)?;
-    let had_structure = table_exists(&conn, "__row_structure")?;
-    let structure = match structure {
-        Some(structure) => structure.to_vec(),
-        None if had_structure => qrate_export::read_row_structure(&conn)?,
-        None => Vec::new(),
-    };
-    let structure = retained_row_structure(structure, row_ids);
-    // A flat v3 project stays v3 until it has an arrangement worth storing.
-    let write_structure = had_structure || !is_flat(&structure, row_ids);
-    if write_structure {
-        validate_row_structure(&structure)?;
+    rewrite_dataset(open_rw(path)?, headers, row_ids, rows, structure, history)
+}
+
+/// [`save_dataset`] that writes only what `history` says changed: the rows it names are updated
+/// or inserted, rows no longer present are deleted and the rest only have their order touched, all
+/// by `_row_id` in one transaction. `history` must be every entry since the file last saved —
+/// the same entries this appends to the log.
+///
+/// Falls back to the full rewrite when the column set differs from the file's (a column added,
+/// removed, renamed or moved), since that is a new table rather than new rows.
+pub fn save_changes<S: AsRef<str>>(
+    path: &Path,
+    headers: &[S],
+    row_ids: &[RowId],
+    rows: &[Vec<S>],
+    structure: Option<&[RowStructure]>,
+    history: &[crate::history::Entry],
+) -> Result<()> {
+    use crate::history::Change;
+
+    if headers.is_empty() {
+        return Ok(());
     }
+    if row_ids.len() != rows.len() {
+        anyhow::bail!("row id count does not match dataset row count");
+    }
+    let mut conn = open_rw(path)?;
+    let reshaped = history
+        .iter()
+        .flat_map(|entry| &entry.changes)
+        .any(|change| {
+            matches!(
+                change,
+                Change::ColumnAdded { .. }
+                    | Change::ColumnRemoved { .. }
+                    | Change::ColumnRenamed { .. }
+                    | Change::ColumnMoved { .. }
+            )
+        });
+    let names = dataset_column_names(headers);
+    if reshaped || stored_columns(&conn)?.as_ref() != Some(&names) {
+        return rewrite_dataset(conn, headers, row_ids, rows, structure, history);
+    }
+    let touched: HashSet<RowId> = history
+        .iter()
+        .flat_map(|entry| &entry.changes)
+        .filter_map(|change| match change {
+            Change::Cell { row, .. } | Change::RowAdded { row, .. } => Some(*row),
+            _ => None,
+        })
+        .collect();
+    let structure = planned_structure(&conn, structure, row_ids)?;
+
+    let tx = conn.transaction().context("Begin dataset update")?;
+    let stored: HashMap<RowId, i64> = tx
+        .prepare("SELECT _row_id, _row_order FROM dataset_main")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()
+        .context("Read stored rows")?;
+    let kept: HashSet<RowId> = row_ids.iter().copied().collect();
+    {
+        let mut delete = tx.prepare("DELETE FROM dataset_main WHERE _row_id = ?1")?;
+        for id in stored.keys().filter(|id| !kept.contains(id)) {
+            delete.execute([id]).context("Delete row")?;
+        }
+        let idents = dataset_column_idents(headers);
+        let mut insert = tx.prepare(&row_insert_sql(&idents, true))?;
+        let assignments: Vec<String> = idents
+            .iter()
+            .enumerate()
+            .map(|(i, ident)| format!("{ident} = ?{}", i + 3))
+            .collect();
+        let mut update = tx.prepare(&format!(
+            "UPDATE dataset_main SET _row_order = ?2, {} WHERE _row_id = ?1",
+            assignments.join(", ")
+        ))?;
+        let mut reorder =
+            tx.prepare("UPDATE dataset_main SET _row_order = ?2 WHERE _row_id = ?1")?;
+        for (ix, (id, row)) in row_ids.iter().zip(rows).enumerate() {
+            let order = ix as i64;
+            match stored.get(id) {
+                None => insert_row(&mut insert, Some(*id), order, row, idents.len())?,
+                Some(_) if touched.contains(id) => {
+                    insert_row(&mut update, Some(*id), order, row, idents.len())?
+                }
+                Some(was) if *was != order => {
+                    reorder.execute(params![id, order]).context("Reorder row")?;
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    if let Some(structure) = structure {
+        tx.execute_batch(ROW_STRUCTURE_DDL)
+            .context("Create __row_structure")?;
+        let stored: HashMap<RowId, RowStructure> = qrate_export::read_row_structure(&tx)?
+            .into_iter()
+            .map(|row| (row.row_id, row))
+            .collect();
+        let wanted: HashSet<RowId> = structure.iter().map(|row| row.row_id).collect();
+        {
+            let mut delete = tx.prepare("DELETE FROM __row_structure WHERE row_id = ?1")?;
+            for id in stored.keys().filter(|id| !wanted.contains(id)) {
+                delete.execute([id]).context("Delete row structure")?;
+            }
+        }
+        let changed: Vec<RowStructure> = structure
+            .into_iter()
+            .filter(|row| stored.get(&row.row_id) != Some(row))
+            .collect();
+        upsert_row_structure(&tx, &changed)?;
+        tx.pragma_update(None, "user_version", QRATE_SCHEMA_VERSION)
+            .context("Set user_version")?;
+    }
+    crate::history::append(&tx, history)?;
+    tx.commit().context("Commit dataset update")
+}
+
+/// The whole-table half of [`save_dataset`] and [`save_changes`]: drop and recreate.
+fn rewrite_dataset<S: AsRef<str>>(
+    mut conn: Connection,
+    headers: &[S],
+    row_ids: &[RowId],
+    rows: &[Vec<S>],
+    structure: Option<&[RowStructure]>,
+    history: &[crate::history::Entry],
+) -> Result<()> {
+    let structure = planned_structure(&conn, structure, row_ids)?;
     let tx = conn.transaction().context("Begin dataset rewrite")?;
     tx.execute_batch("DROP TABLE IF EXISTS __row_structure; DROP TABLE IF EXISTS dataset_main;")
         .context("Begin dataset rewrite")?;
     create_and_fill_dataset(&tx, headers, Some(row_ids), rows)?;
-    if write_structure {
+    if let Some(structure) = structure {
         tx.execute_batch(ROW_STRUCTURE_DDL)
             .context("Recreate __row_structure")?;
         insert_row_structure(&tx, &structure)?;
@@ -989,6 +1119,65 @@ pub fn save_dataset(
     }
     crate::history::append(&tx, history)?;
     tx.commit().context("Commit dataset rewrite")
+}
+
+/// The hierarchy a save writes, normalized to the rows being saved, or `None` when there is none
+/// to write: a flat v3 project stays v3 until it has an arrangement worth storing.
+fn planned_structure(
+    conn: &Connection,
+    structure: Option<&[RowStructure]>,
+    row_ids: &[RowId],
+) -> Result<Option<Vec<RowStructure>>> {
+    let had_structure = table_exists(conn, "__row_structure")?;
+    let structure = match structure {
+        Some(structure) => structure.to_vec(),
+        None if had_structure => qrate_export::read_row_structure(conn)?,
+        None => Vec::new(),
+    };
+    let structure = retained_row_structure(structure, row_ids);
+    if !had_structure && is_flat(&structure, row_ids) {
+        return Ok(None);
+    }
+    validate_row_structure(&structure)?;
+    Ok(Some(structure))
+}
+
+fn upsert_row_structure(conn: &Connection, structure: &[RowStructure]) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT OR REPLACE INTO __row_structure
+         (row_id, parent_id, level_key, sibling_order, source_path, source_kind)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    for component in structure {
+        stmt.execute(params![
+            component.row_id,
+            component.parent_id,
+            component.level_key,
+            component.sibling_order,
+            component.source_path,
+            component.source_kind.map(SourceKind::as_str),
+        ])
+        .with_context(|| format!("Update structure for row {}", component.row_id))?;
+    }
+    Ok(())
+}
+
+/// `dataset_main`'s data columns as the file holds them, in physical order. `None` without one.
+fn stored_columns(conn: &Connection) -> Result<Option<Vec<String>>> {
+    if !table_exists(conn, "dataset_main")? {
+        return Ok(None);
+    }
+    let names = conn
+        .prepare("SELECT name FROM pragma_table_info('dataset_main') ORDER BY cid")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .filter(|name| {
+            !name
+                .as_ref()
+                .is_ok_and(|name| name == "_row_id" || name == "_row_order")
+        })
+        .collect::<rusqlite::Result<_>>()
+        .context("Read dataset columns")?;
+    Ok(Some(names))
 }
 
 fn is_flat(structure: &[RowStructure], row_ids: &[RowId]) -> bool {
@@ -1027,16 +1216,16 @@ fn retained_row_structure(structure: Vec<RowStructure>, row_ids: &[RowId]) -> Ve
     structure
 }
 
-/// Quotes each header as a SQL identifier, de-duplicating case-insensitively
-/// (`Title`, `title` → `"Title"`, `"title_2"`) and naming blanks `column_N` —
-/// spreadsheet headers are user data and can collide or be empty.
-fn dataset_column_idents(headers: &[String]) -> Vec<String> {
+/// Each header as the SQL column it is stored under, de-duplicating case-insensitively
+/// (`Title`, `title` → `Title`, `title_2`) and naming blanks `column_N` — spreadsheet headers are
+/// user data and can collide or be empty.
+fn dataset_column_names<S: AsRef<str>>(headers: &[S]) -> Vec<String> {
     let mut seen = std::collections::HashSet::from(["_row_id".into(), "_row_order".into()]);
     headers
         .iter()
         .enumerate()
         .map(|(ix, h)| {
-            let base = h.trim();
+            let base = h.as_ref().trim();
             let base = if base.is_empty() {
                 format!("column_{}", ix + 1)
             } else {
@@ -1048,8 +1237,16 @@ fn dataset_column_idents(headers: &[String]) -> Vec<String> {
                 name = format!("{base}_{n}");
                 n += 1;
             }
-            quote_identifier(&name)
+            name
         })
+        .collect()
+}
+
+/// [`dataset_column_names`], quoted as SQL identifiers.
+fn dataset_column_idents<S: AsRef<str>>(headers: &[S]) -> Vec<String> {
+    dataset_column_names(headers)
+        .iter()
+        .map(|name| quote_identifier(name))
         .collect()
 }
 
@@ -1248,10 +1445,17 @@ mod tests {
         )
         .unwrap();
 
-        write_column_types(&path, "Digital ID", "Filename", &[]).unwrap();
-        write_column_types(&path, "Taken", "Date", &[]).unwrap();
-        write_column_notes(&path, "Digital ID", "the master scan filename").unwrap();
-        write_column_notes(&path, "Taken", "capture date").unwrap();
+        let queued = |key: &str, value: &str| (key.to_string(), Some(value.to_string()));
+        write_batch(
+            &path,
+            &[
+                queued("column_type:Digital ID", "Filename"),
+                queued("column_type:Taken", "Date"),
+                queued("column_notes:Digital ID", "the master scan filename"),
+                queued("column_notes:Taken", "capture date"),
+            ],
+        )
+        .unwrap();
 
         let columns = load_project_file(&path).unwrap().columns;
         let by_name = |n: &str| {
@@ -1394,6 +1598,145 @@ mod tests {
         // DELETE mode's invariant survives the rewrite: only the `.qrate` file at rest.
         assert!(!path.with_extension("qrate-journal").exists());
         assert!(!path.with_extension("qrate-wal").exists());
+    }
+
+    /// Saves `after` both ways — incrementally from `changes`, and as a full rewrite of a copy —
+    /// starting from the same three-row file, then reopens both and compares them.
+    fn saves_like_a_rewrite(
+        name: &str,
+        headers: &[&str],
+        row_ids: &[RowId],
+        after: &[&[&str]],
+        changes: Vec<crate::history::Change>,
+    ) -> ProjectData {
+        let incremental = tempfile(&format!("{name}-changes.qrate"));
+        let rewritten = tempfile(&format!("{name}-rewrite.qrate"));
+        for path in [&incremental, &rewritten] {
+            create_project_file(
+                path,
+                &ProjectSpec {
+                    name: "Incremental",
+                    source: "CSV",
+                    headers: &["Title".to_string(), "Date".to_string()],
+                    rows: &[
+                        vec!["one".into(), "1901".into()],
+                        vec!["two".into(), "1902".into()],
+                        vec!["three".into(), "1903".into()],
+                    ],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let headers: Vec<String> = headers.iter().map(|h| h.to_string()).collect();
+        let rows: Vec<Vec<String>> = after
+            .iter()
+            .map(|row| row.iter().map(|cell| cell.to_string()).collect())
+            .collect();
+        let log = [crate::history::Entry::new(
+            crate::history::Origin::Typed,
+            changes,
+            None,
+        )];
+        save_changes(&incremental, &headers, row_ids, &rows, None, &log).unwrap();
+        save_dataset(&rewritten, &headers, row_ids, &rows, None, &log).unwrap();
+
+        let (a, b) = (
+            load_project_file(&incremental).unwrap(),
+            load_project_file(&rewritten).unwrap(),
+        );
+        assert_eq!(
+            (&a.headers, &a.row_ids, &a.rows),
+            (&b.headers, &b.row_ids, &b.rows)
+        );
+        assert_eq!(
+            read_row_structure(&incremental).unwrap(),
+            read_row_structure(&rewritten).unwrap()
+        );
+        assert_eq!(
+            crate::history::entries_after(&incremental, 0)
+                .unwrap()
+                .len(),
+            1,
+            "the log entry lands with the data"
+        );
+        a
+    }
+
+    #[test]
+    fn an_incremental_cell_edit_matches_a_rewrite() {
+        let data = saves_like_a_rewrite(
+            "cell",
+            &["Title", "Date"],
+            &[1, 2, 3],
+            &[&["one", "1901"], &["TWO", "1902"], &["three", "1903"]],
+            vec![crate::history::Change::Cell {
+                row: 2,
+                column: "Title".into(),
+                before: "two".into(),
+                after: "TWO".into(),
+            }],
+        );
+        assert_eq!(data.rows[1], vec!["TWO", "1902"]);
+    }
+
+    #[test]
+    fn an_incremental_row_insert_matches_a_rewrite() {
+        let data = saves_like_a_rewrite(
+            "insert",
+            &["Title", "Date"],
+            &[4, 1, 2, 3],
+            &[
+                &["new", ""],
+                &["one", "1901"],
+                &["two", "1902"],
+                &["three", "1903"],
+            ],
+            vec![crate::history::Change::RowAdded {
+                row: 4,
+                position: 0,
+                cells: vec![("Title".into(), "new".into())],
+            }],
+        );
+        assert_eq!(data.row_ids, vec![4, 1, 2, 3]);
+    }
+
+    #[test]
+    fn an_incremental_row_delete_matches_a_rewrite() {
+        let data = saves_like_a_rewrite(
+            "delete",
+            &["Title", "Date"],
+            &[1, 3],
+            &[&["one", "1901"], &["three", "1903"]],
+            vec![crate::history::Change::RowRemoved {
+                row: 2,
+                position: 1,
+                cells: vec![("Title".into(), "two".into())],
+            }],
+        );
+        assert_eq!(data.row_ids, vec![1, 3]);
+    }
+
+    /// A new column is a new table, so the save falls back to rewriting it — and still agrees.
+    #[test]
+    fn an_added_column_rewrites_the_table() {
+        let data = saves_like_a_rewrite(
+            "column",
+            &["Title", "Place", "Date"],
+            &[1, 2, 3],
+            &[
+                &["one", "", "1901"],
+                &["two", "Hope", "1902"],
+                &["three", "", "1903"],
+            ],
+            vec![crate::history::Change::ColumnAdded {
+                column: "Place".into(),
+                position: 1,
+                cells: Vec::new(),
+            }],
+        );
+        assert_eq!(data.headers, vec!["Title", "Place", "Date"]);
+        assert_eq!(data.rows[1], vec!["two", "Hope", "1902"]);
     }
 
     #[test]
@@ -1698,7 +2041,7 @@ mod tests {
                 .contains_key("table_stripes")
         );
 
-        delete_setting(&path, "table_stripes").unwrap();
+        write_batch(&path, &[("table_stripes".into(), None)]).unwrap();
         assert!(
             !load_project_file(&path)
                 .unwrap()
@@ -1706,7 +2049,7 @@ mod tests {
                 .contains_key("table_stripes")
         );
         // Clearing what was never set is what the caller asked for, not a failure.
-        delete_setting(&path, "table_stripes").unwrap();
+        write_batch(&path, &[("table_stripes".into(), None)]).unwrap();
     }
 
     #[test]
@@ -1723,8 +2066,8 @@ mod tests {
         .unwrap();
 
         let writer = ProjectSettingsWriter::start();
-        writer.enqueue(&path, "dock_layout", "{\"v\":1}".into());
-        writer.enqueue(&path, "dock_layout", "{\"v\":2}".into()); // latest wins
+        writer.enqueue(&path, "dock_layout", Some("{\"v\":1}".into()));
+        writer.enqueue(&path, "dock_layout", Some("{\"v\":2}".into())); // latest wins
         writer.flush(); // quit path: synchronous, doesn't wait out the debounce
         assert_eq!(
             read_setting(&path, "dock_layout").unwrap().as_deref(),

@@ -66,6 +66,24 @@ pub(crate) const FROZEN_COLUMNS_KEY: &str = "table_frozen_columns";
 /// Push the settings the delegate caches into it. Called wherever either store changes, since the
 /// delegate reads no settings itself — it has no `App` in the paths that need them.
 fn apply_settings(delegate: &mut QrateTableDelegate, cx: &App) {
+    if let Some(project) = cx.try_global::<settings::project::CurrentProject>() {
+        delegate.set_declared(
+            project
+                .data
+                .columns
+                .iter()
+                .map(|column| {
+                    (
+                        SharedString::from(column.name.clone()),
+                        (
+                            settings::columns::ColumnType::from_declared(&column.data_type),
+                            SharedString::from(column.notes.trim().to_string()),
+                        ),
+                    )
+                })
+                .collect(),
+        );
+    }
     let column_settings = settings::columns::load(cx);
     let filters_on = settings::columns::filters_master_enabled(cx);
     delegate.apply_column_settings(
@@ -136,6 +154,8 @@ pub struct TablePanel {
     search_opts: SearchOpts,
     search_error: bool,
     _search_sub: Subscription,
+    /// The search waiting for typing to pause. See [`Self::schedule_search`].
+    _search_task: Option<Task<()>>,
     /// Linked documents being read for a search that includes them. `Some` while it runs.
     reading_documents: Option<Task<()>>,
     /// The pending visual query. Replacing it cancels the one before, which debounces typing.
@@ -145,7 +165,7 @@ pub struct TablePanel {
     _visual_sub: Subscription,
     /// The last visual ranking as `(score, source_row, data_col)`, best first, so moving the
     /// breadth slider re-cuts it without asking the model again.
-    ranking: Vec<(f32, usize, usize)>,
+    ranking: Vec<(f32, usize)>,
     /// How far below the best visual hit still counts as a match.
     breadth: Entity<SliderState>,
     _breadth_sub: Subscription,
@@ -204,7 +224,6 @@ impl TablePanel {
                 description.profile.key()
             );
             Self::apply_saved_layout(&mut delegate, &project.file);
-            delegate.set_image_paths(Self::resolve_images(&project.data));
             loaded_project = Some(project.file.clone());
         }
         apply_settings(&mut delegate, cx);
@@ -221,6 +240,9 @@ impl TablePanel {
                 .row_header(false)
         });
         cx.set_global(TableStateHandle(state.downgrade()));
+        // A newly opened project reads its files folder afresh, off the UI thread.
+        photos::forget(cx);
+        state.update(cx, |state, cx| photos::refresh(state, None, cx));
 
         let table_state = state.clone();
         let _edit_sub = cx.subscribe_in(
@@ -420,7 +442,6 @@ impl TablePanel {
                     project.data.row_ids.clone(),
                     project.data.rows.clone(),
                 );
-                let image_paths = Self::resolve_images(&project.data);
                 let structure =
                     settings::project::read_row_structure(&file).unwrap_or_else(|error| {
                         log::warn!("Could not read row structure from {file:?}: {error}");
@@ -441,6 +462,7 @@ impl TablePanel {
                     structure.len(),
                     description.profile.key()
                 );
+                photos::forget(cx);
                 this.state.update(cx, |state, cx| {
                     state.delegate_mut().set_data(&headers, &row_ids, &rows);
                     state
@@ -448,8 +470,8 @@ impl TablePanel {
                         .set_structure(&structure, &description.file_level_key);
                     state.delegate_mut().restore_expanded(&expanded);
                     Self::apply_saved_layout(state.delegate_mut(), &file);
-                    state.delegate_mut().set_image_paths(image_paths);
                     apply_settings(state.delegate_mut(), cx);
+                    photos::refresh(state, None, cx);
                     state.refresh(cx);
                     cx.emit(TableChanged);
                     cx.notify();
@@ -472,7 +494,7 @@ impl TablePanel {
             cx.subscribe(
                 &search_input,
                 |this, _input, event: &InputEvent, cx| match event {
-                    InputEvent::Change => this.refresh_search(cx),
+                    InputEvent::Change => this.schedule_search(cx),
                     InputEvent::PressEnter { shift, .. } => {
                         this.goto_match(if *shift { -1 } else { 1 }, cx)
                     }
@@ -534,6 +556,7 @@ impl TablePanel {
             search_opts: SearchOpts::default(),
             search_error: false,
             _search_sub,
+            _search_task: None,
             reading_documents: None,
             visual_query: None,
             similar: None,
@@ -904,8 +927,10 @@ impl TablePanel {
                             })
                             .collect();
                         this.state.update(cx, |state, cx| {
-                            state.delegate_mut().append_spreadsheet_rows(values);
-                            photos::refresh(state, cx);
+                            let at = state.delegate().row_count();
+                            let added = state.delegate_mut().append_spreadsheet_rows(values);
+                            let rows: Vec<usize> = (at..at + added).collect();
+                            photos::refresh(state, Some(&rows), cx);
                             state.refresh(cx);
                             cx.emit(TableChanged);
                             cx.notify();
@@ -948,16 +973,13 @@ impl TablePanel {
                         folder.into(),
                         cx,
                     );
-                    let image_paths = cx
-                        .try_global::<settings::project::CurrentProject>()
-                        .map(|project| Self::resolve_images(&project.data))
-                        .unwrap_or_default();
+                    // The walk revalidates when it lands, which is what clears the missing files.
+                    photos::forget(cx);
                     this.state.update(cx, |state, cx| {
-                        state.delegate_mut().set_image_paths(image_paths);
+                        photos::refresh(state, None, cx);
                         state.refresh(cx);
                         cx.notify();
                     });
-                    crate::revalidate_now(cx);
                     cx.notify();
                 })
                 .ok();
@@ -973,43 +995,47 @@ impl TablePanel {
         crate::stamp_pending_author(cx);
         match settings::effective_text(settings::AUTOSAVE_KEY, cx).as_ref() {
             "off" => {}
-            "immediate" => crate::save_now(cx),
+            "immediate" => crate::autosave(cx),
             _ => {
                 self._autosave_task = Some(cx.spawn(async move |this, cx| {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(800))
-                        .await;
-                    this.update(cx, |_this, cx| crate::save_now(cx)).ok();
+                    cx.background_executor().timer(AUTOSAVE_DEBOUNCE).await;
+                    this.update(cx, |_this, cx| crate::autosave(cx)).ok();
                 }));
             }
         }
     }
 
-    /// Recompute the find matches from the current query and jump to the first, if any. Called on
-    /// every keystroke in the find bar (the scan is sub-millisecond for qrate's grids).
+    /// Re-run the search once typing in the find bar pauses. Replacing the task cancels the timer
+    /// of the keystroke before, so a burst of typing scans the grid once.
+    fn schedule_search(&mut self, cx: &mut Context<Self>) {
+        self._search_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+            this.update(cx, |this, cx| this.refresh_search(cx)).ok();
+        }));
+    }
+
+    /// Recompute the find matches from the current query and jump to the first, if any.
     fn refresh_search(&mut self, cx: &mut Context<Self>) {
+        self._search_task = None;
         if self.search_opts.visual {
             self.search_visual(cx);
             return;
         }
         self.ranking.clear();
         let needle = self.search_input.read(cx).value().to_string();
-        self.search_error =
-            !needle.trim().is_empty() && compile_search(&needle, self.search_opts).is_none();
+        let query = compile_search(&needle, self.search_opts);
+        self.search_error = !needle.trim().is_empty() && query.is_none();
+        let opts = self.search_opts;
         // A search that reaches into linked files narrows the view to its hits.
-        let hits = (self.search_opts.files && !needle.trim().is_empty() && !self.search_error)
-            .then(|| {
-                self.state
-                    .read(cx)
-                    .delegate()
-                    .hit_rows(&needle, self.search_opts)
-            });
+        let hits = query
+            .as_ref()
+            .filter(|_| opts.files)
+            .map(|re| self.state.read(cx).delegate().hit_rows(re, opts));
         self.set_search_rows(hits, cx);
-        self.search_matches = self
-            .state
-            .read(cx)
-            .delegate()
-            .search_matches(&needle, self.search_opts);
+        self.search_matches = query
+            .as_ref()
+            .map(|re| self.state.read(cx).delegate().search_matches(re, opts))
+            .unwrap_or_default();
         self.search_ix = 0;
         self.select_current_match(cx);
         self.read_documents(cx);
@@ -1017,17 +1043,15 @@ impl TablePanel {
     }
 
     /// Rank rows by how well their linked file matches the query, or looks like the file "Find
-    /// similar items" was raised on when the query is empty. Typing waits for a pause first.
+    /// similar items" was raised on when the query is empty. Typing waits for a pause first, and
+    /// the scoring runs off the UI thread.
     fn search_visual(&mut self, cx: &mut Context<Self>) {
         let files = self.state.read(cx).delegate().linked_files();
         visual::index(files, cx);
         self.search_error = false;
         let needle = self.search_input.read(cx).value().trim().to_string();
         let (query, pause) = match (needle.is_empty(), self.similar.clone()) {
-            (false, _) => (
-                visual::Query::Text(needle),
-                std::time::Duration::from_millis(300),
-            ),
+            (false, _) => (visual::Query::Text(needle), VISUAL_DEBOUNCE),
             (true, Some(path)) => (visual::Query::Like(path), std::time::Duration::ZERO),
             (true, None) => {
                 self.visual_query = None;
@@ -1042,11 +1066,22 @@ impl TablePanel {
                 return;
             };
             let score = score.await;
+            let Ok(candidates) =
+                this.update(cx, |this, cx| this.state.read(cx).delegate().linked_rows())
+            else {
+                return;
+            };
+            // No scorer means the model is not loaded yet: show every row until it is.
+            let ranking = match score {
+                Some(score) => {
+                    cx.background_executor()
+                        .spawn(async move { score(&candidates) })
+                        .await
+                }
+                None => Vec::new(),
+            };
             this.update(cx, |this, cx| {
-                // No scorer means the model is not loaded yet: show every row until it is.
-                this.ranking = score
-                    .map(|score| this.state.read(cx).delegate().ranked_rows(score))
-                    .unwrap_or_default();
+                this.ranking = ranking;
                 this.show_ranking(cx);
             })
             .ok();
@@ -1058,21 +1093,16 @@ impl TablePanel {
     fn show_ranking(&mut self, cx: &mut Context<Self>) {
         let breadth = self.breadth.read(cx).value().start();
         let keep = visual::cutoff(self.ranking.iter().map(|hit| hit.0), breadth);
-        let hits = &self.ranking[..keep];
-        let cols: std::collections::HashMap<usize, usize> =
-            hits.iter().map(|&(_, row, col)| (row, col)).collect();
-        self.set_search_rows(
-            (!hits.is_empty()).then(|| hits.iter().map(|hit| hit.1).collect()),
-            cx,
-        );
-        self.search_matches = self
-            .state
-            .read(cx)
-            .delegate()
+        let hits: Vec<usize> = self.ranking[..keep].iter().map(|hit| hit.1).collect();
+        self.set_search_rows((!hits.is_empty()).then(|| hits.clone()), cx);
+        let delegate = self.state.read(cx).delegate();
+        let kept: std::collections::HashSet<usize> = hits.into_iter().collect();
+        self.search_matches = delegate
             .visible()
             .iter()
             .enumerate()
-            .filter_map(|(view, source)| cols.get(source).map(|&col| (view, col)))
+            .filter(|(_, source)| kept.contains(source))
+            .map(|(view, &source)| (view, delegate.file_column(source)))
             .collect();
         self.search_ix = 0;
         self.select_current_match(cx);
@@ -1094,7 +1124,9 @@ impl TablePanel {
         if !self.search_opts.files || self.reading_documents.is_some() {
             return;
         }
-        let unread = self.state.read(cx).delegate().unread_documents();
+        let unread = self
+            .state
+            .update(cx, |state, _| state.delegate_mut().unread_documents());
         if unread.is_empty() {
             return;
         }
@@ -1134,11 +1166,10 @@ impl TablePanel {
         // A visual ranking costs a model call, so it keeps the order it was given.
         if !self.search_opts.visual {
             let needle = self.search_input.read(cx).value().to_string();
-            self.search_matches = self
-                .state
-                .read(cx)
-                .delegate()
-                .search_matches(&needle, self.search_opts);
+            let opts = self.search_opts;
+            self.search_matches = compile_search(&needle, opts)
+                .map(|re| self.state.read(cx).delegate().search_matches(&re, opts))
+                .unwrap_or_default();
         }
         let n = self.search_matches.len();
         if n == 0 {
@@ -1167,6 +1198,9 @@ impl TablePanel {
             return;
         }
         let needle = self.search_input.read(cx).value().to_string();
+        let Some(re) = compile_search(&needle, self.search_opts) else {
+            return;
+        };
         let replacement = self.replace_input.read(cx).value().to_string();
         let only = match all {
             true => None,
@@ -1175,12 +1209,11 @@ impl TablePanel {
                 None => return,
             },
         };
-        let cells = self.state.read(cx).delegate().replace_edits(
-            &needle,
-            &replacement,
-            self.search_opts,
-            only,
-        );
+        let cells =
+            self.state
+                .read(cx)
+                .delegate()
+                .replace_edits(&re, &replacement, self.search_opts, only);
         if all {
             log::info!("replace all: rewrote {} cells", cells.len());
         }
@@ -1316,10 +1349,10 @@ impl TablePanel {
             return;
         }
         self.state.update(cx, |state, cx| {
-            let files = crate::names_a_file(state.delegate(), &cells, cx);
+            let files = crate::file_rows(state.delegate(), &cells);
             state.delegate_mut().apply_edit(cells, origin);
-            if files {
-                photos::refresh(state, cx);
+            if let Some(rows) = files {
+                photos::refresh(state, Some(&rows), cx);
             }
             cx.emit(TableChanged);
             cx.notify();
@@ -1390,22 +1423,6 @@ impl TablePanel {
         {
             delegate.set_frozen(count);
         }
-    }
-
-    /// Each row's image path, resolved against the project's files folder. Re-walks the folder
-    /// from disk every call — qrate never copies files in, so disk is the only source of truth.
-    fn resolve_images(data: &settings::project::ProjectData) -> Vec<Option<std::path::PathBuf>> {
-        let folder = data
-            .values
-            .get(settings::project::FILES_FOLDER_KEY)
-            .map(|v| v.text().to_string())
-            .unwrap_or_default();
-        photos::resolve_row_images(
-            &data.headers,
-            &data.rows,
-            &folder,
-            &photos::declared_file_columns(data),
-        )
     }
 
     /// Save the current column order + widths into the open project's `.qrate` file
@@ -1791,6 +1808,147 @@ impl TablePanel {
     }
 }
 
+/// App-level handlers for the grid's menu commands, so the menu bar reaches them wherever focus
+/// sits rather than only while the grid holds it. Undo, Redo and Deselect are the app's own.
+pub fn register_global_actions(cx: &mut App) {
+    fn on_panel(cx: &mut App, run: impl FnOnce(&mut TablePanel, &mut Context<TablePanel>)) {
+        if let Some(panel) = cx
+            .try_global::<crate::TablePanelHandle>()
+            .and_then(|handle| handle.0.upgrade())
+        {
+            panel.update(cx, run);
+        }
+    }
+    // A global handler runs while the dispatching window is taken out; wait for it to come back.
+    fn in_window(
+        cx: &mut App,
+        run: impl FnOnce(&mut TablePanel, &mut Window, &mut Context<TablePanel>) + 'static,
+    ) {
+        cx.defer(move |cx| {
+            let panel = cx
+                .try_global::<crate::TablePanelHandle>()
+                .and_then(|handle| handle.0.upgrade());
+            if let (Some(panel), Some(window)) = (panel, cx.active_window()) {
+                window
+                    .update(cx, |_, window, cx| {
+                        panel.update(cx, |panel, cx| run(panel, window, cx))
+                    })
+                    .ok();
+            }
+        });
+    }
+    fn arrange(this: &mut TablePanel, op: fn(usize) -> crate::Arrangement, cx: &mut App) {
+        if let Some((rows, _)) = this.structural_target(cx) {
+            crate::arrange(op(rows[0]), cx);
+        }
+    }
+
+    cx.on_action(|_: &InsertRowAbove, cx| {
+        on_panel(cx, |this, cx| {
+            this.structural(|rows, _| crate::Structural::InsertRow { at: rows[0] }, cx)
+        })
+    });
+    cx.on_action(|_: &InsertRowBelow, cx| {
+        on_panel(cx, |this, cx| {
+            this.structural(
+                |rows, _| crate::Structural::InsertRow {
+                    at: rows[rows.len() - 1] + 1,
+                },
+                cx,
+            )
+        })
+    });
+    cx.on_action(|_: &DuplicateRow, cx| {
+        on_panel(cx, |this, cx| {
+            this.structural(
+                |rows, _| crate::Structural::DuplicateRow { row: rows[0] },
+                cx,
+            )
+        })
+    });
+    cx.on_action(|_: &DeleteRow, cx| {
+        on_panel(cx, |this, cx| {
+            this.structural(|rows, _| crate::Structural::DeleteRows(rows.to_vec()), cx)
+        })
+    });
+    cx.on_action(|_: &InsertColumnLeft, cx| {
+        on_panel(cx, |this, cx| {
+            this.structural(|_, col| crate::Structural::InsertColumn { at: col }, cx)
+        })
+    });
+    cx.on_action(|_: &InsertColumnRight, cx| {
+        on_panel(cx, |this, cx| {
+            this.structural(|_, col| crate::Structural::InsertColumn { at: col + 1 }, cx)
+        })
+    });
+    cx.on_action(|_: &DeleteColumn, cx| {
+        on_panel(cx, |this, cx| {
+            this.structural(|_, col| crate::Structural::DeleteColumn { col }, cx)
+        })
+    });
+    cx.on_action(|_: &IndentRow, cx| {
+        on_panel(cx, |this, cx| arrange(this, crate::Arrangement::Indent, cx))
+    });
+    cx.on_action(|_: &OutdentRow, cx| {
+        on_panel(cx, |this, cx| {
+            arrange(this, crate::Arrangement::Outdent, cx)
+        })
+    });
+    cx.on_action(|_: &DeleteSubtree, cx| {
+        on_panel(cx, |this, cx| {
+            arrange(this, crate::Arrangement::DeleteSubtree, cx)
+        })
+    });
+    cx.on_action(|_: &UnfreezeColumns, cx| {
+        on_panel(cx, |this, cx| {
+            crate::set_frozen_columns(&this.state.clone(), 0, cx)
+        })
+    });
+    cx.on_action(|_: &ExpandAll, cx| {
+        on_panel(cx, |this, cx| {
+            let expanded = this.state.update(cx, |state, cx| {
+                state.delegate_mut().expand_all();
+                let expanded = state.delegate().expanded_rows();
+                state.refresh(cx);
+                cx.emit(TableChanged);
+                expanded
+            });
+            crate::persist_expanded(&expanded, cx);
+        })
+    });
+    cx.on_action(|_: &CollapseAll, cx| {
+        on_panel(cx, |this, cx| {
+            this.state.update(cx, |state, cx| {
+                state.delegate_mut().collapse_all();
+                state.refresh(cx);
+                cx.emit(TableChanged);
+            });
+            crate::persist_expanded(&[], cx);
+        })
+    });
+    cx.on_action(|_: &RenameColumn, cx| {
+        in_window(cx, |this, window, cx| this.rename_selected(window, cx))
+    });
+    cx.on_action(|_: &InsertNote, cx| {
+        in_window(cx, |this, window, cx| {
+            note::open_on_selection(&this.state.clone(), window, cx)
+        })
+    });
+    cx.on_action(|_: &ImportFiles, cx| {
+        in_window(cx, |this, window, cx| this.choose_import_paths(window, cx))
+    });
+    cx.on_action(|_: &ImportSpreadsheet, cx| {
+        in_window(cx, |this, window, cx| {
+            this.choose_import_spreadsheet(window, cx)
+        })
+    });
+    cx.on_action(|_: &RelinkMissingFiles, cx| {
+        in_window(cx, |this, window, cx| this.choose_files_root(window, cx))
+    });
+    cx.on_action(|_: &Search, cx| in_window(cx, |this, window, cx| this.toggle_search(window, cx)));
+    cx.on_action(|_: &Replace, cx| in_window(cx, |this, window, cx| this.open_replace(window, cx)));
+}
+
 impl Focusable for TablePanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -1839,92 +1997,10 @@ impl Render for TablePanel {
                 }
             }))
             .on_action(cx.listener(|this, _: &EditCell, window, cx| this.edit_selected(window, cx)))
-            .on_action(cx.listener(|this, _: &InsertNote, window, cx| {
-                note::open_on_selection(&this.state.clone(), window, cx)
-            }))
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy_range(false, cx)))
             .on_action(cx.listener(|this, _: &Cut, _, cx| this.copy_range(true, cx)))
             .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste_range(cx)))
             .on_action(cx.listener(|this, _: &Clear, _, cx| this.clear_range(cx)))
-            .on_action(cx.listener(|this, _: &UnfreezeColumns, _, cx| {
-                crate::set_frozen_columns(&this.state.clone(), 0, cx)
-            }))
-            .on_action(cx.listener(|this, _: &ExpandAll, _, cx| {
-                let expanded = this.state.update(cx, |state, cx| {
-                    state.delegate_mut().expand_all();
-                    let expanded = state.delegate().expanded_rows();
-                    state.refresh(cx);
-                    cx.emit(TableChanged);
-                    expanded
-                });
-                crate::persist_expanded(&expanded, cx);
-            }))
-            .on_action(cx.listener(|this, _: &CollapseAll, _, cx| {
-                this.state.update(cx, |state, cx| {
-                    state.delegate_mut().collapse_all();
-                    state.refresh(cx);
-                    cx.emit(TableChanged);
-                });
-                crate::persist_expanded(&[], cx);
-            }))
-            .on_action(cx.listener(|this, _: &IndentRow, _, cx| {
-                if let Some((rows, _)) = this.structural_target(cx) {
-                    crate::arrange(crate::Arrangement::Indent(rows[0]), cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &OutdentRow, _, cx| {
-                if let Some((rows, _)) = this.structural_target(cx) {
-                    crate::arrange(crate::Arrangement::Outdent(rows[0]), cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &DeleteSubtree, _, cx| {
-                if let Some((rows, _)) = this.structural_target(cx) {
-                    crate::arrange(crate::Arrangement::DeleteSubtree(rows[0]), cx);
-                }
-            }))
-            .on_action(
-                cx.listener(|this, _: &ImportFiles, window, cx| {
-                    this.choose_import_paths(window, cx)
-                }),
-            )
-            .on_action(cx.listener(|this, _: &ImportSpreadsheet, window, cx| {
-                this.choose_import_spreadsheet(window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &RelinkMissingFiles, window, cx| {
-                this.choose_files_root(window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &InsertRowAbove, _, cx| {
-                this.structural(|rows, _| crate::Structural::InsertRow { at: rows[0] }, cx)
-            }))
-            .on_action(cx.listener(|this, _: &InsertRowBelow, _, cx| {
-                this.structural(
-                    |rows, _| crate::Structural::InsertRow {
-                        at: rows[rows.len() - 1] + 1,
-                    },
-                    cx,
-                )
-            }))
-            .on_action(cx.listener(|this, _: &DuplicateRow, _, cx| {
-                this.structural(
-                    |rows, _| crate::Structural::DuplicateRow { row: rows[0] },
-                    cx,
-                )
-            }))
-            .on_action(cx.listener(|this, _: &DeleteRow, _, cx| {
-                this.structural(|rows, _| crate::Structural::DeleteRows(rows.to_vec()), cx)
-            }))
-            .on_action(cx.listener(|this, _: &InsertColumnLeft, _, cx| {
-                this.structural(|_, col| crate::Structural::InsertColumn { at: col }, cx)
-            }))
-            .on_action(cx.listener(|this, _: &InsertColumnRight, _, cx| {
-                this.structural(|_, col| crate::Structural::InsertColumn { at: col + 1 }, cx)
-            }))
-            .on_action(cx.listener(|this, _: &DeleteColumn, _, cx| {
-                this.structural(|_, col| crate::Structural::DeleteColumn { col }, cx)
-            }))
-            .on_action(
-                cx.listener(|this, _: &RenameColumn, window, cx| this.rename_selected(window, cx)),
-            )
             .p_2()
             .gap_2()
             .child(
@@ -2007,6 +2083,14 @@ pub(crate) fn paste_cells(
 const TAB_H: f32 = 16.;
 
 const REVALIDATE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
+
+const AUTOSAVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(800);
+
+/// How long the find bar waits for typing to pause before it scans the grid.
+const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// How long typing pauses before a visual query asks the model.
+const VISUAL_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 
 const SUGGEST_W: f32 = 220.;
 const SUGGEST_H: f32 = 180.;

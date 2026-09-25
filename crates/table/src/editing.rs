@@ -31,7 +31,7 @@ pub(crate) fn start(
     window: &mut Window,
     cx: &mut Context<TableState<QrateTableDelegate>>,
 ) {
-    if crate::column_type(delegate, col, cx) == settings::columns::ColumnType::Filename {
+    if delegate.column_type(col) == settings::columns::ColumnType::Filename {
         let folder = cx
             .try_global::<settings::project::CurrentProject>()
             .and_then(|project| {

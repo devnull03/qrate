@@ -10,8 +10,14 @@
 //! `index_access_files` in the CA migration scripts (`islandora_workbench/g/scripts/ca-migration/
 //! prepare_ingest.py`), which solves the identical problem for the same source data.
 
-use settings::columns::ColumnType;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use gpui::{App, Context, Global, SharedString};
+use gpui_component::table::TableState;
+use settings::columns::ColumnType;
+
+use crate::delegate::QrateTableDelegate;
 
 /// The disk walk stays in the table; the shared crate owns matching and tie-breaking.
 pub struct PhotoIndex {
@@ -89,12 +95,40 @@ pub fn resolve_row_images(
         .collect()
 }
 
-/// Re-resolves the live grid's images against disk and hands them back to the delegate. The cached
-/// paths were resolved from the text a filename cell held when the project opened, so an edit to
-/// one leaves the Details panel showing the file the row used to name until this runs.
+/// The files folder's walk, shared by the grid's previews and `file_links`' checks. Rebuilt when
+/// the folder changes, or after [`forget`] when the same folder may hold different files.
+#[derive(Default)]
+struct Walked {
+    folder: String,
+    index: Option<Arc<PhotoIndex>>,
+}
+
+impl Global for Walked {}
+
+/// The walk of `folder`, if one is cached.
+pub(crate) fn cached_index(folder: &str, cx: &App) -> Option<Arc<PhotoIndex>> {
+    cx.try_global::<Walked>()
+        .filter(|walked| walked.folder == folder)
+        .and_then(|walked| walked.index.clone())
+}
+
+/// Drop the cached walk, so the next [`refresh`] reads the folder from disk — a relinked folder or
+/// a reopened project can hold different files under the same path.
+pub(crate) fn forget(cx: &mut App) {
+    cx.set_global(Walked::default());
+}
+
+fn strings(row: &[SharedString]) -> Vec<String> {
+    row.iter().map(ToString::to_string).collect()
+}
+
+/// Re-resolve the grid's images against the files folder. `rows` limits it to the rows an edit
+/// touched, which resolve on the spot against the cached walk; `None`, or no walk yet, resolves
+/// every row off the UI thread and walks the folder first if it has to.
 pub(crate) fn refresh(
-    state: &mut gpui_component::table::TableState<crate::delegate::QrateTableDelegate>,
-    cx: &gpui::App,
+    state: &mut TableState<QrateTableDelegate>,
+    rows: Option<&[usize]>,
+    cx: &mut Context<TableState<QrateTableDelegate>>,
 ) {
     let Some(project) = cx.try_global::<settings::project::CurrentProject>() else {
         return;
@@ -106,9 +140,68 @@ pub(crate) fn refresh(
         .map(|v| v.text().to_string())
         .unwrap_or_default();
     let declared = declared_file_columns(&project.data);
-    let (headers, _, rows) = state.delegate().dataset_snapshot();
-    let paths = resolve_row_images(&headers, &rows, &folder, &declared);
-    state.delegate_mut().set_image_paths(paths);
+    let delegate = state.delegate_mut();
+    if folder.trim().is_empty() {
+        delegate.set_image_paths(vec![None; delegate.row_count()]);
+        return;
+    }
+    let cached = cached_index(&folder, cx);
+    if let (Some(rows), Some(index)) = (rows, &cached) {
+        let images = rows
+            .iter()
+            .map(|&row| {
+                let (headers, cells): (Vec<_>, Vec<_>) =
+                    delegate.row_fields(row).into_iter().unzip();
+                (
+                    row,
+                    index.resolve_row(&strings(&headers), &declared, &strings(&cells)),
+                )
+            })
+            .collect();
+        delegate.set_row_images(images);
+        return;
+    }
+    let generation = delegate.values_generation();
+    let (headers, grid) = delegate.grid();
+    delegate.images_task = Some(cx.spawn(async move |this, cx| {
+        let walk = folder.clone();
+        let (index, paths) = cx
+            .background_executor()
+            .spawn(async move {
+                let index = cached.unwrap_or_else(|| Arc::new(PhotoIndex::build(&walk)));
+                let headers = strings(&headers);
+                let paths: Vec<Option<PathBuf>> = grid
+                    .iter()
+                    .map(|row| index.resolve_row(&headers, &declared, &strings(row)))
+                    .collect();
+                (index, paths)
+            })
+            .await;
+        let walked = cx.update(|cx| {
+            let walked = cached_index(&folder, cx).is_none();
+            if walked {
+                cx.set_global(Walked {
+                    folder,
+                    index: Some(index),
+                });
+            }
+            walked
+        });
+        this.update(cx, |state, cx| {
+            state.delegate_mut().images_task = None;
+            if state.delegate().values_generation() != generation {
+                refresh(state, None, cx);
+                return;
+            }
+            state.delegate_mut().set_image_paths(paths);
+            cx.emit(crate::TableChanged);
+            cx.notify();
+        })
+        .ok();
+        if walked {
+            cx.update(crate::revalidate_now);
+        }
+    }));
 }
 
 #[cfg(test)]

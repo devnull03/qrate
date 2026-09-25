@@ -66,7 +66,7 @@ pub(crate) fn render_td(
     };
     let location = delegate.location(Some(row_ix), None);
     let worst = Diagnostics::worst_at(&location.dataset, Some(row_ix), None, cx);
-    let tip = note::tooltip_text(&location, cx);
+    let tip = note::tooltip_text(delegate, &location, cx);
     let depth = delegate.row_depth(view_ix);
     let children = delegate.row_child_count(row_ix);
     let expanded = delegate.row_expanded(row_ix);

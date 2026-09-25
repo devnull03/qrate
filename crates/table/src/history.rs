@@ -10,6 +10,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::SharedString;
 use gpui_component::table::Column;
@@ -17,6 +18,9 @@ use settings::history::Change;
 
 /// A batch of cell writes as `(row, col, text)` — what `apply_edit` takes and what undo hands back.
 pub(crate) type Cells = Vec<(usize, usize, SharedString)>;
+
+/// A hierarchy snapshot, shared: one step's `after` is the next step's `before`.
+pub(crate) type Structure = Arc<[settings::project::RowStructure]>;
 
 /// How many steps to keep. Past this the oldest is dropped — a grid edit holds two strings, so the
 /// cap is about bounding a pathological paste loop, not about memory pressure in normal use.
@@ -58,14 +62,14 @@ pub(crate) enum Step {
         rows: Vec<Row>,
         /// Cells an import re-linked on rows already in the table, so it undoes as one step.
         cells: Vec<(usize, usize, SharedString, SharedString)>,
-        before_structure: Vec<settings::project::RowStructure>,
-        after_structure: Vec<settings::project::RowStructure>,
+        before_structure: Structure,
+        after_structure: Structure,
     },
     /// Ascending by index, which is the order they have to go back in.
     RowsRemoved {
         rows: Vec<(usize, Row)>,
-        before_structure: Vec<settings::project::RowStructure>,
-        after_structure: Vec<settings::project::RowStructure>,
+        before_structure: Structure,
+        after_structure: Structure,
     },
     ColumnAdded {
         at: usize,
@@ -87,8 +91,8 @@ pub(crate) enum Step {
     /// Several steps taken as one, in the order they were made — a restore.
     Batch(Vec<Step>),
     Hierarchy {
-        before: Vec<settings::project::RowStructure>,
-        after: Vec<settings::project::RowStructure>,
+        before: Structure,
+        after: Structure,
     },
 }
 
@@ -234,8 +238,8 @@ mod tests {
         h.push(Step::Cells(Vec::new()));
         h.push(Step::RowsRemoved {
             rows: Vec::new(),
-            before_structure: Vec::new(),
-            after_structure: Vec::new(),
+            before_structure: Vec::new().into(),
+            after_structure: Vec::new().into(),
         });
         h.push(Step::Renamed {
             col: 0,
@@ -259,8 +263,8 @@ mod tests {
                     image: None,
                 },
             )],
-            before_structure: Vec::new(),
-            after_structure: Vec::new(),
+            before_structure: Vec::new().into(),
+            after_structure: Vec::new().into(),
         };
         h.push(edit(&[(0, 0, "a", "A")]));
         h.push(removed());

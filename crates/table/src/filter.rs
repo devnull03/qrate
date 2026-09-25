@@ -7,6 +7,8 @@
 //! pushed from the delegate on render and pulled back in the `Change` subscription, so the excluded
 //! set stays the one answer and nothing has to reconcile two.
 
+use std::collections::HashSet;
+
 use diagnostics::{CheckList, Diagnostics};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -66,6 +68,13 @@ impl SearchableListItem for FilterValue {
 /// type for `use_keyed_state`, which stores one value per key.
 struct FilterSub(#[allow(dead_code)] Subscription);
 
+/// A column's distinct values as of `generation`, kept in keyed state so a header repaints without
+/// rescanning every row.
+struct FilterValues {
+    generation: u64,
+    values: Vec<FilterValue>,
+}
+
 /// The header cell for a data column: its name, plus the filter dropdown on columns where
 /// filtering is switched on. Filtering is opt-in per column (see
 /// [`QrateTableDelegate::set_column_filter_enabled`]), so most headers render just the name.
@@ -89,7 +98,7 @@ pub(crate) fn render_th(
 
     let location = delegate.location(None, Some(data_col));
     let worst = Diagnostics::worst_at(&location.dataset, None, location.column.as_deref(), cx);
-    let tip = note::tooltip_text(&location, cx);
+    let tip = note::tooltip_text(delegate, &location, cx);
     let note_editor = note::editor(delegate, None, Some(data_col), cx);
 
     h_flex()
@@ -193,39 +202,43 @@ fn filter_dropdown(
 
     // `column_values` is O(rows), and `set_items` throws away the active search — so both only run
     // when the data behind the list actually moved.
-    let generation = window.use_keyed_state(("col-filter-gen", data_col), cx, |_, _| u64::MAX);
-    let values: Vec<FilterValue> = delegate
-        .column_values(data_col)
-        .into_iter()
-        .map(FilterValue)
-        .collect();
-    if generation.read(cx) != &delegate.values_generation() {
+    let cached = window.use_keyed_state(("col-filter-values", data_col), cx, |_, _| FilterValues {
+        generation: u64::MAX,
+        values: Vec::new(),
+    });
+    if cached.read(cx).generation != delegate.values_generation() {
+        let values: Vec<FilterValue> = delegate
+            .column_values(data_col)
+            .into_iter()
+            .map(FilterValue)
+            .collect();
         state.update(cx, |state, cx| {
             state.set_items(CheckList::new(values.clone()), window, cx);
         });
-        generation.update(cx, |g, _| *g = delegate.values_generation());
+        cached.update(cx, |cached, _| {
+            *cached = FilterValues {
+                generation: delegate.values_generation(),
+                values,
+            }
+        });
     }
 
     // The delegate stores exclusions; the combobox tracks what is kept.
-    let kept: Vec<SharedString> = values
-        .iter()
-        .filter(|v| !delegate.is_filter_excluded(data_col, &v.0))
-        .map(|v| v.0.clone())
+    let values = &cached.read(cx).values;
+    let kept: Vec<usize> = (0..values.len())
+        .filter(|&ix| !delegate.is_filter_excluded(data_col, &values[ix].0))
         .collect();
-    let selected = state.read(cx).selected_values();
-    if selected.len() != kept.len() || !kept.iter().all(|v| selected.contains(v)) {
-        let indices: Vec<IndexPath> = values
-            .iter()
-            .enumerate()
-            .filter(|(_, v)| kept.contains(&v.0))
-            .map(|(ix, _)| IndexPath::new(ix))
-            .collect();
+    let selected: HashSet<SharedString> = state.read(cx).selected_values().into_iter().collect();
+    let in_sync =
+        selected.len() == kept.len() && kept.iter().all(|&ix| selected.contains(&values[ix].0));
+    if !in_sync {
+        let indices: Vec<IndexPath> = kept.into_iter().map(IndexPath::new).collect();
         state.update(cx, |state, cx| {
             state.set_selected_indices(indices, window, cx);
         });
     }
 
-    let all = values.clone();
+    let count = cached.read(cx).values.len();
     Combobox::new(&state)
         .menu_width(px(240.))
         .menu_max_h(px(240.))
@@ -244,30 +257,29 @@ fn filter_dropdown(
                 .tooltip("Filter column")
         })
         .footer(move |_, _| {
-            let bulk =
-                |label: &'static str, id: &'static str, keep_all: bool, all: Vec<FilterValue>| {
-                    let state = state.clone();
-                    Button::new((id, data_col))
-                        .outline()
-                        .xsmall()
-                        .label(label)
-                        .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                            let indices: Vec<IndexPath> = if keep_all {
-                                (0..all.len()).map(IndexPath::new).collect()
-                            } else {
-                                Vec::new()
-                            };
-                            state.update(cx, |state, cx| {
-                                state.set_selected_indices(indices, window, cx);
-                                cx.emit(ComboboxEvent::Change(state.selected_values()));
-                            });
-                        })
-                };
+            let bulk = |label: &'static str, id: &'static str, keep_all: bool, count: usize| {
+                let state = state.clone();
+                Button::new((id, data_col))
+                    .outline()
+                    .xsmall()
+                    .label(label)
+                    .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                        let indices: Vec<IndexPath> = if keep_all {
+                            (0..count).map(IndexPath::new).collect()
+                        } else {
+                            Vec::new()
+                        };
+                        state.update(cx, |state, cx| {
+                            state.set_selected_indices(indices, window, cx);
+                            cx.emit(ComboboxEvent::Change(state.selected_values()));
+                        });
+                    })
+            };
             h_flex()
                 .gap_1()
                 .p_1()
-                .child(bulk("All", "filter-all", true, all.clone()))
-                .child(bulk("None", "filter-none", false, all.clone()))
+                .child(bulk("All", "filter-all", true, count))
+                .child(bulk("None", "filter-none", false, count))
         })
         .into_any_element()
 }

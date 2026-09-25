@@ -1,10 +1,12 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use gpui::{
     App, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Pixels, SharedString,
-    Window, div, px,
+    Task, Window, div, px,
 };
 use gpui_component::{
     input::TextareaState,
@@ -13,9 +15,11 @@ use gpui_component::{
 use serde::{Deserialize, Serialize};
 
 use diagnostics::{DATASET_MAIN, Location};
+use settings::columns::ColumnType;
 use settings::history::{Change, Entry, EntryId, Origin};
+use settings::project::RowId;
 
-use crate::history::{Cells, Col, History, Row, Step};
+use crate::history::{Cells, Col, History, Row, Step, Structure};
 use crate::{
     cell,
     editing::EditState,
@@ -48,6 +52,32 @@ pub struct ColumnLayout {
 }
 
 pub type DatasetSnapshot = (Vec<String>, Vec<settings::project::RowId>, Vec<Vec<String>>);
+
+/// Everything a save writes, taken on the UI thread and written wherever the caller likes.
+pub(crate) struct SaveSnapshot {
+    pub headers: Vec<SharedString>,
+    pub row_ids: Vec<RowId>,
+    pub rows: Vec<Vec<SharedString>>,
+    pub structure: Structure,
+    pub history: Vec<Entry>,
+    /// The log position `history[0]` holds, counted from when the dataset was loaded.
+    pub first: u64,
+    /// [`QrateTableDelegate::edits`] when this was taken.
+    pub edits: u64,
+    pub ledger: Arc<SaveLedger>,
+}
+
+/// One dataset's saves, which may overlap: a background autosave still writing when Ctrl+S comes.
+/// `write` takes them in turn; the counters say what has reached the file, so a later save skips
+/// log entries already there and a stale one writes nothing over a newer one.
+#[derive(Default)]
+pub(crate) struct SaveLedger {
+    pub write: Mutex<()>,
+    /// Log entries on disk, as a position like [`SaveSnapshot::first`].
+    pub written: AtomicU64,
+    /// [`SaveSnapshot::edits`] of the newest snapshot on disk.
+    pub edits: AtomicU64,
+}
 
 /// Data + column model for the center table. In `gpui_component` the delegate *is* the model:
 /// the virtualized `DataTable` calls back into it for counts and per-cell rendering.
@@ -83,9 +113,18 @@ pub struct QrateTableDelegate {
     /// The text inside linked documents, by path. Filled by `TablePanel` the first time a search
     /// includes linked files; a file with no text layer holds an empty string so it is not re-read.
     document_text: HashMap<PathBuf, String>,
+    /// [`Self::unread_documents`], kept until the linked files or the texts read change.
+    unread: Option<Vec<PathBuf>>,
+    /// The pending re-resolution of `image_paths` against the files folder. See `photos::refresh`.
+    pub(crate) images_task: Option<Task<()>>,
+    /// Each declared column's type and description, by name. Pushed in by `panel::apply_settings`
+    /// so a rendered cell never searches the project's column list.
+    declared: HashMap<SharedString, (ColumnType, SharedString)>,
     /// View→source row mapping: `visible_rows[view] == source`. The library only ever sees this
     /// narrowed set, so filtering composes with the virtualized render for free.
     visible_rows: Vec<usize>,
+    /// Source→view, the inverse of `visible_rows`, rebuilt with it.
+    view_of: Vec<Option<usize>>,
     /// The rows the column filters let through, before a search narrows them. What searches scan,
     /// so typing more can widen the hits again.
     filtered_rows: Vec<usize>,
@@ -114,6 +153,11 @@ pub struct QrateTableDelegate {
     /// describe, and are dropped with it when a project is closed without saving.
     unsaved: Vec<Entry>,
     stamped_history: usize,
+    /// How many log entries have left `unsaved` for the file since the dataset was loaded.
+    saved_history: u64,
+    /// Counts every recorded change, so a save can tell whether the grid moved on while it wrote.
+    edits: u64,
+    ledger: Arc<SaveLedger>,
     /// How many leading data columns are frozen. A count in *display* order, not a set of keys:
     /// the library's fixed region is always the leading columns, and moving a column in or out of
     /// it is how a sheet re-freezes. Zero means only the pinned `#` column stays put.
@@ -136,7 +180,11 @@ impl QrateTableDelegate {
             note_editor,
             image_paths: Vec::new(),
             document_text: HashMap::new(),
+            unread: None,
+            images_task: None,
+            declared: HashMap::new(),
             visible_rows: Vec::new(),
+            view_of: Vec::new(),
             filtered_rows: Vec::new(),
             search_rows: None,
             visible_depths: Vec::new(),
@@ -149,6 +197,9 @@ impl QrateTableDelegate {
             history: History::default(),
             unsaved: Vec::new(),
             stamped_history: 0,
+            saved_history: 0,
+            edits: 0,
+            ledger: Arc::default(),
             frozen: 0,
         }
     }
@@ -168,7 +219,7 @@ impl QrateTableDelegate {
     }
 
     /// See [`Self::values_generation`].
-    pub(crate) fn values_generation(&self) -> u64 {
+    pub fn values_generation(&self) -> u64 {
         self.values_generation
     }
 
@@ -242,7 +293,7 @@ impl QrateTableDelegate {
     /// Source→view, the inverse of [`source`](Self::source). `None` when a filter currently hides
     /// the row — a diagnostic can point at a row the user has narrowed away.
     pub fn view_row(&self, source: usize) -> Option<usize> {
-        self.visible_rows.iter().position(|&s| s == source)
+        self.view_of.get(source).copied().flatten()
     }
 
     /// A data-column index from its header text — which is also the column's key, so this is the
@@ -324,6 +375,12 @@ impl QrateTableDelegate {
                     self.visible_rows.push(*source);
                     self.visible_depths.push(depth);
                 }
+            }
+        }
+        self.view_of = vec![None; self.rows.len()];
+        for (view, &source) in self.visible_rows.iter().enumerate() {
+            if let Some(slot) = self.view_of.get_mut(source) {
+                *slot = Some(view);
             }
         }
         // `range` is in view coordinates, which this just redefined.
@@ -446,24 +503,21 @@ impl QrateTableDelegate {
         }
     }
 
-    /// Cells in the *visible* set matching `needle` under `opts`, as `(view_row, data_col)` in view
-    /// order — ready for `set_selected_cell`/`scroll_to_row` after the pinned `+1` on the column.
-    pub(crate) fn search_matches(&self, needle: &str, opts: SearchOpts) -> Vec<(usize, usize)> {
-        let mut hits = find_matches(
-            &self.rows,
-            &self.visible_rows,
-            self.columns.len(),
-            needle,
-            opts,
-        );
+    /// Cells in the *visible* set `re` matches, as `(view_row, data_col)` in view order — ready for
+    /// `set_selected_cell`/`scroll_to_row` after the pinned `+1` on the column.
+    pub(crate) fn search_matches(
+        &self,
+        re: &regex::Regex,
+        opts: SearchOpts,
+    ) -> Vec<(usize, usize)> {
+        let mut hits = find_matches(&self.rows, &self.visible_rows, self.columns.len(), re);
         if opts.files {
             hits.extend(find_file_matches(
                 &self.rows,
                 &self.visible_rows,
                 &self.image_paths,
                 &self.document_text,
-                needle,
-                opts,
+                re,
             ));
             hits.sort_unstable();
             hits.dedup();
@@ -471,43 +525,34 @@ impl QrateTableDelegate {
         hits
     }
 
-    /// Every filtered row with a linked file that `score` can rate, as `(score, source_row,
-    /// data_col)` best first. Ignores any narrowing a previous search applied.
-    pub(crate) fn ranked_rows(
-        &self,
-        score: impl Fn(&Path) -> Option<f32>,
-    ) -> Vec<(f32, usize, usize)> {
-        let mut scored: Vec<(f32, usize, usize)> = self
-            .filtered_rows
+    /// Every filtered row with a linked file, as `(source_row, file)` — what a visual search scores.
+    /// Ignores any narrowing a previous search applied.
+    pub(crate) fn linked_rows(&self) -> Vec<(usize, PathBuf)> {
+        self.filtered_rows
             .iter()
-            .filter_map(|&source| {
-                let path = self.image_paths.get(source)?.as_ref()?;
-                let col = file_column(self.rows.get(source)?, path);
-                Some((score(path)?, source, col))
-            })
-            .collect();
-        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-        scored
+            .filter_map(|&source| Some((source, self.image_paths.get(source)?.clone()?)))
+            .collect()
     }
 
-    /// The filtered rows with a hit for `needle`, in cells or linked files, as source rows in order.
-    /// Ignores any narrowing a previous search applied.
-    pub(crate) fn hit_rows(&self, needle: &str, opts: SearchOpts) -> Vec<usize> {
-        let mut hits = find_matches(
-            &self.rows,
-            &self.filtered_rows,
-            self.columns.len(),
-            needle,
-            opts,
-        );
+    /// The column of the cell naming a row's linked file, where a hit about that file lands.
+    pub(crate) fn file_column(&self, source: usize) -> usize {
+        match (self.rows.get(source), self.row_image(source)) {
+            (Some(row), Some(path)) => file_column(row, path),
+            _ => 0,
+        }
+    }
+
+    /// The filtered rows `re` hits, in cells or linked files, as source rows in order. Ignores any
+    /// narrowing a previous search applied.
+    pub(crate) fn hit_rows(&self, re: &regex::Regex, opts: SearchOpts) -> Vec<usize> {
+        let mut hits = find_matches(&self.rows, &self.filtered_rows, self.columns.len(), re);
         if opts.files {
             hits.extend(find_file_matches(
                 &self.rows,
                 &self.filtered_rows,
                 &self.image_paths,
                 &self.document_text,
-                needle,
-                opts,
+                re,
             ));
         }
         let mut rows: Vec<usize> = hits
@@ -540,29 +585,37 @@ impl QrateTableDelegate {
     }
 
     /// Linked documents whose text has not been read yet, each once.
-    pub(crate) fn unread_documents(&self) -> Vec<PathBuf> {
-        let mut unread: Vec<PathBuf> = self
-            .image_paths
-            .iter()
-            .flatten()
-            .filter(|path| preview::has_text(path) && !self.document_text.contains_key(*path))
-            .cloned()
-            .collect();
-        unread.sort_unstable();
-        unread.dedup();
-        unread
+    pub(crate) fn unread_documents(&mut self) -> Vec<PathBuf> {
+        let (image_paths, document_text) = (&self.image_paths, &self.document_text);
+        self.unread
+            .get_or_insert_with(|| {
+                let mut unread: Vec<PathBuf> = image_paths
+                    .iter()
+                    .flatten()
+                    .filter(|path| preview::has_text(path) && !document_text.contains_key(*path))
+                    .cloned()
+                    .collect();
+                unread.sort_unstable();
+                unread.dedup();
+                unread
+            })
+            .clone()
     }
 
     pub(crate) fn add_document_text(&mut self, texts: Vec<(PathBuf, String)>) {
         self.document_text.extend(texts);
+        let read = &self.document_text;
+        if let Some(unread) = &mut self.unread {
+            unread.retain(|path| !read.contains_key(path));
+        }
     }
 
-    /// The cell writes replacing `needle` with `replacement` produces, in *source* coordinates and
+    /// The cell writes replacing what `re` matches with `replacement`, in *source* coordinates and
     /// ready for [`apply_edit`](Self::apply_edit). `only` limits it to one `(view_row, data_col)`
     /// hit — Replace vs Replace All.
     pub(crate) fn replace_edits(
         &self,
-        needle: &str,
+        re: &regex::Regex,
         replacement: &str,
         opts: SearchOpts,
         only: Option<(usize, usize)>,
@@ -571,7 +624,7 @@ impl QrateTableDelegate {
             &self.rows,
             &self.visible_rows,
             self.columns.len(),
-            needle,
+            re,
             replacement,
             opts,
             only,
@@ -607,15 +660,18 @@ impl QrateTableDelegate {
         self.history = History::default();
         self.unsaved.clear();
         self.stamped_history = 0;
+        self.saved_history = 0;
+        // Saves still writing the outgoing dataset keep the old ledger.
+        self.ledger = Arc::default();
         self.filters = vec![HashSet::new(); self.columns.len()];
         self.filters_enabled = vec![false; self.columns.len()];
         self.search_rows = None;
-        self.filtered_rows = (0..self.rows.len()).collect();
-        self.visible_rows = (0..self.rows.len()).collect();
-        self.visible_depths = vec![0; self.rows.len()];
         self.hierarchy = Hierarchy::from_rows(&self.row_ids, &[], &self.default_level);
+        self.recompute_visible();
         // Stale — indexes into the old row set; `TablePanel` re-resolves right after.
         self.image_paths = vec![None; self.rows.len()];
+        self.images_task = None;
+        self.unread = None;
         self.values_generation += 1;
     }
 
@@ -629,7 +685,7 @@ impl QrateTableDelegate {
         self.recompute_visible();
     }
 
-    pub fn row_structure(&self) -> &[settings::project::RowStructure] {
+    pub fn row_structure(&self) -> Structure {
         self.hierarchy.rows()
     }
 
@@ -638,7 +694,70 @@ impl QrateTableDelegate {
     pub fn set_image_paths(&mut self, paths: Vec<Option<PathBuf>>) {
         if paths.len() == self.rows.len() {
             self.image_paths = paths;
+            self.unread = None;
         }
+    }
+
+    /// Replace some rows' resolved image paths, as `(source_row, path)`.
+    pub(crate) fn set_row_images(&mut self, images: Vec<(usize, Option<PathBuf>)>) {
+        for (row, path) in images {
+            if let Some(slot) = self.image_paths.get_mut(row) {
+                *slot = path;
+            }
+        }
+        self.unread = None;
+    }
+
+    /// Every row's cells, and the headers they sit under, as refcounted clones — cheap to take on
+    /// the UI thread and hand to a background task.
+    pub(crate) fn grid(&self) -> (Vec<SharedString>, Vec<Vec<SharedString>>) {
+        let headers = self.columns.iter().map(|c| c.name.clone()).collect();
+        (headers, self.rows.clone())
+    }
+
+    /// What a save writes: the grid, its row identities, its hierarchy, and the log entries not yet
+    /// on disk.
+    pub(crate) fn save_snapshot(&self) -> SaveSnapshot {
+        let (headers, rows) = self.grid();
+        SaveSnapshot {
+            headers,
+            row_ids: self.row_ids.clone(),
+            rows,
+            structure: self.hierarchy.rows(),
+            history: self.unsaved.clone(),
+            first: self.saved_history,
+            edits: self.edits,
+            ledger: self.ledger.clone(),
+        }
+    }
+
+    pub(crate) fn edits(&self) -> u64 {
+        self.edits
+    }
+
+    /// Push in each declared column's type and description, keyed by column name.
+    pub(crate) fn set_declared(
+        &mut self,
+        declared: HashMap<SharedString, (ColumnType, SharedString)>,
+    ) {
+        self.declared = declared;
+    }
+
+    /// A data column's declared type; `Text` for a column nobody typed.
+    pub(crate) fn column_type(&self, data_col: usize) -> ColumnType {
+        self.columns
+            .get(data_col)
+            .and_then(|column| self.declared.get(&column.name))
+            .map(|(kind, _)| *kind)
+            .unwrap_or_default()
+    }
+
+    /// A column's description, if it has one.
+    pub(crate) fn column_description(&self, name: &str) -> Option<SharedString> {
+        self.declared
+            .get(name)
+            .map(|(_, notes)| notes.clone())
+            .filter(|notes| !notes.is_empty())
     }
 
     /// The selected row's resolved image path, if the files folder had a match for it.
@@ -777,6 +896,7 @@ impl QrateTableDelegate {
 
     /// Push a step that has just been applied onto the undo stack, and log it.
     fn record(&mut self, step: Step, origin: Origin) {
+        self.edits += 1;
         let changes = self.changes(&step);
         self.log(origin, changes);
         self.history.push(step);
@@ -882,8 +1002,11 @@ impl QrateTableDelegate {
     }
 
     fn replay_logged(&mut self, step: &Step, forward: bool, origin: Origin) -> Vec<Change> {
+        self.edits += 1;
         let mut changes = Vec::new();
-        self.replay(step, forward, &mut changes);
+        let mut reshaped = Reshaped::default();
+        self.replay(step, forward, &mut changes, &mut reshaped);
+        self.settle(reshaped);
         self.log(origin, changes.clone());
         changes
     }
@@ -893,15 +1016,42 @@ impl QrateTableDelegate {
     /// step and one log entry. A change that no longer fits — its row already gone, its column
     /// renamed out from under it — is skipped. Notes are not the grid's to apply.
     pub(crate) fn restore(&mut self, changes: &[Change], to: EntryId) -> Vec<Change> {
+        self.edits += 1;
+        let before = self.hierarchy.rows();
+        let mut positions = None;
         let mut steps = Vec::new();
         let mut applied = Vec::new();
         for change in changes {
-            match self.apply_change(change) {
+            match self.apply_change(change, &mut positions) {
                 Some(step) => {
                     applied.extend(self.changes(&step));
                     steps.push(step);
                 }
                 None => log::warn!("restore skipped a change that no longer fits: {change:?}"),
+            }
+        }
+        if steps
+            .iter()
+            .any(|step| matches!(step, Step::RowsAdded { .. } | Step::RowsRemoved { .. }))
+        {
+            self.hierarchy.reconcile(&self.row_ids, &self.default_level);
+            self.rows_settled();
+            let after = self.hierarchy.rows();
+            for step in &mut steps {
+                if let Step::RowsAdded {
+                    before_structure,
+                    after_structure,
+                    ..
+                }
+                | Step::RowsRemoved {
+                    before_structure,
+                    after_structure,
+                    ..
+                } = step
+                {
+                    *before_structure = before.clone();
+                    *after_structure = after.clone();
+                }
             }
         }
         self.log(Origin::Restore(to), applied.clone());
@@ -910,13 +1060,21 @@ impl QrateTableDelegate {
         applied
     }
 
-    fn apply_change(&mut self, change: &Change) -> Option<Step> {
-        let find = |ids: &[settings::project::RowId], row| ids.iter().position(|id| *id == row);
+    /// One change applied to the rows raw — [`restore`](Self::restore) settles the hierarchy and
+    /// the view once, after the last. `positions` is the id→row map, dropped when rows move.
+    fn apply_change(
+        &mut self,
+        change: &Change,
+        positions: &mut Option<HashMap<RowId, usize>>,
+    ) -> Option<Step> {
         match change {
             Change::Cell {
                 row, column, after, ..
             } => {
-                let (r, c) = (find(&self.row_ids, *row)?, self.data_col(column)?);
+                let (r, c) = (
+                    position_of(&self.row_ids, positions, *row)?,
+                    self.data_col(column)?,
+                );
                 let before = self.cell(r, c)?.clone();
                 let after = SharedString::from(after.clone());
                 self.set_cell(r, c, after.clone());
@@ -927,7 +1085,7 @@ impl QrateTableDelegate {
                 position,
                 cells,
             } => {
-                if find(&self.row_ids, *row).is_some() {
+                if self.row_ids.contains(row) {
                     return None;
                 }
                 let text = |name: &SharedString| {
@@ -943,26 +1101,26 @@ impl QrateTableDelegate {
                     image: None,
                 }];
                 let at = (*position).min(self.rows.len());
-                let before_structure = self.hierarchy.rows().to_vec();
                 self.splice_rows(at, &rows);
-                let after_structure = self.hierarchy.rows().to_vec();
+                *positions = None;
+                let structure = self.hierarchy.rows();
                 Some(Step::RowsAdded {
                     at,
                     rows,
                     cells: Vec::new(),
-                    before_structure,
-                    after_structure,
+                    before_structure: structure.clone(),
+                    after_structure: structure,
                 })
             }
             Change::RowRemoved { row, .. } => {
-                let at = find(&self.row_ids, *row)?;
-                let before_structure = self.hierarchy.rows().to_vec();
+                let at = position_of(&self.row_ids, positions, *row)?;
                 let rows = self.cut_rows(&[at]);
-                let after_structure = self.hierarchy.rows().to_vec();
+                *positions = None;
+                let structure = self.hierarchy.rows();
                 Some(Step::RowsRemoved {
                     rows,
-                    before_structure,
-                    after_structure,
+                    before_structure: structure.clone(),
+                    after_structure: structure,
                 })
             }
             Change::ColumnAdded {
@@ -1032,17 +1190,25 @@ impl QrateTableDelegate {
         self.stamped_history = self.unsaved.len();
     }
 
-    /// Forget the first `count` unsaved entries — they have just been written.
-    pub(crate) fn history_saved(&mut self, count: usize) {
-        let count = count.min(self.unsaved.len());
+    /// Forget the unsaved entries the ledger says have reached the file.
+    pub(crate) fn history_written(&mut self) {
+        let written = self.ledger.written.load(Ordering::SeqCst);
+        let count = (written.saturating_sub(self.saved_history) as usize).min(self.unsaved.len());
         self.unsaved.drain(..count);
+        self.saved_history += count as u64;
         self.stamped_history = self.stamped_history.saturating_sub(count);
     }
 
     /// Apply one side of a recorded step without re-recording it — going through `apply_edit` here
     /// would make undo its own undoable action and the stack would never drain. What it changed is
     /// added to `changes`, each step read in the state it was written against.
-    fn replay(&mut self, step: &Step, forward: bool, changes: &mut Vec<Change>) {
+    fn replay(
+        &mut self,
+        step: &Step,
+        forward: bool,
+        changes: &mut Vec<Change>,
+        reshaped: &mut Reshaped,
+    ) {
         if !forward {
             changes.extend(self.changes(step).iter().rev().map(Change::inverse));
         }
@@ -1069,16 +1235,15 @@ impl QrateTableDelegate {
                     let text = if forward { after } else { before };
                     self.set_cell(*row, *col, text.clone());
                 }
-                self.hierarchy.replace_rows(
-                    &self.row_ids,
+                reshaped.rows = true;
+                reshaped.structure = Some(
                     if forward {
                         after_structure
                     } else {
                         before_structure
-                    },
-                    &self.default_level,
+                    }
+                    .clone(),
                 );
-                self.recompute_visible();
             }
             Step::RowsRemoved {
                 rows,
@@ -1088,20 +1253,17 @@ impl QrateTableDelegate {
                 if forward {
                     self.cut_rows(&rows.iter().map(|(at, _)| *at).collect::<Vec<_>>());
                 } else {
-                    for (at, row) in rows {
-                        self.splice_rows(*at, std::slice::from_ref(row));
-                    }
+                    self.put_back(rows);
                 }
-                self.hierarchy.replace_rows(
-                    &self.row_ids,
+                reshaped.rows = true;
+                reshaped.structure = Some(
                     if forward {
                         after_structure
                     } else {
                         before_structure
-                    },
-                    &self.default_level,
+                    }
+                    .clone(),
                 );
-                self.recompute_visible();
             }
             Step::ColumnAdded { at, col } => {
                 if forward {
@@ -1125,19 +1287,16 @@ impl QrateTableDelegate {
                 false => self.shift_column(*to, *from),
             },
             Step::Batch(steps) => match forward {
-                true => steps.iter().for_each(|s| self.replay(s, true, changes)),
+                true => steps
+                    .iter()
+                    .for_each(|s| self.replay(s, true, changes, reshaped)),
                 false => steps
                     .iter()
                     .rev()
-                    .for_each(|s| self.replay(s, false, changes)),
+                    .for_each(|s| self.replay(s, false, changes, reshaped)),
             },
             Step::Hierarchy { before, after } => {
-                self.hierarchy.replace_rows(
-                    &self.row_ids,
-                    if forward { after } else { before },
-                    &self.default_level,
-                );
-                self.recompute_visible();
+                reshaped.structure = Some(if forward { after } else { before }.clone());
             }
         }
         if forward {
@@ -1147,44 +1306,101 @@ impl QrateTableDelegate {
         self.editing = EditState::Idle;
     }
 
-    /// Put `rows` in at `at`, keeping everything row-indexed parallel. The unrecorded half of a
-    /// row insert — [`Self::insert_rows`] is the one that reaches the undo stack.
+    /// Rebuild what replayed steps invalidated, once for however many there were. The last
+    /// structure a step asked for is the one that matches the rows as they now stand.
+    fn settle(&mut self, reshaped: Reshaped) {
+        match reshaped.structure {
+            Some(structure) => {
+                self.hierarchy
+                    .replace_rows(&self.row_ids, &structure, &self.default_level)
+            }
+            None if reshaped.rows => self.hierarchy.reconcile(&self.row_ids, &self.default_level),
+            None => return,
+        }
+        match reshaped.rows {
+            true => self.rows_settled(),
+            false => self.recompute_visible(),
+        }
+    }
+
+    /// Put `rows` in at `at`, keeping everything row-indexed parallel. Raw: the caller brings the
+    /// hierarchy along and then calls [`rows_settled`](Self::rows_settled).
     fn splice_rows(&mut self, at: usize, rows: &[Row]) {
         let at = at.min(self.rows.len());
-        for (offset, row) in rows.iter().enumerate() {
-            self.rows.insert(at + offset, row.cells.clone());
-            self.row_ids.insert(at + offset, row.id);
-            self.image_paths.insert(at + offset, row.image.clone());
+        self.rows
+            .splice(at..at, rows.iter().map(|row| row.cells.clone()));
+        self.row_ids.splice(at..at, rows.iter().map(|row| row.id));
+        self.image_paths
+            .splice(at..at, rows.iter().map(|row| row.image.clone()));
+        if let Some(next) = rows
+            .iter()
+            .map(|row| row.id)
+            .max()
+            .and_then(|id| id.checked_add(1))
+        {
+            self.next_row_id = self.next_row_id.max(next);
         }
-        self.rows_changed();
+    }
+
+    /// Put rows cut by [`cut_rows`](Self::cut_rows) back at the positions it handed out, in one
+    /// pass. Raw, like [`splice_rows`](Self::splice_rows).
+    fn put_back(&mut self, rows: &[(usize, Row)]) {
+        let mut kept = std::mem::take(&mut self.rows)
+            .into_iter()
+            .zip(std::mem::take(&mut self.row_ids))
+            .zip(std::mem::take(&mut self.image_paths));
+        let mut returning = rows.iter().peekable();
+        loop {
+            let at = self.rows.len();
+            let ((cells, id), image) = match returning.next_if(|(to, _)| *to <= at) {
+                Some((_, row)) => ((row.cells.clone(), row.id), row.image.clone()),
+                None => match kept.next() {
+                    Some(row) => row,
+                    None => match returning.next() {
+                        Some((_, row)) => ((row.cells.clone(), row.id), row.image.clone()),
+                        None => break,
+                    },
+                },
+            };
+            self.rows.push(cells);
+            self.row_ids.push(id);
+            self.image_paths.push(image);
+        }
+        if let Some(next) = rows
+            .iter()
+            .map(|(_, row)| row.id)
+            .max()
+            .and_then(|id| id.checked_add(1))
+        {
+            self.next_row_id = self.next_row_id.max(next);
+        }
     }
 
     /// Take out the rows at `ats`, in any order, and hand them back ascending — the order they go
-    /// back in. [`splice_rows`](Self::splice_rows)' inverse.
+    /// back in. Raw, like [`splice_rows`](Self::splice_rows).
     fn cut_rows(&mut self, ats: &[usize]) -> Vec<(usize, Row)> {
-        let mut ats: Vec<usize> = ats
+        let doomed: BTreeSet<usize> = ats
             .iter()
             .copied()
             .filter(|&r| r < self.rows.len())
             .collect();
-        ats.sort_unstable();
-        ats.dedup();
-        let mut cut: Vec<(usize, Row)> = ats
-            .iter()
-            .rev()
-            .map(|&at| {
-                (
-                    at,
-                    Row {
-                        id: self.row_ids.remove(at),
-                        cells: self.rows.remove(at),
-                        image: self.image_paths.remove(at),
-                    },
-                )
-            })
-            .collect();
-        cut.reverse();
-        self.rows_changed();
+        if doomed.is_empty() {
+            return Vec::new();
+        }
+        let mut cut = Vec::with_capacity(doomed.len());
+        let rows = std::mem::take(&mut self.rows)
+            .into_iter()
+            .zip(std::mem::take(&mut self.row_ids))
+            .zip(std::mem::take(&mut self.image_paths));
+        for (at, ((cells, id), image)) in rows.enumerate() {
+            if doomed.contains(&at) {
+                cut.push((at, Row { id, cells, image }));
+            } else {
+                self.rows.push(cells);
+                self.row_ids.push(id);
+                self.image_paths.push(image);
+            }
+        }
         cut
     }
 
@@ -1231,19 +1447,19 @@ impl QrateTableDelegate {
         Some(col)
     }
 
-    /// What every row insert or delete invalidates. The view is rebuilt rather than patched: a
-    /// filtered view's indices all move, and `recompute_visible` already drops the range for that.
-    fn rows_changed(&mut self) {
+    /// What every row insert or delete invalidates, once the hierarchy has caught up with the rows.
+    /// The view is rebuilt rather than patched: a filtered view's indices all move.
+    fn rows_settled(&mut self) {
         // Hits are source rows, which an insert or delete just shifted.
         self.search_rows = None;
-        self.hierarchy.reconcile(&self.row_ids, &self.default_level);
         self.recompute_visible();
         self.editing = EditState::Idle;
         self.values_generation += 1;
+        self.unread = None;
         self.clamp_selection();
     }
 
-    /// [`rows_changed`](Self::rows_changed)'s column counterpart. Still renarrows: a column that
+    /// [`rows_settled`](Self::rows_settled)'s column counterpart. Still renarrows: a column that
     /// was hiding rows stops doing so when it goes.
     fn columns_changed(&mut self) {
         self.recompute_visible();
@@ -1274,7 +1490,7 @@ impl QrateTableDelegate {
 
     /// Insert a blank row at `at`, or a copy of `source` when duplicating a row.
     pub(crate) fn insert_rows(&mut self, at: usize, source: Option<usize>) {
-        let before_structure = self.hierarchy.rows().to_vec();
+        let before_structure = self.hierarchy.rows();
         let cells = match source.and_then(|r| self.rows.get(r)) {
             Some(row) => row.clone(),
             None => vec![SharedString::default(); self.columns.len()],
@@ -1283,6 +1499,7 @@ impl QrateTableDelegate {
         let id = self.fresh_row_id();
         let rows = vec![Row { id, cells, image }];
         self.splice_rows(at, &rows);
+        self.hierarchy.reconcile(&self.row_ids, &self.default_level);
         // A duplicate follows its original; a blank row takes the place of the row it pushed down.
         let neighbour = source
             .map(|row| (row, false))
@@ -1307,9 +1524,9 @@ impl QrateTableDelegate {
                     neighbour + 1
                 ),
             }
-            self.recompute_visible();
         }
-        let after_structure = self.hierarchy.rows().to_vec();
+        self.rows_settled();
+        let after_structure = self.hierarchy.rows();
         self.record(
             Step::RowsAdded {
                 at,
@@ -1379,7 +1596,7 @@ impl QrateTableDelegate {
             return 0;
         }
         let at = self.rows.len();
-        let before_structure = self.hierarchy.rows().to_vec();
+        let before_structure = self.hierarchy.rows();
         let destination_parent = destination_parent.and_then(|source| self.row_id(source));
         let mut next_order = before_structure
             .iter()
@@ -1404,9 +1621,20 @@ impl QrateTableDelegate {
             ids.push(id);
         }
 
+        let source_of: HashMap<RowId, usize> = self
+            .row_ids
+            .iter()
+            .enumerate()
+            .map(|(source, id)| (*id, source))
+            .collect();
+        let mut after_structure = before_structure.to_vec();
+        let slot_of: HashMap<RowId, usize> = after_structure
+            .iter()
+            .enumerate()
+            .map(|(slot, row)| (row.row_id, slot))
+            .collect();
         let mut rows = Vec::new();
         let mut cells = Vec::new();
-        let mut after_structure = before_structure.clone();
         for (index, component) in resolved.plan.components.iter().enumerate() {
             let is_file = component.kind == file_ingest::EntryKind::File;
             let parent_id = match resolved.parents[index] {
@@ -1417,8 +1645,8 @@ impl QrateTableDelegate {
             match &resolved.resolutions[index] {
                 Resolution::Skip { .. } => continue,
                 Resolution::Update { existing } => {
-                    let Some(source) = self.row_ids.iter().position(|id| *id as u64 == *existing)
-                    else {
+                    let existing = *existing as RowId;
+                    let Some(&source) = source_of.get(&existing) else {
                         continue;
                     };
                     // Only the link moves. The metadata on this row is the archivist's.
@@ -1433,9 +1661,9 @@ impl QrateTableDelegate {
                             cells.push((source, col, before.clone(), after));
                         }
                     }
-                    if let Some(row) = after_structure
-                        .iter_mut()
-                        .find(|row| row.row_id as u64 == *existing)
+                    if let Some(row) = slot_of
+                        .get(&existing)
+                        .and_then(|&slot| after_structure.get_mut(slot))
                     {
                         row.source_path = Some(source_path(component));
                     }
@@ -1485,7 +1713,8 @@ impl QrateTableDelegate {
         }
         self.hierarchy
             .replace_rows(&self.row_ids, &after_structure, &self.default_level);
-        self.recompute_visible();
+        self.rows_settled();
+        let after_structure = self.hierarchy.rows();
         self.record(
             Step::RowsAdded {
                 at,
@@ -1500,45 +1729,26 @@ impl QrateTableDelegate {
     }
 
     /// Append spreadsheet values as one undoable step, preserving the project's existing columns.
+    /// The new rows join the end of the roots, which is what reconciling the hierarchy does.
     pub(crate) fn append_spreadsheet_rows(&mut self, values: Vec<Vec<SharedString>>) -> usize {
         if values.is_empty() {
             return 0;
         }
         let at = self.rows.len();
-        let before_structure = self.hierarchy.rows().to_vec();
-        let mut next_order = before_structure
-            .iter()
-            .filter(|row| row.parent_id.is_none())
-            .map(|row| row.sibling_order)
-            .max()
-            .unwrap_or(-1)
-            .saturating_add(1);
-        let mut after_structure = before_structure.clone();
+        let before_structure = self.hierarchy.rows();
         let rows: Vec<_> = values
             .into_iter()
-            .map(|cells| {
-                let id = self.fresh_row_id();
-                after_structure.push(settings::project::RowStructure {
-                    row_id: id,
-                    parent_id: None,
-                    level_key: self.default_level.clone(),
-                    sibling_order: next_order,
-                    source_path: None,
-                    source_kind: None,
-                });
-                next_order = next_order.saturating_add(1);
-                Row {
-                    id,
-                    cells,
-                    image: None,
-                }
+            .map(|cells| Row {
+                id: self.fresh_row_id(),
+                cells,
+                image: None,
             })
             .collect();
         let added = rows.len();
         self.splice_rows(at, &rows);
-        self.hierarchy
-            .replace_rows(&self.row_ids, &after_structure, &self.default_level);
-        self.recompute_visible();
+        self.hierarchy.reconcile(&self.row_ids, &self.default_level);
+        self.rows_settled();
+        let after_structure = self.hierarchy.rows();
         self.record(
             Step::RowsAdded {
                 at,
@@ -1552,19 +1762,15 @@ impl QrateTableDelegate {
         added
     }
 
-    /// Delete the rows at `ats` as one undo step, carrying their cells and photos on it.
+    /// Delete the rows at `ats` as one undo step, carrying their cells and photos on it. The
+    /// hierarchy loses them all in one pass.
     pub(crate) fn remove_rows(&mut self, ats: &[usize]) {
-        let before_structure = self.hierarchy.rows().to_vec();
+        let before_structure = self.hierarchy.rows();
         let removed_ids: Vec<_> = ats.iter().filter_map(|at| self.row_id(*at)).collect();
-        for row_id in removed_ids {
-            if let Err(error) = self.hierarchy.delete(row_id) {
-                log::warn!(
-                    "Deleted row {row_id} had no archival structure, so its children kept their place: {error:?}"
-                );
-            }
-        }
+        self.hierarchy.delete(&removed_ids);
         let removed = self.cut_rows(ats);
-        let after_structure = self.hierarchy.rows().to_vec();
+        self.rows_settled();
+        let after_structure = self.hierarchy.rows();
         self.record(
             Step::RowsRemoved {
                 rows: removed,
@@ -1672,7 +1878,7 @@ impl QrateTableDelegate {
             }
         }
         self.hierarchy.set_expanded(group, true);
-        let structure = self.hierarchy.rows().to_vec();
+        let structure = self.hierarchy.rows();
         if let Some(Step::RowsAdded {
             after_structure, ..
         }) = self.history.last_mut()
@@ -1702,21 +1908,24 @@ impl QrateTableDelegate {
         &mut self,
         edit: impl FnOnce(&mut Hierarchy) -> Result<(), crate::hierarchy::Error>,
     ) -> Result<(), crate::hierarchy::Error> {
-        let before = self.hierarchy.rows().to_vec();
+        let before = self.hierarchy.rows();
         edit(&mut self.hierarchy)?;
-        let after = self.hierarchy.rows().to_vec();
+        let after = self.hierarchy.rows();
         self.record(Step::Hierarchy { before, after }, Origin::Structure);
         self.recompute_visible();
         Ok(())
     }
 
-    fn fresh_row_id(&mut self) -> settings::project::RowId {
-        while self.row_ids.contains(&self.next_row_id) {
-            self.next_row_id = self.next_row_id.checked_add(1).unwrap_or(1);
-        }
+    /// `next_row_id` stays above every id in the grid (`set_data` and `splice_rows` keep it there),
+    /// so only a wrapped counter has to look for a free id.
+    fn fresh_row_id(&mut self) -> RowId {
         let id = self.next_row_id;
-        self.next_row_id = id.checked_add(1).unwrap_or(1);
-        id
+        if let Some(next) = id.checked_add(1) {
+            self.next_row_id = next;
+            return id;
+        }
+        let used: HashSet<RowId> = self.row_ids.iter().copied().collect();
+        (1..RowId::MAX).find(|id| !used.contains(id)).unwrap_or(id)
     }
 
     /// Add a blank column at `at`, named for the user to rename. Returns its name.
@@ -1989,6 +2198,45 @@ impl QrateTableDelegate {
     }
 }
 
+/// What replayed steps left for [`QrateTableDelegate::settle`] to rebuild once.
+#[derive(Default)]
+struct Reshaped {
+    rows: bool,
+    structure: Option<Structure>,
+}
+
+/// Where `row` sits in `row_ids`, through a map built on first ask and dropped by the caller
+/// whenever rows move.
+fn position_of(
+    row_ids: &[RowId],
+    positions: &mut Option<HashMap<RowId, usize>>,
+    row: RowId,
+) -> Option<usize> {
+    positions
+        .get_or_insert_with(|| {
+            row_ids
+                .iter()
+                .enumerate()
+                .map(|(at, id)| (*id, at))
+                .collect()
+        })
+        .get(&row)
+        .copied()
+}
+
+/// `candidates` as `(score, source_row)`, best first, dropping the ones `score` cannot rate.
+pub(crate) fn rank(
+    candidates: &[(usize, PathBuf)],
+    score: impl Fn(&Path) -> Option<f32>,
+) -> Vec<(f32, usize)> {
+    let mut scored: Vec<(f32, usize)> = candidates
+        .iter()
+        .filter_map(|(source, path)| Some((score(path)?, *source)))
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    scored
+}
+
 /// An inclusive range between two endpoints given in either order — a drag up-and-left selects the
 /// same rectangle as the same drag down-and-right.
 fn normalize(a: usize, b: usize) -> RangeInclusive<usize> {
@@ -2095,12 +2343,8 @@ fn find_matches(
     rows: &[Vec<SharedString>],
     visible: &[usize],
     cols: usize,
-    needle: &str,
-    opts: SearchOpts,
+    re: &regex::Regex,
 ) -> Vec<(usize, usize)> {
-    let Some(re) = compile_search(needle, opts) else {
-        return Vec::new();
-    };
     let mut hits = Vec::new();
     for (view, &source) in visible.iter().enumerate() {
         for col in 0..cols {
@@ -2116,19 +2360,15 @@ fn find_matches(
     hits
 }
 
-/// Rows whose linked document contains `needle`, addressed at the cell that names the file so
+/// Rows whose linked document `re` matches, addressed at the cell that names the file so
 /// stepping to the hit lands where the archivist would look for it.
 fn find_file_matches(
     rows: &[Vec<SharedString>],
     visible: &[usize],
     image_paths: &[Option<PathBuf>],
     document_text: &HashMap<PathBuf, String>,
-    needle: &str,
-    opts: SearchOpts,
+    re: &regex::Regex,
 ) -> Vec<(usize, usize)> {
-    let Some(re) = compile_search(needle, opts) else {
-        return Vec::new();
-    };
     visible
         .iter()
         .enumerate()
@@ -2166,14 +2406,11 @@ fn replace_edits(
     rows: &[Vec<SharedString>],
     visible: &[usize],
     cols: usize,
-    needle: &str,
+    re: &regex::Regex,
     replacement: &str,
     opts: SearchOpts,
     only: Option<(usize, usize)>,
 ) -> Cells {
-    let Some(re) = compile_search(needle, opts) else {
-        return Cells::new();
-    };
     let mut edits = Cells::new();
     for (view, &source) in visible.iter().enumerate() {
         for col in 0..cols {
@@ -2297,6 +2534,10 @@ mod tests {
     }
 
     /// One excluded set per column; each inner slice lists that column's excluded values.
+    fn re(needle: &str, opts: SearchOpts) -> regex::Regex {
+        compile_search(needle, opts).expect("the test query compiles")
+    }
+
     fn filters(cols: &[&[&str]]) -> Vec<HashSet<SharedString>> {
         cols.iter()
             .map(|vals| {
@@ -2391,14 +2632,17 @@ mod tests {
         let all = compute_visible_rows(&data, &filters(&[&[], &[]]), "");
         let opts = SearchOpts::default();
         assert_eq!(
-            find_matches(&data, &all, 2, "AP", opts),
+            find_matches(&data, &all, 2, &re("AP", opts)),
             vec![(0, 0), (2, 0)]
         );
         // Hide the "apricot" row: the search must not report it, and the surviving hit is
         // addressed by its *view* row, not its source row.
         let visible = compute_visible_rows(&data, &filters(&[&["apricot"], &[]]), "");
         assert_eq!(visible, vec![0, 1]);
-        assert_eq!(find_matches(&data, &visible, 2, "ap", opts), vec![(0, 0)]);
+        assert_eq!(
+            find_matches(&data, &visible, 2, &re("ap", opts)),
+            vec![(0, 0)]
+        );
     }
 
     /// A hit inside a linked PDF lands on the cell naming the file; a row whose document lacks the
@@ -2430,16 +2674,15 @@ mod tests {
             ..SearchOpts::default()
         };
         assert_eq!(
-            find_file_matches(&data, &[0, 1, 2], &paths, &text, "SAWMILL", opts),
+            find_file_matches(&data, &[0, 1, 2], &paths, &text, &re("SAWMILL", opts)),
             vec![(0, 1)]
         );
-        assert!(find_file_matches(&data, &[1, 2], &paths, &text, "sawmill", opts).is_empty());
+        assert!(find_file_matches(&data, &[1, 2], &paths, &text, &re("sawmill", opts)).is_empty());
     }
 
     #[test]
     fn blank_query_matches_nothing() {
-        let data = rows(&[&["a"]]);
-        assert!(find_matches(&data, &[0], 1, "   ", SearchOpts::default()).is_empty());
+        assert!(compile_search("   ", SearchOpts::default()).is_none());
     }
 
     #[test]
@@ -2455,17 +2698,17 @@ mod tests {
 
         // Match case: "apple" no longer hits the capitalized "Apple pie".
         assert_eq!(
-            find_matches(&data, all, 1, "apple", opt(true, false, false)),
+            find_matches(&data, all, 1, &re("apple", opt(true, false, false))),
             vec![(1, 0)]
         );
         // Whole word: "apple" hits "Apple pie" but not the substring in "pineapple".
         assert_eq!(
-            find_matches(&data, all, 1, "apple", opt(false, true, false)),
+            find_matches(&data, all, 1, &re("apple", opt(false, true, false))),
             vec![(0, 0)]
         );
         // Regex: alternation matches both rows; an unparseable pattern matches nothing.
         assert_eq!(
-            find_matches(&data, all, 1, "pie|pine", opt(false, false, true)),
+            find_matches(&data, all, 1, &re("pie|pine", opt(false, false, true))),
             vec![(0, 0), (1, 0)]
         );
         assert!(compile_search("(", opt(false, false, true)).is_none());
@@ -2480,7 +2723,7 @@ mod tests {
             &data,
             &[0, 1, 2],
             1,
-            "BC",
+            &re("BC", SearchOpts::default()),
             "British Columbia",
             SearchOpts::default(),
             None,
@@ -2509,12 +2752,20 @@ mod tests {
         let opts = SearchOpts::default();
         // One hit only: view row 1, which is source row 3.
         assert_eq!(
-            replace_edits(&data, &visible, 1, "show", "keep", opts, Some((1, 0))),
+            replace_edits(
+                &data,
+                &visible,
+                1,
+                &re("show", opts),
+                "keep",
+                opts,
+                Some((1, 0))
+            ),
             vec![(3, 0, "keep me".into())]
         );
         // Replace All never touches the filtered-out rows.
         assert_eq!(
-            replace_edits(&data, &visible, 1, "show", "keep", opts, None),
+            replace_edits(&data, &visible, 1, &re("show", opts), "keep", opts, None),
             vec![(1, 0, "keep me".into()), (3, 0, "keep me".into())]
         );
     }
@@ -2529,12 +2780,28 @@ mod tests {
             ..SearchOpts::default()
         };
         assert_eq!(
-            replace_edits(&data, &[0], 1, r"(\w+), (\w+)", "$2 $1", regex, None),
+            replace_edits(
+                &data,
+                &[0],
+                1,
+                &re(r"(\w+), (\w+)", regex),
+                "$2 $1",
+                regex,
+                None
+            ),
             vec![(0, 0, "Jane Smith".into())]
         );
         let literal = rows(&[&["cost 5"]]);
         assert_eq!(
-            replace_edits(&literal, &[0], 1, "5", "$5", SearchOpts::default(), None),
+            replace_edits(
+                &literal,
+                &[0],
+                1,
+                &re("5", SearchOpts::default()),
+                "$5",
+                SearchOpts::default(),
+                None
+            ),
             vec![(0, 0, "cost $5".into())],
             "a literal replacement must not be read as a capture group"
         );
@@ -2909,11 +3176,8 @@ mod app_tests {
                 delegate.remove_rows(&[0]);
                 assert_eq!(delegate.row_structure()[0].parent_id, None);
                 delegate.undo();
-                let child = delegate
-                    .row_structure()
-                    .iter()
-                    .find(|row| row.row_id == 2)
-                    .unwrap();
+                let structure = delegate.row_structure();
+                let child = structure.iter().find(|row| row.row_id == 2).unwrap();
                 assert_eq!(child.parent_id, Some(1));
             });
         });
@@ -3101,9 +3365,9 @@ mod app_tests {
                     _ => None,
                 };
                 let rows = |d: &super::QrateTableDelegate| -> Vec<usize> {
-                    d.ranked_rows(score)
+                    super::rank(&d.linked_rows(), score)
                         .into_iter()
-                        .map(|(_, row, _)| row)
+                        .map(|(_, row)| row)
                         .collect()
                 };
                 assert_eq!(rows(delegate), vec![2, 0]);
@@ -3166,12 +3430,9 @@ mod app_tests {
                         .map(|r| d.cell(r, 0).cloned().unwrap_or_default())
                         .collect::<Vec<_>>()
                 };
-                let edits = delegate.replace_edits(
-                    "Video",
-                    "Videotape",
-                    super::SearchOpts::default(),
-                    None,
-                );
+                let opts = super::SearchOpts::default();
+                let video = super::compile_search("Video", opts).expect("a plain query compiles");
+                let edits = delegate.replace_edits(&video, "Videotape", opts, None);
                 assert_eq!(edits.len(), 2);
                 delegate.apply_edit(edits, Origin::Typed);
                 assert_eq!(

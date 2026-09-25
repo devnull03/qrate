@@ -365,13 +365,21 @@ pub fn local_times(ats: &[i64]) -> Vec<(String, String)> {
 
 /// Up to `limit` entries older than `before`, newest first — one page of the History panel. With
 /// `row`, only the entries that changed that row or a note on it.
+/// The row form reads `__history_changes_cell`; one `OR`ed filter would walk every entry instead.
 pub fn page(path: &Path, before: EntryId, limit: i64, row: Option<RowId>) -> Result<Vec<Listed>> {
-    select(
-        path,
-        "id < ?1 AND (?3 IS NULL OR id IN (SELECT entry_id FROM __history_changes WHERE row_id = ?3))
-         ORDER BY id DESC LIMIT ?2",
-        &[&before, &limit, &row],
-    )
+    match row {
+        Some(row) => select(
+            path,
+            "id IN (SELECT entry_id FROM __history_changes WHERE row_id = ?3 AND entry_id < ?1)
+             ORDER BY id DESC LIMIT ?2",
+            &[&before, &limit, &row],
+        ),
+        None => select(
+            path,
+            "id < ?1 ORDER BY id DESC LIMIT ?2",
+            &[&before, &limit],
+        ),
+    }
 }
 
 /// Every name `column` has gone by, newest first and starting with its own — so a cell's history

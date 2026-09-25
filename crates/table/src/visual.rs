@@ -349,12 +349,13 @@ pub(crate) enum Query {
     Like(PathBuf),
 }
 
-/// A scoring function over files for [`crate::delegate::QrateTableDelegate::ranked_rows`], or
-/// `None` when the model is not loaded or the query cannot be embedded.
+/// Ranks `(source_row, file)` candidates from
+/// [`crate::delegate::QrateTableDelegate::linked_rows`] best first, holding the index lock once for
+/// the lot. `None` when the model is not loaded or the query cannot be embedded.
 pub(crate) fn scorer(
     query: Query,
     cx: &App,
-) -> Task<Option<impl Fn(&Path) -> Option<f32> + use<>>> {
+) -> Task<Option<impl FnOnce(&[(usize, PathBuf)]) -> Vec<(f32, usize)> + Send + use<>>> {
     let visual = cx.global::<Visual>();
     let (clip, index) = (visual.clip.clone(), visual.index.clone());
     cx.background_executor().spawn(async move {
@@ -365,9 +366,11 @@ pub(crate) fn scorer(
                 .ok()?,
             Query::Like(path) => lock(&index).get(&path)?.1.clone(),
         };
-        Some(move |path: &Path| {
+        Some(move |candidates: &[(usize, PathBuf)]| {
             let index = lock(&index);
-            Some(visual_search::similarity(&vector, &index.get(path)?.1))
+            crate::delegate::rank(candidates, |path: &Path| {
+                Some(visual_search::similarity(&vector, &index.get(path)?.1))
+            })
         })
     })
 }

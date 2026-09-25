@@ -13,7 +13,7 @@
 use diagnostics::{
     ColumnSnapshot, DATASET_MAIN, Diagnostics, Severity, Source, address as address_findings,
 };
-use gpui::{App, Global, SharedString};
+use gpui::{App, SharedString};
 use settings::columns::ColumnType;
 use settings::project::{CurrentProject, FILES_FOLDER_KEY};
 
@@ -22,24 +22,10 @@ use crate::photos::PhotoIndex;
 /// What the Problems panel shows in the source column, and the key this output is replaced by.
 pub const SOURCE: &str = "files";
 
-/// The walk, kept between runs and rebuilt only when the folder changes.
-///
-/// Validation runs on every commit, and walking a collection's folder tree per keystroke is not
-/// something to do on the UI thread. The folder is a path in the project file, so it only changes
-/// when someone re-links it.
-// or project open. Watch the folder if that gap starts confusing people.
-#[derive(Default)]
-struct Walked {
-    folder: String,
-    index: Option<PhotoIndex>,
-}
-
-impl Global for Walked {}
-
 /// Check every `Filename` column against the files folder and publish what's missing.
 ///
-/// Registered as a deferred producer because of the walk, not because it answers late: it
-/// publishes before returning, so a resolved link clears on the same commit that fixed it.
+/// Reads the walk `photos` keeps rather than walking the folder here, on the UI thread. With no
+/// walk yet it asks the table for one and publishes nothing; the walk revalidates when it lands.
 pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
     let folder = cx
         .try_global::<CurrentProject>()
@@ -59,12 +45,19 @@ pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
         return;
     }
 
-    let cached = cx.default_global::<Walked>();
-    if cached.index.is_none() || cached.folder != folder {
-        cached.index = Some(PhotoIndex::build(&folder));
-        cached.folder = folder;
-    }
-    let Some(index) = cx.global::<Walked>().index.as_ref() else {
+    let Some(index) = crate::photos::cached_index(&folder, cx) else {
+        cx.defer(|cx| {
+            if let Some(state) = cx
+                .try_global::<crate::TableStateHandle>()
+                .and_then(|handle| handle.0.upgrade())
+            {
+                state.update(cx, |state, cx| {
+                    if state.delegate().images_task.is_none() {
+                        crate::photos::refresh(state, None, cx);
+                    }
+                });
+            }
+        });
         return;
     };
 
@@ -74,7 +67,7 @@ pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
             address_findings(
                 SOURCE.into(),
                 column,
-                missing(index, &column.values)
+                missing(&index, &column.values)
                     .into_iter()
                     .map(Into::into)
                     .collect(),

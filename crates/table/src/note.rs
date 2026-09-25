@@ -121,19 +121,15 @@ pub(crate) fn squiggle(severity: Severity, cx: &App) -> impl IntoElement {
 }
 
 /// The column description followed by every diagnostic at a location — the cell/header tooltip.
-pub(crate) fn tooltip_text(location: &Location, cx: &App) -> Option<SharedString> {
-    let description = location.column.as_deref().and_then(|name| {
-        cx.try_global::<settings::project::CurrentProject>()
-            .and_then(|project| {
-                project
-                    .data
-                    .columns
-                    .iter()
-                    .find(|column| column.name == name)
-            })
-            .map(|column| column.notes.trim())
-            .filter(|notes| !notes.is_empty())
-    });
+pub(crate) fn tooltip_text(
+    delegate: &QrateTableDelegate,
+    location: &Location,
+    cx: &App,
+) -> Option<SharedString> {
+    let description = location
+        .column
+        .as_deref()
+        .and_then(|name| delegate.column_description(name));
     let diagnostics = Diagnostics::at(
         &location.dataset,
         location.row,

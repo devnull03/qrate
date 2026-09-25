@@ -48,8 +48,7 @@ pub(crate) fn render_cell(
     // Keep the plain text underneath so the row height and neighbouring cells are unaffected; the
     // editor floats over it.
     let text = delegate.cell(row_ix, col_ix).cloned().unwrap_or_default();
-    let is_filename =
-        crate::column_type(delegate, col_ix, cx) == settings::columns::ColumnType::Filename;
+    let is_filename = delegate.column_type(col_ix) == settings::columns::ColumnType::Filename;
     // Measure once per edit: any later frame would report the cell's *scrolled* position, and the
     // box is meant to stay where the edit opened.
     let capture = editing && cx.try_global::<EditSpawn>().is_none_or(|s| s.at != edit);
@@ -74,7 +73,7 @@ pub(crate) fn render_cell(
     };
     let marked = worst_from(true);
     let flagged = worst_from(false);
-    let tip = note::tooltip_text(&location, cx);
+    let tip = note::tooltip_text(delegate, &location, cx);
     let note_editor = note::editor(delegate, Some(row_ix), Some(col_ix), cx);
 
     div()

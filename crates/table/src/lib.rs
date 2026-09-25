@@ -34,6 +34,7 @@ pub use panel::{
     EditCell, ExpandAll, GRID_CONTEXT, ImportFiles, ImportSpreadsheet, IndentRow, InsertColumnLeft,
     InsertColumnRight, InsertNote, InsertRowAbove, InsertRowBelow, OutdentRow, Paste, Redo,
     RelinkMissingFiles, RenameColumn, Replace, Search, TablePanel, Undo, UnfreezeColumns,
+    register_global_actions,
 };
 
 /// Global command handle for import entry points outside the centre table, such as Details.
@@ -44,7 +45,8 @@ impl Global for TablePanelHandle {}
 pub const TABLE_STRIPES_KEY: &str = "table_stripes";
 
 use gpui::{
-    App, Bounds, ClipboardItem, Entity, Global, Pixels, Point, SharedString, WeakEntity, px, size,
+    App, Bounds, ClipboardItem, Entity, Global, Pixels, Point, PromptLevel, SharedString,
+    WeakEntity, px, size,
 };
 use gpui_component::table::TableState;
 use plugin_api::CommandContext;
@@ -87,20 +89,6 @@ pub(crate) struct EditSpawn {
 }
 impl Global for EditSpawn {}
 
-pub(crate) fn column_type(delegate: &QrateTableDelegate, col: usize, cx: &App) -> ColumnType {
-    let name = delegate.column_name(col);
-    cx.try_global::<settings::project::CurrentProject>()
-        .and_then(|project| {
-            project
-                .data
-                .columns
-                .iter()
-                .find(|column| column.name == name)
-        })
-        .map(|column| ColumnType::from_declared(&column.data_type))
-        .unwrap_or_default()
-}
-
 /// Re-run every registered validator against the live table. The other half of reloading plugins:
 /// dropping one clears its findings, but only a run publishes the replacements.
 #[track_caller]
@@ -115,17 +103,135 @@ pub fn revalidate_now(cx: &mut App) {
     state.update(cx, |state, cx| state.delegate().revalidate(cx));
 }
 
-/// Save now unless autosave is switched off, for the paths that act on an explicitly clicked
-/// target rather than on typing.
+/// Save in the background unless autosave is switched off. What `TablePanel`'s debounce ends in,
+/// and what the paths that act on an explicitly clicked target call straight away — a menu click
+/// is one deliberate change, not a burst to coalesce.
 ///
-/// No debounce, unlike `TablePanel`'s: the timer exists to coalesce a burst of keystrokes, and a
-/// menu click is one deliberate change. That also keeps the pending write off `TablePanel`, which
-/// none of these free functions can reach.
-fn autosave(cx: &mut App) {
+/// The grid is snapshotted here, on the UI thread, and written off it. A failure keeps the project
+/// dirty and is put in front of the archivist, once per run of failures.
+pub(crate) fn autosave(cx: &mut App) {
     stamp_pending_author(cx);
-    if settings::effective_text(settings::AUTOSAVE_KEY, cx).as_ref() != "off" {
-        save_now(cx);
+    if settings::effective_text(settings::AUTOSAVE_KEY, cx).as_ref() == "off" {
+        return;
     }
+    let Some((file, state)) = save_target(cx) else {
+        return;
+    };
+    let snapshot = state.read(cx).delegate().save_snapshot();
+    let edits = snapshot.edits;
+    cx.spawn(async move |cx| {
+        let written = cx
+            .background_executor()
+            .spawn({
+                let file = file.clone();
+                async move { write_snapshot(&file, &snapshot) }
+            })
+            .await;
+        cx.update(|cx| {
+            if let Err(message) = saved(&state, &file, edits, written, cx) {
+                complain(message, cx);
+            }
+        });
+    })
+    .detach();
+}
+
+/// The open project's file and live table, which is what a save needs.
+fn save_target(cx: &App) -> Option<(std::path::PathBuf, Entity<TableState<QrateTableDelegate>>)> {
+    let file = cx
+        .try_global::<settings::project::CurrentProject>()
+        .map(|p| p.file.clone())?;
+    let state = cx.try_global::<TableStateHandle>()?.0.upgrade()?;
+    Some((file, state))
+}
+
+/// Write a snapshot, taking its turn behind any other save of the same dataset. Safe off the UI
+/// thread. The error is the reason alone, for the caller to put into a sentence.
+fn write_snapshot(file: &std::path::Path, snapshot: &delegate::SaveSnapshot) -> Result<(), String> {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let ledger = &snapshot.ledger;
+    let _turn = ledger
+        .write
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if ledger.edits.load(SeqCst) > snapshot.edits {
+        return Ok(());
+    }
+    let skip = (ledger.written.load(SeqCst).saturating_sub(snapshot.first) as usize)
+        .min(snapshot.history.len());
+    settings::project::save_changes(
+        file,
+        &snapshot.headers,
+        &snapshot.row_ids,
+        &snapshot.rows,
+        Some(&snapshot.structure),
+        &snapshot.history[skip..],
+    )
+    .map_err(|err| format!("{err:#}"))?;
+    ledger
+        .written
+        .store(snapshot.first + snapshot.history.len() as u64, SeqCst);
+    ledger.edits.store(snapshot.edits, SeqCst);
+    Ok(())
+}
+
+/// Whether the archivist has been told autosave is failing, so a run of failures prompts once.
+struct SaveTrouble(bool);
+impl Global for SaveTrouble {}
+
+/// Everything after a save lands: the written log entries leave the delegate, and the project
+/// stops being dirty if nothing changed while it wrote. The error names the file for the archivist.
+fn saved(
+    state: &Entity<TableState<QrateTableDelegate>>,
+    file: &std::path::Path,
+    edits: u64,
+    written: Result<(), String>,
+    cx: &mut App,
+) -> Result<(), String> {
+    let settled = state.update(cx, |state, _| {
+        let delegate = state.delegate_mut();
+        delegate.history_written();
+        delegate.edits() == edits
+    });
+    if let Err(err) = written {
+        let message = format!("Couldn't save {}: {err}", file.display());
+        log::error!("{message}");
+        return Err(message);
+    }
+    cx.set_global(SaveTrouble(false));
+    let current = cx
+        .try_global::<settings::project::CurrentProject>()
+        .is_some_and(|project| project.file == file);
+    if settled && current {
+        settings::dirty::clear(settings::dirty::PROJECT_DATA, cx);
+    }
+    Ok(())
+}
+
+/// Put a failed autosave in front of the archivist, over whichever window is active.
+fn complain(message: String, cx: &mut App) {
+    if cx.try_global::<SaveTrouble>().is_some_and(|told| told.0) {
+        return;
+    }
+    cx.set_global(SaveTrouble(true));
+    let Some(window) = cx.active_window() else {
+        return;
+    };
+    let detail = format!(
+        "{message}\n\nThey are still open here. Autosave keeps trying, or save with Ctrl+S."
+    );
+    window
+        .update(cx, |_, window, cx| {
+            drop(window.prompt(
+                PromptLevel::Critical,
+                "Your changes were not saved",
+                Some(&detail),
+                &["OK"],
+                cx,
+            ))
+        })
+        .ok();
 }
 
 pub(crate) fn stamp_pending_author(cx: &mut App) {
@@ -202,10 +308,10 @@ pub fn write_cells(cells: Vec<(usize, usize, SharedString)>, origin: Origin, cx:
         return;
     };
     state.update(cx, |state, cx| {
-        let files = names_a_file(state.delegate(), &cells, cx);
+        let files = file_rows(state.delegate(), &cells);
         state.delegate_mut().apply_edit(cells, origin);
-        if files {
-            photos::refresh(state, cx);
+        if let Some(rows) = files {
+            photos::refresh(state, Some(&rows), cx);
         }
         cx.emit(delegate::TableChanged);
         cx.notify();
@@ -215,16 +321,37 @@ pub fn write_cells(cells: Vec<(usize, usize, SharedString)>, origin: Origin, cx:
     autosave(cx);
 }
 
-/// Whether a batch of edits touches a column the project declares as holding a filename — the only
-/// edits that can change which file a row previews.
-pub(crate) fn names_a_file(
+/// The rows a batch of edits renames a file in, when it touches a column the project declares as
+/// holding a filename — the only edits that can change which file a row previews.
+pub(crate) fn file_rows(
     delegate: &delegate::QrateTableDelegate,
     cells: &[(usize, usize, SharedString)],
-    cx: &App,
-) -> bool {
+) -> Option<Vec<usize>> {
     cells
         .iter()
-        .any(|(_, col, _)| column_type(delegate, *col, cx) == ColumnType::Filename)
+        .any(|(_, col, _)| delegate.column_type(*col) == ColumnType::Filename)
+        .then(|| cells.iter().map(|(row, _, _)| *row).collect())
+}
+
+/// The rows `changes` put new text in or back into, as they now sit; `None` when a column moved,
+/// which can change what every row resolves to.
+fn changed_rows(delegate: &QrateTableDelegate, changes: &[Change]) -> Option<Vec<usize>> {
+    let position: std::collections::HashMap<_, _> = delegate
+        .row_ids()
+        .iter()
+        .enumerate()
+        .map(|(at, id)| (*id, at))
+        .collect();
+    changes
+        .iter()
+        .filter_map(|change| match change {
+            Change::Cell { row, .. } | Change::RowAdded { row, .. } => {
+                Some(position.get(row).copied())
+            }
+            Change::RowRemoved { .. } | Change::Note { .. } => None,
+            _ => Some(None),
+        })
+        .collect()
 }
 
 /// Undo or redo the last grid edit, then do everything a committed edit does. A free function
@@ -263,7 +390,8 @@ fn settle(
 ) {
     state.update(cx, |state, cx| {
         // A row put back by a restore carries no photo, and an undone filename names another.
-        photos::refresh(state, cx);
+        let rows = changed_rows(state.delegate(), changes);
+        photos::refresh(state, rows.as_deref(), cx);
         // The library caches a `Column` per index, so a changed column set needs this.
         state.refresh(cx);
         cx.emit(delegate::TableChanged);
@@ -742,52 +870,26 @@ pub fn selected_context(plugin: &SharedString, cx: &App) -> CommandContext {
     }
 }
 
-/// Persist the open project's table data to its `.qrate` file, synchronously, and clear the
-/// `PROJECT_DATA` dirty mark. No-op with no project open, no live table, or a blank project. Runs
-/// on the calling thread — qrate's grids are small enough that a full rewrite stays well under a
-/// frame; move it onto the background executor if large projects ever stutter here.
-pub fn save_now(cx: &mut App) {
+/// Persist the open project's table data to its `.qrate` file, synchronously — Ctrl+S and quit,
+/// which must not return before the data is on disk. Waits out a background autosave still
+/// writing. Writes only the rows the unsaved log names unless the columns changed.
+///
+/// `Ok` clears the `PROJECT_DATA` dirty mark, including when no project is open. A project whose
+/// table is unavailable cannot be saved; `Err` leaves the mark and says why, for the archivist.
+pub fn save_now(cx: &mut App) -> Result<(), String> {
     stamp_pending_author(cx);
-    let Some(file) = cx
-        .try_global::<settings::project::CurrentProject>()
-        .map(|p| p.file.clone())
-    else {
-        return;
-    };
-    let Some(state) = cx
-        .try_global::<TableStateHandle>()
-        .and_then(|h| h.0.upgrade())
-    else {
-        return;
+    if !cx.has_global::<settings::project::CurrentProject>() {
+        settings::dirty::clear(settings::dirty::PROJECT_DATA, cx);
+        return Ok(());
+    }
+    let Some((file, state)) = save_target(cx) else {
+        return Err("Couldn't save your changes: the project's table is unavailable.".into());
     };
     let started = std::time::Instant::now();
-    let (headers, row_ids, rows, structure, history) = {
-        let delegate = state.read(cx).delegate();
-        let (headers, row_ids, rows) = delegate.dataset_snapshot();
-        let structure = delegate.row_structure().to_vec();
-        let history = delegate.unsaved_history().to_vec();
-        (headers, row_ids, rows, structure, history)
-    };
-    match settings::project::save_dataset(
-        &file,
-        &headers,
-        &row_ids,
-        &rows,
-        Some(&structure),
-        &history,
-    ) {
-        Ok(()) => {
-            state.update(cx, |state, _| {
-                state.delegate_mut().history_saved(history.len())
-            });
-            log::debug!(
-                "saved {} rows and {} arranged components in {:?}",
-                rows.len(),
-                structure.len(),
-                started.elapsed()
-            );
-            settings::dirty::clear(settings::dirty::PROJECT_DATA, cx);
-        }
-        Err(err) => log::error!("failed to save project data: {err}"),
-    }
+    let snapshot = state.read(cx).delegate().save_snapshot();
+    let (rows, edits) = (snapshot.rows.len(), snapshot.edits);
+    let written = write_snapshot(&file, &snapshot);
+    saved(&state, &file, edits, written, cx)?;
+    log::debug!("saved {rows} rows in {:?}", started.elapsed());
+    Ok(())
 }
