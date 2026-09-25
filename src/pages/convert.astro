@@ -1,0 +1,504 @@
+---
+// Converts a .qrate file in the browser. The file is read locally:
+// by a WASM module built from the same export code as the app (see
+// qrate-export-spec.md), and the only network calls are the ones Google Sheets
+// needs, made straight from this page to Google.
+import Base from '../layouts/Base.astro';
+
+// Public by design: a Web OAuth client id and a referrer-restricted Picker key
+// both ship in the page. Unset means the Sheets rows say so instead of failing.
+const googleClientId = import.meta.env.PUBLIC_GOOGLE_WEB_CLIENT_ID ?? '';
+const pickerKey = import.meta.env.PICKER_API_KEY ?? '';
+// The Cloud project number. The Picker grants drive.file access only with it.
+const pickerAppId = '805791669854';
+
+const formats = [
+  { key: 'csv', name: 'CSV', note: 'Opens in any spreadsheet program. The same file the app writes.' },
+  { key: 'xlsx', name: 'Excel workbook', note: 'Every cell stays as text, and project notes become cell comments.' },
+  { key: 'jsonld', name: 'JSON-LD', note: 'Linked data: one node per row, with your column names as schema.org terms.' },
+  { key: 'csl', name: 'CSL-JSON for Zotero', note: 'Choose which columns become Zotero fields. Other columns are kept as notes.', choose: true },
+  { key: 'sheet-new', name: 'New Google Sheet', note: 'Creates a sheet in your Google Drive and fills it.', google: true },
+  { key: 'sheet-existing', name: 'Existing Google Sheet', note: 'Replaces the first tab of a sheet you pick.', google: true },
+];
+---
+
+<Base
+  title="Convert a project · qrate"
+  description="Convert a qrate project to CSV, Excel, JSON-LD, CSL-JSON, or a Google Sheet, in your browser."
+>
+  <header class="gut border-b border-rule-nav py-10 md:py-14">
+    <div class="eyebrow mb-4 flex items-center gap-[9px]">
+      <span class="h-px w-5 bg-accent"></span>Convert
+    </div>
+    <h1 class="m-0 max-w-3xl text-[36px] font-semibold leading-[1.05] md:text-[48px]">
+      Open a qrate project anywhere.
+    </h1>
+    <p class="mt-4 max-w-2xl text-[15px] leading-7 text-body md:text-base">
+      Turn a .qrate file into a spreadsheet, linked data, or a Google Sheet. The file stays in
+      this browser. Export to Google Sheets only when you choose to send the rows there.
+    </p>
+  </header>
+
+  <section id="pick" class="gut border-b border-rule-nav py-8 md:py-10">
+    <label
+      id="drop"
+      class="flex min-h-56 cursor-pointer flex-col items-center justify-center gap-2 border-2 border-dashed border-rule bg-ground/40 px-6 py-10 text-center transition-colors focus-within:border-accent data-[over]:border-accent data-[over]:bg-wash"
+    >
+      <input id="file" type="file" accept=".qrate" class="sr-only" />
+      <span id="drop-text" class="text-base text-ink">
+        Drop a .qrate file here, or <span class="font-semibold underline">choose a file</span>
+      </span>
+      <span class="font-mono text-[11px] text-dim">Read in your browser. Only Sheets exports send rows to Google.</span>
+    </label>
+    <p id="pick-status" class="mt-4 min-h-6 text-sm text-body" role="status" aria-live="polite"></p>
+    <div id="large" class="mt-2 hidden border-l-2 border-rust bg-ground/50 px-4 py-3 text-sm text-body">
+      <p id="large-text" class="m-0"></p>
+      <div class="mt-3 flex gap-3">
+        <button id="large-go" class="cursor-pointer bg-ink px-4 py-2 text-sm font-medium text-paper">Open it anyway</button>
+        <button id="large-cancel" class="cursor-pointer border border-rule px-4 py-2 text-sm">Choose another file</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="loaded" class="hidden" aria-labelledby="project-name">
+    <div class="gut flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2 border-b border-rule-nav py-5">
+      <div class="min-w-0">
+        <h2 id="project-name" class="m-0 truncate text-2xl font-semibold"></h2>
+        <p id="project-size" class="m-0 font-mono text-xs text-dim"></p>
+      </div>
+      <button id="again" class="cursor-pointer text-sm text-ink underline">Choose another file</button>
+    </div>
+
+    <div class="gut border-b border-rule-nav py-6">
+      <div class="eyebrow mb-3 text-dim">Preview</div>
+      <div class="max-h-[420px] overflow-auto border border-rule" tabindex="0" aria-label="Preview of the first rows">
+        <table id="preview" class="w-max min-w-full border-collapse font-mono text-xs"></table>
+      </div>
+      <p id="preview-note" class="mt-2 text-xs text-dim"></p>
+    </div>
+
+    <ul class="gut m-0 list-none p-0">
+      {
+        formats.map((f) => (
+          <li class="border-b border-rule-soft py-5" data-format={f.key}>
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div class="min-w-0">
+                <h3 class="m-0 text-base font-semibold">{f.name}</h3>
+                <p class="m-0 text-sm text-body">{f.note}</p>
+                {!f.google && <code class="font-mono text-[11px] text-dim" data-filename />}
+              </div>
+              <button
+                data-action
+                class="shrink-0 cursor-pointer bg-accent px-5 py-2.5 text-sm font-semibold text-on-accent disabled:cursor-default disabled:opacity-50"
+              >
+                {f.choose ? 'Choose…' : f.google ? 'Export' : 'Download'}
+              </button>
+            </div>
+            {f.key === 'csl' && (
+              <div data-panel class="mt-4 hidden border border-rule bg-ground/40 p-4">
+                <p class="m-0 mb-3 text-sm text-body">
+                  The choices below start on what this project last used, or on its column types.
+                </p>
+                <div data-fields class="grid gap-3 sm:grid-cols-2" />
+                <button data-go class="mt-4 cursor-pointer bg-ink px-4 py-2 text-sm font-medium text-paper">Download</button>
+              </div>
+            )}
+            {f.key === 'sheet-existing' && (
+              <div data-panel class="mt-4 hidden border-l-2 border-rust bg-ground/50 px-4 py-3">
+                <p data-confirm class="m-0 text-sm text-body" />
+                <div class="mt-3 flex gap-3">
+                  <button data-go class="cursor-pointer bg-ink px-4 py-2 text-sm font-medium text-paper">Replace</button>
+                  <button data-cancel class="cursor-pointer border border-rule px-4 py-2 text-sm">Cancel</button>
+                </div>
+              </div>
+            )}
+            <p data-status class="m-0 mt-2 min-h-5 text-sm text-body" role="status" aria-live="polite" />
+          </li>
+        ))
+      }
+      <li class="py-5 text-sm text-dim">Exports added by plugins run only in the qrate app.</li>
+    </ul>
+  </section>
+
+  <section class="gut border-t border-rule-nav py-8 text-sm text-body">
+    Want to edit, fix problems, or keep a sheet in sync?
+    <a href="/docs/install" class="font-medium text-ink underline">Get qrate.</a>
+  </section>
+
+  <div id="config" hidden data-client-id={googleClientId} data-picker-key={pickerKey} data-app-id={pickerAppId}></div>
+
+  <script>
+    import {
+      LARGE_FILE,
+      LOAD_FAILED,
+      MIME,
+      SHEETS_SCOPE,
+      baseName,
+      createSheet,
+      googleErrorMessage,
+      openErrorMessage,
+      outputName,
+      sheetUrl,
+      writeValues,
+      writeNotes,
+      type Format,
+    } from '../lib/convert';
+
+    type Wasm = typeof import('qrate-export');
+    type Project = InstanceType<Wasm['Project']>;
+    declare const google: any;
+    declare const gapi: any;
+
+    const $ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document) =>
+      root.querySelector<T>(sel)!;
+    const config = $('#config').dataset;
+    const fileInput = $<HTMLInputElement>('#file');
+    const drop = $('#drop');
+    const pickStatus = $('#pick-status');
+    const large = $('#large');
+    const loaded = $('#loaded');
+    const pick = $('#pick');
+
+    let wasm: Wasm | undefined;
+    let project: Project | undefined;
+    let base = 'export';
+    let pending: File | undefined;
+
+    // Fetched on the first file, not on page load: most visitors never pick one.
+    async function loadWasm(): Promise<Wasm> {
+      if (!wasm) {
+        const started = performance.now();
+        const mod = await import('qrate-export');
+        await mod.default();
+        console.info(`[convert] module ready in ${Math.round(performance.now() - started)} ms`);
+        wasm = mod;
+      }
+      return wasm;
+    }
+
+    function reset() {
+      project?.free();
+      project = undefined;
+      fileInput.value = '';
+      large.classList.add('hidden');
+      loaded.classList.add('hidden');
+      pick.classList.remove('hidden');
+      pickStatus.textContent = '';
+      for (const row of document.querySelectorAll<HTMLElement>('[data-format]')) {
+        $('[data-status]', row).textContent = '';
+        row.querySelector('[data-panel]')?.classList.add('hidden');
+      }
+      drop.focus();
+    }
+
+    async function open(file: File, confirmed = false) {
+      if (file.size > LARGE_FILE && !confirmed) {
+        pending = file;
+        $('#large-text').textContent = `${file.name} is ${Math.round(file.size / 1048576)} MB. Opening it needs about that much memory in this tab.`;
+        large.classList.remove('hidden');
+        return;
+      }
+      large.classList.add('hidden');
+      pickStatus.textContent = `Reading ${file.name}…`;
+      let mod: Wasm;
+      try {
+        mod = await loadWasm();
+      } catch (err) {
+        console.error('[convert] module failed to load', err);
+        pickStatus.textContent = LOAD_FAILED;
+        return;
+      }
+      try {
+        const started = performance.now();
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        project?.free();
+        project = mod.Project.open(bytes);
+        console.info(`[convert] opened ${file.name} in ${Math.round(performance.now() - started)} ms`);
+      } catch (err) {
+        console.error('[convert] open failed', err);
+        pickStatus.textContent = openErrorMessage(err);
+        fileInput.value = '';
+        return;
+      }
+      base = baseName(project.name() ?? undefined, file.name);
+      show(project);
+    }
+
+    function show(p: Project) {
+      const headers = p.headers();
+      const count = p.row_count();
+      const n = (x: number) => x.toLocaleString();
+      $('#project-name').textContent = p.name() ?? base;
+      $('#project-size').textContent = `${n(count)} ${count === 1 ? 'row' : 'rows'} · ${n(headers.length)} ${headers.length === 1 ? 'column' : 'columns'}`;
+
+      const table = $('#preview');
+      const rows: string[][] = p.preview(20);
+      const cell = (tag: string, text: string) => {
+        const el = document.createElement(tag);
+        el.textContent = text;
+        el.title = text;
+        el.className =
+          tag === 'th'
+            ? 'sticky top-0 max-w-[240px] truncate border-b border-rule bg-ground px-3 py-2 text-left font-semibold'
+            : 'max-w-[240px] truncate border-b border-rule-soft px-3 py-1.5';
+        return el;
+      };
+      const tr = (cells: HTMLElement[]) => {
+        const el = document.createElement('tr');
+        el.append(...cells);
+        return el;
+      };
+      const thead = document.createElement('thead');
+      thead.append(tr(headers.map((h) => cell('th', h))));
+      const tbody = document.createElement('tbody');
+      tbody.append(...rows.map((r) => tr(r.map((c) => cell('td', c)))));
+      table.replaceChildren(thead, tbody);
+      $('#preview-note').textContent =
+        count > rows.length
+          ? `Showing ${n(rows.length)} of ${n(count)} rows. Exports include every row.`
+          : 'Exports include every row.';
+
+      for (const el of document.querySelectorAll<HTMLElement>('[data-format]')) {
+        const name = el.querySelector<HTMLElement>('[data-filename]');
+        if (name) name.textContent = outputName(base, el.dataset.format as Format);
+      }
+      fillCsl(p, headers);
+      pick.classList.add('hidden');
+      loaded.classList.remove('hidden');
+      $('#project-name').focus();
+    }
+
+    function fillCsl(p: Project, headers: string[]) {
+      const fields: string[] = (wasm!.Project as any).csl_fields();
+      const current: Record<string, string> = p.csl_default() ?? {};
+      const labels: Record<string, string> = { id: 'ID', title: 'Title', author: 'Author', issued: 'Date issued', URL: 'URL' };
+      $('[data-format="csl"] [data-fields]').replaceChildren(
+        ...fields.map((field) => {
+          const label = document.createElement('label');
+          label.className = 'grid gap-1 text-sm';
+          const span = Object.assign(document.createElement('span'), { textContent: labels[field] ?? field });
+          span.className = 'font-mono text-[11px] uppercase tracking-wider text-dim';
+          const select = document.createElement('select');
+          select.name = field;
+          select.className = 'border border-rule bg-paper px-2 py-1.5';
+          select.append(new Option('None', ''), ...headers.map((h) => new Option(h, h, false, current[field] === h)));
+          label.append(span, select);
+          return label;
+        }),
+      );
+    }
+
+    function save(bytes: Uint8Array, format: Format) {
+      const url = URL.createObjectURL(new Blob([bytes], { type: MIME[format] }));
+      const a = Object.assign(document.createElement('a'), { href: url, download: outputName(base, format) });
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    }
+
+    // One export at a time per row; the other rows stay usable.
+    async function run(row: HTMLElement, work: (status: (text: string, link?: string) => void) => Promise<void>) {
+      const button = $<HTMLButtonElement>('[data-action]', row);
+      const statusEl = $('[data-status]', row);
+      const status = (text: string, link?: string) => {
+        statusEl.textContent = text;
+        if (link) {
+          statusEl.append(' ', Object.assign(document.createElement('a'), {
+            href: link, target: '_blank', rel: 'noopener', textContent: 'Open sheet', className: 'font-medium text-ink underline',
+          }));
+        }
+      };
+      button.disabled = true;
+      try {
+        await work(status);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    const download = (row: HTMLElement, format: Format, make: () => Uint8Array) =>
+      run(row, async (status) => {
+        status('Preparing…');
+        await new Promise(requestAnimationFrame); // let the status paint before the work blocks
+        try {
+          save(make(), format);
+          status(`Saved ${outputName(base, format)}.`);
+        } catch (err) {
+          console.error(`[convert] ${format} failed`, err);
+          status("That export couldn't be written. The console has the details.");
+        }
+      });
+
+    // --- Google ----------------------------------------------------------------
+
+    let tokenClient: any;
+    let token: { value: string; expires: number } | undefined;
+    let tokenWaiter: { resolve: (t: string | null) => void; reject: (e: unknown) => void } | undefined;
+
+    function loadScript(src: string): Promise<void> {
+      return new Promise((resolve, reject) => {
+        const s = Object.assign(document.createElement('script'), { src, async: true, onload: () => resolve(), onerror: reject });
+        document.head.append(s);
+      });
+    }
+
+    // Loaded up front when configured, so a click can open the consent popup
+    // synchronously; browsers block popups that open after an await.
+    const gis = config.clientId
+      ? loadScript('https://accounts.google.com/gsi/client').then(() => {
+          tokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: config.clientId,
+            scope: SHEETS_SCOPE,
+            callback: (r: any) => {
+              if (r.error) return tokenWaiter?.resolve(null); // access_denied: the user said no
+              token = { value: r.access_token, expires: Date.now() + (r.expires_in - 60) * 1000 };
+              tokenWaiter?.resolve(token.value);
+            },
+            error_callback: (e: any) => (e?.type === 'popup_closed' ? tokenWaiter?.resolve(null) : tokenWaiter?.reject(e)),
+          });
+        })
+      : undefined;
+
+    /** Resolves null when the user closes or declines the consent popup. */
+    function getToken(): Promise<string | null> {
+      if (token && token.expires > Date.now()) return Promise.resolve(token.value);
+      if (!tokenClient) return Promise.reject(new Error('Google sign-in did not load'));
+      return new Promise((resolve, reject) => {
+        tokenWaiter = { resolve, reject };
+        tokenClient.requestAccessToken();
+      });
+    }
+
+    function pickSheet(accessToken: string): Promise<{ id: string; name: string } | null> {
+      const ready = typeof gapi === 'undefined' ? loadScript('https://apis.google.com/js/api.js') : Promise.resolve();
+      return ready.then(
+        () =>
+          new Promise((resolve) =>
+            gapi.load('picker', () =>
+              new google.picker.PickerBuilder()
+                .setAppId(config.appId)
+                .setOAuthToken(accessToken)
+                .setDeveloperKey(config.pickerKey)
+                .addView(new google.picker.DocsView(google.picker.ViewId.SPREADSHEETS))
+                .setCallback((data: any) => {
+                  if (data.action === google.picker.Action.CANCEL) resolve(null);
+                  if (data.action === google.picker.Action.PICKED) resolve({ id: data.docs[0].id, name: data.docs[0].name });
+                })
+                .build()
+                .setVisible(true),
+            ),
+          ),
+      );
+    }
+
+    async function fill(accessToken: string, id: string, status: (t: string, l?: string) => void) {
+      status(`Filling ${project!.row_count().toLocaleString()} rows…`);
+      await writeValues(accessToken, id, project!.sheet_values());
+      await writeNotes(accessToken, id, (sheetId) =>
+        (project as Project & { sheet_note_requests?: (id: number) => { requests: unknown[] } })
+          ?.sheet_note_requests?.(sheetId),
+      );
+      status('Done.', sheetUrl(id));
+    }
+
+    // --- Wiring ----------------------------------------------------------------
+
+    fileInput.addEventListener('change', () => fileInput.files?.[0] && open(fileInput.files[0]));
+    for (const type of ['dragenter', 'dragover']) {
+      drop.addEventListener(type, (e) => {
+        e.preventDefault();
+        drop.dataset.over = '';
+      });
+    }
+    drop.addEventListener('dragleave', () => delete drop.dataset.over);
+    drop.addEventListener('drop', (e) => {
+      e.preventDefault();
+      delete drop.dataset.over;
+      const files = e.dataTransfer?.files;
+      if (!files?.length) return;
+      open(files[0]).then(() => {
+        if (files.length > 1 && project) pickStatus.textContent = `Opened ${files[0].name}. Drop one file at a time.`;
+      });
+    });
+    $('#large-go').addEventListener('click', () => pending && open(pending, true));
+    $('#large-cancel').addEventListener('click', reset);
+    $('#again').addEventListener('click', reset);
+
+    const row = (key: string) => $(`[data-format="${key}"]`);
+    const toggle = (key: string) => $('[data-panel]', row(key)).classList.toggle('hidden');
+
+    $('[data-action]', row('csv')).addEventListener('click', () => download(row('csv'), 'csv', () => project!.to_csv()));
+    $('[data-action]', row('xlsx')).addEventListener('click', () => download(row('xlsx'), 'xlsx', () => project!.to_xlsx()));
+    $('[data-action]', row('jsonld')).addEventListener('click', () => download(row('jsonld'), 'jsonld', () => project!.to_jsonld()));
+
+    $('[data-action]', row('csl')).addEventListener('click', () => toggle('csl'));
+    $('[data-go]', row('csl')).addEventListener('click', () => {
+      const mapping: Record<string, string> = {};
+      for (const s of row('csl').querySelectorAll<HTMLSelectElement>('select')) if (s.value) mapping[s.name] = s.value;
+      download(row('csl'), 'csl', () => project!.to_csl(mapping));
+    });
+
+
+    for (const key of ['sheet-new', 'sheet-existing']) {
+      const r = row(key);
+      if (!config.clientId || (key === 'sheet-existing' && !config.pickerKey)) {
+        $<HTMLButtonElement>('[data-action]', r).disabled = true;
+        $('[data-status]', r).textContent = 'Not set up on this build.';
+      }
+    }
+
+    $('[data-action]', row('sheet-new')).addEventListener('click', () => {
+      const tokenPromise = getToken(); // first, so the popup opens inside the click
+      run(row('sheet-new'), async (status) => {
+        try {
+          await gis;
+          const t = await tokenPromise;
+          if (!t) return status('');
+          status('Creating sheet…');
+          const id = await createSheet(t, base);
+          await fill(t, id, status);
+        } catch (err) {
+          console.error('[convert] sheet failed', err);
+          status(googleErrorMessage(err));
+        }
+      });
+    });
+
+    let picked: { token: string; id: string } | undefined;
+    $('[data-action]', row('sheet-existing')).addEventListener('click', () => {
+      const tokenPromise = getToken();
+      run(row('sheet-existing'), async (status) => {
+        try {
+          const t = await tokenPromise;
+          if (!t) return status('');
+          status('Waiting for you to pick a sheet…');
+          const sheet = await pickSheet(t);
+          if (!sheet) return status('');
+          picked = { token: t, id: sheet.id };
+          status('');
+          $('[data-confirm]', row('sheet-existing')).textContent =
+            `The first tab of “${sheet.name}” will be replaced with this project’s ${project!.row_count().toLocaleString()} rows.`;
+          $('[data-panel]', row('sheet-existing')).classList.remove('hidden');
+        } catch (err) {
+          console.error('[convert] picker failed', err);
+          status(googleErrorMessage(err));
+        }
+      });
+    });
+    $('[data-cancel]', row('sheet-existing')).addEventListener('click', () => {
+      picked = undefined;
+      $('[data-panel]', row('sheet-existing')).classList.add('hidden');
+    });
+    $('[data-go]', row('sheet-existing')).addEventListener('click', () => {
+      $('[data-panel]', row('sheet-existing')).classList.add('hidden');
+      const target = picked!;
+      run(row('sheet-existing'), async (status) => {
+        try {
+          await fill(target.token, target.id, status);
+        } catch (err) {
+          console.error('[convert] sheet write failed', err);
+          status(googleErrorMessage(err));
+        }
+      });
+    });
+  </script>
+</Base>

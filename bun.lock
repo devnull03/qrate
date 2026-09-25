@@ -10,6 +10,7 @@
         "@tailwindcss/vite": "^4.3.3",
         "astro": "^7.2.2",
         "marked": "^15.0.0",
+        "qrate-export": "file:../worktrees/qrate-export-spike/qrate-export-0.0.0-spike.2.tgz",
         "semver": "^7.7.2",
         "starlight-llms-txt": "^0.11.0",
         "starlight-mcp": "^0.2.0",
@@ -869,6 +870,8 @@
     "process-ancestry": ["process-ancestry@0.1.0", "", {}, "sha512-tGqJW/UnclpYASFcM6Xh8D8l/BMtaQ9+CSG0vlJSJTcdMM4lDRv4c6H0Pdcsfted+bVczdYSfk2fdukg2gQkZg=="],
 
     "property-information": ["property-information@7.2.0", "", {}, "sha512-IAtzIB6sUiWaJYrX9smp3V46pBGbBeLFRGdh25kg1334VcBlD8HzhPeNIWQH9zhGmo2itIe25EHt9dQP7G5hmg=="],
+
+    "qrate-export": ["qrate-export@../worktrees/qrate-export-spike/qrate-export-0.0.0-spike.2.tgz", {}, "sha512-3TlyWpidO9tipd1MpzWgw9Djl6WnQS22CZDYJNxNQz5maET+cBIKrlmz+WrizAEqAJjSTtNmCuYwMHGWZZ7kkw=="],
 
     "radix3": ["radix3@1.1.2", "", {}, "sha512-b484I/7b8rDEdSDKckSSBA8knMpcdsXudlE/LNL639wFoHKwLbEkQFZHWEYwDC0wa0FKUcCY+GAF73Z7wxNVFA=="],
 
