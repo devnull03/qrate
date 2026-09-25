@@ -265,11 +265,6 @@ pub fn verify_catalog(bytes: &[u8], signature_bytes: &[u8], key: &VerifyingKey) 
     Ok(catalog)
 }
 
-pub fn fetch_catalog(url: &str, key: &VerifyingKey) -> Result<Catalog> {
-    let (bytes, signature) = fetch_catalog_files(url)?;
-    verify_catalog(&bytes, &signature, key)
-}
-
 pub fn fetch_catalog_cached(url: &str, key: &VerifyingKey, cache_root: &Path) -> Result<Catalog> {
     let catalog_path = cache_root.join("catalog.json");
     let signature_path = cache_root.join("catalog.json.sig");
@@ -481,23 +476,6 @@ pub fn inspect_archive(archive: &Path) -> Result<PackageInspection> {
     })
 }
 
-pub fn install_archive(
-    archive: &Path,
-    plugins_root: &Path,
-    receipts_root: &Path,
-    source: InstallSource,
-    expected: Option<(&CatalogPlugin, &CatalogRelease)>,
-) -> Result<InstallReceipt> {
-    install_archive_checked(
-        archive,
-        plugins_root,
-        receipts_root,
-        source,
-        expected,
-        |_, _| Ok(()),
-    )
-}
-
 pub fn install_archive_checked(
     archive: &Path,
     plugins_root: &Path,
@@ -515,15 +493,6 @@ pub fn install_archive_checked(
         None,
         check,
     )
-}
-
-pub fn install_direct_archive(
-    archive: &Path,
-    plugins_root: &Path,
-    receipts_root: &Path,
-    release: &DirectRelease,
-) -> Result<InstallReceipt> {
-    install_direct_archive_checked(archive, plugins_root, receipts_root, release, |_, _| Ok(()))
 }
 
 pub fn install_direct_archive_checked(
@@ -961,8 +930,8 @@ mod tests {
 
     use super::{
         CATALOG_KEY_ID, DirectRelease, InstallSource, InstallTarget, PackageManifest,
-        install_archive, install_archive_checked, install_direct_archive, parse_install_link,
-        read_receipt, remove_managed, validate_github_source, verify_catalog,
+        install_archive_checked, install_direct_archive_checked, parse_install_link, read_receipt,
+        remove_managed, validate_github_source, verify_catalog,
     };
 
     fn package(path: &std::path::Path, id: &str, extra: Option<(&str, &[u8])>) {
@@ -1099,12 +1068,13 @@ mod tests {
         package(&archive, "org.example.plugin", None);
         let plugins = root.path().join("plugins");
         let receipts = root.path().join("receipts");
-        let receipt = install_archive(
+        let receipt = install_archive_checked(
             &archive,
             &plugins,
             &receipts,
             InstallSource::DirectGithub,
             None,
+            |_, _| Ok(()),
         )
         .unwrap();
         assert!(plugins.join("org.example.plugin/init.lua").is_file());
@@ -1133,11 +1103,12 @@ mod tests {
             artifact_name: "plugin.zip".into(),
             bytes: fs::metadata(&archive).unwrap().len(),
         };
-        let receipt = install_direct_archive(
+        let receipt = install_direct_archive_checked(
             &archive,
             &root.path().join("plugins"),
             &root.path().join("receipts"),
             &release,
+            |_, _| Ok(()),
         )
         .unwrap();
 
@@ -1152,12 +1123,13 @@ mod tests {
         package(&archive, "org.example.plugin", None);
         let plugins = root.path().join("plugins");
         let receipts = root.path().join("receipts");
-        install_archive(
+        install_archive_checked(
             &archive,
             &plugins,
             &receipts,
             InstallSource::DirectGithub,
             None,
+            |_, _| Ok(()),
         )
         .unwrap();
         let manifest = plugins.join("org.example.plugin/qrate-plugin.json");
@@ -1177,12 +1149,13 @@ mod tests {
         package(&archive, "org.example.plugin", None);
         let plugins = root.path().join("plugins");
         let receipts = root.path().join("receipts");
-        install_archive(
+        install_archive_checked(
             &archive,
             &plugins,
             &receipts,
             InstallSource::DirectGithub,
             None,
+            |_, _| Ok(()),
         )
         .unwrap();
         let installed = plugins.join("org.example.plugin/init.lua");
@@ -1219,12 +1192,13 @@ mod tests {
         .unwrap();
 
         assert!(
-            install_archive(
+            install_archive_checked(
                 &archive,
                 &plugins,
                 &root.path().join("receipts"),
                 InstallSource::DirectGithub,
                 None,
+                |_, _| Ok(()),
             )
             .is_err()
         );
@@ -1240,12 +1214,13 @@ mod tests {
         let archive = root.path().join("plugin.zip");
         package(&archive, "org.example.plugin", Some(("../outside", b"bad")));
         assert!(
-            install_archive(
+            install_archive_checked(
                 &archive,
                 &root.path().join("plugins"),
                 &root.path().join("receipts"),
                 InstallSource::DirectGithub,
-                None
+                None,
+                |_, _| Ok(()),
             )
             .is_err()
         );

@@ -1135,7 +1135,7 @@ mod tests {
                 row_id: Some(1),
                 column: Some("Title".into()),
             };
-            let offered = diagnostics::fixes::at(&location, "Harvest", cx);
+            let offered = diagnostics::fixes::at_subject(&location, "Harvest", None, None, cx);
             assert_eq!(
                 offered.len(),
                 1,
@@ -1160,7 +1160,14 @@ mod tests {
                 "staging a replacement must not write the cell"
             );
             assert!(
-                diagnostics::fixes::at(&location, "Harvest, retitled by hand", cx).is_empty(),
+                diagnostics::fixes::at_subject(
+                    &location,
+                    "Harvest, retitled by hand",
+                    None,
+                    None,
+                    cx
+                )
+                .is_empty(),
                 "a cell edited since staging is offered nothing"
             );
         });

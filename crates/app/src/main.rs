@@ -130,10 +130,12 @@ pub(crate) fn open_main_window(cx: &mut gpui::App) {
         .and_then(|p| settings::project::read_setting(&p.file, MAIN_WINDOW_BOUNDS_KEY).ok())
         .flatten()
         .and_then(|raw| serde_json::from_str::<MainWindowBounds>(&raw).ok());
-    let (main_bounds, main_display) = match &project_bounds {
-        Some(b) => MainWindowBounds::startup_placement(Some(b), cx),
-        None => AppSettings::get(cx).main_window_startup_placement(cx),
-    };
+    let (main_bounds, main_display) = MainWindowBounds::startup_placement(
+        project_bounds
+            .as_ref()
+            .or(AppSettings::get(cx).main_window_bounds.as_ref()),
+        cx,
+    );
     let window_options = WindowOptions {
         titlebar: Some(TitleBar::title_bar_options()),
         window_bounds: Some(WindowBounds::Windowed(main_bounds)),

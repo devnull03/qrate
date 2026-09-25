@@ -104,14 +104,9 @@ impl GroupFixProviders {
     }
 }
 
-/// Every correction offered for the findings at `location`, in the order their sources sort.
-///
-/// Public because the cell renderer wants to know whether *any* exist without building a menu.
-pub fn at(location: &Location, text: &str, cx: &App) -> Vec<Fix> {
-    at_subject(location, text, None, None, cx)
-}
-
-fn at_subject(
+/// Every correction offered for the findings at `location`, in the order their sources sort,
+/// narrowed to one `source` and `subject` when given.
+pub fn at_subject(
     location: &Location,
     text: &str,
     source: Option<&str>,
@@ -384,7 +379,7 @@ fn edit_ignores(
 #[cfg(test)]
 mod tests {
     // Never `use super::*` here — see the note in `lib.rs`'s test module.
-    use crate::fixes::{Fix, FixProviders, GroupFix, at, at_subject};
+    use crate::fixes::{Fix, FixProviders, GroupFix, at_subject};
     use crate::{
         DATASET_MAIN, Diagnostic, DiagnosticHooks, Diagnostics, Location, Severity, Source,
     };
@@ -430,7 +425,7 @@ mod tests {
             publish("LCSH", "Subject", cx);
             FixProviders::register("LCSH", offer, cx);
 
-            let found = at(&location("Subject"), "Photograph", cx);
+            let found = at_subject(&location("Subject"), "Photograph", None, None, cx);
             assert_eq!(found.len(), 1);
             assert_eq!(found[0].replacement, SharedString::from("Photographs"));
         });
@@ -444,7 +439,7 @@ mod tests {
             FixProviders::register("spell", offer, cx);
             FixProviders::register("LCSH", offer, cx);
 
-            let found = at(&location("Title"), "alice", cx);
+            let found = at_subject(&location("Title"), "alice", None, None, cx);
             assert_eq!(found.len(), 1, "identical fixes are deduplicated");
             assert_eq!(found[0].replacement, SharedString::from("alices"));
             assert_eq!(
@@ -500,11 +495,11 @@ mod tests {
             publish("files", "Subject", cx);
             FixProviders::register("LCSH", offer, cx);
             assert!(
-                at(&location("Subject"), "Photograph", cx).is_empty(),
+                at_subject(&location("Subject"), "Photograph", None, None, cx).is_empty(),
                 "a source with no provider offers nothing"
             );
             assert!(
-                at(&location("Elsewhere"), "Photograph", cx).is_empty(),
+                at_subject(&location("Elsewhere"), "Photograph", None, None, cx).is_empty(),
                 "a clean cell offers nothing"
             );
         });
@@ -539,7 +534,10 @@ mod tests {
                 cx,
             );
             FixProviders::register("LCSH", offer, cx);
-            assert_eq!(at(&location("Subject"), "Photograph", cx).len(), 1);
+            assert_eq!(
+                at_subject(&location("Subject"), "Photograph", None, None, cx).len(),
+                1
+            );
         });
     }
 

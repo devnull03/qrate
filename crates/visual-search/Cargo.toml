@@ -5,7 +5,6 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-log.workspace = true
 serde_json.workspace = true
 # Pure Rust, so the model runs on every platform CI builds. Held at 0.9: from 0.10 candle-core
 # pulls in `tokenizers` and its C oniguruma build, which nothing here calls.

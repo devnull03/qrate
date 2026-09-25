@@ -1737,14 +1737,12 @@ dependencies = [
  "base64",
  "calamine",
  "csv",
- "file-ingest",
  "getrandom 0.3.4",
- "log",
  "quick-xml 0.37.5",
  "reqwest",
+ "rust_xlsxwriter",
  "serde",
  "serde_json",
- "settings",
  "sha2",
  "tempfile",
  "thiserror 2.0.18",
@@ -6477,7 +6475,6 @@ version = "0.1.0"
 dependencies = [
  "calamine",
  "csv",
- "js-sys",
  "log",
  "rusqlite",
  "rust_xlsxwriter",
@@ -9368,7 +9365,6 @@ dependencies = [
  "candle-transformers",
  "dirs 6.0.0",
  "image",
- "log",
  "regex",
  "reqwest",
  "serde_json",
@@ -9947,7 +9943,6 @@ dependencies = [
  "gpui-pre",
  "schemars",
  "serde",
- "serde_json",
 ]
 
 [[package]]

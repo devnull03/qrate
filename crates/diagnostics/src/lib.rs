@@ -409,11 +409,6 @@ impl Diagnostics {
         Self::at(dataset, row, column, cx).filter(|d| d.source == Source::Note)
     }
 
-    /// How many notes are filed here.
-    pub fn note_count(dataset: &str, row: Option<usize>, column: Option<&str>, cx: &App) -> usize {
-        Self::notes_at(dataset, row, column, cx).count()
-    }
-
     /// Every note anywhere on one row — the ones filed on its cells as well as on the row itself,
     /// oldest first. [`Self::at`] deliberately does *not* let a row inherit its cells' diagnostics,
     /// because the grid marks each where it was attached; but a view with no cells to mark — the
@@ -438,6 +433,7 @@ impl Diagnostics {
 
     /// File another note here without disturbing the ones already at this location. `set_note`'s
     /// counterpart: that one corrects, this one adds.
+    #[cfg(test)]
     pub fn add_note(location: Location, message: SharedString, cx: &mut App) {
         if message.trim().is_empty() {
             return;
@@ -760,7 +756,7 @@ mod tests {
             Diagnostics::add_note(at(None), "whole print is faded".into(), cx);
 
             assert_eq!(
-                Diagnostics::note_count(DATASET_MAIN, Some(3), None, cx),
+                Diagnostics::notes_at(DATASET_MAIN, Some(3), None, cx).count(),
                 1,
                 "the grid still marks each note only where it was attached"
             );
@@ -814,7 +810,7 @@ mod tests {
             Diagnostics::add_note(cell.clone(), "verso inscription".into(), cx);
             Diagnostics::add_note(cell.clone(), "same backdrop as row 12".into(), cx);
             assert_eq!(
-                Diagnostics::note_count(DATASET_MAIN, Some(1), None, cx),
+                Diagnostics::notes_at(DATASET_MAIN, Some(1), None, cx).count(),
                 2,
                 "a second observation joins the first rather than replacing it"
             );

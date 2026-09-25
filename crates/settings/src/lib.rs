@@ -568,12 +568,6 @@ impl AppSettings {
         cx.global::<Self>()
     }
 
-    /// Window size and target display for startup, from the global (non-project) bounds.
-    /// See [`MainWindowBounds::startup_placement`] for the per-project equivalent.
-    pub fn main_window_startup_placement(&self, cx: &App) -> (Bounds<Pixels>, Option<DisplayId>) {
-        MainWindowBounds::startup_placement(self.main_window_bounds.as_ref(), cx)
-    }
-
     /// Single mutation entrypoint so we can trigger persistence.
     pub fn update<R>(cx: &mut App, f: impl FnOnce(&mut Self) -> R) -> R {
         let r = {

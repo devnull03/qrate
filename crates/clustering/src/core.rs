@@ -181,11 +181,6 @@ fn candidate_pairs(values: &[Value]) -> BTreeSet<(usize, usize)> {
     pairs
 }
 
-pub fn compare<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<Pair> {
-    let comparison = compare_indexed(values.into_iter().enumerate());
-    comparison.pairs
-}
-
 pub fn compare_indexed<'a>(values: impl IntoIterator<Item = (usize, &'a str)>) -> Comparison {
     let mut grouped: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (row, value) in values {
@@ -262,7 +257,12 @@ pub fn clusters(pairs: Vec<Pair>) -> Vec<Cluster> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Value, candidate_pairs, clusters, compare};
+    use super::{Pair, Value, candidate_pairs, clusters, compare_indexed};
+
+    fn compare<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<Pair> {
+        compare_indexed(values.into_iter().enumerate()).pairs
+    }
+
     #[test]
     fn evidence_and_frequencies_preserve_exact_text() {
         let pairs = compare([
