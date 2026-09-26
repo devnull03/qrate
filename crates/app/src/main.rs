@@ -122,6 +122,9 @@ pub(crate) fn open_main_window(cx: &mut gpui::App) {
                 set_main_window_title(window, cx);
             })
             .ok();
+        if cx.has_global::<project_wizard::OnboardingPreview>() {
+            onboarding::reopen(cx);
+        }
         return;
     }
 
@@ -150,6 +153,9 @@ pub(crate) fn open_main_window(cx: &mut gpui::App) {
         cx.new(|cx| Root::new(view, window, cx))
     }) {
         WindowRegistry::register(MAIN_WINDOW_KIND, window_handle.into(), cx);
+        if cx.has_global::<project_wizard::OnboardingPreview>() {
+            onboarding::reopen(cx);
+        }
         log::info!("opened the main window in {:?}", started.elapsed());
     }
 }
@@ -568,6 +574,8 @@ fn main() {
     // First, so failures in GPUI platform construction and startup still reach the log file.
     logging::init();
     log::info!("site origin: {}", site::url("/"));
+    let onboarding_preview =
+        cfg!(debug_assertions) && std::env::args().any(|argument| argument == "--onboarding");
     let initial_project = std::env::args_os()
         .skip(1)
         .map(std::path::PathBuf::from)
@@ -618,6 +626,9 @@ fn main() {
         preview::cache::set_cap(app_settings::preview_cache_bytes(cx));
         theming::init(cx);
         cx.set_global(WindowRegistry::default());
+        if onboarding_preview {
+            cx.set_global(project_wizard::OnboardingPreview);
+        }
 
         // Lets the launcher (in the `project-wizard` crate, which can't depend on `app`) open
         // the real main window without a crate cycle. See `project_wizard::launcher`.

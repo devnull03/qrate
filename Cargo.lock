@@ -6467,6 +6467,8 @@ dependencies = [
  "gpui-pre",
  "log",
  "plugin-api",
+ "preview",
+ "qrate-export",
  "serde",
  "serde_json",
  "settings",

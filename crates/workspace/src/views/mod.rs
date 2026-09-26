@@ -287,7 +287,8 @@ impl ViewsPanel {
                     h_flex()
                         .gap_1()
                         .items_center()
-                        .child(Icon::new(mode.icon()).size_3p5())
+                        .text_xs()
+                        .child(Icon::new(mode.icon()).size_3())
                         .child(mode.label()),
                 )
             }))

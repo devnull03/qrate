@@ -13,7 +13,9 @@ mod steps;
 pub mod wizard;
 
 pub use column_config::open_column_config_dialog;
-pub use launcher::{LauncherHooks, open_launcher_window, open_launcher_with_error};
+pub use launcher::{
+    LauncherHooks, OnboardingPreview, open_launcher_window, open_launcher_with_error,
+};
 pub use project::open_project;
 pub use recent::record_opened;
 pub use wizard::{EntryKind, open_project_wizard};
