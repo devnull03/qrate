@@ -325,6 +325,23 @@ pub fn prepare_restart(cx: &mut App) -> Result<PathBuf> {
     Ok(helper)
 }
 
+/// Runs `helper` once this process has exited. gpui's macOS restart would `open` it instead, and
+/// `open` runs a bare executable inside a Terminal window.
+#[cfg(target_os = "macos")]
+pub fn spawn_after_exit(helper: &std::path::Path) -> Result<()> {
+    use std::os::unix::process::CommandExt as _;
+
+    std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(r#"while kill -0 "$0" 2>/dev/null; do sleep 0.1; done; exec "$1""#)
+        .arg(std::process::id().to_string())
+        .arg(helper)
+        .process_group(0)
+        .spawn()
+        .context("start the update helper")?;
+    Ok(())
+}
+
 fn helper_path(installation: &Installation) -> PathBuf {
     #[cfg(target_os = "windows")]
     return installation.root.join("qrate-update-helper.exe");

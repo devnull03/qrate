@@ -79,11 +79,10 @@ pub(crate) fn open_settings_window(initial_page: Option<usize>, cx: &mut gpui::A
         .unwrap_or_else(|| size(px(760.0), px(560.0)));
     let bounds = Bounds::centered(display, win_size, cx);
     let window_options = WindowOptions {
-        titlebar: Some(TitleBar::title_bar_options()),
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         display_id: display,
         window_min_size: Some(Size::new(px(480.0), px(360.0))),
-        ..Default::default()
+        ..TitleBar::window_options()
     };
 
     // Open synchronously: gpui quits when the window list is empty (non-macOS), so a window
@@ -137,11 +136,10 @@ pub(crate) fn open_main_window(cx: &mut gpui::App) {
         cx,
     );
     let window_options = WindowOptions {
-        titlebar: Some(TitleBar::title_bar_options()),
         window_bounds: Some(WindowBounds::Windowed(main_bounds)),
         display_id: main_display,
         window_min_size: Some(Size::new(px(520.0), px(300.0))),
-        ..Default::default()
+        ..TitleBar::window_options()
     };
 
     // Open synchronously — see `open_settings_window` for why (quit-on-empty-window-list).
@@ -542,17 +540,30 @@ pub(crate) fn restart_for_update(_: &ClickEvent, window: &mut Window, cx: &mut g
         "Save them before restarting to update?",
         window,
         cx,
-        Box::new(|cx| match update_check::prepare_restart(cx) {
-            Ok(helper) => {
-                settings::dirty::clear(settings::dirty::PROJECT_DATA, cx);
-                flush_all_state(cx);
-                cx.set_restart_path(helper);
-                cx.restart();
-            }
-            Err(error) => {
-                log::error!("failed to prepare update restart: {error:#}");
-                if let Some(updater) = update_check::AutoUpdater::get(cx) {
-                    updater.update(cx, |updater, cx| updater.fail_restart(&error, cx));
+        Box::new(|cx| {
+            let prepared = update_check::prepare_restart(cx);
+            #[cfg(target_os = "macos")]
+            let prepared = prepared.and_then(|helper| {
+                update_check::spawn_after_exit(&helper)?;
+                Ok(helper)
+            });
+            match prepared {
+                Ok(_helper) => {
+                    settings::dirty::clear(settings::dirty::PROJECT_DATA, cx);
+                    flush_all_state(cx);
+                    #[cfg(target_os = "macos")]
+                    cx.quit();
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        cx.set_restart_path(_helper);
+                        cx.restart();
+                    }
+                }
+                Err(error) => {
+                    log::error!("failed to prepare update restart: {error:#}");
+                    if let Some(updater) = update_check::AutoUpdater::get(cx) {
+                        updater.update(cx, |updater, cx| updater.fail_restart(&error, cx));
+                    }
                 }
             }
         }),
@@ -597,6 +608,8 @@ fn main() {
         let started = std::time::Instant::now();
         gpui_component::init(cx);
         cx.register_url_scheme("qrate").detach();
+        #[cfg(target_os = "linux")]
+        instance_handoff::register_linux_scheme();
 
         // Settings ------------------------------------
         let settings = load_app_settings().unwrap_or_default();

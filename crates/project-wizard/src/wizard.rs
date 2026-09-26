@@ -669,10 +669,9 @@ pub(crate) fn open_project_wizard_seeded(
 ) {
     let bounds = Bounds::centered(None, size(px(560.0), px(680.0)), cx);
     let window_options = WindowOptions {
-        titlebar: Some(TitleBar::title_bar_options()),
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(Size::new(px(480.0), px(520.0))),
-        ..Default::default()
+        ..TitleBar::window_options()
     };
 
     // Open synchronously: gpui quits when the window list is empty (non-macOS), so a window

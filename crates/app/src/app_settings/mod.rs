@@ -124,7 +124,7 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                         label: "Save new projects in",
                         description: "Where the New Project wizard suggests saving. qrate \
                                       remembers the last folder you created a project in; \
-                                      leave empty for Documents\\qrate.",
+                                      leave empty for a qrate folder in Documents.",
                         prompt: "Choose folder",
                     }
                     .into_item(cx),

@@ -34,6 +34,49 @@ pub fn start(link: Option<&str>, sender: async_channel::Sender<String>) -> bool 
     true
 }
 
+/// gpui cannot register a URL scheme on Linux, so a packaged install adds its own desktop entry.
+#[cfg(target_os = "linux")]
+pub fn register_linux_scheme() {
+    let Ok(installation) = updater::detect_installation() else {
+        return;
+    };
+    let Some(applications) = dirs::data_dir().map(|data| data.join("applications")) else {
+        return;
+    };
+    let entry = format!(
+        "[Desktop Entry]\nType=Application\nName=qrate\nExec=\"{}\" %u\nIcon={}\nTerminal=false\n\
+         Categories=Office;Database;\nMimeType=x-scheme-handler/qrate;\n",
+        installation.executable.display(),
+        installation.root.join("qrate.png").display(),
+    );
+    let path = applications.join("qrate.desktop");
+    std::thread::spawn(move || {
+        if fs::read_to_string(&path).is_ok_and(|current| current == entry) {
+            return;
+        }
+        let registered = fs::create_dir_all(&applications)
+            .and_then(|()| fs::write(&path, &entry))
+            .and_then(|()| {
+                std::process::Command::new("xdg-mime")
+                    .args(["default", "qrate.desktop", "x-scheme-handler/qrate"])
+                    .status()
+            })
+            .and_then(|status| {
+                status
+                    .success()
+                    .then_some(())
+                    .ok_or_else(|| std::io::Error::other(format!("xdg-mime exited with {status}")))
+            });
+        match registered {
+            Ok(()) => log::info!("registered qrate:// plugin links with the desktop"),
+            Err(error) => log::warn!(
+                "could not register qrate:// plugin links with the desktop, so install links \
+                 from the browser will not open qrate: {error}"
+            ),
+        }
+    });
+}
+
 fn inbox() -> Option<PathBuf> {
     settings::data_dir().map(|data| data.join("plugin-link-inbox"))
 }

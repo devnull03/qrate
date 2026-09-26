@@ -492,10 +492,9 @@ pub fn open_launcher_window(cx: &mut App) {
     }
     let bounds = Bounds::centered(None, size(px(760.0), px(480.0)), cx);
     let window_options = WindowOptions {
-        titlebar: Some(TitleBar::title_bar_options()),
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(Size::new(px(600.0), px(380.0))),
-        ..Default::default()
+        ..TitleBar::window_options()
     };
 
     // Open synchronously: gpui quits when the window list is empty (non-macOS), so a window
