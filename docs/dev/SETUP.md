@@ -175,10 +175,14 @@ Six workflows cover CI, build caches, releases, the export package, and site dep
   only read caches from its own ref or the default branch.
 
 ### `publish-export.yml` — the `qrate-export` WASM package
-- **Trigger:** a push to `dev` that touches `crates/qrate-export`, or manually.
+- **Trigger:** a push to `main` that touches `crates/qrate-export`, or manually.
 - **Does:** builds `crates/qrate-export` with `wasm-pack` (`--features wasm`) and publishes it
-  to GitHub Packages as `@devnull03/qrate-export`. It skips the publish when that crate version
-  is already there, so bump `crates/qrate-export`'s version to release a new package.
+  to GitHub Packages as `@devnull03/qrate-export`, linked to this repo through the crate's
+  `repository` field. It skips the publish when that crate version is already there, so bump
+  `crates/qrate-export`'s version to release a new package.
+- **Consumers:** GitHub's npm registry needs a token even for a public package. The site's
+  `.npmrc` reads it from `GH_TOKEN`, the same build variable the releases page uses, so that one
+  Cloudflare build variable must be a classic token with `read:packages`.
 
 ### Building the site — Cloudflare Workers Builds (on `site`)
 `qrate.dvnl.work` is served by a Cloudflare Worker, which Cloudflare rebuilds on
