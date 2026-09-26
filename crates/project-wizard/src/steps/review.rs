@@ -8,7 +8,7 @@ use gpui::{prelude::FluentBuilder, *};
 use gpui_component::description_list::DescriptionList;
 use gpui_component::label::Label;
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::{ActiveTheme, Sizable, StyledExt, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
 
 use plugin_api::ColumnMapContributions;
 use settings::columns::{ColumnSettings, ColumnSettingsMap};
@@ -26,7 +26,7 @@ use crate::wizard::{ColumnSource, EntryKind, LinkMethod, ProjectWizard, WizardSt
 /// Keyed by header name, the identity the table mints and the settings page reads. A config row
 /// naming a column the sheet doesn't have is dropped here; the wizard already warned about it on
 /// the Columns step.
-fn column_settings(
+pub(crate) fn column_settings(
     headers: &[String],
     preview: Option<&ColumnConfigPreview>,
     cx: &gpui::App,
@@ -56,7 +56,7 @@ fn column_settings(
     map
 }
 
-fn project_columns(
+pub(crate) fn project_columns(
     headers: &[String],
     preview: Option<&ColumnConfigPreview>,
     title_column: &str,
@@ -328,10 +328,22 @@ impl ProjectWizard {
                 {
                     log::error!("couldn't save the imported folder hierarchy — {error}");
                 }
-                for (key, value) in description.values().into_iter().chain([(
-                    settings::project::IMPORT_DUPLICATE_POLICY_KEY,
-                    self.duplicate_policy.key().to_string(),
-                )]) {
+                for (key, value) in description.values().into_iter().chain([
+                    (
+                        settings::project::IMPORT_DUPLICATE_POLICY_KEY,
+                        self.duplicate_policy.key().to_string(),
+                    ),
+                    // A project made here is new to its archivist, so it opens with the
+                    // Getting started card, and the tasks it offers follow what was imported.
+                    (
+                        settings::onboarding::GUIDE_KEY,
+                        settings::onboarding::GUIDE_OPEN.to_string(),
+                    ),
+                    (
+                        settings::onboarding::GUIDE_KIND_KEY,
+                        self.guide_kind().as_str().to_string(),
+                    ),
+                ]) {
                     if let Err(error) =
                         settings::project::write_setting(std::path::Path::new(&file), key, &value)
                     {
@@ -408,6 +420,49 @@ impl ProjectWizard {
         }
     }
 
+    /// Which Getting started tasks fit what this project was made from: linked media gets
+    /// Gallery, a spreadsheet alone gets its columns and Problems, and an empty project gets its
+    /// first record.
+    fn guide_kind(&self) -> settings::onboarding::GuideKind {
+        use settings::onboarding::GuideKind;
+        let linked = !self.skip_files && self.folder_plan.is_some();
+        match (self.entry_kind, linked) {
+            (_, true) => GuideKind::Media,
+            (EntryKind::Blank, false) => GuideKind::Blank,
+            (_, false) => GuideKind::Import,
+        }
+    }
+
+    /// How many rows the new project will open with: the spreadsheet's, plus a row for each file
+    /// or folder no row claims, or the one empty row a project with nothing in it is given. Runs
+    /// the same folder merge `create_project` does, on copies, so the count cannot drift from it.
+    pub(crate) fn records_to_create(&self) -> usize {
+        let headers = self.effective_headers();
+        let (headers, mut rows) = self
+            .spreadsheet_preview
+            .as_ref()
+            .map(|preview| (preview.headers.clone(), preview.rows.clone()))
+            .unwrap_or_else(|| (headers, Vec::new()));
+        if !self.skip_files
+            && let Some(plan) = self.folder_plan.as_ref()
+        {
+            let description = settings::description::DescriptionProfile::Rad.defaults();
+            append_folder_components(
+                &FolderImport {
+                    headers: &headers,
+                    title_column: self.title_column.as_deref(),
+                    file_column: self.file_column.as_deref(),
+                    folder: &self.folder_path,
+                    plan,
+                    description: &description,
+                    policy: self.duplicate_policy,
+                },
+                &mut rows,
+            );
+        }
+        rows.len().max(1)
+    }
+
     pub(crate) fn render_review_step(
         &mut self,
         _window: &mut Window,
@@ -462,6 +517,16 @@ impl ProjectWizard {
         let folder_plan = (!self.skip_files)
             .then_some(self.folder_plan.as_ref())
             .flatten();
+        let location = project::project_file_path(&self.save_path, &name)
+            .to_string_lossy()
+            .into_owned();
+        let records = self.records_to_create();
+        let records_line = format!(
+            "{records} {} will be created",
+            if records == 1 { "row" } else { "rows" }
+        );
+        let media_folder = (!self.skip_files && !self.folder_path.trim().is_empty())
+            .then(|| self.folder_path.clone());
 
         v_flex()
             .gap_3()
@@ -478,15 +543,70 @@ impl ProjectWizard {
                     .columns(1)
                     .small()
                     .item("Name", name.to_string(), 1)
-                    .item("Location", self.save_path.clone(), 1)
+                    // The file itself, not just its folder: it is what gets backed up and moved.
+                    .item("Location", location, 1)
                     .item("Source", source, 1)
                     .when_some(spreadsheet_line.clone(), |list, line| {
                         list.item("Spreadsheet", line, 1)
                     })
                     .when_some(files_line.clone(), |list, line| list.item("Files", line, 1))
                     // Blank projects go through Columns too, so always show it.
-                    .item("Columns", columns_line, 1),
+                    .item("Columns", columns_line, 1)
+                    .item(
+                        div().font_semibold().child("Records").into_any_element(),
+                        div().font_semibold().child(records_line).into_any_element(),
+                        1,
+                    ),
             )
+            .when_some(media_folder, |review, folder| {
+                review.child(
+                    h_flex()
+                        .gap_2p5()
+                        .items_start()
+                        .px_3()
+                        .py_2p5()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().tiles)
+                        .child(
+                            Icon::new(IconName::FolderOpen)
+                                .text_color(cx.theme().muted_foreground)
+                                .mt_0p5(),
+                        )
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .gap_0p5()
+                                .child(
+                                    div()
+                                        .font_semibold()
+                                        .child("Your media stays in its folder"),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(
+                                            h_flex()
+                                                .flex_wrap()
+                                                .gap_1()
+                                                .child("qrate links to")
+                                                .child(
+                                                    div()
+                                                        .text_color(cx.theme().foreground)
+                                                        .child(folder),
+                                                )
+                                                .child(
+                                                    "and doesn't copy or move files. The .qrate \
+                                                     file holds only the catalog.",
+                                                ),
+                                        ),
+                                ),
+                        ),
+                )
+            })
             .when_some(folder_plan, |review, plan| {
                 const MAX_VISIBLE: usize = 100;
                 let files = plan

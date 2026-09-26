@@ -10,9 +10,12 @@ use gpui::{prelude::FluentBuilder, *};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::label::Label;
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::{ActiveTheme, IconName, Root, Sizable, StyledExt, TitleBar, h_flex, v_flex};
+use gpui_component::{
+    ActiveTheme, Icon, IconName, Root, Sizable, StyledExt, TitleBar, h_flex, v_flex,
+};
 use window_wrapper::WindowRegistry;
 
+use crate::example;
 use crate::project;
 use crate::recent::{self, RecentProject};
 use crate::wizard::{self, EntryKind};
@@ -144,6 +147,149 @@ impl Launcher {
         .detach();
     }
 
+    /// "Open example" — unpacks the bundled sample collection the first time, then opens it like
+    /// any other project, so the Getting started guide and Problems behave as they would for real.
+    fn open_example(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match example::ensure_example_project(cx) {
+            Ok(file) => self.open_project_file(file.to_string_lossy().into_owned(), window, cx),
+            Err(e) => {
+                self.error = Some(format!("Couldn't set up the example project — {e}").into());
+                cx.notify();
+            }
+        }
+    }
+
+    /// First run, 1b: a short welcome where the recents list would be — what qrate is, the two
+    /// things people worry about (an account, their media), the example, and opening a project
+    /// that already exists as its own button so it can't be mistaken for a way to create one.
+    fn render_welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let reassurance = |strong: &'static str, rest: &'static str| {
+            h_flex()
+                .gap_2()
+                .items_center()
+                .text_sm()
+                .child(
+                    Icon::new(IconName::CircleCheck)
+                        .small()
+                        .text_color(cx.theme().success),
+                )
+                .child(div().font_semibold().child(strong))
+                .child(div().text_color(muted).child(rest))
+        };
+        let thumbnail = std::sync::Arc::new(Image::from_bytes(
+            ImageFormat::Jpeg,
+            example::THUMBNAIL.to_vec(),
+        ));
+        v_flex()
+            .flex_1()
+            .min_h(px(0.))
+            .min_w(px(0.))
+            .pr(GAP)
+            .child(
+                div()
+                    .text_lg()
+                    .font_semibold()
+                    .pb_1()
+                    .child("Welcome to qrate"),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .child("Build a catalog from a spreadsheet, or start with a blank one."),
+            )
+            .child(
+                v_flex()
+                    .gap_1p5()
+                    .mt_3p5()
+                    .child(reassurance(
+                        "No account needed.",
+                        "Projects live on this computer.",
+                    ))
+                    .child(reassurance(
+                        "Your media stays in its folder.",
+                        "qrate links to it.",
+                    )),
+            )
+            .when_some(self.error.clone(), |el, msg| {
+                el.child(
+                    div()
+                        .mt_3()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(msg),
+                )
+            })
+            .child(
+                h_flex()
+                    .id("open-example")
+                    .gap_3()
+                    .items_center()
+                    .mt(px(18.))
+                    .p_3()
+                    .rounded_md()
+                    .border_1()
+                    .border_dashed()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tiles)
+                    .child(
+                        img(thumbnail)
+                            .size(px(56.))
+                            .flex_none()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .object_fit(ObjectFit::Cover),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .font_semibold()
+                                    .text_sm()
+                                    .child("Explore an example project"),
+                            )
+                            .child(div().text_sm().text_color(muted).child(
+                                "Four slides from a family collection, with photos to browse \
+                                     in Gallery and findings to review in Problems.",
+                            )),
+                    )
+                    .child(
+                        Button::new("open-example-button")
+                            .label("Open example")
+                            .outline()
+                            .small()
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_example(window, cx)),
+                            ),
+                    ),
+            )
+            .child(div().flex_1())
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .flex_wrap()
+                    .pt(px(14.))
+                    .pb(px(18.))
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        Button::new("open-existing")
+                            .icon(IconName::FolderOpen)
+                            .label("Open an existing .qrate project…")
+                            .outline()
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_other(window, cx)),
+                            ),
+                    )
+                    .child(div().text_xs().text_color(muted).child("or drop one here")),
+            )
+    }
+
     fn start_new(&mut self, entry_kind: EntryKind, window: &mut Window, cx: &mut Context<Self>) {
         wizard::open_project_wizard(entry_kind, cx);
         // Close the launcher while the wizard is up; `go_back` from the wizard's
@@ -261,13 +407,7 @@ impl Render for Launcher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dialog_layer = Root::render_dialog_layer(window, cx);
 
-        let recent_list = if self.recents.is_empty() {
-            v_flex().child(
-                Label::new("No recent projects yet — create one to get started.")
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground),
-            )
-        } else {
+        let recent_list = {
             let mut list = v_flex().gap_0();
             for (ix, project) in self.recents.iter().enumerate() {
                 let path = project.path.clone();
@@ -362,65 +502,75 @@ impl Render for Launcher {
                     // continuing rather than as ending in a band of empty window.
                     .px(GAP)
                     .pt(GAP - HEADING_LEAD)
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            // min_h(0) overrides the flex default min-height:auto so the inner list scrolls, not the column.
-                            .min_h(px(0.))
-                            .min_w(px(0.))
-                            .gap(px(0.))
-                            .child(
-                                h_flex()
-                                    .flex_none()
-                                    .justify_between()
-                                    .items_baseline()
-                                    // Everything but the scrollbar keeps clear of the divider by
-                                    // the same amount the Create New column does.
-                                    .pr(GAP)
-                                    // The heading carries the air under it, not the list: the
-                                    // rows scroll, and a gap that scrolls with them is a gap that
-                                    // disappears the moment somebody uses the list.
-                                    .pb(GAP - HEADING_LEAD)
-                                    .child(div().text_lg().font_semibold().child("Recent Projects"))
-                                    .child(
-                                        div()
-                                            .id("open-other")
-                                            .text_sm()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .cursor_pointer()
-                                            .hover(|el| el.text_color(cx.theme().primary))
-                                            .child("Open other…")
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.open_other(window, cx)
-                                            })),
-                                    ),
-                            )
-                            .when_some(self.error.clone(), |el, msg| {
-                                el.child(
-                                    div()
+                    .when(self.recents.is_empty(), |body| {
+                        body.child(self.render_welcome(cx))
+                    })
+                    .when(!self.recents.is_empty(), |body| {
+                        body.child(
+                            v_flex()
+                                .flex_1()
+                                // min_h(0) overrides the flex default min-height:auto so the inner list scrolls, not the column.
+                                .min_h(px(0.))
+                                .min_w(px(0.))
+                                .gap(px(0.))
+                                .child(
+                                    h_flex()
                                         .flex_none()
+                                        .justify_between()
+                                        .items_baseline()
+                                        // Everything but the scrollbar keeps clear of the divider by
+                                        // the same amount the Create New column does.
                                         .pr(GAP)
+                                        // The heading carries the air under it, not the list: the
+                                        // rows scroll, and a gap that scrolls with them is a gap that
+                                        // disappears the moment somebody uses the list.
                                         .pb(GAP - HEADING_LEAD)
-                                        .text_sm()
-                                        .text_color(cx.theme().danger)
-                                        .child(msg),
+                                        .child(
+                                            div()
+                                                .text_lg()
+                                                .font_semibold()
+                                                .child("Recent Projects"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("open-other")
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .cursor_pointer()
+                                                .hover(|el| el.text_color(cx.theme().primary))
+                                                .child("Open other…")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.open_other(window, cx)
+                                                })),
+                                        ),
                                 )
-                            })
-                            // Heading above stays pinned; only the list scrolls.
-                            .child(
-                                div()
-                                    .id("recents-scroll")
-                                    .flex_1()
-                                    .min_h(px(0.))
-                                    // Scrollbar, not bare overflow: a launcher opened on a long
-                                    // history has to say there is more of it below the fold.
-                                    .overflow_y_scrollbar()
-                                    // Matches the inset on the other side of the divider, and holds
-                                    // the rows off the scrollbar drawn at this column's right edge.
-                                    .pr(GAP - SCROLLBAR)
-                                    .child(recent_list),
-                            ),
-                    )
+                                .when_some(self.error.clone(), |el, msg| {
+                                    el.child(
+                                        div()
+                                            .flex_none()
+                                            .pr(GAP)
+                                            .pb(GAP - HEADING_LEAD)
+                                            .text_sm()
+                                            .text_color(cx.theme().danger)
+                                            .child(msg),
+                                    )
+                                })
+                                // Heading above stays pinned; only the list scrolls.
+                                .child(
+                                    div()
+                                        .id("recents-scroll")
+                                        .flex_1()
+                                        .min_h(px(0.))
+                                        // Scrollbar, not bare overflow: a launcher opened on a long
+                                        // history has to say there is more of it below the fold.
+                                        .overflow_y_scrollbar()
+                                        // Matches the inset on the other side of the divider, and holds
+                                        // the rows off the scrollbar drawn at this column's right edge.
+                                        .pr(GAP - SCROLLBAR)
+                                        .child(recent_list),
+                                ),
+                        )
+                    })
                     .child(
                         v_flex()
                             .w(px(220.))

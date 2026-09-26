@@ -7,7 +7,9 @@ use gpui_component::combobox::{Combobox, ComboboxState};
 use gpui_component::dialog::DialogButtonProps;
 use gpui_component::label::Label;
 use gpui_component::searchable_list::SearchableVec;
-use gpui_component::{ActiveTheme, IndexPath, Sizable, StyledExt, WindowExt, v_flex};
+use gpui_component::{
+    ActiveTheme, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt, h_flex, v_flex,
+};
 
 use crate::column_config::{ColumnConfigLoader, mapping};
 use crate::data;
@@ -264,7 +266,33 @@ impl ProjectWizard {
                                     .small()
                                     .w_full()
                                     .placeholder("Choose a column…"),
-                            ),
+                            )
+                            // The rule still asks for a File column when files are deferred; say
+                            // why that costs nothing, rather than letting it read as "link now".
+                            .when(self.skip_files, |el| {
+                                el.child(
+                                    h_flex()
+                                        .gap_1p5()
+                                        .items_start()
+                                        .mt_0p5()
+                                        .child(
+                                            Icon::new(IconName::Info)
+                                                .small()
+                                                .text_color(cx.theme().muted_foreground),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(
+                                                    "You're adding files later, so this column \
+                                                     can stay empty for now. qrate fills it when \
+                                                     you link a folder.",
+                                                ),
+                                        ),
+                                )
+                            }),
                     )
                     .when(missing, |block| {
                         block.child(inline_message(
