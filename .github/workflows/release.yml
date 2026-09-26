@@ -167,10 +167,22 @@ jobs:
           chmod +x scripts/fetch-agent-runtime.sh
           ./scripts/fetch-agent-runtime.sh . darwin-universal
 
-      - name: Bundle .app and .dmg
+      # Full first, then base: both write dist/qrate.app, so each is checked before the next.
+      # Base leaves PDFium and Pi out for qrate to install on first use.
+      - name: Bundle .app and .dmg, full and base
         run: |
           chmod +x scripts/bundle-mac.sh
-          scripts/bundle-mac.sh universal-app "${{ needs.version.outputs.version }}"
+          ver="${{ needs.version.outputs.version }}"
+          scripts/bundle-mac.sh universal-app "$ver" full
+          for part in MacOS/libpdfium.dylib Resources/agent/pi; do
+            [ -e "dist/qrate.app/Contents/$part" ] ||
+              { echo "::error::the full dmg is missing $part"; exit 1; }
+          done
+          scripts/bundle-mac.sh universal-app "$ver" base
+          for part in MacOS/libpdfium.dylib MacOS/ffmpeg Resources/agent; do
+            [ ! -e "dist/qrate.app/Contents/$part" ] ||
+              { echo "::error::the base dmg carries $part"; exit 1; }
+          done
 
       - uses: actions/upload-artifact@v7
         with:
@@ -277,6 +289,17 @@ jobs:
             "/DOUTFILE=$PWD\dist\qrate-$ver-setup.exe" `
             scripts\installer.nsi
           if ($LASTEXITCODE -ne 0) { throw "makensis failed ($LASTEXITCODE)" }
+          # The small installer: no PDFium, ffmpeg or Pi, which qrate installs on first use.
+          & $nsis `
+            "/DVERSION=$ver" `
+            "/DVIVERSION=$vi" `
+            "/DFLAVOR=base" `
+            "/DSRCEXE=$PWD\dist\portable\qrate.exe" `
+            "/DSRCDIR=$PWD\dist\portable" `
+            "/DICONFILE=$PWD\assets\icons\app-icon.ico" `
+            "/DOUTFILE=$PWD\dist\qrate-$ver-base-setup.exe" `
+            scripts\installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis (base) failed ($LASTEXITCODE)" }
 
           $hasPdfium = if (Test-Path dist/portable/pdfium.dll) { 1 } else { 0 }
           $hasFfmpeg = if (Test-Path dist/portable/ffmpeg.exe) { 1 } else { 0 }
@@ -293,6 +316,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "wix build failed ($LASTEXITCODE)" }
 
           Remove-Item -Recurse -Force dist/portable
+
+      # 7-Zip reads NSIS installers, which is the only way to see what one carries without running it.
+      - name: Check what each installer carries
+        shell: bash
+        run: |
+          ver="${{ needs.version.outputs.version }}"
+          7z l "dist/qrate-$ver-setup.exe" > full.txt
+          7z l "dist/qrate-$ver-base-setup.exe" > base.txt
+          for part in pdfium.dll ffmpeg.exe pi.exe; do
+            grep -q "$part" full.txt || { echo "::error::the full installer is missing $part"; exit 1; }
+            ! grep -q "$part" base.txt || { echo "::error::the base installer carries $part"; exit 1; }
+          done
+          rm full.txt base.txt
 
       - name: Report what shipped
         shell: bash
@@ -363,8 +399,22 @@ jobs:
             'Exec=qrate %u' 'Icon=qrate' 'Terminal=false' \
             'Categories=Office;Database;' 'MimeType=x-scheme-handler/qrate;' \
             > "$stage/qrate.desktop"
+          # Base: the same folder without PDFium and Pi, which qrate installs on first use.
+          base="qrate-$ver-base-x86_64-linux"
+          cp -R "$stage" "$base"
+          rm -rf "$base/libpdfium.so" "$base/agent"
+          printf '{\n  "schema": 1,\n  "kind": "linux-tar",\n  "packaged_version": "%s",\n  "flavor": "base"\n}\n' \
+            "$ver" > "$base/qrate-install.json"
           mkdir -p dist
           tar -czf "dist/$stage.tar.gz" "$stage"
+          tar -czf "dist/$base.tar.gz" "$base"
+          for part in libpdfium.so agent/pi; do
+            tar -tzf "dist/$stage.tar.gz" | grep -qx "$stage/$part" ||
+              { echo "::error::the full tarball is missing $part"; exit 1; }
+            ! tar -tzf "dist/$base.tar.gz" | grep -q "^$base/$part" ||
+              { echo "::error::the base tarball carries $part"; exit 1; }
+          done
+          rm -rf "$base"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -501,14 +551,21 @@ jobs:
             ## qrate ${{ needs.version.outputs.tag }}
 
             ### Downloads
-            - **Windows:** `*-setup.exe` (installer, asks for per-user or all-users) or
-              `*-x86_64.zip` (portable). Deploying to managed machines? See **Enterprise** below.
-            - **macOS:** `*-universal.dmg` (Intel + Apple Silicon)
-            - **Linux:** `*-x86_64-linux.tar.gz` (Wayland + X11; needs a Vulkan driver)
+            Start with the **base** download. It leaves out PDF preview, video preview and the
+            assistant's runtime, and qrate offers to install each one the first time you need it
+            (or under Settings ▸ Components). The **full** download carries them all, for machines
+            that stay offline.
 
-            Verify your download against `SHA256SUMS.txt`. The `component-*` files and
-            `components.json` are parts qrate downloads by itself when it needs them; you do not
-            need to download them.
+            - **Windows:** `*-base-setup.exe` (installer, asks for per-user or all-users). Full:
+              `*-<version>-setup.exe`, or `*-x86_64.zip` (portable). Deploying to managed machines?
+              See **Enterprise** below.
+            - **macOS:** `*-base-universal.dmg` (Intel + Apple Silicon). Full: `*-<version>-universal.dmg`.
+            - **Linux:** `*-base-x86_64-linux.tar.gz` (Wayland + X11; needs a Vulkan driver).
+              Full: `*-<version>-x86_64-linux.tar.gz`.
+
+            An installed qrate updates to the same kind of download it came from. Verify your
+            download against `SHA256SUMS.txt`. The `component-*` files and `components.json` are
+            the parts qrate downloads by itself; you do not need to download them.
 
             ### Enterprise (Windows)
             `*-x86_64.msi` installs per-machine and is built for Group Policy Software
@@ -519,17 +576,19 @@ jobs:
             Upgrades in place on top of any earlier MSI install; downgrading is blocked.
 
             ### File previews
-            PDF previews work out of the box everywhere — PDFium ships in every download.
+            PDF previews need PDFium, which the full downloads carry and the base ones install on
+            the first PDF you open.
 
-            Video previews and JPEG 2000/AVIF/HEIC need **ffmpeg**. It is bundled on Windows;
-            on macOS and Linux install it and qrate will find it on your `PATH`:
+            Video previews and JPEG 2000/AVIF/HEIC need **ffmpeg**. On Windows and Linux qrate
+            installs it on the first video you open (the full Windows download carries it). On
+            macOS install it with Homebrew and qrate will find it on your `PATH`:
 
             ```
             brew install ffmpeg          # macOS
-            sudo apt install ffmpeg      # Debian/Ubuntu
             ```
 
-            Without it those files fall back to a file-type icon; nothing else is affected.
+            A copy already installed on the computer, such as `sudo apt install ffmpeg`, is used
+            too. Without ffmpeg those files fall back to a file-type icon; nothing else is affected.
 
             > [!NOTE]
             > These builds are **unsigned**. This is about who Windows and macOS think
