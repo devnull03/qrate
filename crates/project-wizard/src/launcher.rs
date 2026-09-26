@@ -6,6 +6,9 @@
 //! can't depend on without a cycle. Callers pass that behavior in as a plain
 //! `fn` pointer (mirrors `SettingsWindow::new`'s `build_pages: fn() -> ...`).
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::label::Label;
@@ -21,6 +24,10 @@ use crate::recent::{self, RecentProject};
 use crate::wizard::{self, EntryKind};
 
 pub const LAUNCHER_WINDOW_KIND: &str = "project-launcher";
+
+/// Development launch mode: show the first-run welcome even with recent projects.
+pub struct OnboardingPreview;
+impl Global for OnboardingPreview {}
 
 /// The launcher's one spacing unit — the window's inset on every side, what each column keeps off
 /// the divider, and the air under each heading. One value so nothing here drifts a few pixels away
@@ -56,6 +63,7 @@ impl Global for LauncherHooks {}
 
 pub struct Launcher {
     recents: Vec<RecentProject>,
+    previews: HashMap<String, std::path::PathBuf>,
     /// Shown above the recents list when opening a project fails (missing or
     /// unreadable `.qrate`).
     error: Option<SharedString>,
@@ -71,8 +79,34 @@ impl Launcher {
             .try_global::<LauncherHooks>()
             .copied()
             .map(|hooks| (hooks.title_items)(cx));
+        let recents = if cx.has_global::<OnboardingPreview>() {
+            Vec::new()
+        } else {
+            recent::list(cx)
+        };
+        if !recents.is_empty() {
+            let paths: Vec<_> = recents.iter().map(|project| project.path.clone()).collect();
+            let scan = cx.background_spawn(async move {
+                paths
+                    .into_iter()
+                    .filter_map(|path| {
+                        recent::preview_source(Path::new(&path)).map(|image| (path, image))
+                    })
+                    .collect::<HashMap<_, _>>()
+            });
+            cx.spawn(async move |this, cx| {
+                let previews = scan.await;
+                this.update(cx, |this, cx| {
+                    this.previews = previews;
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
         Self {
-            recents: recent::list(cx),
+            recents,
+            previews: HashMap::new(),
             error: None,
             title_items,
         }
@@ -177,10 +211,6 @@ impl Launcher {
                 .child(div().font_semibold().child(strong))
                 .child(div().text_color(muted).child(rest))
         };
-        let thumbnail = std::sync::Arc::new(Image::from_bytes(
-            ImageFormat::Jpeg,
-            example::THUMBNAIL.to_vec(),
-        ));
         v_flex()
             .flex_1()
             .min_h(px(0.))
@@ -232,15 +262,7 @@ impl Launcher {
                     .border_dashed()
                     .border_color(cx.theme().border)
                     .bg(cx.theme().tiles)
-                    .child(
-                        img(thumbnail)
-                            .size(px(56.))
-                            .flex_none()
-                            .rounded_sm()
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .object_fit(ObjectFit::Cover),
-                    )
+                    .child(project_thumbnail(Thumbnail::Example, px(56.), cx))
                     .child(
                         v_flex()
                             .flex_1()
@@ -421,14 +443,13 @@ impl Render for Launcher {
                         .py_2()
                         .when(ix > 0, |el| el.border_t_1().border_color(cx.theme().border))
                         .hover(|el| el.bg(cx.theme().secondary_hover))
-                        .child(
-                            div()
-                                .size_7()
-                                .flex_none()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(cx.theme().border),
-                        )
+                        .child(project_thumbnail(
+                            Thumbnail::Recent(
+                                self.previews.get(&project.path).map(PathBuf::as_path),
+                            ),
+                            px(28.),
+                            cx,
+                        ))
                         .child(
                             v_flex()
                                 .flex_1()
@@ -603,6 +624,44 @@ impl Render for Launcher {
                     ),
             )
             .children(dialog_layer)
+    }
+}
+
+enum Thumbnail<'a> {
+    Example,
+    Recent(Option<&'a Path>),
+}
+
+fn project_thumbnail(image: Thumbnail<'_>, size: Pixels, cx: &App) -> AnyElement {
+    let frame = div()
+        .size(size)
+        .flex_none()
+        .rounded_md()
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().tiles)
+        .overflow_hidden();
+    match image {
+        Thumbnail::Example => frame
+            .child(
+                img(std::sync::Arc::new(Image::from_bytes(
+                    ImageFormat::Jpeg,
+                    example::THUMBNAIL.to_vec(),
+                )))
+                .size_full()
+                .object_fit(ObjectFit::Cover),
+            )
+            .into_any_element(),
+        Thumbnail::Recent(Some(path)) => frame
+            .child(preview::thumb(Some(path), preview::CARD, cx))
+            .into_any_element(),
+        Thumbnail::Recent(None) => frame
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(cx.theme().muted_foreground)
+            .child(Icon::new(IconName::File).size_4())
+            .into_any_element(),
     }
 }
 
