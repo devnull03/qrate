@@ -72,7 +72,7 @@ pub const FILTER_SUBDELIMITER_KEY: &str = "filter_subdelimiter";
 
 /// Whether the open project holds a value of its own for `key`, as opposed to inheriting the
 /// user-wide one. Legacy overrides remain visible and can be cleared from Settings.
-fn has_project_override(key: &str, cx: &App) -> bool {
+pub fn has_project_override(key: &str, cx: &App) -> bool {
     cx.try_global::<project::CurrentProject>()
         .is_some_and(|p| p.data.values.contains_key(key))
 }
