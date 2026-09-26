@@ -6,6 +6,11 @@ checks the data against validators, and exports it to the formats other systems 
 
 ## Start here
 
+New to qrate? Read [Getting started](getting-started/index.md) first. It walks you from the
+install to your first export in five short steps.
+
+## Reference
+
 - [Projects](projects.md): create, import, open, and save a `.qrate` project, and add files or rows to it
 - [The grid](grid.md): edit cells, group rows, search, filter, and undo
 - [Keyboard shortcuts](shortcuts.md): every shortcut, in one table

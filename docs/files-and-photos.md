@@ -111,7 +111,7 @@ All of these changes are one step, so one **Undo** reverses them.
 
 ## Viewing a file
 
-The Details panel, in the right dock, shows the file linked to the selected row. It
+The Details panel (in the left dock in Table view, and the right dock in Gallery view) shows the file linked to the selected row. It
 previews images, documents, audio, and video directly. Click the preview to open it
 fullscreen, where you can zoom, pan, page through a multi-page document, and search inside
 it.

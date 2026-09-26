@@ -1,7 +1,7 @@
 # Diagnostics
 
 qrate checks project data continuously and lists what it finds in the Problems panel, in
-the right dock. Show or hide the panel with **View ▸ Toggle Problems Panel** or
+the bottom dock. Show or hide the panel with **View ▸ Toggle Problems Panel** or
 **Ctrl+Shift+M**. A finding on a cell also shows as a small marker on that cell in the grid.
 
 ## What qrate checks

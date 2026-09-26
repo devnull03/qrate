@@ -10,7 +10,9 @@ the files-folder path at its new location.
 
 ## Create a project
 
-Choose **File ▸ New Project…** or press **Ctrl+N**. The launcher offers three ways to start:
+Choose **File ▸ New Project…** or press **Ctrl+N** to start a blank project in the wizard. To
+pick how you start, open the launcher with **File ▸ Open Projects…** or **Ctrl+O**. The
+launcher offers three ways to start:
 
 1. **Blank project.** Start with an empty grid, or choose files and folders to start from.
    Each folder becomes a parent row and each file a row inside it, so the grid keeps the

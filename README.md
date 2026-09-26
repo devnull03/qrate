@@ -69,6 +69,7 @@ qrate works without an account. Google Sheets integration is off until you enabl
 
 ## Learn more
 
+- [Getting started](docs/getting-started/index.md): from install to your first export, step by step
 - [Projects](docs/projects.md): create, import, open, and add to projects
 - [The grid](docs/grid.md): edit, group, search, filter, and undo
 - [Keyboard shortcuts](docs/shortcuts.md): every shortcut in one place
