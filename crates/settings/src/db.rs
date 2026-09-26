@@ -135,11 +135,17 @@ pub fn load_app_settings() -> Result<AppSettings> {
         .context("Query settings")?;
 
     let Some(json) = json else {
+        log::debug!("settings: no persisted app settings found");
         return Ok(AppSettings::default());
     };
 
     let persist: PersistSettings =
         serde_json::from_str(&json).context("Deserialize persisted settings")?;
+    log::debug!(
+        "settings: loaded app settings schema={} keys={}",
+        persist.settings_version,
+        persist.values.len()
+    );
     Ok(persist.into())
 }
 
@@ -158,6 +164,10 @@ fn save_app_settings_snapshot(snapshot: PersistSettings) -> Result<()> {
         params![SETTINGS_KEY, json],
     )
     .context("Upsert settings row")?;
+    log::debug!(
+        "settings: saved app snapshot keys={}",
+        snapshot.values.len()
+    );
     Ok(())
 }
 
@@ -186,12 +196,18 @@ impl SettingsWriter {
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         if let Some(s) = pending.take() {
-                            let _ = save_app_settings_snapshot(s);
+                            if let Err(error) = save_app_settings_snapshot(s) {
+                                log::error!("settings: failed to save app snapshot: {error:#}");
+                            }
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         if let Some(s) = pending.take() {
-                            let _ = save_app_settings_snapshot(s);
+                            if let Err(error) = save_app_settings_snapshot(s) {
+                                log::error!(
+                                    "settings: failed to save final app snapshot: {error:#}"
+                                );
+                            }
                         }
                         break;
                     }
@@ -203,6 +219,8 @@ impl SettingsWriter {
     }
 
     pub fn enqueue_save(&self, settings: &AppSettings) {
-        let _ = self.tx.send(PersistSettings::from(settings));
+        if self.tx.send(PersistSettings::from(settings)).is_err() {
+            log::error!("settings: app writer is unavailable");
+        }
     }
 }

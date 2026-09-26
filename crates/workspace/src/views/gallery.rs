@@ -142,7 +142,12 @@ fn card(
                 .when(!selected, |frame| {
                     frame.hover(|frame| frame.border_color(cx.theme().ring))
                 })
-                .child(thumb(path.as_deref(), preview::CARD, cx))
+                .child(thumb(
+                    path.as_deref(),
+                    preview::CARD,
+                    ObjectFit::Contain,
+                    cx,
+                ))
                 .when(pages > 1, |frame| {
                     frame.child(badge(IconName::Copy, pages).top_1())
                 })

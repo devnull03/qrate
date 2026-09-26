@@ -165,6 +165,15 @@ impl Render for DockToggleButton {
                 // Errors and warnings side by side rather than one total: the icon and colour say
                 // which is which, so `self.icon` has nothing left to add here.
                 let (errors, warnings) = Diagnostics::counts(cx);
+                // Two zeroes read as a score to beat; nothing to report is said in words.
+                if errors == 0 && warnings == 0 {
+                    return this.child(
+                        div()
+                            .text_xs()
+                            .when(!lit, |el| el.text_color(cx.theme().muted_foreground))
+                            .child("No problems"),
+                    );
+                }
                 this.children([
                     severity_badge(Severity::Error, IconName::CircleX, errors, cx),
                     severity_badge(Severity::Warning, IconName::TriangleAlert, warnings, cx),

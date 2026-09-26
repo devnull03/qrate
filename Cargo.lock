@@ -272,6 +272,7 @@ dependencies = [
  "gpui-pre-platform",
  "keyring",
  "log",
+ "onboarding",
  "os_info",
  "plugin-api",
  "plugin-host",
@@ -5795,6 +5796,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "onboarding"
+version = "0.5.0-beta.1"
+dependencies = [
+ "diagnostics",
+ "gpui-component",
+ "gpui-pre",
+ "settings",
+ "table",
+ "workspace",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6454,6 +6467,8 @@ dependencies = [
  "gpui-pre",
  "log",
  "plugin-api",
+ "preview",
+ "qrate-export",
  "serde",
  "serde_json",
  "settings",
@@ -10806,6 +10821,7 @@ version = "0.5.0-beta.1"
 dependencies = [
  "agent-runtime",
  "diagnostics",
+ "gpui-base",
  "gpui-component",
  "gpui-pre",
  "log",

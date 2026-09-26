@@ -984,49 +984,51 @@ fn render_image_frame(
         .overflow_hidden()
         .bg(cx.theme().muted)
         .map(|frame| match image_path {
-            Some(path) => frame.child(thumb(Some(&path), preview::PANE, cx)).child(
-                div()
-                    .absolute()
-                    .top_1()
-                    .right_1()
-                    .flex()
-                    .gap_1()
-                    .rounded(cx.theme().radius)
-                    .bg(cx.theme().background)
-                    // Fullscreen only makes sense for something we can actually render; an
-                    // icon-placeholder file has nothing to zoom into.
-                    .when(show_image, |group| {
-                        let path = path.clone();
-                        group.child(
-                            Button::new("fullscreen-image")
-                                .icon(IconName::Maximize)
-                                .ghost()
-                                .small()
-                                .tooltip("View fullscreen")
-                                .on_click(move |_, window, cx| {
-                                    crate::open_viewer(
-                                        path.clone(),
-                                        crate::ViewerScope::Workspace,
-                                        window,
-                                        cx,
-                                    )
-                                }),
-                        )
-                    })
-                    .child(action(
-                        "open-image",
-                        IconName::ExternalLink,
-                        "Open in default app",
-                        path.clone(),
-                    ))
-                    .child(action(
-                        "reveal-image",
-                        IconName::FolderOpen,
-                        "Reveal in folder",
-                        path,
-                    )),
-            ),
-            None => frame.child(thumb(None, preview::PANE, cx)),
+            Some(path) => frame
+                .child(thumb(Some(&path), preview::PANE, ObjectFit::Contain, cx))
+                .child(
+                    div()
+                        .absolute()
+                        .top_1()
+                        .right_1()
+                        .flex()
+                        .gap_1()
+                        .rounded(cx.theme().radius)
+                        .bg(cx.theme().background)
+                        // Fullscreen only makes sense for something we can actually render; an
+                        // icon-placeholder file has nothing to zoom into.
+                        .when(show_image, |group| {
+                            let path = path.clone();
+                            group.child(
+                                Button::new("fullscreen-image")
+                                    .icon(IconName::Maximize)
+                                    .ghost()
+                                    .small()
+                                    .tooltip("View fullscreen")
+                                    .on_click(move |_, window, cx| {
+                                        crate::open_viewer(
+                                            path.clone(),
+                                            crate::ViewerScope::Workspace,
+                                            window,
+                                            cx,
+                                        )
+                                    }),
+                            )
+                        })
+                        .child(action(
+                            "open-image",
+                            IconName::ExternalLink,
+                            "Open in default app",
+                            path.clone(),
+                        ))
+                        .child(action(
+                            "reveal-image",
+                            IconName::FolderOpen,
+                            "Reveal in folder",
+                            path,
+                        )),
+                ),
+            None => frame.child(thumb(None, preview::PANE, ObjectFit::Contain, cx)),
         })
         // Top-left, over the picture rather than taking a row out of the frame — the pane is a
         // height the user drags, and the other two edges are spoken for: the action buttons sit
@@ -1235,7 +1237,9 @@ impl Render for DetailsPanel {
 
         // Hand-built attribute list, not `DescriptionList`/`DataTable`: the fields are fixed pairs,
         // and it reads as a list rather than a second grid — alternating rows carry the structure,
-        // no borders.
+        // no borders. Edge to edge across the dock, like the grid's own rows, rather than an inset
+        // card: the stripes are what line a label up with its value, and they read best at full
+        // width.
         let editing_col = self.editing.as_ref().map(|(_, col, _)| *col);
         let rows = fields
             .iter()
@@ -1254,17 +1258,20 @@ impl Render for DetailsPanel {
                 div()
                     .flex()
                     .items_start()
-                    .when(ix % 2 == 1, |r| r.bg(cx.theme().muted.opacity(0.4)))
+                    .gap_2()
+                    .px_3()
+                    .text_size(px(13.))
+                    .line_height(px(18.))
+                    .when(ix % 2 == 1, |r| r.bg(cx.theme().description_list_label))
                     .child(
-                        // Both columns are shares of the panel's width, not fixed pixels: this dock
-                        // resizes, and a fixed label column either wastes half a wide panel or crushes
-                        // the values in a narrow one.
+                        // A fixed label column, so every value starts on the same line down the
+                        // list however the dock is sized; a long label wraps inside it rather
+                        // than pushing its value along.
                         div()
-                            .w(relative(0.35))
+                            .w(px(96.))
                             .flex_shrink_0()
-                            .px_2()
-                            .py_1p5()
-                            .text_color(cx.theme().muted_foreground)
+                            .py(px(7.))
+                            .text_color(cx.theme().description_list_label_foreground)
                             .child(k.clone()),
                     )
                     // Plain text rather than `TextView`, which parses markdown/html and mangles raw
@@ -1279,8 +1286,7 @@ impl Render for DetailsPanel {
                             // Positions the measuring canvas below against this field, not against
                             // whatever ancestor happens to be positioned.
                             .relative()
-                            .px_2()
-                            .py_1p5()
+                            .py(px(7.))
                             .cursor_text()
                             // `text_ellipsis` is what puts the … on the last kept line; `line_clamp`
                             // alone would cut the text off mid-word with nothing to say it had.
@@ -1416,15 +1422,8 @@ impl Render for DetailsPanel {
                     .w_full()
                     .min_h_0()
                     .overflow_y_scrollbar()
-                    .px_3()
-                    .pt_2()
                     .pb(px(12.))
-                    .child(
-                        div()
-                            .rounded(cx.theme().radius)
-                            .overflow_hidden()
-                            .children(rows),
-                    ),
+                    .child(div().children(rows)),
             )
             .children(self.field_editor(window, cx))
             .into_any_element();
@@ -1457,7 +1456,6 @@ impl Render for DetailsPanel {
                     .child(
                         resizable_panel()
                             .size_range(px(SECTION_MIN_H)..Pixels::MAX)
-                            .pr_2()
                             .child(fields),
                     )
                     .child(
@@ -1472,7 +1470,7 @@ impl Render for DetailsPanel {
             Some(notes) => v_flex()
                 .size_full()
                 .min_h_0()
-                .child(div().flex_1().min_h_0().pr_2().child(fields))
+                .child(div().flex_1().min_h_0().child(fields))
                 .child(
                     div()
                         .flex_none()

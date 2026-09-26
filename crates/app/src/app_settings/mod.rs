@@ -85,9 +85,7 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                                 .collect(),
                             |cx: &App| cx.theme().theme_name().clone(),
                             |name: SharedString, cx: &mut App| {
-                                cx.dispatch_action(&crate::theming::SwitchTheme {
-                                    name: name.to_string(),
-                                });
+                                crate::theming::switch_theme(&name, cx);
                             },
                         ),
                     ))
@@ -251,11 +249,11 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                             "Byte order mark",
                             SettingField::switch(
                                 |cx: &App| {
-                                    settings::scoped_text(crate::export::CSV_BOM_KEY, cx)
+                                    settings::effective_text(crate::export::CSV_BOM_KEY, cx)
                                         != "false"
                                 },
                                 |on: bool, cx: &mut App| {
-                                    settings::set_scoped_text(
+                                    settings::set_user_text(
                                         crate::export::CSV_BOM_KEY,
                                         if on { "true" } else { "false" }.into(),
                                         cx,
@@ -1065,9 +1063,9 @@ fn saving_group(cx: &App) -> SettingGroup {
         SettingItem::new(
             "Autosave",
             SettingField::switch(
-                |cx: &App| settings::scoped_text(settings::AUTOSAVE_KEY, cx) != "off",
+                |cx: &App| settings::effective_text(settings::AUTOSAVE_KEY, cx) != "off",
                 |on: bool, cx: &mut App| {
-                    settings::set_scoped_text(
+                    settings::set_user_text(
                         settings::AUTOSAVE_KEY,
                         if on { "timed" } else { "off" }.into(),
                         cx,
@@ -1078,7 +1076,7 @@ fn saving_group(cx: &App) -> SettingGroup {
         .description("Save cell edits automatically. Ctrl+S always saves."),
     );
 
-    if settings::scoped_text(settings::AUTOSAVE_KEY, cx) != "off" {
+    if settings::effective_text(settings::AUTOSAVE_KEY, cx) != "off" {
         group = group.item(
             SettingItem::new(
                 "Method",
@@ -1088,11 +1086,11 @@ fn saving_group(cx: &App) -> SettingGroup {
                         ("immediate".into(), "On every edit".into()),
                     ],
                     |cx: &App| {
-                        let v = settings::scoped_text(settings::AUTOSAVE_KEY, cx);
+                        let v = settings::effective_text(settings::AUTOSAVE_KEY, cx);
                         if v == "immediate" { v } else { "timed".into() }
                     },
                     |val: SharedString, cx: &mut App| {
-                        settings::set_scoped_text(settings::AUTOSAVE_KEY, val, cx);
+                        settings::set_user_text(settings::AUTOSAVE_KEY, val, cx);
                     },
                 ),
             )
@@ -1113,7 +1111,7 @@ fn spelling_group(cx: &App) -> SettingGroup {
             SettingField::switch(
                 |cx: &App| spellcheck::enabled(cx),
                 |on: bool, cx: &mut App| {
-                    settings::set_scoped_bool(spellcheck::SPELLCHECK_ENABLED_KEY, on, cx);
+                    settings::set_user_bool(spellcheck::SPELLCHECK_ENABLED_KEY, on, cx);
                     crate::register_spell_checker(cx);
                 },
             ),
@@ -1128,7 +1126,7 @@ fn spelling_group(cx: &App) -> SettingGroup {
                 SettingField::switch(
                     |cx: &App| spellcheck::ignore_capitalized(cx),
                     |on: bool, cx: &mut App| {
-                        settings::set_scoped_bool(spellcheck::SPELLCHECK_NAMES_KEY, on, cx);
+                        settings::set_user_bool(spellcheck::SPELLCHECK_NAMES_KEY, on, cx);
                         crate::register_spell_checker(cx);
                     },
                 ),

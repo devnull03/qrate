@@ -312,7 +312,7 @@ pub fn languages(cx: &App) -> Vec<String> {
 }
 
 pub fn set_languages(codes: &[String], cx: &mut App) {
-    settings::set_scoped_text(SPELLCHECK_LANGUAGE_KEY, codes.join(",").into(), cx);
+    settings::set_user_text(SPELLCHECK_LANGUAGE_KEY, codes.join(",").into(), cx);
 }
 
 impl SpellCheck {

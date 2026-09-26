@@ -2,15 +2,18 @@
 //! (center table, left details, right agent, bottom problems) with layout persistence.
 
 mod dock_button;
+pub mod extension;
 mod panel_registry;
 mod panels;
+mod skin;
 mod viewer;
 mod views;
 
 pub use viewer::{CloseViewerLayer, Scope as ViewerScope, VIEWER_CONTEXT, open_viewer};
 
 pub use dock_button::DockToggleButton;
-pub use panel_registry::{BarSide, PANELS, PanelMeta, PanelRegistry, bar_side};
+pub use extension::WorkspaceExtension;
+pub use panel_registry::{BarSide, PANELS, PROBLEMS_META, PanelMeta, PanelRegistry, bar_side};
 /// `record` is how the agent bridge in `app` files an entry for the Agent panel to show.
 pub use panels::{
     AGENT_FONT_KEY, AGENT_FONT_SIZE_KEY, AGENT_FONT_SIZES, AgentCall, AgentEntry, DETAILS_META,
@@ -22,8 +25,8 @@ use std::sync::Arc;
 
 use gpui::*;
 use gpui_component::dock::{
-    BasePanelView, DockArea, DockAreaState, DockEvent, DockLayout, DockPlacement, DockSkin,
-    panel_handle, register_panel,
+    BasePanelView, DockArea, DockAreaState, DockEvent, DockLayout, DockPlacement, panel_handle,
+    register_panel,
 };
 use settings::AppSettings;
 
@@ -89,6 +92,8 @@ pub struct Workspace {
     _viewer_sub: Subscription,
     /// Brings the History panel forward when the grid asks it to show a cell's changes.
     _history_sub: Subscription,
+    /// Repaints the extensions' window overlays when one of them says they changed.
+    _overlays_sub: Subscription,
 }
 
 impl Workspace {
@@ -111,7 +116,7 @@ impl Workspace {
         // The appearance is a separate object in 0.6, installed as the area's renderer. The
         // handle it hands back is how its settings are reached afterwards.
         let (dock_area, skin) =
-            DockSkin::dock_area("qrate-main", Some(DOCK_LAYOUT_VERSION), window, cx);
+            skin::QrateSkin::dock_area("qrate-main", Some(DOCK_LAYOUT_VERSION), window, cx);
 
         // Restore if saved, else build default; building first then loading would orphan a throwaway table.
         if !Self::restore_layout(&dock_area, window, cx) {
@@ -198,11 +203,15 @@ impl Workspace {
             },
         );
 
+        extension::attach(dock_area.downgrade(), cx);
+        let _overlays_sub = cx.observe_global::<extension::OverlaysChanged>(|_, cx| cx.notify());
+
         Self {
             dock_area,
             _layout_sub,
             _viewer_sub,
             _history_sub,
+            _overlays_sub,
         }
     }
 
@@ -438,6 +447,9 @@ impl Render for Workspace {
                     .child(self.dock_area.clone()),
             )
             .children(viewer)
+            // Extensions' layers over the whole body — a popover opening upward from the
+            // status bar, say.
+            .children(extension::window_overlays(cx))
     }
 }
 

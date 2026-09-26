@@ -122,6 +122,9 @@ pub(crate) fn open_main_window(cx: &mut gpui::App) {
                 set_main_window_title(window, cx);
             })
             .ok();
+        if cx.has_global::<project_wizard::OnboardingPreview>() {
+            onboarding::reopen(cx);
+        }
         return;
     }
 
@@ -150,6 +153,9 @@ pub(crate) fn open_main_window(cx: &mut gpui::App) {
         cx.new(|cx| Root::new(view, window, cx))
     }) {
         WindowRegistry::register(MAIN_WINDOW_KIND, window_handle.into(), cx);
+        if cx.has_global::<project_wizard::OnboardingPreview>() {
+            onboarding::reopen(cx);
+        }
         log::info!("opened the main window in {:?}", started.elapsed());
     }
 }
@@ -285,7 +291,9 @@ impl Render for App {
             }))
             // Here rather than globally: the Zotero mapping dialog opens in this window.
             .on_action(cx.listener(|_, action: &export::Export, window, cx| {
-                export::run(action.format, window, cx)
+                export::run(action.format, window, cx);
+                // Once, the first time: what an export includes, and where Sheets sync lives.
+                onboarding::show_export_tip(window, cx);
             }))
             // Here for the same reason: the dialog opens in this window.
             .on_action(cx.listener(|_, _: &LoadColumnConfig, window, cx| {
@@ -305,7 +313,7 @@ impl Render for App {
                                 .map(|p| p.display_name())
                                 .unwrap_or_default(),
                         )
-                        .author(settings::history::author(cx).unwrap_or_else(|| "Not set".into()))
+                        .author(settings::history::author(cx).unwrap_or_default())
                         // Only cell data (gated by autosave/Ctrl+S) can be genuinely unsaved;
                         // column layout/settings auto-persist via the debounced writer, so `any()`
                         // would light the dot forever for those (nothing clears them until quit).
@@ -412,6 +420,9 @@ fn register_variant_checker(cx: &mut gpui::App) {
 /// diagnostic's source row and column *name*, the delegate's filtered view row, and the table's
 /// display column (data col + 1, past the pinned `#`).
 fn reveal_in_table(location: &diagnostics::Location, cx: &mut gpui::App) {
+    // Opening a finding is what "review what qrate found" asks for; fixing it is not.
+    onboarding::note_finding_reviewed(cx);
+
     let Some(state) = cx
         .try_global::<table::TableStateHandle>()
         .and_then(|h| h.0.upgrade())
@@ -563,6 +574,8 @@ fn main() {
     // First, so failures in GPUI platform construction and startup still reach the log file.
     logging::init();
     log::info!("site origin: {}", site::url("/"));
+    let onboarding_preview =
+        cfg!(debug_assertions) && std::env::args().any(|argument| argument == "--onboarding");
     let initial_project = std::env::args_os()
         .skip(1)
         .map(std::path::PathBuf::from)
@@ -599,7 +612,10 @@ fn main() {
         cx.register_url_scheme("qrate").detach();
 
         // Settings ------------------------------------
-        let settings = load_app_settings().unwrap_or_default();
+        let settings = load_app_settings().unwrap_or_else(|error| {
+            log::error!("settings: failed to load app settings: {error:#}");
+            AppSettings::default()
+        });
         cx.set_global(settings);
         cx.set_global(SettingsPersistence {
             writer: Some(SettingsWriter::start()),
@@ -613,6 +629,9 @@ fn main() {
         preview::cache::set_cap(app_settings::preview_cache_bytes(cx));
         theming::init(cx);
         cx.set_global(WindowRegistry::default());
+        if onboarding_preview {
+            cx.set_global(project_wizard::OnboardingPreview);
+        }
 
         // Lets the launcher (in the `project-wizard` crate, which can't depend on `app`) open
         // the real main window without a crate cycle. See `project_wizard::launcher`.
@@ -632,6 +651,9 @@ fn main() {
             revalidate: table::revalidate_now,
         });
         diagnostics::init(cx);
+        // Getting started plugs into the workspace as an extension, so it has to be registered
+        // before the main window builds one.
+        onboarding::init(cx);
         log::debug!(
             "startup: settings and theme ready at {:?}",
             started.elapsed()
@@ -701,6 +723,12 @@ fn main() {
             project_wizard::open_project_wizard(EntryKind::Blank, cx)
         });
         cx.on_action(|_: &OpenProjects, cx| project_wizard::open_launcher_window(cx));
+        // The guide belongs to the open project; with none, the launcher's welcome is the start.
+        cx.on_action(|_: &onboarding::ShowGettingStarted, cx| {
+            if !onboarding::reopen(cx) {
+                project_wizard::open_launcher_window(cx);
+            }
+        });
         // ----------------------------------------------
 
         app_menus::install(cx);

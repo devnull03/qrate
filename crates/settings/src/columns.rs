@@ -1,7 +1,7 @@
 //! Per-column preferences for the data table, stored per project.
 //!
-//! Columns belong to a project, so these are project-scoped only — there is no user-scope
-//! fallback and no `SettingsScope` involvement. Values live as one JSON blob in the `.qrate`
+//! Columns belong to a project, so these are project-scoped only, with no user fallback.
+//! Values live as one JSON blob in the `.qrate`
 //! file's `__settings` table (the same shape `table_columns` uses), read back through
 //! `CurrentProject`'s in-memory cache so nothing here touches disk during a render.
 //!
