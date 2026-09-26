@@ -15,7 +15,20 @@ Export the project from **File ▸ Export** as one of:
 
 Plugins can add their own formats to the same menu.
 
-The save dialog suggests a file named after the project, such as `My Collection.csv`. qrate writes
+**Settings ▸ Table ▸ CSV export** shapes the CSV, including the `data.csv` inside a ZIP
+archive:
+
+- **Byte order mark**, on by default, starts the file with a UTF-8 marker. Excel on Windows
+  needs it to show accented letters correctly; turn it off for an older import script that does
+  not expect it.
+- **Separator** is **Comma** (the default), **Semicolon**, or **Tab**. Excel in regions that
+  write decimals with a comma expects semicolons.
+
+Both are defaults a project can override; see
+[Projects](projects.md#your-defaults-and-project-overrides).
+
+The save dialog opens in the folder this project last exported to, or beside the project file
+the first time. It suggests a file named after the project, such as `My Collection.csv`. qrate writes
 the export in the background and shows a notice when it is done, or the reason it failed. A ZIP
 export copies every linked file, so it shows its progress as it goes and offers **Cancel**. The
 built-in formats are written to a temporary file first, so a cancelled or failed export leaves

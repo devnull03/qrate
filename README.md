@@ -57,7 +57,7 @@ Download the installer or portable build for your platform from [GitHub Releases
 
 PDF preview support is included in release builds. Video previews and some less-common image formats need `ffmpeg`. The Windows downloads include it; on macOS and Linux, install `ffmpeg` and make it available on your system `PATH`.
 
-qrate can check for signed updates and download them in the background. It installs one only when you choose **Restart to update**. Turn this off in **Settings ▸ Application ▸ Updates**.
+qrate can check for signed updates and download them in the background. It installs one only when you choose **Restart to update**, which first asks about any unsaved changes. If an update you asked for, or the last install, fails, an **Update failed** button appears in the title bar; click it to open About and try again, or dismiss it. Turn updates off in **Settings ▸ Application ▸ Updates**.
 
 ## Your data and privacy
 

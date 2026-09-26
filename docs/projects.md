@@ -25,7 +25,12 @@ Choose **File ▸ New Project…** or press **Ctrl+N**. The launcher offers thre
 
 When a project starts from folders, pick an **Archival description standard**: RAD, DACS,
 ISAD(G), Records in Contexts, or Custom. It supplies the level names, and you choose what
-folders and files are called, for example Series and Item.
+folders and files are called, for example Series and Item. You can change all three later in
+**Settings ▸ Project ▸ Description** (see [Project settings](#project-settings)).
+
+The wizard suggests saving the new project in the folder you last created a project in, or in a
+`qrate` folder in your Documents folder the first time. To choose a fixed folder instead, set
+**Settings ▸ Application ▸ New projects ▸ Save new projects in**.
 
 The wizard can also load a column configuration file, such as the `column_config.csv` that
 **Settings ▸ Columns ▸ Config file ▸ Export…** writes, so a new collection starts with the same
@@ -65,7 +70,11 @@ at once and shows the reason if it fails again.
 Before qrate quits, closes its window, switches to another project, or creates a new one, it
 asks about unsaved changes: **Save**, **Don't Save**, or **Cancel**. If saving fails there, qrate
 asks again with the reason, so your edits are never dropped without your choice. Press
-**Ctrl+Q** or choose **File ▸ Quit** to quit.
+**Ctrl+Q** or choose **File ▸ Quit** to quit. **Restart to update** asks the same question
+before it restarts qrate.
+
+Autosave is one of the settings a project can override; see
+[Your defaults and project overrides](#your-defaults-and-project-overrides).
 
 ## Add files to an open project
 
@@ -73,6 +82,11 @@ Choose **File ▸ Import Files or Folders…**, or drop files and folders onto t
 gallery. qrate shows how many rows it will add. If some of the files are already in the
 project, choose **Skip duplicates**, **Update existing** (re-link the existing row to the
 file), or **Add all as new**. Drop a single file onto a `Filename` cell to link that row to it.
+
+**Settings ▸ Project ▸ Import ▸ Files already in the project** holds this project's choice for
+such files: **Leave the existing row alone** (the default), **Re-link the existing row to the new
+file**, or **Add it as a new row**. The wizard sets it when the project is created. An import
+that finds files already in the project still asks, with the three buttons above.
 
 ## Add spreadsheet rows to an open project
 
@@ -83,8 +97,33 @@ rows to the current project as one change you can undo; existing rows and column
 
 ## Project settings
 
-**Settings ▸ Project** holds the linked-files folder. **Settings ▸ Columns** holds this
-project's column configuration (see [Columns](columns.md)), and each plugin's settings have a
-page of their own. **Settings ▸ Application** holds settings that apply to every project you
-open. Set **Application ▸ Identity ▸ Author name** to sign new notes and
-history entries; the active name appears in the project window.
+**Settings ▸ Project** holds the linked-files folder, the import choice above, and the
+**Description** group:
+
+- **Description standard**: RAD, DACS, ISAD(G), Records in Contexts, or Custom.
+- **Imported folders are** and **Imported files are**: the level names that imported folders and
+  files, and new rows, get.
+
+Changing the standard never rewrites rows. It sets what new rows and imports default to from
+then on; rows already filed keep their level, and the old level names stay available.
+
+**Settings ▸ Columns** holds this project's column configuration (see [Columns](columns.md)),
+and each plugin's settings have a page of their own. **Settings ▸ Application** holds settings
+that apply to every project you open. Set **Application ▸ Identity ▸ Author name** to sign new
+notes and history entries; the active name appears in the project window. **Application ▸
+Appearance ▸ Interface size** scales the text and controls of every qrate window: 90%, 100% (the
+default), 110%, 125%, or 150%.
+
+### Your defaults and project overrides
+
+Some settings are a default of yours that a project can override. They are autosave, row
+stripes, row density, undo steps, date format, spelling, and the CSV export options. The
+**User** and **Project** tabs at the top of the Settings window choose which one you are
+editing:
+
+- **User** sets your default, which applies to every project that does not set its own.
+- **Project** sets a value for the open project only, stored in its `.qrate` file, so it travels
+  with the project. Most rows that hold a project value say **Set for this project** and offer
+  a reset button that returns them to your default.
+
+The **Project** tab is available while a project is open.

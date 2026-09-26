@@ -18,7 +18,9 @@ the right dock. Show or hide the panel with **View ▸ Toggle Problems Panel** o
   a claim that two values identify the same entity.
   Right-click a column header and select **Review value variants** to enable this check.
   Select the checked command again to disable it.
-- **Date formats**, so a malformed or ambiguous date is caught before export.
+- **Date formats**, so a malformed or ambiguous date is caught before export. Choose EDTF, ISO
+  8601 only, or Lenient in **Settings ▸ Table ▸ Checks ▸ Date format**; see
+  [Columns](columns.md#column-type).
 - **File links**, so a row whose linked file cannot be found is reported instead of
   silently showing a blank preview. See [Files and photos](files-and-photos.md).
   Only a column set to the `Filename` type is checked this way.

@@ -15,7 +15,14 @@ qrate saves your edits to the project file on its own. See [Saving](projects.md#
 Every edit goes on the undo stack, including row and column changes. Press **Ctrl+Z** to
 undo and **Ctrl+Shift+Z** (or **Ctrl+Y**) to redo. Undo and redo also cover adding,
 removing, and reordering rows and columns, so a structural change is as safe to try as a
-cell edit.
+cell edit. Undo goes back 200 steps by default. **Settings ▸ Table ▸ Editing ▸ Undo steps**
+raises that to 500, 1,000, or 2,000; each step keeps what it replaced, so a deeper history uses
+more memory.
+
+**Settings ▸ Table ▸ Appearance ▸ Row density** chooses **Comfortable** (the default) or
+**Compact**, which uses smaller text and fits more rows on screen. Undo steps and row density
+are defaults a project can override; see
+[Projects](projects.md#your-defaults-and-project-overrides).
 
 ## Rows and columns
 

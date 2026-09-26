@@ -31,6 +31,11 @@ project. qrate checks the download against a published checksum before installin
 The model is stored beside qrate's other data, never inside a project, and it is shared by
 every project you open.
 
+To free the space, choose **Settings ▸ Table ▸ Previews ▸ Visual search model ▸ Remove
+model…**. Visual search then stops working until you download the model again from the search
+bar. qrate refuses to remove the model while it is downloading or indexing; try again when that
+finishes.
+
 ## Searching
 
 1. Open search with **Ctrl+F**.

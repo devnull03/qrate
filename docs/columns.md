@@ -13,7 +13,17 @@ with no type set is **Text**.
 - **Title**: the primary human-readable name of a row.
 - **Filename**: links each row to a file. See [Files and photos](files-and-photos.md) and
   [Diagnostics](diagnostics.md#what-qrate-checks).
-- **Date**: checked as an EDTF date, so a malformed or ambiguous date is flagged.
+- **Date**: checked against the date format chosen in **Settings ▸ Table ▸ Checks ▸ Date
+  format**, so a malformed or ambiguous date is flagged:
+  - **EDTF** (the default) also allows uncertain and approximate dates such as `1987?` and
+    `1987~`, and intervals such as `1987/1989`.
+  - **ISO 8601 only** allows `YYYY`, `YYYY-MM`, and `YYYY-MM-DD`, and an interval of two of them.
+  - **Lenient** allows everything EDTF does, plus the ways catalogues often write an
+    approximate date: `circa 1920`, `ca. 1920`, `c. 1920`, a decade such as `1920s`, and a
+    bracketed guess such as `[1920?]` or `[ca. 1920]`.
+
+  Changing the format checks every Date column again. A project can override your default; see
+  [Projects](projects.md#your-defaults-and-project-overrides).
 - **Number**, **Url**, and **Identifier**: an accession number, call number, or other
   identifier belongs in an Identifier column.
 - **Description Level**, **Parent Component**, and **Source Path**: show a row's archival

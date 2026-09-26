@@ -40,9 +40,10 @@ Without them, qrate shows a file-type icon instead of a preview, and the rest of
 works as normal.
 
 qrate keeps downscaled copies of your files so they open faster the second time. The cache
-is capped at 2 GB and rebuilds itself as you browse. To reclaim the space now, choose
-**Settings ▸ Table ▸ Previews ▸ Clear cache**; qrate then reports how many thumbnails it removed
-and how much space it freed.
+rebuilds itself as you browse. **Settings ▸ Table ▸ Previews ▸ Cache size** sets how large it
+may grow: 512 MB, 1 GB, 2 GB (the default), or 5 GB. Past that, the oldest thumbnails are
+dropped. To reclaim the space now, choose **Clear cache** in the same group; qrate then reports
+how many thumbnails it removed and how much space it freed.
 
 ## Gallery view
 
