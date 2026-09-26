@@ -85,9 +85,7 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                                 .collect(),
                             |cx: &App| cx.theme().theme_name().clone(),
                             |name: SharedString, cx: &mut App| {
-                                cx.dispatch_action(&crate::theming::SwitchTheme {
-                                    name: name.to_string(),
-                                });
+                                crate::theming::switch_theme(&name, cx);
                             },
                         ),
                     ))

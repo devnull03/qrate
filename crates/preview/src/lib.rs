@@ -664,7 +664,8 @@ pub fn forget(path: &Path, cx: &mut App) {
 }
 
 /// The file's contents fit to whatever box the caller gives it, or a type icon when there is
-/// nothing to draw — no path, an undecodable one, or a decode that fails at paint time.
+/// nothing to draw — no path, an undecodable one, or a decode that fails at paint time. `fit`
+/// lets a small icon fill its frame while gallery and details views show the entire file.
 ///
 /// Callers supply the surrounding chrome (the Details panel's bordered frame and its action
 /// buttons, a gallery card's caption and selection ring); this is only the picture. It centres
@@ -675,7 +676,7 @@ pub fn forget(path: &Path, cx: &mut App) {
 /// impls, and gpui's chained builder calls produce deeply nested generic types; propagating that
 /// concrete type into every caller overflows rustc's stack during type-checking instead of just
 /// hitting a slow compile.
-pub fn thumb(path: Option<&Path>, max_edge: u32, cx: &App) -> AnyElement {
+pub fn thumb(path: Option<&Path>, max_edge: u32, fit: ObjectFit, cx: &App) -> AnyElement {
     // Also `img()`'s decode-failure fallback, so a file that passes `can_preview` but turns out to
     // be truncated still lands on the icon. Captures by value because the `'static` fallback
     // closure can't borrow `cx` or the path.
@@ -696,25 +697,27 @@ pub fn thumb(path: Option<&Path>, max_edge: u32, cx: &App) -> AnyElement {
         }
     };
 
+    let cover = matches!(fit, ObjectFit::Cover);
     div()
         .size_full()
         .flex()
         .items_center()
         .justify_center()
         .map(|frame| match path.filter(|path| can_preview(path)) {
-            // gpui's `img` stamps the element with the *image's* aspect ratio, so a `size_full`
-            // img ignores the frame shape and `object_fit` has nothing to letterbox. Size it by
-            // its intrinsic ratio under `max_w/h_full` (where that aspect logic applies) so it
-            // shrinks to fit — bars and all.
-            Some(path) => frame.child(
-                // Page one: a card or a details pane shows what the file *is*, and paging through
-                // a document is the viewer's job.
-                img(source(path, max_edge, 0))
-                    .max_w_full()
-                    .max_h_full()
-                    .object_fit(ObjectFit::Contain)
-                    .with_fallback(placeholder),
-            ),
+            // For contain, keep the image's intrinsic ratio under `max_w/h_full` so it can
+            // letterbox. Cover gives the image the frame's full size so GPUI crops it.
+            Some(path) => {
+                let image = img(source(path, max_edge, 0))
+                    .object_fit(fit)
+                    .with_fallback(placeholder);
+                frame.child(if cover {
+                    image.size_full()
+                } else {
+                    // Page one: a card or details pane shows the entire file; paging through a
+                    // document is the viewer's job. Constrain its intrinsic aspect ratio.
+                    image.max_w_full().max_h_full()
+                })
+            }
             None => frame.child(placeholder()),
         })
         .into_any_element()
@@ -776,7 +779,7 @@ mod tests {
     // No `use super::*`: chain-globbing `gpui::*` shadows the built-in `#[test]` and recurses (see CLAUDE.md).
     use std::path::{Path, PathBuf};
 
-    use gpui::{Context, IntoElement, Render, TestAppContext, Window};
+    use gpui::{Context, IntoElement, ObjectFit, Render, TestAppContext, Window};
     use gpui_component::{IconName, IconNamed as _};
 
     use crate::{can_preview, placeholder_icon, thumb};
@@ -1030,11 +1033,16 @@ mod tests {
     /// Wraps [`thumb`] in a root `Render` view so a test can actually draw it — `Img`'s real
     /// load/fallback logic runs during layout/paint, not at element construction, so building the
     /// element tree alone (without a window draw) wouldn't exercise it.
-    struct ThumbProbe(Option<PathBuf>);
+    struct ThumbProbe(Option<PathBuf>, bool);
 
     impl Render for ThumbProbe {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            thumb(self.0.as_deref(), crate::CARD, cx)
+            let fit = if self.1 {
+                ObjectFit::Cover
+            } else {
+                ObjectFit::Contain
+            };
+            thumb(self.0.as_deref(), crate::CARD, fit, cx)
         }
     }
 
@@ -1050,14 +1058,21 @@ mod tests {
     fn renders_a_resolved_image_without_panicking(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let path = sample_photo("1.jpg");
-        cx.add_window_view(|_, _| ThumbProbe(Some(path)));
+        cx.add_window_view(|_, _| ThumbProbe(Some(path), false));
+    }
+
+    #[gpui::test]
+    fn renders_a_cover_thumbnail_without_panicking(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let path = sample_photo("1.jpg");
+        cx.add_window_view(|_, _| ThumbProbe(Some(path), true));
     }
 
     #[gpui::test]
     fn falls_back_when_the_resolved_path_is_missing_on_disk(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let path = PathBuf::from("/nonexistent/qrate-test-image.jpg");
-        cx.add_window_view(|_, _| ThumbProbe(Some(path)));
+        cx.add_window_view(|_, _| ThumbProbe(Some(path), false));
     }
 
     /// A file rewritten on disk is decoded afresh: forgetting it lets go of its page count and
@@ -1088,7 +1103,7 @@ mod tests {
     #[gpui::test]
     fn renders_the_icon_when_there_is_no_path(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
-        cx.add_window_view(|_, _| ThumbProbe(None));
+        cx.add_window_view(|_, _| ThumbProbe(None, false));
     }
 
     /// The one that would ship silently. `RenderImage` is BGRA, but every decoder we will add
@@ -1173,7 +1188,7 @@ mod tests {
     #[gpui::test]
     fn scrolling_past_more_images_than_fit_releases_the_oldest(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
-        let (_probe, cx) = cx.add_window_view(|_, _| ThumbProbe(None));
+        let (_probe, cx) = cx.add_window_view(|_, _| ThumbProbe(None, false));
 
         // 32×32 RGBA = 4096 bytes each; a budget of three lets the fourth push the first out.
         let image = || {

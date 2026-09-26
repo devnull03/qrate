@@ -539,12 +539,16 @@ impl AppSettings {
     }
 
     pub fn set_text(key: &'static str, val: SharedString, cx: &mut App) {
+        if key != SETTINGS_WINDOW_BOUNDS_KEY {
+            log::debug!("settings: app text changed key={key}");
+        }
         Self::update(cx, |s| {
             s.values.insert(key.into(), Val::Text(val));
         });
     }
 
     pub fn set_bool(key: &'static str, val: bool, cx: &mut App) {
+        log::debug!("settings: app bool changed key={key} value={val}");
         Self::update(cx, |s| {
             s.values.insert(key.into(), Val::Bool(val));
         });

@@ -984,49 +984,51 @@ fn render_image_frame(
         .overflow_hidden()
         .bg(cx.theme().muted)
         .map(|frame| match image_path {
-            Some(path) => frame.child(thumb(Some(&path), preview::PANE, cx)).child(
-                div()
-                    .absolute()
-                    .top_1()
-                    .right_1()
-                    .flex()
-                    .gap_1()
-                    .rounded(cx.theme().radius)
-                    .bg(cx.theme().background)
-                    // Fullscreen only makes sense for something we can actually render; an
-                    // icon-placeholder file has nothing to zoom into.
-                    .when(show_image, |group| {
-                        let path = path.clone();
-                        group.child(
-                            Button::new("fullscreen-image")
-                                .icon(IconName::Maximize)
-                                .ghost()
-                                .small()
-                                .tooltip("View fullscreen")
-                                .on_click(move |_, window, cx| {
-                                    crate::open_viewer(
-                                        path.clone(),
-                                        crate::ViewerScope::Workspace,
-                                        window,
-                                        cx,
-                                    )
-                                }),
-                        )
-                    })
-                    .child(action(
-                        "open-image",
-                        IconName::ExternalLink,
-                        "Open in default app",
-                        path.clone(),
-                    ))
-                    .child(action(
-                        "reveal-image",
-                        IconName::FolderOpen,
-                        "Reveal in folder",
-                        path,
-                    )),
-            ),
-            None => frame.child(thumb(None, preview::PANE, cx)),
+            Some(path) => frame
+                .child(thumb(Some(&path), preview::PANE, ObjectFit::Contain, cx))
+                .child(
+                    div()
+                        .absolute()
+                        .top_1()
+                        .right_1()
+                        .flex()
+                        .gap_1()
+                        .rounded(cx.theme().radius)
+                        .bg(cx.theme().background)
+                        // Fullscreen only makes sense for something we can actually render; an
+                        // icon-placeholder file has nothing to zoom into.
+                        .when(show_image, |group| {
+                            let path = path.clone();
+                            group.child(
+                                Button::new("fullscreen-image")
+                                    .icon(IconName::Maximize)
+                                    .ghost()
+                                    .small()
+                                    .tooltip("View fullscreen")
+                                    .on_click(move |_, window, cx| {
+                                        crate::open_viewer(
+                                            path.clone(),
+                                            crate::ViewerScope::Workspace,
+                                            window,
+                                            cx,
+                                        )
+                                    }),
+                            )
+                        })
+                        .child(action(
+                            "open-image",
+                            IconName::ExternalLink,
+                            "Open in default app",
+                            path.clone(),
+                        ))
+                        .child(action(
+                            "reveal-image",
+                            IconName::FolderOpen,
+                            "Reveal in folder",
+                            path,
+                        )),
+                ),
+            None => frame.child(thumb(None, preview::PANE, ObjectFit::Contain, cx)),
         })
         // Top-left, over the picture rather than taking a row out of the frame — the pane is a
         // height the user drags, and the other two edges are spoken for: the action buttons sit
