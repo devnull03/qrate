@@ -53,6 +53,40 @@ pub const ROW_DENSITY_KEY: &str = "table_row_density";
 /// What Settings offers for [`ROW_DENSITY_KEY`].
 pub const ROW_DENSITIES: &[(&str, &str)] = &[("", "Comfortable (default)"), ("compact", "Compact")];
 
+/// Settings key (either scope) for how many lines of text every grid row holds: 1 (unset) to 4.
+pub const ROW_LINES_KEY: &str = "table_row_lines";
+
+/// What Settings offers for [`ROW_LINES_KEY`].
+pub const ROW_LINES: &[(&str, &str)] = &[
+    ("", "1 line (default)"),
+    ("2", "2 lines"),
+    ("3", "3 lines"),
+    ("4", "4 lines"),
+];
+
+pub(crate) const MAX_ROW_LINES: usize = 4;
+
+/// The row height in force, in lines, clamped to what Settings offers.
+pub(crate) fn row_lines(cx: &App) -> usize {
+    settings::effective_text(ROW_LINES_KEY, cx)
+        .parse::<usize>()
+        .map_or(1, |lines| lines.clamp(1, MAX_ROW_LINES))
+}
+
+/// Write the row height where it takes effect: the project's own value if it overrides the
+/// default, the user default otherwise. One line is stored as unset, like the Settings default.
+pub(crate) fn set_row_lines(lines: usize, cx: &mut App) {
+    let value = match lines.clamp(1, MAX_ROW_LINES) {
+        1 => SharedString::default(),
+        lines => lines.to_string().into(),
+    };
+    if settings::has_project_override(ROW_LINES_KEY, cx) {
+        settings::project::CurrentProject::set_text(ROW_LINES_KEY, value, cx);
+    } else {
+        settings::AppSettings::set_text(ROW_LINES_KEY, value, cx);
+    }
+}
+
 /// Settings key (either scope) for how many edits Undo can step back through.
 pub const UNDO_STEPS_KEY: &str = "undo_steps";
 

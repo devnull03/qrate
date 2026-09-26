@@ -20,8 +20,16 @@ raises that to 500, 1,000, or 2,000; each step keeps what it replaced, so a deep
 more memory.
 
 **Settings ▸ Table ▸ Appearance ▸ Row density** chooses **Comfortable** (the default) or
-**Compact**, which uses smaller text and fits more rows on screen. Undo steps and row density
-are defaults a project can override; see
+**Compact**, which uses smaller text and fits more rows on screen.
+
+**Settings ▸ Table ▸ Appearance ▸ Row height** sets how many lines of text a row holds: 1 (the
+default), 2, 3, or 4. All rows have the same height. You can also set it from the grid: point
+at the bottom edge of any row number until the pointer becomes a resize arrow, then drag up or
+down. Every row follows the drag, and when you release it the height snaps to the nearest whole
+line. Double-click the edge to go back to 1 line. The drag changes the project's own row height
+if the project overrides it, and your default if it does not.
+
+Undo steps, row density, and row height are defaults a project can override; see
 [Projects](projects.md#your-defaults-and-project-overrides).
 
 ## Rows and columns
@@ -35,6 +43,17 @@ row above or below the selection, and **Ctrl+-** deletes the selected row.
 
 Drag a column header to move the column. Drag a row header to move the row; see
 [Groups](#groups).
+
+Right-click a column header and open **Text** to choose what the column does with a value
+that is longer than its cells. A check mark shows the current choice.
+
+- **Overflow** (the default) shows one line and runs it to the edge of the cell.
+- **Wrap** wraps the text to the column width. It fills as many lines as the row height holds
+  and ends with an ellipsis (…) when there is more.
+- **Clip** shows one line and cuts it off at the text edge, with no ellipsis.
+
+Point at a wrapped or clipped value that does not fit to see all of it. Each column keeps its
+choice in the project. To show more of a wrapped value, raise the row height.
 
 ## Groups
 

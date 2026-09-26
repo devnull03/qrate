@@ -24,7 +24,7 @@ use crate::cell;
 
 /// What gpui-base lays a multi-line editor's lines out at, and so what a wrapped height has to be
 /// counted in. Set on the frame because the state inherits it from the ambient text style.
-const LINE_HEIGHT: Rems = Rems(1.25);
+pub(crate) const LINE_HEIGHT: Rems = Rems(1.25);
 
 /// The editor's own padding — the cell's, so the text sits exactly where it did unedited — plus the
 /// 1px border on each side, plus the `RIGHT_MARGIN` a soft-wrapping textarea subtracts from its own

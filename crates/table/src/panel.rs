@@ -68,9 +68,17 @@ pub(crate) const FROZEN_COLUMNS_KEY: &str = "table_frozen_columns";
 
 /// A grid row's height. Scaled with the rem, which is what the UI scale moves, so a row still
 /// fits its text at 150%. Padding stays the library's: the floating editor is laid out against it.
-fn row_height(compact: bool, rem: Pixels) -> Pixels {
+/// Each line past the first adds one wrapped-cell line, the editor's line height.
+pub(crate) fn row_height(compact: bool, lines: usize, rem: Pixels) -> Pixels {
     let base = if compact { 28. } else { 32. };
     px(base * f32::from(rem) / 16.)
+        + rem * crate::editor::LINE_HEIGHT.0 * lines.saturating_sub(1) as f32
+}
+
+/// The whole number of lines closest to a dragged row height, within what Settings offers.
+pub(crate) fn lines_at(compact: bool, height: Pixels, rem: Pixels) -> usize {
+    let extra = (height - row_height(compact, 1, rem)) / (rem * crate::editor::LINE_HEIGHT.0);
+    (extra.round().max(0.) as usize + 1).min(crate::MAX_ROW_LINES)
 }
 
 /// Push the settings the delegate caches into it. Called wherever either store changes, since the
@@ -98,7 +106,13 @@ fn apply_settings(delegate: &mut QrateTableDelegate, cx: &App) {
                 .file_level_key;
     }
     delegate.undo_cap = crate::undo_steps(cx);
+    delegate.row_lines = crate::row_lines(cx);
     let column_settings = settings::columns::load(cx);
+    delegate.text_modes = column_settings
+        .iter()
+        .filter(|(_, s)| s.text_mode != settings::columns::TextMode::Overflow)
+        .map(|(key, s)| (SharedString::from(key.clone()), s.text_mode))
+        .collect();
     let filters_on = settings::columns::filters_master_enabled(cx);
     delegate.apply_column_settings(
         |key| filters_on && column_settings.get(key).is_some_and(|s| s.filter_enabled),
@@ -195,6 +209,8 @@ pub struct TablePanel {
     _revalidate_task: Option<Task<()>>,
     /// The watcher on the files folder, while the project has one.
     watch: Option<watch::FolderWatch>,
+    /// The row height a drag on a row-number edge is previewing, until it is released.
+    row_drag: Option<Pixels>,
 }
 
 impl TablePanel {
@@ -597,6 +613,7 @@ impl TablePanel {
             _autosave_task: None,
             _revalidate_task: None,
             watch: None,
+            row_drag: None,
         };
         panel.sync_watch(cx);
         cx.set_global(crate::TablePanelHandle(cx.entity().downgrade()));
@@ -2011,6 +2028,13 @@ impl Render for TablePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let stripe = settings::effective_bool(crate::TABLE_STRIPES_KEY, cx);
         let compact = settings::effective_text(crate::ROW_DENSITY_KEY, cx).as_ref() == "compact";
+        let rem = window.rem_size();
+        if !cx.has_active_drag() {
+            self.row_drag = None;
+        }
+        let height = self
+            .row_drag
+            .unwrap_or_else(|| row_height(compact, crate::row_lines(cx), rem));
 
         v_flex()
             .size_full()
@@ -2022,6 +2046,27 @@ impl Render for TablePanel {
             .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary_hover))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 this.import_external_paths(paths.paths().to_vec(), window, cx)
+            }))
+            .on_drag_move(cx.listener(
+                move |this, event: &DragMoveEvent<row_index::RowResize>, _, cx| {
+                    let from = cx
+                        .try_global::<row_index::RowResizeFrom>()
+                        .map_or(event.event.position.y, |from| from.0);
+                    let lines = crate::row_lines(cx);
+                    this.row_drag = Some(
+                        (row_height(compact, lines, rem) + event.event.position.y - from).clamp(
+                            row_height(compact, 1, rem),
+                            row_height(compact, crate::MAX_ROW_LINES, rem),
+                        ),
+                    );
+                    cx.notify();
+                },
+            ))
+            .on_drop(cx.listener(move |this, _: &row_index::RowResize, _, cx| {
+                if let Some(height) = this.row_drag.take() {
+                    crate::set_row_lines(lines_at(compact, height, rem), cx);
+                }
+                cx.notify();
             }))
             // Search, Replace and the find bar's own Escape are handled by `ViewsPanel`, which draws
             // the bar above every view. An action stops propagating by default, so declining an
@@ -2085,10 +2130,7 @@ impl Render for TablePanel {
                         DataTable::new(&self.state)
                             .bordered(false)
                             .stripe(stripe)
-                            .with_size(gpui_component::Size::Size(row_height(
-                                compact,
-                                window.rem_size(),
-                            ))),
+                            .with_size(gpui_component::Size::Size(height)),
                     )
                     // A sibling of the table, not a child of the edited cell: the grid virtualizes
                     // rows and columns away, and the box has to outlive that.
@@ -2165,10 +2207,33 @@ mod tests {
     use settings::history::Origin;
 
     #[test]
-    fn row_height_follows_density_and_the_ui_scale() {
-        assert_eq!(super::row_height(false, gpui::px(16.)), gpui::px(32.));
-        assert_eq!(super::row_height(true, gpui::px(16.)), gpui::px(28.));
-        assert_eq!(super::row_height(false, gpui::px(24.)), gpui::px(48.));
+    fn row_height_follows_density_lines_and_the_ui_scale() {
+        use gpui::px;
+        assert_eq!(super::row_height(false, 1, px(16.)), px(32.));
+        assert_eq!(super::row_height(true, 1, px(16.)), px(28.));
+        assert_eq!(super::row_height(false, 1, px(24.)), px(48.));
+        assert_eq!(super::row_height(false, 2, px(16.)), px(52.));
+        assert_eq!(super::row_height(true, 4, px(16.)), px(88.));
+        assert_eq!(super::row_height(false, 3, px(24.)), px(108.));
+    }
+
+    #[test]
+    fn a_dragged_height_snaps_to_the_nearest_line_within_range() {
+        use gpui::px;
+        for compact in [false, true] {
+            for rem in [px(16.), px(24.)] {
+                for lines in 1..=crate::MAX_ROW_LINES {
+                    let exact = super::row_height(compact, lines, rem);
+                    assert_eq!(super::lines_at(compact, exact, rem), lines);
+                    assert_eq!(super::lines_at(compact, exact + px(4.), rem), lines);
+                }
+            }
+        }
+        assert_eq!(super::lines_at(false, px(0.), px(16.)), 1);
+        assert_eq!(
+            super::lines_at(false, px(500.), px(16.)),
+            crate::MAX_ROW_LINES
+        );
     }
 
     #[test]
@@ -2286,6 +2351,50 @@ mod tests {
                 "Agnès Varda"
             );
         });
+    }
+
+    #[gpui::test]
+    fn a_wrap_column_draws_at_every_row_height(cx: &mut TestAppContext) {
+        use gpui::BorrowAppContext as _;
+        use settings::columns::TextMode;
+        project_with_notes(cx);
+        cx.update(|cx| {
+            cx.update_global::<settings::project::CurrentProject, _>(|project, _| {
+                project.data.rows = vec![
+                    vec![
+                        "a value long enough to wrap onto more lines than any row holds ".repeat(8),
+                    ],
+                    vec!["short".into()],
+                ];
+                project.data.values.insert(
+                    settings::columns::COLUMN_SETTINGS_KEY.into(),
+                    settings::Val::Text(r#"{"Title":{"text_mode":"wrap"}}"#.into()),
+                );
+            });
+        });
+        let (panel, cx) = cx.add_window_view(super::TablePanel::new);
+        for lines in 1..=crate::MAX_ROW_LINES {
+            cx.update(|_, cx| {
+                cx.update_global::<settings::AppSettings, _>(|app, _| {
+                    app.values.insert(
+                        crate::ROW_LINES_KEY.into(),
+                        settings::Val::Text(lines.to_string().into()),
+                    );
+                });
+            });
+            cx.run_until_parked();
+            cx.draw(
+                gpui::point(gpui::px(0.), gpui::px(0.)),
+                gpui::size(gpui::px(400.), gpui::px(300.)),
+                |_, _| gpui::IntoElement::into_any_element(panel.clone()),
+            );
+            panel.update(cx, |panel, cx| {
+                let delegate = panel.state.read(cx).delegate();
+                assert_eq!(delegate.row_lines, lines);
+                assert_eq!(delegate.text_mode(0), TextMode::Wrap);
+                assert!(cx.has_global::<crate::TableViewportBounds>());
+            });
+        }
     }
 
     #[gpui::test]

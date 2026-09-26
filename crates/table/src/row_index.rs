@@ -2,7 +2,8 @@ use std::sync::OnceLock;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Context, FontWeight, InteractiveElement as _, IntoElement, SharedString, div, prelude::*, px,
+    Context, FontWeight, Global, InteractiveElement as _, IntoElement, MouseButton, Pixels,
+    SharedString, div, prelude::*, px,
 };
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{
@@ -24,6 +25,17 @@ const WIDTH: f32 = 128.;
 struct RowDrag(usize);
 
 struct RowDragPreview(usize);
+
+/// A drag on a row number's bottom edge, resizing every row at once: rows are one height.
+#[derive(Clone)]
+pub(crate) struct RowResize;
+
+/// Where the pointer went down on a row edge, so a resize follows the pointer from that point.
+pub(crate) struct RowResizeFrom(pub Pixels);
+impl Global for RowResizeFrom {}
+
+/// How tall the grab zone on a row number's bottom edge is. Thin, so the row stays draggable.
+const EDGE: f32 = 4.;
 
 impl gpui::Render for RowDragPreview {
     fn render(&mut self, _: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
@@ -108,6 +120,27 @@ pub(crate) fn render_td(
                         })
                 }),
             ),
+        )
+        // Sits in the cell's bottom padding, below the drop zones, so it never takes a row drop.
+        .child(
+            div()
+                .id(("row-resize", row_ix))
+                .absolute()
+                .left(px(-crate::cell::CELL_PAD_X))
+                .right(px(-crate::cell::CELL_PAD_X))
+                .bottom(px(-crate::cell::CELL_PAD_Y))
+                .h(px(EDGE))
+                .cursor_row_resize()
+                .on_mouse_down(MouseButton::Left, |event, _, cx| {
+                    cx.set_global(RowResizeFrom(event.position.y))
+                })
+                .on_drag(RowResize, |_, _, _, cx| cx.new(|_| gpui::EmptyView))
+                .on_click(|event, _, cx| {
+                    cx.stop_propagation();
+                    if event.click_count() == 2 {
+                        crate::set_row_lines(1, cx);
+                    }
+                }),
         )
         .bg(bg)
         // The Problems panel's nesting: a tint under anything inside a group, and one guide line

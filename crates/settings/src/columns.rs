@@ -71,6 +71,9 @@ pub struct ColumnSettings {
     /// one and not the other way round.
     #[serde(default)]
     pub severity: BTreeMap<String, String>,
+    /// How the grid lays out a value longer than the cell. A view preference, so it has no undo.
+    #[serde(default)]
+    pub text_mode: TextMode,
 }
 
 fn yes() -> bool {
@@ -89,6 +92,32 @@ impl Default for ColumnSettings {
             authority: None,
             plugins: BTreeMap::new(),
             severity: BTreeMap::new(),
+            text_mode: TextMode::Overflow,
+        }
+    }
+}
+
+/// What a cell does with text wider than its column.
+#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum TextMode {
+    /// One line, running to the cell's edge.
+    #[default]
+    Overflow,
+    /// Wrapped to the column width, up to the row's line count, ending in an ellipsis.
+    Wrap,
+    /// One line, cut at the text box with no ellipsis.
+    Clip,
+}
+
+impl TextMode {
+    pub const ALL: [TextMode; 3] = [TextMode::Overflow, TextMode::Wrap, TextMode::Clip];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TextMode::Overflow => "Overflow",
+            TextMode::Wrap => "Wrap",
+            TextMode::Clip => "Clip",
         }
     }
 }
@@ -213,7 +242,7 @@ pub fn rename(before: &str, after: &str, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ColumnSettings, ColumnSettingsMap, ColumnType, parse};
+    use super::{ColumnSettings, ColumnSettingsMap, ColumnType, TextMode, parse};
 
     #[test]
     fn every_type_round_trips_through_its_canonical_spelling() {
@@ -350,6 +379,21 @@ mod tests {
         let parsed = parse(Some(r#"{"c2":{"filter_enabled":true}}"#));
         assert!(parsed["c2"].severity.is_empty());
         assert!(ColumnSettings::default().severity.is_empty());
+    }
+
+    /// Absent reads as Overflow, so a project from before wrapping existed looks the same.
+    #[test]
+    fn a_text_mode_round_trips_and_an_old_blob_reads_as_overflow() {
+        let parsed = parse(Some(r#"{"c2":{"filter_enabled":true}}"#));
+        assert_eq!(parsed["c2"].text_mode, TextMode::Overflow);
+        for mode in TextMode::ALL {
+            let mut map = map_with("c2", false);
+            map.get_mut("c2").unwrap().text_mode = mode;
+            let json = serde_json::to_string(&map).unwrap();
+            assert_eq!(parse(Some(&json)), map);
+        }
+        let wrapped = parse(Some(r#"{"c2":{"text_mode":"wrap"}}"#));
+        assert_eq!(wrapped["c2"].text_mode, TextMode::Wrap);
     }
 
     /// A plugin's own shape is never declared to Rust, so whatever it stores has to survive the

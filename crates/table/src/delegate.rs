@@ -15,7 +15,7 @@ use gpui_component::{
 use serde::{Deserialize, Serialize};
 
 use diagnostics::{DATASET_MAIN, Location};
-use settings::columns::ColumnType;
+use settings::columns::{ColumnType, TextMode};
 use settings::history::{Change, Entry, EntryId, Origin};
 use settings::project::RowId;
 
@@ -164,6 +164,11 @@ pub struct QrateTableDelegate {
     /// the library's fixed region is always the leading columns, and moving a column in or out of
     /// it is how a sheet re-freezes. Zero means only the pinned `#` column stays put.
     frozen: usize,
+    /// Each column's [`TextMode`] by column key, pushed in by `panel::apply_settings`. Absent is
+    /// Overflow, which is every column nobody chose a mode for.
+    pub(crate) text_modes: HashMap<SharedString, TextMode>,
+    /// How many lines of text a row holds; [`crate::row_lines`], pushed in with the other settings.
+    pub(crate) row_lines: usize,
 }
 
 impl QrateTableDelegate {
@@ -204,6 +209,8 @@ impl QrateTableDelegate {
             edits: 0,
             ledger: Arc::default(),
             frozen: 0,
+            text_modes: HashMap::new(),
+            row_lines: 1,
         }
     }
 
@@ -752,6 +759,15 @@ impl QrateTableDelegate {
             .get(data_col)
             .and_then(|column| self.declared.get(&column.name))
             .map(|(kind, _)| *kind)
+            .unwrap_or_default()
+    }
+
+    /// How a data column lays out text wider than its cells.
+    pub(crate) fn text_mode(&self, data_col: usize) -> TextMode {
+        self.columns
+            .get(data_col)
+            .and_then(|column| self.text_modes.get(&column.key))
+            .copied()
             .unwrap_or_default()
     }
 

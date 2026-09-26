@@ -22,6 +22,7 @@ use diagnostics::{Diagnostics, Location, Severity, Source, severity_color};
 use plugin_api::{
     ColumnMapContributions, CommandContext, MenuContributions, MenuTarget, PluginHooks,
 };
+use settings::columns::TextMode;
 use settings::history::Origin;
 
 use crate::TableStateHandle;
@@ -524,8 +525,12 @@ pub fn menu(
                     delegate.column_has_filter(col),
                 )
             };
-            let stored = settings::columns::get(&key, cx).plugins;
-            let variant_review = settings::columns::get(&key, cx).variant_review;
+            let column_settings = settings::columns::get(&key, cx);
+            let (stored, variant_review, text_mode) = (
+                column_settings.plugins,
+                column_settings.variant_review,
+                column_settings.text_mode,
+            );
             let (freeze_table, rename_table) = (table.clone(), table.clone());
             let menu = structural_items(menu, None, false, Some(col))
                 .item(
@@ -550,6 +555,23 @@ pub fn menu(
                     )
                 })
                 .separator();
+            let text_key = key.clone();
+            let menu = menu.submenu("Text", window, cx, move |sub, _window, _cx| {
+                TextMode::ALL.into_iter().fold(sub, |sub, mode| {
+                    let key = text_key.clone();
+                    sub.item(
+                        PopupMenuItem::new(mode.label())
+                            .checked(mode == text_mode)
+                            .on_click(move |_, _, cx| {
+                                settings::columns::update(
+                                    &key,
+                                    |settings| settings.text_mode = mode,
+                                    cx,
+                                );
+                            }),
+                    )
+                })
+            });
             let filter_table = table.clone();
             let filter_key = key.clone();
             let menu = menu.submenu("Filter", window, cx, move |sub, _window, _cx| {

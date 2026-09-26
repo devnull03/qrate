@@ -118,9 +118,9 @@ default), 110%, 125%, or 150%.
 ### Your defaults and project overrides
 
 Some settings are a default of yours that a project can override. They are autosave, row
-stripes, row density, undo steps, date format, spelling, and the CSV export options. The
-**User** and **Project** tabs at the top of the Settings window choose which one you are
-editing:
+stripes, row density, row height, undo steps, date format, spelling, and the CSV export
+options. The **User** and **Project** tabs at the top of the Settings window choose which one
+you are editing:
 
 - **User** sets your default, which applies to every project that does not set its own.
 - **Project** sets a value for the open project only, stored in its `.qrate` file, so it travels

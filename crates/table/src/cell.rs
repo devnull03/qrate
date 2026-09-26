@@ -6,14 +6,16 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, BorderStyle, Bounds, Context, ElementId, ExternalPaths, InteractiveElement as _,
-    IntoElement, MouseButton, ParentElement as _, Pixels, StatefulInteractiveElement as _,
-    Styled as _, Window, canvas, div, fill, outline, point, px, size,
+    AnyElement, AppContext as _, BorderStyle, Bounds, Context, ElementId, EmptyView, ExternalPaths,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledText, TextOverflow, Window, canvas, div,
+    fill, outline, point, px, size,
 };
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, table::TableState};
 
 use diagnostics::{Diagnostics, Source};
+use settings::columns::TextMode;
 
 use crate::EditSpawn;
 use crate::note::{self, Target};
@@ -76,6 +78,28 @@ pub(crate) fn render_cell(
     let tip = note::tooltip_text(delegate, &location, cx);
     let note_editor = note::editor(delegate, Some(row_ix), Some(col_ix), cx);
 
+    let mode = delegate.text_mode(col_ix);
+    // Wrap and Clip shorten what is drawn; the laid-out text's length says afterwards whether they
+    // did, which is when the tooltip, built on hover, asks.
+    let cut_short = mode != TextMode::Overflow;
+    let shown = StyledText::new(text.clone());
+    let layout = shown.layout().clone();
+    let body = div()
+        .flex_1()
+        .min_w_0()
+        .map(|body| match mode {
+            TextMode::Overflow => body,
+            TextMode::Clip => body
+                .overflow_hidden()
+                .text_overflow(TextOverflow::Truncate(SharedString::default())),
+            TextMode::Wrap => body
+                .whitespace_normal()
+                .line_height(crate::editor::LINE_HEIGHT)
+                .line_clamp(delegate.row_lines)
+                .text_ellipsis(),
+        })
+        .child(shown);
+
     div()
         // The library ids the *wrapper* cell `table-cell:{r}:{c}`; this is the inner div, and it
         // needs its own id before it can carry a tooltip or a context menu. `NamedInteger` over a
@@ -89,6 +113,9 @@ pub(crate) fn render_cell(
         // Own the containing block for the capture canvas below: without this it resolves against
         // the library's cell div, whose padding makes "the bounds" ambiguous.
         .relative()
+        // Centred, so one line of text sits mid-row however many lines the row holds.
+        .flex()
+        .items_center()
         .when(is_filename, |cell| {
             cell.can_drop(|value, _, _| {
                 value
@@ -112,25 +139,37 @@ pub(crate) fn render_cell(
                 });
             })
         })
-        .when(is_filename, |cell| {
-            cell.child(
+        .map(|cell| match is_filename {
+            true => cell.child(
                 h_flex()
+                    .flex_1()
+                    .min_w_0()
                     .gap_1()
                     .items_center()
                     .child(Icon::new(IconName::FolderOpen).xsmall())
-                    .child(text.clone()),
-            )
+                    .child(body),
+            ),
+            false => cell.child(body),
         })
-        .when(!is_filename, |cell| cell.child(text))
         .when_some(marked, |cell, severity| {
             cell.child(note::marker(severity, cx))
         })
         .when_some(flagged, |cell, severity| {
             cell.child(note::squiggle(severity, cx))
         })
-        .when_some(tip, |cell, text| {
+        .when(tip.is_some() || cut_short, |cell| {
             cell.tooltip(move |window, cx| {
-                gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
+                let truncated = cut_short && layout.len() != text.len();
+                let tip: Option<SharedString> = match (tip.clone(), truncated) {
+                    (Some(tip), true) => Some(format!("{text}\n\n{tip}").into()),
+                    (Some(tip), false) => Some(tip),
+                    (None, true) => Some(text.clone()),
+                    (None, false) => None,
+                };
+                match tip {
+                    Some(tip) => gpui_component::tooltip::Tooltip::new(tip).build(window, cx),
+                    None => cx.new(|_| EmptyView).into(),
+                }
             })
             .tooltip_show_delay(note::HOVER_DELAY)
         })

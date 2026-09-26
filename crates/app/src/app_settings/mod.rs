@@ -167,6 +167,17 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                             options: table::ROW_DENSITIES,
                         }
                         .into_item(cx),
+                    )
+                    .item(
+                        Setting::Dropdown {
+                            key: table::ROW_LINES_KEY,
+                            label: "Row height",
+                            description: "How many lines of text every row holds. Columns set \
+                                          to Wrap fill the extra lines. Drag the bottom edge of \
+                                          a row number to change it from the grid.",
+                            options: table::ROW_LINES,
+                        }
+                        .into_item(cx),
                     ),
             )
             .group(
