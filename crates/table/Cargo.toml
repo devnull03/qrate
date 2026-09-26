@@ -22,6 +22,7 @@ settings = { path = "../settings" }
 qrate-export = { path = "../qrate-export" }
 plugin-host = { path = "../plugin-host" }
 preview = { path = "../preview" }
+components = { path = "../components" }
 visual-search = { path = "../visual-search" }
 base64 = "0.22"
 sha2 = "0.10"

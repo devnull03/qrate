@@ -38,7 +38,7 @@ pub use panel::{
     RelinkMissingFiles, RenameColumn, Replace, Search, TablePanel, Undo, UnfreezeColumns,
     register_global_actions,
 };
-pub use visual::{model_on_disk as visual_model_on_disk, remove_model as remove_visual_model};
+pub use visual::remove_model as remove_visual_model;
 
 /// Global command handle for import entry points outside the centre table, such as Details.
 pub struct TablePanelHandle(pub WeakEntity<TablePanel>);

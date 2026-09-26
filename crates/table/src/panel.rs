@@ -1805,8 +1805,10 @@ impl TablePanel {
                         visual::Status::Missing | visual::Status::Failed(_) => bar.child(
                             Button::new("visual-install")
                                 .small()
-                                .label(visual::download_label())
-                                .on_click(|_, _, cx| visual::install(cx)),
+                                .label(visual::download_label(cx))
+                                .on_click(|_, _, cx| {
+                                    components::install(components::ComponentId::Clip, cx).detach()
+                                }),
                         ),
                         _ => bar.child(
                             div()

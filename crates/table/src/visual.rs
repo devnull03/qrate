@@ -5,10 +5,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
+use components::{ComponentId, Removal, State};
 use gpui::{App, Global, SharedString, Task};
 use settings::project::{CurrentProject, FILES_FOLDER_KEY, VisualEntry};
 use visual_search::Clip;
@@ -39,7 +38,7 @@ pub(crate) fn cutoff(scores: impl IntoIterator<Item = f32>, breadth: f32) -> usi
 #[derive(Clone, PartialEq)]
 pub(crate) enum Status {
     Missing,
-    Downloading(u64),
+    Downloading { received: u64, total: u64 },
     Indexing { done: usize, total: usize },
     Ready,
     Failed(SharedString),
@@ -66,25 +65,12 @@ pub(crate) struct Visual {
 
 impl Global for Visual {}
 
-fn model_dir() -> Option<PathBuf> {
-    Some(
-        settings::data_dir()?
-            .join("models")
-            .join(visual_search::MODEL_DIR),
-    )
-}
-
 pub(crate) fn init(cx: &mut App) {
     if cx.has_global::<Visual>() {
         return;
     }
-    let installed = model_dir().is_some_and(|dir| visual_search::installed(&dir));
     cx.set_global(Visual {
-        status: if installed {
-            Status::Ready
-        } else {
-            Status::Missing
-        },
+        status: Status::Missing,
         clip: None,
         index: Arc::default(),
         project: None,
@@ -92,35 +78,49 @@ pub(crate) fn init(cx: &mut App) {
         job: None,
         similar: None,
     });
+    follow_install(cx);
+    cx.observe_global::<components::Components>(follow_install)
+        .detach();
 }
 
-/// Whether any visual search weights are on disk, installed or half-downloaded.
-pub fn model_on_disk() -> bool {
-    settings::data_dir().is_some_and(|dir| dir.join("models").exists())
-}
-
-/// Delete `<data dir>/models`. Refused while a download or an indexing job is using it; the
-/// vectors already in the project stay, and are used again once the model is reinstalled.
-pub fn remove_model(cx: &mut App) -> anyhow::Result<()> {
-    let Some(dir) = settings::data_dir().map(|dir| dir.join("models")) else {
-        anyhow::bail!("qrate's data folder is unavailable");
+/// Mirrors the weights' component state into [`Status`], leaving an index in progress alone.
+fn follow_install(cx: &mut App) {
+    let current = cx.global::<Visual>().status.clone();
+    let next = match components::state(ComponentId::Clip, cx) {
+        State::Downloading { received, total } => Status::Downloading { received, total },
+        State::Installing => Status::Downloading {
+            received: 1,
+            total: 1,
+        },
+        State::Failed(_) => Status::Failed("Download failed".into()),
+        State::Installed { .. } => match current {
+            Status::Missing | Status::Downloading { .. } => Status::Ready,
+            ref kept => kept.clone(),
+        },
+        State::Missing { .. } | State::UpdateRequired => Status::Missing,
     };
+    if next != current {
+        let visual = state(cx);
+        if next == Status::Missing {
+            visual.clip = None;
+        }
+        visual.status = next;
+    }
+}
+
+/// Uninstalls the weights. Refused while an indexing job has them open; the vectors already in
+/// the project stay, and are used again once the model is reinstalled.
+pub fn remove_model(cx: &mut App) -> anyhow::Result<Removal> {
     if cx
         .try_global::<Visual>()
         .is_some_and(|visual| visual.job.is_some())
     {
-        anyhow::bail!("visual search is downloading or indexing; try again when it finishes");
+        anyhow::bail!("visual search is indexing; try again when it finishes");
     }
     if cx.has_global::<Visual>() {
-        let visual = state(cx);
-        visual.clip = None;
-        visual.status = Status::Missing;
+        state(cx).clip = None;
     }
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
-    }
-    log::info!("removed the visual search model from {}", dir.display());
-    Ok(())
+    components::remove(ComponentId::Clip, cx)
 }
 
 /// For writes only: every call notifies the global's observers, which re-run the search bar.
@@ -136,70 +136,22 @@ pub(crate) fn status(cx: &App) -> Status {
 pub(crate) fn status_label(status: &Status) -> Option<SharedString> {
     match status {
         Status::Missing => Some("Model not installed".into()),
-        Status::Downloading(done) => Some(
-            format!(
-                "Downloading {}%",
-                done * 100 / visual_search::DOWNLOAD_SIZE.max(1)
-            )
-            .into(),
-        ),
+        Status::Downloading { received, total } => {
+            Some(format!("Downloading {}%", received * 100 / total.max(&1)).into())
+        }
         Status::Indexing { done, total } => Some(format!("Indexing {done} / {total}").into()),
         Status::Ready => None,
         Status::Failed(reason) => Some(reason.clone()),
     }
 }
 
-pub(crate) fn download_label() -> SharedString {
-    format!(
-        "Download model ({} MB)",
-        visual_search::DOWNLOAD_SIZE / 1_000_000
-    )
-    .into()
-}
-
-/// Fetch the model, reporting progress into [`Status::Downloading`].
-pub(crate) fn install(cx: &mut App) {
-    let Some(dir) = model_dir() else {
-        return;
-    };
-    if matches!(status(cx), Status::Downloading(_)) {
-        return;
+pub(crate) fn download_label(cx: &App) -> SharedString {
+    match components::state(ComponentId::Clip, cx) {
+        State::Missing {
+            download: Some(bytes),
+        } => format!("Download model ({} MB)", bytes / 1_000_000).into(),
+        _ => "Download model".into(),
     }
-    state(cx).status = Status::Downloading(0);
-    let progress = Arc::new(AtomicU64::new(0));
-    let finished = Arc::new(AtomicBool::new(false));
-    let download = cx.background_executor().spawn({
-        let (progress, finished) = (progress.clone(), finished.clone());
-        async move {
-            let result =
-                visual_search::download(&dir, &|bytes| progress.store(bytes, Ordering::Relaxed));
-            finished.store(true, Ordering::Relaxed);
-            result
-        }
-    });
-    let job = cx.spawn(async move |cx| {
-        while !finished.load(Ordering::Relaxed) {
-            cx.background_executor()
-                .timer(Duration::from_millis(250))
-                .await;
-            cx.update(|cx| {
-                state(cx).status = Status::Downloading(progress.load(Ordering::Relaxed))
-            });
-        }
-        let result = download.await;
-        cx.update(|cx| {
-            let visual = state(cx);
-            visual.job = None;
-            visual.status = match result {
-                Ok(()) => Status::Ready,
-                Err(err) => {
-                    log::error!("could not download the visual search model: {err:#}");
-                    Status::Failed("Download failed".into())
-                }
-            };
-        });
-    });
-    state(cx).job = Some(job);
 }
 
 /// Embed any of `paths` the index does not already hold at their current length, storing the
@@ -215,7 +167,7 @@ pub(crate) fn index(paths: Vec<PathBuf>, cx: &mut App) {
         (project.file.clone(), folder)
     });
     let visual = cx.global::<Visual>();
-    let Some(dir) = model_dir() else {
+    let Some(dir) = components::store().and_then(|store| store.locate(ComponentId::Clip)) else {
         return;
     };
     if visual.status != Status::Ready || visual.job.is_some() {

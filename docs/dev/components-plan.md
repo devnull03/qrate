@@ -574,6 +574,30 @@ leaves stale sidecars beside the exe, which win the lookup, or drops the bundled
 4. **Lookup order + jobs + CLIP.** The preview, agent-runtime and visual changes, `jobs.rs`, the CLIP
    migration, `sweep`. Full bundles behave exactly as before (beside the exe wins). Visual search now
    downloads from GitHub.
+
+   **Done (2026-09-26).** `crates/components/src/jobs.rs`; lookup order in `preview` (`pdf.rs`,
+   `media.rs`, the asset key in `lib.rs`), `agent-runtime` and `table::visual`; `components::init`
+   in `main`. Deviations from § 3 and § 4:
+   - `jobs.rs` exposes `store()` (the app's `Store` over `<data dir>/components`, used off the
+     gpui thread by the tiers) instead of a separate `root()`. `source(cx)` moved here from
+     `app::update_check::download_source`.
+   - `State` is `Missing { download }`, `Downloading { received, total }`, `Installing`,
+     `Installed { version }`, `UpdateRequired` and `Failed`. `Bundled`, `System` and `Unavailable`
+     come with the UI in step 5, which is the first reader that needs them; so do `refresh` and
+     the automatic reinstall after an app update. The manifest is read by the first install.
+   - `components::remember(slot, generation, find)` is the per-generation cache both tiers use:
+     ffmpeg keeps its answer (hit or miss) per generation, PDFium keeps a bind forever and a miss
+     per generation. The PDF page count is no longer written to the disk cache when PDFium is
+     missing, so it is counted again after an install. An OS-thumbnailer picture already in the
+     disk cache stays until the file or the cache changes.
+   - `agent_runtime::init` observes `Components` itself (a dependency from `components` to
+     `agent-runtime` would be a cycle) and sets or removes `AgentRuntime` when `generation()` moves.
+   - CLIP: `visual_search::installed`, `download`, `MODEL_DIR` and the pins are deleted, so the
+     pins live only in `components`. Adoption checks SHA-256, not just sizes, runs in the
+     background after `init`, deletes a legacy folder that does not match, and removes the empty
+     `models` folder. `table::visual` mirrors `state(Clip)` into its `Status`; "Remove model…"
+     goes through `table::remove_visual_model`, which drops the loaded model and calls
+     `components::remove`.
 5. **UI.** Settings ▸ Components, first-use banners, agent panel state. The onboarding crate can call
    the API from here on.
 6. **Base bundle.** `Flavor` in marker/manifest, base packages in `release.yml`, update-manifest

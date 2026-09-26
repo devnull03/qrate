@@ -120,11 +120,13 @@ The arrows in the bottom-right corner of the fullscreen view move to the file of
 previous or next row, in the order the view shows them. During a search that means the
 previous or next result.
 
-PDF previews need PDFium and video frame previews need ffmpeg. qrate looks for both beside
-its own executable, then on your system `PATH`. Every release download includes PDFium, and
-the Windows downloads also include ffmpeg; on macOS and Linux, install ffmpeg yourself.
-Without them, qrate shows a file-type icon instead of a preview, and the rest of the app
-works as normal.
+PDF previews need PDFium and video frame previews need ffmpeg. qrate looks for each one in
+three places, in this order: beside its own executable, then in the optional components qrate
+installed into its data folder, then on your system (for ffmpeg, your `PATH`). Every release
+download includes PDFium, and the Windows downloads also include ffmpeg; on macOS and Linux,
+install ffmpeg yourself. Without them, qrate shows a file-type icon instead of a preview, and
+the rest of the app works as normal. When one of them is installed while qrate runs, the PDFs
+and videos that showed an icon are drawn again.
 
 qrate keeps downscaled copies of your files so they open faster the second time. The cache
 rebuilds itself as you browse. **Settings ▸ Table ▸ Previews ▸ Cache size** sets how large it

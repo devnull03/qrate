@@ -139,6 +139,15 @@ development build whose version has no release finds none. The CLIP weights are 
 their default source is Hugging Face at the pinned revision, which needs no manifest, and the
 release copy is the fallback (the `clip_source` setting can reverse the two).
 
+Lookup order is the same for every part: beside the executable (a full bundle, which always
+wins), then the installed component (a receipt in `<data dir>/components/receipts` whose `app`
+range matches this version), then the system (PDFium's own resolver, ffmpeg on `PATH`; Pi has no
+system fallback). `preview` and `agent-runtime` keep their answer until `components::generation()`
+moves, so an install or a removal is picked up without a restart. `components::init`, in `main`
+after the single-instance hand-off, sweeps every folder without a receipt and moves an older
+`<data dir>/models/clip-vit-base-patch32` into `components/clip/<revision>` when its SHA-256
+matches the pins.
+
 To test components locally, sign a manifest with a development key. Debug builds trust it under the
 key id `qrate-dev` when `QRATE_DEV_SIGNING_KEY` holds its public half; release builds never do.
 

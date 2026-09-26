@@ -838,11 +838,14 @@ fn previews_group(cx: &App) -> SettingGroup {
     .item(
         SettingItem::new(
             "Visual search model",
-            SettingField::element(|_opts: &_, _window: &mut _, _cx: &mut App| {
+            SettingField::element(|_opts: &_, _window: &mut _, cx: &mut App| {
                 Button::new("remove-visual-model")
                     .small()
                     .label("Remove model…")
-                    .disabled(!table::visual_model_on_disk())
+                    .disabled(!matches!(
+                        components::state(components::ComponentId::Clip, cx),
+                        components::State::Installed { .. } | components::State::UpdateRequired
+                    ))
                     .on_click(|_, window, cx| {
                         let answer = window.prompt(
                             PromptLevel::Warning,
@@ -880,7 +883,7 @@ fn previews_group(cx: &App) -> SettingGroup {
             }),
         )
         .description(
-            "The CLIP weights visual search downloads into qrate's data folder. Removing them \
+            "The CLIP weights visual search installs into qrate's data folder. Removing them \
              is refused while the model is downloading or indexing.",
         ),
     )

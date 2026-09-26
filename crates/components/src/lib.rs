@@ -4,15 +4,21 @@
 //! Each release publishes a signed `components.json` beside its assets. An install downloads an
 //! archive checked against the size and SHA-256 signed there, unpacks it into
 //! `<root>/<id>/<version>`, and writes the receipt last. A folder without a receipt is not
-//! installed, and [`Store::sweep`] deletes it at the next start. Nothing here uses gpui, and every
-//! operation works on the [`Store`]'s root, so the tests run on temporary folders.
+//! installed, and [`Store::sweep`] deletes it at the next start. Every [`Store`] operation works
+//! on its root, so the tests run on temporary folders; the app's store and the gpui side live in
+//! `jobs.rs`.
+
+mod jobs;
 
 use std::{
     fs,
     io::Read,
     iter,
     path::{Component as PathPart, Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -22,6 +28,8 @@ use ed25519_dalek::VerifyingKey;
 use semver::{BuildMetadata, Op, Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use updater::{RELEASE_DOWNLOADS, SignedEnvelope, Source};
+
+pub use jobs::{Components, State, cancel, init, install, remove, source, state, store};
 
 pub const MANIFEST_NAME: &str = "components.json";
 /// The app-wide setting that holds a [`ClipSource`].
@@ -52,12 +60,32 @@ const CLIP_FILES: [(&str, u64, &str); 2] = [
         "99d28a652e6ec46629ab7047a0ac82c69b1fe11e0ce672c43af65d3a9a3fc05d",
     ),
 ];
+/// Bytes the CLIP weights take from Hugging Face, for a prompt shown before any manifest is read.
+pub const CLIP_DOWNLOAD: u64 = CLIP_FILES[0].1 + CLIP_FILES[1].1;
 
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Moves on every install and removal, so an answer cached under an older value is stale.
 pub fn generation() -> u64 {
     GENERATION.load(Ordering::Acquire)
+}
+
+/// The answer `find` gave at `generation`, found again once an install or removal has moved it.
+/// The slot stays locked while `find` runs, so two threads never look at once.
+pub fn remember<T: Clone>(
+    slot: &Mutex<Option<(u64, T)>>,
+    generation: u64,
+    find: impl FnOnce() -> T,
+) -> T {
+    let mut slot = slot.lock().unwrap_or_else(|error| error.into_inner());
+    match &*slot {
+        Some((at, found)) if *at == generation => found.clone(),
+        _ => {
+            let found = find();
+            *slot = Some((generation, found.clone()));
+            found
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -409,6 +437,59 @@ impl Store {
         Ok(receipt)
     }
 
+    /// Records the CLIP weights an older qrate downloaded into `legacy` as installed, moving them
+    /// rather than fetching 607 MB again. Weights that do not hash to the pins are deleted.
+    pub fn adopt_clip(&self, legacy: &Path) -> Result<bool> {
+        self.adopt(legacy, &CLIP_FILES)
+    }
+
+    fn adopt(&self, legacy: &Path, files: &[(&str, u64, &str)]) -> Result<bool> {
+        let id = ComponentId::Clip;
+        if !legacy.is_dir() || self.receipt(id).is_some() {
+            return Ok(false);
+        }
+        for (name, size, sha256) in files {
+            let path = legacy.join(name);
+            let pinned = path.is_file()
+                && updater::sha256_file(&path)
+                    .with_context(|| format!("check {}", path.display()))?
+                    == ((*sha256).to_owned(), *size);
+            if !pinned {
+                log::info!("deleting incomplete CLIP weights at {}", legacy.display());
+                fs::remove_dir_all(legacy)?;
+                return Ok(false);
+            }
+        }
+        let home = self.root.join(id.name());
+        let target = home.join(CLIP_VERSION);
+        fs::create_dir_all(&home)?;
+        if target.exists() {
+            fs::rename(&target, home.join(trash_name()))?;
+        }
+        fs::rename(legacy, &target)?;
+        let (name, _, sha256) = files.last().context("no files to adopt")?;
+        let receipt = Receipt {
+            schema: RECEIPT_SCHEMA,
+            id,
+            version: CLIP_VERSION.into(),
+            app: VersionReq::STAR,
+            url: format!("{CLIP_UPSTREAM}{name}"),
+            sha256: (*sha256).into(),
+            bytes: files.iter().map(|(_, size, _)| size).sum(),
+            installed_at_unix_seconds: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs()),
+        };
+        if let Err(error) = updater::write_json_atomic(&self.receipt_path(id), &receipt) {
+            let _ = fs::rename(&target, legacy);
+            return Err(error).context("record the adopted CLIP weights");
+        }
+        GENERATION.fetch_add(1, Ordering::AcqRel);
+        prune(&home, Some(CLIP_VERSION));
+        log::info!("adopted the CLIP weights from {}", legacy.display());
+        Ok(true)
+    }
+
     /// Uninstalls `id`. qrate treats it as gone at once, but on Windows a loaded PDFium or a
     /// running Pi cannot be moved, so its files then stay until [`Store::sweep`] at the next start.
     pub fn remove(&self, id: ComponentId) -> Result<Removal> {
@@ -730,7 +811,10 @@ mod tests {
         fs,
         io::Write as _,
         path::{Path, PathBuf},
-        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+        sync::{
+            Mutex,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
     };
 
     use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -741,19 +825,19 @@ mod tests {
     use updater::{RELEASE_DOWNLOADS, SignedEnvelope, Source};
 
     use super::{
-        ClipSource, ComponentId, KEEP_PARTIAL, Manifest, Removal, Store, compatible, generation,
-        origins,
+        CLIP_VERSION, ClipSource, ComponentId, KEEP_PARTIAL, Manifest, Removal, Store, compatible,
+        generation, origins, remember,
     };
 
-    const APP: &str = "0.6.0-beta.1";
-    const RANGE: &str = ">=0.6.0-0, <0.7.0-0";
-    const KEY_ID: &str = "qrate-test";
+    pub(crate) const APP: &str = "0.6.0-beta.1";
+    pub(crate) const RANGE: &str = ">=0.6.0-0, <0.7.0-0";
+    pub(crate) const KEY_ID: &str = "qrate-test";
 
-    fn signing_key() -> SigningKey {
+    pub(crate) fn signing_key() -> SigningKey {
         SigningKey::from_bytes(&[7; 32])
     }
 
-    fn store_for(root: &Path, app: &str) -> Store {
+    pub(crate) fn store_for(root: &Path, app: &str) -> Store {
         Store {
             root: root.to_path_buf(),
             app: Version::parse(app).unwrap(),
@@ -761,7 +845,7 @@ mod tests {
         }
     }
 
-    fn sign(key: &SigningKey, key_id: &str, payload: &Value) -> SignedEnvelope {
+    pub(crate) fn sign(key: &SigningKey, key_id: &str, payload: &Value) -> SignedEnvelope {
         let bytes = serde_json::to_vec(payload).unwrap();
         SignedEnvelope {
             schema: 1,
@@ -771,7 +855,7 @@ mod tests {
         }
     }
 
-    fn payload(components: Vec<Value>) -> Value {
+    pub(crate) fn payload(components: Vec<Value>) -> Value {
         json!({
             "kind": "qrate-components",
             "schema": 1,
@@ -781,7 +865,7 @@ mod tests {
         })
     }
 
-    fn listing(id: &str, version: &str, app: &str, assets: Vec<Value>) -> Value {
+    pub(crate) fn listing(id: &str, version: &str, app: &str, assets: Vec<Value>) -> Value {
         json!({ "id": id, "version": version, "app": app, "license": "MIT", "assets": assets })
     }
 
@@ -789,28 +873,28 @@ mod tests {
         format!("{RELEASE_DOWNLOADS}v{APP}/{name}")
     }
 
-    fn file_url(path: &Path) -> String {
+    pub(crate) fn file_url(path: &Path) -> String {
         let path = path.to_string_lossy().replace('\\', "/");
         format!("file:///{}", path.trim_start_matches('/'))
     }
 
     /// A download source folder. `publish` puts a file where it stands in for this release.
-    struct Mirror {
-        dir: tempfile::TempDir,
+    pub(crate) struct Mirror {
+        pub(crate) dir: tempfile::TempDir,
     }
 
     impl Mirror {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             Self {
                 dir: tempfile::tempdir().unwrap(),
             }
         }
 
-        fn source(&self) -> Source {
+        pub(crate) fn source(&self) -> Source {
             Source::parse(Some(&file_url(self.dir.path()))).unwrap()
         }
 
-        fn path(&self, name: &str) -> PathBuf {
+        pub(crate) fn path(&self, name: &str) -> PathBuf {
             self.dir
                 .path()
                 .join(format!("github/devnull03/qrate/releases/download/v{APP}"))
@@ -818,7 +902,13 @@ mod tests {
         }
 
         /// Publishes `bytes` as `name` and returns its asset entry for this computer.
-        fn publish(&self, name: &str, bytes: &[u8], installed: u64, archive: &str) -> Value {
+        pub(crate) fn publish(
+            &self,
+            name: &str,
+            bytes: &[u8],
+            installed: u64,
+            archive: &str,
+        ) -> Value {
             let path = self.path(name);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, bytes).unwrap();
@@ -835,7 +925,7 @@ mod tests {
         }
     }
 
-    fn tar_of(files: &[(&str, &[u8], u32)]) -> Vec<u8> {
+    pub(crate) fn tar_of(files: &[(&str, &[u8], u32)]) -> Vec<u8> {
         let mut builder = tar::Builder::new(Vec::new());
         for (name, body, mode) in files {
             let mut header = Header::new_gnu();
@@ -847,7 +937,7 @@ mod tests {
         builder.into_inner().unwrap()
     }
 
-    fn gz(bytes: &[u8]) -> Vec<u8> {
+    pub(crate) fn gz(bytes: &[u8]) -> Vec<u8> {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(bytes).unwrap();
         encoder.finish().unwrap()
@@ -1373,5 +1463,77 @@ mod tests {
             )
             .unwrap_err();
         assert!(format!("{missing:#}").contains("no pdfium download"));
+    }
+
+    #[test]
+    fn a_remembered_answer_is_found_again_only_when_the_generation_moves() {
+        let slot = Mutex::new(None);
+        let mut looked = 0;
+        let mut look = |generation, answer: Option<&str>| {
+            remember(&slot, generation, || {
+                looked += 1;
+                answer.map(PathBuf::from)
+            })
+        };
+        // A miss is kept too, so a missing library is not probed on every card.
+        assert_eq!(look(4, None), None);
+        assert_eq!(look(4, Some("found")), None);
+        assert_eq!(look(5, Some("found")), Some(PathBuf::from("found")));
+        assert_eq!(look(5, None), Some(PathBuf::from("found")));
+        assert_eq!(looked, 2);
+    }
+
+    #[test]
+    fn adopts_weights_an_older_qrate_downloaded() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store_for(&temp.path().join("components"), APP);
+        let legacy = temp.path().join("models/clip-vit-base-patch32");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("tokenizer.json"), b"words").unwrap();
+        fs::write(legacy.join("model.safetensors"), b"weights").unwrap();
+        let digest = |name: &str| updater::sha256_file(&legacy.join(name)).unwrap().0;
+        let (words, weights) = (digest("tokenizer.json"), digest("model.safetensors"));
+        let pins = [
+            ("tokenizer.json", 5, words.as_str()),
+            ("model.safetensors", 7, weights.as_str()),
+        ];
+        let before = generation();
+
+        assert!(store.adopt(&legacy, &pins).unwrap());
+
+        assert!(generation() > before);
+        assert!(!legacy.exists());
+        let dir = store.locate(ComponentId::Clip).unwrap();
+        assert!(dir.ends_with(format!("clip/{CLIP_VERSION}")));
+        assert_eq!(fs::read(dir.join("model.safetensors")).unwrap(), b"weights");
+        let receipt = store.receipt(ComponentId::Clip).unwrap();
+        assert_eq!((receipt.bytes, receipt.sha256), (12, weights.clone()));
+        assert_eq!(receipt.app, VersionReq::STAR);
+        // Once adopted there is nothing left to adopt.
+        assert!(!store.adopt(&legacy, &pins).unwrap());
+    }
+
+    #[test]
+    fn deletes_legacy_weights_that_are_not_the_pinned_ones() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store_for(&temp.path().join("components"), APP);
+        let legacy = temp.path().join("models/clip-vit-base-patch32");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("tokenizer.json"), b"words").unwrap();
+        fs::write(legacy.join("model.part"), b"half a download").unwrap();
+        let zeros = "0".repeat(64);
+        let words = updater::sha256_file(&legacy.join("tokenizer.json"))
+            .unwrap()
+            .0;
+        let pins = [
+            ("tokenizer.json", 5, words.as_str()),
+            ("model.safetensors", 7, zeros.as_str()),
+        ];
+
+        assert!(!store.adopt(&legacy, &pins).unwrap());
+
+        assert!(!legacy.exists());
+        assert_eq!(store.receipt(ComponentId::Clip), None);
+        assert!(!store.adopt(&legacy, &pins).unwrap());
     }
 }

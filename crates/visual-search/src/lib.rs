@@ -6,107 +6,21 @@
 //! are ranked by how close their vectors are.
 //!
 //! The model runs on the CPU through candle, which is pure Rust. Its weights are not part of the
-//! install: [`download`] fetches a pinned revision and checks it against the published checksum.
+//! install: qrate installs them as an optional component (the `components` crate), which holds
+//! the pinned revision and checksums, and hands [`Clip::load`] the folder they are in.
 
 mod tokenizer;
 
-use std::fs;
-use std::io::{Read as _, Write as _};
 use std::path::Path;
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::Result;
 use candle_core::{DType, Device, Tensor};
 use candle_transformers::models::clip::{ClipConfig, ClipModel, div_l2_norm};
 use image::{DynamicImage, RgbaImage, imageops::FilterType};
-use sha2::{Digest as _, Sha256};
 
 /// Which weights an index was built with. Vectors from different models are not comparable, so an
 /// index recorded under another name is discarded rather than searched.
 pub const MODEL: &str = "openai/clip-vit-base-patch32@b33cedf";
-
-/// Folder name for the weights under qrate's models directory.
-pub const MODEL_DIR: &str = "clip-vit-base-patch32";
-
-const REVISION: &str = "b33cedfd0df4e43b8238760678fcc89e1a0d38b3";
-
-struct File {
-    name: &'static str,
-    size: u64,
-    sha256: &'static str,
-}
-
-const FILES: [File; 2] = [
-    File {
-        name: "tokenizer.json",
-        size: 2_224_041,
-        sha256: "b556ac8c99757ffb677208af34bc8c6721572114111a6e0aaf5fa69ff0b8d842",
-    },
-    File {
-        name: "model.safetensors",
-        size: 605_157_884,
-        sha256: "99d28a652e6ec46629ab7047a0ac82c69b1fe11e0ce672c43af65d3a9a3fc05d",
-    },
-];
-
-/// Bytes [`download`] fetches in total, for the install prompt.
-pub const DOWNLOAD_SIZE: u64 = FILES[0].size + FILES[1].size;
-
-/// Whether the weights are in `dir`. Checks sizes, not checksums: [`download`] only renames a file
-/// into place after its checksum matched.
-pub fn installed(dir: &Path) -> bool {
-    FILES
-        .iter()
-        .all(|file| fs::metadata(dir.join(file.name)).is_ok_and(|meta| meta.len() == file.size))
-}
-
-/// Fetch the pinned weights into `dir`, calling `progress` with bytes done so far. A file is written
-/// beside its final name and moved into place only once its SHA-256 matches, so an interrupted or
-/// tampered download never looks installed.
-pub fn download(dir: &Path, progress: &dyn Fn(u64)) -> Result<()> {
-    fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
-    // No overall timeout: the weights are 600 MB and a slow connection is not a failure.
-    let client = reqwest::blocking::Client::builder().timeout(None).build()?;
-    let mut done = 0;
-    for file in &FILES {
-        let target = dir.join(file.name);
-        if fs::metadata(&target).is_ok_and(|meta| meta.len() == file.size) {
-            done += file.size;
-            progress(done);
-            continue;
-        }
-        let url = format!(
-            "https://huggingface.co/openai/clip-vit-base-patch32/resolve/{REVISION}/{}",
-            file.name
-        );
-        let mut response = client.get(&url).send()?.error_for_status()?;
-        let partial = target.with_extension("part");
-        let mut out = fs::File::create(&partial)?;
-        let mut hasher = Sha256::new();
-        let mut buffer = vec![0; 1 << 16];
-        loop {
-            let read = response.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            out.write_all(&buffer[..read])?;
-            hasher.update(&buffer[..read]);
-            done += read as u64;
-            progress(done);
-        }
-        drop(out);
-        let digest = format!("{:x}", hasher.finalize());
-        if digest != file.sha256 {
-            let _ = fs::remove_file(&partial);
-        }
-        ensure!(
-            digest == file.sha256,
-            "the downloaded {} did not match its published checksum",
-            file.name
-        );
-        fs::rename(&partial, &target)?;
-    }
-    Ok(())
-}
 
 /// The loaded model. Holds about 600 MB, memory-mapped from the weights file.
 pub struct Clip {
@@ -173,14 +87,16 @@ mod tests {
     use super::*;
 
     /// Runs against the real weights when they are installed. Without them this is the skip path,
-    /// not a pass — `download` into the models folder first.
+    /// not a pass — install them from qrate's search bar first.
     #[test]
     fn a_description_finds_the_image_it_describes() {
-        let Some(dir) = dirs::data_local_dir().map(|d| d.join("qrate/models").join(MODEL_DIR))
+        let version = MODEL.rsplit('@').next().unwrap();
+        let Some(dir) =
+            dirs::data_local_dir().map(|d| d.join("qrate/components/clip").join(version))
         else {
             return;
         };
-        if !installed(&dir) {
+        if !dir.join("model.safetensors").is_file() {
             eprintln!("skipping the model check: CLIP weights are not installed");
             return;
         }

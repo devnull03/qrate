@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 alacritty_terminal.workspace = true
+components = { path = "../components" }
 gpui.workspace = true
 log.workspace = true
 settings = { path = "../settings" }

@@ -7,6 +7,11 @@ The Rust ownership boundary is `crates/agent-runtime`: it resolves the bundle, s
 profile, and owns the Pi PTY/session. `workspace` only renders that state in the Agent panel, `app`
 only initializes it, and `ai` remains the provider- and transport-neutral qrate tool contract.
 
+Pi is found in `<exe dir>/agent`, then `Contents/Resources/agent` in a macOS bundle, then the
+`agent` optional component in `<data dir>/components/agent/<version>`. A full install always uses
+its own copy. `agent_runtime::init` looks again whenever `components::generation()` moves, so an
+install sets the `AgentRuntime` global and a removal clears it without a restart.
+
 The qrate-specific package lives in the public
 [`devnull03/qrate-pi-extension`](https://github.com/devnull03/qrate-pi-extension) repository. qrate
 pins its v0.2.1 tag and checksum in the runtime-fetch scripts. The package supplies the system

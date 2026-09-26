@@ -14,6 +14,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+use components::ComponentId;
 use image::DynamicImage;
 use pdfium_render::prelude::{
     PdfPageTextChars, PdfRenderConfig, PdfSearchDirection, PdfSearchOptions, Pdfium,
@@ -25,33 +26,41 @@ pub fn handles(extension: &str) -> bool {
     matches!(extension, "pdf" | "ai")
 }
 
-/// Where the library lives: beside the executable in an install, then wherever the system keeps
-/// it for a development checkout. Probed once — a miss is permanent for the session, and retrying
-/// a failed load on every card would be a stutter per row.
-fn library() -> Option<&'static PathBuf> {
-    static FOUND: OnceLock<Option<PathBuf>> = OnceLock::new();
-    FOUND
-        .get_or_init(|| {
-            let beside = std::env::current_exe().ok().and_then(|exe| {
-                let dir = exe.parent()?;
-                Some(Pdfium::pdfium_platform_library_name_at_path(&dir))
-                    .filter(|path| path.is_file())
-            });
-            if beside.is_some() {
-                return beside;
+/// Where to look for the library, in order: beside the executable (a full install), the copy qrate
+/// installed on demand, then the system's own, which the empty path stands for.
+fn candidates(exe_dir: Option<&Path>, installed: Option<&Path>) -> Vec<PathBuf> {
+    exe_dir
+        .into_iter()
+        .chain(installed)
+        .map(Pdfium::pdfium_platform_library_name_at_path)
+        .chain([PathBuf::new()])
+        .collect()
+}
+
+fn bind() -> Option<Pdfium> {
+    let exe = std::env::current_exe().ok();
+    let installed = components::store().and_then(|store| store.locate(ComponentId::Pdfium));
+    let bindings = candidates(exe.as_deref().and_then(Path::parent), installed.as_deref())
+        .into_iter()
+        .find_map(|library| {
+            if library.as_os_str().is_empty() {
+                Pdfium::bind_to_system_library().ok()
+            } else if library.is_file() {
+                Pdfium::bind_to_library(&library)
+                    .map_err(|err| {
+                        log::warn!("could not load PDFium from {}: {err}", library.display())
+                    })
+                    .ok()
+            } else {
+                None
             }
-            // An empty path asks PDFium's own resolver to try the system library.
-            Pdfium::bind_to_system_library()
-                .ok()
-                .map(|_| PathBuf::new())
-                .or_else(|| {
-                    log::info!(
-                        "PDFium is not installed, so PDFs will show an icon instead of their first page"
-                    );
-                    None
-                })
-        })
-        .as_ref()
+        });
+    if bindings.is_none() {
+        log::info!(
+            "PDFium is not installed, so PDFs will show an icon instead of their first page"
+        );
+    }
+    Some(Pdfium::new(bindings?))
 }
 
 /// The one PDFium instance, behind the lock that makes it safe to reach.
@@ -63,21 +72,20 @@ fn library() -> Option<&'static PathBuf> {
 ///
 /// The cost is that PDF rendering is serialised. That is what the library allows, and each result
 /// is cached, so it is paid once per page anybody actually looks at.
+///
+/// A miss is looked at again only after a component install or removal: retrying a failed load
+/// on every card would be a stutter per row.
 fn pdfium() -> Option<&'static Mutex<Pdfium>> {
-    static INSTANCE: OnceLock<Option<Mutex<Pdfium>>> = OnceLock::new();
-    INSTANCE
-        .get_or_init(|| {
-            let library = library()?;
-            let bindings = if library.as_os_str().is_empty() {
-                Pdfium::bind_to_system_library()
-            } else {
-                Pdfium::bind_to_library(library)
-            }
-            .map_err(|err| log::warn!("could not load PDFium: {err}"))
-            .ok()?;
-            Some(Mutex::new(Pdfium::new(bindings)))
-        })
-        .as_ref()
+    static INSTANCE: OnceLock<Mutex<Pdfium>> = OnceLock::new();
+    static TRIED: Mutex<Option<(u64, bool)>> = Mutex::new(None);
+    if let Some(pdfium) = INSTANCE.get() {
+        return Some(pdfium);
+    }
+    components::remember(&TRIED, components::generation(), || {
+        INSTANCE.get().is_some()
+            || bind().is_some_and(|pdfium| INSTANCE.set(Mutex::new(pdfium)).is_ok())
+    });
+    INSTANCE.get()
 }
 
 /// Take the lock, recovering from a previous render having panicked while holding it: a poisoned
@@ -258,7 +266,21 @@ pub fn decode(path: &Path, max_edge: u32, page: usize) -> Option<DynamicImage> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use crate::pdf;
+
+    #[test]
+    fn looks_beside_the_executable_then_in_components_then_the_system() {
+        let exe = Path::new("/qrate");
+        let installed = Path::new("/data/components/pdfium/chromium-7881");
+        let found = pdf::candidates(Some(exe), Some(installed));
+        assert_eq!(found.len(), 3);
+        assert!(found[0].starts_with(exe));
+        assert!(found[1].starts_with(installed));
+        assert_eq!(found[2], PathBuf::new(), "the system library comes last");
+        assert_eq!(pdf::candidates(None, None), [PathBuf::new()]);
+    }
 
     #[test]
     fn claims_pdf_and_illustrator_only() {

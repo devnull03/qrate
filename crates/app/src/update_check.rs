@@ -18,18 +18,6 @@ pub fn automatic_updates(cx: &App) -> bool {
         .unwrap_or(true)
 }
 
-/// The one reader of the download source that updates, the plugin catalog and components share.
-pub fn download_source(cx: &App) -> updater::Source {
-    let setting = AppSettings::get(cx)
-        .values
-        .get(updater::DOWNLOAD_SOURCE_KEY)
-        .map(|value| value.text());
-    updater::Source::choose(
-        std::env::var(updater::DOWNLOAD_SOURCE_ENV).ok().as_deref(),
-        setting.as_deref(),
-    )
-}
-
 #[derive(Clone, Debug)]
 pub enum UpdateStatus {
     Disabled(Arc<str>),
@@ -189,7 +177,7 @@ impl AutoUpdater {
         cx.notify();
 
         let current = Version::parse(env!("CARGO_PKG_VERSION")).expect("package version is SemVer");
-        let source = download_source(cx);
+        let source = components::source(cx);
         let (tx, rx) = async_channel::unbounded();
         cx.background_spawn(async move {
             let result = updater::fetch_and_stage(

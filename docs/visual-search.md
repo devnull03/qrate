@@ -25,11 +25,16 @@ A row with no linked file cannot be found this way. See
 ## Installing the model
 
 The first time you turn visual search on, qrate offers a **Download model** button in the
-search bar. The download is about 605 MB and happens once per computer, not once per
+search bar. The download is about 607 MB and happens once per computer, not once per
 project. qrate checks the download against a published checksum before installing it.
 
-The model is stored beside qrate's other data, never inside a project, and it is shared by
-every project you open.
+The model comes from Hugging Face. If Hugging Face does not answer, qrate downloads the copy
+attached to its own GitHub release instead. Both are the same files, checked against the same
+checksums.
+
+The model is stored beside qrate's other data, in the `components` folder, never inside a
+project, and it is shared by every project you open. A model that an older qrate downloaded is
+moved there once, at startup, without a new download.
 
 To free the space, choose **Settings ▸ Table ▸ Previews ▸ Visual search model ▸ Remove
 model…**. Visual search then stops working until you download the model again from the search

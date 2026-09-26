@@ -11,7 +11,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 
+use components::ComponentId;
 use image::DynamicImage;
 
 /// Formats routed to ffmpeg. The still images here are the ones no pure-Rust decoder in the tree
@@ -35,30 +37,46 @@ pub fn is_video(extension: &str) -> bool {
     )
 }
 
-/// The ffmpeg to run: the one shipped beside the executable first, so a qrate install is
-/// self-contained and reproducible, then whatever is on `PATH` for a development checkout.
-/// `None` means the tier is simply unavailable and the ladder moves on.
+const NAME: &str = if cfg!(windows) {
+    "ffmpeg.exe"
+} else {
+    "ffmpeg"
+};
+
+/// Where to look, in order: beside the executable, so a full install is self-contained and
+/// reproducible, then the copy qrate installed on demand, then the bare name for whatever is on
+/// `PATH` in a development checkout.
+fn candidates(exe_dir: Option<&Path>, installed: Option<&Path>) -> Vec<PathBuf> {
+    exe_dir
+        .into_iter()
+        .chain(installed)
+        .map(|dir| dir.join(NAME))
+        .chain([PathBuf::from(NAME)])
+        .collect()
+}
+
+/// The ffmpeg to run. `None` means the tier is simply unavailable and the ladder moves on. The
+/// answer is kept until a component is installed or removed, so a decode spawns no probe.
 fn binary() -> Option<PathBuf> {
-    let name = if cfg!(windows) {
-        "ffmpeg.exe"
-    } else {
-        "ffmpeg"
-    };
-    let beside = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join(name)));
-    if let Some(bundled) = beside.filter(|path| path.is_file()) {
-        return Some(bundled);
-    }
-    // Cheapest reliable probe for "is it on PATH": ask it to identify itself.
-    Command::new(name)
-        .arg("-version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .ok()
-        .filter(std::process::ExitStatus::success)
-        .map(|_| PathBuf::from(name))
+    static FOUND: Mutex<Option<(u64, Option<PathBuf>)>> = Mutex::new(None);
+    components::remember(&FOUND, components::generation(), || {
+        let exe = std::env::current_exe().ok();
+        let installed = components::store().and_then(|store| store.locate(ComponentId::Ffmpeg));
+        candidates(exe.as_deref().and_then(Path::parent), installed.as_deref())
+            .into_iter()
+            .find(|candidate| {
+                if candidate.is_absolute() {
+                    return candidate.is_file();
+                }
+                // Cheapest reliable probe for "is it on PATH": ask it to identify itself.
+                Command::new(candidate)
+                    .arg("-version")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success())
+            })
+    })
 }
 
 /// One frame, as PNG on stdout.
@@ -166,7 +184,21 @@ fn run(binary: &Path, path: &Path, max_edge: u32, seek: Option<&str>) -> Option<
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use crate::media;
+
+    #[test]
+    fn looks_beside_the_executable_then_in_components_then_on_path() {
+        let exe = Path::new("/qrate");
+        let installed = Path::new("/data/components/ffmpeg/n8.1.2");
+        let name = PathBuf::from(media::NAME);
+        assert_eq!(
+            media::candidates(Some(exe), Some(installed)),
+            [exe.join(&name), installed.join(&name), name.clone()]
+        );
+        assert_eq!(media::candidates(None, None), [name]);
+    }
 
     #[test]
     fn claims_video_and_the_stills_nothing_else_decodes() {

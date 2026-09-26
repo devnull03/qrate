@@ -132,16 +132,27 @@ pub fn placeholder_icon(path: Option<&Path>) -> IconName {
 /// is eviction — see [`retain`].
 pub struct Preview;
 
-/// File, size cap, and where in it: the page for a document, whole seconds in for a video. Zero
-/// for everything else, which has only one thing to show.
-type Key = (PathBuf, u32, usize);
+/// File, size cap, where in it (the page for a document, whole seconds in for a video, zero for
+/// everything else, which has only one thing to show), and the [`generation`] it was drawn at.
+type Key = (PathBuf, u32, usize, u64);
+
+/// For the files PDFium and ffmpeg draw, the component generation, so installing either gives
+/// them new keys and a card that fell back to an icon is drawn again. Zero for everything else,
+/// which an install does not change.
+fn generation(extension: &str) -> u64 {
+    if pdf::handles(extension) || media::handles(extension) {
+        components::generation()
+    } else {
+        0
+    }
+}
 
 impl Asset for Preview {
     type Source = Key;
     type Output = Option<Arc<RenderImage>>;
 
     fn load(
-        (path, max_edge, page): Self::Source,
+        (path, max_edge, page, _): Self::Source,
         cx: &mut App,
     ) -> impl Future<Output = Self::Output> + Send + 'static {
         let executor = cx.background_executor().clone();
@@ -173,12 +184,10 @@ fn learn_pages(path: &Path, pages: usize) {
 }
 
 /// The counter for the formats that can hold more than one page, `None` for every other.
-fn pager(path: &Path) -> Option<fn(&Path) -> usize> {
+fn pager(path: &Path) -> Option<fn(&Path) -> Option<usize>> {
     match extension(path).as_deref() {
-        Some(extension) if pdf::handles(extension) => {
-            Some(|path| pdf::page_count(path).unwrap_or(1))
-        }
-        Some("tif" | "tiff") => Some(tiff_pages),
+        Some(extension) if pdf::handles(extension) => Some(pdf::page_count),
+        Some("tif" | "tiff") => Some(|path| Some(tiff_pages(path))),
         _ => None,
     }
 }
@@ -191,7 +200,7 @@ pub fn page_count(path: &Path) -> usize {
     let Some(count) = pager(path) else {
         return 1;
     };
-    let pages = count(path);
+    let pages = count(path).unwrap_or(1);
     learn_pages(path, pages);
     pages
 }
@@ -427,12 +436,14 @@ pub fn thumbnail_pixels(path: &Path, max_edge: u32, page: usize) -> Option<image
         && let Some(key) = &key
         && let Some(count) = pager(path)
     {
-        let pages = cache::read_pages(key).unwrap_or_else(|| {
-            let pages = count(path);
+        // Not written when the count is unknown, so a PDF met before PDFium was installed is
+        // counted again afterwards.
+        let pages = cache::read_pages(key).or_else(|| {
+            let pages = count(path)?;
             cache::write_pages(key, pages);
-            pages
+            Some(pages)
         });
-        learn_pages(path, pages);
+        learn_pages(path, pages.unwrap_or(1));
     }
 
     Some(scaled)
@@ -641,7 +652,8 @@ pub fn forget(path: &Path, cx: &mut App) {
             dropped.push(image);
         }
     }
-    let unheld = [CARD, PANE, FULL].map(|edge| (path.to_path_buf(), edge, 0));
+    let at = extension(path).map_or(0, |extension| generation(&extension));
+    let unheld = [CARD, PANE, FULL].map(|edge| (path.to_path_buf(), edge, 0, at));
     for key in held.iter().chain(&unheld) {
         cx.remove_asset::<Preview>(key);
     }
@@ -741,7 +753,7 @@ pub fn source(path: &Path, max_edge: u32, page: usize) -> ImageSource {
     {
         return ImageSource::Resource(path.to_path_buf().into());
     }
-    let key = (path.to_path_buf(), max_edge, page);
+    let key = (path.to_path_buf(), max_edge, page, generation(&extension));
     ImageSource::Custom(Arc::new(move |window: &mut Window, cx: &mut App| {
         // `None` while the decode is still running, which leaves the frame empty rather than
         // flashing the icon; gpui re-renders the view when the task lands.
@@ -1173,7 +1185,7 @@ mod tests {
 
         cx.update(|window, cx| {
             for n in 0..8 {
-                let key = (PathBuf::from(format!("/f/{n}.png")), crate::CARD, 0);
+                let key = (PathBuf::from(format!("/f/{n}.png")), crate::CARD, 0, 0);
                 crate::retain(&key, &image(), budget, window, cx);
             }
             assert_eq!(

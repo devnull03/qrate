@@ -25,6 +25,7 @@ tempfile.workspace = true
 # composition root links both the contract and the live table.
 ai = { path = "../ai" }
 agent-runtime = { path = "../agent-runtime" }
+components = { path = "../components" }
 # Where the Google refresh token lives; it never expires, so it doesn't go in the settings DB.
 # The Linux features are the pure-Rust ones — the `sync`/`openssl` alternatives link libdbus.
 keyring = { version = "3", features = [

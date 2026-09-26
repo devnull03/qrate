@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use components::ComponentId;
 use gpui::{App, Global};
 
 const PI_VERSION: &str = "0.84.2";
@@ -17,9 +18,29 @@ pub struct AgentRuntime {
 
 impl Global for AgentRuntime {}
 
+/// Finds Pi now, and again whenever a component is installed or removed, so installing the
+/// assistant needs no restart.
 pub fn init(cx: &mut App) {
+    load(cx);
+    let mut seen = components::generation();
+    cx.observe_global::<components::Components>(move |cx| {
+        if components::generation() != seen {
+            seen = components::generation();
+            load(cx);
+        }
+    })
+    .detach();
+}
+
+fn load(cx: &mut App) {
     match prepare() {
         Ok(runtime) => {
+            if cx
+                .try_global::<AgentRuntime>()
+                .is_some_and(|current| current.program == runtime.program)
+            {
+                return;
+            }
             log::info!(
                 "embedded Pi {PI_VERSION} ready at {}",
                 runtime.program.display()
@@ -27,13 +48,19 @@ pub fn init(cx: &mut App) {
             crate::terminal::warm_global_credential(runtime.program.clone());
             cx.set_global(runtime);
         }
-        Err(err) => log::warn!("embedded Pi is unavailable: {err}"),
+        Err(err) => {
+            log::warn!("embedded Pi is unavailable: {err}");
+            if cx.has_global::<AgentRuntime>() {
+                cx.remove_global::<AgentRuntime>();
+            }
+        }
     }
 }
 
 fn prepare() -> Result<AgentRuntime, String> {
-    let root = bundled_root().ok_or_else(|| {
-        "the agent runtime is missing; reinstall qrate or run scripts/fetch-agent-runtime.ps1"
+    let root = root().ok_or_else(|| {
+        "the agent runtime is not installed; install it as an optional component, reinstall the \
+         full qrate, or run scripts/fetch-agent-runtime.ps1 in a checkout"
             .to_owned()
     })?;
     let program = root.join(if cfg!(windows) { "pi.exe" } else { "pi" });
@@ -87,19 +114,52 @@ fn prepare() -> Result<AgentRuntime, String> {
     })
 }
 
-fn bundled_root() -> Option<PathBuf> {
-    let executable = std::env::current_exe().ok()?;
-    let executable_dir = executable.parent()?;
-    let mut candidates = vec![executable_dir.join("agent")];
-    // A macOS .app keeps auxiliary executables and data in Contents/Resources.
-    if let Some(contents) = executable_dir.parent() {
-        candidates.push(contents.join("Resources/agent"));
+/// Where Pi may be, in order: a full install's `agent` folder, beside the executable or in a
+/// macOS bundle's `Contents/Resources`, then the copy qrate installed on demand.
+fn candidates(exe_dir: Option<&Path>, installed: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(exe_dir) = exe_dir {
+        candidates.push(exe_dir.join("agent"));
+        if let Some(contents) = exe_dir.parent() {
+            candidates.push(contents.join("Resources/agent"));
+        }
     }
-    candidates.into_iter().find(|path| runtime_exists(path))
+    candidates.extend(installed);
+    candidates
+}
+
+fn root() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok();
+    let installed = components::store().and_then(|store| store.locate(ComponentId::Agent));
+    candidates(executable.as_deref().and_then(Path::parent), installed)
+        .into_iter()
+        .find(|path| runtime_exists(path))
 }
 
 fn runtime_exists(root: &Path) -> bool {
     root.join(if cfg!(windows) { "pi.exe" } else { "pi" })
         .is_file()
         && root.join("qrate-pi-extension").is_dir()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::candidates;
+
+    #[test]
+    fn a_full_install_wins_over_the_installed_component() {
+        let exe = Path::new("/Applications/qrate.app/Contents/MacOS");
+        let installed = PathBuf::from("/data/components/agent/0.84.2-ext.0.2.1");
+        assert_eq!(
+            candidates(Some(exe), Some(installed.clone())),
+            [
+                exe.join("agent"),
+                Path::new("/Applications/qrate.app/Contents/Resources/agent").to_path_buf(),
+                installed.clone(),
+            ]
+        );
+        assert_eq!(candidates(None, Some(installed.clone())), [installed]);
+    }
 }

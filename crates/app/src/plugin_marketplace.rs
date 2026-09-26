@@ -133,8 +133,7 @@ impl MarketplaceWindow {
             .map(str::to_owned)
             .or_else(|| std::env::var("QRATE_PLUGIN_CATALOG_PUBLIC_KEY").ok());
         let mut urls = vec![
-            crate::update_check::download_source(cx)
-                .site(crate::site::origin(), "/plugins/catalog.json"),
+            components::source(cx).site(crate::site::origin(), "/plugins/catalog.json"),
             crate::site::url("/plugins/catalog.json"),
         ];
         urls.dedup();

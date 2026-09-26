@@ -608,6 +608,8 @@ fn main() {
             writer: Some(settings::project::ProjectSettingsWriter::start()),
         });
         settings::dirty::init(cx);
+        // Here and only here: past the single-instance hand-off, before any tier loads a part.
+        components::init(cx);
         preview::cache::set_cap(app_settings::preview_cache_bytes(cx));
         theming::init(cx);
         cx.set_global(WindowRegistry::default());
@@ -775,6 +777,33 @@ fn open_install_link(link: &str, cx: &mut gpui::App) -> bool {
         Err(error) => {
             log::warn!("ignored invalid plugin install link: {error:#}");
             false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `components::init` sweeps away every component folder without a receipt, including one a
+    /// running qrate is installing into, so it must follow the single-instance hand-off. It must
+    /// also come before anything that loads a component.
+    #[test]
+    fn components_are_swept_after_the_hand_off_and_before_any_tier_loads() {
+        let source = include_str!("main.rs");
+        let main =
+            &source[source.find("fn main()").unwrap()..source.rfind("#[cfg(test)]").unwrap()];
+        let at = |call: &str| {
+            main.find(call)
+                .unwrap_or_else(|| panic!("main() no longer calls {call}"))
+        };
+        let init = at("components::init(cx)");
+        assert_eq!(
+            main.matches("components::init(").count(),
+            1,
+            "once per process"
+        );
+        assert!(at("instance_handoff::start(") < init);
+        for later in ["preview::", "agent_runtime::init(", "plugin_host::reload("] {
+            assert!(init < at(later), "{later} runs before the sweep");
         }
     }
 }
