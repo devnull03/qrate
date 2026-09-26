@@ -615,6 +615,10 @@ leaves stale sidecars beside the exe, which win the lookup, or drops the bundled
      `Unavailable`; on macOS ffmpeg's reason points at Homebrew. CLIP is never `Unavailable`.
    - After an app update, `init` reinstalls every `UpdateRequired` component in the background when
      automatic updates are on. `automatic_updates(cx)` moved here from `app::update_check`.
+     `Store::install` first compares the receipt with the manifest: the same version and SHA-256
+     only rewrites the receipt's `app` range, with no download. That holds because
+     `package-component.sh` now packs reproducibly (sorted entries, zero mtimes and owners, modes
+     reduced to 755/644, no gzip timestamp), so unchanged inputs give the same archive each release.
    - `ComponentId::label` is the name the UI shows. The sizes use `preview::file_size` (binary
      units), not the decimal MB of § 3's examples.
    - Banners: the viewer shows one at the top and reopens the file once the part lands, so a PDF's

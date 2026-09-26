@@ -358,8 +358,12 @@ impl Store {
         progress: &mut dyn FnMut(u64, u64),
         cancel: &AtomicBool,
     ) -> Result<Receipt> {
+        let origins = origins(id, manifest, clip);
+        if let Some(receipt) = self.renew(id, &origins) {
+            return Ok(receipt);
+        }
         let mut failure = None;
-        for origin in origins(id, manifest, clip) {
+        for origin in origins {
             if let Some(error) = failure.take() {
                 log::warn!("{error:#}; trying {} instead", origin.fetches[0].url);
             }
@@ -377,6 +381,35 @@ impl Store {
                 id.name()
             )
         }))
+    }
+
+    /// Records the installed copy as fit for this version of qrate when an origin publishes the
+    /// same version with the same SHA-256, so an app update downloads nothing that did not change.
+    fn renew(&self, id: ComponentId, origins: &[Origin]) -> Option<Receipt> {
+        let receipt = self.receipt(id)?;
+        let origin = origins.iter().find(|origin| {
+            origin.version == receipt.version
+                && origin.fetches.last().map(|main| &main.sha256) == Some(&receipt.sha256)
+                && compatible(&origin.app, &self.app)
+        })?;
+        if !self.root.join(id.name()).join(&receipt.version).is_dir() {
+            return None;
+        }
+        let renewed = Receipt {
+            app: origin.app.clone(),
+            ..receipt
+        };
+        if let Err(error) = updater::write_json_atomic(&self.receipt_path(id), &renewed) {
+            log::warn!("could not record {} as unchanged: {error:#}", id.name());
+            return None;
+        }
+        GENERATION.fetch_add(1, Ordering::AcqRel);
+        log::info!(
+            "{} {} is unchanged, so qrate kept it rather than downloading it again",
+            id.name(),
+            renewed.version
+        );
+        Some(renewed)
     }
 
     fn install_from(
@@ -1332,6 +1365,50 @@ mod tests {
         assert_eq!(updated.locate(ComponentId::Pdfium), None);
         let patched = store_for(temp.path(), "0.6.2");
         assert!(patched.locate(ComponentId::Pdfium).is_some());
+    }
+
+    #[test]
+    fn an_unchanged_component_is_kept_after_an_app_update_and_a_changed_one_downloaded() {
+        let temp = tempfile::tempdir().unwrap();
+        let mirror = Mirror::new();
+        let store = store_for(temp.path(), APP);
+        let manifest = pdfium(&mirror, &store, "1", &tar_of(&[("a", b"one", 0o644)]));
+        attempt(&store, ComponentId::Pdfium, &manifest, &mirror).unwrap();
+        let path = store.receipt_path(ComponentId::Pdfium);
+        let mut receipt = store.receipt(ComponentId::Pdfium).unwrap();
+        receipt.app = VersionReq::parse(">=0.5.0-0, <0.6.0-0").unwrap();
+        updater::write_json_atomic(&path, &receipt).unwrap();
+        assert_eq!(store.locate(ComponentId::Pdfium), None);
+
+        let install = |manifest: &Manifest| {
+            let mut downloaded = false;
+            let receipt = store
+                .install(
+                    ComponentId::Pdfium,
+                    Some(manifest),
+                    &mirror.source(),
+                    ClipSource::default(),
+                    &mut |_, _| downloaded = true,
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+            (receipt, downloaded)
+        };
+        let before = generation();
+        let (kept, downloaded) = install(&manifest);
+        assert!(!downloaded, "the same SHA-256 needs no download");
+        assert_eq!(kept.app, VersionReq::parse(RANGE).unwrap());
+        assert!(generation() > before);
+        let dir = store.locate(ComponentId::Pdfium).unwrap();
+        assert_eq!(fs::read(dir.join("a")).unwrap(), b"one");
+
+        let rebuilt = pdfium(&mirror, &store, "1", &tar_of(&[("a", b"two", 0o644)]));
+        receipt.app = VersionReq::parse(">=0.5.0-0, <0.6.0-0").unwrap();
+        updater::write_json_atomic(&path, &receipt).unwrap();
+        let (_, downloaded) = install(&rebuilt);
+        assert!(downloaded, "a different SHA-256 is downloaded");
+        let dir = store.locate(ComponentId::Pdfium).unwrap();
+        assert_eq!(fs::read(dir.join("a")).unwrap(), b"two");
     }
 
     #[test]
