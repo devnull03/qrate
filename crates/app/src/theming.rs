@@ -102,6 +102,7 @@ fn apply_saved_theme(cx: &mut App) {
 fn apply_theme_by_name(name: &str, cx: &mut App) {
     if let Some(config) = ThemeRegistry::global(cx).themes().get(name).cloned() {
         Theme::global_mut(cx).apply_config(&config);
+        Theme::sync_base(cx);
         cx.refresh_windows();
     }
 }

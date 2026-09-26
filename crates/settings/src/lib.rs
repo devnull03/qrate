@@ -21,10 +21,9 @@ pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _, StyledExt, TitleBar, h_flex,
+    ActiveTheme as _, StyledExt, TitleBar,
     input::InputState,
     label::Label,
     setting::{SelectIndex, SettingField, SettingItem, SettingPage, Settings},
@@ -37,7 +36,7 @@ use crate::path_picker::PathPickerApp;
 /// `AppSettings` value key for the Settings window's last size (a JSON [`MainWindowBounds`]).
 pub const SETTINGS_WINDOW_BOUNDS_KEY: &str = "settings_window_bounds";
 
-/// Setting key (either scope) for autosave behavior: `"timed"` (buffered, the default), `"immediate"`,
+/// Setting key for autosave behavior: `"timed"` (buffered, the default), `"immediate"`,
 /// or `"off"`. Read by the table crate to decide when a committed cell edit reaches disk.
 pub const AUTOSAVE_KEY: &str = "autosave";
 
@@ -63,7 +62,7 @@ pub fn google_enabled(cx: &App) -> bool {
 /// elsewhere is how someone runs this flow against their own Google Cloud project.
 pub const GOOGLE_CONFIG_ENDPOINT_KEY: &str = "google_config_endpoint";
 
-/// Setting key (either scope) for the string that separates several values inside one cell, e.g.
+/// Setting key for the string that separates several values inside one cell, e.g.
 /// `;` in `Film; Video`. Empty means a cell is one indivisible value.
 ///
 /// Lives here rather than in `table` because it is no longer only the table's: a plugin checking a
@@ -71,105 +70,34 @@ pub const GOOGLE_CONFIG_ENDPOINT_KEY: &str = "google_config_endpoint";
 /// `table` to ask.
 pub const FILTER_SUBDELIMITER_KEY: &str = "filter_subdelimiter";
 
-// --- Settings Scope ---
-
-/// Which store a settings field reads and writes. The same fields render in both scopes; only
-/// the backing store differs — `User` is the app-wide `AppSettings`, `Project` is the open
-/// project's `.qrate` file.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub enum SettingsScope {
-    #[default]
-    User,
-    Project,
-}
-
-/// The scope the Settings window's fields currently target. Unset means [`SettingsScope::User`].
-#[derive(Clone, Copy, Default)]
-pub struct CurrentSettingsScope(pub SettingsScope);
-
-impl Global for CurrentSettingsScope {}
-
-impl SettingsScope {
-    pub fn current(cx: &App) -> Self {
-        cx.try_global::<CurrentSettingsScope>()
-            .map(|s| s.0)
-            .unwrap_or_default()
-    }
-}
-
 /// Whether the open project holds a value of its own for `key`, as opposed to inheriting the
-/// user-wide one. This is what the Project scope's reset button keys off: only an override can be
-/// cleared, because only an override exists.
-pub fn has_project_override(key: &str, cx: &App) -> bool {
+/// user-wide one. Legacy overrides remain visible and can be cleared from Settings.
+fn has_project_override(key: &str, cx: &App) -> bool {
     cx.try_global::<project::CurrentProject>()
         .is_some_and(|p| p.data.values.contains_key(key))
 }
 
 /// Drops the open project's own value for `key`, so it inherits the user-wide one again.
-pub fn clear_project_override(key: &str, cx: &mut App) {
-    if cx.has_global::<project::CurrentProject>() {
+fn clear_project_override(key: &str, cx: &mut App) {
+    if has_project_override(key, cx) {
         project::CurrentProject::clear(key, cx);
     }
 }
 
-/// Reads a bool from whichever scope the Settings window currently targets. The Project scope
-/// resolves the same way the rest of the app does ([`effective_bool`]) rather than reading the
-/// project store raw: an unset key there means "inherits the user default", and showing it as
-/// `false` would state the opposite.
-fn scoped_bool(key: &str, cx: &App) -> bool {
-    match SettingsScope::current(cx) {
-        SettingsScope::User => AppSettings::get(cx)
-            .values
-            .get(key)
-            .map(|v| v.bool())
-            .unwrap_or(false),
-        SettingsScope::Project => effective_bool(key, cx),
-    }
+/// New edits are user-wide. Clear an old project override so the edit takes effect now.
+pub fn set_user_bool(key: &'static str, val: bool, cx: &mut App) {
+    clear_project_override(key, cx);
+    AppSettings::set_bool(key, val, cx);
 }
 
-/// Writes a bool to whichever scope the Settings window currently targets. Falls back to the
-/// user scope when `Project` is active but no project is open, so a stale scope can't panic.
-pub fn set_scoped_bool(key: &'static str, val: bool, cx: &mut App) {
-    let target = match SettingsScope::current(cx) {
-        SettingsScope::Project if cx.has_global::<project::CurrentProject>() => {
-            SettingsScope::Project
-        }
-        _ => SettingsScope::User,
-    };
-    match target {
-        SettingsScope::User => AppSettings::set_bool(key, val, cx),
-        SettingsScope::Project => project::CurrentProject::set_bool(key, val, cx),
-    }
-}
-
-/// Text sibling of [`scoped_bool`], inheriting in the Project scope for the same reason.
-pub fn scoped_text(key: &str, cx: &App) -> SharedString {
-    match SettingsScope::current(cx) {
-        SettingsScope::User => AppSettings::get(cx)
-            .values
-            .get(key)
-            .map(|v| v.text())
-            .unwrap_or_default(),
-        SettingsScope::Project => effective_text(key, cx),
-    }
-}
-
-pub fn set_scoped_text(key: &'static str, val: SharedString, cx: &mut App) {
-    let target = match SettingsScope::current(cx) {
-        SettingsScope::Project if cx.has_global::<project::CurrentProject>() => {
-            SettingsScope::Project
-        }
-        _ => SettingsScope::User,
-    };
-    match target {
-        SettingsScope::User => AppSettings::set_text(key, val, cx),
-        SettingsScope::Project => project::CurrentProject::set_text(key, val, cx),
-    }
+/// Text sibling of [`set_user_bool`].
+pub fn set_user_text(key: &'static str, val: SharedString, cx: &mut App) {
+    clear_project_override(key, cx);
+    AppSettings::set_text(key, val, cx);
 }
 
 /// Resolves a bool setting for a *consumer* (e.g. the table's stripe toggle): the open project's
-/// value wins if present, else the user-wide default, else `false`. Unlike [`scoped_bool`], this
-/// ignores the Settings window's active scope — it's what the feature should actually use.
+/// value wins if present, else the user-wide default, else `false`.
 pub fn effective_bool(key: &str, cx: &App) -> bool {
     if let Some(project) = cx.try_global::<project::CurrentProject>()
         && let Some(v) = project.data.values.get(key)
@@ -246,8 +174,7 @@ pub enum Setting {
 }
 
 impl Setting {
-    /// Builds the row this setting draws. Takes `&App` because a dual-scope row says whether the
-    /// open project overrides it, which only the live stores know.
+    /// Builds the row this setting draws. Takes `&App` to show legacy project overrides.
     pub fn into_item(self, cx: &App) -> SettingItem {
         match self {
             Setting::Text {
@@ -259,8 +186,8 @@ impl Setting {
                 resettable(
                     key,
                     SettingField::input(
-                        move |cx: &App| scoped_text(key, cx),
-                        move |val: SharedString, cx: &mut App| set_scoped_text(key, val, cx),
+                        move |cx: &App| effective_text(key, cx),
+                        move |val: SharedString, cx: &mut App| set_user_text(key, val, cx),
                     ),
                     None,
                 ),
@@ -279,9 +206,9 @@ impl Setting {
                 resettable(
                     key,
                     SettingField::input(
-                        move |cx: &App| scoped_text(key, cx),
+                        move |cx: &App| effective_text(key, cx),
                         move |val: SharedString, cx: &mut App| {
-                            set_scoped_text(key, val, cx);
+                            set_user_text(key, val, cx);
                             on_change(cx);
                         },
                     ),
@@ -300,8 +227,8 @@ impl Setting {
                 resettable(
                     key,
                     SettingField::switch(
-                        move |cx: &App| scoped_bool(key, cx),
-                        move |val: bool, cx: &mut App| set_scoped_bool(key, val, cx),
+                        move |cx: &App| effective_bool(key, cx),
+                        move |val: bool, cx: &mut App| set_user_bool(key, val, cx),
                     ),
                     None,
                 ),
@@ -324,8 +251,8 @@ impl Setting {
                         key,
                         SettingField::dropdown(
                             opts,
-                            move |cx: &App| scoped_text(key, cx),
-                            move |val: SharedString, cx: &mut App| set_scoped_text(key, val, cx),
+                            move |cx: &App| effective_text(key, cx),
+                            move |val: SharedString, cx: &mut App| set_user_text(key, val, cx),
                         ),
                         None,
                     ),
@@ -348,9 +275,9 @@ impl Setting {
                             .iter()
                             .map(|(k, v)| ((*k).into(), (*v).into()))
                             .collect(),
-                        move |cx: &App| scoped_text(key, cx),
+                        move |cx: &App| effective_text(key, cx),
                         move |val: SharedString, cx: &mut App| {
-                            set_scoped_text(key, val, cx);
+                            set_user_text(key, val, cx);
                             on_change(cx);
                         },
                     ),
@@ -400,27 +327,22 @@ fn user_text(key: &'static str, cx: &App) -> SharedString {
         .unwrap_or_default()
 }
 
-/// Tells a dual-scope row apart from an inherited one while the Project scope is showing. Without
-/// it the two look identical — the field shows the same resolved value either way.
+/// Mark a legacy project override beside the effective value it currently supplies.
 fn described(description: &'static str, key: &'static str, cx: &App) -> SharedString {
-    match SettingsScope::current(cx) == SettingsScope::Project && has_project_override(key, cx) {
-        true => format!("{description}\n\nSet for this project.").into(),
+    match has_project_override(key, cx) {
+        true => format!("{description}\n\nProject override; Reset uses the user default.").into(),
         false => description.into(),
     }
 }
 
-/// Wires a dual-scope field to the page's Reset button, which clears the project's own value so the
-/// row inherits the user-wide one again. Nothing to reset in the User scope: that store *is* the
-/// default this returns to.
+/// Let an existing project override be cleared without exposing a scope switcher.
 fn resettable<T: 'static>(
     key: &'static str,
     field: SettingField<T>,
     on_change: Option<fn(&mut App)>,
 ) -> SettingField<T> {
     field.on_reset(
-        move |cx: &App| {
-            SettingsScope::current(cx) == SettingsScope::Project && has_project_override(key, cx)
-        },
+        move |cx: &App| has_project_override(key, cx),
         move |_window: &mut Window, cx: &mut App| {
             clear_project_override(key, cx);
             if let Some(on_change) = on_change {
@@ -641,8 +563,7 @@ pub struct SettingsWindow {
     initial_page: Option<usize>,
     /// Persists the window's size (debounced) so it reopens where it was left.
     _bounds_sub: Subscription,
-    /// Re-render when any setting changes so scope-dependent pages (autosave's method row, the
-    /// columns filter picker) rebuild live instead of on the next unrelated repaint.
+    /// Re-render when any setting changes so dynamic pages rebuild live.
     _settings_sub: Subscription,
     _project_sub: Subscription,
 }
@@ -673,48 +594,8 @@ impl SettingsWindow {
     }
 }
 
-/// A small text-only scope tab (Zed-style): accented when selected, muted otherwise.
-fn scope_tab(
-    id: &'static str,
-    label: &'static str,
-    selected: bool,
-    enabled: bool,
-    target: SettingsScope,
-    cx: &mut Context<SettingsWindow>,
-) -> Stateful<Div> {
-    let color = if selected {
-        cx.theme().foreground
-    } else {
-        cx.theme().muted_foreground
-    };
-    let base = div()
-        .id(id)
-        .text_sm()
-        .text_color(color)
-        .when(selected, |d| d.font_semibold())
-        .child(label);
-    if enabled {
-        base.cursor_pointer()
-            .on_click(cx.listener(move |_this, _ev, _window, cx| {
-                cx.set_global(CurrentSettingsScope(target));
-                cx.notify();
-            }))
-    } else {
-        base
-    }
-}
-
 impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_project = cx.has_global::<project::CurrentProject>();
-        // A stale `Project` scope (project closed while it was selected) snaps back to User so
-        // fields don't target a nonexistent store.
-        let scope = if has_project {
-            SettingsScope::current(cx)
-        } else {
-            SettingsScope::User
-        };
-
         v_flex()
             .size_full()
             .child(
@@ -722,33 +603,6 @@ impl Render for SettingsWindow {
                     .text_xs()
                     .text_color(cx.theme().foreground)
                     .child(Label::new("Settings").font_semibold()),
-            )
-            // Fixed scope switcher, right-aligned over the settings content section.
-            .child(
-                h_flex()
-                    .flex_none()
-                    .justify_end()
-                    .gap_4()
-                    .px_4()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(scope_tab(
-                        "scope-user",
-                        "User",
-                        scope == SettingsScope::User,
-                        true,
-                        SettingsScope::User,
-                        cx,
-                    ))
-                    .child(scope_tab(
-                        "scope-project",
-                        "Project",
-                        scope == SettingsScope::Project,
-                        has_project,
-                        SettingsScope::Project,
-                        cx,
-                    )),
             )
             .child(div().flex_1().min_h_0().child({
                 let pages = (self.build_pages)(cx);
