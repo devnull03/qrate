@@ -265,10 +265,16 @@ pub fn verify_catalog(bytes: &[u8], signature_bytes: &[u8], key: &VerifyingKey) 
     Ok(catalog)
 }
 
-pub fn fetch_catalog_cached(url: &str, key: &VerifyingKey, cache_root: &Path) -> Result<Catalog> {
+/// Takes the catalog from the first of `urls` that has one, so a download source without it falls
+/// through to the site. The verified cache answers only when none of them could.
+pub fn fetch_catalog_cached(
+    urls: &[String],
+    key: &VerifyingKey,
+    cache_root: &Path,
+) -> Result<Catalog> {
     let catalog_path = cache_root.join("catalog.json");
     let signature_path = cache_root.join("catalog.json.sig");
-    match fetch_catalog_files(url).and_then(|(catalog, signature)| {
+    match fetch_catalog_files(urls).and_then(|(catalog, signature)| {
         let verified = verify_catalog(&catalog, &signature, key)?;
         fs::create_dir_all(cache_root)?;
         write_bytes_atomic(&catalog_path, &catalog)?;
@@ -288,15 +294,45 @@ pub fn fetch_catalog_cached(url: &str, key: &VerifyingKey, cache_root: &Path) ->
     }
 }
 
-fn fetch_catalog_files(url: &str) -> Result<(Vec<u8>, Vec<u8>)> {
+fn fetch_catalog_files(urls: &[String]) -> Result<(Vec<u8>, Vec<u8>)> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()?;
-    let bytes = bounded_response(client.get(url).send()?, MAX_CATALOG_BYTES as u64)
-        .context("could not download plugin catalog")?;
-    let signature = bounded_response(client.get(format!("{url}.sig")).send()?, 64 * 1024)
-        .context("could not download plugin catalog signature")?;
-    Ok((bytes, signature))
+    // `None` is "not here", the one answer that moves on to the next URL.
+    let fetch = |url: &str, limit: u64| -> Result<Option<Vec<u8>>> {
+        let local = reqwest::Url::parse(url)
+            .ok()
+            .filter(|url| url.scheme() == "file")
+            .and_then(|url| url.to_file_path().ok());
+        if let Some(path) = local {
+            return match fs::read(path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                read => {
+                    let bytes = read?;
+                    ensure!(bytes.len() as u64 <= limit, "download is too large");
+                    Ok(Some(bytes))
+                }
+            };
+        }
+        let response = client.get(url).send()?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        bounded_response(response, limit).map(Some)
+    };
+    for url in urls {
+        let Some(bytes) =
+            fetch(url, MAX_CATALOG_BYTES as u64).context("could not download plugin catalog")?
+        else {
+            log::warn!("there is no plugin catalog at {url}");
+            continue;
+        };
+        let signature = fetch(&format!("{url}.sig"), 64 * 1024)
+            .context("could not download plugin catalog signature")?
+            .with_context(|| format!("the plugin catalog at {url} has no signature"))?;
+        return Ok((bytes, signature));
+    }
+    bail!("there is no plugin catalog at {}", urls.join(" or "))
 }
 
 fn bounded_response(response: reqwest::blocking::Response, limit: u64) -> Result<Vec<u8>> {
@@ -930,8 +966,8 @@ mod tests {
 
     use super::{
         CATALOG_KEY_ID, DirectRelease, InstallSource, InstallTarget, PackageManifest,
-        install_archive_checked, install_direct_archive_checked, parse_install_link, read_receipt,
-        remove_managed, validate_github_source, verify_catalog,
+        fetch_catalog_cached, install_archive_checked, install_direct_archive_checked,
+        parse_install_link, read_receipt, remove_managed, validate_github_source, verify_catalog,
     };
 
     fn package(path: &std::path::Path, id: &str, extra: Option<(&str, &[u8])>) {
@@ -1010,6 +1046,45 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn catalog_comes_from_the_first_source_that_has_it_then_the_cache() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let bytes = br#"{"schema":1,"generated_at":"now","source_commit":"abc","plugins":[]}"#;
+        let signature = json!({
+            "schema": 1,
+            "key_id": CATALOG_KEY_ID,
+            "algorithm": "Ed25519",
+            "sha256": format!("{:x}", Sha256::digest(bytes)),
+            "signature_base64": STANDARD.encode(key.sign(bytes).to_bytes())
+        });
+        let temp = tempdir().unwrap();
+        let site = temp.path().join("site");
+        fs::create_dir_all(&site).unwrap();
+        fs::write(site.join("catalog.json"), bytes).unwrap();
+        fs::write(
+            site.join("catalog.json.sig"),
+            serde_json::to_vec(&signature).unwrap(),
+        )
+        .unwrap();
+        let url = |path: std::path::PathBuf| {
+            reqwest::Url::from_file_path(path.join("catalog.json"))
+                .unwrap()
+                .to_string()
+        };
+        let cache = temp.path().join("cache");
+
+        // A mirror without the catalog falls through to the next URL.
+        let urls = [url(temp.path().join("mirror")), url(site.clone())];
+        fetch_catalog_cached(&urls, &key.verifying_key(), &cache).unwrap();
+        assert!(cache.join("catalog.json").exists());
+
+        // When no URL has it, the verified cache still answers.
+        let missing = [url(temp.path().join("mirror"))];
+        fetch_catalog_cached(&missing, &key.verifying_key(), &cache).unwrap();
+        fs::remove_dir_all(&cache).unwrap();
+        assert!(fetch_catalog_cached(&missing, &key.verifying_key(), &cache).is_err());
     }
 
     #[test]

@@ -6,7 +6,7 @@ use anyhow::{Context as _, Result};
 use gpui::{App, AppContext as _, Context, Entity, Global, Task};
 use semver::Version;
 use settings::AppSettings;
-use updater::{InstallKind, Installation, JOB_NAME, ReleaseChannel, StagedUpdate, UpdateJob};
+use updater::{InstallKind, Installation, JOB_NAME, StagedUpdate, UpdateJob};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
@@ -16,6 +16,18 @@ pub fn automatic_updates(cx: &App) -> bool {
         .get(updater::AUTO_UPDATE_KEY)
         .map(|value| value.bool())
         .unwrap_or(true)
+}
+
+/// The one reader of the download source that updates, the plugin catalog and components share.
+pub fn download_source(cx: &App) -> updater::Source {
+    let setting = AppSettings::get(cx)
+        .values
+        .get(updater::DOWNLOAD_SOURCE_KEY)
+        .map(|value| value.text());
+    updater::Source::choose(
+        std::env::var(updater::DOWNLOAD_SOURCE_ENV).ok().as_deref(),
+        setting.as_deref(),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -177,14 +189,11 @@ impl AutoUpdater {
         cx.notify();
 
         let current = Version::parse(env!("CARGO_PKG_VERSION")).expect("package version is SemVer");
-        let feed = match ReleaseChannel::for_version(&current) {
-            ReleaseChannel::Beta => crate::site::url("/updates/beta.json"),
-            ReleaseChannel::Stable => crate::site::url("/updates/stable.json"),
-        };
+        let source = download_source(cx);
         let (tx, rx) = async_channel::unbounded();
         cx.background_spawn(async move {
             let result = updater::fetch_and_stage(
-                &feed,
+                &source,
                 &installation,
                 &current,
                 |version| {

@@ -59,9 +59,9 @@ registration when qrate exits:
 ```
 
 Debug builds use `http://localhost:4321` for every qrate site route, including plugin discovery,
-catalog verification, feedback, Google configuration and Picker, release pages, and update feeds.
-Release builds use `https://qrate.dvnl.work`. A self-hosted build can set `QRATE_SITE_ORIGIN` at
-compile time to use its own site for all of those routes.
+catalog verification, feedback, Google configuration and Picker, and release pages. Release builds
+use `https://qrate.dvnl.work`. A self-hosted build can set `QRATE_SITE_ORIGIN` at compile time to
+use its own site for all of those routes. Updates do not go through the site (§2a).
 
 This requires an authenticated GitHub CLI. To register an already-built debug executable without
 running it, use:
@@ -76,6 +76,56 @@ installed build:
 
 ```powershell
 .\scripts\register-dev-protocol.ps1 -Unregister
+```
+
+**Preview binaries:** `./scripts/fetch-binaries.sh` (or `.ps1` on Windows) downloads PDFium and
+ffmpeg beside the debug executable. Both are pinned to one release and checked against its SHA-256
+(PDFium `chromium/7881`, the build `pdfium-render`'s `pdfium_latest` binds; ffmpeg BtbN LGPL
+`n8.1.2-50-g1a748fe2cd` from `autobuild-2026-08-31-13-27` on Windows and Linux, Homebrew on macOS).
+A hash that does not match is a failed download. To move a pin, change the release and every hash
+in both scripts together.
+
+### 2a. Where updates come from, and the download source
+
+The update check reads the signed `update-manifest.json` straight from a GitHub release:
+
+| Build | Feed |
+|---|---|
+| Stable (`0.6.0`) | `https://github.com/devnull03/qrate/releases/latest/download/update-manifest.json`. GitHub's latest release is never a pre-release. |
+| Pre-release (`0.6.0-beta.1`) | The newest release by SemVer that carries `update-manifest.json`, stable or not, found through `api.github.com/repos/devnull03/qrate/releases`, then that tag's `update-manifest.json`. |
+
+The signature, channel, version and artifact rules (`updater::select_update`) are the same as
+before; only the address changed. A release reaches installed apps when its draft is published.
+Development builds never check for updates, so a real test of this path needs a packaged build with
+an install marker.
+
+**Download source.** One app-wide setting, **Settings ▸ Application ▸ Updates and downloads ▸
+Download source** (`updater::DOWNLOAD_SOURCE_KEY`), points updates and the plugin catalog at a
+mirror or a local folder. The environment variable `QRATE_DOWNLOAD_SOURCE` overrides it. Empty means
+the defaults, and a value qrate cannot use is ignored with a warning in the log. It accepts
+`https://` anywhere, `http://` only on `localhost` or a loopback address, and `file:///` folders.
+A mirror has this layout:
+
+```
+<source>/updates/stable.json      the envelope a stable build should see (copy of update-manifest.json)
+<source>/updates/beta.json        the envelope a pre-release build should see
+<source>/plugins/catalog.json     the signed plugin catalog, and catalog.json.sig beside it
+<source>/github/<path>            any https://github.com/<path> release asset, e.g.
+                                  github/devnull03/qrate/releases/download/v0.6.0/qrate-0.6.0-setup.exe
+```
+
+The mirror is untrusted. The update envelope and the catalog are signed, and every artifact is
+checked against the size and SHA-256 in the signed manifest before anything is rewritten, so a
+mirror can withhold a download but cannot change one. When the mirror answers 404 (or the file is
+missing from a folder), qrate logs a warning and takes that one file from GitHub or the site
+instead, so a partial mirror still works. Any other failure is reported as it is.
+
+```bash
+mkdir -p mirror/updates mirror/github/devnull03/qrate/releases/download/v0.6.0-beta.1
+cp dist/update-manifest.json mirror/updates/beta.json
+cp dist/qrate-0.6.0-beta.1-setup.exe mirror/github/devnull03/qrate/releases/download/v0.6.0-beta.1/
+(cd mirror && python -m http.server 8000)
+QRATE_DOWNLOAD_SOURCE=http://127.0.0.1:8000 ./qrate      # or file:///C:/path/to/mirror
 ```
 
 ---
@@ -232,7 +282,8 @@ tag vX.Y.Z ─▶ release.yml (build dmg/zip/exe) ─▶ DRAFT release
    `.dmg`, `.zip`, `-setup.exe`, `.msi`, `.tar.gz`, `SHA256SUMS.txt`, and
    `update-manifest.json`.
 5. **Publish the draft** (Releases → edit the draft → *Publish release*). This is
-   when the release becomes visible to the API and to the site.
+   when the release becomes visible to the API, to the site, and to installed apps
+   checking for updates (§2a).
 6. Publishing fires `redeploy-site-on-release.yml` → the site rebuilds with the new
    release.
 

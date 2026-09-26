@@ -132,6 +132,12 @@ impl MarketplaceWindow {
         let key = option_env!("QRATE_PLUGIN_CATALOG_PUBLIC_KEY")
             .map(str::to_owned)
             .or_else(|| std::env::var("QRATE_PLUGIN_CATALOG_PUBLIC_KEY").ok());
+        let mut urls = vec![
+            crate::update_check::download_source(cx)
+                .site(crate::site::origin(), "/plugins/catalog.json"),
+            crate::site::url("/plugins/catalog.json"),
+        ];
+        urls.dedup();
         log::info!("fetching signed plugin catalog");
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -148,11 +154,7 @@ impl MarketplaceWindow {
                     let data = plugins
                         .parent()
                         .ok_or_else(|| anyhow::anyhow!("plugin folder has no parent"))?;
-                    plugin_package::fetch_catalog_cached(
-                        &crate::site::url("/plugins/catalog.json"),
-                        &key,
-                        &data.join("plugin-catalog"),
-                    )
+                    plugin_package::fetch_catalog_cached(&urls, &key, &data.join("plugin-catalog"))
                 })
                 .await;
             this.update(cx, |this, cx| {

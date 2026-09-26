@@ -115,6 +115,15 @@ notes and history entries; the active name appears in the project window. **Appl
 Appearance ▸ Interface size** scales the text and controls of every qrate window: 90%, 100% (the
 default), 110%, 125%, or 150%.
 
+**Application ▸ Updates and downloads** holds **Automatic updates**, which checks for and
+downloads signed qrate updates in the background, and **Download source**. Leave the download
+source blank to get updates from GitHub and the plugin catalog from the qrate website. If your
+network cannot reach them, your IT staff can keep a copy on a server or a shared folder: enter its
+address, such as `https://mirror.example.org/qrate`, or a folder, such as
+`file:///D:/qrate-mirror`. qrate checks everything it downloads against its own signatures, so a
+mirror cannot change what you install. Anything the mirror does not have comes from the usual
+place. The mirror's layout is in [Setup and releases](dev/SETUP.md#2a-where-updates-come-from-and-the-download-source).
+
 ### Your defaults and project overrides
 
 Some settings are a default of yours that a project can override. They are autosave, row

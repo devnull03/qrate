@@ -6207,6 +6207,7 @@ dependencies = [
  "anyhow",
  "base64",
  "ed25519-dalek",
+ "log",
  "reqwest",
  "semver",
  "serde",

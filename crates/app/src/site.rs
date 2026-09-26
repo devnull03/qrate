@@ -3,12 +3,13 @@ const DEFAULT_ORIGIN: &str = "http://localhost:4321";
 #[cfg(not(debug_assertions))]
 const DEFAULT_ORIGIN: &str = "https://qrate.dvnl.work";
 
+pub fn origin() -> &'static str {
+    option_env!("QRATE_SITE_ORIGIN").unwrap_or(DEFAULT_ORIGIN)
+}
+
 pub fn url(path: &str) -> String {
     debug_assert!(path.starts_with('/'));
-    format!(
-        "{}{path}",
-        option_env!("QRATE_SITE_ORIGIN").unwrap_or(DEFAULT_ORIGIN)
-    )
+    format!("{}{path}", origin())
 }
 
 #[cfg(test)]

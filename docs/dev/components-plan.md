@@ -96,6 +96,54 @@ no release build exists locally and debug rlibs (for example `libcandle_core` at
 about linked size. Step 0 measures it. Only moving CLIP out of process would make candle optional,
 which is out of scope.
 
+### Step 0 results (2026-09-25)
+
+**Linked size of the always-compiled code: an estimate, not a measurement.** `cargo bloat --release
+-p app --crates` was started and stopped partway, because a full release build on top of the other
+builds on this machine was too heavy. Its partial `target/bloat/release/deps` still holds 646
+release rlibs (3178 MB). By rlib bytes, `candle-*` with `gemm-*`, `safetensors` and `visual-search`
+are 287 MB (9.0%), `pdfium-render` 43 MB (1.3%), `symphonia-*` with `rodio` 43 MB (1.4%), and
+`alacritty_terminal` 8 MB (0.3%). An rlib holds metadata and generic code that the linker drops, so
+these shares are only an upper-bound guide: candle is probably a few MB of the 57.3 MB `qrate.exe`,
+not the 9% its rlibs suggest. Run the real `cargo bloat` in CI or on an idle machine before quoting
+a number.
+
+**Pinned component inputs** (`scripts/fetch-binaries.sh` and `.ps1`, each download checked against
+its SHA-256; digests from the GitHub release API, and the Windows x64 ones checked again locally):
+
+PDFium, `bblanchon/pdfium-binaries` release `chromium/7881`, the build `pdfium-render` 0.9.3's
+`pdfium_latest` feature binds (`pdfium_7881`). `https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-<platform>.tgz`:
+
+| Platform | Size | SHA-256 |
+|---|---|---|
+| `win-x64` | 3733154 | `73cc0de638ac2095e7445bf56a38200a5b7c7ca0e9f4ba144598f2457377ac08` |
+| `win-arm64` | 3522432 | `d3035d4d2cacac6ecd1a2ece197a3d702a1b2a58466276b9f870b8cb278a9d84` |
+| `linux-x64` | 3644759 | `1470e21b8b4a3b4ad7f85684e2da11d94f3b69a86d81dee11b9b6709d927ac1d` |
+| `linux-arm64` | 3588127 | `ee7f7b7d5468958336a818c1cd580bdd20972846b7377b13f9a923d92d1d4674` |
+| `mac-x64` | 3588813 | `6dedf83990e0e3d6b7c93c9e7589c5a126b0ae14b7464d76120cff7a26afb18b` |
+| `mac-arm64` | 3533019 | `52e94ca5aa8847934330daf3f8150c190682c5ca93831468794f8b90d4392e40` |
+| `mac-univ` | 7006774 | `df451a413c3609585e84a4a91110a9bc889cff05fe3b2db0ed817c9e90c3f7d3` |
+
+ffmpeg, BtbN LGPL static build `n8.1.2-50-g1a748fe2cd` (the 8.1 release branch) from
+`BtbN/FFmpeg-Builds` release `autobuild-2026-08-31-13-27`. It is a month-end autobuild because BtbN
+keeps those for about two years and the daily ones for two weeks.
+`https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-31-13-27/ffmpeg-n8.1.2-50-g1a748fe2cd-<target>-lgpl-8.1.<ext>`:
+
+| Target | Size | SHA-256 |
+|---|---|---|
+| `win64` (`.zip`) | 146078616 | `f6274bbd9c247f9e90c1bbed066b03ed4a3907cece2fb91be6dd352393936365` |
+| `winarm64` (`.zip`) | 95498313 | `0ad4d6e7342d6d77bbae4ac230964ebd51bdd6192414392e5f521d295b39b111` |
+| `linux64` (`.tar.xz`) | 112545684 | `7d6d93e9c39e0e461feb13c118e91e4eec2515e4da3a01d4ad6790996731bbee` |
+| `linuxarm64` (`.tar.xz`) | 97141720 | `56b37b6f2832ba37bd4979ae5c4521ae718efa41846a0d3ecfbbe492137c66f6` |
+
+macOS keeps `brew install ffmpeg` (§ 7).
+
+Component sizes these give on Windows x64, measured by packing the fetched file into a tar.gz:
+PDFium `pdfium.dll` 7.2 MB raw, **3.6 MB** download. BtbN `ffmpeg.exe` 114.0 MB raw, **47.5 MB**
+download. The LGPL build is larger than the gyan.dev GPL "essentials" build it replaces (102.9 MB
+raw, 38.7 MB deflated), so the ffmpeg banner's size grows by about 9 MB. The size shown to the user
+comes from the manifest, so nothing is hardcoded.
+
 ## 3. Design
 
 ### Crate: `components`
@@ -369,7 +417,7 @@ download:
 
 | What | Default | With a download source |
 |---|---|---|
-| Update feed | `<site>/updates/{channel}.json` | `<base>/updates/{channel}.json` |
+| Update feed | GitHub: `releases/latest/download/update-manifest.json` for a stable build, the newest signed tag from the releases API for a pre-release build (step 1, § 7) | `<base>/updates/{channel}.json`, then GitHub on 404 |
 | Plugin catalog | `<site>/plugins/catalog.json` (+ `.sig`) | `<base>/plugins/catalog.json` (+ `.sig`) |
 | Any GitHub release asset (update artifact, components, plugin artifact) | `https://github.com/<path>` | `<base>/github/<path>` |
 

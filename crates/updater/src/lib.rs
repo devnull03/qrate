@@ -1,7 +1,12 @@
 //! Trusted update metadata, installation provenance, and post-exit update jobs.
 
 #[cfg(feature = "client")]
-use std::time::Duration;
+mod download;
+
+#[cfg(feature = "client")]
+pub use download::{
+    DOWNLOAD_SOURCE_ENV, DOWNLOAD_SOURCE_KEY, Source, download_verified, try_mirror,
+};
 use std::{
     fs,
     io::{Read as _, Write as _},
@@ -26,7 +31,10 @@ const UPDATE_PUBLIC_KEY: [u8; 32] = [
     0x9c, 0xc1, 0x33, 0x97, 0x97, 0xa9, 0xc4, 0xe8, 0xd7, 0xb5, 0x3c, 0xb5, 0x5f, 0x6b, 0x4b, 0x04,
     0x7c, 0x9c, 0x7d, 0x1a, 0x69, 0x8d, 0x7d, 0x92, 0x03, 0xea, 0x04, 0x21, 0x37, 0x58, 0x67, 0xe4,
 ];
-const UPDATE_KEY_ID: &str = "qrate-update-1";
+pub const UPDATE_KEY_ID: &str = "qrate-update-1";
+/// Where every signed download URL must point before a download source rewrites it.
+pub const RELEASE_DOWNLOADS: &str = "https://github.com/devnull03/qrate/releases/download/";
+pub const MANIFEST_NAME: &str = "update-manifest.json";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SignedEnvelope {
@@ -63,6 +71,13 @@ impl ReleaseChannel {
 
     pub fn accepts(self, version: &Version) -> bool {
         self == Self::Beta || version.pre.is_empty()
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Beta => "beta",
+            Self::Stable => "stable",
+        }
     }
 }
 
@@ -141,34 +156,52 @@ pub enum ReceiptStatus {
     Failed,
 }
 
+fn embedded_key() -> Result<VerifyingKey> {
+    VerifyingKey::from_bytes(&UPDATE_PUBLIC_KEY).context("invalid embedded update key")
+}
+
 pub fn verify_envelope(envelope: &SignedEnvelope) -> Result<(UpdateManifest, Vec<u8>)> {
-    let key =
-        VerifyingKey::from_bytes(&UPDATE_PUBLIC_KEY).context("invalid embedded update key")?;
-    verify_with(&key, envelope)
+    verify_with(&embedded_key()?, envelope)
+}
+
+/// The signed bytes of an envelope made with the embedded release key, whatever they describe.
+pub fn verify_payload(envelope: &SignedEnvelope) -> Result<Vec<u8>> {
+    verify_payload_with(&embedded_key()?, UPDATE_KEY_ID, envelope)
 }
 
 /// The trust root is a parameter so the signature rules can be exercised against a test key —
 /// the shipped private key exists only in the release environment.
-fn verify_with(key: &VerifyingKey, envelope: &SignedEnvelope) -> Result<(UpdateManifest, Vec<u8>)> {
+pub fn verify_payload_with(
+    key: &VerifyingKey,
+    key_id: &str,
+    envelope: &SignedEnvelope,
+) -> Result<Vec<u8>> {
     ensure!(
         envelope.schema == ENVELOPE_SCHEMA,
-        "unsupported update envelope schema"
+        "unsupported signed envelope schema {}",
+        envelope.schema
     );
     ensure!(
-        envelope.key_id == UPDATE_KEY_ID,
-        "unknown update signing key"
+        envelope.key_id == key_id,
+        "unknown signing key {}",
+        envelope.key_id
     );
     let payload = STANDARD
         .decode(&envelope.payload_base64)
-        .context("invalid update payload encoding")?;
+        .context("invalid signed payload encoding")?;
     let signature = Signature::from_slice(
         &STANDARD
             .decode(&envelope.signature_base64)
-            .context("invalid update signature encoding")?,
+            .context("invalid signature encoding")?,
     )
-    .context("invalid update signature length")?;
+    .context("invalid signature length")?;
     key.verify(&payload, &signature)
-        .context("update manifest signature did not verify")?;
+        .context("signature did not verify")?;
+    Ok(payload)
+}
+
+fn verify_with(key: &VerifyingKey, envelope: &SignedEnvelope) -> Result<(UpdateManifest, Vec<u8>)> {
+    let payload = verify_payload_with(key, UPDATE_KEY_ID, envelope).context("update manifest")?;
     let manifest = serde_json::from_slice(&payload).context("invalid signed update manifest")?;
     Ok((manifest, payload))
 }
@@ -204,17 +237,17 @@ pub fn validate_update(
 
 #[cfg(feature = "client")]
 pub fn fetch_and_stage(
-    feed: &str,
+    source: &Source,
     installation: &Installation,
     current: &Version,
     mut found: impl FnMut(Version),
     mut progress: impl FnMut(u64, u64),
 ) -> Result<Option<StagedUpdate>> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("qrate-updater")
-        .timeout(Duration::from_secs(30))
-        .build()?;
-    let envelope: SignedEnvelope = client.get(feed).send()?.error_for_status()?.json()?;
+    let envelope = download::fetch_feed(
+        &download::client()?,
+        source,
+        ReleaseChannel::for_version(current),
+    )?;
     let Some((manifest, artifact)) = validate_update(&envelope, installation, current)? else {
         return Ok(None);
     };
@@ -241,44 +274,17 @@ pub fn fetch_and_stage(
         return Ok(Some(staged()));
     }
 
-    let partial = final_path.with_extension("partial");
-    let mut response = client.get(&artifact.url).send()?.error_for_status()?;
-    if let Some(content_length) = response.content_length() {
-        ensure!(
-            content_length == artifact.size,
-            "server content length differs from signed manifest"
-        );
-    }
-    let mut output = fs::File::create(&partial)?;
-    // Hashed as it arrives, so the ~100 MB is read once — from the network — rather than again
-    // from disk once it has landed.
-    let mut hasher = Sha256::new();
-    let mut received = 0_u64;
-    let mut reported_percent = None;
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = response.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        received += read as u64;
-        ensure!(received <= artifact.size, "download exceeded signed size");
-        hasher.update(&buffer[..read]);
-        output.write_all(&buffer[..read])?;
-        let percent = received.saturating_mul(100) / artifact.size;
-        if reported_percent != Some(percent) {
-            reported_percent = Some(percent);
-            progress(received, artifact.size);
-        }
-    }
-    output.sync_all()?;
-    drop(output);
-    ensure!(received == artifact.size, "download size mismatch");
-    ensure!(
-        format!("{:x}", hasher.finalize()).eq_ignore_ascii_case(&artifact.sha256),
-        "download checksum mismatch"
-    );
-    fs::rename(&partial, &final_path)?;
+    let never = std::sync::atomic::AtomicBool::new(false);
+    try_mirror(&source.github(&artifact.url), &artifact.url, |url| {
+        download_verified(
+            url,
+            artifact.size,
+            &artifact.sha256,
+            &final_path,
+            &mut progress,
+            &never,
+        )
+    })?;
     remember_verified(&final_path, &artifact);
     Ok(Some(StagedUpdate {
         envelope,
@@ -339,9 +345,7 @@ pub fn select_update(
     }
     let artifact = artifact_for(manifest, installation)?.clone();
     ensure!(
-        artifact
-            .url
-            .starts_with("https://github.com/devnull03/qrate/releases/download/"),
+        artifact.url.starts_with(RELEASE_DOWNLOADS),
         "unexpected update download host"
     );
     ensure!(
@@ -442,8 +446,7 @@ pub fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
 }
 
 pub fn run_job(job_path: &Path) -> Result<()> {
-    let key =
-        VerifyingKey::from_bytes(&UPDATE_PUBLIC_KEY).context("invalid embedded update key")?;
+    let key = embedded_key()?;
     let job = fs::read(job_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<UpdateJob>(&bytes).ok());
@@ -752,7 +755,8 @@ fn mark_healthy_in(updates: &Path, current_version: &Version) -> Result<Option<U
 mod tests {
     use super::{
         ENVELOPE_SCHEMA, InstallKind, InstallMarker, Installation, ReleaseChannel, SignedEnvelope,
-        UpdateArtifact, UpdateManifest, select_update, sha256_file, verify_with,
+        UpdateArtifact, UpdateManifest, select_update, sha256_file, verify_payload_with,
+        verify_with,
     };
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use ed25519_dalek::{Signer as _, SigningKey};
@@ -837,6 +841,34 @@ mod tests {
             ..good
         };
         assert!(verify_with(&key.verifying_key(), &renamed).is_err());
+    }
+
+    #[test]
+    fn verifies_payloads_that_are_not_update_manifests() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let payload = br#"{"kind":"qrate-components","schema":1}"#;
+        let envelope = SignedEnvelope {
+            schema: ENVELOPE_SCHEMA,
+            key_id: "qrate-dev".into(),
+            signature_base64: STANDARD.encode(key.sign(payload).to_bytes()),
+            payload_base64: STANDARD.encode(payload),
+        };
+        assert_eq!(
+            verify_payload_with(&key.verifying_key(), "qrate-dev", &envelope).unwrap(),
+            payload
+        );
+        // The key id is part of what is trusted, and a verified payload is still not an update.
+        assert!(
+            verify_payload_with(&key.verifying_key(), super::UPDATE_KEY_ID, &envelope).is_err()
+        );
+        let as_update = SignedEnvelope {
+            key_id: super::UPDATE_KEY_ID.into(),
+            ..envelope
+        };
+        assert!(
+            verify_payload_with(&key.verifying_key(), super::UPDATE_KEY_ID, &as_update).is_ok()
+        );
+        assert!(verify_with(&key.verifying_key(), &as_update).is_err());
     }
 
     #[test]

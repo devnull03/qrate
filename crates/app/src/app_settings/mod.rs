@@ -130,21 +130,57 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                 ),
             )
             .group(
-                divided_group(cx).title("Updates").item(
-                    SettingItem::new(
-                        "Automatic updates",
-                        SettingField::switch(
-                            |cx: &App| crate::update_check::automatic_updates(cx),
-                            |on: bool, cx: &mut App| {
-                                settings::AppSettings::set_bool(updater::AUTO_UPDATE_KEY, on, cx);
-                            },
+                divided_group(cx)
+                    .title("Updates and downloads")
+                    .item(
+                        SettingItem::new(
+                            "Automatic updates",
+                            SettingField::switch(
+                                |cx: &App| crate::update_check::automatic_updates(cx),
+                                |on: bool, cx: &mut App| {
+                                    settings::AppSettings::set_bool(
+                                        updater::AUTO_UPDATE_KEY,
+                                        on,
+                                        cx,
+                                    );
+                                },
+                            ),
+                        )
+                        .description(
+                            "Check for and download signed qrate updates in the background. \
+                             Installing always waits for you to choose Restart to update.",
                         ),
                     )
-                    .description(
-                        "Check for and download signed qrate updates in the background. Installing \
-                     always waits for you to choose Restart to update.",
+                    .item(
+                        SettingItem::new(
+                            "Download source",
+                            SettingField::input(
+                                |cx: &App| {
+                                    settings::AppSettings::get(cx)
+                                        .values
+                                        .get(updater::DOWNLOAD_SOURCE_KEY)
+                                        .map(|value| value.text())
+                                        .unwrap_or_default()
+                                },
+                                |source: SharedString, cx: &mut App| {
+                                    settings::AppSettings::set_text(
+                                        updater::DOWNLOAD_SOURCE_KEY,
+                                        source,
+                                        cx,
+                                    );
+                                },
+                            ),
+                        )
+                        .description(
+                            "A mirror or a folder to download updates and the plugin catalog \
+                             from instead of GitHub and the qrate website, such as \
+                             https://mirror.example.org/qrate or file:///D:/qrate-mirror. \
+                             Everything is still checked against qrate's signatures, and \
+                             anything the mirror does not have comes from the usual place. \
+                             Leave blank to use the defaults.",
+                        )
+                        .layout(Axis::Vertical),
                     ),
-                ),
             ),
         SettingPage::new("Table")
             .group(
