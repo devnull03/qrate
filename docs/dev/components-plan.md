@@ -731,19 +731,16 @@ repeat with `QRATE_DOWNLOAD_SOURCE` pointing at a local folder.
 
 ## 9. Handoff (2026-09-26)
 
-Steps 0 to 4 are on `main` (bf9d9b7, f34267b, fa991f5, 8e3f918). Steps 5 and 6 are on
-`claude/clever-euler-ic4wpg`, waiting for review. The next session picks up here:
+Steps 0 to 6 shipped in `v0.6.0-beta.1` (pre-release, published 2026-09-26), with the base and
+full packages side by side. The site offers the base downloads first (`site` at 8f22e72). Left:
 
-1. **Step 5, check by hand.** Nothing here was run in a window: on a build without PDFium and
-   ffmpeg beside it, open a PDF and a video in the viewer and the details panel, install both from
-   the banners, cancel one midway, open the agent panel without Pi, and use Settings ▸ Components.
-   The onboarding crate (branch `onboarding`) calls `components::install`, `state`, `cancel` and
-   `observe_global`; it now also sees `Bundled`, `System` and `Unavailable`.
-2. **Step 6, base bundle.** Done on this branch, packaging included. The first tag is its first
-   real run; check the base and full assets and `update-manifest.json` on the draft release.
-3. **Known gap from step 4.** A thumbnail the OS made while PDFium or ffmpeg was missing stays in
+1. **Check by hand on the published build.** Nothing here was run in a window: install a base
+   package, open a PDF and a video in the viewer and the details panel, install both from the
+   banners, cancel one midway, open the agent panel without Pi, and use Settings ▸ Components.
+   Then update a full install and a base install to the next release and check each keeps its
+   flavor. The onboarding crate (branch `onboarding`) calls `components::install`, `state`,
+   `cancel` and `observe_global`; it now also sees `Bundled`, `System` and `Unavailable`.
+2. **Known gap from step 4.** A thumbnail the OS made while PDFium or ffmpeg was missing stays in
    the disk cache after an install until the file or the cache changes.
-4. **Then** run `./scripts/ci.sh` and cut a pre-release with the `cut-release` skill (suggested
-   `0.6.0-beta.1`; confirm the version with the maintainer). That tag is the first real run of the
-   component packaging and the CLIP release copy in `release.yml`. Do not bump `qrate-export`'s
-   version for a pre-release.
+3. **Before notarization** (question 10): a hardened-runtime app needs the
+   `disable-library-validation` entitlement to load PDFium from Application Support.
