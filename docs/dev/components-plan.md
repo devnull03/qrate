@@ -678,3 +678,20 @@ repeat with `QRATE_DOWNLOAD_SOURCE` pointing at a local folder.
 11. **Site dependence.** Updates and the plugin catalog still come through `qrate.dvnl.work`. Only
     components go straight to GitHub. Is that split acceptable, or should the update feed also read
     `update-manifest.json` from the release tag?
+
+## 9. Handoff (2026-09-26)
+
+Steps 0 to 4 are on `main` (bf9d9b7, f34267b, fa991f5, 8e3f918). The next session picks up here:
+
+1. **Step 5, UI.** Settings ▸ Components (installed, available, size, Install, Update, Remove,
+   Cancel), first-use banners in the viewer and the agent panel, and the `Bundled`, `System` and
+   `Unavailable` states, `refresh(cx)` and reinstall after an app update that step 4 deferred.
+   The onboarding crate (branch `onboarding`) calls `components::install`, `state`, `cancel` and
+   `observe_global`; keep that API small and free of UI types.
+2. **Step 6, base bundle.** Wait until steps 4 and 5 have been through one beta.
+3. **Known gap from step 4.** A thumbnail the OS made while PDFium or ffmpeg was missing stays in
+   the disk cache after an install until the file or the cache changes.
+4. **Then** run `./scripts/ci.sh` and cut a pre-release with the `cut-release` skill (suggested
+   `0.6.0-beta.1`; confirm the version with the maintainer). That tag is the first real run of the
+   component packaging and the CLIP release copy in `release.yml`. Do not bump `qrate-export`'s
+   version for a pre-release.
