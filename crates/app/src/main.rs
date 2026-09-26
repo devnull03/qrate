@@ -610,6 +610,8 @@ fn main() {
         settings::dirty::init(cx);
         // Here and only here: past the single-instance hand-off, before any tier loads a part.
         components::init(cx);
+        components::found_by(components::ComponentId::Pdfium, preview::pdfium_found, cx);
+        components::found_by(components::ComponentId::Ffmpeg, preview::ffmpeg_found, cx);
         preview::cache::set_cap(app_settings::preview_cache_bytes(cx));
         theming::init(cx);
         cx.set_global(WindowRegistry::default());

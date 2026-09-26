@@ -1,3 +1,4 @@
+mod components_page;
 mod config;
 
 use std::collections::{HashMap, HashSet};
@@ -136,7 +137,7 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                         SettingItem::new(
                             "Automatic updates",
                             SettingField::switch(
-                                |cx: &App| crate::update_check::automatic_updates(cx),
+                                |cx: &App| components::automatic_updates(cx),
                                 |on: bool, cx: &mut App| {
                                     settings::AppSettings::set_bool(
                                         updater::AUTO_UPDATE_KEY,
@@ -172,8 +173,8 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                             ),
                         )
                         .description(
-                            "A mirror or a folder to download updates and the plugin catalog \
-                             from instead of GitHub and the qrate website, such as \
+                            "A mirror or a folder to download updates, optional components and \
+                             the plugin catalog from instead of GitHub and the qrate website, such as \
                              https://mirror.example.org/qrate or file:///D:/qrate-mirror. \
                              Everything is still checked against qrate's signatures, and \
                              anything the mirror does not have comes from the usual place. \
@@ -327,6 +328,7 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
         SettingPage::new("Spelling").group(spelling_group(cx)),
         google_page(cx),
         plugins_page(cx),
+        components_page(cx),
     ];
     pages.extend(plugin_pages(cx));
     pages
@@ -835,58 +837,69 @@ fn previews_group(cx: &App) -> SettingGroup {
         )
         .description("The oldest thumbnails are dropped once the cache is larger than this."),
     )
-    .item(
-        SettingItem::new(
-            "Visual search model",
-            SettingField::element(|_opts: &_, _window: &mut _, cx: &mut App| {
-                Button::new("remove-visual-model")
-                    .small()
-                    .label("Remove model…")
-                    .disabled(!matches!(
-                        components::state(components::ComponentId::Clip, cx),
-                        components::State::Installed { .. } | components::State::UpdateRequired
-                    ))
-                    .on_click(|_, window, cx| {
-                        let answer = window.prompt(
-                            PromptLevel::Warning,
-                            "Remove the visual search model?",
-                            Some(
-                                "This frees about 600 MB. Visual search stops working until you \
-                                 download the model again from the search bar.",
-                            ),
-                            &["Remove", "Cancel"],
-                            cx,
-                        );
-                        let handle = window.window_handle();
-                        cx.spawn(async move |cx| {
-                            if answer.await.unwrap_or(1) != 0 {
-                                return;
-                            }
-                            let removed = cx.update(table::remove_visual_model);
-                            if let Err(err) = removed {
-                                log::warn!("did not remove the visual search model: {err:#}");
-                                let _ = cx.update_window(handle, |_, window, cx| {
-                                    window.prompt(
-                                        PromptLevel::Info,
-                                        "The model was not removed",
-                                        Some(&err.to_string()),
-                                        &["OK"],
-                                        cx,
-                                    )
-                                });
-                            }
-                            cx.update(|cx| cx.refresh_windows());
-                        })
-                        .detach();
-                    })
-                    .into_any_element()
-            }),
-        )
+}
+
+fn components_page(cx: &App) -> SettingPage {
+    SettingPage::new("Components")
         .description(
-            "The CLIP weights visual search installs into qrate's data folder. Removing them \
-             is refused while the model is downloading or indexing.",
-        ),
-    )
+            "Optional parts qrate downloads from its GitHub release the first time you need \
+             one, each checked against qrate's signature. The download source under \
+             Application ▸ Updates and downloads applies to them too.",
+        )
+        .group(
+            divided_group(cx).title("Installed and available").item(
+                SettingItem::render(|_opts: &_, window: &mut Window, cx: &mut App| {
+                    window
+                        .use_keyed_state("component-rows", cx, |_, cx| {
+                            components_page::ComponentRows::new(cx)
+                        })
+                        .into_any_element()
+                })
+                .keywords([
+                    "components",
+                    "PDF",
+                    "video",
+                    "ffmpeg",
+                    "assistant",
+                    "model",
+                ]),
+            ),
+        )
+        .group(
+            divided_group(cx).title("Visual search").item(
+                SettingItem::new(
+                    "Download the model from",
+                    SettingField::dropdown(
+                        options(&[
+                            (
+                                components::ClipSource::HuggingFace.setting(),
+                                "Hugging Face (default)",
+                            ),
+                            (
+                                components::ClipSource::GitHub.setting(),
+                                "qrate's GitHub release",
+                            ),
+                        ]),
+                        |cx: &App| {
+                            let stored = settings::AppSettings::get(cx)
+                                .values
+                                .get(components::CLIP_SOURCE_KEY)
+                                .map(|value| value.text());
+                            components::ClipSource::from_setting(stored.as_deref())
+                                .setting()
+                                .into()
+                        },
+                        |source: SharedString, cx: &mut App| {
+                            settings::AppSettings::set_text(components::CLIP_SOURCE_KEY, source, cx)
+                        },
+                    ),
+                )
+                .description(
+                    "Where the 600 MB of CLIP weights come from first. The other is tried if it \
+                     fails.",
+                ),
+            ),
+        )
 }
 
 /// Google Sheets has three deliberately separate states: the app-wide feature switch, the

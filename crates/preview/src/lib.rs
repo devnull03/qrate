@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use components::ComponentId;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Asset, Global, ImageCacheError, ImageSource, IntoElement as _, ObjectFit,
@@ -29,7 +30,8 @@ use gpui::{
 use gpui_component::{ActiveTheme, Icon, IconName};
 use image::Frame;
 
-pub use pdf::Match;
+pub use media::found as ffmpeg_found;
+pub use pdf::{Match, found as pdfium_found};
 
 /// Longest edge, in pixels, of a gallery card's thumbnail. Cards are 168px wide, so this still has
 /// headroom on a 2× display while costing a sixteenth of a full scan's pixels.
@@ -311,6 +313,16 @@ pub fn file_size(bytes: u64) -> String {
 /// OCR'd still passes and yields empty pages.
 pub fn has_text(path: &Path) -> bool {
     extension(path).is_some_and(|extension| pdf::handles(&extension))
+}
+
+/// The optional part that draws this file, when it is not there. Cheap after the first call: the
+/// lookups are kept until a component is installed or removed.
+pub fn missing(path: &Path) -> Option<ComponentId> {
+    let extension = extension(path)?;
+    if pdf::handles(&extension) {
+        return pdf::pdfium().is_none().then_some(ComponentId::Pdfium);
+    }
+    (media::handles(&extension) && media::binary().is_none()).then_some(ComponentId::Ffmpeg)
 }
 
 /// Whether this file is a recording. Extension-only, and the same kind of claim [`has_text`] makes:

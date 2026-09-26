@@ -22,6 +22,9 @@ use crate::{CLIP_DOWNLOAD, CLIP_SOURCE_KEY, ClipSource, ComponentId, Manifest, R
 /// What a failed install tells the archivist. The cause goes to the log.
 const FAILED: &str =
     "The download failed. Check the connection, or the download source in Settings.";
+/// What a manifest that could not be read tells the archivist. The cause goes to the log.
+const UNREAD: &str = "qrate could not read the list of optional parts. Check the connection, \
+                      or the download source in Settings.";
 
 /// `<data dir>/components`, the store the whole app reads. `None` without a data folder.
 pub fn store() -> Option<&'static Store> {
@@ -43,8 +46,29 @@ pub fn source(cx: &App) -> Source {
     )
 }
 
+/// Whether updates install in the background. Reinstalling a component an app update left
+/// behind counts as one, since the archivist already chose to install it once.
+pub fn automatic_updates(cx: &App) -> bool {
+    AppSettings::get(cx)
+        .values
+        .get(updater::AUTO_UPDATE_KEY)
+        .map(|value| value.bool())
+        .unwrap_or(true)
+}
+
+/// Where a tier found a part qrate did not install itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Found {
+    /// Beside the executable, in a full install.
+    Bundled,
+    /// Installed on the computer by someone else, such as a package manager.
+    System,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum State {
+    Bundled,
+    System,
     /// Not installed. `download` is its size, once a manifest has said.
     Missing {
         download: Option<u64>,
@@ -60,17 +84,37 @@ pub enum State {
     },
     /// Installed for another version of qrate, so this one does not use it.
     UpdateRequired,
+    /// Nothing to install here: no download for this computer, or the list could not be read.
+    Unavailable(SharedString),
     Failed(SharedString),
 }
 
 pub struct Components {
     store: &'static Store,
     manifest: Option<Arc<Manifest>>,
+    /// Why the manifest could not be read, until a read succeeds.
+    unread: Option<SharedString>,
+    reading: bool,
+    finders: HashMap<ComponentId, fn() -> Option<Found>>,
     jobs: HashMap<ComponentId, Job>,
     failed: HashMap<ComponentId, SharedString>,
 }
 
 impl Global for Components {}
+
+impl Components {
+    fn new(store: &'static Store) -> Self {
+        Self {
+            store,
+            manifest: None,
+            unread: None,
+            reading: false,
+            finders: HashMap::new(),
+            jobs: HashMap::new(),
+            failed: HashMap::new(),
+        }
+    }
+}
 
 struct Job {
     received: u64,
@@ -91,23 +135,18 @@ pub fn init(cx: &mut App) {
         return;
     }
     store.sweep();
-    cx.set_global(Components {
-        store,
-        manifest: None,
-        jobs: HashMap::new(),
-        failed: HashMap::new(),
-    });
-    let Some(models) = settings::data_dir().map(|dir| dir.join("models")) else {
-        return;
-    };
+    cx.set_global(Components::new(store));
+    let models = settings::data_dir().map(|dir| dir.join("models"));
     cx.spawn(async move |cx| {
         let adopted = cx
             .background_spawn(async move {
+                let models = models?;
                 let adopted = store.adopt_clip(&models.join("clip-vit-base-patch32"));
                 let _ = fs::remove_dir(&models);
-                adopted
+                Some(adopted)
             })
-            .await;
+            .await
+            .unwrap_or(Ok(false));
         match adopted {
             Ok(true) => cx.update_global::<Components, _>(|_, _| {}),
 
@@ -116,8 +155,69 @@ pub fn init(cx: &mut App) {
                 log::warn!("could not move the visual search model into place: {error:#}")
             }
         }
+        // After the tiers have said what they found, so a part a full install carries is left alone.
+        cx.update(|cx| {
+            if !automatic_updates(cx) {
+                return;
+            }
+            for id in ComponentId::ALL {
+                if state(id, cx) == State::UpdateRequired {
+                    log::info!("installing {} again for this version of qrate", id.name());
+                    install(id, cx).detach();
+                }
+            }
+        });
     })
     .detach();
+}
+
+/// Lets the tier that loads `id` say when it found the part somewhere qrate did not put it, so
+/// nobody is offered a download of something already there.
+pub fn found_by(id: ComponentId, finder: fn() -> Option<Found>, cx: &mut App) {
+    if cx.has_global::<Components>() {
+        cx.global_mut::<Components>().finders.insert(id, finder);
+    }
+}
+
+/// Reads the manifest again in the background, for the sizes and for what this computer can
+/// install. A read already running is not started twice.
+pub fn refresh(cx: &mut App) {
+    let Some(components) = cx.try_global::<Components>() else {
+        return;
+    };
+    if components.reading {
+        return;
+    }
+    let store = components.store;
+    let source = source(cx);
+    cx.global_mut::<Components>().reading = true;
+    cx.spawn(async move |cx| {
+        let read = cx
+            .background_spawn(async move { store.fetch_manifest(&source) })
+            .await;
+        cx.update(|cx| {
+            let components = cx.global_mut::<Components>();
+            components.reading = false;
+            match read {
+                Ok(manifest) => {
+                    components.manifest = Some(Arc::new(manifest));
+                    components.unread = None;
+                }
+                Err(error) => {
+                    log::warn!("could not read the components manifest: {error:#}");
+                    components.unread = Some(UNREAD.into());
+                }
+            }
+        });
+    })
+    .detach();
+}
+
+fn unpublished(id: ComponentId) -> SharedString {
+    if id == ComponentId::Ffmpeg && cfg!(target_os = "macos") {
+        return "On macOS, video preview uses ffmpeg from Homebrew: brew install ffmpeg".into();
+    }
+    format!("No {} download is published for this computer.", id.label()).into()
 }
 
 pub fn state(id: ComponentId, cx: &App) -> State {
@@ -135,6 +235,12 @@ pub fn state(id: ComponentId, cx: &App) -> State {
     if let Some(reason) = components.and_then(|components| components.failed.get(&id)) {
         return State::Failed(reason.clone());
     }
+    let found = components
+        .and_then(|components| components.finders.get(&id))
+        .and_then(|finder| finder());
+    if found == Some(Found::Bundled) {
+        return State::Bundled;
+    }
     let store = components.map(|components| components.store).or_else(store);
     if let Some(receipt) = store.and_then(|store| store.receipt(id)) {
         return match store.and_then(|store| store.locate(id)) {
@@ -144,12 +250,25 @@ pub fn state(id: ComponentId, cx: &App) -> State {
             None => State::UpdateRequired,
         };
     }
-    let listed = components
-        .and_then(|components| components.manifest.as_ref())
+    if found == Some(Found::System) {
+        return State::System;
+    }
+    let manifest = components.and_then(|components| components.manifest.as_ref());
+    let listed = manifest
         .and_then(|manifest| manifest.component(id))
         .map(|component| component.asset.size);
-    State::Missing {
-        download: listed.or((id == ComponentId::Clip).then_some(CLIP_DOWNLOAD)),
+    match (listed, id == ComponentId::Clip, manifest) {
+        (Some(bytes), _, _) => State::Missing {
+            download: Some(bytes),
+        },
+        (None, true, _) => State::Missing {
+            download: Some(CLIP_DOWNLOAD),
+        },
+        (None, false, Some(_)) => State::Unavailable(unpublished(id)),
+        (None, false, None) => match components.and_then(|components| components.unread.clone()) {
+            Some(reason) => State::Unavailable(reason),
+            None => State::Missing { download: None },
+        },
     }
 }
 
@@ -227,6 +346,9 @@ pub fn install(id: ComponentId, cx: &mut App) -> Task<Result<()>> {
                 cx.update(|cx| {
                     let components = cx.global_mut::<Components>();
                     components.jobs.remove(&id);
+                    if manifest.is_some() {
+                        components.unread = None;
+                    }
                     components.manifest = manifest.or(components.manifest.take());
                     match &result {
                         Err(error) if !cancel.load(Ordering::Relaxed) => {
@@ -280,14 +402,16 @@ pub fn remove(id: ComponentId, cx: &mut App) -> Result<Removal> {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, collections::HashMap, fs, rc::Rc};
+    use std::{cell::Cell, fs, rc::Rc};
 
     use gpui::{SharedString, TestAppContext};
     use settings::AppSettings;
 
-    use super::{Components, FAILED, State, cancel, install, remove, state};
+    use super::{
+        Components, FAILED, Found, State, cancel, found_by, install, refresh, remove, state,
+    };
     use crate::{
-        ComponentId, Removal,
+        CLIP_DOWNLOAD, ComponentId, Removal,
         tests::{
             APP, KEY_ID, Mirror, RANGE, file_url, gz, listing, payload, sign, signing_key,
             store_for, tar_of,
@@ -325,12 +449,7 @@ mod tests {
                 settings::Val::Text(file_url(mirror.dir.path()).into()),
             );
             cx.set_global(settings);
-            cx.set_global(Components {
-                store,
-                manifest: None,
-                jobs: HashMap::new(),
-                failed: HashMap::new(),
-            });
+            cx.set_global(Components::new(store));
         });
         let notified = Rc::new(Cell::new(0));
         let _observer = cx.update({
@@ -405,5 +524,73 @@ mod tests {
             cx.update(|cx| state(ComponentId::Agent, cx)),
             State::Failed(SharedString::from(FAILED))
         );
+    }
+
+    #[gpui::test]
+    async fn a_part_found_elsewhere_or_not_published_is_not_offered(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let mirror = Mirror::new();
+        let archive = tar_of(&[("pdfium.dll", &[1_u8; 64], 0o644)]);
+        let asset = mirror.publish(
+            "component-pdfium-1-test.tar.gz",
+            &gz(&archive),
+            archive.len() as u64,
+            "tar.gz",
+        );
+        let size = asset["size"].as_u64().unwrap();
+        let envelope = sign(
+            &signing_key(),
+            KEY_ID,
+            &payload(vec![listing("pdfium", "1", RANGE, vec![asset])]),
+        );
+        fs::write(
+            mirror.path("components.json"),
+            serde_json::to_vec(&envelope).unwrap(),
+        )
+        .unwrap();
+        let store = Box::leak(Box::new(store_for(temp.path(), APP)));
+        cx.update(|cx| {
+            let mut settings = AppSettings::default();
+            settings.values.insert(
+                updater::DOWNLOAD_SOURCE_KEY.into(),
+                settings::Val::Text(file_url(mirror.dir.path()).into()),
+            );
+            cx.set_global(settings);
+            cx.set_global(Components::new(store));
+            found_by(ComponentId::Agent, || Some(Found::Bundled), cx);
+            found_by(ComponentId::Clip, || Some(Found::System), cx);
+        });
+        let states =
+            |cx: &mut TestAppContext| cx.update(|cx| ComponentId::ALL.map(|id| state(id, cx)));
+        assert_eq!(
+            states(cx),
+            [
+                State::Missing { download: None },
+                State::Missing { download: None },
+                State::Bundled,
+                State::System,
+            ]
+        );
+
+        cx.update(refresh);
+        cx.run_until_parked();
+        let [pdfium, ffmpeg, agent, _] = states(cx);
+        assert_eq!(
+            pdfium,
+            State::Missing {
+                download: Some(size)
+            }
+        );
+        assert!(matches!(ffmpeg, State::Unavailable(_)), "{ffmpeg:?}");
+        assert_eq!(agent, State::Bundled);
+        cx.update(|cx| {
+            cx.global_mut::<Components>().finders.clear();
+            assert_eq!(
+                state(ComponentId::Clip, cx),
+                State::Missing {
+                    download: Some(CLIP_DOWNLOAD)
+                }
+            );
+        });
     }
 }

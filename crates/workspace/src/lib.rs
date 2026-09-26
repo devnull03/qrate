@@ -1,6 +1,7 @@
 //! The main workspace view: a `gpui_component::dock::DockArea` hosting the app's panels
 //! (center table, left details, right agent, bottom problems) with layout persistence.
 
+mod component_banner;
 mod dock_button;
 mod panel_registry;
 mod panels;

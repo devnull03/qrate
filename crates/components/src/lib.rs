@@ -29,7 +29,10 @@ use semver::{BuildMetadata, Op, Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use updater::{RELEASE_DOWNLOADS, SignedEnvelope, Source};
 
-pub use jobs::{Components, State, cancel, init, install, remove, source, state, store};
+pub use jobs::{
+    Components, Found, State, automatic_updates, cancel, found_by, init, install, refresh, remove,
+    source, state, store,
+};
 
 pub const MANIFEST_NAME: &str = "components.json";
 /// The app-wide setting that holds a [`ClipSource`].
@@ -107,6 +110,16 @@ impl ComponentId {
             Self::Ffmpeg => "ffmpeg",
             Self::Agent => "agent",
             Self::Clip => "clip",
+        }
+    }
+
+    /// What the archivist calls it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pdfium => "PDF preview",
+            Self::Ffmpeg => "Video preview",
+            Self::Agent => "Assistant runtime",
+            Self::Clip => "Visual search model",
         }
     }
 }

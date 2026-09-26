@@ -97,7 +97,10 @@ fn follow_install(cx: &mut App) {
             Status::Missing | Status::Downloading { .. } => Status::Ready,
             ref kept => kept.clone(),
         },
-        State::Missing { .. } | State::UpdateRequired => Status::Missing,
+        State::Unavailable(reason) => Status::Failed(reason),
+        State::Missing { .. } | State::UpdateRequired | State::Bundled | State::System => {
+            Status::Missing
+        }
     };
     if next != current {
         let visual = state(cx);

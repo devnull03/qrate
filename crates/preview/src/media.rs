@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
-use components::ComponentId;
+use components::{ComponentId, Found};
 use image::DynamicImage;
 
 /// Formats routed to ffmpeg. The still images here are the ones no pure-Rust decoder in the tree
@@ -57,7 +57,7 @@ fn candidates(exe_dir: Option<&Path>, installed: Option<&Path>) -> Vec<PathBuf> 
 
 /// The ffmpeg to run. `None` means the tier is simply unavailable and the ladder moves on. The
 /// answer is kept until a component is installed or removed, so a decode spawns no probe.
-fn binary() -> Option<PathBuf> {
+pub(crate) fn binary() -> Option<PathBuf> {
     static FOUND: Mutex<Option<(u64, Option<PathBuf>)>> = Mutex::new(None);
     components::remember(&FOUND, components::generation(), || {
         let exe = std::env::current_exe().ok();
@@ -77,6 +77,17 @@ fn binary() -> Option<PathBuf> {
                     .is_ok_and(|status| status.success())
             })
     })
+}
+
+/// Where the ffmpeg in use came from, for `components::found_by`. `None` when it is the copy qrate
+/// installed, or there is none.
+pub fn found() -> Option<Found> {
+    let binary = binary()?;
+    if binary.is_relative() {
+        return Some(Found::System);
+    }
+    let exe = std::env::current_exe().ok();
+    (binary.parent() == exe.as_deref().and_then(Path::parent)).then_some(Found::Bundled)
 }
 
 /// One frame, as PNG on stdout.

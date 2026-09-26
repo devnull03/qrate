@@ -13,7 +13,7 @@ The bridge never changes a cell. `stage_findings` only replaces that agent's dra
 Bridge findings remain ungrouped atomic diagnostics. Built-in diagnostic groups do not change protocol 2 query or staging formats.
 Findings the archivist ignored are absent from `overview` counts and `diagnostics` queries, exactly as they are hidden in the Problems panel.
 
-qrate's Pi comes from a full install's `agent` folder or, when that is absent, from the optional component qrate installs on demand into `components/agent/<version>` in the same application-data directory; the bridge and protocol are the same either way.
+qrate's Pi comes from a full install's `agent` folder or, when that is absent, from the optional component qrate installs on demand into `components/agent/<version>` in the same application-data directory. Without either, the Agent panel offers to install it (Settings ▸ Components does too) and starts Pi once it lands, with no restart; the bridge and protocol are the same either way.
 qrate's bundled Pi runs as a contained child process. Stop, Restart, panel teardown, and app exit terminate its process tree; do not rely on an older Pi process surviving a restart.
 The bundled assistant loads its protocol 2 extension and `SYSTEM.md` with all skills disabled. The `skills/` folder in this repo packages the same instructions for an agent running outside qrate — `qrate-live-review` there is for an external Pi or any other runtime, not the built-in session.
 

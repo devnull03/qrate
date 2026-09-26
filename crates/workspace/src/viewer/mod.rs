@@ -82,7 +82,18 @@ pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut Ap
     let table = cx
         .try_global::<table::TableStateHandle>()
         .and_then(|handle| handle.0.upgrade());
+    let needs = preview::missing(&path);
     let viewer = cx.new(|cx| Viewer {
+        needs,
+        _components: cx.observe_global_in::<components::Components>(
+            window,
+            |this: &mut Viewer, window, cx| {
+                if this.needs.is_some() && preview::missing(&this.path).is_none() {
+                    open_viewer(this.path.clone(), this.scope, window, cx);
+                }
+                cx.notify();
+            },
+        ),
         _follow: table.map(|table| {
             cx.subscribe_in(
                 &table,
@@ -257,6 +268,10 @@ pub struct Viewer {
     /// carries the drag handle, the sizing and the propagation rules, none of which are ours to
     /// reinvent.
     split: Entity<ResizableState>,
+    /// The optional part this file needs and does not have, which the viewer offers to install.
+    needs: Option<components::ComponentId>,
+    /// Opens the file again once that part is installed, so its pages and timeline are read.
+    _components: Subscription,
     /// Swaps in the selected row's file when the selection moves, from the find bar, the arrows or
     /// anywhere else.
     _follow: Option<Subscription>,
@@ -467,6 +482,9 @@ impl Render for Viewer {
         // The panel's *live* width, straight off the resizable's state, so the rows re-trim as it
         // is dragged. Empty until the group has laid out once.
         let panel_width = self.split.read(cx).sizes().get(1).copied().unwrap_or(PANEL);
+        let banner = self
+            .needs
+            .and_then(|id| crate::component_banner::banner(id, cx));
 
         div()
             .track_focus(&self.focus_handle)
@@ -643,6 +661,16 @@ impl Render for Viewer {
                             .child(details)
                     })),
             )
+            .children(banner.map(|banner| {
+                div()
+                    .absolute()
+                    .top_4()
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(div().max_w(px(560.)).occlude().child(banner))
+            }))
             // Bottom pill: page controls (even for 1 page, or a TIFF stack), transport or scrubber.
             .when(
                 self.document

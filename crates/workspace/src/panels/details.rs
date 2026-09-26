@@ -95,6 +95,8 @@ pub struct DetailsPanel {
     /// Re-renders when the bottom dock opens/closes, so the panel gives the strip crop back as
     /// padding and keeps the same usable height either way.
     _crop_sub: Subscription,
+    /// Re-renders while an optional part the selected file needs is installing.
+    _components_sub: Subscription,
     /// The field editor, shared across whichever field is open — the same one-per-panel
     /// arrangement the grid uses for its cell editor.
     editor: Entity<TextareaState>,
@@ -178,6 +180,8 @@ impl DetailsPanel {
             _handle_sub,
             _table_sub: None,
             _crop_sub: cx.observe_global::<BottomDockCrop>(|_this: &mut Self, cx| cx.notify()),
+            _components_sub: cx
+                .observe_global::<components::Components>(|_this: &mut Self, cx| cx.notify()),
             editor,
             editing: None,
             stack: 0,
@@ -1225,6 +1229,14 @@ impl Render for DetailsPanel {
                 .text_color(cx.theme().muted_foreground)
                 .into_any_element();
         };
+
+        // A file its part cannot draw has no recording to play, so the install prompt takes that bar.
+        let transport = transport.or_else(|| {
+            image_path
+                .as_deref()
+                .and_then(preview::missing)
+                .and_then(|id| crate::component_banner::banner(id, cx))
+        });
 
         // Built before the field rows below, which borrow `cx` for as long as they stay a lazy
         // iterator — this needs `&mut cx` and cannot wait for them.

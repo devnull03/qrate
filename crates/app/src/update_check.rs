@@ -10,14 +10,6 @@ use updater::{InstallKind, Installation, JOB_NAME, StagedUpdate, UpdateJob};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-pub fn automatic_updates(cx: &App) -> bool {
-    AppSettings::get(cx)
-        .values
-        .get(updater::AUTO_UPDATE_KEY)
-        .map(|value| value.bool())
-        .unwrap_or(true)
-}
-
 #[derive(Clone, Debug)]
 pub enum UpdateStatus {
     Disabled(Arc<str>),
@@ -115,7 +107,7 @@ impl AutoUpdater {
                 .map(|installation| installation.marker.kind),
         );
         let _settings_sub = cx.observe_global::<AppSettings>(|this, cx| {
-            if automatic_updates(cx) && matches!(this.status, UpdateStatus::Idle) {
+            if components::automatic_updates(cx) && matches!(this.status, UpdateStatus::Idle) {
                 this.poll(false, cx);
             }
             cx.notify();
@@ -269,7 +261,7 @@ impl AutoUpdater {
         if matches!(self.status, UpdateStatus::Disabled(_)) {
             return;
         }
-        if automatic_updates(cx) {
+        if components::automatic_updates(cx) {
             self.poll(false, cx);
         }
         self.poll_task = Some(cx.spawn(async move |this, cx| {
@@ -277,7 +269,7 @@ impl AutoUpdater {
                 cx.background_executor().timer(POLL_INTERVAL).await;
                 if this
                     .update(cx, |this, cx| {
-                        if automatic_updates(cx) {
+                        if components::automatic_updates(cx) {
                             this.poll(false, cx);
                         }
                     })
