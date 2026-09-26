@@ -858,6 +858,8 @@ impl ProjectSettingsWriter {
                     writes.len(),
                     file.display()
                 );
+            } else {
+                log::debug!("settings: saved {} project keys", writes.len());
             }
         }
     }
@@ -879,6 +881,10 @@ pub fn queue_write(file: &Path, key: &str, value: &str, cx: &gpui::App) {
 
 /// [`queue_write`] for any queued operation, removals included.
 fn queue(file: &Path, key: &str, value: Option<String>, cx: &gpui::App) {
+    log::debug!(
+        "settings: project {} key={key}",
+        if value.is_some() { "set" } else { "cleared" }
+    );
     let writer = cx
         .try_global::<ProjectPersistence>()
         .and_then(|p| p.writer.clone());
@@ -887,6 +893,8 @@ fn queue(file: &Path, key: &str, value: Option<String>, cx: &gpui::App) {
         None => {
             if let Err(err) = write_batch(file, &[(key.to_string(), value)]) {
                 log::error!("failed to save project setting {key}: {err:#}");
+            } else {
+                log::debug!("settings: saved project key={key}");
             }
         }
     }

@@ -625,7 +625,10 @@ fn main() {
         instance_handoff::register_linux_scheme();
 
         // Settings ------------------------------------
-        let settings = load_app_settings().unwrap_or_default();
+        let settings = load_app_settings().unwrap_or_else(|error| {
+            log::error!("settings: failed to load app settings: {error:#}");
+            AppSettings::default()
+        });
         cx.set_global(settings);
         cx.set_global(SettingsPersistence {
             writer: Some(SettingsWriter::start()),

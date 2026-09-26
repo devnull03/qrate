@@ -653,7 +653,12 @@ fn project_thumbnail(image: Thumbnail<'_>, size: Pixels, cx: &App) -> AnyElement
             )
             .into_any_element(),
         Thumbnail::Recent(Some(path)) => frame
-            .child(preview::thumb(Some(path), preview::CARD, cx))
+            .child(preview::thumb(
+                Some(path),
+                preview::CARD,
+                ObjectFit::Cover,
+                cx,
+            ))
             .into_any_element(),
         Thumbnail::Recent(None) => frame
             .flex()
