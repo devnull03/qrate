@@ -269,7 +269,7 @@ const formats = [
     }
 
     function fillCsl(p: Project, headers: string[]) {
-      const fields: string[] = (wasm!.Project as any).csl_fields();
+      const fields: string[] = wasm!.Project.csl_fields();
       const current: Record<string, string> = p.csl_default() ?? {};
       const labels: Record<string, string> = { id: 'ID', title: 'Title', author: 'Author', issued: 'Date issued', URL: 'URL' };
       $('[data-format="csl"] [data-fields]').replaceChildren(
@@ -393,10 +393,7 @@ const formats = [
     async function fill(accessToken: string, id: string, status: (t: string, l?: string) => void) {
       status(`Filling ${project!.row_count().toLocaleString()} rows…`);
       await writeValues(accessToken, id, project!.sheet_values());
-      await writeNotes(accessToken, id, (sheetId) =>
-        (project as Project & { sheet_note_requests?: (id: number) => { requests: unknown[] } })
-          ?.sheet_note_requests?.(sheetId),
-      );
+      await writeNotes(accessToken, id, (sheetId) => project!.sheet_note_requests(sheetId));
       status('Done.', sheetUrl(id));
     }
 
