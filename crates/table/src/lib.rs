@@ -20,6 +20,7 @@ mod history;
 mod note;
 mod panel;
 pub mod photos;
+mod relink;
 mod row_index;
 mod visual;
 

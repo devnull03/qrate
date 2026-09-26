@@ -17,7 +17,7 @@ pub use export::{
     derive_csl_mapping, jsonld_hierarchy_value, project_structure_columns, xlsx_bytes, zip_to,
 };
 pub use notes::{ProjectNote, SheetNote, read_project_notes, sheet_note_request_body, sheet_notes};
-pub use photos::PhotoIndex;
+pub use photos::{PhotoIndex, relative_to};
 
 pub const QRATE_APPLICATION_ID: i32 = 1097887558;
 pub const QRATE_SCHEMA_VERSION: i32 = 4;

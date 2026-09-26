@@ -897,6 +897,34 @@ impl QrateTableDelegate {
         changed
     }
 
+    /// Re-link rows to files: each `(row, col, link)` writes the Filename cell and the row's
+    /// `source_path` together, and the whole batch undoes as one step.
+    pub(crate) fn relink(&mut self, links: Vec<(usize, usize, SharedString)>, origin: Origin) {
+        let before = self.hierarchy.rows();
+        let mut edit = Vec::with_capacity(links.len());
+        for (row, col, after) in links {
+            let Some(before) = self.cell(row, col).cloned() else {
+                continue;
+            };
+            if let Some(id) = self.row_id(row) {
+                self.hierarchy.set_source_file(id, after.to_string());
+            }
+            if before != after {
+                self.set_cell(row, col, after.clone());
+                edit.push((row, col, before, after));
+            }
+        }
+        let after = self.hierarchy.rows();
+        let cells = Step::Cells(edit);
+        self.edits += 1;
+        let changes = self.changes(&cells);
+        self.log(origin, changes);
+        self.history.push(
+            Step::Batch(vec![cells, Step::Hierarchy { before, after }]),
+            self.undo_cap,
+        );
+    }
+
     /// Push a step that has just been applied onto the undo stack, and log it.
     fn record(&mut self, step: Step, origin: Origin) {
         self.edits += 1;
@@ -1607,10 +1635,10 @@ impl QrateTableDelegate {
             .count() as i64;
         let source_path = |component: &file_ingest::PlannedComponent| {
             file_ingest::normalized_path(
-                files_root
-                    .and_then(|root| component.absolute_path.strip_prefix(root).ok())
+                &files_root
+                    .and_then(|root| qrate_export::relative_to(root, &component.absolute_path))
                     .filter(|relative| !relative.as_os_str().is_empty())
-                    .unwrap_or(&component.absolute_path),
+                    .unwrap_or_else(|| component.absolute_path.clone()),
             )
         };
 
@@ -1657,9 +1685,7 @@ impl QrateTableDelegate {
                         && let Some(col) = file_col
                         && let Some(before) = self.rows.get(source).and_then(|row| row.get(col))
                     {
-                        let after = SharedString::from(file_ingest::normalized_path(
-                            &component.absolute_path,
-                        ));
+                        let after = SharedString::from(source_path(component));
                         if *before != after {
                             cells.push((source, col, before.clone(), after));
                         }
@@ -1677,8 +1703,7 @@ impl QrateTableDelegate {
                         new_cells[col] = component.title.clone().into();
                     }
                     if is_file && let Some(col) = file_col.filter(|col| *col < new_cells.len()) {
-                        new_cells[col] =
-                            file_ingest::normalized_path(&component.absolute_path).into();
+                        new_cells[col] = source_path(component).into();
                     }
                     rows.push(Row {
                         id: ids[index],

@@ -97,18 +97,18 @@ pub(crate) fn render_cell(
             })
             .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary_hover))
             .on_drop(move |paths: &ExternalPaths, window, cx| {
-                let Some(path) = paths.paths().first() else {
+                let Some(path) = paths.paths().first().cloned() else {
                     return;
                 };
-                let text = file_ingest::normalized_path(path);
-                window.defer(cx, move |_, cx| {
-                    crate::write_cell(
-                        row_ix,
-                        col_ix,
-                        text.into(),
-                        settings::history::Origin::Typed,
-                        cx,
-                    )
+                window.defer(cx, move |window, cx| {
+                    if let Some(panel) = cx
+                        .try_global::<crate::TablePanelHandle>()
+                        .and_then(|handle| handle.0.upgrade())
+                    {
+                        panel.update(cx, |panel, cx| {
+                            panel.link_dropped_file(row_ix, col_ix, path, window, cx)
+                        });
+                    }
                 });
             })
         })

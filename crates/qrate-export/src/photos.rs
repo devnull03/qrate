@@ -1,9 +1,26 @@
 //! Filename resolution shared by the desktop table and export code.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::filenames;
+
+/// `path` below `root`, or `None` when it lies outside it. Windows paths compare without case,
+/// as the file system does.
+pub fn relative_to(root: &Path, path: &Path) -> Option<PathBuf> {
+    if let Ok(relative) = path.strip_prefix(root) {
+        return Some(relative.to_path_buf());
+    }
+    if !cfg!(windows) {
+        return None;
+    }
+    let slashed = |p: &Path| p.to_string_lossy().replace('\\', "/");
+    let root = format!("{}/", slashed(root).trim_end_matches('/'));
+    let path = slashed(path);
+    path.to_ascii_lowercase()
+        .starts_with(&root.to_ascii_lowercase())
+        .then(|| PathBuf::from(&path[root.len()..]))
+}
 
 pub struct PhotoIndex {
     by_key: HashMap<String, PathBuf>,
@@ -70,7 +87,40 @@ impl PhotoIndex {
 mod tests {
     use std::path::PathBuf;
 
-    use super::PhotoIndex;
+    use super::{PhotoIndex, relative_to};
+
+    #[test]
+    fn a_path_is_relative_only_below_its_root() {
+        let root = std::env::temp_dir().join("qrate-root");
+        assert_eq!(
+            relative_to(&root, &root.join("a").join("1.jpg")),
+            Some(PathBuf::from("a").join("1.jpg"))
+        );
+        assert_eq!(
+            relative_to(&root, &std::env::temp_dir().join("other.jpg")),
+            None
+        );
+        assert_eq!(
+            relative_to(
+                &root,
+                &std::env::temp_dir().join("qrate-root-sibling/x.jpg")
+            ),
+            None,
+            "a folder sharing the root's name as a prefix is not inside it"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_paths_compare_without_case() {
+        assert_eq!(
+            relative_to(
+                std::path::Path::new(r"C:\Archive"),
+                std::path::Path::new(r"c:\archive\Box\1.jpg")
+            ),
+            Some(PathBuf::from("Box/1.jpg"))
+        );
+    }
 
     #[test]
     fn nested_paths_and_component_order() {

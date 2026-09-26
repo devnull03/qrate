@@ -223,6 +223,15 @@ impl Hierarchy {
         Ok(())
     }
 
+    /// Point a row at the file it now links to.
+    pub(crate) fn set_source_file(&mut self, row_id: RowId, source_path: String) {
+        if let Some(node) = self.nodes.get_mut(&row_id) {
+            node.source_path = Some(source_path);
+            node.source_kind = Some(SourceKind::File);
+            self.changed();
+        }
+    }
+
     pub(crate) fn level(&self, row_id: RowId) -> Option<&str> {
         self.nodes.get(&row_id).map(|node| node.level_key.as_str())
     }

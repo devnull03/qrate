@@ -376,11 +376,13 @@ pub fn zip_to(
         let Some(fallback) = image.path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let relative = image
-            .source_path
-            .as_deref()
-            .and_then(safe_archive_path)
-            .unwrap_or_else(|| fallback.to_string());
+        // A file linked from outside the files folder goes under `files/outside/`.
+        let relative = match image.source_path.as_deref() {
+            Some(source) if Path::new(source).is_absolute() => format!("outside/{fallback}"),
+            source => source
+                .and_then(safe_archive_path)
+                .unwrap_or_else(|| fallback.to_string()),
+        };
         // Two folders can hold the same filename, and a zip entry that repeats one silently wins.
         let mut name = relative;
         for n in 2.. {
@@ -721,6 +723,39 @@ mod tests {
             ]
             .into_iter()
             .collect()
+        );
+    }
+
+    #[test]
+    fn a_file_from_outside_the_files_folder_lands_under_outside() {
+        let dir = std::env::temp_dir().join("qrate-export-zip-outside-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("elsewhere")).unwrap();
+        std::fs::write(dir.join("elsewhere/loose.jpg"), "loose").unwrap();
+        let loose = dir.join("elsewhere/loose.jpg");
+
+        let (headers, rows) = grid();
+        let archive = dir.join("out.zip");
+        write_zip(
+            &archive,
+            &headers,
+            &[10, 11],
+            &rows,
+            &[],
+            &[ArchiveFile {
+                path: loose.clone(),
+                source_path: Some(loose.to_string_lossy().into_owned()),
+            }],
+            super::CsvOptions::default(),
+        )
+        .unwrap();
+
+        let zip = zip::ZipArchive::new(std::fs::File::open(&archive).unwrap()).unwrap();
+        assert!(
+            zip.file_names()
+                .any(|name| name == "files/outside/loose.jpg"),
+            "{:?}",
+            zip.file_names().collect::<Vec<_>>()
         );
     }
 }

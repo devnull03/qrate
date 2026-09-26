@@ -1150,6 +1150,9 @@ impl Render for DetailsPanel {
         let selection = self.state.as_ref().and_then(|w| w.upgrade()).map(|s| {
             let delegate = s.read(cx).delegate();
             let image = front.and_then(|row| delegate.row_image(row).map(Path::to_path_buf));
+            let lost = front.filter(|_| count == 1).and_then(|row| {
+                table::file_links::missing_file(delegate, row, cx).map(|(_, name)| (row, name))
+            });
             let fields = match &self.fields {
                 Some((built_for, fields)) if *built_for == picked => fields.clone(),
                 _ => {
@@ -1158,7 +1161,7 @@ impl Render for DetailsPanel {
                     fields
                 }
             };
-            (fields, image)
+            (fields, image, lost)
         });
 
         // Compact: this dock is one the user drags narrow, and the full-width scrubber would push
@@ -1175,7 +1178,7 @@ impl Render for DetailsPanel {
         let gallery = crate::ViewMode::parse(&settings::effective_text(crate::VIEW_MODE_KEY, cx))
             == crate::ViewMode::Gallery;
 
-        let Some((fields, image_path)) = selection.filter(|(f, _)| !f.is_empty()) else {
+        let Some((fields, image_path, lost)) = selection.filter(|(f, _, _)| !f.is_empty()) else {
             // Says what this panel is for and how to fill it, rather than only reporting that it
             // is empty — the multi-select gesture is the one thing here nobody discovers by luck.
             return div()
@@ -1362,6 +1365,49 @@ impl Render for DetailsPanel {
                         .text_color(cx.theme().muted_foreground)
                         .child(format!("{count} items · shared fields"))
                         .child("edits apply to all"),
+                )
+            })
+            .when_some(lost, |list, (row, name)| {
+                list.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .mx_3()
+                        .mt_2()
+                        .px_2()
+                        .py_1p5()
+                        .rounded(cx.theme().radius)
+                        .bg(cx.theme().warning.opacity(0.12))
+                        .text_xs()
+                        .child(
+                            gpui_component::Icon::new(IconName::TriangleAlert)
+                                .small()
+                                .text_color(cx.theme().warning),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(format!("File not found: {name}")),
+                        )
+                        .child(
+                            Button::new("details-locate-file")
+                                .small()
+                                .label("Locate file…")
+                                .on_click(move |_, window, cx| {
+                                    if let Some(table) = cx
+                                        .try_global::<TablePanelHandle>()
+                                        .and_then(|handle| handle.0.upgrade())
+                                    {
+                                        table.update(cx, |table, cx| {
+                                            table.locate_file(row, window, cx)
+                                        });
+                                    }
+                                }),
+                        ),
                 )
             })
             .child(

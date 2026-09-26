@@ -68,6 +68,16 @@ pub const IMPORT_DUPLICATE_POLICIES: &[(&str, &str)] = &[
     ("add_as_new", "Add it as a new row"),
 ];
 
+/// What adding a file from outside the files folder does: `ask`, `copy` into it, or `link` in place.
+pub const IMPORT_OUTSIDE_FILES_KEY: &str = "import_outside_files";
+
+/// What Settings offers for [`IMPORT_OUTSIDE_FILES_KEY`].
+pub const IMPORT_OUTSIDE_FILES: &[(&str, &str)] = &[
+    ("ask", "Ask each time (default)"),
+    ("copy", "Copy into the files folder"),
+    ("link", "Link where it is"),
+];
+
 /// `__settings` key for the spreadsheet this project pushes to. The id alone, not the URL — the
 /// link is derivable (`data_exchange::google::sheet_url`) and the id is what the Sheets API takes.
 /// Written when the user picks a sheet through Google's chooser, which is also what grants qrate

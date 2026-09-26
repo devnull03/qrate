@@ -5,7 +5,6 @@
 //! action, the save dialog, and the CSL field-mapping picker.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write as _};
 use std::path::{Path, PathBuf};
@@ -409,24 +408,16 @@ fn sheet_notes(file: &Path, grid: &ExportGrid) -> anyhow::Result<Vec<SheetNote>>
 /// Each row's linked file, and where it sat in the source tree. Scans the files folder, so it runs
 /// off the UI thread.
 fn archive_files(grid: &ExportGrid, files: &ZipFiles) -> Vec<ArchiveFile> {
-    let source_paths: HashMap<settings::project::RowId, &String> = grid
-        .structure
-        .iter()
-        .filter_map(|component| Some((component.row_id, component.source_path.as_ref()?)))
-        .collect();
+    let root = Path::new(&files.folder);
     table::photos::resolve_row_images(&grid.headers, &grid.rows, &files.folder, &files.declared)
         .into_iter()
-        .enumerate()
-        .filter_map(|(index, path)| {
-            let source_path = grid
-                .row_ids
-                .get(index)
-                .and_then(|row_id| source_paths.get(row_id))
-                .map(|source| (*source).clone());
-            Some(ArchiveFile {
-                path: path?,
-                source_path,
-            })
+        .flatten()
+        .map(|path| ArchiveFile {
+            source_path: Some(match qrate_export::relative_to(root, &path) {
+                Some(relative) => relative.to_string_lossy().replace('\\', "/"),
+                None => path.to_string_lossy().into_owned(),
+            }),
+            path,
         })
         .collect()
 }

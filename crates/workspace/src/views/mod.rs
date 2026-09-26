@@ -448,6 +448,10 @@ impl Render for ViewsPanel {
             }))
             .child(
                 self.table
+                    .update(cx, |table, cx| table.render_files_banner(cx)),
+            )
+            .child(
+                self.table
                     .update(cx, |table, cx| table.render_search_bar(cx)),
             )
             .child(

@@ -2015,7 +2015,7 @@ fn project_page(cx: &App) -> SettingPage {
                 .item(settings::path_picker_item(
                     settings::project::FILES_FOLDER_KEY,
                     "Files folder",
-                    "Where row images and linked files are looked up. qrate never copies them, so \
+                    "Where row images and linked files are looked up. qrate never moves them, so \
                  moving the folder means pointing this at its new home.",
                     "Choose files folder",
                     settings::Picks::Directories,
@@ -2139,6 +2139,36 @@ fn project_page(cx: &App) -> SettingPage {
                 )
                 .description(
                     "What importing a file does when a row already links to it or names it.",
+                ),
+            )
+            .item(
+                SettingItem::new(
+                    "Files from outside the files folder",
+                    SettingField::dropdown(
+                        options(settings::project::IMPORT_OUTSIDE_FILES),
+                        |cx: &App| {
+                            cx.try_global::<CurrentProject>()
+                                .and_then(|p| {
+                                    p.data
+                                        .values
+                                        .get(settings::project::IMPORT_OUTSIDE_FILES_KEY)
+                                })
+                                .map(|v| v.text())
+                                .unwrap_or_else(|| "ask".into())
+                        },
+                        |choice: SharedString, cx: &mut App| {
+                            CurrentProject::set_text(
+                                settings::project::IMPORT_OUTSIDE_FILES_KEY,
+                                choice,
+                                cx,
+                            );
+                        },
+                    ),
+                )
+                .description(
+                    "What dropping a file that is not in the files folder does. A copy goes into \
+                     the folder's imported subfolder; a link keeps the file where it is and is \
+                     listed in Problems.",
                 ),
             ),
         )

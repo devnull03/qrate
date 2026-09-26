@@ -26,6 +26,8 @@ use crate::{
     note, photos, row_index, visual,
 };
 
+mod files;
+
 const COLUMN_LAYOUT_KEY: &str = "table_columns";
 
 fn map_spreadsheet_headers(
@@ -183,6 +185,8 @@ pub struct TablePanel {
     replace_input: Entity<InputState>,
     replace_open: bool,
     _replace_sub: Subscription,
+    /// Repaints the files-folder banner, which `ViewsPanel` draws from this view.
+    _files_sub: Subscription,
     /// Pending debounced autosave (the "timed" mode). Replacing it drops the prior task, which
     /// cancels its timer — that drop *is* the debounce, coalescing a burst of edits into one write.
     _autosave_task: Option<Task<()>>,
@@ -253,6 +257,7 @@ impl TablePanel {
         cx.set_global(TableStateHandle(state.downgrade()));
         // A newly opened project reads its files folder afresh, off the UI thread.
         photos::forget(cx);
+        cx.set_global(crate::file_links::FilesBase::default());
         state.update(cx, |state, cx| photos::refresh(state, None, cx));
 
         let table_state = state.clone();
@@ -474,6 +479,7 @@ impl TablePanel {
                     description.profile.key()
                 );
                 photos::forget(cx);
+                cx.set_global(crate::file_links::FilesBase::default());
                 this.state.update(cx, |state, cx| {
                     state.delegate_mut().set_data(&headers, &row_ids, &rows);
                     state
@@ -545,6 +551,9 @@ impl TablePanel {
             this.show_ranking(cx)
         });
 
+        let _files_sub =
+            cx.observe_global::<crate::file_links::FilesBase>(|_: &mut Self, cx| cx.notify());
+
         let _replace_sub = cx.subscribe(&replace_input, |this, _input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.replace(false, cx);
@@ -578,6 +587,7 @@ impl TablePanel {
             replace_input,
             replace_open: false,
             _replace_sub,
+            _files_sub,
             _autosave_task: None,
             _revalidate_task: None,
         };
@@ -598,7 +608,20 @@ impl TablePanel {
         }));
     }
 
+    /// Import dropped or picked files and folders as rows, once any from outside the files folder
+    /// have been copied in or accepted where they are.
     pub fn import_external_paths(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.place_outside_files(paths, window, cx, |this, paths, window, cx| {
+            this.import_paths(paths, window, cx)
+        });
+    }
+
+    fn import_paths(
         &mut self,
         paths: Vec<std::path::PathBuf>,
         window: &mut Window,
@@ -983,39 +1006,6 @@ impl TablePanel {
                 .detach();
             })
             .ok();
-        })
-        .detach();
-    }
-
-    pub fn choose_files_root(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let receiver = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Choose the folder that contains this project's files".into()),
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = receiver.await
-                && let Some(folder) = paths.first()
-            {
-                let folder = folder.to_string_lossy().into_owned();
-                this.update(cx, |this, cx| {
-                    settings::project::CurrentProject::set_text(
-                        settings::project::FILES_FOLDER_KEY,
-                        folder.into(),
-                        cx,
-                    );
-                    // The walk revalidates when it lands, which is what clears the missing files.
-                    photos::forget(cx);
-                    this.state.update(cx, |state, cx| {
-                        photos::refresh(state, None, cx);
-                        state.refresh(cx);
-                        cx.notify();
-                    });
-                    cx.notify();
-                })
-                .ok();
-            }
         })
         .detach();
     }
