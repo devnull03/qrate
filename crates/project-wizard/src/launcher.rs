@@ -34,11 +34,16 @@ const HEADING_LEAD: Pixels = px(12.);
 /// centred between them.
 const SCROLLBAR: Pixels = px(6.);
 
+/// Asks, on the given window, whether to save the open project's unsaved cell edits, then runs
+/// the callback unless the user cancels. Saving is the table's, which this crate can't reach.
+pub type ResolveUnsaved = fn(&str, &mut Window, &mut App, Box<dyn FnOnce(&mut App)>);
+
 /// Set once at startup (see `crates/app/src/main.rs`) so the launcher can
 /// open the real main window without depending on the `app` crate.
 #[derive(Clone, Copy)]
 pub struct LauncherHooks {
     pub open_main_window: fn(&mut App),
+    pub resolve_unsaved: ResolveUnsaved,
     /// The title bar's contents — the app menus and the updater's state. Same inversion as
     /// above: every action in them belongs to the `app` crate, which builds the view.
     pub title_items: fn(&mut App) -> AnyView,
@@ -70,22 +75,51 @@ impl Launcher {
         }
     }
 
+    /// Runs `then` once the open project's unsaved edits are saved or dropped, never if the user
+    /// cancels — the project about to be replaced is the one holding them.
+    fn after_unsaved(
+        detail: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        let handle = window.window_handle();
+        let launcher = cx.entity().downgrade();
+        let then: Box<dyn FnOnce(&mut App)> = Box::new(move |cx| {
+            handle
+                .update(cx, |_, window, cx| {
+                    launcher.update(cx, |this, cx| then(this, window, cx))
+                })
+                .ok();
+        });
+        match cx.try_global::<LauncherHooks>().copied() {
+            Some(hooks) => (hooks.resolve_unsaved)(detail, window, cx, then),
+            None => cx.defer(then),
+        }
+    }
+
     /// Loads the `.qrate` file at `path`, sets it current, and hands off to
     /// the main window. On failure the launcher stays up and shows why.
     fn open_project_file(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
-        match project::open_project(std::path::Path::new(&path), cx) {
-            Ok(name) => {
-                recent::record_opened(name, path, cx);
-                if let Some(hooks) = cx.try_global::<LauncherHooks>().copied() {
-                    (hooks.open_main_window)(cx);
+        Self::after_unsaved(
+            "Save them before opening another project?",
+            window,
+            cx,
+            move |this, window, cx| match project::open_project(std::path::Path::new(&path), cx) {
+                Ok(name) => {
+                    settings::dirty::clear(settings::dirty::PROJECT_DATA, cx);
+                    recent::record_opened(name, path, cx);
+                    if let Some(hooks) = cx.try_global::<LauncherHooks>().copied() {
+                        (hooks.open_main_window)(cx);
+                    }
+                    window.remove_window();
                 }
-                window.remove_window();
-            }
-            Err(e) => {
-                self.error = Some(format!("Couldn't open that project — {e}").into());
-                cx.notify();
-            }
-        }
+                Err(e) => {
+                    this.error = Some(format!("Couldn't open that project — {e}").into());
+                    cx.notify();
+                }
+            },
+        );
     }
 
     /// "Open other…" — pick a `.qrate` file anywhere on disk.
@@ -291,8 +325,14 @@ impl Render for Launcher {
             .size_full()
             .bg(cx.theme().background)
             .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary_hover))
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                this.accept_drop(paths.paths(), window, cx)
+            .on_drop(cx.listener(|_, paths: &ExternalPaths, window, cx| {
+                let paths = paths.paths().to_vec();
+                Self::after_unsaved(
+                    "Save them before switching projects?",
+                    window,
+                    cx,
+                    move |this, window, cx| this.accept_drop(&paths, window, cx),
+                )
             }))
             .child(
                 TitleBar::new()
@@ -466,4 +506,23 @@ pub fn open_launcher_window(cx: &mut App) {
     }) {
         WindowRegistry::register(LAUNCHER_WINDOW_KIND, window_handle.into(), cx);
     }
+}
+
+/// Opens (or focuses) the launcher with `error` shown above the recents list.
+pub fn open_launcher_with_error(error: SharedString, cx: &mut App) {
+    open_launcher_window(cx);
+    let Some(root) = WindowRegistry::focus_or_clear(LAUNCHER_WINDOW_KIND, cx)
+        .and_then(|handle| handle.downcast::<Root>())
+    else {
+        return;
+    };
+    root.update(cx, |root, _, cx| {
+        if let Ok(launcher) = root.view().clone().downcast::<Launcher>() {
+            launcher.update(cx, |launcher, cx| {
+                launcher.error = Some(error);
+                cx.notify();
+            });
+        }
+    })
+    .ok();
 }

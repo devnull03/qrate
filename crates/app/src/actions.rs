@@ -8,19 +8,19 @@
 use gpui::*;
 use gpui_component::dock::ToggleZoom;
 
-use crate::app_menus::OpenSettings;
+use crate::app_menus::{OpenProjects, OpenSettings, Quit};
 
 actions!(
     qrate,
     [
         // Workspace commands.
-        NewWindow,
         NewProject,
         Save,
         // Dock/panel toggles (handled on the App root — they need a `Window`).
         ToggleLeftDock,
         ToggleBottomDock,
         ToggleRightDock,
+        ToggleProblemsPanel,
     ]
 );
 
@@ -32,8 +32,9 @@ actions!(
 /// line covers all three, and the menus print the right glyph for whoever is reading them.
 pub fn key_bindings() -> Vec<KeyBinding> {
     vec![
-        KeyBinding::new("secondary-shift-n", NewWindow, None),
         KeyBinding::new("secondary-n", NewProject, None),
+        KeyBinding::new("secondary-o", OpenProjects, None),
+        KeyBinding::new("secondary-q", Quit, None),
         // Save the open project's data to its `.qrate` file. Global: saving shouldn't depend on
         // where focus sits (a focused cell editor's `Input` context doesn't bind Ctrl+S).
         KeyBinding::new("secondary-s", Save, None),
@@ -46,6 +47,8 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-b", ToggleLeftDock, None),
         KeyBinding::new("secondary-`", ToggleBottomDock, None),
         KeyBinding::new("secondary-alt-b", ToggleRightDock, None),
+        // VS Code's key for its own Problems panel.
+        KeyBinding::new("secondary-shift-m", ToggleProblemsPanel, None),
         // Settings. Declared in `app_menus` (it's a menu action first); the handler is already
         // registered globally in `main.rs`, so this only adds the key.
         KeyBinding::new("secondary-,", OpenSettings, None),
@@ -96,6 +99,19 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         ),
         KeyBinding::new("secondary-]", table::IndentRow, Some(table::GRID_CONTEXT)),
         KeyBinding::new("secondary-[", table::OutdentRow, Some(table::GRID_CONTEXT)),
+        KeyBinding::new(
+            "alt-shift-up",
+            table::InsertRowAbove,
+            Some(table::GRID_CONTEXT),
+        ),
+        KeyBinding::new(
+            "alt-shift-down",
+            table::InsertRowBelow,
+            Some(table::GRID_CONTEXT),
+        ),
+        // Excel's keys for deleting a row and adding a note to a cell.
+        KeyBinding::new("secondary--", table::DeleteRow, Some(table::GRID_CONTEXT)),
+        KeyBinding::new("shift-f2", table::InsertNote, Some(table::GRID_CONTEXT)),
         // Blank the selection, the spreadsheet convention — and both keys, since Sheets and Excel
         // accept either. Scoped to the grid like the clipboard keys above, which is what keeps
         // Backspace deleting *text* while the cell editor or the find bar holds focus.
@@ -141,10 +157,26 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 /// on the `App` view in `main.rs` instead, since global handlers only get `&mut App`.
 ///
 /// `NewProject` is registered in `main.rs` alongside `OpenSettings` (it needs to call into the
-/// `project-wizard` crate). Only `NewWindow` is still a stub here.
+/// `project-wizard` crate).
 pub fn register_global_handlers(cx: &mut App) {
-    cx.on_action(|_: &NewWindow, _cx| log::warn!("NewWindow: TODO (bar registries are global)"));
-    cx.on_action(|_: &Save, cx| table::save_now(cx));
+    table::register_global_actions(cx);
+    cx.on_action(|_: &Save, cx| {
+        if let Err(error) = table::save_now(cx)
+            && let Some(window) = cx.active_window()
+        {
+            window
+                .update(cx, |_, window, cx| {
+                    drop(window.prompt(
+                        PromptLevel::Critical,
+                        "Couldn't save your changes.",
+                        Some(error.as_str()),
+                        &["OK"],
+                        cx,
+                    ))
+                })
+                .ok();
+        }
+    });
     // One handler for all three bindings above: which view was showing the selection doesn't
     // change what dropping it means.
     cx.on_action(|_: &table::Deselect, cx| table::clear_selection(cx));
@@ -203,6 +235,38 @@ mod tests {
                 Some("qrate::Deselect"),
                 "{context} drops the selection when no overlay is open"
             );
+        }
+    }
+
+    /// A key bound twice in one context, or globally and in a context too, runs only one of its
+    /// actions and silently hides the other.
+    #[test]
+    fn no_key_means_two_things_in_one_place() {
+        let bindings: Vec<(String, String, &'static str)> = key_bindings()
+            .iter()
+            .map(|binding| {
+                let keys = binding
+                    .keystrokes()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let context = binding
+                    .predicate()
+                    .map(|predicate| predicate.to_string())
+                    .unwrap_or_default();
+                (keys, context, binding.action().name())
+            })
+            .collect();
+        for (ix, (keys, context, action)) in bindings.iter().enumerate() {
+            for (other_keys, other_context, other_action) in &bindings[ix + 1..] {
+                let overlaps =
+                    context == other_context || context.is_empty() || other_context.is_empty();
+                assert!(
+                    keys != other_keys || !overlaps,
+                    "{keys} is {action} in {context:?} and {other_action} in {other_context:?}"
+                );
+            }
         }
     }
 

@@ -89,6 +89,7 @@ pub struct ProjectWizard {
     pub(crate) folder_path: String,
     pub(crate) import_paths: Vec<std::path::PathBuf>,
     pub(crate) folder_match: Option<FolderMatch>,
+    pub(crate) folder_check_generation: u64,
     /// The exact hierarchy shown on Review and consumed by project creation.
     pub(crate) folder_plan: Option<file_ingest::ImportPlan>,
     pub(crate) folder_error: Option<SharedString>,
@@ -275,6 +276,7 @@ impl ProjectWizard {
             folder_path: String::new(),
             import_paths: Vec::new(),
             folder_match: None,
+            folder_check_generation: 0,
             folder_plan: None,
             folder_error: None,
             skip_files: false,
@@ -508,7 +510,28 @@ impl ProjectWizard {
             WizardStep::Files => self.advance_past_files(),
             WizardStep::Link => self.step = WizardStep::Columns,
             WizardStep::Columns => self.step = WizardStep::Review,
-            WizardStep::Review => self.create_project(window, cx),
+            WizardStep::Review => {
+                if settings::dirty::Dirty::has(settings::dirty::PROJECT_DATA, cx)
+                    && let Some(hooks) = cx.try_global::<launcher::LauncherHooks>().copied()
+                {
+                    let wizard = cx.entity().downgrade();
+                    let handle = window.window_handle();
+                    (hooks.resolve_unsaved)(
+                        "Save them before creating another project?",
+                        window,
+                        cx,
+                        Box::new(move |cx| {
+                            handle
+                                .update(cx, |_, window, cx| {
+                                    wizard.update(cx, |this, cx| this.create_project(window, cx))
+                                })
+                                .ok();
+                        }),
+                    );
+                } else {
+                    self.create_project(window, cx);
+                }
+            }
         }
         cx.notify();
     }

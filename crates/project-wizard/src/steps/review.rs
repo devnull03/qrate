@@ -406,6 +406,7 @@ impl ProjectWizard {
                     self.step = WizardStep::Name;
                     return;
                 }
+                settings::dirty::clear(settings::dirty::PROJECT_DATA, cx);
                 recent::record_opened(name, file, cx);
                 // No success screen — hand off to the main app right away.
                 if let Some(hooks) = cx.try_global::<launcher::LauncherHooks>().copied() {

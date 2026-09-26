@@ -1,15 +1,18 @@
 use gpui::*;
 use window_wrapper::OpenBrowser;
 
-use crate::actions::{NewProject, Save, ToggleBottomDock, ToggleLeftDock, ToggleRightDock};
+use crate::actions::{
+    NewProject, Save, ToggleBottomDock, ToggleLeftDock, ToggleProblemsPanel, ToggleRightDock,
+};
 use crate::export::{EXPORT_FORMATS, Export, PluginExport};
 use crate::theming::{SwitchTheme, theme_choices};
 
 // The Edit menu's items act on the grid, so they're the grid's actions — `table` declares and
 // handles them, and this menu only names them.
 use table::{
-    Clear, Copy, Cut, DeleteColumn, DeleteRow, DuplicateRow, InsertColumnLeft, InsertColumnRight,
-    InsertNote, InsertRowAbove, InsertRowBelow, Paste, Redo, RenameColumn, Undo, UnfreezeColumns,
+    Clear, CollapseAll, Copy, Cut, DeleteColumn, DeleteRow, DuplicateRow, ExpandAll, IndentRow,
+    InsertColumnLeft, InsertColumnRight, InsertNote, InsertRowAbove, InsertRowBelow, OutdentRow,
+    Paste, Redo, RenameColumn, Undo, UnfreezeColumns,
 };
 
 actions!(
@@ -173,6 +176,10 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
                 MenuItem::action("Toggle Left Dock", ToggleLeftDock),
                 MenuItem::action("Toggle Bottom Dock", ToggleBottomDock),
                 MenuItem::action("Toggle Right Dock", ToggleRightDock),
+                MenuItem::action("Toggle Problems Panel", ToggleProblemsPanel),
+                MenuItem::Separator,
+                MenuItem::action("Expand All Rows", ExpandAll),
+                MenuItem::action("Collapse All Rows", CollapseAll),
                 MenuItem::Separator,
                 // Freezing *to* a column needs one to point at, which is the column header's
                 // menu; only the release is a global command.
@@ -202,6 +209,9 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
                 MenuItem::action("Load Column Config…", LoadColumnConfig),
                 MenuItem::action("Rename Column…", RenameColumn),
                 MenuItem::Separator,
+                MenuItem::action("Indent Row", IndentRow),
+                MenuItem::action("Outdent Row", OutdentRow),
+                MenuItem::Separator,
                 MenuItem::action("Delete Row", DeleteRow),
                 MenuItem::action("Delete Column", DeleteColumn),
                 MenuItem::Separator,
@@ -228,6 +238,12 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
             name: "Help".into(),
             disabled: false,
             items: vec![
+                MenuItem::action(
+                    "User Guide",
+                    OpenBrowser {
+                        url: format!("{REPO_URL}/blob/main/docs/index.md"),
+                    },
+                ),
                 MenuItem::submenu(Menu {
                     name: "GitHub".into(),
                     disabled: false,

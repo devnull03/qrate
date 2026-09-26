@@ -40,7 +40,7 @@ impl Global for MainWorkspaceHandle {}
 
 use crate::app_settings::build_pages;
 use crate::{
-    actions::{NewProject, ToggleBottomDock, ToggleLeftDock, ToggleRightDock},
+    actions::{NewProject, ToggleBottomDock, ToggleLeftDock, ToggleProblemsPanel, ToggleRightDock},
     app_menus::{
         CopyDebugInfo, LoadColumnConfig, OpenAbout, OpenColumnSettings, OpenLogsFolder,
         OpenPluginsFolder, OpenProjects, OpenSettings, Quit, ReloadPlugins, ReportBug,
@@ -203,32 +203,17 @@ impl App {
 
         // Native X skips `on_app_quit` on Windows (zed#40385/#40290), so flush here too.
         window.on_window_should_close(cx, |window, cx| {
-            // Unsaved cell edits (autosave off, or a pending "timed" save) are the only thing the
-            // user might want to discard — layout/settings auto-persist on the flush below.
             if settings::dirty::Dirty::has(settings::dirty::PROJECT_DATA, cx) {
-                let answer = window.prompt(
-                    PromptLevel::Warning,
-                    "You have unsaved changes.",
-                    Some("Save them before closing?"),
-                    &["Save", "Don't Save", "Cancel"],
+                resolve_unsaved(
+                    "Save them before closing?",
+                    window,
                     cx,
-                );
-                cx.spawn(async move |cx| {
-                    let choice = answer.await.unwrap_or(2);
-                    cx.update(|cx| {
-                        match choice {
-                            // Save: the quit flush persists PROJECT_DATA (still dirty).
-                            0 => {}
-                            // Don't Save: drop the mark so the flush skips it — edits are discarded.
-                            1 => settings::dirty::clear(settings::dirty::PROJECT_DATA, cx),
-                            // Cancel: leave the window open.
-                            _ => return,
-                        }
+                    Box::new(|cx| {
+                        settings::dirty::clear(settings::dirty::PROJECT_DATA, cx);
                         cx.quit();
-                    });
-                })
-                .detach();
-                // Veto this close; the async handler quits once the user decides.
+                    }),
+                );
+                // Veto this close; the prompt quits once the user decides.
                 return false;
             }
             flush_all_state(cx);
@@ -287,6 +272,11 @@ impl Render for App {
             }))
             .on_action(cx.listener(|this, _: &ToggleRightDock, window, cx| {
                 this.toggle_dock(DockPlacement::Right, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleProblemsPanel, window, cx| {
+                if let Some(dock) = this.workspace.read(cx).dock_area().upgrade() {
+                    workspace::PanelRegistry::toggle("ProblemsPanel", &dock, window, cx);
+                }
             }))
             // Same reason as the dock toggles: switching views re-arranges the docks, so it needs
             // a `Window`, and it has to fire with focus in any panel — not just the centre.
@@ -471,53 +461,102 @@ fn flush_all_state(cx: &mut gpui::App) {
         log::error!("failed to flush app settings on quit: {err}");
     }
     // Flush unsaved cell edits (a pending "timed" autosave, or edits made with autosave off).
-    if settings::dirty::Dirty::has(settings::dirty::PROJECT_DATA, cx) {
-        table::save_now(cx);
+    if settings::dirty::Dirty::has(settings::dirty::PROJECT_DATA, cx)
+        && let Err(error) = table::save_now(cx)
+    {
+        log::error!("unsaved cell edits could not be written on quit: {error}");
     }
-    // Everything above reached disk synchronously, so nothing is outstanding.
-    settings::dirty::clear_all(cx);
+    // Everything else reached disk synchronously above; cell edits stay marked if their save failed.
+    for domain in settings::dirty::Dirty::domains(cx) {
+        if domain != settings::dirty::PROJECT_DATA {
+            settings::dirty::clear(domain, cx);
+        }
+    }
     agent_bridge::shutdown();
 }
 
-pub(crate) fn restart_for_update(_: &ClickEvent, window: &mut Window, cx: &mut gpui::App) {
-    let restart = |cx: &mut gpui::App| match update_check::prepare_restart(cx) {
-        Ok(helper) => {
-            flush_all_state(cx);
-            cx.set_restart_path(helper);
-            cx.restart();
-        }
-        Err(error) => {
-            log::error!("failed to prepare update restart: {error:#}");
-            if let Some(updater) = update_check::AutoUpdater::get(cx) {
-                updater.update(cx, |updater, cx| updater.fail_restart(&error, cx));
-            }
-        }
-    };
-
+/// Runs `then` once unsaved cell edits are saved or knowingly dropped, asking on `window` if there
+/// are any. Cancel never runs it, and a failed save asks again with the error.
+pub(crate) fn resolve_unsaved(
+    detail: &str,
+    window: &mut Window,
+    cx: &mut gpui::App,
+    then: Box<dyn FnOnce(&mut gpui::App)>,
+) {
     if !settings::dirty::Dirty::has(settings::dirty::PROJECT_DATA, cx) {
-        restart(cx);
+        cx.defer(then);
         return;
     }
-
     let answer = window.prompt(
         PromptLevel::Warning,
         "You have unsaved changes.",
-        Some("Save them before restarting to update?"),
+        Some(detail),
         &["Save", "Don't Save", "Cancel"],
         cx,
     );
+    let handle = window.window_handle();
+    let detail = detail.to_string();
     cx.spawn(async move |cx| {
         let choice = answer.await.unwrap_or(2);
-        cx.update(|cx| {
-            match choice {
-                0 => {}
-                1 => settings::dirty::clear(settings::dirty::PROJECT_DATA, cx),
-                _ => return,
+        cx.update(|cx| match choice {
+            0 => match table::save_now(cx) {
+                Ok(()) => then(cx),
+                Err(error) => {
+                    let detail = format!("Saving failed: {error}\n\n{detail}");
+                    handle
+                        .update(cx, |_, window, cx| {
+                            resolve_unsaved(&detail, window, cx, then)
+                        })
+                        .ok();
+                }
+            },
+            1 => {
+                then(cx);
             }
-            restart(cx);
+            _ => {}
         });
     })
     .detach();
+}
+
+/// [`resolve_unsaved`] for a menu command, which arrives with no window: it asks on the main
+/// window, the one holding the edits.
+fn resolve_unsaved_from_menu(
+    detail: &'static str,
+    cx: &mut gpui::App,
+    then: Box<dyn FnOnce(&mut gpui::App)>,
+) {
+    match WindowRegistry::focus_or_clear(MAIN_WINDOW_KIND, cx) {
+        Some(main) => {
+            main.update(cx, |_, window, cx| {
+                resolve_unsaved(detail, window, cx, then)
+            })
+            .ok();
+        }
+        None => then(cx),
+    }
+}
+
+pub(crate) fn restart_for_update(_: &ClickEvent, window: &mut Window, cx: &mut gpui::App) {
+    resolve_unsaved(
+        "Save them before restarting to update?",
+        window,
+        cx,
+        Box::new(|cx| match update_check::prepare_restart(cx) {
+            Ok(helper) => {
+                settings::dirty::clear(settings::dirty::PROJECT_DATA, cx);
+                flush_all_state(cx);
+                cx.set_restart_path(helper);
+                cx.restart();
+            }
+            Err(error) => {
+                log::error!("failed to prepare update restart: {error:#}");
+                if let Some(updater) = update_check::AutoUpdater::get(cx) {
+                    updater.update(cx, |updater, cx| updater.fail_restart(&error, cx));
+                }
+            }
+        }),
+    );
 }
 
 fn main() {
@@ -576,6 +615,7 @@ fn main() {
         // the real main window without a crate cycle. See `project_wizard::launcher`.
         cx.set_global(LauncherHooks {
             open_main_window,
+            resolve_unsaved,
             title_items: title_items::launcher_bar::LauncherBar::view,
         });
 
@@ -671,7 +711,14 @@ fn main() {
         });
 
         cx.on_action(|_: &Quit, cx| {
-            cx.quit();
+            resolve_unsaved_from_menu(
+                "Save them before quitting?",
+                cx,
+                Box::new(|cx| {
+                    settings::dirty::clear(settings::dirty::PROJECT_DATA, cx);
+                    cx.quit();
+                }),
+            )
         });
 
         cx.spawn(async move |cx| {
@@ -703,7 +750,11 @@ fn main() {
                     }
                     Err(error) => {
                         log::error!("could not open project {}: {error:#}", path.display());
-                        false
+                        project_wizard::open_launcher_with_error(
+                            format!("Couldn't open {} — {error:#}", path.display()).into(),
+                            cx,
+                        );
+                        true
                     }
                 },
             ) => {}

@@ -156,6 +156,7 @@ impl AutoUpdater {
                 self.status,
                 UpdateStatus::Ready { .. } | UpdateStatus::Restarting
             )
+            || (!manual && self.visible() && matches!(self.status, UpdateStatus::Error { .. }))
         {
             return;
         }
@@ -347,21 +348,35 @@ fn helper_path(installation: &Installation) -> PathBuf {
 }
 
 pub fn init(cx: &mut App) {
-    if cfg!(debug_assertions) {
+    let failed_update = if cfg!(debug_assertions) {
         log::info!("automatic updates are disabled in development builds");
+        None
     } else {
         let current = Version::parse(env!("CARGO_PKG_VERSION")).expect("package version is SemVer");
         match updater::mark_healthy(&current) {
             Ok(Some(receipt)) if receipt.status == updater::ReceiptStatus::Failed => {
-                log::error!("previous update failed: {}", receipt.message)
+                log::error!("previous update failed: {}", receipt.message);
+                Some(receipt.message)
             }
-            Err(error) => log::warn!("could not finalize previous update: {error:#}"),
-            _ => {}
+            Err(error) => {
+                log::warn!("could not finalize previous update: {error:#}");
+                None
+            }
+            _ => None,
         }
-    }
+    };
     let updater = cx.new(AutoUpdater::new);
     cx.set_global(GlobalUpdater(updater.clone()));
-    updater.update(cx, |updater, cx| updater.start_polling(cx));
+    updater.update(cx, |updater, cx| {
+        if let Some(message) = failed_update {
+            updater.status = UpdateStatus::Error {
+                stage: "install",
+                message: message.into(),
+                manual: true,
+            };
+        }
+        updater.start_polling(cx)
+    });
 }
 
 pub fn check_now(cx: &mut App) {
