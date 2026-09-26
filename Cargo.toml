@@ -9,6 +9,7 @@ members = [
   "crates/components",
   "crates/data-exchange",
   "crates/diagnostics",
+  "crates/onboarding",
   "crates/file-ingest",
   "crates/plugin-api",
   "crates/plugin-host",

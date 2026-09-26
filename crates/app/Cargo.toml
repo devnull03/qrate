@@ -36,6 +36,7 @@ keyring = { version = "3", features = [
   "crypto-rust",
 ] }
 window-wrapper = { path = "../window-wrapper" }
+onboarding = { path = "../onboarding" }
 project-wizard = { path = "../project-wizard" }
 checks = { path = "../checks" }
 data-exchange = { path = "../data-exchange" }

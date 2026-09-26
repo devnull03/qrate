@@ -135,6 +135,10 @@ pub struct ViewsPanel {
     _changed_sub: Option<Subscription>,
     /// Mounts and unmounts the centre-scoped photo overlay as cards are clicked and dismissed.
     _viewer_sub: Subscription,
+    /// Repaints the extensions' centre overlays when one of them says they changed.
+    _overlays_sub: Subscription,
+    /// The body's last measured size, so extensions hear about a resize once, not per frame.
+    body_size: Size<Pixels>,
     /// Cards per row in the gallery. Owned here rather than in `gallery::render`, which is a free
     /// function with no state of its own to keep between frames.
     thumb: Entity<SliderState>,
@@ -190,6 +194,9 @@ impl ViewsPanel {
             }),
             _changed_sub: None,
             _viewer_sub: cx.observe_global::<crate::viewer::ActiveViewer>(|_, cx| cx.notify()),
+            _overlays_sub: cx
+                .observe_global::<crate::extension::OverlaysChanged>(|_, cx| cx.notify()),
+            body_size: Size::default(),
             thumb,
             _thumb_sub,
             _table_sub: cx.observe(&table, |_, _, cx| cx.notify()),
@@ -273,11 +280,17 @@ impl ViewsPanel {
                 };
                 switch(&this, mode, window, cx);
             })
-            .children(
-                ViewMode::ALL
-                    .into_iter()
-                    .map(|mode| Tab::new().icon(mode.icon()).label(mode.label())),
-            )
+            // Icon and name as the tab's content, not `.icon()` + `.label()`: the library draws
+            // an iconed tab as a fixed icon-only square and drops its label.
+            .children(ViewMode::ALL.into_iter().map(|mode| {
+                Tab::new().aria_label(mode.label()).child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(Icon::new(mode.icon()).size_3p5())
+                        .child(mode.label()),
+                )
+            }))
     }
 }
 
@@ -322,6 +335,7 @@ fn switch(panel: &Entity<ViewsPanel>, mode: ViewMode, window: &mut Window, cx: &
         let focus = panel.read(cx).focus_handle.clone();
         focus.focus(window, cx);
     }
+    crate::extension::view_changed(mode, cx);
     // The switcher is drawn by the parent `TabPanel` (via `Panel::title`), which does not observe
     // this panel — `cx.notify()` above repaints the body but leaves the highlight on the old tab.
     // Switching views is a rare, deliberate click, so a full redraw is the cheap honest fix.
@@ -469,6 +483,15 @@ impl Render for ViewsPanel {
                                         cx.notify();
                                     }
                                 });
+                                // Extensions hear the size only when it changes, not per frame.
+                                let resized = this.update(cx, |this, _| {
+                                    let resized = this.body_size != bounds.size;
+                                    this.body_size = bounds.size;
+                                    resized
+                                });
+                                if resized {
+                                    crate::extension::centre_resized(bounds.size, cx);
+                                }
                             },
                             |_, _, _, _| {},
                         )
@@ -492,7 +515,9 @@ impl Render for ViewsPanel {
                             )
                         }
                     })
-                    .children(crate::viewer::viewer_in(ViewerScope::Centre, cx)),
+                    .children(crate::viewer::viewer_in(ViewerScope::Centre, cx))
+                    // Extensions' layers over the view, under nothing else.
+                    .children(crate::extension::centre_overlays(cx)),
             )
     }
 }

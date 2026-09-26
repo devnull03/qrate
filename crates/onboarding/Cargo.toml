@@ -1,0 +1,16 @@
+[package]
+name = "onboarding"
+version.workspace = true
+edition.workspace = true
+
+# Getting started: the workspace guide card, its one-time tips and the export tip. A crate of its
+# own so onboarding can grow without threading through `workspace`: it plugs in as a
+# `workspace::WorkspaceExtension` and reads the grid through `table`'s public facts.
+
+[dependencies]
+gpui.workspace = true
+gpui-component.workspace = true
+diagnostics = { path = "../diagnostics" }
+settings = { path = "../settings" }
+table = { path = "../table" }
+workspace = { path = "../workspace" }
