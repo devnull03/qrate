@@ -133,7 +133,7 @@ pub struct QrateTableDelegate {
     /// Hierarchy depth parallel to `visible_rows`.
     visible_depths: Vec<usize>,
     hierarchy: Hierarchy,
-    default_level: String,
+    pub(crate) default_level: String,
     /// Per-data-column set of *excluded* cell values, parallel to `columns`. Empty = no filter.
     filters: Vec<HashSet<SharedString>>,
     /// Whether each column offers a filter dropdown at all, parallel to `columns`. Off for every
@@ -149,6 +149,8 @@ pub struct QrateTableDelegate {
     /// Undo/redo stack for cell edits and shape changes alike, so a delete and the typing before
     /// it come back in the order they went in.
     history: History,
+    /// How many steps `history` keeps; [`crate::undo_steps`], pushed in with the other settings.
+    pub(crate) undo_cap: usize,
     /// Log entries for changes not yet saved. They reach the `.qrate` file with the data they
     /// describe, and are dropped with it when a project is closed without saving.
     unsaved: Vec<Entry>,
@@ -195,6 +197,7 @@ impl QrateTableDelegate {
             subdelimiter: SharedString::default(),
             values_generation: 0,
             history: History::default(),
+            undo_cap: crate::DEFAULT_UNDO_STEPS,
             unsaved: Vec::new(),
             stamped_history: 0,
             saved_history: 0,
@@ -899,7 +902,7 @@ impl QrateTableDelegate {
         self.edits += 1;
         let changes = self.changes(&step);
         self.log(origin, changes);
-        self.history.push(step);
+        self.history.push(step, self.undo_cap);
     }
 
     fn log(&mut self, origin: Origin, changes: Vec<Change>) {
@@ -1055,7 +1058,7 @@ impl QrateTableDelegate {
             }
         }
         self.log(Origin::Restore(to), applied.clone());
-        self.history.push(Step::Batch(steps));
+        self.history.push(Step::Batch(steps), self.undo_cap);
         self.editing = EditState::Idle;
         applied
     }

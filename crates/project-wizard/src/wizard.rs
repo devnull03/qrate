@@ -201,11 +201,18 @@ impl ProjectWizard {
                 .default_value("Item")
         });
 
-        let default_save_dir = dirs::document_dir()
-            .map(|d| d.join("qrate"))
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
+        let default_save_dir = cx
+            .try_global::<settings::AppSettings>()
+            .and_then(|settings| settings.values.get(crate::NEW_PROJECT_FOLDER_KEY))
+            .map(|folder| folder.text().to_string())
+            .filter(|folder| std::path::Path::new(folder).is_dir())
+            .unwrap_or_else(|| {
+                dirs::document_dir()
+                    .map(|d| d.join("qrate"))
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            });
         let save_path_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Choose a folder…")

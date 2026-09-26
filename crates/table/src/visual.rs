@@ -94,6 +94,35 @@ pub(crate) fn init(cx: &mut App) {
     });
 }
 
+/// Whether any visual search weights are on disk, installed or half-downloaded.
+pub fn model_on_disk() -> bool {
+    settings::data_dir().is_some_and(|dir| dir.join("models").exists())
+}
+
+/// Delete `<data dir>/models`. Refused while a download or an indexing job is using it; the
+/// vectors already in the project stay, and are used again once the model is reinstalled.
+pub fn remove_model(cx: &mut App) -> anyhow::Result<()> {
+    let Some(dir) = settings::data_dir().map(|dir| dir.join("models")) else {
+        anyhow::bail!("qrate's data folder is unavailable");
+    };
+    if cx
+        .try_global::<Visual>()
+        .is_some_and(|visual| visual.job.is_some())
+    {
+        anyhow::bail!("visual search is downloading or indexing; try again when it finishes");
+    }
+    if cx.has_global::<Visual>() {
+        let visual = state(cx);
+        visual.clip = None;
+        visual.status = Status::Missing;
+    }
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)?;
+    }
+    log::info!("removed the visual search model from {}", dir.display());
+    Ok(())
+}
+
 /// For writes only: every call notifies the global's observers, which re-run the search bar.
 fn state(cx: &mut App) -> &mut Visual {
     cx.global_mut::<Visual>()

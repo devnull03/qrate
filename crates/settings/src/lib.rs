@@ -222,6 +222,14 @@ pub enum Setting {
         description: &'static str,
         options: &'static [(&'static str, &'static str)],
     },
+    /// A [`Setting::Dropdown`] whose consumer has to be told, as `TextWithAction` is to Text.
+    DropdownWithAction {
+        key: &'static str,
+        label: &'static str,
+        description: &'static str,
+        options: &'static [(&'static str, &'static str)],
+        on_change: fn(&mut App),
+    },
     FilePicker {
         key: &'static str,
         label: &'static str,
@@ -323,6 +331,32 @@ impl Setting {
                 )
                 .description(described(description, key, cx))
             }
+
+            Setting::DropdownWithAction {
+                key,
+                label,
+                description,
+                options,
+                on_change,
+            } => SettingItem::new(
+                label,
+                resettable(
+                    key,
+                    SettingField::dropdown(
+                        options
+                            .iter()
+                            .map(|(k, v)| ((*k).into(), (*v).into()))
+                            .collect(),
+                        move |cx: &App| scoped_text(key, cx),
+                        move |val: SharedString, cx: &mut App| {
+                            set_scoped_text(key, val, cx);
+                            on_change(cx);
+                        },
+                    ),
+                    Some(on_change),
+                ),
+            )
+            .description(described(description, key, cx)),
 
             Setting::FilePicker {
                 key,

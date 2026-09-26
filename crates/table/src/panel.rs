@@ -63,6 +63,13 @@ fn map_spreadsheet_headers(
 
 pub(crate) const FROZEN_COLUMNS_KEY: &str = "table_frozen_columns";
 
+/// A grid row's height. Scaled with the rem, which is what the UI scale moves, so a row still
+/// fits its text at 150%. Padding stays the library's: the floating editor is laid out against it.
+fn row_height(compact: bool, rem: Pixels) -> Pixels {
+    let base = if compact { 28. } else { 32. };
+    px(base * f32::from(rem) / 16.)
+}
+
 /// Push the settings the delegate caches into it. Called wherever either store changes, since the
 /// delegate reads no settings itself — it has no `App` in the paths that need them.
 fn apply_settings(delegate: &mut QrateTableDelegate, cx: &App) {
@@ -83,7 +90,11 @@ fn apply_settings(delegate: &mut QrateTableDelegate, cx: &App) {
                 })
                 .collect(),
         );
+        delegate.default_level =
+            settings::description::DescriptionConfig::from_values(&project.data.values)
+                .file_level_key;
     }
+    delegate.undo_cap = crate::undo_steps(cx);
     let column_settings = settings::columns::load(cx);
     let filters_on = settings::columns::filters_master_enabled(cx);
     delegate.apply_column_settings(
@@ -1958,6 +1969,7 @@ impl Focusable for TablePanel {
 impl Render for TablePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let stripe = settings::effective_bool(crate::TABLE_STRIPES_KEY, cx);
+        let compact = settings::effective_text(crate::ROW_DENSITY_KEY, cx).as_ref() == "compact";
 
         v_flex()
             .size_full()
@@ -2008,6 +2020,7 @@ impl Render for TablePanel {
                     .flex_1()
                     .min_h_0()
                     .relative()
+                    .when(compact, |table| table.text_sm())
                     // Record the table area's rect so the floating cell editor can wrap to it and
                     // stay clamped inside it (never over a side panel).
                     .child(
@@ -2027,7 +2040,15 @@ impl Render for TablePanel {
                         .absolute()
                         .size_full(),
                     )
-                    .child(DataTable::new(&self.state).bordered(false).stripe(stripe))
+                    .child(
+                        DataTable::new(&self.state)
+                            .bordered(false)
+                            .stripe(stripe)
+                            .with_size(gpui_component::Size::Size(row_height(
+                                compact,
+                                window.rem_size(),
+                            ))),
+                    )
                     // A sibling of the table, not a child of the edited cell: the grid virtualizes
                     // rows and columns away, and the box has to outlive that.
                     .children(self.cell_editor(window, cx)),
@@ -2101,6 +2122,13 @@ mod tests {
     use diagnostics::{DATASET_MAIN, Diagnostic, Diagnostics, Location, Severity, Source};
     use gpui::{SharedString, TestAppContext};
     use settings::history::Origin;
+
+    #[test]
+    fn row_height_follows_density_and_the_ui_scale() {
+        assert_eq!(super::row_height(false, gpui::px(16.)), gpui::px(32.));
+        assert_eq!(super::row_height(true, gpui::px(16.)), gpui::px(28.));
+        assert_eq!(super::row_height(false, gpui::px(24.)), gpui::px(48.));
+    }
 
     #[test]
     fn spreadsheet_headers_map_by_name_and_reject_ambiguous_sources() {

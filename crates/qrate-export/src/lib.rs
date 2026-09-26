@@ -13,8 +13,8 @@ pub mod wasm;
 
 pub use columns::ColumnType;
 pub use export::{
-    ArchiveFile, CSL_FIELDS, CslMapping, ExportComponent, csl_items, csv_bytes, derive_csl_mapping,
-    jsonld_hierarchy_value, project_structure_columns, xlsx_bytes, zip_to,
+    ArchiveFile, CSL_FIELDS, CslMapping, CsvOptions, ExportComponent, csl_items, csv_bytes,
+    derive_csl_mapping, jsonld_hierarchy_value, project_structure_columns, xlsx_bytes, zip_to,
 };
 pub use notes::{ProjectNote, SheetNote, read_project_notes, sheet_note_request_body, sheet_notes};
 pub use photos::PhotoIndex;

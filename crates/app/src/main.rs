@@ -608,6 +608,7 @@ fn main() {
             writer: Some(settings::project::ProjectSettingsWriter::start()),
         });
         settings::dirty::init(cx);
+        preview::cache::set_cap(app_settings::preview_cache_bytes(cx));
         theming::init(cx);
         cx.set_global(WindowRegistry::default());
 

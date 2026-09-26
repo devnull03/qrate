@@ -74,21 +74,60 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                 .layout(Axis::Vertical),
             ))
             .group(
-                divided_group(cx).title("Appearance").item(SettingItem::new(
-                    "Theme",
-                    SettingField::scrollable_dropdown(
-                        crate::theming::theme_choices(cx)
-                            .into_iter()
-                            .map(|name| (name.clone(), name))
-                            .collect(),
-                        |cx: &App| cx.theme().theme_name().clone(),
-                        |name: SharedString, cx: &mut App| {
-                            cx.dispatch_action(&crate::theming::SwitchTheme {
-                                name: name.to_string(),
-                            });
-                        },
+                divided_group(cx)
+                    .title("Appearance")
+                    .item(SettingItem::new(
+                        "Theme",
+                        SettingField::scrollable_dropdown(
+                            crate::theming::theme_choices(cx)
+                                .into_iter()
+                                .map(|name| (name.clone(), name))
+                                .collect(),
+                            |cx: &App| cx.theme().theme_name().clone(),
+                            |name: SharedString, cx: &mut App| {
+                                cx.dispatch_action(&crate::theming::SwitchTheme {
+                                    name: name.to_string(),
+                                });
+                            },
+                        ),
+                    ))
+                    .item(
+                        SettingItem::new(
+                            "Interface size",
+                            SettingField::dropdown(
+                                options(crate::theming::UI_SCALES),
+                                |cx: &App| {
+                                    settings::AppSettings::get(cx)
+                                        .values
+                                        .get(crate::theming::UI_SCALE_KEY)
+                                        .map(|value| value.text())
+                                        .unwrap_or_default()
+                                },
+                                |scale: SharedString, cx: &mut App| {
+                                    settings::AppSettings::set_text(
+                                        crate::theming::UI_SCALE_KEY,
+                                        scale,
+                                        cx,
+                                    );
+                                    crate::theming::apply_ui_scale(cx);
+                                },
+                            ),
+                        )
+                        .description("Scales the text and controls of every qrate window."),
                     ),
-                )),
+            )
+            .group(
+                divided_group(cx).title("New projects").item(
+                    Setting::DirPicker {
+                        key: project_wizard::NEW_PROJECT_FOLDER_KEY,
+                        label: "Save new projects in",
+                        description: "Where the New Project wizard suggests saving. qrate \
+                                      remembers the last folder you created a project in; \
+                                      leave empty for Documents\\qrate.",
+                        prompt: "Choose folder",
+                    }
+                    .into_item(cx),
+                ),
             )
             .group(
                 divided_group(cx).title("Updates").item(
@@ -109,14 +148,90 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
             ),
         SettingPage::new("Table")
             .group(
-                divided_group(cx).title("Appearance").item(
-                    Setting::Switch {
-                        key: table::TABLE_STRIPES_KEY,
-                        label: "Row Stripes",
-                        description: "Alternate row background color in the data table.",
+                divided_group(cx)
+                    .title("Appearance")
+                    .item(
+                        Setting::Switch {
+                            key: table::TABLE_STRIPES_KEY,
+                            label: "Row Stripes",
+                            description: "Alternate row background color in the data table.",
+                        }
+                        .into_item(cx),
+                    )
+                    .item(
+                        Setting::Dropdown {
+                            key: table::ROW_DENSITY_KEY,
+                            label: "Row density",
+                            description: "Compact rows use smaller text and fit more of the \
+                                          collection on screen.",
+                            options: table::ROW_DENSITIES,
+                        }
+                        .into_item(cx),
+                    ),
+            )
+            .group(
+                divided_group(cx).title("Editing").item(
+                    Setting::Dropdown {
+                        key: table::UNDO_STEPS_KEY,
+                        label: "Undo steps",
+                        description: "How many edits Undo can step back through. Each step keeps \
+                                      what it replaced, so a deeper history holds more memory.",
+                        options: table::UNDO_STEPS,
                     }
                     .into_item(cx),
                 ),
+            )
+            .group(
+                divided_group(cx).title("Checks").item(
+                    Setting::DropdownWithAction {
+                        key: checks::dates::DATE_FORMAT_KEY,
+                        label: "Date format",
+                        description: "What a Date column accepts. EDTF allows uncertain and \
+                                      approximate dates such as 1987? and 1987~. ISO 8601 only \
+                                      allows YYYY, YYYY-MM and YYYY-MM-DD. Lenient also allows \
+                                      circa 1920, ca. 1920, 1920s and [1920?].",
+                        options: checks::dates::DATE_FORMATS,
+                        on_change: revalidate_dates,
+                    }
+                    .into_item(cx),
+                ),
+            )
+            .group(
+                divided_group(cx)
+                    .title("CSV export")
+                    .item(
+                        SettingItem::new(
+                            "Byte order mark",
+                            SettingField::switch(
+                                |cx: &App| {
+                                    settings::scoped_text(crate::export::CSV_BOM_KEY, cx)
+                                        != "false"
+                                },
+                                |on: bool, cx: &mut App| {
+                                    settings::set_scoped_text(
+                                        crate::export::CSV_BOM_KEY,
+                                        if on { "true" } else { "false" }.into(),
+                                        cx,
+                                    );
+                                },
+                            ),
+                        )
+                        .description(
+                            "Start the file with a UTF-8 marker. Excel on Windows needs it to \
+                             show accented letters correctly; some older import scripts do not \
+                             expect it.",
+                        ),
+                    )
+                    .item(
+                        Setting::Dropdown {
+                            key: crate::export::CSV_DELIMITER_KEY,
+                            label: "Separator",
+                            description: "Excel in regions that write decimals with a comma \
+                                          expects semicolons.",
+                            options: crate::export::CSV_DELIMITERS,
+                        }
+                        .into_item(cx),
+                    ),
             )
             .group(saving_group(cx))
             .group(history_group(cx))
@@ -168,6 +283,39 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
     ];
     pages.extend(plugin_pages(cx));
     pages
+}
+
+fn options(pairs: &[(&'static str, &'static str)]) -> Vec<(SharedString, SharedString)> {
+    pairs
+        .iter()
+        .map(|(value, label)| ((*value).into(), (*label).into()))
+        .collect()
+}
+
+fn revalidate_dates(cx: &mut App) {
+    checks::dates::sync_mode(cx);
+    table::revalidate_now(cx);
+}
+
+/// `AppSettings` key for the thumbnail cache's ceiling, in MB. A machine's disk is not project
+/// data, so this has no project scope.
+const PREVIEW_CACHE_KEY: &str = "preview_cache_size";
+
+const PREVIEW_CACHE_SIZES: &[(&str, &str)] = &[
+    ("512", "512 MB"),
+    ("1024", "1 GB"),
+    ("", "2 GB (default)"),
+    ("5120", "5 GB"),
+];
+
+pub fn preview_cache_bytes(cx: &App) -> u64 {
+    let megabytes = settings::AppSettings::get(cx)
+        .values
+        .get(PREVIEW_CACHE_KEY)
+        .and_then(|value| value.text().parse::<u64>().ok())
+        .filter(|megabytes| *megabytes > 0)
+        .unwrap_or(2048);
+    megabytes * 1024 * 1024
 }
 
 fn divided_group(cx: &App) -> SettingGroup {
@@ -609,8 +757,84 @@ fn previews_group(cx: &App) -> SettingGroup {
         )
         .description(
             "Downscaled copies of your files, so photos and scans open instantly the second time. \
-             They are capped at 2 GB and rebuilt as you browse, so deleting them is safe — it \
-             only makes the next look at each file slower.",
+             They are rebuilt as you browse, so deleting them is safe — it only makes the next \
+             look at each file slower.",
+        ),
+    )
+    .item(
+        SettingItem::new(
+            "Cache size",
+            SettingField::dropdown(
+                options(PREVIEW_CACHE_SIZES),
+                |cx: &App| {
+                    settings::AppSettings::get(cx)
+                        .values
+                        .get(PREVIEW_CACHE_KEY)
+                        .map(|value| value.text())
+                        .unwrap_or_default()
+                },
+                |size: SharedString, cx: &mut App| {
+                    settings::AppSettings::set_text(PREVIEW_CACHE_KEY, size, cx);
+                    let bytes = preview_cache_bytes(cx);
+                    preview::cache::set_cap(bytes);
+                    cx.background_spawn(async move {
+                        if let Some(dir) = preview::cache::dir() {
+                            preview::cache::prune(&dir, bytes);
+                        }
+                    })
+                    .detach();
+                },
+            ),
+        )
+        .description("The oldest thumbnails are dropped once the cache is larger than this."),
+    )
+    .item(
+        SettingItem::new(
+            "Visual search model",
+            SettingField::element(|_opts: &_, _window: &mut _, _cx: &mut App| {
+                Button::new("remove-visual-model")
+                    .small()
+                    .label("Remove model…")
+                    .disabled(!table::visual_model_on_disk())
+                    .on_click(|_, window, cx| {
+                        let answer = window.prompt(
+                            PromptLevel::Warning,
+                            "Remove the visual search model?",
+                            Some(
+                                "This frees about 600 MB. Visual search stops working until you \
+                                 download the model again from the search bar.",
+                            ),
+                            &["Remove", "Cancel"],
+                            cx,
+                        );
+                        let handle = window.window_handle();
+                        cx.spawn(async move |cx| {
+                            if answer.await.unwrap_or(1) != 0 {
+                                return;
+                            }
+                            let removed = cx.update(table::remove_visual_model);
+                            if let Err(err) = removed {
+                                log::warn!("did not remove the visual search model: {err:#}");
+                                let _ = cx.update_window(handle, |_, window, cx| {
+                                    window.prompt(
+                                        PromptLevel::Info,
+                                        "The model was not removed",
+                                        Some(&err.to_string()),
+                                        &["OK"],
+                                        cx,
+                                    )
+                                });
+                            }
+                            cx.update(|cx| cx.refresh_windows());
+                        })
+                        .detach();
+                    })
+                    .into_any_element()
+            }),
+        )
+        .description(
+            "The CLIP weights visual search downloads into qrate's data folder. Removing them \
+             is refused while the model is downloading or indexing.",
         ),
     )
 }
@@ -1713,7 +1937,8 @@ fn descriptions_group(project: &CurrentProject, headers: &[ColumnItem], cx: &App
 /// cannot be emptied: a column always has a type, and that is the one it has when nothing is said.
 fn data_types_group(headers: Vec<ColumnItem>, cx: &App) -> SettingGroup {
     let mut group = divided_group(cx).title("Data types").description(
-        "What a column holds. Checks key off this: dates are validated as EDTF, filenames are \
+        "What a column holds. Checks key off this: dates are validated in the Table ▸ Checks \
+         date format, filenames are \
          resolved against the files folder, and only text is spell-checked.",
     );
     for ty in columns::ColumnType::ALL {
@@ -1807,6 +2032,115 @@ fn project_page(cx: &App) -> SettingPage {
                         table::revalidate_now(cx);
                     },
                 )),
+        )
+        .group({
+            let description = |cx: &App| {
+                cx.try_global::<CurrentProject>()
+                    .map(|project| {
+                        settings::description::DescriptionConfig::from_values(&project.data.values)
+                    })
+                    .unwrap_or_else(|| settings::description::DescriptionProfile::Rad.defaults())
+            };
+            let store = |config: settings::description::DescriptionConfig, cx: &mut App| {
+                for (key, value) in config.values() {
+                    CurrentProject::set_text(key, value.into(), cx);
+                }
+            };
+            let level = move |label: &'static str, folder: bool| {
+                SettingItem::new(
+                    label,
+                    SettingField::input(
+                        move |cx: &App| {
+                            let config = description(cx);
+                            let key = match folder {
+                                true => &config.folder_level_key,
+                                false => &config.file_level_key,
+                            };
+                            config
+                                .levels
+                                .iter()
+                                .find(|level| &level.key == key)
+                                .map(|level| SharedString::from(level.label.clone()))
+                                .unwrap_or_default()
+                        },
+                        move |label: SharedString, cx: &mut App| {
+                            let mut config = description(cx);
+                            let key = match folder {
+                                true => config.folder_level_key.clone(),
+                                false => config.file_level_key.clone(),
+                            };
+                            config.relabel(&key, &label);
+                            store(config, cx);
+                        },
+                    ),
+                )
+                .layout(Axis::Vertical)
+            };
+            divided_group(cx)
+                .title("Description")
+                .item(
+                    SettingItem::new(
+                        "Description standard",
+                        SettingField::dropdown(
+                            settings::description::DescriptionProfile::ALL
+                                .into_iter()
+                                .map(|profile| (profile.key().into(), profile.label().into()))
+                                .collect(),
+                            move |cx: &App| description(cx).profile.key().into(),
+                            move |key: SharedString, cx: &mut App| {
+                                let profile =
+                                    settings::description::DescriptionProfile::parse(&key);
+                                let config = description(cx);
+                                if config.profile != profile {
+                                    store(config.with_profile(profile), cx);
+                                }
+                            },
+                        ),
+                    )
+                    .description(
+                        "The levels of description rows can be filed under. Changing it sets what \
+                         new rows and imported folders and files default to; rows already filed \
+                         keep their level, and their levels stay available.",
+                    ),
+                )
+                .item(
+                    level("Imported folders are", true).description(
+                        "What a folder brought in by an import is called at its level.",
+                    ),
+                )
+                .item(level("Imported files are", false).description(
+                    "What a file brought in by an import, or a new row, is called at its level.",
+                ))
+        })
+        .group(
+            divided_group(cx).title("Import").item(
+                SettingItem::new(
+                    "Files already in the project",
+                    SettingField::dropdown(
+                        options(settings::project::IMPORT_DUPLICATE_POLICIES),
+                        |cx: &App| {
+                            cx.try_global::<CurrentProject>()
+                                .and_then(|p| {
+                                    p.data
+                                        .values
+                                        .get(settings::project::IMPORT_DUPLICATE_POLICY_KEY)
+                                })
+                                .map(|v| v.text())
+                                .unwrap_or_else(|| "skip".into())
+                        },
+                        |policy: SharedString, cx: &mut App| {
+                            CurrentProject::set_text(
+                                settings::project::IMPORT_DUPLICATE_POLICY_KEY,
+                                policy,
+                                cx,
+                            );
+                        },
+                    ),
+                )
+                .description(
+                    "What importing a file does when a row already links to it or names it.",
+                ),
+            ),
         )
 }
 

@@ -159,7 +159,8 @@ impl Project {
             .unwrap_or(JsValue::NULL)
     }
     pub fn to_csv(&self) -> Result<Vec<u8>, JsError> {
-        crate::csv_bytes(&self.headers, &self.rows).map_err(|e| error("write", e))
+        crate::csv_bytes(&self.headers, &self.rows, crate::CsvOptions::default())
+            .map_err(|e| error("write", e))
     }
     pub fn to_xlsx(&self) -> Result<Vec<u8>, JsError> {
         crate::xlsx_bytes(&self.headers, &self.rows, &self.sheet_notes)

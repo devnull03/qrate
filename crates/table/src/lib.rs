@@ -36,6 +36,7 @@ pub use panel::{
     RelinkMissingFiles, RenameColumn, Replace, Search, TablePanel, Undo, UnfreezeColumns,
     register_global_actions,
 };
+pub use visual::{model_on_disk as visual_model_on_disk, remove_model as remove_visual_model};
 
 /// Global command handle for import entry points outside the centre table, such as Details.
 pub struct TablePanelHandle(pub WeakEntity<TablePanel>);
@@ -43,6 +44,34 @@ impl Global for TablePanelHandle {}
 
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
 pub const TABLE_STRIPES_KEY: &str = "table_stripes";
+
+/// Settings key (either scope) for how tall grid rows are: comfortable (unset) or `compact`.
+pub const ROW_DENSITY_KEY: &str = "table_row_density";
+
+/// What Settings offers for [`ROW_DENSITY_KEY`].
+pub const ROW_DENSITIES: &[(&str, &str)] = &[("", "Comfortable (default)"), ("compact", "Compact")];
+
+/// Settings key (either scope) for how many edits Undo can step back through.
+pub const UNDO_STEPS_KEY: &str = "undo_steps";
+
+/// What Settings offers for [`UNDO_STEPS_KEY`]. The last is a ceiling: every step keeps what it
+/// replaced, so a deep stack of whole-column pastes is real memory.
+pub const UNDO_STEPS: &[(&str, &str)] = &[
+    ("", "200 (default)"),
+    ("500", "500"),
+    ("1000", "1,000"),
+    ("2000", "2,000"),
+];
+
+pub(crate) const DEFAULT_UNDO_STEPS: usize = 200;
+const MAX_UNDO_STEPS: usize = 2000;
+
+/// The undo depth in force, clamped so a hand-edited value cannot make the stack unbounded.
+pub(crate) fn undo_steps(cx: &App) -> usize {
+    settings::effective_text(UNDO_STEPS_KEY, cx)
+        .parse::<usize>()
+        .map_or(DEFAULT_UNDO_STEPS, |steps| steps.clamp(1, MAX_UNDO_STEPS))
+}
 
 use gpui::{
     App, Bounds, ClipboardItem, Entity, Global, Pixels, Point, PromptLevel, SharedString,

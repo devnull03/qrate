@@ -6,6 +6,8 @@
 //! value this rejects is usually prose — `circa 1987`, `May 1987`, `1987-5-3` — which is exactly
 //! what an ingest would choke on.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use diagnostics::{
     ColumnFinding, ColumnInfo, ColumnValidator, ColumnValues, DiagnosticGroup, Fix, FixProviders,
     Location, Severity,
@@ -16,16 +18,100 @@ use settings::columns::ColumnType;
 /// What the Problems panel shows, and the key this validator's output is replaced by.
 pub const SOURCE: &str = "date";
 
+/// Settings key (either scope) for what a `Date` column accepts: EDTF (unset), `iso`, `lenient`.
+pub const DATE_FORMAT_KEY: &str = "date_format";
+
+/// What Settings offers for [`DATE_FORMAT_KEY`].
+pub const DATE_FORMATS: &[(&str, &str)] = &[
+    ("", "EDTF (default)"),
+    ("iso", "ISO 8601 only"),
+    ("lenient", "Lenient"),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum Mode {
+    Edtf,
+    Iso,
+    Lenient,
+}
+
+/// The mode in force, mirrored out of the settings stores because validation runs off the UI
+/// thread with no `App` to read them from.
+static MODE: AtomicU8 = AtomicU8::new(Mode::Edtf as u8);
+
+fn mode() -> Mode {
+    match MODE.load(Ordering::SeqCst) {
+        1 => Mode::Iso,
+        2 => Mode::Lenient,
+        _ => Mode::Edtf,
+    }
+}
+
+/// Copy [`DATE_FORMAT_KEY`] into the validator. Call before revalidating after a change to it.
+pub fn sync_mode(cx: &mut App) {
+    if !cx.has_global::<settings::AppSettings>() {
+        return;
+    }
+    let mode = match settings::effective_text(DATE_FORMAT_KEY, cx).as_ref() {
+        "iso" => Mode::Iso,
+        "lenient" => Mode::Lenient,
+        _ => Mode::Edtf,
+    };
+    MODE.store(mode as u8, Ordering::SeqCst);
+}
+
 pub struct DateCheck;
+
+fn valid(value: &str, mode: Mode) -> bool {
+    match mode {
+        Mode::Edtf => edtf(value),
+        Mode::Iso => match value.split_once('/') {
+            Some((start, end)) => iso(start) && iso(end),
+            None => iso(value),
+        },
+        Mode::Lenient => edtf(value) || approximate(value),
+    }
+}
 
 /// Whether `value` is something EDTF accepts. Level 1 rather than level 0 because uncertainty and
 /// approximation are the whole reason an archive wants EDTF over a plain date, plus the level 2
 /// sets below — `edtf`'s own `level_2` parses nothing but scientific years.
-fn valid(value: &str) -> bool {
+fn edtf(value: &str) -> bool {
     match members(value) {
         Some(members) => members.iter().all(|member| valid_member(member)),
         None => edtf::level_1::Edtf::parse(value).is_ok(),
     }
+}
+
+/// A calendar date as `YYYY`, `YYYY-MM`, or `YYYY-MM-DD`, with no EDTF qualifiers.
+fn iso(value: &str) -> bool {
+    let shaped = matches!(value.len(), 4 | 7 | 10)
+        && value.char_indices().all(|(at, c)| match at {
+            4 | 7 => c == '-',
+            _ => c.is_ascii_digit(),
+        });
+    shaped && edtf::level_1::Edtf::parse(value).is_ok()
+}
+
+/// The ways a catalogue writes "about this date" that EDTF has its own syntax for: `circa 1920`,
+/// `ca. 1920`, `c. 1920`, a decade as `1920s`, and a bracketed guess such as `[1920?]`.
+fn approximate(value: &str) -> bool {
+    let lower = value.trim().to_lowercase();
+    if let Some(inner) = lower.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+        return edtf(inner.trim()) || approximate(inner);
+    }
+    if let Some(rest) = ["circa ", "ca. ", "ca.", "ca ", "c. ", "c."]
+        .iter()
+        .find_map(|prefix| lower.strip_prefix(prefix))
+    {
+        return edtf(rest.trim());
+    }
+    let decade = lower
+        .strip_suffix("'s")
+        .or_else(|| lower.strip_suffix('s'))
+        .unwrap_or_default();
+    decade.len() == 4 && decade.ends_with('0') && decade.chars().all(|c| c.is_ascii_digit())
 }
 
 /// What is inside an EDTF set (`[1667,1668]`, one of these) or list (`{1960,1961-12}`, all of
@@ -62,6 +148,10 @@ impl ColumnValidator for DateCheck {
         SOURCE.into()
     }
 
+    fn revision(&self) -> u64 {
+        mode() as u64
+    }
+
     fn validate(
         &self,
         column: &ColumnInfo,
@@ -70,13 +160,19 @@ impl ColumnValidator for DateCheck {
         if ColumnType::from_declared(column.data_type) != ColumnType::Date {
             return Vec::new();
         }
+        let mode = mode();
+        let expected = match mode {
+            Mode::Edtf => "an EDTF date",
+            Mode::Iso => "an ISO 8601 date",
+            Mode::Lenient => "a date qrate recognises",
+        };
         values
             .iter()
             .flat_map(|cell| {
                 cell.parts()
-                    .filter(|value| !valid(value))
+                    .filter(move |value| !valid(value, mode))
                     .map(move |value| {
-                        let message: SharedString = format!("“{value}” is not an EDTF date").into();
+                        let message: SharedString = format!("“{value}” is not {expected}").into();
                         ColumnFinding {
                             row: Some(cell.row),
                             severity: Severity::Error,
@@ -98,7 +194,7 @@ impl ColumnValidator for DateCheck {
 /// Deliberately narrow: these are transcription habits (a slash instead of a hyphen, an unpadded
 /// month, the word "circa"), not attempts to guess what a date means. Anything cleverer would be
 /// proposing a fact about the collection, which is the archivist's call and not a menu's.
-fn rewrites(value: &str) -> Vec<String> {
+fn rewrites(value: &str, mode: Mode) -> Vec<String> {
     let trimmed = value.trim();
     let lower = trimmed.to_lowercase();
 
@@ -121,7 +217,7 @@ fn rewrites(value: &str) -> Vec<String> {
     let mut offered: Vec<String> = [approximate, Some(hyphenated), padded]
         .into_iter()
         .flatten()
-        .filter(|candidate| candidate != trimmed && valid(candidate))
+        .filter(|candidate| candidate != trimmed && valid(candidate, mode))
         .collect();
     offered.dedup();
     offered
@@ -129,10 +225,11 @@ fn rewrites(value: &str) -> Vec<String> {
 
 fn offer(_: &Location, text: &str, subject: Option<&str>, _: &App) -> Vec<Fix> {
     let value = subject.unwrap_or(text);
-    if valid(value.trim()) {
+    let mode = mode();
+    if valid(value.trim(), mode) {
         return Vec::new();
     }
-    rewrites(value)
+    rewrites(value, mode)
         .into_iter()
         .map(|fixed| Fix {
             label: format!("Use {fixed}").into(),
@@ -142,13 +239,18 @@ fn offer(_: &Location, text: &str, subject: Option<&str>, _: &App) -> Vec<Fix> {
 }
 
 pub fn init(cx: &mut App) {
+    sync_mode(cx);
+    cx.observe_global::<settings::AppSettings>(sync_mode)
+        .detach();
+    cx.observe_global::<settings::project::CurrentProject>(sync_mode)
+        .detach();
     diagnostics::Validators::register(Box::new(DateCheck), cx);
     FixProviders::register(SOURCE, offer, cx);
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::dates::{DateCheck, offer, rewrites, valid};
+    use crate::dates::{DateCheck, Mode, approximate, offer, rewrites, valid};
     use diagnostics::{ColumnInfo, ColumnValidator, ColumnValues, DATASET_MAIN, Location};
     use gpui::SharedString;
     use settings::columns::ColumnSettings;
@@ -192,7 +294,7 @@ mod tests {
             "1987/1989",
             "198X",
         ] {
-            assert!(valid(value), "{value} is valid EDTF");
+            assert!(valid(value, Mode::Edtf), "{value} is valid EDTF");
         }
     }
 
@@ -210,7 +312,7 @@ mod tests {
             "[1670..]",
             "[1667,1670..1672,198X]",
         ] {
-            assert!(valid(value), "{value} is valid EDTF");
+            assert!(valid(value, Mode::Edtf), "{value} is valid EDTF");
         }
     }
 
@@ -228,14 +330,14 @@ mod tests {
             // A range inside a set is written `..`; the slash interval belongs at the top level.
             "[1667/1668]",
         ] {
-            assert!(!valid(value), "{value} is not EDTF");
+            assert!(!valid(value, Mode::Edtf), "{value} is not EDTF");
         }
     }
 
     #[test]
     fn prose_and_spreadsheet_habits_are_rejected() {
         for value in ["circa 1987", "May 1987", "1987-5-3", "sometime in the 80s"] {
-            assert!(!valid(value), "{value} is not EDTF");
+            assert!(!valid(value, Mode::Edtf), "{value} is not EDTF");
         }
     }
 
@@ -243,25 +345,100 @@ mod tests {
     #[test]
     fn every_rewrite_offered_is_itself_valid() {
         for value in ["circa 1987", "1987/05/03", "1987-5-3", "1987.05.03"] {
-            let offered = rewrites(value);
+            let offered = rewrites(value, Mode::Edtf);
             assert!(!offered.is_empty(), "{value} gets an offer");
             for candidate in offered {
-                assert!(valid(&candidate), "{value} offered invalid {candidate}");
+                assert!(
+                    valid(&candidate, Mode::Edtf),
+                    "{value} offered invalid {candidate}"
+                );
             }
         }
     }
 
     #[test]
     fn a_value_nothing_sensible_can_be_done_with_gets_no_offer() {
-        assert!(rewrites("sometime in the 80s").is_empty());
-        assert!(rewrites("May 1987").is_empty());
+        assert!(rewrites("sometime in the 80s", Mode::Edtf).is_empty());
+        assert!(rewrites("May 1987", Mode::Edtf).is_empty());
     }
 
     /// `1987/1989` is an EDTF interval already — the slash rewrite must not "fix" it into
     /// something else, and a valid value must never be offered a rewrite at all.
     #[test]
     fn a_valid_value_is_left_alone() {
-        assert!(valid("1987/1989"));
-        assert!(rewrites("1987").is_empty());
+        assert!(valid("1987/1989", Mode::Edtf));
+        assert!(rewrites("1987", Mode::Edtf).is_empty());
+    }
+
+    /// ISO 8601 only is plain calendar dates and intervals between them: EDTF's qualifiers, sets
+    /// and unspecified digits are all refused, and so is a date the calendar does not have.
+    #[test]
+    fn iso_mode_accepts_calendar_dates_and_nothing_else() {
+        for value in [
+            "1987",
+            "1987-05",
+            "1987-05-03",
+            "1987/1989",
+            "1987-05/1988-01-31",
+        ] {
+            assert!(valid(value, Mode::Iso), "{value} is ISO 8601");
+        }
+        for value in [
+            "1987?",
+            "1987~",
+            "198X",
+            "[1857,1858]",
+            "1987-13",
+            "1987-02-30",
+            "87",
+            "1987-5-3",
+            "circa 1987",
+        ] {
+            assert!(!valid(value, Mode::Iso), "{value} is not ISO 8601");
+        }
+    }
+
+    /// An ISO rewrite still has to be ISO: "circa" becoming `1987~` is an EDTF answer.
+    #[test]
+    fn iso_mode_only_offers_iso_rewrites() {
+        assert_eq!(
+            rewrites("1987/5/3", Mode::Iso),
+            vec!["1987-05-03".to_string()]
+        );
+        assert!(rewrites("circa 1987", Mode::Iso).is_empty());
+    }
+
+    #[test]
+    fn lenient_mode_accepts_approximate_forms_as_well_as_edtf() {
+        for value in [
+            "circa 1920",
+            "ca. 1920",
+            "ca 1920",
+            "c. 1920",
+            "c.1920",
+            "Circa 1920",
+            "1920s",
+            "1920's",
+            "[1920?]",
+            "[ca. 1920]",
+            "1920~",
+            "1987-05-03",
+            "[1857,1858]",
+        ] {
+            assert!(valid(value, Mode::Lenient), "{value} is accepted leniently");
+        }
+        for value in [
+            "sometime in the 80s",
+            "May 1987",
+            "1925s",
+            "c. May",
+            "[1920",
+        ] {
+            assert!(!valid(value, Mode::Lenient), "{value} is still refused");
+        }
+        assert!(
+            !approximate("1987"),
+            "a plain date is EDTF's, not an approximation"
+        );
     }
 }

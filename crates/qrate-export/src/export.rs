@@ -42,9 +42,39 @@ pub struct ExportComponent {
     pub source_path: Option<String>,
 }
 
+/// How a CSV is written. The default is plain RFC 4180, what a script or the wizard reads back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CsvOptions {
+    pub delimiter: u8,
+    /// Lead with a UTF-8 byte order mark, without which Excel on Windows reads the file as ANSI.
+    pub bom: bool,
+}
+
+impl Default for CsvOptions {
+    fn default() -> Self {
+        Self {
+            delimiter: b',',
+            bom: false,
+        }
+    }
+}
+
+const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
+
 /// The grid as CSV: the header row, then every row in table order.
-pub fn csv_bytes(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, csv::Error> {
-    let mut writer = csv::Writer::from_writer(Vec::new());
+pub fn csv_bytes(
+    headers: &[String],
+    rows: &[Vec<String>],
+    options: CsvOptions,
+) -> Result<Vec<u8>, csv::Error> {
+    let bom = if options.bom {
+        UTF8_BOM.to_vec()
+    } else {
+        Vec::new()
+    };
+    let mut writer = csv::WriterBuilder::new()
+        .delimiter(options.delimiter)
+        .from_writer(bom);
     writer.write_record(headers)?;
     for row in rows {
         writer.write_record(row)?;
@@ -53,8 +83,13 @@ pub fn csv_bytes(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, cs
     writer.into_inner().map_err(|e| e.into_error().into())
 }
 
-pub fn write_csv(path: &Path, headers: &[String], rows: &[Vec<String>]) -> Result<(), ExportError> {
-    Ok(File::create(path)?.write_all(&csv_bytes(headers, rows)?)?)
+pub fn write_csv(
+    path: &Path,
+    headers: &[String],
+    rows: &[Vec<String>],
+    options: CsvOptions,
+) -> Result<(), ExportError> {
+    Ok(File::create(path)?.write_all(&csv_bytes(headers, rows, options)?)?)
 }
 
 /// Write every cell as text so Excel preserves identifiers, dates, and leading zeroes exactly.
@@ -301,6 +336,7 @@ pub fn write_zip(
     rows: &[Vec<String>],
     structure: &[ExportComponent],
     images: &[ArchiveFile],
+    csv: CsvOptions,
 ) -> Result<(), ExportError> {
     zip_to(
         File::create(path)?,
@@ -309,6 +345,7 @@ pub fn write_zip(
         rows,
         structure,
         images,
+        csv,
     )
 }
 
@@ -319,6 +356,7 @@ pub fn zip_to(
     rows: &[Vec<String>],
     structure: &[ExportComponent],
     images: &[ArchiveFile],
+    csv: CsvOptions,
 ) -> Result<(), ExportError> {
     let mut zip = zip::ZipWriter::new(writer);
     let text = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -326,7 +364,7 @@ pub fn zip_to(
     let binary = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
     zip.start_file("data.csv", text)?;
-    zip.write_all(&csv_bytes(headers, rows)?)?;
+    zip.write_all(&csv_bytes(headers, rows, csv)?)?;
     zip.start_file("metadata.jsonld", text)?;
     zip.write_all(
         &serde_json::to_vec_pretty(&jsonld_hierarchy_value(headers, row_ids, rows, structure))
@@ -412,8 +450,43 @@ mod tests {
     fn csv_golden_keeps_header_and_row_order() {
         let (headers, rows) = grid();
         assert_eq!(
-            super::csv_bytes(&headers, &rows).unwrap(),
+            super::csv_bytes(&headers, &rows, super::CsvOptions::default()).unwrap(),
             b"Digital ID,Title,Taken,Notes\n1,First photo,1943,on loan\n2,Second photo,,\n"
+        );
+    }
+
+    /// Excel on Windows needs the BOM to read UTF-8, and a semicolon-locale Excel splits on `;`.
+    #[test]
+    fn csv_options_add_a_bom_and_change_the_delimiter() {
+        let headers = vec!["Title".to_string(), "Place".to_string()];
+        let rows = vec![vec!["Café; bar".to_string(), "Montréal".to_string()]];
+        let bytes = super::csv_bytes(
+            &headers,
+            &rows,
+            super::CsvOptions {
+                delimiter: b';',
+                bom: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(&bytes[..3], &super::UTF8_BOM);
+        assert_eq!(
+            std::str::from_utf8(&bytes[3..]).unwrap(),
+            "Title;Place\n\"Café; bar\";Montréal\n"
+        );
+
+        let tabbed = super::csv_bytes(
+            &headers,
+            &rows,
+            super::CsvOptions {
+                delimiter: b'\t',
+                bom: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            std::str::from_utf8(&tabbed).unwrap(),
+            "Title\tPlace\nCafé; bar\tMontréal\n"
         );
     }
 
@@ -632,6 +705,7 @@ mod tests {
                     source_path: Some("b/1.jpg".into()),
                 },
             ],
+            super::CsvOptions::default(),
         )
         .unwrap();
 

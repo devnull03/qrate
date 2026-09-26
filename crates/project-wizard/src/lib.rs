@@ -16,3 +16,7 @@ pub use launcher::{LauncherHooks, open_launcher_window, open_launcher_with_error
 pub use project::open_project;
 pub use recent::record_opened;
 pub use wizard::{EntryKind, open_project_wizard};
+
+/// `AppSettings` key for the folder a new project is saved in: the last one used, or whatever
+/// Settings ▸ Application names. Unset or missing on disk falls back to `Documents/qrate`.
+pub const NEW_PROJECT_FOLDER_KEY: &str = "new_project_folder";

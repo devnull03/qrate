@@ -33,6 +33,59 @@ use settings::project::CurrentProject;
 /// Where the CSL picker's answer is remembered, per project.
 const CSL_MAPPING_KEY: &str = "csl_mapping";
 
+/// Settings key (either scope) for whether a CSV export starts with a UTF-8 byte order mark. Unset
+/// means on: Excel on Windows garbles accented text in a UTF-8 CSV without one.
+pub const CSV_BOM_KEY: &str = "csv_bom";
+
+/// Settings key (either scope) for the CSV field separator: comma (unset), `semicolon`, or `tab`.
+pub const CSV_DELIMITER_KEY: &str = "csv_delimiter";
+
+/// What Settings offers for [`CSV_DELIMITER_KEY`].
+pub const CSV_DELIMITERS: &[(&str, &str)] = &[
+    ("", "Comma (default)"),
+    ("semicolon", "Semicolon"),
+    ("tab", "Tab"),
+];
+
+/// `__settings` key for the folder the open project last exported into.
+const EXPORT_FOLDER_KEY: &str = "last_export_folder";
+
+fn csv_options(cx: &App) -> export::CsvOptions {
+    export::CsvOptions {
+        delimiter: match settings::effective_text(CSV_DELIMITER_KEY, cx).as_ref() {
+            "semicolon" => b';',
+            "tab" => b'\t',
+            _ => b',',
+        },
+        bom: settings::effective_text(CSV_BOM_KEY, cx).as_ref() != "false",
+    }
+}
+
+/// Where a save dialog for this project opens: the folder it last exported into while that still
+/// exists, else the folder the project file is in.
+fn export_folder(project_file: &Path, cx: &App) -> PathBuf {
+    cx.try_global::<CurrentProject>()
+        .filter(|project| project.file == project_file)
+        .and_then(|project| project.data.values.get(EXPORT_FOLDER_KEY))
+        .map(|folder| PathBuf::from(folder.text().as_ref()))
+        .filter(|folder| folder.is_dir())
+        .or_else(|| project_file.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn remember_export_folder(project_file: &Path, chosen: &Path, cx: &mut App) {
+    let open = cx
+        .try_global::<CurrentProject>()
+        .is_some_and(|project| project.file == project_file);
+    if let (true, Some(folder)) = (open, chosen.parent()) {
+        CurrentProject::set_text(
+            EXPORT_FOLDER_KEY,
+            folder.to_string_lossy().into_owned().into(),
+            cx,
+        );
+    }
+}
+
 struct ExportGrid {
     headers: Vec<String>,
     row_ids: Vec<settings::project::RowId>,
@@ -43,6 +96,7 @@ struct ExportGrid {
     column_notes: Vec<(String, String)>,
     /// Where a ZIP finds each row's linked file. `None` for every other format.
     files: Option<ZipFiles>,
+    csv: export::CsvOptions,
 }
 
 /// The files folder and the columns declared to name files, which a ZIP resolves against disk.
@@ -164,10 +218,8 @@ pub fn run_plugin(action: &PluginExport, cx: &mut App) {
             .map(|row| row.into_iter().map(SharedString::from).collect())
             .collect(),
     };
-    let directory = project
-        .file
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let project_file = project.file.clone();
+    let directory = export_folder(&project_file, cx);
     let receiver = cx.prompt_for_new_path(&directory, Some(spec.suggested_name.as_ref()));
     let export_id = action.export.clone();
     let window = cx.active_window();
@@ -176,6 +228,7 @@ pub fn run_plugin(action: &PluginExport, cx: &mut App) {
         let Ok(Ok(Some(path))) = receiver.await else {
             return;
         };
+        cx.update(|cx| remember_export_folder(&project_file, &path, cx));
         let name = path.file_name().map_or_else(
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
@@ -306,6 +359,7 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
         structure,
         column_notes,
         files,
+        csv: csv_options(cx),
     };
 
     if is_google(format) {
@@ -464,9 +518,7 @@ fn save_as(
     cx: &mut App,
 ) {
     let window = cx.active_window();
-    let directory = project_file
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let directory = export_folder(&project_file, cx);
     let suggested = EXPORT_FORMATS
         .iter()
         .find(|(f, _, _)| *f == format)
@@ -478,6 +530,7 @@ fn save_as(
         let Ok(Ok(Some(path))) = receiver.await else {
             return;
         };
+        cx.update(|cx| remember_export_folder(&project_file, &path, cx));
         let rows = grid.rows.len();
         let progress = Arc::new(Progress::default());
         let task = cx.background_spawn({
@@ -574,7 +627,7 @@ fn write_export(
         ..
     } = grid;
     match format {
-        ExportFormat::Csv => export::write_csv(path, headers, rows)?,
+        ExportFormat::Csv => export::write_csv(path, headers, rows, grid.csv)?,
         ExportFormat::Xlsx => {
             export::write_xlsx(path, headers, rows, &sheet_notes(project_file, grid)?)?
         }
@@ -599,7 +652,7 @@ fn write_export(
                 inner: BufWriter::new(File::create(path)?),
                 progress: progress.clone(),
             };
-            export::zip_to(file, headers, row_ids, rows, structure, &images)?
+            export::zip_to(file, headers, row_ids, rows, structure, &images, grid.csv)?
         }
         // Handled in `run` — they have no path to write to.
         ExportFormat::GoogleSheet | ExportFormat::GoogleSheetSync => {}
@@ -721,6 +774,7 @@ fn ask_csl_mapping(
                         structure: Vec::new(),
                         column_notes: Vec::new(),
                         files: None,
+                        csv: export::CsvOptions::default(),
                     },
                     mapping,
                     cx,

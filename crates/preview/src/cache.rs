@@ -22,7 +22,14 @@ use image::buffer::ConvertBuffer as _;
 /// puts ten thousand items near 1.3 GB only if every one has been viewed at both sizes. The cap is
 /// a backstop against unbounded growth from orphans, not a working limit — a cache that evicts
 /// during normal use would cost more in re-decoding than it saves in disk.
-const CAP: u64 = 2 * 1024 * 1024 * 1024;
+const DEFAULT_CAP: u64 = 2 * 1024 * 1024 * 1024;
+
+static CAP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(DEFAULT_CAP);
+
+/// Change the ceiling the next [`prune`] of this session enforces.
+pub fn set_cap(bytes: u64) {
+    CAP.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Where the downscaled copies live — the platform's own cache location, so an OS cleanup tool
 /// treats them as what they are. `None` if it can't be created, which degrades to decoding from
@@ -141,7 +148,7 @@ pub fn write(key: &str, image: &RgbaImage) {
     // on every thumbnail; doing it at startup would charge the cost to launch even when nothing
     // is ever cached. A session that only reads existing entries has not grown anything.
     static PRUNED: std::sync::Once = std::sync::Once::new();
-    PRUNED.call_once(|| prune(&dir, CAP));
+    PRUNED.call_once(|| prune(&dir, CAP.load(std::sync::atomic::Ordering::Relaxed)));
 }
 
 /// Drop the oldest entries until `dir` holds at most `cap` bytes.

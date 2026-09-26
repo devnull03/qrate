@@ -311,6 +311,11 @@ impl ProjectWizard {
             },
         ) {
             Ok(file) => {
+                settings::AppSettings::set_text(
+                    crate::NEW_PROJECT_FOLDER_KEY,
+                    self.save_path.clone().into(),
+                    cx,
+                );
                 log::info!(
                     "created project {file} from {source}: {} rows, {} arranged components, {} profile",
                     rows.len(),
@@ -323,28 +328,10 @@ impl ProjectWizard {
                 {
                     log::error!("couldn't save the imported folder hierarchy — {error}");
                 }
-                for (key, value) in [
-                    (
-                        settings::description::DESCRIPTION_PROFILE_KEY,
-                        description.profile.key().to_string(),
-                    ),
-                    (
-                        settings::description::DESCRIPTION_LEVELS_KEY,
-                        serde_json::to_string(&description.levels).unwrap_or_default(),
-                    ),
-                    (
-                        settings::description::FOLDER_LEVEL_KEY,
-                        description.folder_level_key.clone(),
-                    ),
-                    (
-                        settings::description::FILE_LEVEL_KEY,
-                        description.file_level_key.clone(),
-                    ),
-                    (
-                        settings::project::IMPORT_DUPLICATE_POLICY_KEY,
-                        self.duplicate_policy.key().to_string(),
-                    ),
-                ] {
+                for (key, value) in description.values().into_iter().chain([(
+                    settings::project::IMPORT_DUPLICATE_POLICY_KEY,
+                    self.duplicate_policy.key().to_string(),
+                )]) {
                     if let Err(error) =
                         settings::project::write_setting(std::path::Path::new(&file), key, &value)
                     {

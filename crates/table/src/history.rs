@@ -22,10 +22,6 @@ pub(crate) type Cells = Vec<(usize, usize, SharedString)>;
 /// A hierarchy snapshot, shared: one step's `after` is the next step's `before`.
 pub(crate) type Structure = Arc<[settings::project::RowStructure]>;
 
-/// How many steps to keep. Past this the oldest is dropped — a grid edit holds two strings, so the
-/// cap is about bounding a pathological paste loop, not about memory pressure in normal use.
-const CAP: usize = 200;
-
 /// A whole row: its cells and its resolved image path, so restoring a deleted row doesn't need a
 /// re-walk of the files folder to get its photo back.
 #[derive(Clone)]
@@ -126,15 +122,16 @@ pub(crate) struct History {
 }
 
 impl History {
-    /// Record a change. Drops the redo tail: a new edit forks the timeline.
-    pub(crate) fn push(&mut self, step: Step) {
+    /// Record a change, keeping at most `cap` steps. Drops the redo tail: a new edit forks the
+    /// timeline.
+    pub(crate) fn push(&mut self, step: Step, cap: usize) {
         if step.is_empty() {
             return;
         }
         self.undone.clear();
         self.done.push(step);
-        if self.done.len() > CAP {
-            self.done.remove(0);
+        if self.done.len() > cap {
+            self.done.drain(..self.done.len() - cap);
         }
     }
 
@@ -196,9 +193,9 @@ mod tests {
     #[test]
     fn edits_undo_in_reverse_order_and_redo_forward() {
         let mut h = History::default();
-        h.push(edit(&[(0, 0, "a", "A")]));
-        h.push(edit(&[(1, 0, "b", "B")]));
-        h.push(edit(&[(2, 0, "c", "C")]));
+        h.push(edit(&[(0, 0, "a", "A")]), 200);
+        h.push(edit(&[(1, 0, "b", "B")]), 200);
+        h.push(edit(&[(2, 0, "c", "C")]), 200);
 
         assert_eq!(befores(&h.undo().unwrap()), vec![(2, 0, "c".into())]);
         assert_eq!(befores(&h.undo().unwrap()), vec![(1, 0, "b".into())]);
@@ -210,9 +207,9 @@ mod tests {
     #[test]
     fn a_new_edit_after_an_undo_drops_the_redo_tail() {
         let mut h = History::default();
-        h.push(edit(&[(0, 0, "a", "A")]));
+        h.push(edit(&[(0, 0, "a", "A")]), 200);
         h.undo().unwrap();
-        h.push(edit(&[(9, 9, "x", "X")]));
+        h.push(edit(&[(9, 9, "x", "X")]), 200);
         assert!(h.redo().is_none());
         assert_eq!(befores(&h.undo().unwrap()), vec![(9, 9, "x".into())]);
     }
@@ -220,11 +217,10 @@ mod tests {
     #[test]
     fn a_multi_cell_edit_undoes_as_one_step() {
         let mut h = History::default();
-        h.push(edit(&[
-            (0, 0, "a", "A"),
-            (0, 1, "b", "B"),
-            (1, 0, "c", "C"),
-        ]));
+        h.push(
+            edit(&[(0, 0, "a", "A"), (0, 1, "b", "B"), (1, 0, "c", "C")]),
+            200,
+        );
         assert_eq!(
             befores(&h.undo().unwrap()),
             vec![(0, 0, "a".into()), (0, 1, "b".into()), (1, 0, "c".into())]
@@ -235,17 +231,23 @@ mod tests {
     #[test]
     fn an_empty_step_is_not_recorded() {
         let mut h = History::default();
-        h.push(Step::Cells(Vec::new()));
-        h.push(Step::RowsRemoved {
-            rows: Vec::new(),
-            before_structure: Vec::new().into(),
-            after_structure: Vec::new().into(),
-        });
-        h.push(Step::Renamed {
-            col: 0,
-            before: "A".into(),
-            after: "A".into(),
-        });
+        h.push(Step::Cells(Vec::new()), 200);
+        h.push(
+            Step::RowsRemoved {
+                rows: Vec::new(),
+                before_structure: Vec::new().into(),
+                after_structure: Vec::new().into(),
+            },
+            200,
+        );
+        h.push(
+            Step::Renamed {
+                col: 0,
+                before: "A".into(),
+                after: "A".into(),
+            },
+            200,
+        );
         assert!(h.undo().is_none());
     }
 
@@ -266,8 +268,8 @@ mod tests {
             before_structure: Vec::new().into(),
             after_structure: Vec::new().into(),
         };
-        h.push(edit(&[(0, 0, "a", "A")]));
-        h.push(removed());
+        h.push(edit(&[(0, 0, "a", "A")]), 200);
+        h.push(removed(), 200);
 
         let Some(Step::RowsRemoved { rows, .. }) = h.undo() else {
             panic!("the structural step comes back first");
@@ -279,5 +281,25 @@ mod tests {
         assert_eq!(befores(&h.undo().unwrap()), vec![(0, 0, "a".into())]);
         assert!(matches!(h.redo(), Some(Step::Cells(_))));
         assert!(matches!(h.redo(), Some(Step::RowsRemoved { .. })));
+    }
+
+    /// The stack keeps the newest `cap` steps, and a smaller cap on the next push trims it at once.
+    #[test]
+    fn the_oldest_steps_fall_off_past_the_cap() {
+        let mut h = History::default();
+        for row in 0..5 {
+            h.push(edit(&[(row, 0, "a", "A")]), 3);
+        }
+        let rows: Vec<usize> = std::iter::from_fn(|| h.undo())
+            .map(|s| befores(&s)[0].0)
+            .collect();
+        assert_eq!(rows, vec![4, 3, 2]);
+
+        let mut h = History::default();
+        for row in 0..5 {
+            h.push(edit(&[(row, 0, "a", "A")]), 200);
+        }
+        h.push(edit(&[(9, 0, "a", "A")]), 2);
+        assert_eq!(std::iter::from_fn(|| h.undo()).count(), 2);
     }
 }
