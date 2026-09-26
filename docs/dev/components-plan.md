@@ -645,10 +645,14 @@ leaves stale sidecars beside the exe, which win the lookup, or drops the bundled
    - ASNT-103: `components::init` logs an `error` for each part a full install lacks beside the
      executable (PDFium and Pi everywhere, ffmpeg on Windows), off the main thread.
 
-   Still to do: `/DFLAVOR=base` in `installer.nsi` and `bundle-mac.sh` (skip the sidecars and
-   `agent`, write `"flavor": "base"` into the marker; the NSIS uninstaller removes
-   `${DATADIR}\components`), the Linux base tarball, base jobs in `release.yml` that assert the
-   sidecars are absent, and the site's download links (branch `site`).
+   **Packaging done (2026-09-26).** `installer.nsi` takes `/DFLAVOR=base` (no sidecars or `agent`,
+   deletes ones a full install left, writes the flavor into the marker); the NSIS uninstaller
+   removes `${DATADIR}\components`. `bundle-mac.sh` takes a third argument, `full` or `base`.
+   `release.yml` builds `-base-setup.exe`, `-base-universal.dmg` and `-base-x86_64-linux.tar.gz`
+   beside the full packages and fails when a full package lacks a part or a base one carries it
+   (7-Zip lists the NSIS installers). Portable zip and MSI stay full only (question 4). The
+   release notes put base first. The site change (base first, `component-*` never a platform
+   download, first-use wording) is a commit on branch `site`, to push with the release.
 
 `feat/file-integrity` also changes `preview`. Rebase whichever branch lands second (roadmap § Order).
 
@@ -727,7 +731,7 @@ repeat with `QRATE_DOWNLOAD_SOURCE` pointing at a local folder.
 
 ## 9. Handoff (2026-09-26)
 
-Steps 0 to 4 are on `main` (bf9d9b7, f34267b, fa991f5, 8e3f918). Step 5 is on
+Steps 0 to 4 are on `main` (bf9d9b7, f34267b, fa991f5, 8e3f918). Steps 5 and 6 are on
 `claude/clever-euler-ic4wpg`, waiting for review. The next session picks up here:
 
 1. **Step 5, check by hand.** Nothing here was run in a window: on a build without PDFium and
@@ -735,8 +739,8 @@ Steps 0 to 4 are on `main` (bf9d9b7, f34267b, fa991f5, 8e3f918). Step 5 is on
    the banners, cancel one midway, open the agent panel without Pi, and use Settings ▸ Components.
    The onboarding crate (branch `onboarding`) calls `components::install`, `state`, `cancel` and
    `observe_global`; it now also sees `Bundled`, `System` and `Unavailable`.
-2. **Step 6, base bundle.** The updater and manifest side is on this branch (see step 6 above);
-   the packaging is not. Wait until steps 4 and 5 have been through one beta.
+2. **Step 6, base bundle.** Done on this branch, packaging included. The first tag is its first
+   real run; check the base and full assets and `update-manifest.json` on the draft release.
 3. **Known gap from step 4.** A thumbnail the OS made while PDFium or ffmpeg was missing stays in
    the disk cache after an install until the file or the cache changes.
 4. **Then** run `./scripts/ci.sh` and cut a pre-release with the `cut-release` skill (suggested
