@@ -6,6 +6,7 @@ pub mod description;
 pub mod dirty;
 pub use qrate_export::filenames;
 pub mod history;
+pub mod onboarding;
 pub mod os_open;
 pub mod path_picker;
 pub mod plugins;

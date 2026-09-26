@@ -95,6 +95,9 @@ pub struct ProjectWizard {
     pub(crate) folder_error: Option<SharedString>,
     /// "I'll add files later" — skips folder matching and the whole Link step.
     pub(crate) skip_files: bool,
+    /// The Files step's Advanced block: folder rows, description standard, duplicates. Collapsed
+    /// by default so the match result sits directly under the folder it describes.
+    pub(crate) show_advanced_files: bool,
     pub(crate) description_profile: settings::description::DescriptionProfile,
     pub(crate) duplicate_policy: file_ingest::duplicates::DuplicatePolicy,
     pub(crate) folder_level_input: Entity<InputState>,
@@ -287,6 +290,7 @@ impl ProjectWizard {
             folder_plan: None,
             folder_error: None,
             skip_files: false,
+            show_advanced_files: false,
             description_profile: settings::description::DescriptionProfile::Rad,
             duplicate_policy: file_ingest::duplicates::DuplicatePolicy::default(),
             folder_level_input,
@@ -573,6 +577,16 @@ impl ProjectWizard {
                 h_flex()
                     .gap_2()
                     .items_center()
+                    // Sets expectations for what opens next, so the workspace's guide card
+                    // arrives as something promised rather than a surprise.
+                    .when(self.step == WizardStep::Review && blocker.is_none(), |el| {
+                        el.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Opens with a short Getting started card"),
+                        )
+                    })
                     .when_some(blocker, |el, reason| {
                         el.child(
                             div()

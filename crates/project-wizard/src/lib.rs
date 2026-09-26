@@ -5,6 +5,7 @@
 
 mod column_config;
 mod data;
+mod example;
 pub mod launcher;
 mod project;
 mod recent;
