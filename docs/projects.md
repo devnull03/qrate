@@ -10,7 +10,7 @@ the files-folder path at its new location.
 
 ## Create a project
 
-The launcher offers three ways to start:
+Choose **File ▸ New Project…** or press **Ctrl+N**. The launcher offers three ways to start:
 
 1. **Blank project.** Start with an empty grid, or choose files and folders to start from.
    Each folder becomes a parent row and each file a row inside it, so the grid keeps the
@@ -19,7 +19,8 @@ The launcher offers three ways to start:
    OpenDocument spreadsheet as the grid. If you also give it a files folder, qrate links rows
    to files in that folder by filename, or by a custom pattern such as `{id}_*.jpg`. If one
    file is named by several rows, the wizard asks what to do with it.
-3. **Start from a Google Sheet link.** qrate reads the sheet once to build the project. See
+3. **Start from a Google Sheet link.** qrate reads the sheet once to build the project. Date
+   cells come in as dates, written `YYYY-MM-DD`, the same as from an Excel workbook. See
    [Export and Google Sheets](export-and-sync.md) for how to keep the two in sync afterward.
 
 When a project starts from folders, pick an **Archival description standard**: RAD, DACS,
@@ -36,7 +37,35 @@ spreadsheet starts a spreadsheet import, and files or folders start a folder-bas
 
 ## Open a project
 
-The launcher lists recent projects. Pick one to open it, or browse to any `.qrate` file.
+Choose **File ▸ Open Projects…** or press **Ctrl+O** to show the launcher. It lists recent
+projects. Pick one to open it, or browse to any `.qrate` file. If a project cannot be opened, the
+launcher says why above the list.
+
+If the open project has unsaved changes when you open or create another one, qrate asks first.
+See [Saving](#saving).
+
+## Saving
+
+qrate saves cell edits to the project file on its own. By default it writes them after a short
+pause in your typing, in the background, so a large project does not stop you working. Column
+settings, layout, and other project settings always save as you change them.
+
+**Settings ▸ Table ▸ Saving** controls autosave:
+
+- **Autosave** turns it on or off. With it off, edits reach the file only when you save.
+- **Method** chooses **After a short pause** or **On every edit**.
+
+Press **Ctrl+S**, or choose **File ▸ Save**, to save at any time, whatever the autosave setting.
+A dot in the title bar means the project has changes that are not saved yet.
+
+If a save fails, for example because the drive is full or the file is read-only, qrate tells you
+and keeps your changes open. Autosave tries again after your next edit, and **Ctrl+S** tries
+at once and shows the reason if it fails again.
+
+Before qrate quits, closes its window, switches to another project, or creates a new one, it
+asks about unsaved changes: **Save**, **Don't Save**, or **Cancel**. If saving fails there, qrate
+asks again with the reason, so your edits are never dropped without your choice. Press
+**Ctrl+Q** or choose **File ▸ Quit** to quit.
 
 ## Add files to an open project
 

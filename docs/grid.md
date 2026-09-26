@@ -7,7 +7,10 @@ The grid is the main view of a project. Each row is a record. Each column is a f
 Click a cell to select it. Type to replace its content, or press Enter to edit in place.
 Copy, cut, and paste work across one cell or a selected range, including between qrate and
 other spreadsheet apps. **Delete** or **Backspace** clears the selected cells, and **Esc**
-drops the selection. On macOS, use Cmd wherever this guide says Ctrl.
+drops the selection. On macOS, use Cmd wherever this guide says Ctrl. Every shortcut is listed
+in [Keyboard shortcuts](shortcuts.md).
+
+qrate saves your edits to the project file on its own. See [Saving](projects.md#saving).
 
 Every edit goes on the undo stack, including row and column changes. Press **Ctrl+Z** to
 undo and **Ctrl+Shift+Z** (or **Ctrl+Y**) to redo. Undo and redo also cover adding,
@@ -19,7 +22,9 @@ cell edit.
 Right-click a row header for a menu to insert, duplicate, clear, or delete rows. Right-click a
 column header to insert, delete, or rename a column, or choose **Freeze up to here** to keep
 the columns up to that one in view while you scroll. **View ▸ Unfreeze All Columns** releases
-them. The **Insert** and **Data** menus offer the same commands for the current selection.
+them. The **Insert** and **Data** menus offer the same commands for the current selection, and
+they work even while another panel has focus. **Alt+Shift+Up** and **Alt+Shift+Down** insert a
+row above or below the selection, and **Ctrl+-** deletes the selected row.
 
 Drag a column header to move the column. Drag a row header to move the row; see
 [Groups](#groups).
@@ -29,13 +34,15 @@ Drag a column header to move the column. Drag a row header to move the row; see
 Rows can nest inside other rows, the way a series holds files and a file holds items. A
 project created from a folder tree starts nested; any project can be arranged by hand. A row
 with children shows a chevron in its header. Click it to collapse or expand the group, or press
-**Ctrl+Alt+Right** and **Ctrl+Alt+Left** to expand or collapse every group.
+**Ctrl+Alt+Right** and **Ctrl+Alt+Left** to expand or collapse every group. **View ▸ Expand All
+Rows** and **View ▸ Collapse All Rows** do the same.
 
 - **Group rows.** Select rows, right-click a row header, and choose **Group** (the item
   reads, for example, **Group 3 rows**). qrate inserts a new parent row above them and moves
   them inside it.
 - **Indent and outdent.** **Ctrl+]** makes a row the last child of the row just above it at
-  the same level. **Ctrl+[** moves it out to sit just after its parent.
+  the same level. **Ctrl+[** moves it out to sit just after its parent. **Data ▸ Indent Row**
+  and **Data ▸ Outdent Row** do the same.
 - **Drag.** Drop a row header on the top edge of another row to place it before that row, on
   the middle to make it a child, or on the bottom edge to place it after. A row always moves
   with its children.
@@ -77,8 +84,8 @@ image instead of by cell, useful for photo collections in particular.
 
 ## Notes
 
-Right-click a cell and choose **Notes ▸ Add note…**, or use **Insert ▸ Note…**, to attach a
-free-text note to it. A cell with a note shows a small corner marker. Notes appear on the
+Right-click a cell and choose **Notes ▸ Add note…**, use **Insert ▸ Note…**, or press
+**Shift+F2** to attach a free-text note to it. A cell with a note shows a small corner marker. Notes appear on the
 Notes tab of the Problems panel. If you set an author name in **Settings ▸ Application**, each
 new note records it.
 

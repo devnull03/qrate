@@ -4,7 +4,9 @@
 
 Use a hosted feedback form and send reports to a Cloudflare Worker. The Worker creates an issue in Grass Labs, project qrate, milestone Beta Intake & Stabilization, state Backlog.
 
-Add a persistent **Feedback** button to the main title bar and launcher title bar. Keep **Help > Send Feedback** as a second entry point.
+This is the one place qrate still uses Linear: as the private intake queue for user reports. Planned work is tracked in Notion and GitHub, as `CLAUDE.md` describes. The Worker is `src/lib/feedback.ts` on the `site` branch, and `FEEDBACK.md` there covers its deployment.
+
+Add a persistent **Feedback** button to the main title bar and launcher title bar. Keep **Help > Send Feedback** as a second entry point. Both are built.
 
 The app should open the browser form with a small diagnostic payload in the URL fragment. The form should remove the fragment after it reads the data.
 
@@ -36,8 +38,9 @@ qrate already has these local support features:
 - Panic messages and backtraces in the session log.
 - App version, commit, operating system, hardware, project size, plugin status, and a short log tail.
 - Home directory redaction.
-- **Copy Debug Info**, **Open Logs Folder**, and **Report an Issue** actions.
-- A GitHub issue link that lets the user review the report before submission.
+- **Copy Debug Info** and **Open Logs Folder** actions.
+- **Help ▸ Send Feedback ▸ Report a Bug…**, **Request a Feature…**, and **Report a UI/UX Issue…**, plus the title-bar **Feedback** button, all opening the hosted form.
+- **Help ▸ GitHub ▸ Issues**, which opens the public issue list.
 
 The former public GitHub workflow had four limits:
 
@@ -79,11 +82,13 @@ The form should keep entered text after a failed request. A successful request s
 
 ### App-to-browser data transfer
 
-Use a URL fragment such as:
+The app builds the link in `feedback_url` (`crates/app/src/logging.rs`). The query picks the form's category and the fragment carries the data, each value percent-encoded:
 
 ```text
-https://qrate.dvnl.work/feedback#qrate=<base64url-json>
+https://qrate.dvnl.work/feedback?type=bug#diagnostics=<json>&logs=<log tail>
 ```
+
+`type` is `bug`, `feature`, or `ui_ux`, and the title-bar button leaves it out.
 
 Browsers do not send a URL fragment in the HTTP request. Page JavaScript can read the payload locally and then call `history.replaceState` to remove it.
 
@@ -232,9 +237,7 @@ Linear does not let the Worker create a saved custom view. Create **Feedback Das
 - State is **Backlog**, **Todo**, **In Progress**, or **In Review**.
 This view shows active intake and accepted work. It excludes shipped, canceled, and duplicate reports.
 
-Update the website privacy policy before release. It currently states that qrate sends no reports and operates no data server.
-
-The policy must name:
+The website privacy policy now has an **Optional feedback reports** section. Before release, check that it names:
 
 - The exact report data.
 - Cloudflare and Linear as processors.
@@ -297,7 +300,7 @@ Do not add Sentry for the beta feedback form. Review it as a separate opt-in cra
 1. Add the persistent **Feedback** button.
 2. Add the hosted form and six report categories on the `site` branch.
 3. Open the form with an allowlisted diagnostic fragment.
-4. Keep the existing GitHub action as a fallback.
+4. Keep **Help ▸ GitHub ▸ Issues** as a public fallback.
 
 ### Phase 2: private delivery
 

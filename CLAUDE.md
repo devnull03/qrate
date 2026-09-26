@@ -155,7 +155,7 @@ executable, optionally — a package built without them installs a working, degr
 - **Never `eprintln!`/`println!` for diagnostics — use the `log` crate.** `log::error!` for something that failed, `log::warn!` for something skipped or degraded, `log::info!` for lifecycle events, `log::debug!` for detail. A packaged Windows build has no console, so a `println!` is a message nobody will ever read.
 - Add `log.workspace = true` to any crate that needs it. `log` is a facade with no init cost, so any crate can depend on it.
 - Only `crates/app` initializes logging (`crates/app/src/logging.rs`, called first in `main`). It writes `%LOCALAPPDATA%\qrate\logs\qrate.log` (previous run rotated to `qrate.old.log`) and installs the panic hook.
-- That file is also what Help ▸ Copy Debug Info / Report an Issue paste. Anything logged at `error`/`warn` will end up in a user's bug report, so write the message for the person reading the report — name what failed, not just the error value.
+- That file is also what Help ▸ Copy Debug Info / Send Feedback paste. Anything logged at `error`/`warn` will end up in a user's bug report, so write the message for the person reading the report — name what failed, not just the error value.
 
 ## Plugin contracts — keep all repositories synchronized
 

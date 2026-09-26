@@ -4,6 +4,8 @@
 
 This document records a future requirement. The beta feedback flow does not send email receipts.
 
+Linear here is the feedback intake queue that the site's Worker writes to (`src/lib/feedback.ts` on the `site` branch). It is not a planning tracker; planned work lives in Notion and GitHub.
+
 ## Recommendation
 
 Use Resend Transactional Email after Linear confirms issue creation.

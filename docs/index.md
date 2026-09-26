@@ -2,11 +2,13 @@
 
 qrate is a desktop app for collection catalogs. It edits a project in a spreadsheet grid,
 checks the data against validators, and exports it to the formats other systems expect.
+**Help ▸ User Guide** in qrate opens this page.
 
 ## Start here
 
-- [Projects](projects.md): create, import, and open a `.qrate` project, and add files or rows to it
+- [Projects](projects.md): create, import, open, and save a `.qrate` project, and add files or rows to it
 - [The grid](grid.md): edit cells, group rows, search, filter, and undo
+- [Keyboard shortcuts](shortcuts.md): every shortcut, in one table
 - [Files and photos](files-and-photos.md): link records to files, and view them
 - [Visual search](visual-search.md): find records by what their pictures show
 - [Diagnostics](diagnostics.md): the Problems panel, spelling, and fixes

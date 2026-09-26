@@ -1,7 +1,8 @@
 # Diagnostics
 
 qrate checks project data continuously and lists what it finds in the Problems panel, in
-the right dock. A finding on a cell also shows as a small marker on that cell in the grid.
+the right dock. Show or hide the panel with **View ▸ Toggle Problems Panel** or
+**Ctrl+Shift+M**. A finding on a cell also shows as a small marker on that cell in the grid.
 
 ## What qrate checks
 
@@ -89,6 +90,10 @@ canonical form, merges records, or changes every matching row automatically.
 
 Right-click a spelling or capitalization group to apply one correction to all its occurrences.
 The group resolver applies the changes as one undo step.
+
+A misspelled word's menu also offers **Add “word” to dictionary**. qrate stops flagging that word
+in every project, and keeps it in `dictionary.txt` in qrate's data folder, so it stays accepted
+after a restart.
 
 Right-click a value-variant group to replace all occurrences with any displayed member.
 You can also mark the cluster members as distinct for that column. qrate saves this choice with the project.

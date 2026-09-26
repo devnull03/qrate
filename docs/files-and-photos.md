@@ -39,6 +39,11 @@ the Windows downloads also include ffmpeg; on macOS and Linux, install ffmpeg yo
 Without them, qrate shows a file-type icon instead of a preview, and the rest of the app
 works as normal.
 
+qrate keeps downscaled copies of your files so they open faster the second time. The cache
+is capped at 2 GB and rebuilds itself as you browse. To reclaim the space now, choose
+**Settings ▸ Table ▸ Previews ▸ Clear cache**; qrate then reports how many thumbnails it removed
+and how much space it freed.
+
 ## Gallery view
 
 Switch to the gallery with **View ▸ Switch View ▸ Gallery** to browse a collection as

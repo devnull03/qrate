@@ -35,7 +35,7 @@ This plugin adds a command that marks one column for empty-value checks:
 
 ```lua
 return {
-  api_version = 1,
+  api_version = 2,
   description = "Flags empty cells.",
 
   menu = {

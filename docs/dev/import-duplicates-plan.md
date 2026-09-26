@@ -1,13 +1,14 @@
 # Import duplicates plan (ASNT-77, #87)
 
 Folds [#87](https://github.com/devnull03/qrate/issues/87) into the Filesystem Collections branch
-(draft PR #134). That branch turned every import into a component plan, so the duplicate policy
+(PR #134, now merged). That branch turned every import into a component plan, so the duplicate policy
 belongs to the planner rather than the old flat `match_folder` extra-files list.
 
 ## Why it lands here
 
 Digitization arrives in batches. The second batch is usually dropped onto a project that already
-holds the first, often as the same parent folder with new files in it. On this branch today:
+holds the first, often as the same parent folder with new files in it. Before this work, the
+branch did this:
 
 - **Open table:** `append_components` never looks at existing rows. Dropping a folder that is
   already imported creates a second copy of every component.
@@ -129,8 +130,8 @@ the first batch's series instead of in a new copy of it.
 
 ## Status
 
-Steps 1-3 are implemented on `feat/filesystem-collections-plan`. Two things differ from the design
-above, both deliberately:
+Steps 1-3 shipped to `main` with PR #134. Two things differ from the design above, both
+deliberately:
 
 - **`Update` re-links, it does not re-arrange.** The existing row keeps its place in the hierarchy;
   only its Filename cell and stored source path follow the file. Moving a catalogued component
@@ -141,7 +142,7 @@ above, both deliberately:
 
 ## Delivery
 
-Each step is one commit on `feat/filesystem-collections-plan`.
+Each step was one commit on `feat/filesystem-collections-plan`, merged to `main` with PR #134.
 
 1. **Resolver.** `file_ingest::duplicates` with unit tests for every rule and policy: exact source,
    single key, ambiguous, within-import collapse, and a skipped parent adopting new children.
@@ -153,8 +154,7 @@ Each step is one commit on `feat/filesystem-collections-plan`.
    moved file is re-linked, typed cells untouched).
 4. **Docs and trackers.** Add a Duplicates subsection to the Import preview section of
    `filesystem-collections-plan.md`. Add a memory-log entry to the ASNT-77 Notion page, link #87
-   from PR #134 (`Closes #87 (Notion ID: 3b821d32-b13b-818d-a1b6-c542b16fe2d7)`), and mirror the
-   status in Linear.
+   from PR #134 (`Closes #87 (Notion ID: 3b821d32-b13b-818d-a1b6-c542b16fe2d7)`).
 
 ## Definition of done
 
