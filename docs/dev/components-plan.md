@@ -534,7 +534,20 @@ Manual before step 6 ships: on Windows, install the base NSIS, open a PDF and a 
 from the banners, update qrate from the previous base build, remove PDFium while a PDF is open, and
 repeat with `QRATE_DOWNLOAD_SOURCE` pointing at a local folder.
 
-## 7. Open questions
+## 7. Decisions (2026-09-26)
+
+- **PDFium is optional.** It leaves the base bundle and installs on the first PDF opened, like ffmpeg.
+- **ffmpeg:** pinned BtbN LGPL builds for Windows and Linux. macOS keeps the system ffmpeg
+  (`brew install ffmpeg`) for now.
+- **CLIP weights:** every release's workflow downloads the pinned weights on the runner and attaches
+  them to the release, as a fail-safe if Hugging Face disappears. Hugging Face stays the default
+  source, the release asset is the automatic fallback, and a setting lets the user pick either.
+- **Update feed:** updates read `update-manifest.json` from the GitHub release tag too, so the site
+  leaves the update path. The download source setting covers updates, the plugin catalog and
+  components alike.
+- Questions 4 to 10 take the proposals below.
+
+## 8. Open questions (as asked)
 
 1. **PDFium in base?** It is about 2.6 MB of a 75 MB installer, and PDF is the most common archival
    format. Recommendation: keep it in the base bundle and still publish it as a component (repairs,
