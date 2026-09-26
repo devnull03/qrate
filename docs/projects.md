@@ -86,7 +86,8 @@ file), or **Add all as new**. Drop a single file onto a `Filename` cell to link 
 **Settings ▸ Project ▸ Import ▸ Files already in the project** holds this project's choice for
 such files: **Leave the existing row alone** (the default), **Re-link the existing row to the new
 file**, or **Add it as a new row**. The wizard sets it when the project is created. An import
-that finds files already in the project still asks, with the three buttons above.
+that finds files already in the project still asks, with this choice as the default button, and
+the button you pick becomes the project's new choice.
 
 ## Add spreadsheet rows to an open project
 

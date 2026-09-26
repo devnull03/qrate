@@ -724,28 +724,49 @@ impl TablePanel {
                         )
                     }
                 );
-                // Only a drop that actually repeats material asks what to do about it.
-                let choices: &[&str] = match duplicates {
-                    0 => &["Import", "Cancel"],
-                    _ => &["Skip duplicates", "Update existing", "Add all as new", "Cancel"],
+                // Only a drop that actually repeats material asks what to do about it, with the
+                // project's saved policy as the default button.
+                use file_ingest::duplicates::DuplicatePolicy;
+                let mut order = [
+                    DuplicatePolicy::Skip,
+                    DuplicatePolicy::Update,
+                    DuplicatePolicy::AddAsNew,
+                ];
+                order.sort_by_key(|option| *option != policy);
+                let choices: Vec<&str> = match duplicates {
+                    0 => vec!["Import", "Cancel"],
+                    _ => order
+                        .iter()
+                        .map(|option| match option {
+                            DuplicatePolicy::Skip => "Skip duplicates",
+                            DuplicatePolicy::Update => "Update existing",
+                            DuplicatePolicy::AddAsNew => "Add all as new",
+                        })
+                        .chain(["Cancel"])
+                        .collect(),
                 };
                 let answer = window.prompt(
                     PromptLevel::Info,
                     "Import dropped files",
                     Some(&detail),
-                    choices,
+                    &choices,
                     cx,
                 );
                 cx.spawn_in(window, async move |this, cx| {
                     let chosen = answer.await.unwrap_or(usize::MAX);
                     let chosen = match (duplicates, chosen) {
                         (0, 0) => policy,
-                        (_, 0) => file_ingest::duplicates::DuplicatePolicy::Skip,
-                        (_, 1) => file_ingest::duplicates::DuplicatePolicy::Update,
-                        (_, 2) => file_ingest::duplicates::DuplicatePolicy::AddAsNew,
+                        (1.., ix) if ix < order.len() => order[ix],
                         _ => return,
                     };
                     this.update(cx, |this, cx| {
+                        if duplicates > 0 && chosen != policy {
+                            settings::project::CurrentProject::set_text(
+                                settings::project::IMPORT_DUPLICATE_POLICY_KEY,
+                                chosen.key().into(),
+                                cx,
+                            );
+                        }
                         // Re-resolving is what makes the buttons mean what they say.
                         let resolved = match chosen == policy {
                             true => resolved,
