@@ -2,8 +2,10 @@
 
 A row can link to a file on disk: a photo, document, audio, or video file. qrate does not
 move your files. It stores the files folder's path and finds each row's file by matching it
-against that folder every time you open the project. The only time qrate copies a file is
-when you add one from outside the files folder and choose to copy it in (see below).
+against that folder when you open the project, and again whenever a file in the folder
+changes (see [When the files folder changes](#when-the-files-folder-changes)). The only time
+qrate copies a file is when you add one from outside the files folder and choose to copy it
+in (see below).
 
 ## Linking a row to a file
 
@@ -41,6 +43,40 @@ is.
 
 A ZIP export includes the files that are linked from outside the files folder. They are in
 `files/outside/` in the archive, next to the files from the files folder.
+
+## When the files folder changes
+
+While a project is open, qrate watches its files folder, including every subfolder. You do
+not have to reopen the project after you add, rename, replace, or delete a file there:
+
+- **A file that a row names appears.** The row links to it, its preview shows, and its
+  missing-file problem goes away.
+- **A linked file is deleted or renamed.** The row's missing-file problem comes back.
+- **A linked file is replaced.** The preview shows the new version.
+
+qrate waits until a file has stopped changing for about half a second before it uses it, so
+a large file that is still copying is not read half-written. It ignores hidden files, Office
+lock files (`~$…`), `Thumbs.db`, `desktop.ini`, and unfinished downloads or copies
+(`.tmp`, `.part`, `.crdownload`).
+
+A project with no files folder set, or one whose files folder does not exist, is not
+watched.
+
+### New files
+
+A file in the files folder that no row links to is a new file. The status bar shows
+**New files (N)** on the left while there are any. qrate also looks for new files when you
+open a project, so files added while qrate was closed are counted too.
+
+Click **New files (N)** to import them as rows. The prompt is the same one you see when you
+drop files on the grid, with the project's duplicate policy as the default button (see
+[Add files to an open project](projects.md#add-files-to-an-open-project)).
+
+- **Ignore** takes these files out of the count. The project remembers them, so they do not
+  come back when you open it again.
+- **Cancel** imports nothing and leaves the files in the count.
+
+Files that qrate copies into `imported` for you are never counted as new.
 
 ## Missing files
 

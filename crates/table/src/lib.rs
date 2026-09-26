@@ -30,6 +30,7 @@ pub use editor::editor_box;
 /// The grid's right-click menu, so a gallery card can raise the same one a row does rather than
 /// growing a second, quietly diverging copy.
 pub use note::{Target as MenuTarget, menu as context_menu};
+pub use panel::watch::NewFiles;
 pub use panel::{
     Clear, CollapseAll, Copy, Cut, DeleteColumn, DeleteRow, DeleteSubtree, Deselect, DuplicateRow,
     EditCell, ExpandAll, GRID_CONTEXT, ImportFiles, ImportSpreadsheet, IndentRow, InsertColumnLeft,

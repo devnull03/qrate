@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 log.workspace = true
+notify.workspace = true
 gpui.workspace = true
 gpui-base.workspace = true
 gpui-component.workspace = true

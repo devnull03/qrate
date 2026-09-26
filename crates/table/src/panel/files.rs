@@ -14,11 +14,12 @@ use settings::history::Origin;
 use settings::project::{CurrentProject, FILES_FOLDER_KEY, IMPORT_OUTSIDE_FILES_KEY};
 
 use super::TablePanel;
+use super::watch::NewFiles;
 use crate::delegate::TableChanged;
 use crate::file_links::{self, BaseProblem, FilesBase};
 use crate::{photos, relink};
 
-fn files_folder(cx: &App) -> String {
+pub(super) fn files_folder(cx: &App) -> String {
     cx.try_global::<CurrentProject>()
         .and_then(|project| project.data.values.get(FILES_FOLDER_KEY))
         .map(|folder| folder.text().to_string())
@@ -354,9 +355,11 @@ impl TablePanel {
             let (paths, failed) = match copy {
                 false => (paths, Vec::new()),
                 true => {
-                    cx.background_executor()
+                    cx.update(|_, cx| NewFiles::copying(true, &[], cx)).ok();
+                    let (placed, copied, failed) = cx
+                        .background_executor()
                         .spawn(async move {
-                            let mut failed = Vec::new();
+                            let (mut copied, mut failed) = (Vec::new(), Vec::new());
                             let placed = paths
                                 .into_iter()
                                 .filter_map(|path| {
@@ -364,6 +367,7 @@ impl TablePanel {
                                         return Some(path);
                                     }
                                     relink::copy_in(&root, &path)
+                                        .inspect(|copy| copied.push(copy.clone()))
                                         .inspect_err(|error| {
                                             log::error!(
                                                 "Could not copy {} into the files folder: {error}",
@@ -374,9 +378,12 @@ impl TablePanel {
                                         .ok()
                                 })
                                 .collect::<Vec<_>>();
-                            (placed, failed)
+                            (placed, copied, failed)
                         })
-                        .await
+                        .await;
+                    cx.update(|_, cx| NewFiles::copying(false, &copied, cx))
+                        .ok();
+                    (placed, failed)
                 }
             };
             this.update_in(cx, |this, window, cx| {
@@ -403,7 +410,7 @@ impl TablePanel {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     // Never `use super::*` here — the parent's `use gpui::*` would shadow `#[test]`.
     use std::path::{Path, PathBuf};
 
@@ -412,7 +419,7 @@ mod tests {
     use crate::TablePanel;
     use crate::file_links::{BaseProblem, FilesBase};
 
-    fn tempdir(case: &str) -> PathBuf {
+    pub(crate) fn tempdir(case: &str) -> PathBuf {
         let dir = std::env::temp_dir()
             .join("qrate-files-panel-test")
             .join(case);
@@ -421,14 +428,14 @@ mod tests {
         dir
     }
 
-    fn touch(path: &Path) {
+    pub(crate) fn touch(path: &Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, "x").unwrap();
     }
 
     /// One Filename column holding `rows`, linked to `folder`, with the file checks registered
     /// and autosave off so the temp project is never written.
-    fn open<'a>(
+    pub(crate) fn open<'a>(
         cx: &'a mut TestAppContext,
         folder: &Path,
         rows: &[&str],
@@ -476,7 +483,7 @@ mod tests {
         (panel, cx)
     }
 
-    fn cells(panel: &Entity<TablePanel>, cx: &mut VisualTestContext) -> Vec<String> {
+    pub(crate) fn cells(panel: &Entity<TablePanel>, cx: &mut VisualTestContext) -> Vec<String> {
         panel.read_with(cx, |panel, cx| {
             let delegate = panel.state.read(cx).delegate();
             (0..delegate.row_count())
@@ -501,7 +508,7 @@ mod tests {
     }
 
     /// Let the debounced revalidation after an edit run, and the walk it may start land.
-    fn settle(cx: &mut VisualTestContext) {
+    pub(crate) fn settle(cx: &mut VisualTestContext) {
         cx.run_until_parked();
         cx.executor()
             .advance_clock(std::time::Duration::from_secs(1));
@@ -515,7 +522,7 @@ mod tests {
         })
     }
 
-    fn findings(cx: &mut VisualTestContext, severity: diagnostics::Severity) -> usize {
+    pub(crate) fn findings(cx: &mut VisualTestContext, severity: diagnostics::Severity) -> usize {
         cx.update(|_, cx| {
             diagnostics::Diagnostics::all(cx)
                 .iter()

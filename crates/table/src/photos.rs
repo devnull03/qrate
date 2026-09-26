@@ -23,12 +23,14 @@ use crate::delegate::QrateTableDelegate;
 pub struct PhotoIndex {
     inner: qrate_export::PhotoIndex,
     root: PathBuf,
+    /// Every file the walk found, relative to `root`.
+    pub(crate) files: Vec<PathBuf>,
 }
 
 impl PhotoIndex {
     pub fn build(folder: &str) -> Self {
         let root = PathBuf::from(folder);
-        let paths = file_ingest::scan(&root, true)
+        let files = file_ingest::scan(&root, true)
             .map(|inventory| {
                 inventory
                     .files()
@@ -37,9 +39,41 @@ impl PhotoIndex {
             })
             .unwrap_or_default();
         Self {
-            inner: qrate_export::PhotoIndex::from_paths(paths),
+            inner: qrate_export::PhotoIndex::from_paths(files.clone()),
             root,
+            files,
         }
+    }
+
+    /// This walk with `added` files and everything at or under `removed`, both relative to the
+    /// root, without reading the folder again. `None` when that leaves the same set of files.
+    pub(crate) fn changed(&self, added: &[PathBuf], removed: &[PathBuf]) -> Option<Self> {
+        let gone: Vec<String> = removed.iter().map(|path| comparable(path)).collect();
+        let kept: Vec<PathBuf> = self
+            .files
+            .iter()
+            .filter(|file| {
+                let file = comparable(file);
+                !gone.iter().any(|gone| within(&file, gone))
+            })
+            .cloned()
+            .collect();
+        let mut held: std::collections::HashSet<String> =
+            kept.iter().map(|f| comparable(f)).collect();
+        let new: Vec<PathBuf> = added
+            .iter()
+            .filter(|file| held.insert(comparable(file)))
+            .cloned()
+            .collect();
+        if kept.len() == self.files.len() && new.is_empty() {
+            return None;
+        }
+        let files: Vec<PathBuf> = kept.into_iter().chain(new).collect();
+        Some(Self {
+            inner: qrate_export::PhotoIndex::from_paths(files.clone()),
+            root: self.root.clone(),
+            files,
+        })
     }
 
     pub(crate) fn resolve_cell(&self, cell: &str) -> Option<PathBuf> {
@@ -118,6 +152,29 @@ pub(crate) fn forget(cx: &mut App) {
     cx.set_global(Walked::default());
 }
 
+/// Keep `index` as the walk of `folder`.
+pub(crate) fn remember(folder: String, index: Arc<PhotoIndex>, cx: &mut App) {
+    cx.set_global(Walked {
+        folder,
+        index: Some(index),
+    });
+}
+
+/// How two paths are compared: separators unified and case folded, as the import's duplicate
+/// check compares them.
+pub(crate) fn comparable(path: &std::path::Path) -> String {
+    file_ingest::normalized_path(path).to_lowercase()
+}
+
+/// Whether the [`comparable`] path `path` is `folder` or lies under it. An empty `folder` is the
+/// root, which holds everything.
+pub(crate) fn within(path: &str, folder: &str) -> bool {
+    folder.is_empty()
+        || path
+            .strip_prefix(folder)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
 fn strings(row: &[SharedString]) -> Vec<String> {
     row.iter().map(ToString::to_string).collect()
 }
@@ -180,10 +237,7 @@ pub(crate) fn refresh(
         let walked = cx.update(|cx| {
             let walked = cached_index(&folder, cx).is_none();
             if walked {
-                cx.set_global(Walked {
-                    folder,
-                    index: Some(index),
-                });
+                remember(folder, index, cx);
             }
             walked
         });

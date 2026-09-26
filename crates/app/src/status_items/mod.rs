@@ -1,11 +1,13 @@
 mod cell_location;
 pub mod markup;
+mod new_files;
 mod panel_buttons;
 mod plugin_bar;
 
 use cell_location::CellLocation;
 use gpui::*;
 use gpui_component::dock::DockArea;
+use new_files::NewFilesButton;
 use panel_buttons::PanelButtons;
 use plugin_api::{Bar, BarContributions, Side};
 pub use plugin_bar::PluginBar;
@@ -42,6 +44,11 @@ pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> St
     registry.items_mut().add_left_if(plugins, |cx| {
         !BarContributions::at(Bar::Status, Side::Left, cx).is_empty()
     });
+
+    let new_files = cx.new(NewFilesButton::new);
+    registry
+        .items_mut()
+        .add_left_if(new_files, NewFilesButton::occupied);
 
     // Plugin text, then the cell readout, then the panel buttons: text items go right-leftmost
     // and the buttons stay rightmost.

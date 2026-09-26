@@ -27,6 +27,7 @@ use crate::{
 };
 
 mod files;
+pub(crate) mod watch;
 
 const COLUMN_LAYOUT_KEY: &str = "table_columns";
 
@@ -192,6 +193,8 @@ pub struct TablePanel {
     _autosave_task: Option<Task<()>>,
     /// Pending debounced revalidation, on the same drop-cancels-the-timer trick as the autosave.
     _revalidate_task: Option<Task<()>>,
+    /// The watcher on the files folder, while the project has one.
+    watch: Option<watch::FolderWatch>,
 }
 
 impl TablePanel {
@@ -258,6 +261,7 @@ impl TablePanel {
         // A newly opened project reads its files folder afresh, off the UI thread.
         photos::forget(cx);
         cx.set_global(crate::file_links::FilesBase::default());
+        cx.set_global(watch::NewFiles::default());
         state.update(cx, |state, cx| photos::refresh(state, None, cx));
 
         let table_state = state.clone();
@@ -448,6 +452,7 @@ impl TablePanel {
                         cx.notify();
                     });
                     log::debug!("table re-read project settings in {:?}", started.elapsed());
+                    this.sync_watch(cx);
                     cx.notify();
                     return;
                 }
@@ -493,6 +498,7 @@ impl TablePanel {
                     cx.emit(TableChanged);
                     cx.notify();
                 });
+                this.sync_watch(cx);
                 cx.notify();
             });
 
@@ -560,7 +566,7 @@ impl TablePanel {
             }
         });
 
-        let panel = Self {
+        let mut panel = Self {
             focus_handle: cx.focus_handle(),
             state,
             loaded_project,
@@ -590,7 +596,9 @@ impl TablePanel {
             _files_sub,
             _autosave_task: None,
             _revalidate_task: None,
+            watch: None,
         };
+        panel.sync_watch(cx);
         cx.set_global(crate::TablePanelHandle(cx.entity().downgrade()));
         panel
     }
@@ -617,16 +625,20 @@ impl TablePanel {
         cx: &mut Context<Self>,
     ) {
         self.place_outside_files(paths, window, cx, |this, paths, window, cx| {
-            this.import_paths(paths, window, cx)
+            this.import_paths(paths, false, window, cx)
         });
     }
 
+    /// Plan `paths` as rows and ask before adding them. `new_files` are the watch's new files,
+    /// which the prompt also offers to ignore.
     fn import_paths(
         &mut self,
         paths: Vec<std::path::PathBuf>,
+        new_files: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let offered = new_files.then(|| paths.clone());
         let description = cx
             .try_global::<settings::project::CurrentProject>()
             .map(|project| {
@@ -757,7 +769,7 @@ impl TablePanel {
                 ];
                 order.sort_by_key(|option| *option != policy);
                 let choices: Vec<&str> = match duplicates {
-                    0 => vec!["Import", "Cancel"],
+                    0 => vec!["Import"],
                     _ => order
                         .iter()
                         .map(|option| match option {
@@ -765,24 +777,42 @@ impl TablePanel {
                             DuplicatePolicy::Update => "Update existing",
                             DuplicatePolicy::AddAsNew => "Add all as new",
                         })
-                        .chain(["Cancel"])
                         .collect(),
                 };
+                let ignore_at = offered.as_ref().map(|_| choices.len());
+                let choices: Vec<&str> = choices
+                    .into_iter()
+                    .chain(offered.as_ref().map(|_| "Ignore"))
+                    .chain(["Cancel"])
+                    .collect();
                 let answer = window.prompt(
                     PromptLevel::Info,
-                    "Import dropped files",
+                    match offered {
+                        Some(_) => "Import new files",
+                        None => "Import dropped files",
+                    },
                     Some(&detail),
                     &choices,
                     cx,
                 );
                 cx.spawn_in(window, async move |this, cx| {
                     let chosen = answer.await.unwrap_or(usize::MAX);
+                    if let Some(offered) = &offered
+                        && ignore_at == Some(chosen)
+                    {
+                        cx.update(|_, cx| watch::NewFiles::settle(offered, true, cx))
+                            .ok();
+                        return;
+                    }
                     let chosen = match (duplicates, chosen) {
                         (0, 0) => policy,
                         (1.., ix) if ix < order.len() => order[ix],
                         _ => return,
                     };
                     this.update(cx, |this, cx| {
+                        if let Some(offered) = &offered {
+                            watch::NewFiles::settle(offered, false, cx);
+                        }
                         if duplicates > 0 && chosen != policy {
                             settings::project::CurrentProject::set_text(
                                 settings::project::IMPORT_DUPLICATE_POLICY_KEY,

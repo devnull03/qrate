@@ -617,6 +617,40 @@ fn release(budget: usize, window: &mut Window, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Drop what memory holds about `path`, its page count and every decoded picture of it, so the
+/// next draw reads the file as it is now. The disk cache needs nothing: its key has the file's
+/// size and modified time in it. Call it outside a frame, as [`release`] explains.
+pub fn forget(path: &Path, cx: &mut App) {
+    if let Ok(mut known) = PAGES.lock() {
+        known.remove(path);
+    }
+    ImageSource::Resource(path.to_path_buf().into()).remove_asset(cx);
+    let live = cx.default_global::<Live>();
+    let held: Vec<Key> = live
+        .ticks
+        .keys()
+        .filter(|key| key.0 == path)
+        .cloned()
+        .collect();
+    let mut dropped = Vec::new();
+    for key in &held {
+        if let Some(tick) = live.ticks.remove(key)
+            && let Some((_, image)) = live.entries.remove(&tick)
+        {
+            live.bytes = live.bytes.saturating_sub(cost(&image));
+            dropped.push(image);
+        }
+    }
+    let unheld = [CARD, PANE, FULL].map(|edge| (path.to_path_buf(), edge, 0));
+    for key in held.iter().chain(&unheld) {
+        cx.remove_asset::<Preview>(key);
+    }
+    for image in dropped {
+        cx.drop_image(image, None);
+    }
+    cx.refresh_windows();
+}
+
 /// The file's contents fit to whatever box the caller gives it, or a type icon when there is
 /// nothing to draw — no path, an undecodable one, or a decode that fails at paint time.
 ///
@@ -1012,6 +1046,31 @@ mod tests {
         cx.update(gpui_component::init);
         let path = PathBuf::from("/nonexistent/qrate-test-image.jpg");
         cx.add_window_view(|_, _| ThumbProbe(Some(path)));
+    }
+
+    /// A file rewritten on disk is decoded afresh: forgetting it lets go of its page count and
+    /// every picture of it held in memory.
+    #[gpui::test]
+    fn a_forgotten_file_is_decoded_afresh(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let path = sample_photo("2.jpg");
+        let (_, cx) = cx.add_window_view(|_, _| ThumbProbe(Some(path.clone())));
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        crate::learn_pages(&path, 3);
+        let held = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_, cx| {
+                cx.try_global::<crate::Live>().map_or(0, |live| {
+                    live.ticks.keys().filter(|key| key.0 == path).count()
+                })
+            })
+        };
+        assert_eq!(held(cx), 1, "drawn once");
+
+        cx.update(|_, cx| crate::forget(&path, cx));
+        assert_eq!(held(cx), 0);
+        assert_eq!(crate::known_pages(&path), None);
     }
 
     #[gpui::test]

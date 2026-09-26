@@ -73,6 +73,7 @@ pub fn folder_names<'a>(values: impl IntoIterator<Item = &'a SharedString>) -> V
 /// walk yet it asks the table for one and publishes nothing; the walk revalidates when it lands.
 /// A folder that moved as a whole is one banner over the grid instead of a finding per row.
 pub fn check(columns: &[ColumnSnapshot], cx: &mut App) {
+    cx.defer(crate::panel::watch::recount);
     let folder = cx
         .try_global::<CurrentProject>()
         .and_then(|p| p.data.values.get(FILES_FOLDER_KEY).map(|v| v.text()))

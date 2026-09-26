@@ -78,6 +78,10 @@ pub const IMPORT_OUTSIDE_FILES: &[(&str, &str)] = &[
     ("link", "Link where it is"),
 ];
 
+/// Files in the files folder the archivist chose not to import, as a JSON list of paths relative
+/// to it, so the "New files" count does not bring them back.
+pub const IGNORED_NEW_FILES_KEY: &str = "ignored_new_files";
+
 /// `__settings` key for the spreadsheet this project pushes to. The id alone, not the URL — the
 /// link is derivable (`data_exchange::google::sheet_url`) and the id is what the Sheets API takes.
 /// Written when the user picks a sheet through Google's chooser, which is also what grants qrate

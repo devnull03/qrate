@@ -68,6 +68,8 @@ gpui = { package = "gpui-pre", version = "0.3" }
 gpui_platform = { package = "gpui-pre-platform", version = "0.3", features = ["font-kit", "wayland", "x11"] }
 gpui-base = { version = "0.6" }
 gpui-component = { version = "0.6" }
+# Watches the files folder. gpui-component still carries notify 7 for itself.
+notify = "8"
 gpui-component-assets = { package = "gpui-kit-assets", version = "0.6" }
 dirs = "6"
 log = "0.4"
