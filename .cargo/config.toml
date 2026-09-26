@@ -3,6 +3,10 @@
 # Leaves headroom so the machine stays usable while cargo works.
 jobs = 10
 
+[target.x86_64-pc-windows-msvc]
+# link.exe dominates test builds, since every test binary links gpui; rust-lld ships with rustup.
+linker = "rust-lld.exe"
+
 [env]
 # Make Rust artifacts path-independent so zccache can reuse them across worktrees.
 ZCCACHE_PATH_REMAP = "auto"
