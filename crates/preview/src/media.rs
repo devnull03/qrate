@@ -43,15 +43,23 @@ const NAME: &str = if cfg!(windows) {
     "ffmpeg"
 };
 
+/// Homebrew's prefixes. A Mac app opened from Finder gets a `PATH` without either.
+const SYSTEM_DIRS: &[&str] = if cfg!(target_os = "macos") {
+    &["/opt/homebrew/bin", "/usr/local/bin"]
+} else {
+    &[]
+};
+
 /// Where to look, in order: beside the executable, so a full install is self-contained and
 /// reproducible, then the copy qrate installed on demand, then the bare name for whatever is on
-/// `PATH` in a development checkout.
+/// `PATH`, then Homebrew.
 fn candidates(exe_dir: Option<&Path>, installed: Option<&Path>) -> Vec<PathBuf> {
     exe_dir
         .into_iter()
         .chain(installed)
         .map(|dir| dir.join(NAME))
         .chain([PathBuf::from(NAME)])
+        .chain(SYSTEM_DIRS.iter().map(|dir| Path::new(dir).join(NAME)))
         .collect()
 }
 
@@ -83,7 +91,10 @@ pub(crate) fn binary() -> Option<PathBuf> {
 /// installed, or there is none.
 pub fn found() -> Option<Found> {
     let binary = binary()?;
-    if binary.is_relative() {
+    let homebrew = SYSTEM_DIRS
+        .iter()
+        .any(|dir| binary.parent() == Some(Path::new(dir)));
+    if binary.is_relative() || homebrew {
         return Some(Found::System);
     }
     let exe = std::env::current_exe().ok();
@@ -204,11 +215,19 @@ mod tests {
         let exe = Path::new("/qrate");
         let installed = Path::new("/data/components/ffmpeg/n8.1.2");
         let name = PathBuf::from(media::NAME);
+        let system: Vec<PathBuf> = media::SYSTEM_DIRS
+            .iter()
+            .map(|dir| Path::new(dir).join(&name))
+            .collect();
         assert_eq!(
             media::candidates(Some(exe), Some(installed)),
-            [exe.join(&name), installed.join(&name), name.clone()]
+            [
+                vec![exe.join(&name), installed.join(&name), name.clone()],
+                system.clone()
+            ]
+            .concat()
         );
-        assert_eq!(media::candidates(None, None), [name]);
+        assert_eq!(media::candidates(None, None), [vec![name], system].concat());
     }
 
     #[test]

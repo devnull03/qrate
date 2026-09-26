@@ -295,6 +295,7 @@ mod quick_look {
 mod freedesktop {
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use image::DynamicImage;
 
@@ -338,7 +339,12 @@ mod freedesktop {
         let mime = mime_guess::from_path(path).first()?.to_string();
         let exec = command_for(&mime)?;
 
-        let out = std::env::temp_dir().join(format!("qrate-thumb-{}.png", std::process::id()));
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let out = std::env::temp_dir().join(format!(
+            "qrate-thumb-{}-{}.png",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         // The spec's placeholders: %i input, %o output, %s the requested size, %u a file URI.
         let mut parts = exec.split_whitespace().map(|part| {
             part.replace("%i", &path.to_string_lossy())
