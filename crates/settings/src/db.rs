@@ -195,19 +195,17 @@ impl SettingsWriter {
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if let Some(s) = pending.take() {
-                            if let Err(error) = save_app_settings_snapshot(s) {
-                                log::error!("settings: failed to save app snapshot: {error:#}");
-                            }
+                        if let Some(s) = pending.take()
+                            && let Err(error) = save_app_settings_snapshot(s)
+                        {
+                            log::error!("settings: failed to save app snapshot: {error:#}");
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        if let Some(s) = pending.take() {
-                            if let Err(error) = save_app_settings_snapshot(s) {
-                                log::error!(
-                                    "settings: failed to save final app snapshot: {error:#}"
-                                );
-                            }
+                        if let Some(s) = pending.take()
+                            && let Err(error) = save_app_settings_snapshot(s)
+                        {
+                            log::error!("settings: failed to save final app snapshot: {error:#}");
                         }
                         break;
                     }
