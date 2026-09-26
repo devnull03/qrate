@@ -1081,7 +1081,7 @@ mod tests {
     fn a_forgotten_file_is_decoded_afresh(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let path = sample_photo("2.jpg");
-        let (_, cx) = cx.add_window_view(|_, _| ThumbProbe(Some(path.clone())));
+        let (_, cx) = cx.add_window_view(|_, _| ThumbProbe(Some(path.clone()), false));
         cx.run_until_parked();
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
