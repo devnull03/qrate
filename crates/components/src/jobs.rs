@@ -15,7 +15,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::Shared};
 use gpui::{App, AppContext as _, Global, SharedString, Task};
 use settings::AppSettings;
-use updater::Source;
+use updater::{Flavor, Source};
 
 use crate::{CLIP_DOWNLOAD, CLIP_SOURCE_KEY, ClipSource, ComponentId, Manifest, Removal, Store};
 
@@ -156,6 +156,9 @@ pub fn init(cx: &mut App) {
             }
         }
         // After the tiers have said what they found, so a part a full install carries is left alone.
+        let finders = cx.update(|cx| cx.global::<Components>().finders.clone());
+        cx.background_spawn(async move { check_full_install(&finders) })
+            .await;
         cx.update(|cx| {
             if !automatic_updates(cx) {
                 return;
@@ -169,6 +172,29 @@ pub fn init(cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// Logs each part a full install should carry beside the executable and does not, which then
+/// reaches bug reports through Help ▸ Copy Debug Info. Off the main thread: finding PDFium loads it.
+fn check_full_install(finders: &HashMap<ComponentId, fn() -> Option<Found>>) {
+    let Ok(installation) = updater::detect_installation() else {
+        return;
+    };
+    if installation.marker.flavor != Flavor::Full {
+        return;
+    }
+    let bundled = [ComponentId::Pdfium, ComponentId::Agent]
+        .into_iter()
+        .chain(cfg!(windows).then_some(ComponentId::Ffmpeg));
+    for id in bundled {
+        if finders.get(&id).and_then(|finder| finder()) != Some(Found::Bundled) {
+            log::error!(
+                "this qrate install is missing {}; reinstall qrate or install it under \
+                 Settings ▸ Components",
+                id.label()
+            );
+        }
+    }
 }
 
 /// Lets the tier that loads `id` say when it found the part somewhere qrate did not put it, so

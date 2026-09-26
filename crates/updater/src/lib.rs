@@ -85,6 +85,9 @@ impl ReleaseChannel {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct UpdateArtifact {
     pub kind: InstallKind,
+    /// Absent in manifests before base bundles, which only held full ones.
+    #[serde(default)]
+    pub flavor: Flavor,
     pub os: String,
     pub arch: String,
     pub url: String,
@@ -102,6 +105,16 @@ pub enum InstallKind {
     LinuxTar,
 }
 
+/// Whether an install carries the optional parts beside the executable. An update keeps the
+/// flavor, since a full one's sidecars would win the lookup over a newer installed component.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Flavor {
+    Base,
+    #[default]
+    Full,
+}
+
 impl InstallKind {
     pub fn self_managed(self) -> bool {
         !matches!(self, Self::WindowsMsi)
@@ -113,6 +126,9 @@ pub struct InstallMarker {
     pub schema: u32,
     pub kind: InstallKind,
     pub packaged_version: Version,
+    /// Absent in markers written before base bundles, when every install was full.
+    #[serde(default)]
+    pub flavor: Flavor,
 }
 
 #[derive(Clone, Debug)]
@@ -218,6 +234,7 @@ pub fn artifact_for<'a>(
         .iter()
         .find(|artifact| {
             artifact.kind == installation.marker.kind
+                && artifact.flavor == installation.marker.flavor
                 && artifact.os == os
                 && (artifact.arch == arch || artifact.arch == "universal")
         })
@@ -755,9 +772,9 @@ fn mark_healthy_in(updates: &Path, current_version: &Version) -> Result<Option<U
 #[cfg(test)]
 mod tests {
     use super::{
-        ENVELOPE_SCHEMA, InstallKind, InstallMarker, Installation, ReleaseChannel, SignedEnvelope,
-        UpdateArtifact, UpdateManifest, select_update, sha256_file, verify_payload_with,
-        verify_with,
+        ENVELOPE_SCHEMA, Flavor, InstallKind, InstallMarker, Installation, ReleaseChannel,
+        SignedEnvelope, UpdateArtifact, UpdateManifest, artifact_for, select_update, sha256_file,
+        verify_payload_with, verify_with,
     };
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use ed25519_dalek::{Signer as _, SigningKey};
@@ -776,6 +793,7 @@ mod tests {
             release_notes_url: "https://github.com/devnull03/qrate/releases/tag/v9.9.9".into(),
             artifacts: vec![UpdateArtifact {
                 kind: InstallKind::LinuxTar,
+                flavor: Flavor::Full,
                 os: std::env::consts::OS.into(),
                 arch: "universal".into(),
                 url: format!(
@@ -795,6 +813,7 @@ mod tests {
                 schema: 1,
                 kind: InstallKind::LinuxTar,
                 packaged_version: version("0.4.0-alpha.1"),
+                flavor: Flavor::Full,
             },
         }
     }
@@ -807,6 +826,40 @@ mod tests {
             signature_base64: STANDARD.encode(key.sign(&payload).to_bytes()),
             payload_base64: STANDARD.encode(payload),
         }
+    }
+
+    #[test]
+    fn an_install_updates_to_its_own_flavor_and_old_files_read_as_full() {
+        let mut manifest = manifest("0.6.0-beta.1");
+        let mut base = manifest.artifacts[0].clone();
+        base.flavor = Flavor::Base;
+        base.url = base.url.replace("qrate.tar.gz", "qrate-base.tar.gz");
+        manifest.artifacts.push(base);
+        let mut installation = installation();
+        assert_eq!(
+            artifact_for(&manifest, &installation).unwrap().flavor,
+            Flavor::Full
+        );
+        installation.marker.flavor = Flavor::Base;
+        assert!(
+            artifact_for(&manifest, &installation)
+                .unwrap()
+                .url
+                .ends_with("qrate-base.tar.gz")
+        );
+        manifest.artifacts.pop();
+        assert!(artifact_for(&manifest, &installation).is_err());
+
+        let marker: InstallMarker = serde_json::from_str(
+            r#"{"schema": 1, "kind": "windows-nsis", "packaged_version": "0.5.0-beta.1"}"#,
+        )
+        .unwrap();
+        assert_eq!(marker.flavor, Flavor::Full);
+        let artifact: UpdateArtifact = serde_json::from_str(
+            r#"{"kind": "linux-tar", "os": "linux", "arch": "x86_64", "url": "u", "size": 1, "sha256": "s"}"#,
+        )
+        .unwrap();
+        assert_eq!(artifact.flavor, Flavor::Full);
     }
 
     #[test]
@@ -961,7 +1014,7 @@ mod tests {
 #[cfg(test)]
 mod apply_tests {
     use super::{
-        ENVELOPE_SCHEMA, InstallKind, InstallMarker, JOB_NAME, MARKER_NAME, RECEIPT_NAME,
+        ENVELOPE_SCHEMA, Flavor, InstallKind, InstallMarker, JOB_NAME, MARKER_NAME, RECEIPT_NAME,
         ReceiptStatus, ReleaseChannel, SignedEnvelope, UpdateArtifact, UpdateJob, UpdateManifest,
         UpdateReceipt, mark_healthy_in, run_job_with, sha256_file, write_json_atomic,
     };
@@ -982,6 +1035,7 @@ mod apply_tests {
             schema: 1,
             kind: InstallKind::WindowsPortable,
             packaged_version: Version::parse(version).unwrap(),
+            flavor: Flavor::Full,
         })
         .unwrap()
     }
@@ -1019,6 +1073,7 @@ mod apply_tests {
             release_notes_url: format!("https://github.com/devnull03/qrate/releases/tag/v{TO}"),
             artifacts: vec![UpdateArtifact {
                 kind: InstallKind::WindowsPortable,
+                flavor: Flavor::Full,
                 os: std::env::consts::OS.into(),
                 arch: std::env::consts::ARCH.into(),
                 url: format!("https://github.com/devnull03/qrate/releases/download/v{TO}/q.zip"),

@@ -635,6 +635,21 @@ leaves stale sidecars beside the exe, which win the lookup, or drops the bundled
    ordering, site links, ASNT-103 runtime check. This is the step that shrinks the default download,
    and it can wait until 4 and 5 have been through one beta.
 
+   **Started (2026-09-26): the parts that change nothing until a release ships a base package.**
+   - `updater::Flavor` (`base` | `full`) on `InstallMarker` and `UpdateArtifact`, both
+     `#[serde(default)]` to `full`, and `artifact_for` matches it. Every marker the packaging
+     writes today omits it, which reads as full.
+   - `build-update-manifest.sh` has a flavor column, lists full artifacts first, takes a base
+     artifact (`-base-setup.exe`, `-base-universal.dmg`, `-base-x86_64-linux.tar.gz`) only when
+     one is there, and refuses two files for one suffix.
+   - ASNT-103: `components::init` logs an `error` for each part a full install lacks beside the
+     executable (PDFium and Pi everywhere, ffmpeg on Windows), off the main thread.
+
+   Still to do: `/DFLAVOR=base` in `installer.nsi` and `bundle-mac.sh` (skip the sidecars and
+   `agent`, write `"flavor": "base"` into the marker; the NSIS uninstaller removes
+   `${DATADIR}\components`), the Linux base tarball, base jobs in `release.yml` that assert the
+   sidecars are absent, and the site's download links (branch `site`).
+
 `feat/file-integrity` also changes `preview`. Rebase whichever branch lands second (roadmap § Order).
 
 ## 6. Test plan
@@ -720,7 +735,8 @@ Steps 0 to 4 are on `main` (bf9d9b7, f34267b, fa991f5, 8e3f918). Step 5 is on
    the banners, cancel one midway, open the agent panel without Pi, and use Settings ▸ Components.
    The onboarding crate (branch `onboarding`) calls `components::install`, `state`, `cancel` and
    `observe_global`; it now also sees `Bundled`, `System` and `Unavailable`.
-2. **Step 6, base bundle.** Wait until steps 4 and 5 have been through one beta.
+2. **Step 6, base bundle.** The updater and manifest side is on this branch (see step 6 above);
+   the packaging is not. Wait until steps 4 and 5 have been through one beta.
 3. **Known gap from step 4.** A thumbnail the OS made while PDFium or ffmpeg was missing stays in
    the disk cache after an install until the file or the cache changes.
 4. **Then** run `./scripts/ci.sh` and cut a pre-release with the `cut-release` skill (suggested
