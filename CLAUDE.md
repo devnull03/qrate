@@ -71,7 +71,8 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | `app` | the binary — `main`, menu bar, actions/keybindings, theming, logging, export entry points |
 | `agent-runtime` | the bundled Pi executable contract, isolated profile, and restricted PTY/session |
 | `table` | the spreadsheet grid: delegate, cell editing, undo history, filters, notes, photos, file links |
-| `workspace` | panel hosting — the panel registry, dock buttons, image viewer |
+| `workspace` | panel hosting — the panel registry, dock buttons, image viewer, the dock skin, and `extension` (how another crate draws over the centre or reacts to the view) |
+| `onboarding` | Getting started — the workspace guide card, its one-time tips, the export tip. Plugs in as a `workspace::WorkspaceExtension`; its per-project keys live in `settings::onboarding` so `project-wizard` can switch it on without depending on it |
 | `window-wrapper` | shared window chrome: title bar, status bar, the window registry |
 | `settings` | `AppSettings` (user-wide) and `.qrate` (per project), column config, plugin settings |
 | `project-wizard` | new/open project flow, recent projects, the launcher |

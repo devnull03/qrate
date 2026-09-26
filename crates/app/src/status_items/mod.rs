@@ -29,6 +29,13 @@ pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> St
         })
         .collect();
 
+    // Leftmost: the Getting started label, when the guide is folded into the bar ("Show me
+    // later", or a centre too small for the card). Takes up only its label, so it fits any size.
+    let guide = cx.new(onboarding::GuideStatusItem::new);
+    registry
+        .items_mut()
+        .add_left_if(guide, onboarding::status_label_visible);
+
     let left_panels = cx.new(|cx| PanelButtons::new(BarSide::Left, buttons.clone(), cx));
     registry
         .items_mut()

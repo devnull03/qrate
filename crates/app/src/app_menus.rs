@@ -238,12 +238,16 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
             name: "Help".into(),
             disabled: false,
             items: vec![
+                // Reopens the workspace's guide with its progress, or the launcher's welcome
+                // when no project is open.
+                MenuItem::action("Getting Started", onboarding::ShowGettingStarted),
                 MenuItem::action(
                     "User Guide",
                     OpenBrowser {
                         url: format!("{REPO_URL}/blob/main/docs/index.md"),
                     },
                 ),
+                MenuItem::Separator,
                 MenuItem::submenu(Menu {
                     name: "GitHub".into(),
                     disabled: false,

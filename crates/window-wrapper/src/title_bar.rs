@@ -79,11 +79,15 @@ impl RenderOnce for AppTitleBar {
                     .when(!self.title.is_empty(), |this| {
                         this.child(self.title.clone())
                     })
-                    .child(
-                        div()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("· Author: {}", self.author)),
-                    ),
+                    // Who the change log will credit, said as what it is: the name this
+                    // session's edits go out under, not a property of the project.
+                    .child(div().text_color(cx.theme().muted_foreground).child(
+                        if self.author.is_empty() {
+                            "· No author set".to_string()
+                        } else {
+                            format!("· Editing as {}", self.author)
+                        },
+                    )),
             )
             .child(
                 gpui_component::h_flex()

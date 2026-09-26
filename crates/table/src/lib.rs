@@ -958,3 +958,77 @@ pub fn save_now(cx: &mut App) -> Result<(), String> {
     log::debug!("saved {rows} rows in {:?}", started.elapsed());
     Ok(())
 }
+
+/// What the workspace's Getting started guide reads off the grid to tell which of its tasks are
+/// already done. Read rather than reported: the grid has no idea a guide exists, and a task an
+/// archivist finished on their own (typing a title before being asked) should still tick.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct GuideFacts {
+    /// Source rows, including filtered-away ones.
+    pub rows: usize,
+    /// Data columns.
+    pub columns: usize,
+    /// Whether any row has text in the Title column (the first column, when none is declared).
+    pub any_title: bool,
+    /// Whether a row or cell is selected — what opens a row in Details.
+    pub selected: bool,
+    /// Rows whose file resolved to something on disk.
+    pub linked_files: usize,
+}
+
+/// The data column holding each row's title: the one declared Title, else the first.
+fn title_col(delegate: &QrateTableDelegate) -> usize {
+    (0..delegate.column_count())
+        .find(|&col| delegate.column_type(col) == ColumnType::Title)
+        .unwrap_or(0)
+}
+
+/// See [`GuideFacts`]. `None` before the grid exists.
+pub fn guide_facts(cx: &App) -> Option<GuideFacts> {
+    let state = cx.try_global::<TableStateHandle>()?.0.upgrade()?;
+    let delegate = state.read(cx).delegate();
+    let rows = delegate.row_count();
+    let title = title_col(delegate);
+    Some(GuideFacts {
+        rows,
+        columns: delegate.column_count(),
+        any_title: (0..rows).any(|row| {
+            delegate
+                .cell(row, title)
+                .is_some_and(|text| !text.trim().is_empty())
+        }),
+        selected: matches!(
+            delegate.selection(),
+            Some(Selection::Cell { .. } | Selection::Row(_))
+        ),
+        linked_files: (0..rows)
+            .filter(|&row| delegate.row_image(row).is_some())
+            .count(),
+    })
+}
+
+/// Select the first visible row — its Title cell when `title_cell`, else the whole row — the way
+/// a click would, so Details follows. The guide's "Show me" for the tasks that start in the grid.
+pub fn select_first_row(title_cell: bool, cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+    let target = {
+        let delegate = state.read(cx).delegate();
+        delegate.visible().first().map(|_| (0, title_col(delegate)))
+    };
+    let Some((view_row, col)) = target else {
+        return;
+    };
+    state.update(cx, |state, cx| {
+        if title_cell {
+            // `+ 1`: the library counts the pinned row-number column, the data does not.
+            state.set_selected_cell(view_row, col + 1, cx)
+        } else {
+            state.set_selected_row(view_row, cx)
+        }
+    });
+}
