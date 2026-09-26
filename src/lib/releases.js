@@ -49,7 +49,10 @@ export function labelFor(name) {
 
 // Only the shipped installers get a platform. Anything else in the release
 // (sample data, checksums, source archives) must stay out of the download table.
+// So must the component-* archives, which qrate downloads by itself: a Linux
+// one ends in linux-x86_64.tar.gz like the tarball does.
 export function platformOf(name) {
+  if (/^component-/i.test(name)) return null;
   if (/\.dmg$/i.test(name)) return 'macOS';
   if (/(-setup\.exe|\.msi|(x64|x86_64)[^/]*\.zip)$/i.test(name)) return 'Windows';
   // release.yml ships Linux as a tarball, not a .deb or .AppImage. Matching only
@@ -62,9 +65,20 @@ export function platformOf(name) {
 // The downloadable assets of one release, keyed by filename. /thanks resolves its
 // ?a= param against this, so only a name the release actually published can ever
 // become a download URL.
+// The base downloads come first, so every "first file for this platform" lookup
+// (the hero button, /thanks, the table) offers the small one. It installs PDF
+// preview, video preview and the assistant when they are first needed.
+export function isBase(name) {
+  return /-base-/i.test(name);
+}
+
+export function baseFirst(assets) {
+  return [...assets].sort((a, b) => Number(isBase(b.name)) - Number(isBase(a.name)));
+}
+
 export function assetIndex(rel) {
   const out = {};
-  for (const a of rel?.assets ?? []) {
+  for (const a of baseFirst(rel?.assets ?? [])) {
     const os = platformOf(a.name);
     if (os) out[a.name] = { url: a.browser_download_url, os, size: a.size };
   }

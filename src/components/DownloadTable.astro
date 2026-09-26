@@ -4,14 +4,16 @@
 //
 // No Tailwind classes: docs pages render Starlight's layout, not Base.astro, so
 // global.css is never loaded there. Plain scoped CSS against the --sl-* tokens.
-import { getReleases, latest, platformOf, humanSize, REPO } from '../lib/releases.js';
+import { getReleases, latest, platformOf, baseFirst, humanSize, REPO } from '../lib/releases.js';
 
 const releases = await getReleases();
 const rel = latest(releases);
 const assets = rel?.assets ?? [];
 
 const sums = assets.find((a) => /SHA256SUMS\.txt$/i.test(a.name));
-const downloads = assets.map((a) => ({ ...a, os: platformOf(a.name) })).filter((a) => a.os);
+const downloads = baseFirst(assets)
+  .map((a) => ({ ...a, os: platformOf(a.name) }))
+  .filter((a) => a.os);
 ---
 
 {

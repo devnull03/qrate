@@ -30,8 +30,10 @@ fullscreen, where you can zoom, pan, page through a multi-page document, and sea
 it.
 
 PDF previews need PDFium and video frame previews need ffmpeg. qrate looks for both beside
-its own executable, then on your system `PATH`. Without them, qrate shows a file-type icon
-instead of a preview, and the rest of the app works as normal.
+its own executable, then for the copies it installed itself, then on your system `PATH`. When
+one is missing, opening a PDF or a video offers to install it, and **Settings ▸ Components**
+lists both. Until then, qrate shows a file-type icon instead of a preview, and the rest of the
+app works as normal.
 
 ## Gallery view
 

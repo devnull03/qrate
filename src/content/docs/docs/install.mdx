@@ -11,6 +11,11 @@ Download a build, or run from source with the Rust stable toolchain.
 
 <DownloadTable />
 
+The files with `base` in their name are the small downloads. They leave out PDF preview, video
+preview and the assistant's runtime, and qrate offers to install each one the first time you
+need it, or under **Settings ▸ Components**. The other installers carry all three, for a
+computer that stays offline. An installed qrate updates to the same kind it came from.
+
 ## Run from source
 
 Install Rust with rustup. Add the rustfmt and clippy components. Then clone the repository
@@ -22,12 +27,13 @@ cd qrate
 cargo run
 ```
 
-## Optional preview tools
+## Optional preview tools in a checkout
 
 Common image formats work without extra tools. PDF previews use PDFium. Video frame previews
 use ffmpeg. qrate links neither one. It loads PDFium dynamically and runs ffmpeg as a
 subprocess. A checkout without them still builds and launches, but PDFs and videos show only a
-type icon. qrate looks beside its own executable first, then on your PATH.
+type icon. qrate looks beside its own executable first, then for a copy it installed itself
+(Settings ▸ Components), then on your PATH.
 
 This script downloads PDFium for your platform, and ffmpeg on Windows. On macOS and Linux,
 install ffmpeg with your package manager.

@@ -112,7 +112,8 @@ const code =
       </div>
       <code class={code}>xattr -dr com.apple.quarantine "/Applications/qrate.app"</code>
       <div class="mt-3 text-[13px] leading-[1.7] text-faint">
-        PDF previews work out of the box. For video frames, <span class="font-mono">brew install ffmpeg</span>.
+        qrate offers to install PDF preview the first time you open a PDF. For video frames,
+        <span class="font-mono">brew install ffmpeg</span>.
       </div>
     </div>
 
@@ -125,7 +126,7 @@ const code =
         tick Unblock.
       </div>
       <div class="mt-3 text-[13px] leading-[1.7] text-faint">
-        PDF and video previews both work out of the box. ffmpeg is bundled.
+        qrate offers to install PDF and video preview the first time you open one of those files.
       </div>
     </div>
 
@@ -140,7 +141,8 @@ const code =
           treat the line breaks as JSX whitespace and drop them. */}
       <code class={code}>{`tar -xzf ${linuxDir}.tar.gz\ncd ${linuxDir}\n./qrate`}</code>
       <div class="mt-3 text-[13px] leading-[1.7] text-faint">
-        PDFium ships in the tarball. For video frames, <span class="font-mono">sudo apt install ffmpeg</span>.
+        qrate offers to install PDF and video preview the first time you open one of those files,
+        and uses an ffmpeg already on your system.
       </div>
     </div>
   </section>
