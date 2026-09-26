@@ -12,7 +12,7 @@
 #
 # The app icon is generated from assets/icons/app-icon.png (sips + iconutil, both
 # preinstalled on macOS) — replace that PNG to change the icon. The bundle is
-# UNSIGNED; users must right-click > Open (or clear the quarantine bit) the first time.
+# only ad-hoc signed; users allow it once in System Settings > Privacy & Security.
 set -euo pipefail
 
 BIN="${1:?usage: bundle-mac.sh <binary> <version>}"
@@ -72,6 +72,11 @@ for s in 16 32 128 256 512; do
   sips -z $((s*2)) $((s*2))  "$src_png" --out "$iconset/icon_${s}x${s}@2x.png"  >/dev/null
 done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
+
+# ---- Ad-hoc signature ------------------------------------------------------
+# Not a Developer ID: it only seals the bundle, so a quarantined copy asks to be allowed in
+# System Settings instead of calling itself damaged.
+codesign --force --deep --sign - "$app"
 
 # ---- .dmg ------------------------------------------------------------------
 dmg="$dist/qrate-${VERSION}-universal.dmg"

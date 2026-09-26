@@ -594,5 +594,5 @@ jobs:
             > These builds are **unsigned**. This is about who Windows and macOS think
             > published the app, and is separate from the signature qrate checks on an update.
             > - **Windows:** SmartScreen may warn "unknown publisher" — click *More info → Run anyway*.
-            > - **macOS:** right-click the app → *Open* the first time, or run
+            > - **macOS:** open it once, then choose *Open Anyway* under System Settings → Privacy & Security, or run
             >   `xattr -dr com.apple.quarantine "/Applications/qrate.app"`.
