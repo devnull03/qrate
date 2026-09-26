@@ -168,7 +168,8 @@ export default defineConfig({
     optimizeDeps: {
       // Astro's dev worker starts a second Vite runner. Optimizing its renderers can invalidate
       // deps_ssr while that runner is loading them, especially under Bun on Windows.
-      exclude: ['astro/jsx-runtime', '@astrojs/mdx'],
+      // qrate-export: pre-bundling moves its glue away from the .wasm it loads via import.meta.url.
+      exclude: ['astro/jsx-runtime', '@astrojs/mdx', 'qrate-export'],
     },
   },
 });
