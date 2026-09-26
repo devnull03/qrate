@@ -349,13 +349,13 @@ pub(crate) enum Query {
     Like(PathBuf),
 }
 
-/// Ranks `(source_row, file)` candidates from
-/// [`crate::delegate::QrateTableDelegate::linked_rows`] best first, holding the index lock once for
-/// the lot. `None` when the model is not loaded or the query cannot be embedded.
-pub(crate) fn scorer(
-    query: Query,
-    cx: &App,
-) -> Task<Option<impl FnOnce(&[(usize, PathBuf)]) -> Vec<(f32, usize)> + Send + use<>>> {
+/// Ranks `(source_row, file)` candidates best first, as `(score, source_row)`.
+pub(crate) type Ranker = Box<dyn FnOnce(&[(usize, PathBuf)]) -> Vec<(f32, usize)> + Send>;
+
+/// A [`Ranker`] for candidates from [`crate::delegate::QrateTableDelegate::linked_rows`], holding
+/// the index lock once for the lot. `None` when the model is not loaded or the query cannot be
+/// embedded.
+pub(crate) fn scorer(query: Query, cx: &App) -> Task<Option<Ranker>> {
     let visual = cx.global::<Visual>();
     let (clip, index) = (visual.clip.clone(), visual.index.clone());
     cx.background_executor().spawn(async move {
@@ -366,12 +366,12 @@ pub(crate) fn scorer(
                 .ok()?,
             Query::Like(path) => lock(&index).get(&path)?.1.clone(),
         };
-        Some(move |candidates: &[(usize, PathBuf)]| {
+        Some(Box::new(move |candidates: &[(usize, PathBuf)]| {
             let index = lock(&index);
             crate::delegate::rank(candidates, |path: &Path| {
                 Some(visual_search::similarity(&vector, &index.get(path)?.1))
             })
-        })
+        }) as Ranker)
     })
 }
 

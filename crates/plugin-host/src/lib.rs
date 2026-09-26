@@ -44,12 +44,14 @@ const DEBOUNCE: Duration = Duration::from_millis(150);
 /// diagnostic that lands a moment late is not.
 const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(120);
 
+/// One plugin's cached findings per column, with the fingerprints they were computed from.
+type ColumnFindings = HashMap<SharedString, (u64, u64, Vec<Diagnostic>)>;
+
 /// What the last [`reload`] loaded, and whatever run is in flight.
 #[derive(Default)]
 struct Plugins {
     loaded: Vec<Arc<LuaPlugin>>,
-    validated:
-        Arc<Mutex<HashMap<SharedString, HashMap<SharedString, (u64, u64, Vec<Diagnostic>)>>>>,
+    validated: Arc<Mutex<HashMap<SharedString, ColumnFindings>>>,
     published: HashMap<SharedString, Vec<(SharedString, u64, u64)>>,
     /// Dropping this cancels the publish that would have followed, so assigning a fresh run is the
     /// whole staleness scheme — the same trick `TablePanel`'s autosave task uses.

@@ -121,7 +121,7 @@ pub struct DetailsPanel {
     _row_history_task: Option<Task<()>>,
     /// [`shared_fields`] for the selection it was built from. Cleared on every table change, which
     /// is the only way a value can change, so a scroll or a hover never rebuilds it.
-    fields: Option<(Vec<usize>, Rc<Vec<(SharedString, SharedString, bool)>>)>,
+    fields: Option<(Vec<usize>, Rc<Vec<SharedField>>)>,
     /// Commits the open field on Enter or when the editor loses focus.
     _editor_sub: Subscription,
     /// Pending image-pane height write. Replacing the task cancels its timer, coalescing an entire
@@ -1109,15 +1109,15 @@ fn step(
         .into_any_element()
 }
 
+/// A column's header, its shared value (or "Mixed"), and whether the items disagree.
+type SharedField = (SharedString, SharedString, bool);
+
 /// What a bundle of items has to say about each column: the value when they agree, and how many
 /// distinct values there are when they don't. Display order, so it lines up with the grid.
 ///
 /// A field that reads `Mixed` is still editable — typing into it sets that value on every selected
 /// item, which is the whole reason to select several rows before touching a field.
-fn shared_fields(
-    delegate: &QrateTableDelegate,
-    picked: &[usize],
-) -> Vec<(SharedString, SharedString, bool)> {
+fn shared_fields(delegate: &QrateTableDelegate, picked: &[usize]) -> Vec<SharedField> {
     let Some((&first, rest)) = picked.split_first() else {
         return Vec::new();
     };
