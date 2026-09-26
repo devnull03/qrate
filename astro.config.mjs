@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'astro/config';
 import cloudflare from '@astrojs/cloudflare';
 import tailwindcss from '@tailwindcss/vite';
@@ -15,6 +17,13 @@ import stripHtmlLinks from './src/integrations/strip-html-links.mjs';
 // render; both have to exist for the funnel to span / -> /docs/install -> /thanks.
 const beacon = process.env.CF_BEACON_TOKEN;
 const site = process.env.SITE_URL ?? 'https://qrate.dvnl.work';
+
+// /convert's WASM exporter. Production uses the GitHub Package pinned in package.json
+// (@devnull03/qrate-export, see .npmrc). `bun run export:main` builds qrate's main
+// into vendor/ (gitignored), and a checkout that has it uses that instead, so
+// local builds test main and Cloudflare's never can.
+const exportMain = fileURLToPath(new URL('./vendor/qrate-export/qrate_export.js', import.meta.url));
+const exportAlias = existsSync(exportMain) ? [{ find: /^qrate-export$/, replacement: exportMain }] : [];
 
 // Served from the root of its own domain, so no `base` and no BASE_URL juggling:
 // every internal link is a plain absolute path.
@@ -155,6 +164,7 @@ export default defineConfig({
 
   vite: {
     plugins: [tailwindcss()],
+    resolve: { alias: exportAlias },
     optimizeDeps: {
       // Astro's dev worker starts a second Vite runner. Optimizing its renderers can invalidate
       // deps_ssr while that runner is loading them, especially under Bun on Windows.
