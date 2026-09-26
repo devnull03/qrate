@@ -128,6 +128,34 @@ cp dist/qrate-0.6.0-beta.1-setup.exe mirror/github/devnull03/qrate/releases/down
 QRATE_DOWNLOAD_SOURCE=http://127.0.0.1:8000 ./qrate      # or file:///C:/path/to/mirror
 ```
 
+### 2b. Optional components
+
+PDFium, ffmpeg, the Pi agent runtime and the CLIP weights can also be installed on demand, into
+`<data dir>/components/<id>/<version>` (`crates/components`, `docs/dev/components-plan.md`). Each
+release carries them as `component-<id>-<version>-<os>-<arch>.tar.gz` (the CLIP weights as an
+uncompressed `component-clip-<revision>-any-any.tar`) and lists them in a signed `components.json`.
+qrate reads that file from **its own version's tag**, through the download source, so a
+development build whose version has no release finds none. The CLIP weights are the exception:
+their default source is Hugging Face at the pinned revision, which needs no manifest, and the
+release copy is the fallback (the `clip_source` setting can reverse the two).
+
+To test components locally, sign a manifest with a development key. Debug builds trust it under the
+key id `qrate-dev` when `QRATE_DEV_SIGNING_KEY` holds its public half; release builds never do.
+
+```bash
+openssl genpkey -algorithm ed25519 -out dev-key.pem          # once
+pub="$(openssl pkey -in dev-key.pem -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n')"
+dir=mirror/github/devnull03/qrate/releases/download/v0.6.0-beta.1   # the version in Cargo.toml
+./scripts/package-component.sh pdfium pdfium-src windows x86_64 "$dir"   # pdfium-src holds pdfium.dll
+QRATE_UPDATE_SIGNING_KEY="$(cat dev-key.pem)" QRATE_SIGNING_KEY_ID=qrate-dev \
+  ./scripts/build-components-manifest.sh "$dir" v0.6.0-beta.1
+QRATE_DOWNLOAD_SOURCE=file:///C:/path/to/mirror QRATE_DEV_SIGNING_KEY="$pub" cargo run
+```
+
+`package-component.sh` archives the *contents* of the folder it is given and takes the version
+from the pin in the fetch script, so an archive cannot carry a version it is not. It packs the
+ffmpeg component only with the build's `LICENSE.txt` beside the binary (LGPL).
+
 ---
 
 ## 3. One-time GitHub setup (do this before the first release)
@@ -214,9 +242,22 @@ Six workflows cover CI, build caches, releases, the export package, and site dep
   - Linux: binary + `.desktop` + icon in a `*-x86_64-linux.tar.gz`.
   - Every platform also builds the `qrate-update-helper` binary and bundles PDFium and the
     pinned Pi agent (`docs/dev/agent-runtime.md`); Windows bundles ffmpeg too.
-- **Publishes:** a **DRAFT** release with the artifacts, `SHA256SUMS.txt`, and the signed
-  `update-manifest.json`. A version with a `-` suffix (e.g. `0.5.0-beta.1`) is marked as a
-  pre-release automatically.
+  - Beside those full bundles, which do not change, each job packs the optional components
+    (§2b) with `scripts/package-component.sh`: PDFium and Pi for Windows, Linux and each macOS
+    architecture (from the `build-macos` matrix, not the universal dmg), and ffmpeg for Windows
+    and Linux with its LGPL `LICENSE.txt`. macOS has no ffmpeg component; it stays Homebrew's.
+  - The `release` job downloads the pinned CLIP weights from Hugging Face
+    (`scripts/fetch-clip-weights.sh`, checked against their SHA-256) and packs them. If Hugging Face
+    does not serve them, it takes the copy an earlier release carried, checked against the same
+    pins, so the weights stay available release after release.
+- **Publishes:** a **DRAFT** release with the artifacts, the `component-*` archives,
+  `SHA256SUMS.txt` (covering the artifacts and the component archives), the signed
+  `update-manifest.json`, and the signed `components.json` (`scripts/build-components-manifest.sh`,
+  same key, payload kind `qrate-components`). The manifest step fails if a component is missing for
+  any platform the jobs build, and it verifies its own signature before writing. A version with a
+  `-` suffix (e.g. `0.5.0-beta.1`) is marked as a pre-release automatically.
+- **Size:** each release carries the 607 MB CLIP archive and roughly 100 MB of components per
+  platform on top of the full bundles.
 
 ### `warm-release-cache.yml` — release dependency cache
 - **Trigger:** `Cargo.lock` or the toolchain changes on `main`, every third day on a schedule,
@@ -279,8 +320,8 @@ tag vX.Y.Z ─▶ release.yml (build dmg/zip/exe) ─▶ DRAFT release
    git push origin v0.1.0
    ```
 4. **Wait for `release.yml`** to finish; it leaves a **draft** release with the
-   `.dmg`, `.zip`, `-setup.exe`, `.msi`, `.tar.gz`, `SHA256SUMS.txt`, and
-   `update-manifest.json`.
+   `.dmg`, `.zip`, `-setup.exe`, `.msi`, `.tar.gz`, `SHA256SUMS.txt`,
+   `update-manifest.json`, the `component-*` archives, and `components.json`.
 5. **Publish the draft** (Releases → edit the draft → *Publish release*). This is
    when the release becomes visible to the API, to the site, and to installed apps
    checking for updates (§2a).

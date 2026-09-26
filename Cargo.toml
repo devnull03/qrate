@@ -6,6 +6,7 @@ members = [
   "crates/ai",
   "crates/checks",
   "crates/clustering",
+  "crates/components",
   "crates/data-exchange",
   "crates/diagnostics",
   "crates/file-ingest",

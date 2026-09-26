@@ -539,6 +539,38 @@ leaves stale sidecars beside the exe, which win the lookup, or drops the bundled
 3. **`components` core + CI assets.** The crate without `jobs.rs`, the new scripts, and `release.yml`
    publishing `components.json` and component assets next to the unchanged full bundle. Nothing in
    the app calls it yet, and the next tag proves the pipeline.
+
+   **Done (2026-09-26).** `crates/components/src/lib.rs`, `scripts/package-component.sh`,
+   `scripts/build-components-manifest.sh`, `scripts/fetch-clip-weights.sh`, and the component
+   steps in `release.yml`. A dev-key manifest built by the scripts was installed by the crate end to
+   end. Deviations from § 3 and § 4:
+   - The API is a `Store` over an explicit root (`verify`, `fetch_manifest`, `receipt`, `locate`,
+     `install`, `remove`, `sweep`), and `generation()` stays a free function. `root()` moves to
+     `jobs.rs`, which can call `settings::data_dir()`; the core does not depend on `settings` or
+     `gpui`. `locate` does not cache: the step 4 callers cache per `generation()`, as the lookup
+     table says. `ComponentId::label` and `Found` come with the steps that use them.
+   - No `pending-removal.json`. The receipt is the only state: `remove` deletes it first, then moves
+     the folder to `.trash-<n>`. When Windows refuses (a loaded PDFium, a running Pi), it returns
+     `AfterRestart`, and `sweep` deletes every folder that no receipt names.
+   - `app` ranges use plain version order and comparison operators only. SemVer's own rule, that
+     a pre-release only matches a range naming its x.y.z, would make each beta update download its
+     components again. The manifest script writes `>=X.Y.0-0, <X.(Y+1).0-0` for PDFium and Pi and
+     `>=X.Y.0-0` for ffmpeg and CLIP, so a PDFium or Pi pin moves only in a minor release.
+   - CLIP follows § 7, not the fixed `components-clip-b33cedf` release: the release job fetches the
+     pinned weights on the runner (or, if Hugging Face fails, an earlier release's copy, checked
+     against the same pins) and attaches `component-clip-b33cedf-any-any.tar` to every release, so
+     `publish-clip.yml` is not needed. The Hugging Face origin (revision, sizes, SHA-256) is compiled
+     into `components` and needs no manifest; `ClipSource` under the setting `clip_source`
+     (`hugging-face` by default, or `github`) picks which goes first, and the other is the
+     fallback. Hugging Face downloads do not go through the download source.
+   - Downloads are content-addressed, `downloads/<sha256>.partial`; `sweep` keeps a partial for a
+     week. Component versions come from the fetch scripts' pins: `chromium-7881`,
+     `n8.1.2-50-g1a748fe2cd`, `0.84.2-ext.0.2.1` (Pi and the qrate extension), `b33cedf`.
+   - `updater::client` and `updater::read_bytes` are public, for `fetch_manifest`.
+   - The release job verifies the new manifest's signature with `openssl pkeyutl -verify` inside
+     `build-components-manifest.sh`, and `QRATE_COMPONENTS_REQUIRE` in `release.yml` fails the
+     release if any id and platform is missing. `SHA256SUMS.txt` covers the component archives.
+   - `build-update-manifest.sh` is unchanged: nothing new ends in `-setup.exe` until step 6.
 4. **Lookup order + jobs + CLIP.** The preview, agent-runtime and visual changes, `jobs.rs`, the CLIP
    migration, `sweep`. Full bundles behave exactly as before (beside the exe wins). Visual search now
    downloads from GitHub.

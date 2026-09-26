@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-destination="${1:?usage: fetch-agent-runtime.sh <destination> <linux-x64|darwin-universal>}"
-platform="${2:?usage: fetch-agent-runtime.sh <destination> <linux-x64|darwin-universal>}"
+destination="${1:?usage: fetch-agent-runtime.sh <destination> <linux-x64|darwin-universal|darwin-x64|darwin-arm64>}"
+platform="${2:?usage: fetch-agent-runtime.sh <destination> <linux-x64|darwin-universal|darwin-x64|darwin-arm64>}"
 pi_version=0.84.2
 extension_version=0.2.1
 extension_sha=feb4ce5dcb59f5d936122541b776a85cd9d2541e121b7c47de7c4efb517ed37d
@@ -23,6 +23,15 @@ case "$platform" in
   linux-x64)
     fetch_pi linux-x64 906fbe787fd225c4ac624fe7ebd5b1d55a60e0f5c7ef51795d231564f9ee1c13
     cp -R "$tmp/linux-x64/pi/." "$runtime/"
+    ;;
+  # One architecture each, for the per-Mac agent component.
+  darwin-x64)
+    fetch_pi darwin-x64 808cf02a93cd601d3ea05d47dc15c45074b120ac81decc8644cd3e40a35824e6
+    cp -R "$tmp/darwin-x64/pi/." "$runtime/"
+    ;;
+  darwin-arm64)
+    fetch_pi darwin-arm64 c996e888b7f7dce44bcf24f69176ac646c44139d3916bd49a6b28e5a8c5e3a65
+    cp -R "$tmp/darwin-arm64/pi/." "$runtime/"
     ;;
   darwin-universal)
     fetch_pi darwin-x64 808cf02a93cd601d3ea05d47dc15c45074b120ac81decc8644cd3e40a35824e6

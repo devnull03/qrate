@@ -28,6 +28,8 @@
 #   QRATE_SKIP_FFMPEG=1      PDFium only. CI wants the small, quick download so the PDF tests
 #                            exercise real rendering; the runners already provide ffmpeg.
 #   QRATE_STRICT_BINARIES=1  Fail if an expected release sidecar cannot be downloaded or found.
+#   QRATE_FFMPEG_LICENSE=<file>  Also copy the ffmpeg build's LICENSE.txt to <file>, for the
+#                            ffmpeg component (scripts/package-component.sh).
 set -euo pipefail
 
 PDFIUM_RELEASE="chromium/7881"
@@ -147,6 +149,16 @@ elif [ -n "$FFMPEG_TARGET" ]; then
       tar xJf "$WORK/$FFMPEG_ASSET" -C "$WORK/ffmpeg"
     fi
     find "$WORK/ffmpeg" -type f -path "*/bin/$FFMPEG_EXE" -exec cp {} "$DEST/" \;
+    # The ffmpeg component carries the build's LGPL notice. The bundle beside the exe does not change.
+    if [ -n "${QRATE_FFMPEG_LICENSE:-}" ]; then
+      license="$(find "$WORK/ffmpeg" -maxdepth 2 -type f -name LICENSE.txt | head -1)"
+      if [ -z "$license" ]; then
+        echo "::error::no LICENSE.txt inside $FFMPEG_URL" >&2
+        exit 1
+      fi
+      mkdir -p "$(dirname "$QRATE_FFMPEG_LICENSE")"
+      cp "$license" "$QRATE_FFMPEG_LICENSE"
+    fi
     echo "    installed $FFMPEG_EXE $FFMPEG_BUILD"
   else
     echo "    ffmpeg download failed; video previews will fall back to an icon" >&2

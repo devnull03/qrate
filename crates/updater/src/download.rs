@@ -142,7 +142,7 @@ fn is_not_found(error: &anyhow::Error) -> bool {
     })
 }
 
-pub(crate) fn client() -> Result<Client> {
+pub fn client() -> Result<Client> {
     Ok(Client::builder()
         .user_agent("qrate-updater")
         .timeout(Duration::from_secs(30))
@@ -176,7 +176,8 @@ fn open(client: &Client, url: &str, from: u64) -> Result<(Box<dyn Read>, Option<
     Ok((Box::new(response), length, resumed))
 }
 
-fn read_bytes(client: &Client, url: &str, limit: u64) -> Result<Vec<u8>> {
+/// At most `limit` bytes of `url`, which may be a `file:` URL, where a missing file reads as a 404.
+pub fn read_bytes(client: &Client, url: &str, limit: u64) -> Result<Vec<u8>> {
     let (body, _, _) = open(client, url, 0)?;
     let mut bytes = Vec::new();
     body.take(limit + 1).read_to_end(&mut bytes)?;

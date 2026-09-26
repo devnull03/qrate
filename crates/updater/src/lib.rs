@@ -5,7 +5,8 @@ mod download;
 
 #[cfg(feature = "client")]
 pub use download::{
-    DOWNLOAD_SOURCE_ENV, DOWNLOAD_SOURCE_KEY, Source, download_verified, try_mirror,
+    DOWNLOAD_SOURCE_ENV, DOWNLOAD_SOURCE_KEY, Source, client, download_verified, read_bytes,
+    try_mirror,
 };
 use std::{
     fs,

@@ -1269,6 +1269,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "components"
+version = "0.5.0-beta.1"
+dependencies = [
+ "anyhow",
+ "base64",
+ "ed25519-dalek",
+ "flate2",
+ "log",
+ "semver",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "updater",
+]
+
+[[package]]
 name = "compression-codecs"
 version = "0.4.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"

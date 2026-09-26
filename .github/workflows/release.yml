@@ -94,6 +94,30 @@ jobs:
             target/${{ matrix.target }}/release/qrate-update-helper
           if-no-files-found: error
 
+      # Optional components install one Mac's architecture, not the universal pair the dmg
+      # carries, so each leg packs its own. ffmpeg stays Homebrew's on macOS.
+      - name: Package optional components
+        env:
+          QRATE_SKIP_FFMPEG: 1
+          QRATE_STRICT_BINARIES: 1
+        run: |
+          case "${{ matrix.target }}" in
+            x86_64-apple-darwin)  pdfium=x64;   pi=darwin-x64;   arch=x86_64 ;;
+            aarch64-apple-darwin) pdfium=arm64; pi=darwin-arm64; arch=aarch64 ;;
+          esac
+          chmod +x scripts/fetch-binaries.sh scripts/fetch-agent-runtime.sh scripts/package-component.sh
+          mkdir -p components/pdfium components-dist
+          QRATE_PDFIUM_ARCH="$pdfium" ./scripts/fetch-binaries.sh components/pdfium
+          ./scripts/fetch-agent-runtime.sh components "$pi"
+          ./scripts/package-component.sh pdfium components/pdfium macos "$arch" components-dist
+          ./scripts/package-component.sh agent components/agent macos "$arch" components-dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: components-macos-${{ matrix.target }}
+          path: components-dist/*
+          if-no-files-found: error
+
   # ---------------------------------------------------------------------------
   # macOS: lipo the two arch binaries -> universal .app -> .dmg
   # ---------------------------------------------------------------------------
@@ -201,6 +225,8 @@ jobs:
       - name: Fetch preview binaries
         env:
           QRATE_STRICT_BINARIES: 1
+          # For the ffmpeg component only; nothing is added beside qrate.exe.
+          QRATE_FFMPEG_LICENSE: components/ffmpeg/LICENSE.txt
         shell: bash
         run: |
           mkdir -p dist/portable
@@ -210,6 +236,19 @@ jobs:
       - name: Fetch embedded Pi agent
         shell: pwsh
         run: ./scripts/fetch-agent-runtime.ps1 -Destination dist/portable
+
+      # The optional components are packed from the same pinned files the full bundle ships. This
+      # reads the staging folder before the next step deletes it and changes nothing inside it.
+      - name: Package optional components
+        shell: bash
+        run: |
+          chmod +x scripts/package-component.sh
+          mkdir -p components/pdfium components/ffmpeg components-dist
+          cp dist/portable/pdfium.dll components/pdfium/
+          cp dist/portable/ffmpeg.exe components/ffmpeg/
+          ./scripts/package-component.sh pdfium components/pdfium windows x86_64 components-dist
+          ./scripts/package-component.sh ffmpeg components/ffmpeg windows x86_64 components-dist
+          ./scripts/package-component.sh agent dist/portable/agent windows x86_64 components-dist
 
       - name: Package zip + NSIS + MSI installers
         shell: pwsh
@@ -266,6 +305,12 @@ jobs:
             dist/*.zip
             dist/*-setup.exe
             dist/*.msi
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: components-windows
+          path: components-dist/*
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -327,6 +372,29 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+      # PDFium and Pi come from the tarball's own folder. ffmpeg is not in the tarball, so this
+      # fetches the same pinned build for the component, with its LGPL notice.
+      - name: Package optional components
+        env:
+          QRATE_STRICT_BINARIES: 1
+          QRATE_FFMPEG_LICENSE: components/ffmpeg/LICENSE.txt
+        run: |
+          stage="qrate-${{ needs.version.outputs.version }}-x86_64-linux"
+          chmod +x scripts/package-component.sh
+          mkdir -p components/pdfium components/ffmpeg components-dist
+          ./scripts/fetch-binaries.sh components/raw
+          cp "$stage/libpdfium.so" components/pdfium/
+          cp components/raw/ffmpeg components/ffmpeg/
+          ./scripts/package-component.sh pdfium components/pdfium linux x86_64 components-dist
+          ./scripts/package-component.sh ffmpeg components/ffmpeg linux x86_64 components-dist
+          ./scripts/package-component.sh agent "$stage/agent" linux x86_64 components-dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: components-linux
+          path: components-dist/*
+          if-no-files-found: error
+
   # ---------------------------------------------------------------------------
   # Collect artifacts, checksum them, publish a DRAFT release.
   # ---------------------------------------------------------------------------
@@ -351,11 +419,41 @@ jobs:
         with:
           name: linux-build
           path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: components-*
+          path: dist
+          merge-multiple: true
+
+      # Every release carries its own copy of the pinned CLIP weights, so visual search keeps a
+      # download if Hugging Face stops serving them. If Hugging Face is already gone, an earlier
+      # release's copy is checked against the same pins and carried forward.
+      - name: Package the CLIP weights
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x scripts/fetch-clip-weights.sh scripts/package-component.sh
+          if ! ./scripts/fetch-clip-weights.sh clip; then
+            echo "::warning::Hugging Face did not serve the pinned CLIP weights; reusing an earlier release's copy"
+            rm -rf clip previous
+            mkdir -p clip previous
+            for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 30 \
+                --json tagName,isDraft --jq '.[] | select(.isDraft | not) | .tagName'); do
+              if gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+                  --pattern 'component-clip-*.tar' --dir previous --clobber; then
+                tar -xf previous/component-clip-*.tar -C clip
+                break
+              fi
+            done
+            ./scripts/fetch-clip-weights.sh --verify clip
+          fi
+          ./scripts/package-component.sh clip clip any any dist
+          rm -rf clip previous
 
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum *.dmg *.zip *-setup.exe *.msi *.tar.gz > SHA256SUMS.txt
+          sha256sum *.dmg *.zip *-setup.exe *.msi *.tar.gz component-*.tar > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Build and sign update manifest
@@ -365,6 +463,21 @@ jobs:
         run: |
           chmod +x scripts/build-update-manifest.sh
           ./scripts/build-update-manifest.sh dist "${{ needs.version.outputs.tag }}"
+
+      # Signed with the same key; the script checks the signature before writing the file.
+      - name: Build and sign components manifest
+        env:
+          QRATE_UPDATE_SIGNING_KEY: ${{ secrets.QRATE_UPDATE_SIGNING_KEY }}
+          # Each id:os:arch the jobs above package. macOS has no ffmpeg component.
+          QRATE_COMPONENTS_REQUIRE: >-
+            pdfium:windows:x86_64 pdfium:linux:x86_64 pdfium:macos:x86_64 pdfium:macos:aarch64
+            ffmpeg:windows:x86_64 ffmpeg:linux:x86_64
+            agent:windows:x86_64 agent:linux:x86_64 agent:macos:x86_64 agent:macos:aarch64
+            clip:any:any
+        shell: bash
+        run: |
+          chmod +x scripts/build-components-manifest.sh
+          ./scripts/build-components-manifest.sh dist "${{ needs.version.outputs.tag }}"
 
       - name: Publish draft release
         uses: softprops/action-gh-release@v3
@@ -380,8 +493,10 @@ jobs:
             dist/*-setup.exe
             dist/*.msi
             dist/*.tar.gz
+            dist/component-*.tar
             dist/SHA256SUMS.txt
             dist/update-manifest.json
+            dist/components.json
           body: |
             ## qrate ${{ needs.version.outputs.tag }}
 
@@ -391,7 +506,9 @@ jobs:
             - **macOS:** `*-universal.dmg` (Intel + Apple Silicon)
             - **Linux:** `*-x86_64-linux.tar.gz` (Wayland + X11; needs a Vulkan driver)
 
-            Verify your download against `SHA256SUMS.txt`.
+            Verify your download against `SHA256SUMS.txt`. The `component-*` files and
+            `components.json` are parts qrate downloads by itself when it needs them; you do not
+            need to download them.
 
             ### Enterprise (Windows)
             `*-x86_64.msi` installs per-machine and is built for Group Policy Software
