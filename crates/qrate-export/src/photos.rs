@@ -5,13 +5,13 @@ use std::path::{Path, PathBuf};
 
 use crate::filenames;
 
-/// `path` below `root`, or `None` when it lies outside it. Windows paths compare without case,
-/// as the file system does.
+/// `path` below `root`, or `None` when it lies outside it. Windows and macOS paths compare
+/// without case, as their default file systems do.
 pub fn relative_to(root: &Path, path: &Path) -> Option<PathBuf> {
     if let Ok(relative) = path.strip_prefix(root) {
         return Some(relative.to_path_buf());
     }
-    if !cfg!(windows) {
+    if !cfg!(any(windows, target_os = "macos")) {
         return None;
     }
     let slashed = |p: &Path| p.to_string_lossy().replace('\\', "/");
@@ -117,6 +117,18 @@ mod tests {
             relative_to(
                 std::path::Path::new(r"C:\Archive"),
                 std::path::Path::new(r"c:\archive\Box\1.jpg")
+            ),
+            Some(PathBuf::from("Box/1.jpg"))
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_paths_compare_without_case() {
+        assert_eq!(
+            relative_to(
+                std::path::Path::new("/Users/me/Archive"),
+                std::path::Path::new("/users/me/archive/Box/1.jpg")
             ),
             Some(PathBuf::from("Box/1.jpg"))
         );
