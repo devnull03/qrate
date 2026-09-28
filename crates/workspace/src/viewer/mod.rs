@@ -1228,7 +1228,8 @@ mod tests {
 
         cx.update(|window, cx| {
             open_viewer(path.clone(), Scope::Workspace, window, cx);
-            preview::playback::play(&path, cx);
+            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+            preview::playback::play(&path, viewer.entity_id(), cx);
             close_viewer(window, cx);
             assert!(
                 !preview::playback::position(cx).is_some_and(|(_, playing)| playing),

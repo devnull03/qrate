@@ -36,6 +36,10 @@ const MIN_SIZE: Size<Pixels> = Size {
     width: px(800.),
     height: px(600.),
 };
+const DEFAULT_SIZE: Size<Pixels> = Size {
+    width: px(1120.),
+    height: px(700.),
+};
 /// Height of the sidebar's header strip, the Details title or the Details | Find tabs.
 const HEADER_H: Pixels = px(30.);
 /// The stage's own text colours. Not theme colours, for the reason the backdrop is not one.
@@ -46,13 +50,20 @@ const STAGE_MUTED: u32 = 0xa3a3a3;
 /// per project, the same way the main window keeps its own.
 const BOUNDS_KEY: &str = "pop_out_window_bounds";
 
-/// Silence `viewer`'s recording as it goes — only its own: the player is shared by the whole app,
-/// and may be playing something the main window started.
+/// Silence `viewer`'s recording as it goes — only if it started it: the player is shared by the
+/// whole app, and the main window may be playing the same file.
 fn stop_playing(viewer: &Entity<Viewer>, cx: &mut App) {
-    if preview::playback::playing(cx) == Some(viewer.read(cx).path.as_path()) {
+    if preview::playback::owner(cx) == Some(viewer.entity_id()) {
         preview::playback::stop(cx);
     }
 }
+
+/// The bounds last seen, for the project they belong to. The `.qrate` write is debounced, so a
+/// window closed and reopened inside that interval would otherwise read the size it had before.
+#[derive(Default)]
+struct LastBounds(Option<(PathBuf, MainWindowBounds)>);
+
+impl Global for LastBounds {}
 
 /// The open pop-out window. There is one per project, and one project open at a time.
 #[derive(Default)]
@@ -74,12 +85,27 @@ pub fn open(cx: &mut App) {
     {
         return;
     }
-    let saved = cx
-        .try_global::<CurrentProject>()
-        .and_then(|p| settings::project::read_setting(&p.file, BOUNDS_KEY).ok())
-        .flatten()
-        .and_then(|raw| serde_json::from_str::<MainWindowBounds>(&raw).ok());
-    let (bounds, display) = MainWindowBounds::startup_placement(saved.as_ref(), cx);
+    let file = cx.try_global::<CurrentProject>().map(|p| p.file.clone());
+    let saved = file.as_ref().and_then(|file| {
+        let remembered = cx
+            .try_global::<LastBounds>()
+            .and_then(|last| last.0.as_ref())
+            .filter(|(of, _)| of == file)
+            .map(|(_, bounds)| bounds.clone());
+        remembered.or_else(|| {
+            settings::project::read_setting(file, BOUNDS_KEY)
+                .ok()
+                .flatten()
+                .and_then(|raw| serde_json::from_str::<MainWindowBounds>(&raw).ok())
+        })
+    });
+    // The shared placement's fallback is the main window's portrait default, narrower than this
+    // window's minimum; nothing saved means this window's own default.
+    let (bounds, display) = match saved {
+        Some(saved) => MainWindowBounds::startup_placement(Some(&saved), cx),
+        None => (Bounds::centered(None, DEFAULT_SIZE, cx), None),
+    };
+    let bounds = Bounds::centered(display, bounds.size.max(&MIN_SIZE), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         display_id: display,
@@ -186,6 +212,7 @@ impl PopOut {
                 if let Ok(json) = serde_json::to_string(&bounds) {
                     settings::project::queue_write(file, BOUNDS_KEY, &json, cx);
                 }
+                cx.set_global(LastBounds(Some((file.clone(), bounds))));
             }),
         ];
 
@@ -235,6 +262,7 @@ impl PopOut {
 
     /// Bring the rows, the stage and the sidebar up to date with the grid.
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut kept = None;
         let rows = self.table().map_or_else(Vec::new, |state| {
             let delegate = state.read(cx).delegate();
             let all = delegate.row_ids();
@@ -250,15 +278,24 @@ impl PopOut {
                 {
                     self.rows.clone()
                 }
-                // Rows were added, removed or moved: one pass to find the pin again.
+                // Rows were added, removed or moved: one pass to find the pin again, dropping the
+                // items that are gone so the pass above matches again from the next change.
                 Some(ids) => {
                     let at: std::collections::HashMap<_, _> =
                         all.iter().enumerate().map(|(row, id)| (*id, row)).collect();
-                    ids.iter().filter_map(|id| at.get(id).copied()).collect()
+                    let (ids, rows): (Vec<_>, Vec<_>) = ids
+                        .iter()
+                        .filter_map(|id| Some((*id, *at.get(id)?)))
+                        .unzip();
+                    kept = Some(ids);
+                    rows
                 }
                 None => delegate.selected_source_rows(),
             }
         });
+        if kept.is_some() {
+            self.pinned = kept;
+        }
         // Every pinned item deleted: there is nothing left to hold, so follow again.
         if self.pinned.is_some() && rows.is_empty() {
             self.pinned = None;
@@ -1150,6 +1187,37 @@ mod tests {
         });
     }
 
+    /// An item deleted out of a pin of several leaves the pin holding only what is left, so the
+    /// next cell edit takes the cheap path rather than re-finding every row.
+    #[gpui::test]
+    fn a_deleted_item_leaves_the_pin(cx: &mut TestAppContext) {
+        let (pop_out, state, cx) = window_over_a_table(cx);
+        select(&state, &[0, 2], cx);
+        pop_out.update_in(cx, |pop_out, window, cx| pop_out.toggle_pin(window, cx));
+
+        state.update(cx, |state, cx| {
+            state.delegate_mut().set_data(
+                &["Identifier".into(), "Title".into()],
+                &[12, 13],
+                &[
+                    vec!["ADR-0043".into(), "Sawmill crew".into()],
+                    vec!["ADR-0044".into(), "Saanich mill".into()],
+                ],
+            );
+            cx.emit(TableChanged);
+        });
+        cx.run_until_parked();
+
+        pop_out.read_with(cx, |pop_out, _| {
+            assert_eq!(
+                pop_out.pinned.as_deref(),
+                Some(&[13][..]),
+                "11 is gone from the pin"
+            );
+            assert_eq!(pop_out.rows, [1]);
+        });
+    }
+
     /// Several rows: the stage steps through them, wrapping, while the sidebar keeps all of them.
     #[gpui::test]
     fn the_stack_steps_through_the_selection_and_wraps(cx: &mut TestAppContext) {
@@ -1209,30 +1277,30 @@ mod tests {
         wav.extend(b"data");
         wav.extend((data as u32).to_le_bytes());
         wav.extend(std::iter::repeat_n(0u8, data));
-        let main = std::env::temp_dir().join("qrate-pop-out-main.wav");
         let shown = std::env::temp_dir().join("qrate-pop-out-shown.wav");
-        std::fs::write(&main, &wav).unwrap();
         std::fs::write(&shown, &wav).unwrap();
 
         let (_, cx) = cx.add_window_view(|_, _| Blank);
         cx.update(|window, cx| {
             let popped =
                 crate::viewer::build(shown.clone(), crate::viewer::Scope::PopOut, window, cx);
-            preview::playback::play(&main, cx);
+            // The same recording, open in the main window too.
+            let main =
+                crate::viewer::build(shown.clone(), crate::viewer::Scope::Workspace, window, cx);
+            preview::playback::play(&shown, main.entity_id(), cx);
             let before = preview::playback::playing(cx).map(|path| path.to_path_buf());
             stop_playing(&popped, cx);
             assert_eq!(
                 preview::playback::playing(cx).map(|path| path.to_path_buf()),
                 before,
-                "the main window's recording plays on"
+                "the main window's playback of the same file plays on"
             );
 
-            preview::playback::play(&shown, cx);
+            preview::playback::play(&shown, popped.entity_id(), cx);
             stop_playing(&popped, cx);
             assert!(preview::playback::playing(cx).is_none(), "its own stops");
         });
 
-        let _ = std::fs::remove_file(&main);
         let _ = std::fs::remove_file(&shown);
     }
 

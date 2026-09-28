@@ -14,7 +14,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use gpui::{App, Global};
+use gpui::{App, EntityId, Global};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 
 pub use crate::audio::duration;
@@ -26,6 +26,9 @@ struct Playback {
     /// What was last handed to the player. There is one device and one recording, but more than
     /// one transport can be on screen — each has to know whether the position is even its own.
     playing: Option<PathBuf>,
+    /// The view whose transport started it. Two windows can show the same recording, and closing
+    /// one must not silence the other's.
+    owner: Option<EntityId>,
 }
 
 impl Global for Playback {}
@@ -36,9 +39,9 @@ fn player(cx: &App) -> Option<&Player> {
     Some(&cx.try_global::<Playback>()?.player)
 }
 
-/// Start `path` from the beginning, replacing whatever was playing. Opens the output device on
-/// first use, and stays quiet on a machine that has none.
-pub fn play(path: &Path, cx: &mut App) {
+/// Start `path` from the beginning for `owner`, replacing whatever was playing. Opens the output
+/// device on first use, and stays quiet on a machine that has none.
+pub fn play(path: &Path, owner: EntityId, cx: &mut App) {
     let opened = File::open(path)
         .map_err(|err| err.to_string())
         .and_then(|file| Decoder::new(BufReader::new(file)).map_err(|err| err.to_string()));
@@ -58,11 +61,13 @@ pub fn play(path: &Path, cx: &mut App) {
             _device: device,
             player,
             playing: None,
+            owner: None,
         });
     }
 
     let playback = cx.global_mut::<Playback>();
     playback.playing = Some(path.to_path_buf());
+    playback.owner = Some(owner);
     playback.player.clear();
     playback.player.append(source);
     playback.player.play();
@@ -72,6 +77,11 @@ pub fn play(path: &Path, cx: &mut App) {
 /// not describing it.
 pub fn playing(cx: &App) -> Option<&Path> {
     cx.try_global::<Playback>()?.playing.as_deref()
+}
+
+/// The view that started what is loaded.
+pub fn owner(cx: &App) -> Option<EntityId> {
+    cx.try_global::<Playback>()?.owner
 }
 
 /// Pause if playing, resume if paused. Does nothing before anything is loaded.
@@ -108,6 +118,7 @@ pub fn stop(cx: &mut App) {
         let playback = cx.global_mut::<Playback>();
         playback.player.clear();
         playback.playing = None;
+        playback.owner = None;
     }
 }
 
