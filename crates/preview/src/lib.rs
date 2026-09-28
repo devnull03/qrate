@@ -135,8 +135,9 @@ pub fn placeholder_icon(path: Option<&Path>) -> IconName {
 pub struct Preview;
 
 /// File, size cap, where in it (the page for a document, whole seconds in for a video, zero for
-/// everything else, which has only one thing to show), and the [`generation`] it was drawn at.
-type Key = (PathBuf, u32, usize, u64);
+/// everything else, which has only one thing to show), the [`generation`] it was drawn at, and how
+/// many quarter turns clockwise the viewer has rotated it.
+type Key = (PathBuf, u32, usize, u64, u8);
 
 /// For the files PDFium and ffmpeg draw, the component generation, so installing either gives
 /// them new keys and a card that fell back to an icon is drawn again. Zero for everything else,
@@ -154,13 +155,13 @@ impl Asset for Preview {
     type Output = Option<Arc<RenderImage>>;
 
     fn load(
-        (path, max_edge, page, _): Self::Source,
+        (path, max_edge, page, _, turns): Self::Source,
         cx: &mut App,
     ) -> impl Future<Output = Self::Output> + Send + 'static {
         let executor = cx.background_executor().clone();
         async move {
             executor
-                .spawn(async move { render(&path, max_edge, page) })
+                .spawn(async move { render(&path, max_edge, page, turns) })
                 .await
         }
     }
@@ -284,11 +285,39 @@ fn tiff_page(path: &Path, page: usize) -> Option<image::DynamicImage> {
 /// One stat per call, so call it when the selection changes rather than per frame.
 pub fn describe(path: &Path) -> Option<String> {
     let kind = extension(path).map(|extension| extension.to_uppercase());
+    let pixels = dimensions(path).map(|(width, height)| format!("{width} × {height}"));
     let size = std::fs::metadata(path)
         .ok()
         .map(|metadata| file_size(metadata.len()));
-    let parts: Vec<String> = [kind, size].into_iter().flatten().collect();
+    let parts: Vec<String> = [kind, pixels, size].into_iter().flatten().collect();
     (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// Width and height in pixels, upright, read from the header alone. `None` for anything that is not
+/// one of the raster formats `image` reads, which have no pixel size of their own to report.
+pub fn dimensions(path: &Path) -> Option<(u32, u32)> {
+    use image::ImageDecoder as _;
+    use image::metadata::Orientation::{Rotate90, Rotate90FlipH, Rotate270, Rotate270FlipH};
+
+    if !extension(path).is_some_and(|extension| is_raster(&extension)) {
+        return None;
+    }
+    let mut decoder = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_decoder()
+        .ok()?;
+    let (width, height) = decoder.dimensions();
+    let sideways = matches!(
+        decoder.orientation(),
+        Ok(Rotate90 | Rotate270 | Rotate90FlipH | Rotate270FlipH)
+    );
+    Some(if sideways {
+        (height, width)
+    } else {
+        (width, height)
+    })
 }
 
 /// `2.4 MB`. Powers of 1024 with the unit names every file manager on the three platforms shows,
@@ -411,10 +440,17 @@ pub fn thumbnail_png(path: &Path, page: usize) -> Option<Vec<u8>> {
     Some(encoded.into_inner())
 }
 
-/// Decode `path`, shrink it to fit `max_edge`, and hand back something gpui can draw. Runs on a
-/// background thread; `None` for anything that won't decode, which the caller turns into the icon.
-fn render(path: &Path, max_edge: u32, page: usize) -> Option<Arc<RenderImage>> {
-    let mut bgra = thumbnail_pixels(path, max_edge, page)?;
+/// Decode `path`, shrink it to fit `max_edge`, turn it `turns` quarter turns clockwise, and hand
+/// back something gpui can draw. Runs on a background thread; `None` for anything that won't
+/// decode, which the caller turns into the icon.
+fn render(path: &Path, max_edge: u32, page: usize, turns: u8) -> Option<Arc<RenderImage>> {
+    let upright = thumbnail_pixels(path, max_edge, page)?;
+    let mut bgra = match turns % 4 {
+        1 => image::imageops::rotate90(&upright),
+        2 => image::imageops::rotate180(&upright),
+        3 => image::imageops::rotate270(&upright),
+        _ => upright,
+    };
     // `RenderImage` is documented as BGRA and gpui only swaps inside its own decode path, so an
     // image built by hand has to arrive already swapped or every preview draws blue-for-red.
     for px in bgra.pixels_mut() {
@@ -520,13 +556,24 @@ fn decode(path: &Path, max_edge: u32, page: usize) -> Option<image::DynamicImage
 }
 
 /// Formats `image` handles itself. Decoded by content rather than by extension — matching gpui,
-/// and matching what [`can_preview`] promises: a `.jpg` that is really a PNG still opens.
+/// and matching what [`can_preview`] promises: a `.jpg` that is really a PNG still opens. Turned
+/// upright by its EXIF orientation, as gpui turns the original the viewer draws.
 fn raster(path: &Path) -> Option<image::DynamicImage> {
+    use image::ImageDecoder as _;
+
     image::ImageReader::open(path)
         .ok()?
         .with_guessed_format()
         .ok()?
-        .decode()
+        .into_decoder()
+        .and_then(|mut decoder| {
+            let orientation = decoder
+                .orientation()
+                .unwrap_or(image::metadata::Orientation::NoTransforms);
+            let mut image = image::DynamicImage::from_decoder(decoder)?;
+            image.apply_orientation(orientation);
+            Ok(image)
+        })
         .map_err(|err| log::warn!("could not decode {}: {err}", path.display()))
         .ok()
 }
@@ -567,8 +614,8 @@ struct Live {
 impl Global for Live {}
 
 fn cost(image: &RenderImage) -> usize {
-    // ponytail: frame 0 only, so an animated GIF is undercounted. Costs accuracy on a format the
-    // budget already tolerates; revisit if animations become common in collections.
+    // Frame 0 is the whole cost: the ladder builds one frame, and the animated original goes
+    // through gpui's loader instead.
     image.as_bytes(0).map_or(0, <[u8]>::len)
 }
 
@@ -665,7 +712,7 @@ pub fn forget(path: &Path, cx: &mut App) {
         }
     }
     let at = extension(path).map_or(0, |extension| generation(&extension));
-    let unheld = [CARD, PANE, FULL].map(|edge| (path.to_path_buf(), edge, 0, at));
+    let unheld = [CARD, PANE, FULL].map(|edge| (path.to_path_buf(), edge, 0, at, 0));
     for key in held.iter().chain(&unheld) {
         cx.remove_asset::<Preview>(key);
     }
@@ -719,7 +766,7 @@ pub fn thumb(path: Option<&Path>, max_edge: u32, fit: ObjectFit, cx: &App) -> An
             // For contain, keep the image's intrinsic ratio under `max_w/h_full` so it can
             // letterbox. Cover gives the image the frame's full size so GPUI crops it.
             Some(path) => {
-                let image = img(source(path, max_edge, 0))
+                let image = img(source(path, max_edge, 0, 0))
                     .object_fit(fit)
                     .with_fallback(placeholder);
                 frame.child(if cover {
@@ -739,13 +786,15 @@ pub fn thumb(path: Option<&Path>, max_edge: u32, fit: ObjectFit, cx: &App) -> An
 ///
 /// gpui's own loader gets the file whenever it can read it and nothing has to be shrunk, so what
 /// the fullscreen viewer draws is the original: animation intact, no round trip through our decode
-/// and BGRA swap, no second interpretation of a file gpui already understands.
+/// and BGRA swap, no second interpretation of a file gpui already understands. It is also the only
+/// place a GIF moves: a card or the details pane gets its first frame, shrunk and cached.
 ///
 /// - **SVG at every size.** It is the one format [`can_preview`] accepts that the `image` crate
 ///   cannot decode — gpui rasterises it through the `resvg` it already vendors — and vector files
 ///   are small enough that neither the downscale nor the disk cache would earn its keep.
-/// - **Raster at [`FULL`] only**, i.e. the viewer. A card or a details pane wants the capped,
-///   cached copy; there is nothing to cap here.
+/// - **Raster at [`FULL`] only**, i.e. the viewer, while it is upright. A card or a details pane
+///   wants the capped, cached copy; there is nothing to cap here. A turned image has to be turned
+///   by us, so a rotated GIF stands still.
 ///
 /// Everything else goes through [`Preview`] as a custom source — the formats gpui cannot read at
 /// all (PDF, RAW, video, audio artwork, whatever only the OS can thumbnail), and every capped
@@ -757,18 +806,21 @@ pub fn thumb(path: Option<&Path>, max_edge: u32, fit: ObjectFit, cx: &App) -> An
 /// so a session spent opening one large scan after another keeps every one of them. Acceptable
 /// while the viewer shows one at a time; give the viewer an explicit `drop_image` on close if it
 /// ever shows up in a memory profile.
-pub fn source(path: &Path, max_edge: u32, page: usize) -> ImageSource {
+pub fn source(path: &Path, max_edge: u32, page: usize, turns: u8) -> ImageSource {
     let extension = extension(path).unwrap_or_default();
-    // ponytail: a GIF goes to gpui whole at every size, because only gpui's own decode keeps the
-    // frames that animate it. It skips the thumbnail cache and the memory budget, so a gallery of
-    // large GIFs holds them all; downscale every frame here if that shows up.
-    if extension == "svg"
-        || extension == "gif"
-        || (max_edge == FULL && page == 0 && is_raster(&extension))
+    let turns = turns % 4;
+    if turns == 0
+        && (extension == "svg" || (max_edge == FULL && page == 0 && is_raster(&extension)))
     {
         return ImageSource::Resource(path.to_path_buf().into());
     }
-    let key = (path.to_path_buf(), max_edge, page, generation(&extension));
+    let key = (
+        path.to_path_buf(),
+        max_edge,
+        page,
+        generation(&extension),
+        turns,
+    );
     ImageSource::Custom(Arc::new(move |window: &mut Window, cx: &mut App| {
         // `None` while the decode is still running, which leaves the frame empty rather than
         // flashing the icon; gpui re-renders the view when the task lands.
@@ -866,11 +918,11 @@ mod tests {
     fn the_viewer_gets_the_original_file_and_everything_else_gets_the_ladder() {
         use gpui::ImageSource;
 
-        use crate::{CARD, FULL, source};
+        use crate::{CARD, FULL, PANE, source};
 
         let native = |p: &str, max_edge, page| {
             matches!(
-                source(Path::new(p), max_edge, page),
+                source(Path::new(p), max_edge, page, 0),
                 ImageSource::Resource(_)
             )
         };
@@ -884,9 +936,15 @@ mod tests {
         assert!(native("/f/logo.svg", CARD, 0));
         assert!(native("/f/logo.svg", FULL, 0));
 
+        // Only the viewer animates; the Details pane and a card get the cached first frame.
+        assert!(!native("/f/anim.gif", PANE, 0));
+        assert!(!native("/f/anim.gif", CARD, 0));
         assert!(
-            native("/f/anim.gif", CARD, 0),
-            "the Details pane animates too"
+            !matches!(
+                source(Path::new("/f/anim.gif"), FULL, 0, 1),
+                ImageSource::Resource(_)
+            ),
+            "a turned image is turned by the ladder"
         );
         // Capped sizes stay on the ladder — a card wants the shrunk, disk-cached copy.
         assert!(!native("/f/scan.jpg", CARD, 0));
@@ -1128,7 +1186,7 @@ mod tests {
             .save(&red)
             .unwrap();
 
-        let rendered = crate::render(&red, crate::CARD, 0).expect("a 4x4 png decodes");
+        let rendered = crate::render(&red, crate::CARD, 0, 0).expect("a 4x4 png decodes");
         let bytes = rendered.as_bytes(0).expect("one frame");
         assert_eq!(
             &bytes[..4],
@@ -1147,7 +1205,7 @@ mod tests {
         image::RgbaImage::from_pixel(900, 300, image::Rgba([1, 2, 3, 255]))
             .save(&big)
             .unwrap();
-        let rendered = crate::render(&big, 256, 0).expect("decodes");
+        let rendered = crate::render(&big, 256, 0, 0).expect("decodes");
         let size = rendered.size(0);
         assert_eq!(i32::from(size.width), 256, "longest edge is capped");
         assert_eq!(i32::from(size.height), 85, "aspect ratio preserved");
@@ -1156,7 +1214,7 @@ mod tests {
         image::RgbaImage::from_pixel(40, 20, image::Rgba([1, 2, 3, 255]))
             .save(&small)
             .unwrap();
-        let rendered = crate::render(&small, 512, 0).expect("decodes");
+        let rendered = crate::render(&small, 512, 0, 0).expect("decodes");
         assert_eq!(i32::from(rendered.size(0).width), 40, "never enlarged");
 
         let _ = std::fs::remove_file(&big);
@@ -1175,7 +1233,7 @@ mod tests {
         let entry = crate::cache::dir().expect("cache dir").join(&key);
         let _ = std::fs::remove_file(&entry);
 
-        crate::render(&path, 128, 0).expect("decodes");
+        crate::render(&path, 128, 0, 0).expect("decodes");
         assert!(entry.is_file(), "the first decode leaves an entry behind");
         assert!(crate::cache::read(&key).is_some(), "and it reads back");
 
@@ -1212,7 +1270,7 @@ mod tests {
 
         cx.update(|window, cx| {
             for n in 0..8 {
-                let key = (PathBuf::from(format!("/f/{n}.png")), crate::CARD, 0, 0);
+                let key = (PathBuf::from(format!("/f/{n}.png")), crate::CARD, 0, 0, 0);
                 crate::retain(&key, &image(), budget, window, cx);
             }
             assert_eq!(
@@ -1261,12 +1319,48 @@ mod tests {
         });
     }
 
+    /// A phone photo stored sideways with an EXIF turn has to come out upright in every thumbnail,
+    /// as it does in the viewer, where gpui applies the tag itself. The viewer's own rotation is
+    /// applied on top of that, never instead of it.
+    #[test]
+    fn exif_orientation_and_the_viewers_turn_both_reach_the_pixels() {
+        use image::ImageEncoder as _;
+
+        let path = std::env::temp_dir().join("qrate-exif-orientation-probe.png");
+        // A little-endian TIFF header with one IFD entry: Orientation (0x0112) = 6, "rotate 90°".
+        let exif = vec![
+            0x49, 0x49, 0x2A, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0,
+            0, 0,
+        ];
+        let mut encoder =
+            image::codecs::png::PngEncoder::new(std::fs::File::create(&path).unwrap());
+        encoder.set_exif_metadata(exif).unwrap();
+        encoder
+            .write_image(&[0u8; 4 * 2 * 4], 4, 2, image::ExtendedColorType::Rgba8)
+            .unwrap();
+
+        assert_eq!(crate::dimensions(&path), Some((2, 4)), "reported upright");
+        let upright = crate::render(&path, crate::CARD, 0, 0).expect("decodes");
+        assert_eq!(i32::from(upright.size(0).width), 2, "drawn upright");
+        let turned = crate::render(&path, crate::CARD, 0, 1).expect("decodes");
+        assert_eq!(
+            i32::from(turned.size(0).width),
+            4,
+            "then turned by the viewer"
+        );
+
+        if let Some(key) = crate::cache::key(&path, crate::CARD, 0) {
+            let _ = std::fs::remove_file(crate::cache::dir().unwrap().join(key));
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn undecodable_files_render_nothing_rather_than_panicking() {
         let junk = std::env::temp_dir().join("qrate-junk-probe.jpg");
         std::fs::write(&junk, b"this is not an image").unwrap();
-        assert!(crate::render(&junk, crate::CARD, 0).is_none());
-        assert!(crate::render(Path::new("/nonexistent/x.png"), crate::CARD, 0).is_none());
+        assert!(crate::render(&junk, crate::CARD, 0, 0).is_none());
+        assert!(crate::render(Path::new("/nonexistent/x.png"), crate::CARD, 0, 0).is_none());
         let _ = std::fs::remove_file(&junk);
     }
 }

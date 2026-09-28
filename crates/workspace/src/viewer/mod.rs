@@ -103,6 +103,7 @@ pub(crate) fn build(
     let document = preview::has_text(&path);
     let video = preview::has_video(&path);
     let details = preview::describe(&path);
+    let pixels = preview::dimensions(&path);
     let probe_path = path.clone();
     let table = cx
         .try_global::<table::TableStateHandle>()
@@ -154,6 +155,9 @@ pub(crate) fn build(
         zoom: 1.0,
         offset: Point::default(),
         drag_from: None,
+        turns: 0,
+        pixels,
+        scale: 1.0,
         frame: Rc::default(),
         focus_handle: cx.focus_handle(),
         focused: false,
@@ -289,6 +293,12 @@ pub struct Viewer {
     offset: Point<Pixels>,
     /// Last pointer position while dragging; `None` when not panning.
     drag_from: Option<Point<Pixels>>,
+    /// Quarter turns clockwise, for a scan that was fed in sideways. A view, never saved.
+    turns: u8,
+    /// Upright pixel size, where the header says one — what "actual size" is measured against.
+    pixels: Option<(u32, u32)>,
+    /// The window's scale factor at the last render, so 1:1 means one image pixel per device pixel.
+    scale: f32,
     /// Window-space rect of the content box, from `canvas` prepaint — where scroll-zoom's anchor
     /// is measured from.
     frame: Rc<Cell<Bounds<Pixels>>>,
@@ -350,13 +360,80 @@ impl Viewer {
     /// `anchor` (relative to the frame's centre) still, and recenter once the image is no bigger
     /// than its frame, where there's nothing to pan to.
     fn set_zoom(&mut self, zoom: f32, anchor: Point<Pixels>) {
-        let zoom = zoom.clamp(0.1, 8.0);
+        let most = self.actual_size().map_or(8.0, |actual| actual.max(8.0));
+        let zoom = zoom.clamp(0.1, most);
         let scale = zoom / self.zoom;
         self.offset = anchor - (anchor - self.offset) * scale;
         self.zoom = zoom;
         if self.zoom <= 1.0 {
             self.offset = Point::default();
         }
+        self.clamp_pan();
+    }
+
+    /// The picture's pixel size as turned, and the scale that fits it to the frame. `None` where
+    /// the file has no pixel size of its own, or before the frame has been laid out.
+    fn fit(&self) -> Option<(Size<f32>, f32)> {
+        let (width, height) = self.pixels?;
+        let image = match self.turns % 2 {
+            0 => size(width as f32, height as f32),
+            _ => size(height as f32, width as f32),
+        };
+        let frame = self.frame.get().size;
+        let fit =
+            (f32::from(frame.width) / image.width).min(f32::from(frame.height) / image.height);
+        (fit > 0.0).then_some((image, fit))
+    }
+
+    /// The zoom at which one pixel of the image is one pixel of the screen.
+    fn actual_size(&self) -> Option<f32> {
+        self.fit().map(|(_, fit)| 1.0 / (fit * self.scale))
+    }
+
+    /// How far the picture overhangs its frame on each side — the most it may be panned. Measured
+    /// on the image itself where its size is known, so the letterbox bars are not pannable.
+    fn slack(&self) -> Point<Pixels> {
+        let frame = self.frame.get().size;
+        let shown = self.fit().map_or(frame, |(image, fit)| {
+            size(px(image.width * fit), px(image.height * fit))
+        });
+        point(
+            ((shown.width * self.zoom - frame.width) / 2.).max(px(0.)),
+            ((shown.height * self.zoom - frame.height) / 2.).max(px(0.)),
+        )
+    }
+
+    /// Keep an edge of the picture on its frame's edge, so a drag cannot lose it off screen. Left
+    /// alone before the frame has a size, which is only ever the case before the first paint.
+    fn clamp_pan(&mut self) {
+        if self.frame.get().size.width <= px(0.) {
+            return;
+        }
+        let slack = self.slack();
+        self.offset.x = self.offset.x.clamp(-slack.x, slack.x);
+        self.offset.y = self.offset.y.clamp(-slack.y, slack.y);
+    }
+
+    /// A quarter turn clockwise, or back with `-1`. Starts from fit: the old zoom and pan were aimed
+    /// at a picture of a different shape.
+    fn rotate(&mut self, delta: i8) {
+        self.turns = (self.turns as i8 + delta).rem_euclid(4) as u8;
+        self.zoom = 1.0;
+        self.offset = Point::default();
+    }
+
+    /// Fit when zoomed, actual size when fitted; 2× for a file with no pixel size of its own, or
+    /// whose actual size is the fit.
+    fn toggle_zoom(&mut self, anchor: Point<Pixels>) {
+        if (self.zoom - 1.0).abs() > 0.01 {
+            self.set_zoom(1.0, anchor);
+            return;
+        }
+        let target = self
+            .actual_size()
+            .filter(|actual| (actual - 1.0).abs() > 0.05)
+            .unwrap_or(2.0);
+        self.set_zoom(target, anchor);
     }
 
     /// Move `delta` pages, stopping at either end rather than wrapping — a document has a first
@@ -512,6 +589,7 @@ impl Render for Viewer {
             window.focus(&self.focus_handle, cx);
             self.focused = true;
         }
+        self.scale = window.scale_factor();
         let (zoom, offset, page, pages) = (self.zoom, self.offset, self.page, self.pages);
         let name: SharedString = self
             .path
@@ -532,7 +610,20 @@ impl Render for Viewer {
         };
         let pill = cx.theme().background.opacity(0.8);
         let accent = cx.theme().primary.opacity(0.55);
-        let marks: Vec<preview::Match> = self.find.on_page(page).cloned().collect();
+        // A hit's box is measured on the upright page, so a turned page shows none.
+        let marks: Vec<preview::Match> = match self.turns {
+            0 => self.find.on_page(page).cloned().collect(),
+            _ => Vec::new(),
+        };
+        let cursor = match (self.drag_from.is_some(), self.slack()) {
+            (true, _) => CursorStyle::ClosedHand,
+            (false, slack) if slack.x > px(0.) || slack.y > px(0.) => CursorStyle::OpenHand,
+            _ => CursorStyle::Arrow,
+        };
+        let readout = match self.actual_size() {
+            Some(actual) => format!("{:.0}%", zoom / actual * 100.),
+            None => format!("{:.0}%", zoom * 100.),
+        };
         // The panel's *live* width, straight off the resizable's state, so the rows re-trim as it
         // is dragged. Empty until the group has laid out once.
         let panel_width = self.split.read(cx).sizes().get(1).copied().unwrap_or(PANEL);
@@ -611,6 +702,16 @@ impl Render for Viewer {
                         this.set_zoom(1.0, Point::default());
                         cx.notify();
                     }
+                    "1" if reading => {
+                        if let Some(actual) = this.actual_size() {
+                            this.set_zoom(actual, Point::default());
+                            cx.notify();
+                        }
+                    }
+                    "r" if reading => {
+                        this.rotate(if ev.keystroke.modifiers.shift { -1 } else { 1 });
+                        cx.notify();
+                    }
                     "up" | "down" if reading && overlay => {
                         step_row(if ev.keystroke.key == "up" { -1 } else { 1 }, cx);
                     }
@@ -639,9 +740,14 @@ impl Render for Viewer {
                                         cx.notify();
                                     },
                                 ))
+                                .cursor(cursor)
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                                        if ev.click_count == 2 {
+                                            let anchor = ev.position - this.frame.get().center();
+                                            this.toggle_zoom(anchor);
+                                        }
                                         this.drag_from = Some(ev.position);
                                         cx.notify();
                                     }),
@@ -652,10 +758,19 @@ impl Render for Viewer {
                                     };
                                     this.offset.x += ev.position.x - last.x;
                                     this.offset.y += ev.position.y - last.y;
+                                    this.clamp_pan();
                                     this.drag_from = Some(ev.position);
                                     cx.notify();
                                 }))
                                 .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                        this.drag_from = None;
+                                        cx.notify();
+                                    }),
+                                )
+                                // Released over a panel or outside the window, the drag still ends.
+                                .on_mouse_up_out(
                                     MouseButton::Left,
                                     cx.listener(|this, _: &MouseUpEvent, _, cx| {
                                         this.drag_from = None;
@@ -682,7 +797,11 @@ impl Render for Viewer {
                                         })
                                         .children((!bare).then(|| {
                                             // `flex_shrink_0` keeps `relative(zoom)` past 1.
-                                            img(preview::source(&self.path, cap, page))
+                                            // The id is what lets gpui keep a GIF's frame clock.
+                                            img(preview::source(
+                                                &self.path, cap, page, self.turns,
+                                            ))
+                                            .id("viewer-image")
                                                 .flex_shrink_0()
                                                 .relative()
                                                 .w(relative(zoom))
@@ -917,6 +1036,19 @@ impl Render for Viewer {
                                 })),
                         )
                     })
+                    .when(!bare, |group| {
+                        group.child(
+                            Button::new("rotate")
+                                .icon(IconName::RotateCw)
+                                .ghost()
+                                .small()
+                                .tooltip("Rotate (R, Shift+R back)")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.rotate(1);
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .child(
                         Button::new("zoom-out")
                             .icon(IconName::Minus)
@@ -925,6 +1057,21 @@ impl Render for Viewer {
                             .tooltip("Zoom out (-)")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.set_zoom(this.zoom / 1.25, Point::default());
+                                cx.notify();
+                            })),
+                    )
+                    // Percent of actual size where the file has one, else of the fit.
+                    .child(
+                        Button::new("zoom-readout")
+                            .label(readout)
+                            .ghost()
+                            .small()
+                            .tooltip(match self.actual_size() {
+                                Some(_) => "Toggle fit (0) and actual size (1)",
+                                None => "Toggle fit (0) and 2×",
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_zoom(Point::default());
                                 cx.notify();
                             })),
                     )
@@ -1110,6 +1257,45 @@ mod tests {
                 let after = under(viewer);
                 assert!((before.x - after.x).abs() < gpui::px(0.01));
                 assert!((before.y - after.y).abs() < gpui::px(0.01));
+            });
+            close_viewer(window, cx);
+        });
+    }
+
+    /// A drag cannot lose the picture off screen, "actual size" follows the turn, and a turn starts
+    /// again from fit.
+    #[gpui::test]
+    fn panning_stops_at_the_edge_and_a_turn_swaps_the_actual_size(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
+        let path = std::path::PathBuf::from("/nonexistent/qrate-pan-test.png");
+        cx.update(|window, cx| {
+            open_viewer(path, Scope::Workspace, window, cx);
+            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+            viewer.update(cx, |viewer, _| {
+                // A 2000×1000 picture in a 1000×500 frame: fitted at half scale.
+                viewer.pixels = Some((2000, 1000));
+                viewer.frame.set(gpui::Bounds::new(
+                    gpui::Point::default(),
+                    gpui::size(gpui::px(1000.), gpui::px(500.)),
+                ));
+                assert_eq!(viewer.actual_size(), Some(2.0));
+
+                viewer.set_zoom(2.0, gpui::Point::default());
+                viewer.offset = gpui::point(gpui::px(5000.), gpui::px(-5000.));
+                viewer.clamp_pan();
+                assert_eq!(
+                    viewer.offset,
+                    gpui::point(gpui::px(500.), gpui::px(-250.)),
+                    "no further than the overhang on either side"
+                );
+
+                viewer.rotate(1);
+                assert_eq!(viewer.zoom, 1.0);
+                assert_eq!(viewer.offset, gpui::Point::default());
+                // Now 1000×2000 in the same frame, fitted at a quarter.
+                assert_eq!(viewer.actual_size(), Some(4.0));
+                viewer.rotate(-2);
+                assert_eq!(viewer.turns, 3, "a turn back from upright wraps");
             });
             close_viewer(window, cx);
         });

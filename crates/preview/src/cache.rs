@@ -52,6 +52,10 @@ pub fn dir() -> Option<PathBuf> {
     .clone()
 }
 
+/// Bumped when a decode changes what an unchanged file looks like, so every old entry misses.
+/// 1: raster thumbnails turned upright by their EXIF orientation.
+const FORMAT: u32 = 1;
+
 /// Identity of one cached rendering. The file's length and mtime are in the hash, so editing or
 /// replacing a source file misses rather than serving the old picture — which is why nothing here
 /// needs an invalidation pass.
@@ -61,6 +65,7 @@ pub fn dir() -> Option<PathBuf> {
 pub fn key(path: &Path, max_edge: u32, page: usize) -> Option<String> {
     let meta = fs::metadata(path).ok()?;
     let mut hasher = DefaultHasher::new();
+    FORMAT.hash(&mut hasher);
     path.hash(&mut hasher);
     meta.len().hash(&mut hasher);
     meta.modified().ok()?.hash(&mut hasher);
