@@ -289,9 +289,7 @@ impl Render for App {
             }))
             // Here rather than globally: the Zotero mapping dialog opens in this window.
             .on_action(cx.listener(|_, action: &export::Export, window, cx| {
-                export::run(action.format, window, cx);
-                // Once, the first time: what an export includes, and where Sheets sync lives.
-                onboarding::show_export_tip(window, cx);
+                export::run(action.format, window, cx)
             }))
             // Here for the same reason: the dialog opens in this window.
             .on_action(cx.listener(|_, _: &LoadColumnConfig, window, cx| {
