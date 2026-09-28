@@ -1,49 +1,46 @@
 ---
-// The release table, lifted out of the old get-started page so the docs Install
-// page and anything else share one build-time fetch of the GitHub releases.
-//
-// No Tailwind classes: docs pages render Starlight's layout, not Base.astro, so
-// global.css is never loaded there. Plain scoped CSS against the --sl-* tokens.
-import { getReleases, latest, platformOf, baseFirst, humanSize, REPO } from '../lib/releases.js';
+import { getReleases, latest, installationChoices, downloadLabel, humanSize, REPO } from '../lib/releases.js';
 
-const releases = await getReleases();
-const rel = latest(releases);
+const rel = latest(await getReleases());
 const assets = rel?.assets ?? [];
-
-const sums = assets.find((a) => /SHA256SUMS\.txt$/i.test(a.name));
-const downloads = baseFirst(assets)
-  .map((a) => ({ ...a, os: platformOf(a.name) }))
-  .filter((a) => a.os);
+const { recommended, alternatives } = installationChoices(assets);
+const sums = assets.find((asset) => asset.name === 'SHA256SUMS.txt');
+const link = (asset) => `/thanks?a=${encodeURIComponent(asset.name)}`;
 ---
 
 {
-  downloads.length > 0 ? (
+  recommended.length ? (
     <div class="qr-downloads not-content">
-      <div class="qr-row qr-head">
-        <div>Platform</div>
-        <div>File</div>
-        <div>Size</div>
-        <div>Checksum</div>
+      <div class="qr-heading">Recommended for {rel.tag_name}</div>
+      <div class="qr-choices">
+        {recommended.map((asset) => (
+          <div class="qr-choice">
+            <div class="qr-platform">{asset.os}</div>
+            <a href={link(asset)}>Download {downloadLabel(asset.name)}</a>
+            <div class="qr-detail">{humanSize(asset.size)} · {asset.name}</div>
+          </div>
+        ))}
       </div>
-      {downloads.map((d) => (
-        <div class="qr-row">
-          <div class="qr-os">{d.os}</div>
-          <div class="qr-file">
-            <a href={`/thanks?a=${encodeURIComponent(d.name)}`}>{d.name}</a>
+      <p class="qr-note">Start with a base download. qrate offers to add PDF previews and the assistant when you need them.</p>
+      {alternatives.length > 0 && (
+        <details class="qr-more">
+          <summary>Full, portable, and managed downloads</summary>
+          <div class="qr-alternatives">
+            {alternatives.map((asset) => (
+              <div class="qr-alternative">
+                <span>{asset.os} · {downloadLabel(asset.name)}</span>
+                <a href={link(asset)}>{asset.name}</a>
+                <span>{humanSize(asset.size)}</span>
+              </div>
+            ))}
           </div>
-          <div class="qr-dim">{humanSize(d.size)}</div>
-          <div class="qr-dim">
-            {sums ? <a href={sums.browser_download_url}>sha256</a> : 'sha256'}
-          </div>
-        </div>
-      ))}
+        </details>
+      )}
+      {sums && <div class="qr-checksums">Check a download against <a href={sums.browser_download_url}>SHA256SUMS.txt</a>.</div>}
     </div>
   ) : (
-    <div class="qr-downloads not-content">
-      <div class="qr-empty">
-        No published builds yet. See the{' '}
-        <a href={`https://github.com/${REPO}/releases`}>Releases page</a>.
-      </div>
+    <div class="qr-downloads not-content qr-empty">
+      No published builds yet. See the <a href={`https://github.com/${REPO}/releases`}>Releases page</a>.
     </div>
   )
 }
@@ -52,65 +49,32 @@ const downloads = baseFirst(assets)
   .qr-downloads {
     border: 1px solid var(--sl-color-hairline);
     margin-block: 1.5rem;
-    font-family: var(--sl-font-mono);
-    font-size: 0.78rem;
+    font-size: 0.9rem;
   }
-
-  .qr-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    align-items: center;
-    border-bottom: 1px solid var(--sl-color-hairline-light);
-  }
-
-  /* min-width: 0 stops a long asset filename from widening its column, and with
-     it the whole page, on narrow screens. */
-  .qr-row > * {
-    min-width: 0;
-    overflow-wrap: break-word;
-    padding: 9px 14px;
-  }
-
-  .qr-row:last-child {
-    border-bottom: 0;
-  }
-
-  @media (min-width: 40rem) {
-    .qr-row {
-      grid-template-columns: 110px 1fr 92px 100px;
-    }
-  }
-
-  .qr-head {
-    background: var(--sl-color-bg-inline-code);
+  .qr-heading {
+    padding: 0.8rem 1rem;
     border-bottom: 1px solid var(--sl-color-hairline);
-    font-size: 0.66rem;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--sl-color-gray-2);
+    background: var(--sl-color-bg-inline-code);
+    font-weight: 600;
   }
-
-  .qr-os {
-    color: var(--sl-color-white);
-  }
-
-  .qr-file a {
-    color: var(--sl-color-accent);
-    text-decoration: none;
-    box-shadow: inset 0 -1px 0 var(--sl-color-accent-high);
-  }
-
-  .qr-dim {
-    color: var(--sl-color-gray-3);
-  }
-
-  .qr-dim a {
-    color: inherit;
-  }
-
-  .qr-empty {
-    padding: 0.85rem;
-    color: var(--sl-color-gray-3);
+  .qr-choices { display: grid; }
+  .qr-choice { padding: 1rem; border-bottom: 1px solid var(--sl-color-hairline-light); }
+  .qr-platform { font-weight: 600; margin-bottom: 0.35rem; }
+  .qr-choice a { font-weight: 600; }
+  .qr-detail { color: var(--sl-color-gray-3); font-size: 0.73rem; overflow-wrap: anywhere; margin-top: 0.35rem; }
+  .qr-note, .qr-checksums { margin: 0; padding: 0.8rem 1rem; color: var(--sl-color-gray-2); }
+  .qr-more { border-top: 1px solid var(--sl-color-hairline); }
+  .qr-more summary { cursor: pointer; padding: 0.8rem 1rem; font-weight: 600; }
+  .qr-alternatives { border-top: 1px solid var(--sl-color-hairline-light); }
+  .qr-alternative { display: grid; gap: 0.15rem; padding: 0.75rem 1rem; border-bottom: 1px solid var(--sl-color-hairline-light); }
+  .qr-alternative a { overflow-wrap: anywhere; }
+  .qr-alternative span { color: var(--sl-color-gray-3); font-size: 0.78rem; }
+  .qr-checksums { border-top: 1px solid var(--sl-color-hairline); font-size: 0.8rem; }
+  .qr-empty { padding: 1rem; }
+  @media (min-width: 42rem) {
+    .qr-choices { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .qr-choice { border-bottom: 0; border-right: 1px solid var(--sl-color-hairline-light); }
+    .qr-choice:last-child { border-right: 0; }
+    .qr-alternative { grid-template-columns: 10rem minmax(0, 1fr) 5rem; align-items: center; }
   }
 </style>

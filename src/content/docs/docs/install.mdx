@@ -9,14 +9,18 @@ import DownloadTable from '../../../components/DownloadTable.astro';
 
 ## GitHub Releases
 
-Download the installer or portable build for your platform.
+Choose the recommended base download for your platform. It installs optional tools when you first
+need them. The download panel also lists the other packages:
 
 <DownloadTable />
 
-The files with `base` in their name are the small downloads. They leave out PDF preview, video
-preview and the assistant's runtime, and qrate offers to install each one the first time you
-need it, or under **Settings ▸ Components**. The other installers carry all three, for a
-computer that stays offline. An installed qrate updates to the same kind it came from.
+- **Full:** a larger download with optional tools for computers that stay offline. On macOS,
+  install ffmpeg separately for video previews.
+- **Portable ZIP (Windows):** unpack and run qrate without an installer.
+- **Managed MSI (Windows):** for IT deployment with Group Policy, SCCM, or Intune.
+
+An installed qrate updates to the same type of download it came from. You can also add optional
+tools later under **Settings ▸ Components**.
 
 ## Homebrew (macOS)
 
@@ -25,6 +29,9 @@ The [qrate tap](https://github.com/devnull03/homebrew-tap) installs the base app
 ```sh
 brew install --cask devnull03/tap/qrate
 ```
+
+The tap can lag a prerelease. Use the GitHub download above for the newest beta; stable releases
+update the tap automatically once that channel is enabled.
 
 qrate offers to install optional components when you need them. For video previews, install
 ffmpeg separately with `brew install ffmpeg`.

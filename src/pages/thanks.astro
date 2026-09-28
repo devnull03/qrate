@@ -111,21 +111,21 @@ const code =
         Security.
       </div>
       <div class="mt-3 text-[13px] leading-[1.7] text-faint">
-        qrate offers to install PDF preview the first time you open a PDF. For video frames,
+        Base builds offer PDF support on first use; full builds include it. For video frames, use
         <span class="font-mono">brew install ffmpeg</span>.
       </div>
     </div>
 
     <div data-os="Windows" class="gut border-b border-rule py-[26px] md:border-b-0 md:border-r md:p-[34px]">
       <div class="eyebrow">Windows</div>
-      <h2 class="m-0 mb-2.5 mt-3 text-xl font-semibold tracking-[-0.02em]">Run the installer</h2>
+      <h2 class="m-0 mb-2.5 mt-3 text-xl font-semibold tracking-[-0.02em]">Open your download</h2>
       <div class="text-[14px] leading-[1.7] text-body">
-        The build is unsigned, so SmartScreen warns about an unknown publisher. Click More info,
-        then Run anyway. If the file will not start at all, right-click it, choose Properties, and
-        tick Unblock.
+        Run the EXE or MSI installer. For a portable ZIP, extract it and run qrate.exe. These
+        downloads lack a Windows publisher signature, so SmartScreen may ask you to choose More info,
+        then Run anyway.
       </div>
       <div class="mt-3 text-[13px] leading-[1.7] text-faint">
-        qrate offers to install PDF and video preview the first time you open one of those files.
+        Base builds offer to install PDF and video support on first use; full builds include them.
       </div>
     </div>
 
@@ -138,10 +138,9 @@ const code =
       </div>
       {/* One expression, not text plus {linuxDir}: mixing them makes the compiler
           treat the line breaks as JSX whitespace and drop them. */}
-      <code class={code}>{`tar -xzf ${linuxDir}.tar.gz\ncd ${linuxDir}\n./qrate`}</code>
+      <code id="linux-install-command" class={code}>{`tar -xzf ${linuxDir}.tar.gz\ncd ${linuxDir}\n./qrate`}</code>
       <div class="mt-3 text-[13px] leading-[1.7] text-faint">
-        qrate offers to install PDF and video preview the first time you open one of those files,
-        and uses an ffmpeg already on your system.
+        Base builds offer PDF and video support on first use; full builds include them.
       </div>
     </div>
   </section>
@@ -218,6 +217,11 @@ const code =
     document.getElementById('dl-size').textContent = file.size;
     document.getElementById('dl-retry').href = file.url;
     document.getElementById('install').dataset.os = file.os;
+    if (file.os === 'Linux' && name.endsWith('.tar.gz')) {
+      const directory = name.slice(0, -'.tar.gz'.length);
+      document.getElementById('linux-install-command').textContent =
+        `tar -xzf ${name}\ncd ${directory}\n./qrate`;
+    }
 
     // The digest is what stands in for a signature on these builds, so the page
     // shows the expected value next to the command that produces the real one.

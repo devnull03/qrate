@@ -38,21 +38,12 @@ export function latest(releases) {
   return releases[0] ?? null;
 }
 
-// Friendly labels keyed off the asset filenames produced by release.yml.
-export function labelFor(name) {
-  if (/-setup\.exe$/i.test(name)) return 'Windows installer';
-  if (/-x86_64\.zip$/i.test(name)) return 'Windows (portable)';
-  if (/\.dmg$/i.test(name)) return 'macOS (Intel + Apple Silicon)';
-  if (/SHA256SUMS\.txt$/i.test(name)) return 'Checksums';
-  return name;
-}
-
 // Only the shipped installers get a platform. Anything else in the release
 // (sample data, checksums, source archives) must stay out of the download table.
 // So must the component-* archives, which qrate downloads by itself: a Linux
 // one ends in linux-x86_64.tar.gz like the tarball does.
 export function platformOf(name) {
-  if (/^component-/i.test(name)) return null;
+  if (!/^qrate-/i.test(name)) return null;
   if (/\.dmg$/i.test(name)) return 'macOS';
   if (/(-setup\.exe|\.msi|(x64|x86_64)[^/]*\.zip)$/i.test(name)) return 'Windows';
   // release.yml ships Linux as a tarball, not a .deb or .AppImage. Matching only
@@ -65,22 +56,46 @@ export function platformOf(name) {
 // The downloadable assets of one release, keyed by filename. /thanks resolves its
 // ?a= param against this, so only a name the release actually published can ever
 // become a download URL.
-// The base downloads come first, so every "first file for this platform" lookup
-// (the hero button, /thanks, the table) offers the small one. It installs PDF
-// preview, video preview and the assistant when they are first needed.
+// The base downloads come first, so the hero button and /thanks offer the small
+// installer when a release has one.
 export function isBase(name) {
   return /-base-/i.test(name);
 }
 
-export function baseFirst(assets) {
-  return [...assets].sort((a, b) => Number(isBase(b.name)) - Number(isBase(a.name)));
+export function installationChoices(assets) {
+  const order = ['Windows', 'macOS', 'Linux'];
+  const priority = (name) => {
+    if (isBase(name)) return 0;
+    if (/-setup\.exe$|\.dmg$|linux[^/]*\.tar\.(gz|xz)$/i.test(name)) return 1;
+    if (/\.zip$/i.test(name)) return 2;
+    return 3;
+  };
+  const downloads = assets
+    .map((asset) => ({ ...asset, os: platformOf(asset.name) }))
+    .filter((asset) => asset.os)
+    .sort((a, b) => order.indexOf(a.os) - order.indexOf(b.os) || priority(a.name) - priority(b.name));
+  const recommended = [];
+  const alternatives = [];
+  for (const asset of downloads) {
+    (recommended.some((choice) => choice.os === asset.os) ? alternatives : recommended).push(asset);
+  }
+  return { recommended, alternatives };
+}
+
+export function downloadLabel(name) {
+  if (/\.msi$/i.test(name)) return 'Managed MSI';
+  if (/\.zip$/i.test(name)) return 'Portable ZIP';
+  if (/\.dmg$/i.test(name)) return isBase(name) ? 'Base disk image' : 'Full disk image';
+  if (/\.tar\.(gz|xz)$/i.test(name)) return isBase(name) ? 'Base archive' : 'Full archive';
+  if (/-setup\.exe$/i.test(name)) return isBase(name) ? 'Base installer' : 'Full installer';
+  return 'Download';
 }
 
 export function assetIndex(rel) {
   const out = {};
-  for (const a of baseFirst(rel?.assets ?? [])) {
-    const os = platformOf(a.name);
-    if (os) out[a.name] = { url: a.browser_download_url, os, size: a.size };
+  const { recommended, alternatives } = installationChoices(rel?.assets ?? []);
+  for (const a of [...recommended, ...alternatives]) {
+    out[a.name] = { url: a.browser_download_url, os: a.os, size: a.size };
   }
   return out;
 }

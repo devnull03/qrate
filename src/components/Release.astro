@@ -1,6 +1,6 @@
 ---
 import { marked } from 'marked';
-import { humanSize, formatDate, platformOf } from '../lib/releases.js';
+import { humanSize, formatDate, platformOf, installationChoices, downloadLabel, REPO } from '../lib/releases.js';
 
 const { release, latest = false } = Astro.props;
 
@@ -8,6 +8,8 @@ const { release, latest = false } = Astro.props;
 // trusted content. (Add sanitize-html here if that assumption ever changes.)
 const notesHtml = release.body ? marked.parse(release.body) : '';
 const assets = release.assets ?? [];
+const { recommended, alternatives } = installationChoices(assets);
+const releaseUrl = release.html_url ?? `https://github.com/${REPO}/releases/tag/${release.tag_name}`;
 const tag = release.prerelease ? 'pre-release' : latest ? 'latest' : 'release';
 
 // /thanks is built from the newest release alone, so only its rows may go there.
@@ -41,25 +43,37 @@ const thanksLink = (name) =>
     <div class="mb-3 text-[18px] font-semibold leading-[1.3] tracking-[-0.02em]">
       {release.name || release.tag_name}
     </div>
-    {notesHtml && <div class="notes text-[13.5px] leading-[1.65] text-body" set:html={notesHtml} />}
-
     {
-      assets.length > 0 && (
-        <div class="mt-[18px] border-t border-rule">
-          {assets.map((a) => (
-            <div class="flex items-center justify-between gap-4 border-b border-rule-soft py-[9px] font-mono text-[12.5px]">
-              <span class="break-all">{a.name}</span>
-              <span class="flex shrink-0 items-center gap-4 text-dim">
-                <span>{humanSize(a.size)}</span>
-                <a href={thanksLink(a.name) ?? a.browser_download_url} class="text-accent">
-                  download
-                </a>
-              </span>
-            </div>
-          ))}
+      recommended.length > 0 && (
+        <div class="mb-[18px] border-y border-rule">
+          <div class="py-3 text-[12px] font-semibold uppercase tracking-[0.08em] text-dim">Download this version</div>
+          <div class="grid gap-2 sm:grid-cols-3">
+            {recommended.map((a) => (
+              <a href={thanksLink(a.name) ?? a.browser_download_url} class="border border-rule p-3 text-accent">
+                <span class="block text-[13px] font-semibold">{a.os}</span>
+                <span class="block text-[12px]">{downloadLabel(a.name)} · {humanSize(a.size)}</span>
+              </a>
+            ))}
+          </div>
+          {alternatives.length > 0 && (
+            <details class="mt-3 border-t border-rule-soft pt-3 text-[12.5px]">
+              <summary class="cursor-pointer font-medium text-body">Full, portable, and managed downloads</summary>
+              <div class="mt-2 grid gap-2">
+                {alternatives.map((a) => (
+                  <a href={thanksLink(a.name) ?? a.browser_download_url} class="text-accent">
+                    {a.os} · {downloadLabel(a.name)} · {humanSize(a.size)}
+                  </a>
+                ))}
+              </div>
+            </details>
+          )}
+          <div class="py-3 text-[12px] text-dim">
+            <a href={releaseUrl} class="text-accent">All files and checksums on GitHub</a>
+          </div>
         </div>
       )
     }
+    {notesHtml && <div class="notes text-[13.5px] leading-[1.65] text-body" set:html={notesHtml} />}
   </div>
 </article>
 
