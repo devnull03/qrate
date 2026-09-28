@@ -511,12 +511,33 @@ impl BasePanel for ProblemsPanel {
 }
 
 impl Panel for ProblemsPanel {
-    fn title(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Problems")
+    // The filter tabs sit in the title (the bar's stretching slot, so they stay left) and the
+    // source picker in the suffix, so the list starts right under the title bar.
+    fn title(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex().items_center().gap_3().child("Problems").child(
+            TabBar::new("problems-filter")
+                .segmented()
+                .xsmall()
+                .selected_index(
+                    Filter::ALL
+                        .iter()
+                        .position(|f| *f == self.filter)
+                        .unwrap_or(0),
+                )
+                .children(
+                    Filter::ALL
+                        .iter()
+                        .zip(self.counts)
+                        .map(|(f, n)| Tab::new().label(format!("{} ({n})", f.label()))),
+                )
+                .on_click(cx.listener(|this, ix: &usize, _w, cx| {
+                    this.filter = Filter::ALL[*ix];
+                    this.refresh(cx);
+                    cx.notify();
+                })),
+        )
     }
 
-    // The filter tabs and source picker ride in the dock's title bar rather than a row of their
-    // own, so the list starts right under the title.
     fn title_suffix(
         &mut self,
         window: &mut Window,
@@ -588,59 +609,28 @@ impl Panel for ProblemsPanel {
             }
             state
         });
-        Some(
+        source_filter.map(|state| {
             h_flex()
                 .items_center()
-                .gap_2()
-                .child(
-                    TabBar::new("problems-filter")
-                        .segmented()
-                        .xsmall()
-                        .selected_index(
-                            Filter::ALL
-                                .iter()
-                                .position(|f| *f == self.filter)
-                                .unwrap_or(0),
-                        )
-                        .children(
-                            Filter::ALL
-                                .iter()
-                                .zip(self.counts)
-                                .map(|(f, n)| Tab::new().label(format!("{} ({n})", f.label()))),
-                        )
-                        .on_click(cx.listener(|this, ix: &usize, _w, cx| {
-                            this.filter = Filter::ALL[*ix];
-                            this.refresh(cx);
-                            cx.notify();
-                        })),
-                )
-                .when_some(source_filter, |bar, state| {
+                .gap_1()
+                .when(self.ignored_count > 0, |bar| {
                     bar.child(
-                        h_flex()
-                            .items_center()
-                            .gap_1()
-                            .when(self.ignored_count > 0, |bar| {
-                                bar.child(
-                                    Button::new("problems-show-ignored")
-                                        .ghost()
-                                        .small()
-                                        .selected(self.show_ignored)
-                                        .label(format!("Show ignored ({})", self.ignored_count))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.show_ignored = !this.show_ignored;
-                                            this.refresh(cx);
-                                            cx.notify();
-                                        })),
-                                )
-                            })
-                            .child(div().w_48().pr_1().when(self.sources.len() > 1, |element| {
-                                element.child(
-                                    Combobox::new(&state).placeholder("Filter sources").small(),
-                                )
+                        Button::new("problems-show-ignored")
+                            .ghost()
+                            .small()
+                            .selected(self.show_ignored)
+                            .label(format!("Show ignored ({})", self.ignored_count))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.show_ignored = !this.show_ignored;
+                                this.refresh(cx);
+                                cx.notify();
                             })),
                     )
-                }),
-        )
+                })
+                .child(div().w_48().pr_1().when(self.sources.len() > 1, |element| {
+                    element.child(Combobox::new(&state).placeholder("Filter sources").small())
+                }))
+        })
     }
 }
 
