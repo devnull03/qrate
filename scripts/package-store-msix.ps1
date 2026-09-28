@@ -21,10 +21,10 @@ foreach ($value in @($IdentityName, $IdentityPublisher, $PublisherDisplayName)) 
   if ([string]::IsNullOrWhiteSpace($value)) { Fail 'all Partner Center identity values are required' }
 }
 
-if ($QrateVersion -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
-  Fail "expected a stable three-part qrate version, got '$QrateVersion'"
+if ($QrateVersion -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
+  Fail "expected a three-part qrate version with an optional prerelease suffix, got '$QrateVersion'"
 }
-$major, $minor, $patch = $QrateVersion.Split('.') | ForEach-Object { [int] $_ }
+$major, $minor, $patch = ($QrateVersion -split '-', 2)[0].Split('.') | ForEach-Object { [int] $_ }
 if ($major -ge 65535 -or $minor -gt 65535 -or $patch -gt 65535) {
   Fail "version '$QrateVersion' cannot be represented by the MSIX version fields"
 }

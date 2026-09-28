@@ -41,14 +41,15 @@ Set these secrets in the `release-signing` GitHub environment:
 With identity variables set and submissions disabled, a stable release builds the MSIX artifact so
 the first package can be submitted by hand in Partner Center. After that submission has completed
 with age ratings, set
-`QRATE_STORE_SUBMISSIONS_ENABLED=true`; later stable tags submit automatically. Prerelease tags do
-not build or submit an MSIX. The submit job keeps Partner Center's existing publish mode and listing
-metadata, and stops after Partner Center accepts the submission for processing. Certification and
-any manual publication step remain visible in Partner Center.
+`QRATE_STORE_SUBMISSIONS_ENABLED=true`; later stable tags submit automatically. Prerelease tags build
+the private MSIX workflow artifact but do not submit it to Partner Center. The submit job keeps
+Partner Center's existing publish mode and listing metadata, and stops after Partner Center accepts
+the submission for processing. Certification and any manual publication step remain visible in
+Partner Center.
 
-The installer branch must be merged before its release tag is pushed. The current published 0.6
-release is a prerelease, so it cannot produce the first Store MSIX under this workflow. Publish the
-updated site privacy policy before entering its URL in the first Store submission.
+The installer branch must be merged before its release tag is pushed. Tags created before this
+workflow change do not acquire an MSIX retroactively; use a new prerelease tag to test packaging.
+Publish the updated site privacy policy before entering its URL in the first Store submission.
 
 ## Package behavior
 
@@ -62,8 +63,9 @@ full-trust declaration.
 
 The Store reserves the fourth MSIX version field. It also requires a nonzero first version field,
 while qrate is still `0.x`. The package script offsets qrate's major version by one (for example,
-qrate `0.6.0` becomes Store package `1.6.0.0`), preserving version order. The app's own version in
-the install marker remains the Cargo version.
+qrate `0.6.0` becomes Store package `1.6.0.0`), preserving version order across stable releases.
+Prereleases with the same major, minor and patch share that numeric MSIX version because the Store
+manifest has no prerelease field. The app's install marker retains the full Cargo version.
 
 The Store submission job uses Microsoft's MSIX app submission API. It needs the Store ID plus the
 Entra tenant, client ID and secret; no Seller ID is used by this API. Store package signing is
