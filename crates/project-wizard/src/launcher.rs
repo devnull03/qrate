@@ -84,20 +84,36 @@ impl Launcher {
         } else {
             recent::list(cx)
         };
+        // Remembered thumbnails paint at once; the check below only walks a folder whose cache
+        // is missing or stale.
+        let previews = recents
+            .iter()
+            .filter_map(|project| {
+                let image = project.preview.as_ref()?.image.clone()?;
+                Some((project.path.clone(), image))
+            })
+            .collect();
         if !recents.is_empty() {
-            let paths: Vec<_> = recents.iter().map(|project| project.path.clone()).collect();
+            let cached: Vec<_> = recents
+                .iter()
+                .map(|project| (project.path.clone(), project.preview.clone()))
+                .collect();
             let scan = cx.background_spawn(async move {
-                paths
+                cached
                     .into_iter()
-                    .filter_map(|path| {
-                        recent::preview_source(Path::new(&path)).map(|image| (path, image))
+                    .filter_map(|(path, cached)| {
+                        recent::preview(Path::new(&path), cached).map(|preview| (path, preview))
                     })
-                    .collect::<HashMap<_, _>>()
+                    .collect::<Vec<_>>()
             });
             cx.spawn(async move |this, cx| {
-                let previews = scan.await;
+                let resolved = scan.await;
                 this.update(cx, |this, cx| {
-                    this.previews = previews;
+                    this.previews = resolved
+                        .iter()
+                        .filter_map(|(path, preview)| Some((path.clone(), preview.image.clone()?)))
+                        .collect();
+                    recent::store_previews(resolved, cx);
                     cx.notify();
                 })
                 .ok();
@@ -106,7 +122,7 @@ impl Launcher {
         }
         Self {
             recents,
-            previews: HashMap::new(),
+            previews,
             error: None,
             title_items,
         }
