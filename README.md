@@ -53,7 +53,19 @@ Collection data rarely lives in just one place. A spreadsheet names an object, a
 
 ## Get qrate
 
-Download the installer or portable build for your platform from [GitHub Releases](https://github.com/devnull03/qrate/releases). Release assets are available for Windows, macOS, and Linux. Releases are currently unsigned, so Windows SmartScreen or macOS Gatekeeper may ask for confirmation the first time you open qrate.
+Download the installer or portable build for your platform from [GitHub Releases](https://github.com/devnull03/qrate/releases). Release assets are available for Windows, macOS, and Linux. The builds do not have a Windows publisher signature or an Apple Developer ID signature and notarization, so Windows SmartScreen or macOS Gatekeeper may ask you to allow qrate the first time you open it.
+
+On macOS, install the base app from the Homebrew tap:
+
+```sh
+brew install --cask devnull03/tap/qrate
+```
+
+On Windows, install qrate with WinGet after its first community manifest is accepted:
+
+```powershell
+winget install --id devnull03.qrate --exact
+```
 
 PDF preview support is included in release builds. Video previews and some less-common image formats need `ffmpeg`. The Windows downloads include it; on macOS and Linux, install `ffmpeg` and make it available on your system `PATH`.
 

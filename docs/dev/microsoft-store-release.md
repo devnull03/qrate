@@ -1,9 +1,11 @@
 # Microsoft Store release setup
 
-GitHub Releases remain qrate's public release channel. On stable tags, the Windows build can also
-produce a private `windows-store-msix` workflow artifact. Once Store submission is enabled, a later
-job creates and commits a Partner Center submission. The unsigned MSIX is not attached to the
-GitHub release; Microsoft signs it after certification.
+GitHub Releases remain qrate's primary release record and download channel. Stable releases can
+also update the Homebrew tap and open WinGet update submissions; see
+[package manager releases](package-manager-releases.md). The Windows build can also produce a
+private `windows-store-msix` workflow artifact. Once Store submission is enabled, a later job
+creates and commits a Partner Center submission. The unsigned MSIX is not attached to the GitHub
+release; Microsoft signs it after certification.
 
 ## One-time Partner Center setup
 

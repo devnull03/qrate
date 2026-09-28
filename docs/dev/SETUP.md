@@ -186,13 +186,11 @@ produce nothing visible.
    `CI` checks — but note `ci.yml` only runs on PRs / `dev` pushes today (§4), and
    tag pushes bypass protection by design.
 
-4. **Code signing (optional, currently OFF).** Releases are **unsigned**:
-   - Windows: SmartScreen "unknown publisher" warning.
-   - macOS: Gatekeeper quarantine (`xattr -dr com.apple.quarantine ...`).
-   To sign later you'd add secrets (Apple Developer ID cert + notarization creds,
-   a Windows code-signing cert) and signing steps in `release.yml`. None exist yet,
-   so no code-signing secrets are required today. This is separate from the update
-   signing key in step 6.
+4. **Platform signing.** macOS bundles are ad-hoc signed to seal the app, but they do
+   not have an Apple Developer ID signature or notarization; users may need to choose
+   **Open Anyway** under System Settings → Privacy & Security. Windows installers remain
+   unsigned and can show the SmartScreen "unknown publisher" warning. No platform-signing
+   secrets are required. This is separate from the update signing key in step 6.
 
 5. **Google credentials.** Actions secrets, mapped into the `QRATE_*` build vars by
    `release.yml` — nothing else needs editing. Only one of the three is required:
