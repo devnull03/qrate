@@ -9,4 +9,4 @@ linker = "rust-lld.exe"
 
 [env]
 # Make Rust artifacts path-independent so zccache can reuse them across worktrees.
-ZCCACHE_PATH_REMAP = "auto"
+# ZCCACHE_PATH_REMAP = "auto"
