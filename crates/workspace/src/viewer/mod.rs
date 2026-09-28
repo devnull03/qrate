@@ -14,7 +14,9 @@ mod find;
 mod highlight;
 pub(crate) mod transport;
 
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
@@ -125,6 +127,7 @@ pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut Ap
         zoom: 1.0,
         offset: Point::default(),
         drag_from: None,
+        frame: Rc::default(),
         focus_handle: cx.focus_handle(),
         focused: false,
         find: Find::default(),
@@ -258,6 +261,9 @@ pub struct Viewer {
     offset: Point<Pixels>,
     /// Last pointer position while dragging; `None` when not panning.
     drag_from: Option<Point<Pixels>>,
+    /// Window-space rect of the content box, from `canvas` prepaint — where scroll-zoom's anchor
+    /// is measured from.
+    frame: Rc<Cell<Bounds<Pixels>>>,
     focus_handle: FocusHandle,
     /// Grabs focus on first render so Escape reaches [`Self`]; set once so we don't re-focus.
     focused: bool,
@@ -309,10 +315,14 @@ impl Viewer {
         cx.notify();
     }
 
-    /// Clamp zoom to [0.1, 8] — below 1 zooms out past the initial fit — and recenter once the
-    /// image is no bigger than its frame, where there's nothing to pan to.
-    fn set_zoom(&mut self, zoom: f32) {
-        self.zoom = zoom.clamp(0.1, 8.0);
+    /// Clamp zoom to [0.1, 8] — below 1 zooms out past the initial fit — keeping the point at
+    /// `anchor` (relative to the frame's centre) still, and recenter once the image is no bigger
+    /// than its frame, where there's nothing to pan to.
+    fn set_zoom(&mut self, zoom: f32, anchor: Point<Pixels>) {
+        let zoom = zoom.clamp(0.1, 8.0);
+        let scale = zoom / self.zoom;
+        self.offset = anchor - (anchor - self.offset) * scale;
+        self.zoom = zoom;
         if self.zoom <= 1.0 {
             self.offset = Point::default();
         }
@@ -540,16 +550,16 @@ impl Render for Viewer {
                     // bare keys are free here in a way they are not in the grid. `reading` keeps
                     // them out of the query box, where they are text.
                     "=" | "+" if reading => {
-                        this.set_zoom(this.zoom * 1.25);
+                        this.set_zoom(this.zoom * 1.25, Point::default());
                         cx.notify();
                     }
                     "-" | "_" if reading => {
-                        this.set_zoom(this.zoom / 1.25);
+                        this.set_zoom(this.zoom / 1.25, Point::default());
                         cx.notify();
                     }
                     // Back to fit, the one zoom the pointer cannot land on exactly.
                     "0" if reading => {
-                        this.set_zoom(1.0);
+                        this.set_zoom(1.0, Point::default());
                         cx.notify();
                     }
                     "up" | "down" if reading => {
@@ -575,7 +585,8 @@ impl Render for Viewer {
                                             ScrollDelta::Lines(d) => d.y * 0.1,
                                             ScrollDelta::Pixels(d) => f32::from(d.y) * 0.005,
                                         };
-                                        this.set_zoom(this.zoom * (1.0 + step));
+                                        let anchor = ev.position - this.frame.get().center();
+                                        this.set_zoom(this.zoom * (1.0 + step), anchor);
                                         cx.notify();
                                     },
                                 ))
@@ -612,6 +623,14 @@ impl Render for Viewer {
                                         .flex()
                                         .items_center()
                                         .justify_center()
+                                        .child({
+                                            let frame = self.frame.clone();
+                                            canvas(move |bounds, _, _| frame.set(bounds), |_, _, _, _| {})
+                                                .absolute()
+                                                .top_0()
+                                                .left_0()
+                                                .size_full()
+                                        })
                                         .children((!bare).then(|| {
                                             // `flex_shrink_0` keeps `relative(zoom)` past 1.
                                             img(preview::source(&self.path, cap, page))
@@ -860,7 +879,7 @@ impl Render for Viewer {
                             .small()
                             .tooltip("Zoom out (-)")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.set_zoom(this.zoom / 1.25);
+                                this.set_zoom(this.zoom / 1.25, Point::default());
                                 cx.notify();
                             })),
                     )
@@ -871,7 +890,7 @@ impl Render for Viewer {
                             .small()
                             .tooltip("Zoom in (+)")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.set_zoom(this.zoom * 1.25);
+                                this.set_zoom(this.zoom * 1.25, Point::default());
                                 cx.notify();
                             })),
                     )
@@ -998,6 +1017,30 @@ mod tests {
         });
     }
 
+    /// Scroll-zoom keeps the point under the cursor still: its position relative to the image's
+    /// centre scales with the zoom, so on screen it must land back where it was.
+    #[gpui::test]
+    fn zoom_holds_the_point_under_the_cursor(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
+        let path = std::path::PathBuf::from("/nonexistent/qrate-zoom-test.png");
+        cx.update(|window, cx| {
+            open_viewer(path, Scope::Workspace, window, cx);
+            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+            viewer.update(cx, |viewer, _| {
+                let cursor = gpui::point(gpui::px(120.), gpui::px(-40.));
+                viewer.set_zoom(2.0, gpui::Point::default());
+                viewer.offset = gpui::point(gpui::px(10.), gpui::px(20.));
+                let under = |v: &super::Viewer| (cursor - v.offset) / v.zoom;
+                let before = under(viewer);
+                viewer.set_zoom(3.0, cursor);
+                let after = under(viewer);
+                assert!((before.x - after.x).abs() < gpui::px(0.01));
+                assert!((before.y - after.y).abs() < gpui::px(0.01));
+            });
+            close_viewer(window, cx);
+        });
+    }
+
     /// Paging has to stop at both ends. Wrapping past the last page loses the reader's place, and
     /// an underflow on page zero would panic on a `usize` subtraction.
     #[gpui::test]
@@ -1019,7 +1062,7 @@ mod tests {
                 assert_eq!(viewer.page, 1);
 
                 // Zoom and pan belong to the page being left, not to the next one.
-                viewer.set_zoom(4.0);
+                viewer.set_zoom(4.0, gpui::Point::default());
                 viewer.offset = gpui::Point {
                     x: gpui::px(30.),
                     y: gpui::px(30.),
