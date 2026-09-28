@@ -1599,123 +1599,111 @@ impl Render for DetailsPanel {
                                 }
                             }
                         })
-                        // Dropped entirely in the gallery: the cards are already showing this photo,
-                        // so the pane is just less room for the fields. It comes back with the grid.
-                        .when(!gallery, |split| {
-                            split.child(
-                                resizable_panel()
-                                    .size(px(image_height))
-                                    .size_range(px(80.)..px(600.))
-                                    .flex_none()
-                                    .p_3()
-                                    // One item is a plain frame. Several are a stack of offset cards
-                                    // with the front one live: the bundle keeps a slot per item —
-                                    // including an item with no file, which shows its placeholder
-                                    // rather than being skipped — so stepping through is a walk over
-                                    // the selection, not over the subset that happens to have photos.
-                                    .map(|pane| match count > 1 {
-                                        false => pane.child(render_image_frame(
-                                            image_path,
-                                            self.caption.clone(),
-                                            transport,
-                                            cx,
-                                        )),
-                                        true => pane.child(
-                                            div()
-                                                .id("details-stack")
-                                                .relative()
-                                                .size_full()
-                                                .on_hover(cx.listener(
-                                                    |this, over: &bool, _, cx| {
-                                                        this.stack_hover = *over;
-                                                        cx.notify();
-                                                    },
-                                                ))
-                                                .child(
-                                                    div()
-                                                        .absolute()
-                                                        .left(px(14.))
-                                                        .right_0()
-                                                        .top(px(10.))
-                                                        .bottom_0()
-                                                        .rounded(cx.theme().radius)
-                                                        .border_1()
-                                                        .border_color(cx.theme().border)
-                                                        .bg(cx.theme().muted),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .absolute()
-                                                        .left(px(7.))
-                                                        .right(px(7.))
-                                                        .top(px(5.))
-                                                        .bottom(px(5.))
-                                                        .rounded(cx.theme().radius)
-                                                        .border_1()
-                                                        .border_color(cx.theme().border)
-                                                        .bg(cx.theme().background),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .absolute()
-                                                        .left_0()
-                                                        .right(px(14.))
-                                                        .top_0()
-                                                        .bottom(px(10.))
-                                                        .child(render_image_frame(
-                                                            image_path,
-                                                            self.caption.clone(),
-                                                            transport,
-                                                            cx,
-                                                        ))
-                                                        .when(self.stack_hover, |front| {
-                                                            front
-                                                                .child(step(
-                                                                    "details-stack-prev",
-                                                                    true,
-                                                                    cx.listener(
-                                                                        |this, _, _, cx| {
-                                                                            this.step_stack(
-                                                                                false, cx,
-                                                                            )
-                                                                        },
-                                                                    ),
-                                                                    cx,
-                                                                ))
-                                                                .child(step(
-                                                                    "details-stack-next",
-                                                                    false,
-                                                                    cx.listener(
-                                                                        |this, _, _, cx| {
-                                                                            this.step_stack(
-                                                                                true, cx,
-                                                                            )
-                                                                        },
-                                                                    ),
-                                                                    cx,
-                                                                ))
-                                                        })
-                                                        .child(
-                                                            div()
-                                                                .absolute()
-                                                                .bottom_1()
-                                                                .right_1()
-                                                                .px_1p5()
-                                                                .py_0p5()
-                                                                .rounded(cx.theme().radius)
-                                                                .bg(cx.theme().background)
-                                                                .text_xs()
-                                                                .text_color(cx.theme().foreground)
-                                                                .child(format!(
-                                                                    "{} of {count}",
-                                                                    self.stack.min(count - 1) + 1
-                                                                )),
-                                                        ),
-                                                ),
-                                        ),
-                                    }),
-                            )
-                        })
+                        // Hidden in the gallery, not dropped: the split sizes its panels by index.
+                        .child(
+                            resizable_panel()
+                                .visible(!gallery)
+                                .size(px(image_height))
+                                .size_range(px(80.)..px(600.))
+                                .flex_none()
+                                .p_3()
+                                // One item is a plain frame. Several are a stack of offset cards
+                                // with the front one live: the bundle keeps a slot per item —
+                                // including an item with no file, which shows its placeholder
+                                // rather than being skipped — so stepping through is a walk over
+                                // the selection, not over the subset that happens to have photos.
+                                .map(|pane| match count > 1 {
+                                    false => pane.child(render_image_frame(
+                                        image_path,
+                                        self.caption.clone(),
+                                        transport,
+                                        cx,
+                                    )),
+                                    true => pane.child(
+                                        div()
+                                            .id("details-stack")
+                                            .relative()
+                                            .size_full()
+                                            .on_hover(cx.listener(|this, over: &bool, _, cx| {
+                                                this.stack_hover = *over;
+                                                cx.notify();
+                                            }))
+                                            .child(
+                                                div()
+                                                    .absolute()
+                                                    .left(px(14.))
+                                                    .right_0()
+                                                    .top(px(10.))
+                                                    .bottom_0()
+                                                    .rounded(cx.theme().radius)
+                                                    .border_1()
+                                                    .border_color(cx.theme().border)
+                                                    .bg(cx.theme().muted),
+                                            )
+                                            .child(
+                                                div()
+                                                    .absolute()
+                                                    .left(px(7.))
+                                                    .right(px(7.))
+                                                    .top(px(5.))
+                                                    .bottom(px(5.))
+                                                    .rounded(cx.theme().radius)
+                                                    .border_1()
+                                                    .border_color(cx.theme().border)
+                                                    .bg(cx.theme().background),
+                                            )
+                                            .child(
+                                                div()
+                                                    .absolute()
+                                                    .left_0()
+                                                    .right(px(14.))
+                                                    .top_0()
+                                                    .bottom(px(10.))
+                                                    .child(render_image_frame(
+                                                        image_path,
+                                                        self.caption.clone(),
+                                                        transport,
+                                                        cx,
+                                                    ))
+                                                    .when(self.stack_hover, |front| {
+                                                        front
+                                                            .child(step(
+                                                                "details-stack-prev",
+                                                                true,
+                                                                cx.listener(|this, _, _, cx| {
+                                                                    this.step_stack(false, cx)
+                                                                }),
+                                                                cx,
+                                                            ))
+                                                            .child(step(
+                                                                "details-stack-next",
+                                                                false,
+                                                                cx.listener(|this, _, _, cx| {
+                                                                    this.step_stack(true, cx)
+                                                                }),
+                                                                cx,
+                                                            ))
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .absolute()
+                                                            .bottom_1()
+                                                            .right_1()
+                                                            .px_1p5()
+                                                            .py_0p5()
+                                                            .rounded(cx.theme().radius)
+                                                            .bg(cx.theme().background)
+                                                            .text_xs()
+                                                            .text_color(cx.theme().foreground)
+                                                            .child(format!(
+                                                                "{} of {count}",
+                                                                self.stack.min(count - 1) + 1
+                                                            )),
+                                                    ),
+                                            ),
+                                    ),
+                                }),
+                        )
                         // Same sum one level up: dragging the photo down may not push the fields,
                         // Notes and History below the height the three of them need.
                         .child(
