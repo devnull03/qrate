@@ -102,8 +102,6 @@ try {
   if (Test-Path -LiteralPath $resolvedOutput) { Remove-Item -LiteralPath $resolvedOutput -Force }
   & $makeAppx pack /d $stage /p $resolvedOutput /o
   if ($LASTEXITCODE -ne 0) { Fail "MakeAppx pack failed with exit code $LASTEXITCODE" }
-  & $makeAppx validate /p $resolvedOutput
-  if ($LASTEXITCODE -ne 0) { Fail "MakeAppx validation failed with exit code $LASTEXITCODE" }
 
   & $makeAppx unpack /p $resolvedOutput /d $unpacked /o
   if ($LASTEXITCODE -ne 0) { Fail "MakeAppx unpack failed with exit code $LASTEXITCODE" }

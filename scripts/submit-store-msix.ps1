@@ -56,7 +56,7 @@ $token = $tokenResponse.access_token
 if ([string]::IsNullOrWhiteSpace($token)) { throw 'Microsoft Entra returned no access token.' }
 
 $baseUri = "https://manage.devcenter.microsoft.com/v1.0/my/applications/$applicationId/submissions"
-$submission = Invoke-StoreApi -Method Post -Uri $baseUri -Token $token -Body @{}
+$submission = Invoke-StoreApi -Method Post -Uri $baseUri -Token $token
 $submissionId = [string]$submission.id
 if ([string]::IsNullOrWhiteSpace($submissionId)) { throw 'The Store API created no submission ID.' }
 if ([string]::IsNullOrWhiteSpace([string]$submission.fileUploadUrl)) {
@@ -81,6 +81,7 @@ $packages += [ordered]@{
   minimumSystemRam = 'None'
 }
 $submission.applicationPackages = $packages
+$submission.targetPublishMode = 'Manual'
 
 $body = [ordered]@{}
 foreach ($property in $submission.PSObject.Properties) {
@@ -108,7 +109,7 @@ try {
   Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
 }
 
-$null = Invoke-StoreApi -Method Post -Uri "$submissionUri/commit" -Token $token -Body @{}
+$null = Invoke-StoreApi -Method Post -Uri "$submissionUri/commit" -Token $token
 $statusUri = "$submissionUri/status"
 $deadline = (Get-Date).AddMinutes(8)
 do {
