@@ -2,11 +2,12 @@
 title: 'Diagnostics'
 description: 'the Problems panel, spelling, and fixes'
 sidebar:
-  order: 3
+  order: 11
 ---
 
 qrate checks project data continuously and lists what it finds in the Problems panel, in
-the right dock. A finding on a cell also shows as a small marker on that cell in the grid.
+the bottom dock. Show or hide the panel with **View ▸ Toggle Problems Panel** or
+**Ctrl+Shift+M**. A finding on a cell also shows as a small marker on that cell in the grid.
 
 ## What qrate checks
 
@@ -22,7 +23,9 @@ the right dock. A finding on a cell also shows as a small marker on that cell in
   a claim that two values identify the same entity.
   Right-click a column header and select **Review value variants** to enable this check.
   Select the checked command again to disable it.
-- **Date formats**, so a malformed or ambiguous date is caught before export.
+- **Date formats**, so a malformed or ambiguous date is caught before export. Choose EDTF, ISO
+  8601 only, or Lenient in **Settings ▸ Table ▸ Checks ▸ Date format**; see
+  [Columns](/docs/columns#column-type).
 - **File links**, so a row whose linked file cannot be found is reported instead of
   silently showing a blank preview. See [Files and photos](/docs/files-and-photos).
   Only a column set to the `Filename` type is checked this way.
@@ -94,6 +97,10 @@ canonical form, merges records, or changes every matching row automatically.
 
 Right-click a spelling or capitalization group to apply one correction to all its occurrences.
 The group resolver applies the changes as one undo step.
+
+A misspelled word's menu also offers **Add “word” to dictionary**. qrate stops flagging that word
+in every project, and keeps it in `dictionary.txt` in qrate's data folder, so it stays accepted
+after a restart.
 
 Right-click a value-variant group to replace all occurrences with any displayed member.
 You can also mark the cluster members as distinct for that column. qrate saves this choice with the project.

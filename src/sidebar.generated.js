@@ -3,9 +3,22 @@ export default [
   {
     "label": "Start here",
     "items": [
+      "docs/getting-started",
+      "docs/getting-started/1-create-a-project",
+      "docs/getting-started/2-link-files",
+      "docs/getting-started/3-describe-items",
+      "docs/getting-started/4-check-your-work",
+      "docs/getting-started/5-save-and-export"
+    ]
+  },
+  {
+    "label": "Reference",
+    "items": [
       "docs/projects",
       "docs/grid",
+      "docs/shortcuts",
       "docs/files-and-photos",
+      "docs/visual-search",
       "docs/diagnostics",
       "docs/columns",
       "docs/export-and-sync",
@@ -17,6 +30,7 @@ export default [
     "items": [
       "docs/plugins",
       "docs/plugins/developing",
+      "docs/plugins/api-reference",
       "docs/plugins/islandora",
       "docs/plugins/api-reference"
     ]

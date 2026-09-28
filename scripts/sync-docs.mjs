@@ -41,10 +41,29 @@ for (const line of index.split('\n')) {
     groups.push(group);
     continue;
   }
-  const item = /^-\s+\[([^\]]+)\]\(([^)]+\.md)\)\s*(?:[—-]\s*(.*))?$/.exec(line);
-  if (item && group && !item[2].startsWith('http')) {
-    group.items.push({ label: item[1], src: item[2], description: (item[3] || '').trim() });
+  if (!group) continue;
+  const item = /^-\s+\[([^\]]+)\]\(([^)]+\.md)\)\s*(?:[:—-]\s*(.*))?$/.exec(line);
+  // A section can also point at a page in prose ("Read [Getting started](…) first").
+  const links = item
+    ? [[, item[1], item[2], item[3]]]
+    : [...line.matchAll(/\[([^\]]+)\]\(([^)]+\.md)\)/g)];
+  for (const [, label, src, description] of links) {
+    if (/^(https?:|\.\.\/|dev\/)/.test(src)) continue;
+    group.items.push({ label, src, description: (description || '').trim() });
   }
+}
+
+// A section index (getting-started/index.md) lists its own pages, bulleted or
+// numbered. Pull those in right after it so its links resolve on the site.
+for (const g of groups) {
+  g.items = g.items.flatMap((it) => {
+    if (!it.src.endsWith('/index.md')) return [it];
+    const dir = posix.dirname(it.src);
+    const kids = [...show(`docs/${it.src}`).replace(/\n {2,}/g, ' ').matchAll(/^(?:-|\d+\.)\s+\[([^\]]+)\]\(([^)/]+\.md)\)(?::\s*(.*))?/gm)]
+      .map(([, label, src, description]) => ({ label, src: `${dir}/${src}`, description: (description || '').trim() }))
+      .filter((k) => !groups.some((x) => x.items.some((y) => y.src === k.src)));
+    return [it, ...kids];
+  });
 }
 
 const pages = groups.flatMap((g) => g.items);

@@ -1,21 +1,52 @@
 ---
 title: 'Export and Google Sheets'
-description: 'CSV, JSON-LD, CSL-JSON, ZIP, and Sheets sync'
+description: 'CSV, Excel, JSON-LD, CSL-JSON, ZIP, and Sheets sync'
 sidebar:
-  order: 5
+  order: 13
 ---
 
 ## Exporting
 
-Export the project from the **File** menu as one of:
+Export the project from **File ▸ Export** as one of:
 
 - **CSV**
-- **JSON-LD**
-- **CSL-JSON**
-- **A ZIP archive**, which bundles the exported data with the linked files it points to.
+- **Excel (.xlsx)**, with cell values kept as text so identifiers and dates stay unchanged.
+  Project notes become cell comments.
+- **JSON-LD**. Each row records the row it is part of, so the archival arrangement
+  survives. See [Groups](/docs/grid#groups).
+- **Zotero (CSL-JSON)**
+- **ZIP Archive**, which bundles the data as CSV and JSON-LD with the linked files it points
+  to. Files imported from folders keep the folder paths they were imported from.
+
+Plugins can add their own formats to the same menu.
+
+To convert a `.qrate` file on a machine without qrate installed, use the
+[online converter](https://qrate.dvnl.work/convert). It runs in your browser, so the project
+never leaves your machine unless you send it to a Google Sheet.
+
+**Settings ▸ Table ▸ CSV export** shapes the CSV, including the `data.csv` inside a ZIP
+archive:
+
+- **Byte order mark**, on by default, starts the file with a UTF-8 marker. Excel on Windows
+  needs it to show accented letters correctly; turn it off for an older import script that does
+  not expect it.
+- **Separator** is **Comma** (the default), **Semicolon**, or **Tab**. Excel in regions that
+  write decimals with a comma expects semicolons.
+
+Both are defaults a project can override; see
+[Projects](/docs/projects#your-defaults-and-project-overrides).
+
+The save dialog opens in the folder this project last exported to, or beside the project file
+the first time. It suggests a file named after the project, such as `My Collection.csv`. qrate writes
+the export in the background and shows a notice when it is done, or the reason it failed. A ZIP
+export copies every linked file, so it shows its progress as it goes and offers **Cancel**. The
+built-in formats are written to a temporary file first, so a cancelled or failed export leaves
+any existing file at that path unchanged.
 
 Export always reads every row, regardless of any active filter. See
 [The grid](/docs/grid#filtering).
+
+No qrate installed? [Convert a project in your browser](https://qrate.dvnl.work/convert).
 
 ## Google Sheets
 
@@ -24,8 +55,19 @@ you do, qrate shows no Google Sheets item in its menus.
 
 Once it is on, you can:
 
-- **Export to a new Google Sheet.**
-- **Sync an existing sheet**, so qrate and the sheet stay in step with each other.
+- **Export to a new Google Sheet** with **File ▸ Export ▸ New Google Sheet…**.
+- **Sync to an existing sheet** with **File ▸ Export ▸ Sync to Google Sheet…**. qrate writes
+  the project into the sheet this project is linked to, or into one you pick through Google's
+  file picker. Sync replaces the entire contents of the spreadsheet's first tab: rows and
+  columns beyond the project's are cleared, and so are the notes an earlier sync left there.
+  Before it writes, qrate names the spreadsheet and asks you to confirm with **Replace**. Sync
+  goes one way, from qrate to the sheet; edits made in the sheet do not come back into qrate.
+
+qrate writes the new values before it clears anything, so a sync that fails partway does not
+leave the sheet empty. A notice reports when the export or sync is done, or why it failed.
+
+Project notes are added to the corresponding cells in Google Sheets. Notes on columns
+are added to the header cells.
 
 Sign-in happens on your own machine. qrate never sees your Google password, and it can
 reach only the sheets it created or that you picked yourself through Google's file picker.
