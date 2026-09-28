@@ -35,9 +35,6 @@ use crate::path_picker::PathPickerApp;
 
 /// `AppSettings` value key for the Settings window's last size (a JSON [`MainWindowBounds`]).
 pub const SETTINGS_WINDOW_BOUNDS_KEY: &str = "settings_window_bounds";
-/// The same for the pop-out viewer, whose display is the point of it: it reopens on the monitor
-/// the archivist moved it to.
-pub const POP_OUT_WINDOW_BOUNDS_KEY: &str = "pop_out_window_bounds";
 
 /// Setting key for autosave behavior: `"timed"` (buffered, the default), `"immediate"`,
 /// or `"off"`. Read by the table crate to decide when a committed cell edit reaches disk.
@@ -542,7 +539,7 @@ impl AppSettings {
     }
 
     pub fn set_text(key: &'static str, val: SharedString, cx: &mut App) {
-        if key != SETTINGS_WINDOW_BOUNDS_KEY && key != POP_OUT_WINDOW_BOUNDS_KEY {
+        if key != SETTINGS_WINDOW_BOUNDS_KEY {
             log::debug!("settings: app text changed key={key}");
         }
         Self::update(cx, |s| {

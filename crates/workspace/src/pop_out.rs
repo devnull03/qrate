@@ -20,8 +20,8 @@ use gpui_component::{
     table::TableState,
     v_flex,
 };
+use settings::MainWindowBounds;
 use settings::project::{CurrentProject, RowId};
-use settings::{AppSettings, MainWindowBounds, POP_OUT_WINDOW_BOUNDS_KEY};
 use table::{QrateTableDelegate, Selection, TableChanged, TablePanelHandle, TableStateHandle};
 
 use crate::panels::DetailsPanel;
@@ -36,15 +36,23 @@ const MIN_SIZE: Size<Pixels> = Size {
     width: px(800.),
     height: px(600.),
 };
-const DEFAULT_SIZE: Size<Pixels> = Size {
-    width: px(1120.),
-    height: px(700.),
-};
 /// Height of the sidebar's header strip, the Details title or the Details | Find tabs.
 const HEADER_H: Pixels = px(30.);
 /// The stage's own text colours. Not theme colours, for the reason the backdrop is not one.
 const STAGE_FG: u32 = 0xe8e8e8;
 const STAGE_MUTED: u32 = 0xa3a3a3;
+
+/// `.qrate` setting key for the window's last size and display, as a JSON [`MainWindowBounds`] —
+/// per project, the same way the main window keeps its own.
+const BOUNDS_KEY: &str = "pop_out_window_bounds";
+
+/// Silence `viewer`'s recording as it goes — only its own: the player is shared by the whole app,
+/// and may be playing something the main window started.
+fn stop_playing(viewer: &Entity<Viewer>, cx: &mut App) {
+    if preview::playback::playing(cx) == Some(viewer.read(cx).path.as_path()) {
+        preview::playback::stop(cx);
+    }
+}
 
 /// The open pop-out window. There is one per project, and one project open at a time.
 #[derive(Default)]
@@ -66,30 +74,14 @@ pub fn open(cx: &mut App) {
     {
         return;
     }
-    // Size and display only, like the other windows: the display is the point of this one.
-    let saved = AppSettings::get(cx)
-        .values
-        .get(POP_OUT_WINDOW_BOUNDS_KEY)
-        .map(|value| value.text())
+    let saved = cx
+        .try_global::<CurrentProject>()
+        .and_then(|p| settings::project::read_setting(&p.file, BOUNDS_KEY).ok())
+        .flatten()
         .and_then(|raw| serde_json::from_str::<MainWindowBounds>(&raw).ok());
-    let display = saved.as_ref().and_then(|b| b.display_id).and_then(|raw| {
-        cx.displays()
-            .into_iter()
-            .find(|display| u64::from(display.id()) == raw)
-            .map(|display| display.id())
-    });
-    let win_size = saved
-        .filter(|b| {
-            b.width.is_finite()
-                && b.height.is_finite()
-                && px(b.width) >= MIN_SIZE.width
-                && px(b.height) >= MIN_SIZE.height
-        })
-        .map_or(DEFAULT_SIZE, |b| size(px(b.width), px(b.height)));
+    let (bounds, display) = MainWindowBounds::startup_placement(saved.as_ref(), cx);
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-            display, win_size, cx,
-        ))),
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
         display_id: display,
         window_min_size: Some(MIN_SIZE),
         ..TitleBar::window_options()
@@ -151,12 +143,8 @@ impl PopOut {
         let me = window.window_handle();
         cx.on_release(move |this: &mut Self, cx| {
             // A recording playing here would otherwise go on with nothing on screen to stop it.
-            if this
-                .viewer
-                .as_ref()
-                .is_some_and(|viewer| viewer.read(cx).transport.is_some())
-            {
-                preview::playback::stop(cx);
+            if let Some(viewer) = &this.viewer {
+                stop_playing(viewer, cx);
             }
             // Only this window's own entry: a new pop-out may already have replaced it.
             if cx
@@ -189,10 +177,14 @@ impl PopOut {
                     this.sync(window, cx);
                 }
             }),
-            cx.observe_window_bounds(window, |_, window, cx| {
+            // Debounced by the writer: this fires on every pixel of a drag.
+            cx.observe_window_bounds(window, |this, window, cx| {
+                let Some(file) = &this.project else {
+                    return;
+                };
                 let bounds = MainWindowBounds::capture_from_window(window, cx);
                 if let Ok(json) = serde_json::to_string(&bounds) {
-                    AppSettings::set_text(POP_OUT_WINDOW_BOUNDS_KEY, json.into(), cx);
+                    settings::project::queue_write(file, BOUNDS_KEY, &json, cx);
                 }
             }),
         ];
@@ -245,11 +237,25 @@ impl PopOut {
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rows = self.table().map_or_else(Vec::new, |state| {
             let delegate = state.read(cx).delegate();
+            let all = delegate.row_ids();
             match &self.pinned {
-                Some(ids) => ids
-                    .iter()
-                    .filter_map(|id| delegate.row_ids().iter().position(|row| row == id))
-                    .collect(),
+                // Where the pin was last found, while every row is still there: a cell edit is the
+                // common change, and it moves nothing.
+                Some(ids)
+                    if ids.len() == self.rows.len()
+                        && ids
+                            .iter()
+                            .zip(&self.rows)
+                            .all(|(id, &row)| all.get(row) == Some(id)) =>
+                {
+                    self.rows.clone()
+                }
+                // Rows were added, removed or moved: one pass to find the pin again.
+                Some(ids) => {
+                    let at: std::collections::HashMap<_, _> =
+                        all.iter().enumerate().map(|(row, id)| (*id, row)).collect();
+                    ids.iter().filter_map(|id| at.get(id).copied()).collect()
+                }
                 None => delegate.selected_source_rows(),
             }
         });
@@ -270,6 +276,9 @@ impl PopOut {
             .zip(self.table())
             .and_then(|(row, state)| viewer::previewable(state.read(cx).delegate(), row));
         if self.viewer.as_ref().map(|viewer| &viewer.read(cx).path) != file.as_ref() {
+            if let Some(leaving) = &self.viewer {
+                stop_playing(leaving, cx);
+            }
             self.viewer = file.map(|file| viewer::build(file, Scope::PopOut, window, cx));
             self._viewer_sub = self
                 .viewer
@@ -443,11 +452,13 @@ impl PopOut {
         let table_row = self
             .pinned
             .as_ref()
-            .filter(|_| delegate.selected_source_rows() != self.rows)
             .and_then(|_| match delegate.selection() {
-                Some(Selection::Cell { row, .. } | Selection::Row(row)) => delegate.view_row(row),
+                Some(Selection::Cell { row, .. } | Selection::Row(row)) => Some(row),
                 _ => None,
             })
+            // Only the grid's cursor, not its whole selection: this runs on every repaint.
+            .filter(|row| !self.rows.contains(row))
+            .and_then(|row| delegate.view_row(row))
             .map(|view| view + 1);
         (readout, table_row)
     }
@@ -992,7 +1003,7 @@ mod tests {
     use gpui_component::table::TableState;
     use table::{QrateTableDelegate, TableChanged};
 
-    use super::PopOut;
+    use super::{PopOut, stop_playing};
 
     /// Three rows in a real grid, and the pop-out window watching it.
     fn window_over_a_table(
@@ -1108,6 +1119,37 @@ mod tests {
         details.read_with(cx, |details, cx| assert_eq!(details.picked(cx), [1]));
     }
 
+    /// A pin is an item, not a position: a row added above it leaves the window on the same item.
+    #[gpui::test]
+    fn a_pin_stays_on_its_item_when_rows_are_added_above_it(cx: &mut TestAppContext) {
+        let (pop_out, state, cx) = window_over_a_table(cx);
+        select(&state, &[1], cx);
+        pop_out.update_in(cx, |pop_out, window, cx| pop_out.toggle_pin(window, cx));
+
+        state.update(cx, |state, cx| {
+            state.delegate_mut().set_data(
+                &["Identifier".into(), "Title".into()],
+                &[10, 11, 12, 13],
+                &[
+                    vec!["ADR-0041".into(), "Added above".into()],
+                    vec!["ADR-0042".into(), "Beacon Hill Park".into()],
+                    vec!["ADR-0043".into(), "Sawmill crew".into()],
+                    vec!["ADR-0044".into(), "Saanich mill".into()],
+                ],
+            );
+            cx.emit(TableChanged);
+        });
+        cx.run_until_parked();
+
+        pop_out.read_with(cx, |pop_out, _| {
+            assert_eq!(
+                pop_out.rows,
+                [2],
+                "row id 12 moved down one, and the pin with it"
+            )
+        });
+    }
+
     /// Several rows: the stage steps through them, wrapping, while the sidebar keeps all of them.
     #[gpui::test]
     fn the_stack_steps_through_the_selection_and_wraps(cx: &mut TestAppContext) {
@@ -1131,6 +1173,67 @@ mod tests {
         // A new selection starts at its first item rather than wherever the last one was left.
         select(&state, &[1, 2], cx);
         pop_out.read_with(cx, |pop_out, _| assert_eq!(pop_out.front(), Some(1)));
+    }
+
+    struct Blank;
+
+    impl gpui::Render for Blank {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            gpui::div()
+        }
+    }
+
+    /// Replacing or closing the pop-out's viewer stops only its own recording. The player is the
+    /// app's, and what it is playing may be the main window's.
+    ///
+    /// Like the viewer's playback test, this is the real path on a machine with an output device
+    /// and holds trivially on one without.
+    #[gpui::test]
+    fn leaving_a_file_stops_only_its_own_recording(cx: &mut TestAppContext) {
+        let data = 8000usize * 2;
+        let mut wav = Vec::new();
+        wav.extend(b"RIFF");
+        wav.extend((36 + data as u32).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(8000u32.to_le_bytes());
+        wav.extend(16000u32.to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(16u16.to_le_bytes());
+        wav.extend(b"data");
+        wav.extend((data as u32).to_le_bytes());
+        wav.extend(std::iter::repeat_n(0u8, data));
+        let main = std::env::temp_dir().join("qrate-pop-out-main.wav");
+        let shown = std::env::temp_dir().join("qrate-pop-out-shown.wav");
+        std::fs::write(&main, &wav).unwrap();
+        std::fs::write(&shown, &wav).unwrap();
+
+        let (_, cx) = cx.add_window_view(|_, _| Blank);
+        cx.update(|window, cx| {
+            let popped =
+                crate::viewer::build(shown.clone(), crate::viewer::Scope::PopOut, window, cx);
+            preview::playback::play(&main, cx);
+            let before = preview::playback::playing(cx).map(|path| path.to_path_buf());
+            stop_playing(&popped, cx);
+            assert_eq!(
+                preview::playback::playing(cx).map(|path| path.to_path_buf()),
+                before,
+                "the main window's recording plays on"
+            );
+
+            preview::playback::play(&shown, cx);
+            stop_playing(&popped, cx);
+            assert!(preview::playback::playing(cx).is_none(), "its own stops");
+        });
+
+        let _ = std::fs::remove_file(&main);
+        let _ = std::fs::remove_file(&shown);
     }
 
     /// Nothing selected is a state of the stage, not an empty window.
