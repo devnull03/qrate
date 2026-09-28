@@ -100,10 +100,11 @@ pub struct DetailsPanel {
     /// The field editor, shared across whichever field is open — the same one-per-panel
     /// arrangement the grid uses for its cell editor.
     editor: Entity<TextareaState>,
-    /// `(source_rows, data_col)` of the field being edited, in the grid's own coordinates so a
-    /// filter change between opening and committing can't redirect the write. Several rows when
-    /// the field belongs to a bundle: one edit box writing the same value down the selection.
-    editing: Option<(Vec<usize>, usize, SharedString)>,
+    /// `(row ids, data_col, header)` of the field being edited. Ids rather than source rows, so a
+    /// row added or removed before the commit — from either window — can't redirect the write.
+    /// Several rows when the field belongs to a bundle: one edit box writing the same value down
+    /// the selection.
+    editing: Option<(Vec<settings::project::RowId>, usize, SharedString)>,
     /// Which of the selected items the preview stack is showing, and whether the pointer is over
     /// it — the step arrows only exist while it is, so they never cover the photo at rest.
     stack: usize,
@@ -381,14 +382,19 @@ impl DetailsPanel {
     ) {
         // Whatever was open loses focus rather than being silently dropped.
         self.commit(cx);
-        let rows = self.picked(cx);
+        let picked = self.picked(cx);
         let located = self
             .state
             .as_ref()
             .and_then(|w| w.upgrade())
-            .and_then(|s| s.read(cx).delegate().data_col(header))
-            .filter(|_| !rows.is_empty());
-        let Some(col) = located else {
+            .filter(|_| !picked.is_empty())
+            .and_then(|s| {
+                let delegate = s.read(cx).delegate();
+                let ids = delegate.row_ids();
+                let rows = picked.iter().filter_map(|&row| ids.get(row).copied());
+                Some((rows.collect::<Vec<_>>(), delegate.data_col(header)?))
+            });
+        let Some((rows, col)) = located else {
             log::warn!("details: no column named {header} to edit");
             return;
         };
@@ -830,15 +836,38 @@ impl DetailsPanel {
     /// validation and undo stay single-sourced. Clearing `editing` first keeps the `TableChanged`
     /// this provokes from re-entering as a second commit.
     fn commit(&mut self, cx: &mut Context<Self>) {
-        let Some((rows, col, _)) = self.editing.take() else {
+        let Some((ids, _, header)) = self.editing.take() else {
             return;
         };
         let value = self.editor.read(cx).value().clone();
+        // Resolved now, not when the editor opened: rows and columns may have moved since.
+        let Some(cells) = self
+            .state
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .and_then(|state| {
+                let delegate = state.read(cx).delegate();
+                let col = delegate.data_col(&header)?;
+                let at: std::collections::HashMap<_, _> = delegate
+                    .row_ids()
+                    .iter()
+                    .enumerate()
+                    .map(|(row, id)| (*id, row))
+                    .collect();
+                let rows = ids.iter().filter_map(|id| at.get(id).copied());
+                Some(
+                    rows.map(|row| (row, col, value.clone()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+        else {
+            log::warn!("details: the field being edited is gone, so the edit was dropped");
+            return;
+        };
         // One batch, so setting a field across a bundle is a single undo step — and `apply_edit`
         // drops the rows whose text this didn't change, so committing an untouched shared field
         // costs nothing.
-        let cells = rows.into_iter().map(|row| (row, col, value.clone()));
-        table::write_cells(cells.collect(), settings::history::Origin::Details, cx);
+        table::write_cells(cells, settings::history::Origin::Details, cx);
         cx.notify();
     }
 
@@ -2034,7 +2063,7 @@ mod tests {
             panel.edit_field(&"Title".into(), &"".into(), window, cx);
             assert_eq!(
                 panel.editing,
-                Some((vec![0, 2], 1, "Title".into())),
+                Some((vec![1, 3], 1, "Title".into())),
                 "the write is aimed at both selected items"
             );
             panel
@@ -2057,6 +2086,47 @@ mod tests {
         assert_eq!(titles(cx), vec!["one", "two", "three"]);
     }
 
+    /// A row added above the item while its field is open must not redirect the write onto
+    /// whichever row slid into the old position — the other window can do this mid-edit.
+    #[gpui::test]
+    fn an_edit_lands_on_its_item_after_a_row_is_added_above_it(cx: &mut TestAppContext) {
+        project_with_table(cx);
+        let state = cx.update(|cx| {
+            cx.try_global::<table::TableStateHandle>()
+                .and_then(|h| h.0.upgrade())
+                .expect("the table panel publishes its state handle")
+        });
+        let (panel, cx) = cx.add_window_view(DetailsPanel::new);
+        state.update(cx, |state, cx| state.set_selected_cell(1, 2, cx));
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.edit_field(&"Title".into(), &"two".into(), window, cx);
+            panel.editor.update(cx, |editor, cx| {
+                editor.set_value("two, revised", window, cx)
+            });
+        });
+        state.update(cx, |state, _| {
+            state.delegate_mut().set_data(
+                &["Medium".into(), "Title".into()],
+                &[9, 1, 2, 3],
+                &[
+                    vec!["Photo".into(), "new".into()],
+                    vec!["Film".into(), "one".into()],
+                    vec!["Video".into(), "two".into()],
+                    vec!["Film".into(), "three".into()],
+                ],
+            )
+        });
+        panel.update(cx, |panel, cx| panel.commit(cx));
+
+        let titles = state.read_with(cx, |s, _| {
+            (0..4)
+                .map(|row| s.delegate().cell(row, 1).cloned().unwrap_or_default())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(titles, vec!["new", "one", "two, revised", "three"]);
+    }
+
     /// The DoD: a field edited in the panel lands in the grid, and undo — the grid's own history,
     /// which the panel must not have bypassed — puts it back. Also pins the name→column lookup:
     /// each field must write its own column, not the one at its position in the list.
@@ -2076,7 +2146,7 @@ mod tests {
             panel.edit_field(&"Title".into(), &"two".into(), window, cx);
             assert_eq!(
                 panel.editing,
-                Some((vec![1], 1, "Title".into())),
+                Some((vec![2], 1, "Title".into())),
                 "Title is data column 1"
             );
             panel.editor.update(cx, |editor, cx| {
@@ -2087,7 +2157,7 @@ mod tests {
             panel.edit_field(&"Medium".into(), &"Video".into(), window, cx);
             assert_eq!(
                 panel.editing,
-                Some((vec![1], 0, "Medium".into())),
+                Some((vec![2], 0, "Medium".into())),
                 "Medium is data column 0"
             );
             panel.editing = None;

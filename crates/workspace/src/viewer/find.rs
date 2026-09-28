@@ -34,6 +34,8 @@ pub struct Find {
     /// Whether the document has any text to search. `None` until checked. A scan that was never
     /// OCR'd finds nothing for every query, and "No matches" would blame the query for it.
     pub layered: Option<bool>,
+    /// The search for `query`. Replaced by the next one, which drops it if it has not begun.
+    pub task: Option<Task<()>>,
 }
 
 impl Find {

@@ -42,6 +42,12 @@ pub const VIEWER_CONTEXT: &str = "Viewer";
 const PANEL: Pixels = px(384.);
 const PANEL_RANGE: std::ops::Range<Pixels> = px(240.)..px(720.);
 
+/// How long a file has to stay open before its pages or duration are probed, and a query has to
+/// stay typed before it is searched. Stepping through videos or typing a word then starts one
+/// ffmpeg or one PDFium search, not one per file or per keystroke — neither can be stopped once
+/// running.
+const SETTLE: Duration = Duration::from_millis(150);
+
 /// Which slot mounts the viewer. Two, because they answer different asks: the Details panel's
 /// button means "show me this as big as the window allows", while a gallery card means "show me
 /// this instead of the thumbnails" — the side panels stay readable beside it.
@@ -151,25 +157,29 @@ pub(crate) fn build(
         find: Find::default(),
         find_open: false,
         split: cx.new(|_| ResizableState::default()),
-    });
-    let probe = cx.background_executor().spawn(async move {
-        let seconds = preview::video_duration(&probe_path);
-        let pages = seconds.map_or_else(
-            || preview::page_count(&probe_path),
-            |seconds| seconds.max(1) as usize,
-        );
-        (seconds, pages)
+        _probe: None,
     });
     let weak = viewer.downgrade();
-    cx.spawn(async move |cx| {
-        let (seconds, pages) = probe.await;
+    let probe = cx.spawn(async move |cx| {
+        cx.background_executor().timer(SETTLE).await;
+        let (seconds, pages) = cx
+            .background_executor()
+            .spawn(async move {
+                let seconds = preview::video_duration(&probe_path);
+                let pages = seconds.map_or_else(
+                    || preview::page_count(&probe_path),
+                    |seconds| seconds.max(1) as usize,
+                );
+                (seconds, pages)
+            })
+            .await;
         cx.update(|cx| {
             if let Some(viewer) = weak.upgrade() {
                 viewer.update(cx, |viewer, cx| viewer.install_timeline(seconds, pages, cx));
             }
         });
-    })
-    .detach();
+    });
+    viewer.update(cx, |viewer, _| viewer._probe = Some(probe));
     viewer
 }
 
@@ -293,6 +303,9 @@ pub struct Viewer {
     /// Swaps in the selected row's file when the selection moves, from the find bar, the arrows or
     /// anywhere else.
     _follow: Option<Subscription>,
+    /// Reads the page count or duration. Held so that a viewer replaced before [`SETTLE`] is up
+    /// never starts it.
+    _probe: Option<Task<()>>,
 }
 
 impl Viewer {
@@ -442,7 +455,9 @@ impl Viewer {
 
         self.find.searching = true;
         let path = self.path.clone();
-        cx.spawn(async move |this, cx| {
+        // Replacing the task drops the previous query's search if it has not started yet.
+        self.find.task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SETTLE).await;
             let hits = cx
                 .background_executor()
                 .spawn({
@@ -463,8 +478,7 @@ impl Viewer {
                 cx.notify();
             })
             .ok();
-        })
-        .detach();
+        }));
         cx.notify();
     }
 
@@ -1208,6 +1222,7 @@ mod tests {
             open_viewer(path.clone(), Scope::Workspace, window, cx);
             viewer_in(Scope::Workspace, cx).expect("just opened")
         });
+        cx.executor().advance_clock(super::SETTLE);
         cx.run_until_parked();
         let scrubber = cx.update(|_, cx| {
             let scrubber = viewer
