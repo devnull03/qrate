@@ -22,7 +22,6 @@ for (const [name, a] of Object.entries(assetIndex(rel))) {
 }
 const available = ORDER.filter((os) => byOs[os]);
 const fallback = available[0] ?? null;
-const others = available.filter((os) => os !== fallback);
 
 // One card per screen of the app. `shot` is a dark-theme capture of that screen;
 // the four that have none render as text cards rather than as a dashed
@@ -158,7 +157,7 @@ const mess = [
           id="dl-others"
           href="/docs/install"
           class="border border-[rgba(23,20,15,.22)] px-[18px] py-3 text-center text-[14px] font-medium"
-          >{others.length ? others.join(' · ') : 'All platforms'}</a
+          >All install options</a
         >
       </div>
       <div class="flex border-t border-rule-nav">
@@ -477,14 +476,13 @@ const mess = [
     if (!byOs[guess]) {
       primary.href = '/docs/install#run-from-source';
       primary.textContent = 'Build from source';
-      rest.textContent = available.join(' · ');
+      rest.textContent = 'All install options';
       return;
     }
 
     primary.href = `/thanks?a=${encodeURIComponent(byOs[guess])}`;
     primary.textContent = `Download for ${guess}`;
-    const others = available.filter((o) => o !== guess);
-    rest.textContent = others.length ? others.join(' · ') : 'All platforms';
+    rest.textContent = 'All install options';
   })();
 </script>
 

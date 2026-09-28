@@ -33,3 +33,6 @@ ds-bundle/
 .design-sync/.cache/
 .design-sync/learnings/
 .design-sync/node_modules
+
+# qrate-export built from qrate's main (bun run export:main)
+vendor/

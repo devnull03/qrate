@@ -8,26 +8,29 @@ const CONTACT = 'qrate@dvnl.work';
 <Legal
   title="Privacy policy"
   eyebrow="Privacy"
-  updated="16 August 2026"
-  description="qrate is a desktop app with no accounts and no telemetry. Your collection stays on your own disk. What it touches, and what it never sends."
-  lede="qrate is a desktop application. Your catalogue stays on your own disk. Optional feedback reports go privately to the qrate team."
+  updated="26 September 2026"
+  description="qrate is a desktop app with no accounts or usage analytics. Learn what stays on your device and what optional features send to other providers."
+  lede="Your catalogue stays on your own disk unless you choose a feature that shares selected data with another service."
 >
   <h2>The short version</h2>
   <p>
-    The application has no accounts, no telemetry and no analytics. It does not phone home. Every
-    record, field, note and linked file stays in the <code>.qrate</code> file on your own disk. The
-    only time qrate talks to anyone else is when you ask it to: exporting to Google Sheets,
-    downloading a dictionary, checking for a release, or submitting feedback. This website counts page views, without
-    cookies and without identifying you, which is the one difference between the two.
+    The application has no accounts, no usage analytics and no automatic crash reporting. Your
+    project stays on your device. If you export to Google Sheets, submit feedback with details, use a
+    plugin, or use the optional AI agent, the information you choose to share may go to another
+    provider. qrate also checks release and plugin catalog metadata, and downloads components when
+    you request them.
+    Those network requests contain no project records. This website counts page views without
+    cookies; that is the one difference between the website and the application.
   </p>
 
   <h2>What qrate collects</h2>
   <p>
     The application does not automatically send your catalogue, file paths, settings or usage
-    data to us. There is no automatic crash reporting service and no usage counter.
-    qrate writes a session log on your own machine to help you diagnose problems. When you open the
-    feedback form from qrate, the app gives your browser a short log preview. The form does not send
-    that preview to us unless you choose to include it.
+    data to the qrate team. It makes requests to qrate's release and plugin catalog services; those
+    services receive ordinary connection information such as your IP address and user agent, but
+    not your project contents. qrate writes a session log on your own machine to help you diagnose
+    problems. When you open the feedback form, qrate gives your browser a short log preview. The
+    form sends that preview to us only if you choose to include it.
   </p>
 
   <h2>This website</h2>
@@ -80,6 +83,11 @@ const CONTACT = 'qrate@dvnl.work';
     Provider backup and security retention policies may apply after deletion.
   </p>
 
+  <p>
+    The browser converter reads your .qrate file on your device. It sends no project data to us.
+    If you choose Google Sheets export, the page asks you to sign in to Google and sends the
+    selected rows and columns to Google for that export.
+  </p>
   <h2>Google user data</h2>
   <p>
     qrate can export a project to a Google Sheet. That is the only feature that touches a Google
@@ -145,6 +153,13 @@ const CONTACT = 'qrate@dvnl.work';
   <h2>Other things qrate can reach</h2>
   <ul>
     <li>
+      <strong>Release checks, the plugin catalog and components.</strong> qrate requests signed
+      release and catalog metadata from <code>qrate.dvnl.work</code>. When you install a component,
+      qrate downloads its files from the source listed for that component, such as GitHub or
+      Hugging Face. These requests carry standard connection information required to serve the
+      request, not your project data.
+    </li>
+    <li>
       <strong>Dictionaries.</strong> If you add a spell-check language, qrate downloads that word
       list from its public repository. The request carries no identifying information beyond what any
       download requires.
@@ -158,6 +173,24 @@ const CONTACT = 'qrate@dvnl.work';
       <strong>Preview tools.</strong> PDFium and ffmpeg run locally. They send nothing anywhere.
     </li>
   </ul>
+
+  <h2>Optional AI agent</h2>
+  <p>
+    qrate includes an optional terminal agent that runs on your device. It starts with OpenRouter's
+    <code>openrouter/free</code> model router. If you use the agent, your prompts and the project
+    information you ask it to read can be sent from your device to OpenRouter and the model provider
+    that handles the request. Those prompts and responses do not pass through qrate's servers.
+    OpenRouter and the model provider apply their own privacy, retention and model-use terms.
+  </p>
+  <p>
+    The agent can read project data through a local connection that is protected by a token renewed
+    each time qrate starts. It can stage suggested findings for you to accept or ignore; it cannot
+    change a cell through that connection. The embedded Pi agent stores session history, settings
+    and any sign-in credential in a local profile under qrate's data folder. qrate may pass a
+    credential from your existing Pi OpenRouter login to the agent process for that session. It
+    does not send the credential to qrate servers. Do not include sensitive data in a prompt unless
+    you have reviewed the provider's terms.
+  </p>
 
   <h2>Children</h2>
   <p>qrate is a professional cataloguing tool and is not directed at children under 13.</p>
