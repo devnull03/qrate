@@ -58,17 +58,35 @@ row's file, for example `IMG_0042.jpg`. qrate uses this column to link rows to f
 
 ## Install qrate
 
-1. Go to [qrate releases](https://github.com/devnull03/qrate/releases).
-2. Download the installer or the portable build for your platform.
-3. Run the installer, or unpack the portable build.
-4. Start qrate.
+Download an installer or portable build for Windows, macOS, or Linux from
+[qrate releases](https://github.com/devnull03/qrate/releases). Run the installer, or unpack the
+portable build, then start qrate.
 
-Releases are not signed yet. The first time you open qrate, Windows SmartScreen or macOS
-Gatekeeper can ask you to confirm.
+On macOS, you can also install the base app from the [qrate Homebrew tap](https://github.com/devnull03/homebrew-tap):
 
-Every release shows PDF previews. The Windows downloads also include ffmpeg, which qrate uses
-for video previews. On macOS and Linux, install ffmpeg and put it on your `PATH` to see video
-previews. Without it, qrate shows a file-type icon for a video, and everything else works.
+```sh
+brew install --cask devnull03/tap/qrate
+```
+
+WinGet and the Microsoft Store are planned Windows install options. They will be available after
+their first package submissions are accepted. Until then, use a Windows download from GitHub
+Releases. Once the WinGet listing is live, install it with:
+
+```powershell
+winget install --id devnull03.qrate --exact
+```
+
+The Homebrew Cask installs the base app. Optional components can be installed from within qrate.
+The WinGet package uses the per-machine MSI.
+
+The builds do not have a Windows publisher signature or an Apple Developer ID signature and
+notarization. Windows SmartScreen can ask you to confirm. On macOS, try to open qrate once, then
+choose **Open Anyway** under System Settings → Privacy & Security.
+
+The full downloads include PDF previews. Base downloads offer to install PDF support when you
+need it. Windows and Linux can also install ffmpeg on first use, or carry it in the full download.
+On macOS, install ffmpeg and put it on your `PATH` to see video previews. Without it, qrate shows
+a file-type icon for a video, and everything else works.
 
 ## What you see first
 

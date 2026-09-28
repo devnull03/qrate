@@ -2101,8 +2101,6 @@ impl Render for TablePanel {
             .on_action(cx.listener(|this, _: &Cut, _, cx| this.copy_range(true, cx)))
             .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste_range(cx)))
             .on_action(cx.listener(|this, _: &Clear, _, cx| this.clear_range(cx)))
-            .p_2()
-            .gap_2()
             .child(
                 div()
                     .flex_1()

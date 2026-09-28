@@ -4,6 +4,7 @@
 
 # Packaging output, plus the runtime binaries scripts/fetch-binaries.sh drops beside a build.
 /dist
+.env
 pdfium.dll
 libpdfium.so
 libpdfium.dylib

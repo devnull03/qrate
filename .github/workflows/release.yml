@@ -314,8 +314,24 @@ jobs:
             -d "HasFfmpeg=$hasFfmpeg" `
             -o "dist\qrate-$ver-x86_64.msi"
           if ($LASTEXITCODE -ne 0) { throw "wix build failed ($LASTEXITCODE)" }
-
           Remove-Item -Recurse -Force dist/portable
+
+      - name: Package unsigned Microsoft Store MSIX
+        if: ${{ !contains(needs.version.outputs.version, '-') && vars.QRATE_STORE_APPLICATION_ID != '' && vars.QRATE_STORE_IDENTITY_NAME != '' && vars.QRATE_STORE_IDENTITY_PUBLISHER != '' && vars.QRATE_STORE_PUBLISHER_DISPLAY_NAME != '' }}
+        shell: pwsh
+        env:
+          QRATE_STORE_IDENTITY_NAME: ${{ vars.QRATE_STORE_IDENTITY_NAME }}
+          QRATE_STORE_IDENTITY_PUBLISHER: ${{ vars.QRATE_STORE_IDENTITY_PUBLISHER }}
+          QRATE_STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.QRATE_STORE_PUBLISHER_DISPLAY_NAME }}
+        run: |
+          $ver = "${{ needs.version.outputs.version }}"
+          ./scripts/package-store-msix.ps1 `
+            -SourceExe target/release/app.exe `
+            -OutputPath "dist/qrate-$ver-x64.msix" `
+            -QrateVersion $ver `
+            -IdentityName $env:QRATE_STORE_IDENTITY_NAME `
+            -IdentityPublisher $env:QRATE_STORE_IDENTITY_PUBLISHER `
+            -PublisherDisplayName $env:QRATE_STORE_PUBLISHER_DISPLAY_NAME
 
       # 7-Zip reads NSIS installers, which is the only way to see what one carries without running it.
       - name: Check what each installer carries
@@ -347,6 +363,13 @@ jobs:
         with:
           name: components-windows
           path: components-dist/*
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !contains(needs.version.outputs.version, '-') && vars.QRATE_STORE_APPLICATION_ID != '' && vars.QRATE_STORE_IDENTITY_NAME != '' && vars.QRATE_STORE_IDENTITY_PUBLISHER != '' && vars.QRATE_STORE_PUBLISHER_DISPLAY_NAME != '' }}
+        with:
+          name: windows-store-msix
+          path: dist/*.msix
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -591,8 +614,39 @@ jobs:
             too. Without ffmpeg those files fall back to a file-type icon; nothing else is affected.
 
             > [!NOTE]
-            > These builds are **unsigned**. This is about who Windows and macOS think
-            > published the app, and is separate from the signature qrate checks on an update.
+            > These builds do not have a Windows publisher signature or an Apple Developer ID
+            > signature and notarization. This is separate from the signature qrate checks on an update.
             > - **Windows:** SmartScreen may warn "unknown publisher" — click *More info → Run anyway*.
-            > - **macOS:** open it once, then choose *Open Anyway* under System Settings → Privacy & Security, or run
-            >   `xattr -dr com.apple.quarantine "/Applications/qrate.app"`.
+            > - **macOS:** try to open it once, then choose *Open Anyway* under System Settings → Privacy & Security.
+
+  # Store signs the package after certification. Keep the unsigned upload as a workflow artifact,
+  # separate from the established GitHub release downloads.
+  submit-store:
+    needs: [version, build-windows, release]
+    if: ${{ !contains(needs.version.outputs.version, '-') && vars.QRATE_STORE_SUBMISSIONS_ENABLED == 'true' && vars.QRATE_STORE_APPLICATION_ID != '' && vars.QRATE_STORE_IDENTITY_NAME != '' && vars.QRATE_STORE_IDENTITY_PUBLISHER != '' && vars.QRATE_STORE_PUBLISHER_DISPLAY_NAME != '' }}
+    runs-on: windows-latest
+    environment: release-signing
+    concurrency:
+      group: microsoft-store-${{ vars.QRATE_STORE_APPLICATION_ID }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      QRATE_STORE_APPLICATION_ID: ${{ vars.QRATE_STORE_APPLICATION_ID }}
+      QRATE_STORE_TENANT_ID: ${{ secrets.QRATE_STORE_TENANT_ID }}
+      QRATE_STORE_CLIENT_ID: ${{ secrets.QRATE_STORE_CLIENT_ID }}
+      QRATE_STORE_CLIENT_SECRET: ${{ secrets.QRATE_STORE_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-store-msix
+          path: store-package
+      - name: Submit stable MSIX to Partner Center
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem store-package/*.msix | Select-Object -First 1
+          if (-not $package) { throw 'The Windows Store MSIX artifact is missing.' }
+          ./scripts/submit-store-msix.ps1 `
+            -PackagePath $package.FullName `
+            -QrateVersion "${{ needs.version.outputs.version }}"
