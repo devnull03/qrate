@@ -1,13 +1,15 @@
 ---
 title: Install
-description: Download qrate for macOS, Windows or Linux, or build it from source with Rust.
+description: Install qrate from GitHub Releases or Homebrew, with Windows package listings in progress.
 sidebar:
   order: -1
 ---
 
 import DownloadTable from '../../../components/DownloadTable.astro';
 
-Download a build, or run from source with the Rust stable toolchain.
+## GitHub Releases
+
+Download the installer or portable build for your platform.
 
 <DownloadTable />
 
@@ -15,6 +17,29 @@ The files with `base` in their name are the small downloads. They leave out PDF 
 preview and the assistant's runtime, and qrate offers to install each one the first time you
 need it, or under **Settings ▸ Components**. The other installers carry all three, for a
 computer that stays offline. An installed qrate updates to the same kind it came from.
+
+## Homebrew (macOS)
+
+The [qrate tap](https://github.com/devnull03/homebrew-tap) installs the base app:
+
+```sh
+brew install --cask devnull03/tap/qrate
+```
+
+qrate offers to install optional components when you need them. For video previews, install
+ffmpeg separately with `brew install ffmpeg`.
+
+## Windows package managers
+
+The WinGet package will use the per-machine MSI. Its first community manifest still needs to be
+submitted and accepted. Once it is listed, install it with:
+
+```powershell
+winget install --id devnull03.qrate --exact
+```
+
+The Microsoft Store package is in preparation. Its first listing must be submitted and certified
+before it can be installed from the Store. Use a GitHub Releases download until then.
 
 ## Run from source
 

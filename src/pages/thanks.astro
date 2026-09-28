@@ -1,8 +1,7 @@
 ---
 // Where every download button lands. The button does not link at the asset: it
 // links here with ?a=<filename>, and this page starts the download itself. That
-// buys the one thing the beta needs most, which is somewhere to say the builds
-// are unsigned before Gatekeeper or SmartScreen says it first.
+// gives each platform its first-launch instructions.
 import Base from '../layouts/Base.astro';
 import { getReleases, latest, assetIndex, getChecksums, humanSize, REPO } from '../lib/releases.js';
 
@@ -107,10 +106,10 @@ const code =
       <div class="eyebrow">macOS</div>
       <h2 class="m-0 mb-2.5 mt-3 text-xl font-semibold tracking-[-0.02em]">Open the disk image</h2>
       <div class="text-[14px] leading-[1.7] text-body">
-        Drag qrate to Applications. The build is unsigned, so the first launch has to be a
-        right-click on the app, then Open. If macOS still refuses, clear the quarantine flag.
+        Drag qrate to Applications. The app has an ad-hoc signature but is not notarized. If macOS
+        blocks it, try to open it once, then choose Open Anyway under System Settings → Privacy &amp;
+        Security.
       </div>
-      <code class={code}>xattr -dr com.apple.quarantine "/Applications/qrate.app"</code>
       <div class="mt-3 text-[13px] leading-[1.7] text-faint">
         qrate offers to install PDF preview the first time you open a PDF. For video frames,
         <span class="font-mono">brew install ffmpeg</span>.
@@ -147,6 +146,11 @@ const code =
     </div>
   </section>
 
+  <div class="gut border-b border-rule py-[18px] text-[13px] text-body">
+    Want another install method? See <a href="/docs/install" class="underline">all install options</a>,
+    including Homebrew and the upcoming Windows package listings.
+  </div>
+
   <section class="grid grid-cols-1 border-b border-rule md:grid-cols-2">
     <div class="gut border-b border-rule py-[26px] md:border-b-0 md:border-r md:p-[34px]">
       <h2 class="m-0 mb-2.5 text-xl font-semibold tracking-[-0.02em]">This is a beta build</h2>
@@ -175,7 +179,7 @@ const code =
   {
     sums && (
       <div class="gut border-b border-rule py-[18px] font-mono text-[12px] text-faint">
-        Every build is unsigned. Verify what you downloaded against{' '}
+        Verify what you downloaded against{' '}
         <a href={sums.browser_download_url} class="underline">
           SHA256SUMS.txt
         </a>
