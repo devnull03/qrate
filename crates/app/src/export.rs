@@ -360,16 +360,19 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
         files,
         csv: csv_options(cx),
     };
+    // A project that already knows its spreadsheet refills that one; otherwise "Sync" asks
+    // Google's chooser, which is also what grants qrate access to the file.
+    let linked = project
+        .data
+        .values
+        .get(settings::project::GOOGLE_SHEET_ID_KEY)
+        .map(|v| v.text().to_string())
+        .filter(|id| !id.is_empty());
+
+    // Once, the first time an export actually starts: what it includes, and where Sheets sync lives.
+    onboarding::show_export_tip(window, cx);
 
     if is_google(format) {
-        // A project that already knows its spreadsheet refills that one; otherwise "Sync" asks
-        // Google's chooser, which is also what grants qrate access to the file.
-        let linked = project
-            .data
-            .values
-            .get(settings::project::GOOGLE_SHEET_ID_KEY)
-            .map(|v| v.text().to_string())
-            .filter(|id| !id.is_empty());
         let target = match (format, linked) {
             (ExportFormat::GoogleSheet, _) => SheetTarget::New,
             (_, Some(id)) => SheetTarget::Existing(id),

@@ -647,13 +647,17 @@ pub fn show_export_tip(window: &mut Window, cx: &mut App) {
     }
     mark_tip_seen(EXPORT_TIP, cx);
     let rows = table::guide_facts(cx).map_or(0, |facts| facts.rows);
+    let sheets = if settings::google_enabled(cx) {
+        ""
+    } else {
+        " To keep a Google Sheet in sync, turn it on in Settings ▸ Google first."
+    };
     use gpui_component::WindowExt as _;
     window.push_notification(
         gpui_component::notification::Notification::new()
             .title("Share or move your catalog")
             .message(format!(
-                "Every export includes all {rows} row{}, including rows hidden by a filter. To keep \
-                 a Google Sheet in sync, turn it on in Settings ▸ Google first.",
+                "Every export includes all {rows} row{}, including rows hidden by a filter.{sheets}",
                 if rows == 1 { "" } else { "s" }
             ))
             .autohide(false),
