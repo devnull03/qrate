@@ -514,14 +514,14 @@ impl Panel for ProblemsPanel {
     fn title(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from("Problems")
     }
-}
 
-impl Render for ProblemsPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows = self.rows.clone();
-        let panel_handle = cx.entity();
-        let expanded = self.expanded.clone();
-        let muted = cx.theme().muted_foreground;
+    // The filter tabs and source picker ride in the dock's title bar rather than a row of their
+    // own, so the list starts right under the title.
+    fn title_suffix(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
         let source_filter = (self.filter != Filter::Notes).then(|| {
             let sources = self.sources.clone();
             let excluded = self.excluded_sources.clone();
@@ -588,7 +588,68 @@ impl Render for ProblemsPanel {
             }
             state
         });
+        Some(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    TabBar::new("problems-filter")
+                        .segmented()
+                        .xsmall()
+                        .selected_index(
+                            Filter::ALL
+                                .iter()
+                                .position(|f| *f == self.filter)
+                                .unwrap_or(0),
+                        )
+                        .children(
+                            Filter::ALL
+                                .iter()
+                                .zip(self.counts)
+                                .map(|(f, n)| Tab::new().label(format!("{} ({n})", f.label()))),
+                        )
+                        .on_click(cx.listener(|this, ix: &usize, _w, cx| {
+                            this.filter = Filter::ALL[*ix];
+                            this.refresh(cx);
+                            cx.notify();
+                        })),
+                )
+                .when_some(source_filter, |bar, state| {
+                    bar.child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .when(self.ignored_count > 0, |bar| {
+                                bar.child(
+                                    Button::new("problems-show-ignored")
+                                        .ghost()
+                                        .small()
+                                        .selected(self.show_ignored)
+                                        .label(format!("Show ignored ({})", self.ignored_count))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.show_ignored = !this.show_ignored;
+                                            this.refresh(cx);
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                            .child(div().w_48().pr_1().when(self.sources.len() > 1, |element| {
+                                element.child(
+                                    Combobox::new(&state).placeholder("Filter sources").small(),
+                                )
+                            })),
+                    )
+                }),
+        )
+    }
+}
 
+impl Render for ProblemsPanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let rows = self.rows.clone();
+        let panel_handle = cx.entity();
+        let expanded = self.expanded.clone();
+        let muted = cx.theme().muted_foreground;
         v_flex()
             .size_full()
             .tab_group()
@@ -599,65 +660,6 @@ impl Render for ProblemsPanel {
             .id("problems-panel")
             .role(Role::Group)
             .aria_label("Problems")
-            .child(
-                h_flex()
-                    .w_full()
-                    .justify_between()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        TabBar::new("problems-filter")
-                            .selected_index(
-                                Filter::ALL
-                                    .iter()
-                                    .position(|f| *f == self.filter)
-                                    .unwrap_or(0),
-                            )
-                            .children(
-                                Filter::ALL
-                                    .iter()
-                                    .zip(self.counts)
-                                    .map(|(f, n)| Tab::new().label(format!("{} ({n})", f.label()))),
-                            )
-                            .on_click(cx.listener(|this, ix: &usize, _w, cx| {
-                                this.filter = Filter::ALL[*ix];
-                                this.refresh(cx);
-                                cx.notify();
-                            })),
-                    )
-                    .when_some(source_filter, |bar, state| {
-                        bar.child(
-                            h_flex()
-                                .items_center()
-                                .gap_1()
-                                .when(self.ignored_count > 0, |bar| {
-                                    bar.child(
-                                        Button::new("problems-show-ignored")
-                                            .ghost()
-                                            .small()
-                                            .selected(self.show_ignored)
-                                            .label(format!("Show ignored ({})", self.ignored_count))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.show_ignored = !this.show_ignored;
-                                                this.refresh(cx);
-                                                cx.notify();
-                                            })),
-                                    )
-                                })
-                                .child(div().w_48().pr_1().when(
-                                    self.sources.len() > 1,
-                                    |element| {
-                                        element.child(
-                                            Combobox::new(&state)
-                                                .placeholder("Filter sources")
-                                                .small(),
-                                        )
-                                    },
-                                )),
-                        )
-                    }),
-            )
             .when(rows.is_empty(), |panel| {
                 panel.child(div().p_3().text_color(muted).child("No problems"))
             })
@@ -1118,7 +1120,7 @@ mod tests {
             _ = window.draw(cx);
         });
         cx.simulate_click(
-            gpui::point(gpui::px(400.), gpui::px(48.)),
+            gpui::point(gpui::px(400.), gpui::px(16.)),
             Default::default(),
         );
         cx.run_until_parked();
@@ -1130,7 +1132,7 @@ mod tests {
             _ = window.draw(cx);
         });
         cx.simulate_click(
-            gpui::point(gpui::px(400.), gpui::px(80.)),
+            gpui::point(gpui::px(400.), gpui::px(48.)),
             Default::default(),
         );
         cx.run_until_parked();
@@ -1141,7 +1143,7 @@ mod tests {
             );
         });
         cx.simulate_click(
-            gpui::point(gpui::px(100.), gpui::px(48.)),
+            gpui::point(gpui::px(100.), gpui::px(16.)),
             Default::default(),
         );
         cx.run_until_parked();
