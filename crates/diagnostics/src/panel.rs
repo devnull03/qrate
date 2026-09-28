@@ -524,12 +524,24 @@ impl Panel for ProblemsPanel {
                         .position(|f| *f == self.filter)
                         .unwrap_or(0),
                 )
-                .children(
-                    Filter::ALL
-                        .iter()
-                        .zip(self.counts)
-                        .map(|(f, n)| Tab::new().label(format!("{} ({n})", f.label()))),
-                )
+                .children(Filter::ALL.iter().zip(self.counts).map(|(f, n)| {
+                    // The same icon and colour the rows of that severity carry.
+                    let icon = match f {
+                        Filter::All => Icon::new(IconName::Menu),
+                        Filter::Errors => Icon::new(IconName::CircleX)
+                            .text_color(severity_color(Severity::Error, cx)),
+                        Filter::Warnings => Icon::new(IconName::TriangleAlert)
+                            .text_color(severity_color(Severity::Warning, cx)),
+                        Filter::Notes => Icon::new(IconName::Info),
+                    };
+                    Tab::new().aria_label(f.label()).child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(icon.xsmall())
+                            .child(format!("{} ({n})", f.label())),
+                    )
+                }))
                 .on_click(cx.listener(|this, ix: &usize, _w, cx| {
                     this.filter = Filter::ALL[*ix];
                     this.refresh(cx);
