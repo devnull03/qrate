@@ -459,6 +459,9 @@ impl Default for AgentTerminal {
     }
 }
 
+/// The status while there is no runtime to start, until it is installed.
+pub const NOT_INSTALLED: &str = "Pi is not installed. Install the assistant runtime to start it.";
+
 impl AgentTerminal {
     pub fn is_running(&self) -> bool {
         self.session.as_ref().is_some_and(|session| session.running)
@@ -476,7 +479,7 @@ impl AgentTerminal {
         self.stop();
         self.scroll_remainder = 0.;
         let Some(runtime) = cx.try_global::<AgentRuntime>().cloned() else {
-            self.status = "Pi is not installed in this qrate build.".to_owned();
+            self.status = NOT_INSTALLED.to_owned();
             return;
         };
         let Some(project) = cx.try_global::<settings::project::CurrentProject>() else {

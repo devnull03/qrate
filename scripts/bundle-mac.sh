@@ -3,19 +3,22 @@
 # Assemble a macOS .app bundle from a (universal) binary and package it as a .dmg.
 #
 # Usage:
-#   scripts/bundle-mac.sh <path-to-universal-binary> <version>
+#   scripts/bundle-mac.sh <path-to-universal-binary> <version> [full|base]
 #
 # Produces:
 #   dist/qrate.app
-#   dist/qrate-<version>-universal.dmg
+#   dist/qrate-<version>-universal.dmg, or dist/qrate-<version>-base-universal.dmg for base, which
+#   leaves out PDFium and Pi for qrate to install the first time they are needed.
 #
 # The app icon is generated from assets/icons/app-icon.png (sips + iconutil, both
 # preinstalled on macOS) — replace that PNG to change the icon. The bundle is
-# UNSIGNED; users must right-click > Open (or clear the quarantine bit) the first time.
+# only ad-hoc signed; users allow it once in System Settings > Privacy & Security.
 set -euo pipefail
 
 BIN="${1:?usage: bundle-mac.sh <binary> <version>}"
-VERSION="${2:?usage: bundle-mac.sh <binary> <version>}"
+VERSION="${2:?usage: bundle-mac.sh <binary> <version> [full|base]}"
+FLAVOR="${3:-full}"
+case "$FLAVOR" in full|base) ;; *) echo "unknown flavor $FLAVOR" >&2; exit 1 ;; esac
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app_name="qrate"
@@ -32,15 +35,15 @@ chmod +x "$app/Contents/MacOS/$executable"
 
 cp "$(dirname "$BIN")/qrate-update-helper" "$app/Contents/Helpers/qrate-update-helper"
 chmod +x "$app/Contents/Helpers/qrate-update-helper"
-printf '{\n  "schema": 1,\n  "kind": "macos-bundle",\n  "packaged_version": "%s"\n}\n' \
-  "$VERSION" > "$app/Contents/Resources/qrate-install.json"
+printf '{\n  "schema": 1,\n  "kind": "macos-bundle",\n  "packaged_version": "%s",\n  "flavor": "%s"\n}\n' \
+  "$VERSION" "$FLAVOR" > "$app/Contents/Resources/qrate-install.json"
 
 # ---- Preview sidecars ------------------------------------------------------
 # PDFium is dlopen'd and ffmpeg is spawned, both looked for beside the executable first (see
 # scripts/fetch-binaries.sh). Optional by design: without them PDFs and video fall back to a type
 # icon, so a bundle built without them is degraded, never broken.
 for sidecar in libpdfium.dylib ffmpeg; do
-  if [ -f "$(dirname "$BIN")/$sidecar" ]; then
+  if [ "$FLAVOR" = full ] && [ -f "$(dirname "$BIN")/$sidecar" ]; then
     cp "$(dirname "$BIN")/$sidecar" "$app/Contents/MacOS/$sidecar"
     chmod +x "$app/Contents/MacOS/$sidecar"
     echo "bundled $sidecar"
@@ -50,7 +53,7 @@ done
 # ---- Embedded agent --------------------------------------------------------
 # Kept in Resources rather than MacOS because only Pi itself is executable; the extension, prompt,
 # and skill are versioned data that qrate passes to it explicitly.
-if [ -d "$(dirname "$BIN")/agent" ]; then
+if [ "$FLAVOR" = full ] && [ -d "$(dirname "$BIN")/agent" ]; then
   cp -R "$(dirname "$BIN")/agent" "$app/Contents/Resources/agent"
   chmod +x "$app/Contents/Resources/agent/pi"
   echo "bundled Pi agent runtime"
@@ -70,8 +73,14 @@ for s in 16 32 128 256 512; do
 done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
 
+# ---- Ad-hoc signature ------------------------------------------------------
+# Not a Developer ID: it only seals the bundle, so a quarantined copy asks to be allowed in
+# System Settings instead of calling itself damaged.
+codesign --force --deep --sign - "$app"
+
 # ---- .dmg ------------------------------------------------------------------
 dmg="$dist/qrate-${VERSION}-universal.dmg"
+[ "$FLAVOR" = full ] || dmg="$dist/qrate-${VERSION}-base-universal.dmg"
 staging="$(mktemp -d)/dmg"
 mkdir -p "$staging"
 cp -R "$app" "$staging/"

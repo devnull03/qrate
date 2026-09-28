@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use components::ComponentId;
+use components::{ComponentId, Found};
 use gpui::{App, Global};
 
 const PI_VERSION: &str = "0.84.2";
@@ -21,6 +22,7 @@ impl Global for AgentRuntime {}
 /// Finds Pi now, and again whenever a component is installed or removed, so installing the
 /// assistant needs no restart.
 pub fn init(cx: &mut App) {
+    components::found_by(ComponentId::Agent, found, cx);
     load(cx);
     let mut seen = components::generation();
     cx.observe_global::<components::Components>(move |cx| {
@@ -134,6 +136,18 @@ fn root() -> Option<PathBuf> {
     candidates(executable.as_deref().and_then(Path::parent), installed)
         .into_iter()
         .find(|path| runtime_exists(path))
+}
+
+/// Whether Pi came with this install. Every place but the installed
+/// component is part of a full install.
+fn found() -> Option<Found> {
+    static FOUND: Mutex<Option<(u64, Option<Found>)>> = Mutex::new(None);
+    components::remember(&FOUND, components::generation(), || {
+        let installed = components::store().and_then(|store| store.locate(ComponentId::Agent));
+        root()
+            .filter(|root| Some(root) != installed.as_ref())
+            .map(|_| Found::Bundled)
+    })
 }
 
 fn runtime_exists(root: &Path) -> bool {

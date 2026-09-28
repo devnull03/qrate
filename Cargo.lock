@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "agent-runtime"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "alacritty_terminal",
  "components",
@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "ai"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -254,7 +254,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "app"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "agent-runtime",
  "ai",
@@ -1114,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "checks"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "diagnostics",
  "edtf",
@@ -1164,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "clustering"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "caseless",
  "diagnostics",
@@ -1273,7 +1273,7 @@ dependencies = [
 
 [[package]]
 name = "components"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1755,7 +1755,7 @@ checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 
 [[package]]
 name = "data-exchange"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "base64",
  "calamine",
@@ -1871,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "diagnostics"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "gpui-component",
  "gpui-pre",
@@ -2352,7 +2352,7 @@ checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "file-ingest"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "tempfile",
 ]
@@ -6213,7 +6213,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "plugin-api"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "gpui-pre",
  "serde_json",
@@ -6222,7 +6222,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-host"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "diagnostics",
  "gpui-pre",
@@ -6237,7 +6237,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-package"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -6393,7 +6393,7 @@ dependencies = [
 
 [[package]]
 name = "preview"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -6456,7 +6456,7 @@ dependencies = [
 
 [[package]]
 name = "project-wizard"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "anyhow",
  "data-exchange",
@@ -7737,7 +7737,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7976,7 +7976,7 @@ dependencies = [
 
 [[package]]
 name = "spellcheck"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "diagnostics",
  "gpui-pre",
@@ -8528,7 +8528,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "ai",
  "anyhow",
@@ -9243,7 +9243,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "updater"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -9437,7 +9437,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "visual-search"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -10015,7 +10015,7 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "window-wrapper"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "gpui-component",
  "gpui-pre",
@@ -10817,9 +10817,10 @@ dependencies = [
 
 [[package]]
 name = "workspace"
-version = "0.5.0-beta.1"
+version = "0.6.0-beta.1"
 dependencies = [
  "agent-runtime",
+ "components",
  "diagnostics",
  "gpui-base",
  "gpui-component",

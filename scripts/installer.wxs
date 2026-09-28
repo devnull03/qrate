@@ -92,7 +92,7 @@
       </Component>
       <Component Id="QrateProjectType" Guid="*">
         <RegistryKey Root="HKLM" Key="Software\Classes\qrate.Project">
-          <RegistryValue Type="string" Value="qrate project" />
+          <RegistryValue Type="string" Value="qrate project" KeyPath="yes" />
           <RegistryKey Key="DefaultIcon">
             <RegistryValue Type="string" Value="[#QrateExe],0" />
           </RegistryKey>

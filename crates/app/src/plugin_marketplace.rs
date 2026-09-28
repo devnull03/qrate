@@ -753,10 +753,9 @@ fn open_marketplace(direct: bool, target: Option<InstallTarget>, cx: &mut gpui::
     }
     let win_size = size(px(460.0), px(380.0));
     let options = WindowOptions {
-        titlebar: Some(TitleBar::title_bar_options()),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, win_size, cx))),
         window_min_size: Some(size(px(400.0), px(300.0))),
-        ..Default::default()
+        ..TitleBar::window_options()
     };
     if let Ok(handle) = cx.open_window(options, |window, cx| {
         let view = cx.new(|cx| MarketplaceWindow::new(direct, target, false, window, cx));

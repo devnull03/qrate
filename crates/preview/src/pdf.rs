@@ -14,7 +14,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use components::ComponentId;
+use components::{ComponentId, Found};
 use image::DynamicImage;
 use pdfium_render::prelude::{
     PdfPageTextChars, PdfRenderConfig, PdfSearchDirection, PdfSearchOptions, Pdfium,
@@ -37,20 +37,28 @@ fn candidates(exe_dir: Option<&Path>, installed: Option<&Path>) -> Vec<PathBuf> 
         .collect()
 }
 
-fn bind() -> Option<Pdfium> {
+/// The library, and where it came from when qrate did not install it.
+fn bind() -> Option<(Pdfium, Option<Found>)> {
     let exe = std::env::current_exe().ok();
+    let exe_dir = exe.as_deref().and_then(Path::parent);
     let installed = components::store().and_then(|store| store.locate(ComponentId::Pdfium));
-    let bindings = candidates(exe.as_deref().and_then(Path::parent), installed.as_deref())
+    let bindings = candidates(exe_dir, installed.as_deref())
         .into_iter()
         .find_map(|library| {
             if library.as_os_str().is_empty() {
-                Pdfium::bind_to_system_library().ok()
+                Pdfium::bind_to_system_library()
+                    .ok()
+                    .map(|bindings| (bindings, Some(Found::System)))
             } else if library.is_file() {
                 Pdfium::bind_to_library(&library)
                     .map_err(|err| {
                         log::warn!("could not load PDFium from {}: {err}", library.display())
                     })
                     .ok()
+                    .map(|bindings| {
+                        let bundled = exe_dir.is_some_and(|dir| library.starts_with(dir));
+                        (bindings, bundled.then_some(Found::Bundled))
+                    })
             } else {
                 None
             }
@@ -60,7 +68,16 @@ fn bind() -> Option<Pdfium> {
             "PDFium is not installed, so PDFs will show an icon instead of their first page"
         );
     }
-    Some(Pdfium::new(bindings?))
+    bindings.map(|(bindings, found)| (Pdfium::new(bindings), found))
+}
+
+static INSTANCE: OnceLock<(Mutex<Pdfium>, Option<Found>)> = OnceLock::new();
+
+/// Where the PDFium in use came from, for `components::found_by`. `None` when it is the copy qrate
+/// installed, or there is none.
+pub fn found() -> Option<Found> {
+    pdfium()?;
+    INSTANCE.get()?.1
 }
 
 /// The one PDFium instance, behind the lock that makes it safe to reach.
@@ -75,17 +92,17 @@ fn bind() -> Option<Pdfium> {
 ///
 /// A miss is looked at again only after a component install or removal: retrying a failed load
 /// on every card would be a stutter per row.
-fn pdfium() -> Option<&'static Mutex<Pdfium>> {
-    static INSTANCE: OnceLock<Mutex<Pdfium>> = OnceLock::new();
+pub(crate) fn pdfium() -> Option<&'static Mutex<Pdfium>> {
     static TRIED: Mutex<Option<(u64, bool)>> = Mutex::new(None);
-    if let Some(pdfium) = INSTANCE.get() {
+    if let Some((pdfium, _)) = INSTANCE.get() {
         return Some(pdfium);
     }
     components::remember(&TRIED, components::generation(), || {
         INSTANCE.get().is_some()
-            || bind().is_some_and(|pdfium| INSTANCE.set(Mutex::new(pdfium)).is_ok())
+            || bind()
+                .is_some_and(|(pdfium, found)| INSTANCE.set((Mutex::new(pdfium), found)).is_ok())
     });
-    INSTANCE.get()
+    INSTANCE.get().map(|(pdfium, _)| pdfium)
 }
 
 /// Take the lock, recovering from a previous render having panicked while holding it: a poisoned

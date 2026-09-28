@@ -94,7 +94,27 @@ fn export_items(cx: &gpui::App) -> Vec<MenuItem> {
 /// Both, not one: `set_menus` feeds the macOS system menu bar, `set_app_menus` feeds the
 /// in-window `AppMenuBar` we draw on Windows and Linux.
 pub fn install(cx: &mut gpui::App) {
-    cx.set_menus(app_menus(cx));
+    let mut menus = app_menus(cx);
+    // macOS makes the first menu the application menu whatever it is named.
+    if cfg!(target_os = "macos") {
+        menus.insert(
+            0,
+            Menu {
+                name: "qrate".into(),
+                disabled: false,
+                items: vec![
+                    MenuItem::action("About qrate", OpenAbout),
+                    MenuItem::Separator,
+                    MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::Separator,
+                    MenuItem::os_submenu("Services", SystemMenuType::Services),
+                    MenuItem::Separator,
+                    MenuItem::action("Quit qrate", Quit),
+                ],
+            },
+        );
+    }
+    cx.set_menus(menus);
     let owned = app_menus(cx).into_iter().map(|menu| menu.owned()).collect();
     gpui_component::GlobalState::global_mut(cx).set_app_menus(owned);
 }

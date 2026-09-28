@@ -150,10 +150,9 @@ pub(crate) fn open_about_window(cx: &mut gpui::App) {
     let win_size = size(px(460.0), px(240.0));
     let bounds = Bounds::centered(None, win_size, cx);
     let window_options = WindowOptions {
-        titlebar: Some(TitleBar::title_bar_options()),
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(win_size),
-        ..Default::default()
+        ..TitleBar::window_options()
     };
     if let Ok(window_handle) = cx.open_window(window_options, |window, cx| {
         let view = cx.new(|cx| AboutWindow::new(window, cx));

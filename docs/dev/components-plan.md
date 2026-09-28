@@ -600,9 +600,59 @@ leaves stale sidecars beside the exe, which win the lookup, or drops the bundled
      `components::remove`.
 5. **UI.** Settings ▸ Components, first-use banners, agent panel state. The onboarding crate can call
    the API from here on.
+
+   **Done (2026-09-26).** `crates/app/src/app_settings/components_page.rs`,
+   `crates/workspace/src/component_banner.rs`, and the states in `jobs.rs`. Deviations from § 3:
+   - `State` gains `Bundled`, `System` and `Unavailable(reason)`. `components` cannot see the tiers
+     (they depend on it), so each tier registers a finder with `found_by(id, fn() -> Option<Found>, cx)`:
+     `app::main` for `preview::pdfium_found` and `preview::ffmpeg_found`, `agent_runtime::init` for
+     Pi. A finder answers only for a copy qrate did not install. Order in `state`: a running job,
+     a failure, `Bundled`, the receipt (`Installed`/`UpdateRequired`), `System`, then the manifest.
+     A system copy never hides an installed one, so Remove stays reachable.
+   - `refresh(cx)` reads the manifest in the background. Nothing reads it at startup: a banner calls
+     it when it has no size to show, and the Settings page each time it opens ("Check again" too).
+     A manifest without the component, or one that cannot be read and has no cached copy, makes it
+     `Unavailable`; on macOS ffmpeg's reason points at Homebrew. CLIP is never `Unavailable`.
+   - After an app update, `init` reinstalls every `UpdateRequired` component in the background when
+     automatic updates are on. `automatic_updates(cx)` moved here from `app::update_check`.
+     `Store::install` first compares the receipt with the manifest: the same version and SHA-256
+     only rewrites the receipt's `app` range, with no download. That holds because
+     `package-component.sh` now packs reproducibly (sorted entries, zero mtimes and owners, modes
+     reduced to 755/644, no gzip timestamp), so unchanged inputs give the same archive each release.
+   - `ComponentId::label` is the name the UI shows. The sizes use `preview::file_size` (binary
+     units), not the decimal MB of § 3's examples.
+   - Banners: the viewer shows one at the top and reopens the file once the part lands, so a PDF's
+     page count is read again; the details panel shows it where a recording's transport goes;
+     the agent panel shows it under the status line and starts Pi once `AgentRuntime` appears.
+     `preview::missing(path)` says which part a file needs. "Not now" is per session
+     (`NotNow` global); the agent panel has none, since the banner is its only content.
+   - Settings ▸ Components is one entity (`ComponentRows`) that observes `Components`, since the
+     Settings window re-renders only on settings changes. It also holds the `clip_source` dropdown.
+     The old "Visual search model" item under Table ▸ Previews is gone.
+   - Sizes on disk are not shown: the receipt keeps the download size, and walking the folder on
+     every render is not worth it.
 6. **Base bundle.** `Flavor` in marker/manifest, base packages in `release.yml`, update-manifest
    ordering, site links, ASNT-103 runtime check. This is the step that shrinks the default download,
    and it can wait until 4 and 5 have been through one beta.
+
+   **Started (2026-09-26): the parts that change nothing until a release ships a base package.**
+   - `updater::Flavor` (`base` | `full`) on `InstallMarker` and `UpdateArtifact`, both
+     `#[serde(default)]` to `full`, and `artifact_for` matches it. Every marker the packaging
+     writes today omits it, which reads as full.
+   - `build-update-manifest.sh` has a flavor column, lists full artifacts first, takes a base
+     artifact (`-base-setup.exe`, `-base-universal.dmg`, `-base-x86_64-linux.tar.gz`) only when
+     one is there, and refuses two files for one suffix.
+   - ASNT-103: `components::init` logs an `error` for each part a full install lacks beside the
+     executable (PDFium and Pi everywhere, ffmpeg on Windows), off the main thread.
+
+   **Packaging done (2026-09-26).** `installer.nsi` takes `/DFLAVOR=base` (no sidecars or `agent`,
+   deletes ones a full install left, writes the flavor into the marker); the NSIS uninstaller
+   removes `${DATADIR}\components`. `bundle-mac.sh` takes a third argument, `full` or `base`.
+   `release.yml` builds `-base-setup.exe`, `-base-universal.dmg` and `-base-x86_64-linux.tar.gz`
+   beside the full packages and fails when a full package lacks a part or a base one carries it
+   (7-Zip lists the NSIS installers). Portable zip and MSI stay full only (question 4). The
+   release notes put base first. The site change (base first, `component-*` never a platform
+   download, first-use wording) is a commit on branch `site`, to push with the release.
 
 `feat/file-integrity` also changes `preview`. Rebase whichever branch lands second (roadmap § Order).
 
@@ -681,17 +731,16 @@ repeat with `QRATE_DOWNLOAD_SOURCE` pointing at a local folder.
 
 ## 9. Handoff (2026-09-26)
 
-Steps 0 to 4 are on `main` (bf9d9b7, f34267b, fa991f5, 8e3f918). The next session picks up here:
+Steps 0 to 6 shipped in `v0.6.0-beta.1` (pre-release, published 2026-09-26), with the base and
+full packages side by side. The site offers the base downloads first (`site` at 8f22e72). Left:
 
-1. **Step 5, UI.** Settings ▸ Components (installed, available, size, Install, Update, Remove,
-   Cancel), first-use banners in the viewer and the agent panel, and the `Bundled`, `System` and
-   `Unavailable` states, `refresh(cx)` and reinstall after an app update that step 4 deferred.
-   The onboarding crate (branch `onboarding`) calls `components::install`, `state`, `cancel` and
-   `observe_global`; keep that API small and free of UI types.
-2. **Step 6, base bundle.** Wait until steps 4 and 5 have been through one beta.
-3. **Known gap from step 4.** A thumbnail the OS made while PDFium or ffmpeg was missing stays in
+1. **Check by hand on the published build.** Nothing here was run in a window: install a base
+   package, open a PDF and a video in the viewer and the details panel, install both from the
+   banners, cancel one midway, open the agent panel without Pi, and use Settings ▸ Components.
+   Then update a full install and a base install to the next release and check each keeps its
+   flavor. The onboarding crate (branch `onboarding`) calls `components::install`, `state`,
+   `cancel` and `observe_global`; it now also sees `Bundled`, `System` and `Unavailable`.
+2. **Known gap from step 4.** A thumbnail the OS made while PDFium or ffmpeg was missing stays in
    the disk cache after an install until the file or the cache changes.
-4. **Then** run `./scripts/ci.sh` and cut a pre-release with the `cut-release` skill (suggested
-   `0.6.0-beta.1`; confirm the version with the maintainer). That tag is the first real run of the
-   component packaging and the CLIP release copy in `release.yml`. Do not bump `qrate-export`'s
-   version for a pre-release.
+3. **Before notarization** (question 10): a hardened-runtime app needs the
+   `disable-library-validation` entitlement to load PDFium from Application Support.

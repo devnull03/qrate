@@ -288,6 +288,8 @@ pub struct AgentPanel {
     /// Re-renders when the terminal's font or size changes, in either scope.
     _settings_sub: Subscription,
     _project_sub: Subscription,
+    /// Follows an install of the runtime, and starts Pi once it lands.
+    _components_sub: Subscription,
 }
 
 impl AgentPanel {
@@ -335,6 +337,8 @@ impl AgentPanel {
                 cx.notify();
             }),
             _crop_sub: cx.observe_global::<BottomDockCrop>(|_this: &mut Self, cx| cx.notify()),
+            _components_sub: cx
+                .observe_global::<components::Components>(|_this: &mut Self, cx| cx.notify()),
             // Changing the font resizes the grid, so the PTY has to be told before Pi redraws.
             // Both stores, because the type can be set user-wide or per project.
             _settings_sub: cx
@@ -480,16 +484,23 @@ impl Panel for AgentPanel {
 
 impl Render for AgentPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let installed = cx.has_global::<agent_runtime::AgentRuntime>();
         if self.view == View::Terminal
             && !self.terminal.is_running()
             && matches!(
                 self.terminal.status(),
-                "Pi has not started." | "Open a qrate project before starting Pi."
+                "Pi has not started."
+                    | "Open a qrate project before starting Pi."
+                    | agent_runtime::NOT_INSTALLED
             )
+            && installed
             && cx.has_global::<settings::project::CurrentProject>()
         {
             self.terminal.start(true, cx);
         }
+        let install = (!installed)
+            .then(|| crate::component_banner::banner(components::ComponentId::Agent, cx))
+            .flatten();
         let (
             foreground,
             background,
@@ -597,6 +608,7 @@ impl Render for AgentPanel {
                                     ),
                             )
                         })
+                        .children(install.map(|install| div().p_2().child(install)))
                         .child(
                             div()
                                 .relative()

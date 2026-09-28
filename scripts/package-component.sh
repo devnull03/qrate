@@ -61,10 +61,43 @@ case "$ARCH" in x86_64|aarch64|any) ;; *) fail "unknown arch $ARCH" ;; esac
 
 mkdir -p "$DIST"
 OUT="$(cd "$DIST" && pwd)/component-$ID-$VERSION-$OS-$ARCH.$EXT"
-flags=-chf
-if [ "$EXT" = tar.gz ]; then flags=-czhf; fi
-# COPYFILE_DISABLE keeps macOS tar from adding ._ resource-fork files.
-COPYFILE_DISABLE=1 tar "$flags" "$OUT" -C "$SRC" .
+# Reproducible: the same inputs give the same bytes in every release, so an app update finds the
+# installed copy's SHA-256 in the new manifest and keeps it instead of downloading it again.
+# Python rather than tar, because GNU and BSD tar share no flags for sorting and timestamps.
+PYTHON="$(command -v python3 || command -v python)" || fail "python is needed to pack $ID"
+"$PYTHON" - "$SRC" "$OUT" <<'PY'
+import gzip, os, sys, tarfile
+
+src, out = sys.argv[1], sys.argv[2]
+
+def normal(info):
+    info.mtime = 0
+    info.uid = info.gid = 0
+    info.uname = info.gname = ""
+    info.mode = 0o755 if info.isdir() or info.mode & 0o111 else 0o644
+    return info
+
+entries = []
+for root, dirs, files in os.walk(src, followlinks=True):
+    dirs.sort()
+    for name in dirs + sorted(files):
+        path = os.path.join(root, name)
+        entries.append((os.path.relpath(path, src).replace(os.sep, "/"), path))
+entries.sort()
+
+with open(out, "wb") as raw:
+    stream = gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) if out.endswith(".gz") else raw
+    with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for name, path in entries:
+            info = normal(tar.gettarinfo(os.path.realpath(path), arcname=name))
+            if info.isfile():
+                with open(path, "rb") as data:
+                    tar.addfile(info, data)
+            else:
+                tar.addfile(info)
+    if stream is not raw:
+        stream.close()
+PY
 
 if tar -tvf "$OUT" | grep -qv '^[-d]'; then
   tar -tvf "$OUT" | grep -v '^[-d]' >&2

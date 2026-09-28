@@ -21,20 +21,27 @@ printf '%s\n' "$QRATE_UPDATE_SIGNING_KEY" > "$WORK/key.pem"
 openssl pkey -in "$WORK/key.pem" -noout -text 2>/dev/null | grep -qi ed25519 ||
   { echo "::error::the update signing key is not Ed25519" >&2; exit 1; }
 
-# filename suffix : install kind : os : arch. The kind is what an installation's marker declares,
-# so it is what decides which artifact a given install is allowed to take.
+# flavor : filename suffix : install kind : os : arch. The kind and flavor are what an
+# installation's marker declares, so they decide which artifact a given install may take. Full
+# artifacts come first: qrate 0.5 reads no flavor and takes the first match for its kind, and every
+# 0.5 install is full. A base artifact is named -base-<suffix>, and is listed only when present.
 DESCRIPTORS="
--setup.exe:windows-nsis:windows:x86_64
--x86_64.zip:windows-portable:windows:x86_64
--universal.dmg:macos-bundle:macos:universal
--x86_64-linux.tar.gz:linux-tar:linux:x86_64
+full:-setup.exe:windows-nsis:windows:x86_64
+full:-x86_64.zip:windows-portable:windows:x86_64
+full:-universal.dmg:macos-bundle:macos:universal
+full:-x86_64-linux.tar.gz:linux-tar:linux:x86_64
+base:-base-setup.exe:windows-nsis:windows:x86_64
+base:-base-universal.dmg:macos-bundle:macos:universal
+base:-base-x86_64-linux.tar.gz:linux-tar:linux:x86_64
 "
 
 artifacts=""
 found=0
 for descriptor in $DESCRIPTORS; do
-  suffix="${descriptor%%:*}"
+  flavor="${descriptor%%:*}"
   rest="${descriptor#*:}"
+  suffix="${rest%%:*}"
+  rest="${rest#*:}"
   kind="${rest%%:*}"
   rest="${rest#*:}"
   os="${rest%%:*}"
@@ -42,9 +49,13 @@ for descriptor in $DESCRIPTORS; do
 
   file=""
   for candidate in "$DIST"/*"$suffix"; do
-    [ -f "$candidate" ] && file="$candidate"
+    [ -f "$candidate" ] || continue
+    [ "$flavor" = base ] || case "$(basename "$candidate")" in *-base-*) continue ;; esac
+    [ -z "$file" ] || { echo "::error::both $file and $candidate match *$suffix" >&2; exit 1; }
+    file="$candidate"
   done
   if [ -z "$file" ]; then
+    [ "$flavor" = base ] && continue
     echo "::error::no release artifact matching *$suffix in $DIST" >&2
     exit 1
   fi
@@ -56,6 +67,7 @@ for descriptor in $DESCRIPTORS; do
   artifacts="$artifacts
     {
       \"kind\": \"$kind\",
+      \"flavor\": \"$flavor\",
       \"os\": \"$os\",
       \"arch\": \"$arch\",
       \"url\": \"https://github.com/devnull03/qrate/releases/download/$TAG/$name\",

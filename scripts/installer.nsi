@@ -7,6 +7,9 @@
 ;            /DOUTFILE=C:\path\qrate-1.2.3-setup.exe ^
 ;            scripts\installer.nsi
 ;
+; /DFLAVOR=base builds the small installer: no PDFium, ffmpeg or Pi beside the executable. qrate
+; installs each one the first time it is needed (docs/dev/components-plan.md).
+;
 ; The installer and the installed app use assets/icons/app-icon.ico — replace
 ; that icon (regenerate via scripts/gen-icons.ps1) to rebrand. UNSIGNED: users
 ; will see a Windows SmartScreen "unknown publisher" prompt (More info > Run anyway).
@@ -37,6 +40,9 @@ Unicode true
 !endif
 ; VIProductVersion needs a strict numeric X.X.X.X. CI derives this from VERSION
 ; (stripping any pre-release suffix); the fallback covers local/manual compiles.
+!ifndef FLAVOR
+  !define FLAVOR "full"
+!endif
 !ifndef VIVERSION
   !define VIVERSION "0.0.0.0"
 !endif
@@ -110,8 +116,15 @@ Section "Install"
   File /oname=qrate-update-helper.exe "${SRCDIR}\qrate-update-helper.exe"
 
   FileOpen $0 "$INSTDIR\qrate-install.json" w
-  FileWrite $0 '{$\r$\n  "schema": 1,$\r$\n  "kind": "windows-nsis",$\r$\n  "packaged_version": "${VERSION}"$\r$\n}$\r$\n'
+  FileWrite $0 '{$\r$\n  "schema": 1,$\r$\n  "kind": "windows-nsis",$\r$\n  "packaged_version": "${VERSION}",$\r$\n  "flavor": "${FLAVOR}"$\r$\n}$\r$\n'
   FileClose $0
+
+!if "${FLAVOR}" == "base"
+  ; Parts a full install left here would win the lookup over the copies qrate installs itself.
+  Delete "$INSTDIR\pdfium.dll"
+  Delete "$INSTDIR\ffmpeg.exe"
+  RMDir /r "$INSTDIR\agent"
+!else
 
   ; Preview sidecars, taken from beside the built executable — see scripts/fetch-binaries.sh.
   ; PDFium is loaded dynamically and ffmpeg is run as a subprocess, and both tiers fall back to a
@@ -125,6 +138,7 @@ Section "Install"
   SetOutPath "$INSTDIR\agent"
   File /r "${SRCDIR}\agent\*"
   SetOutPath "$INSTDIR"
+!endif
 
   ; Start Menu + Desktop shortcuts. $SMPROGRAMS/$DESKTOP already resolve to the per-user or
   ; all-users locations MULTIUSER_INIT picked (it calls SetShellVarContext for us).
@@ -189,6 +203,7 @@ Section "un.qrate" SEC_UNAPP
   ; them costs ~100 MB and buys nothing once qrate is gone.
   RMDir /r "${DATADIR}\thumbnails"
   RMDir /r "${DATADIR}\updates"
+  RMDir /r "${DATADIR}\components"
   RMDir /r "${DATADIR}\logs"
   RMDir /r "${DATADIR}\pi-agent\bin"
   Delete "${DATADIR}\pi-agent\models-store.json"
