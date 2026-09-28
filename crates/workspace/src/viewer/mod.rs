@@ -10,7 +10,7 @@
 //! The two neighbours hold the parts with rules in them: [`find`] owns the search state, and
 //! [`highlight`] turns a hit's position on the page into a position on the screen.
 
-mod find;
+pub(crate) mod find;
 mod highlight;
 pub(crate) mod transport;
 
@@ -51,6 +51,9 @@ pub enum Scope {
     Workspace,
     /// Over the centre panel only, leaving the docked panels visible.
     Centre,
+    /// The pop-out window's stage. Never the global viewer: that window owns its viewer, and
+    /// follows the selection itself so that it can stop following while pinned.
+    PopOut,
 }
 
 /// The currently-open viewer and the focus to restore. Both mount slots observe this.
@@ -71,24 +74,42 @@ pub fn viewer_in(scope: Scope, cx: &App) -> Option<Entity<Viewer>> {
 
 /// Opens `path` in the shared viewer overlay, replacing any viewer already open.
 pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut App) {
-    let document = preview::has_text(&path);
-    let video = preview::has_video(&path);
-    let details = preview::describe(&path);
-    let probe_path = path.clone();
     let return_focus = cx
         .try_global::<ActiveViewer>()
         .and_then(|active| active.return_focus.clone())
         .or_else(|| window.focused(cx));
+    let viewer = build(path, scope, window, cx);
+    cx.set_global(ActiveViewer {
+        viewer: Some(viewer),
+        return_focus,
+    });
+}
+
+/// A viewer for `path`, not yet mounted anywhere.
+pub(crate) fn build(
+    path: PathBuf,
+    scope: Scope,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<Viewer> {
+    let document = preview::has_text(&path);
+    let video = preview::has_video(&path);
+    let details = preview::describe(&path);
+    let probe_path = path.clone();
     let table = cx
         .try_global::<table::TableStateHandle>()
-        .and_then(|handle| handle.0.upgrade());
+        .and_then(|handle| handle.0.upgrade())
+        .filter(|_| scope != Scope::PopOut);
     let needs = preview::missing(&path);
     let viewer = cx.new(|cx| Viewer {
         needs,
         _components: cx.observe_global_in::<components::Components>(
             window,
             |this: &mut Viewer, window, cx| {
-                if this.needs.is_some() && preview::missing(&this.path).is_none() {
+                if this.scope != Scope::PopOut
+                    && this.needs.is_some()
+                    && preview::missing(&this.path).is_none()
+                {
                     open_viewer(this.path.clone(), this.scope, window, cx);
                 }
                 cx.notify();
@@ -149,16 +170,13 @@ pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut Ap
         });
     })
     .detach();
-    cx.set_global(ActiveViewer {
-        viewer: Some(viewer),
-        return_focus,
-    });
+    viewer
 }
 
 /// Select the next row, by `delta`, in the view's order that has something to preview. During a
 /// search the view is its hits, so this steps through the results. The open viewer follows the
 /// selection to that row's file.
-fn step_row(delta: isize, cx: &mut App) {
+pub(crate) fn step_row(delta: isize, cx: &mut App) {
     let Some(state) = cx
         .try_global::<table::TableStateHandle>()
         .and_then(|handle| handle.0.upgrade())
@@ -189,7 +207,7 @@ fn step_row(delta: isize, cx: &mut App) {
 }
 
 /// The file `row` links to, if the viewer can show it.
-fn previewable(delegate: &table::QrateTableDelegate, row: usize) -> Option<PathBuf> {
+pub(crate) fn previewable(delegate: &table::QrateTableDelegate, row: usize) -> Option<PathBuf> {
     delegate
         .row_image(row)
         .filter(|file| preview::can_preview(file))
@@ -197,7 +215,7 @@ fn previewable(delegate: &table::QrateTableDelegate, row: usize) -> Option<PathB
 }
 
 /// The nearest view index past `from` in `delta`'s direction that `viewable` accepts, if any.
-fn next_row(
+pub(crate) fn next_row(
     from: usize,
     delta: isize,
     len: usize,
@@ -229,7 +247,7 @@ pub fn close_viewer(window: &mut Window, cx: &mut App) {
 }
 
 pub struct Viewer {
-    path: PathBuf,
+    pub(crate) path: PathBuf,
     /// File type and size, read once when the viewer opens rather than statting on every repaint.
     details: Option<String>,
     scope: Scope,
@@ -240,12 +258,12 @@ pub struct Viewer {
     pages: usize,
     /// Whether this file is a document at all, which is a different question from whether it has
     /// more than one page — a one-page PDF is still a document, and still says "1 / 1".
-    document: bool,
+    pub(crate) document: bool,
     /// Known from the extension immediately, before the duration probe finishes.
     video: bool,
     /// The playback transport, present exactly when the file is a recording. Gated on the format
     /// for the same reason `document` is: a silent tape is still audio and still gets a transport.
-    transport: Option<Transport>,
+    pub(crate) transport: Option<Transport>,
     /// The scrubber, present exactly when the file is a video ffmpeg could measure.
     ///
     scrubber: Option<Entity<SliderState>>,
@@ -258,18 +276,18 @@ pub struct Viewer {
     offset: Point<Pixels>,
     /// Last pointer position while dragging; `None` when not panning.
     drag_from: Option<Point<Pixels>>,
-    focus_handle: FocusHandle,
+    pub(crate) focus_handle: FocusHandle,
     /// Grabs focus on first render so Escape reaches [`Self`]; set once so we don't re-focus.
     focused: bool,
-    find: Find,
-    /// Whether the find panel is showing.
-    find_open: bool,
+    pub(crate) find: Find,
+    /// Whether the find panel is showing — in the pop-out, whether its sidebar is on Find.
+    pub(crate) find_open: bool,
     /// The split between the page and the find panel, owned by `gpui_component`'s resizable — it
     /// carries the drag handle, the sizing and the propagation rules, none of which are ours to
     /// reinvent.
     split: Entity<ResizableState>,
     /// The optional part this file needs and does not have, which the viewer offers to install.
-    needs: Option<components::ComponentId>,
+    pub(crate) needs: Option<components::ComponentId>,
     /// Opens the file again once that part is installed, so its pages and timeline are read.
     _components: Subscription,
     /// Swaps in the selected row's file when the selection moves, from the find bar, the arrows or
@@ -341,8 +359,20 @@ impl Viewer {
         self.offset = Point::default();
     }
 
+    /// Whether the bottom pill has anything to hold: page controls, a transport or a scrubber.
+    pub(crate) fn has_controls(&self) -> bool {
+        self.document || self.pages > 1 || self.transport.is_some() || self.scrubber.is_some()
+    }
+
+    /// Put the find panel away and hand the keys back to the page.
+    pub(crate) fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.find_open = false;
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
     /// Show the find panel, building its query box the first time.
-    fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.find_open = true;
 
         // Asked once, on first open: it opens the document, and the answer cannot change while
@@ -485,6 +515,7 @@ impl Render for Viewer {
         let banner = self
             .needs
             .and_then(|id| crate::component_banner::banner(id, cx));
+        let popped = self.scope == Scope::PopOut;
 
         div()
             .track_focus(&self.focus_handle)
@@ -493,12 +524,11 @@ impl Render for Viewer {
             .role(Role::Group)
             .aria_label("File viewer")
             // The find panel is the inner layer, so Escape dismisses it before the viewer.
+            // The pop-out has no overlay to close: its window is what the viewer is.
             .on_action(cx.listener(|this, _: &CloseViewerLayer, window, cx| {
                 if this.find_open {
-                    this.find_open = false;
-                    window.focus(&this.focus_handle, cx);
-                    cx.notify();
-                } else {
+                    this.close_find(window, cx);
+                } else if this.scope != Scope::PopOut {
                     close_viewer(window, cx);
                 }
             }))
@@ -516,23 +546,28 @@ impl Render for Viewer {
             .occlude()
             // Dim what's behind so the file reads as the focus. Not a theme colour: a light
             // theme's background is white, which hides nothing and lights the room around a photo.
-            .bg(black().opacity(0.85))
+            // The pop-out's stage paints the same backdrop, whatever it is showing.
+            .when(!popped, |viewer| viewer.bg(black().opacity(0.85)))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 // Paging keys are only ours while the viewer itself holds focus: with the query
                 // box focused, left/right belong to its caret.
                 let reading = this.focus_handle.is_focused(window);
+                // Alt+←/→ steps the pop-out's stack of selected items, not the pages.
+                let paging = reading && this.scrubber.is_none() && !ev.keystroke.modifiers.alt;
+                // The pop-out's window handles Find and the rows, since both reach past the page.
+                let overlay = this.scope != Scope::PopOut;
                 match ev.keystroke.key.as_str() {
-                    "f" if ev.keystroke.modifiers.secondary() && this.document => {
+                    "f" if overlay && ev.keystroke.modifiers.secondary() && this.document => {
                         this.open_find(window, cx);
                     }
                     // The keys anyone reading a document reaches for first. Harmless on a photo,
                     // where there is only ever one page to move between — but kept off a video,
                     // whose position is the scrubber's, and whose thumb would be left behind.
-                    "left" | "pageup" if reading && this.scrubber.is_none() => {
+                    "left" | "pageup" if paging => {
                         this.turn_page(-1);
                         cx.notify();
                     }
-                    "right" | "pagedown" if reading && this.scrubber.is_none() => {
+                    "right" | "pagedown" if paging => {
                         this.turn_page(1);
                         cx.notify();
                     }
@@ -552,7 +587,7 @@ impl Render for Viewer {
                         this.set_zoom(1.0);
                         cx.notify();
                     }
-                    "up" | "down" if reading => {
+                    "up" | "down" if reading && overlay => {
                         step_row(if ev.keystroke.key == "up" { -1 } else { 1 }, cx);
                     }
                     _ => {}
@@ -638,8 +673,8 @@ impl Render for Viewer {
                         resizable_panel()
                             .size(PANEL)
                             .size_range(PANEL_RANGE)
-                            .visible(self.find_open)
-                            .child(find::panel(&self.find, panel_width, cx)),
+                            .visible(self.find_open && !popped)
+                            .child(find::panel(&self.find, panel_width, false, cx)),
                     ),
             )
             .child(
@@ -673,10 +708,7 @@ impl Render for Viewer {
             }))
             // Bottom pill: page controls (even for 1 page, or a TIFF stack), transport or scrubber.
             .when(
-                self.document
-                    || self.pages > 1
-                    || self.transport.is_some()
-                    || self.scrubber.is_some(),
+                self.has_controls(),
                 |viewer| {
                 viewer.child(
                     div()
@@ -790,8 +822,8 @@ impl Render for Viewer {
                 },
             )
             // Rows, not pages: the neighbouring files in the view's order, which during a search are
-            // the neighbouring results.
-            .child(
+            // the neighbouring results. The pop-out keeps these in its title bar instead.
+            .children((!popped).then(|| {
                 div()
                     .absolute()
                     .bottom_4()
@@ -816,9 +848,10 @@ impl Render for Viewer {
                             .small()
                             .tooltip("Next row (↓)")
                             .on_click(|_, _, cx| step_row(1, cx)),
-                    ),
-            )
-            .child(
+                    )
+            }))
+            // Zoom has its keys and the wheel there; find is a sidebar tab, and closing is the window's.
+            .children((!popped).then(|| {
                 div()
                     .absolute()
                     .top_4()
@@ -844,9 +877,7 @@ impl Render for Viewer {
                                 })
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     if this.find_open {
-                                        this.find_open = false;
-                                        window.focus(&this.focus_handle, cx);
-                                        cx.notify();
+                                        this.close_find(window, cx);
                                     } else {
                                         this.open_find(window, cx);
                                     }
@@ -882,8 +913,8 @@ impl Render for Viewer {
                             .small()
                             .tooltip("Close (Esc)")
                             .on_click(cx.listener(|_, _, window, cx| close_viewer(window, cx))),
-                    ),
-            )
+                    )
+            }))
     }
 }
 
@@ -895,7 +926,7 @@ mod tests {
         VisualTestContext, Window, div,
     };
 
-    use crate::viewer::{Scope, close_viewer, next_row, open_viewer, viewer_in};
+    use crate::viewer::{Scope, build, close_viewer, next_row, open_viewer, viewer_in};
 
     #[test]
     fn stepping_rows_skips_what_cannot_be_previewed_and_stops_at_the_ends() {
@@ -940,6 +971,35 @@ mod tests {
             close_viewer(window, cx);
             assert!(viewer_in(Scope::Workspace, cx).is_none());
             assert!(viewer_in(Scope::Centre, cx).is_none());
+        });
+    }
+
+    /// The pop-out owns its viewer. Building one must not take over the overlay's slot, and
+    /// closing the overlay must leave it alone.
+    #[gpui::test]
+    fn a_pop_out_viewer_and_the_overlay_do_not_touch_each_other(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
+        cx.update(|window, cx| {
+            open_viewer(
+                "/nonexistent/overlay.jpg".into(),
+                Scope::Workspace,
+                window,
+                cx,
+            );
+            let popped = build("/nonexistent/popped.jpg".into(), Scope::PopOut, window, cx);
+            let overlay = viewer_in(Scope::Workspace, cx).expect("the overlay is still open");
+            assert_ne!(overlay.entity_id(), popped.entity_id());
+            assert!(
+                viewer_in(Scope::PopOut, cx).is_none(),
+                "never a global viewer"
+            );
+
+            close_viewer(window, cx);
+            assert!(viewer_in(Scope::Workspace, cx).is_none());
+            assert_eq!(
+                popped.read(cx).path,
+                std::path::PathBuf::from("/nonexistent/popped.jpg")
+            );
         });
     }
 

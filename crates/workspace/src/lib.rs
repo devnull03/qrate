@@ -6,10 +6,12 @@ mod dock_button;
 pub mod extension;
 mod panel_registry;
 mod panels;
+mod pop_out;
 mod skin;
 mod viewer;
 mod views;
 
+pub use pop_out::{close as close_pop_out, open as open_pop_out};
 pub use viewer::{CloseViewerLayer, Scope as ViewerScope, VIEWER_CONTEXT, open_viewer};
 
 pub use dock_button::DockToggleButton;

@@ -7,7 +7,7 @@ use std::time::Duration;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, IconName, Sizable, StyledExt as _,
+    ActiveTheme, Icon, IconName, Selectable as _, Sizable, StyledExt as _,
     button::{Button, ButtonVariants},
     dock::{BasePanel, DockPlacement, Panel, PanelEvent},
     h_flex,
@@ -146,6 +146,12 @@ pub struct DetailsPanel {
     /// What `transport` and `caption` were built from. `retarget` runs on every table change, so
     /// without it a keystroke in the grid would re-stat the file.
     file: Option<PathBuf>,
+    /// The rows described instead of the grid's selection, which makes this the pop-out's sidebar:
+    /// that window can be pinned to an item the grid has moved on from, and its stage already
+    /// shows the file, so there is no image pane here.
+    rows: Option<Vec<usize>>,
+    /// Repaints the Pop out button when that window opens or closes.
+    _pop_out_sub: Subscription,
 }
 
 impl DetailsPanel {
@@ -202,6 +208,9 @@ impl DetailsPanel {
             caption: None,
             _caption_task: None,
             file: None,
+            rows: None,
+            _pop_out_sub: cx
+                .observe_global::<crate::pop_out::PopOutWindow>(|_this: &mut Self, cx| cx.notify()),
         };
         this.bind(cx);
         this
@@ -235,7 +244,10 @@ impl DetailsPanel {
 
     /// The selected items as source rows in view order — what the whole panel is about, and the
     /// same list the grid, the gallery and the status bar count.
-    fn picked(&self, cx: &App) -> Vec<usize> {
+    pub(crate) fn picked(&self, cx: &App) -> Vec<usize> {
+        if let Some(rows) = &self.rows {
+            return rows.clone();
+        }
         self.state
             .as_ref()
             .and_then(|w| w.upgrade())
@@ -259,6 +271,11 @@ impl DetailsPanel {
         let picked = self.picked(cx);
         let front = self.front(&picked);
         self.load_row_history(front, cx);
+        // The pop-out's stage has the file, its caption and its transport.
+        if self.rows.is_some() {
+            self.transport = None;
+            return;
+        }
         let path = front.and_then(|row| {
             let state = self.state.as_ref()?.upgrade()?;
             let delegate = state.read(cx).delegate();
@@ -286,6 +303,16 @@ impl DetailsPanel {
             preview::playback::stop(cx);
         }
         self.transport = path.and_then(|path| Transport::new(path, cx));
+    }
+
+    /// Describe `rows` from now on, rather than the grid's selection.
+    pub(crate) fn show_rows(&mut self, rows: Vec<usize>, cx: &mut Context<Self>) {
+        if self.rows.as_ref() == Some(&rows) {
+            return;
+        }
+        self.rows = Some(rows);
+        self.retarget(cx);
+        cx.notify();
     }
 
     /// Re-read the front item's history, off the UI thread, when the item or the project file has
@@ -1019,6 +1046,21 @@ fn render_image_frame(
                                     }),
                             )
                         })
+                        // Beside fullscreen, since both open a bigger view — but for any file,
+                        // because the pop-out also says what it cannot show. One per project.
+                        .child({
+                            let open = crate::pop_out::is_open(cx);
+                            Button::new("pop-out")
+                                .icon(Icon::empty().path("icons/app-window.svg"))
+                                .ghost()
+                                .small()
+                                .selected(open)
+                                .tooltip(match open {
+                                    true => "Show pop-out window",
+                                    false => "Open in new window",
+                                })
+                                .on_click(|_, _, cx| crate::pop_out::open(cx))
+                        })
                         .child(action(
                             "open-image",
                             IconName::ExternalLink,
@@ -1185,6 +1227,10 @@ impl Render for DetailsPanel {
             == crate::ViewMode::Gallery;
 
         let Some((fields, image_path, lost)) = selection.filter(|(f, _, _)| !f.is_empty()) else {
+            // The pop-out's stage already says so, in a place a collapsed sidebar cannot hide.
+            if self.rows.is_some() {
+                return div().into_any_element();
+            }
             // Says what this panel is for and how to fill it, rather than only reporting that it
             // is empty — the multi-select gesture is the one thing here nobody discovers by luck.
             return div()
@@ -1568,7 +1614,7 @@ impl Render for DetailsPanel {
             // region padding itself: the split below sizes its panes against whatever height it is
             // handed, so a panel that grew 29px when the bottom dock closed re-scaled the image
             // pane under the pointer. Paid here, the split's height never changes.
-            .pb(crop)
+            .when(self.rows.is_none(), |panel| panel.pb(crop))
             .key_context(DETAILS_META.name)
             .track_focus(&self.focus_handle)
             .id("details-panel")
@@ -1601,7 +1647,7 @@ impl Render for DetailsPanel {
                         })
                         // Dropped entirely in the gallery: the cards are already showing this photo,
                         // so the pane is just less room for the fields. It comes back with the grid.
-                        .when(!gallery, |split| {
+                        .when(!gallery && self.rows.is_none(), |split| {
                             split.child(
                                 resizable_panel()
                                     .size(px(image_height))
