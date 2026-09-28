@@ -10,8 +10,9 @@ release; Microsoft signs it after certification.
 ## One-time Partner Center setup
 
 1. Reserve qrate's name and create the app in Partner Center. Fill in the age ratings, listing and
-   privacy policy URL. The submission API cannot create the first app submission; use Partner
-   Center's UI for the first package submission after the workflow builds its MSIX artifact.
+   privacy policy URL, and provide at least one screenshot. The submission API cannot create the
+   first app submission; use Partner Center's UI for the first package submission after the workflow
+   builds its MSIX artifact.
 2. Deploy the privacy policy update in the qrate-site checkout, then use
    <https://qrate.dvnl.work/privacy>. The current policy now describes the optional Pi/OpenRouter
    data flow and app update/catalog requests.
@@ -44,6 +45,10 @@ with age ratings, set
 not build or submit an MSIX. The submit job keeps Partner Center's existing publish mode and listing
 metadata, and stops after Partner Center accepts the submission for processing. Certification and
 any manual publication step remain visible in Partner Center.
+
+The installer branch must be merged before its release tag is pushed. The current published 0.6
+release is a prerelease, so it cannot produce the first Store MSIX under this workflow. Publish the
+updated site privacy policy before entering its URL in the first Store submission.
 
 ## Package behavior
 
