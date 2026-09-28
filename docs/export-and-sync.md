@@ -15,6 +15,10 @@ Export the project from **File ▸ Export** as one of:
 
 Plugins can add their own formats to the same menu.
 
+To convert a `.qrate` file on a machine without qrate installed, use the
+[online converter](https://qrate.dvnl.work/convert). It runs in your browser, so the project
+never leaves your machine unless you send it to a Google Sheet.
+
 **Settings ▸ Table ▸ CSV export** shapes the CSV, including the `data.csv` inside a ZIP
 archive:
 
