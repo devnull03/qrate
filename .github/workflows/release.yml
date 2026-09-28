@@ -574,10 +574,12 @@ jobs:
             ## qrate ${{ needs.version.outputs.tag }}
 
             ### Downloads
-            Start with the **base** download. It leaves out PDF preview, video preview and the
+            Choose a download for your platform at https://qrate.dvnl.work/docs/install. Start with
+            the **base** download: it leaves out PDF preview, video preview and the
             assistant's runtime, and qrate offers to install each one the first time you need it
-            (or under Settings ▸ Components). The **full** download carries them all, for machines
-            that stay offline.
+            (or under Settings ▸ Components). The **full** download carries the bundled tools for
+            machines with limited connectivity. macOS video preview still needs ffmpeg installed
+            separately.
 
             - **Windows:** `*-base-setup.exe` (installer, asks for per-user or all-users). Full:
               `*-<version>-setup.exe`, or `*-x86_64.zip` (portable). Deploying to managed machines?

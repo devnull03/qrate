@@ -8,9 +8,9 @@
 
 qrate helps archives, libraries, museums, researchers, and small collection teams describe and care for collections without giving up their data to a hosted system. Work in a familiar spreadsheet-style grid, connect records to the files they describe, find problems before they spread, and export your catalog when it is time to share or move it.
 
-[Download qrate](https://github.com/devnull03/qrate/releases) · [Read the user guide](docs/index.md) · [Contribute](CONTRIBUTING.md)
+[Download qrate](https://qrate.dvnl.work/docs/install) · [Read the user guide](docs/index.md) · [Contribute](CONTRIBUTING.md)
 
-> **Early release:** qrate is currently `0.5.0-beta.1`. Keep backups of important collections and report reproducible problems in an issue.
+> **Early release:** qrate is in beta. Keep backups of important collections and report reproducible problems in an issue.
 
 ## Why qrate
 
@@ -53,7 +53,7 @@ Collection data rarely lives in just one place. A spreadsheet names an object, a
 
 ## Get qrate
 
-Download the installer or portable build for your platform from [GitHub Releases](https://github.com/devnull03/qrate/releases). Release assets are available for Windows, macOS, and Linux. The builds do not have a Windows publisher signature or an Apple Developer ID signature and notarization, so Windows SmartScreen or macOS Gatekeeper may ask you to allow qrate the first time you open it.
+Start with the base download for your platform on the [install page](https://qrate.dvnl.work/docs/install). Full downloads carry bundled optional tools for limited connectivity; macOS video preview still needs ffmpeg installed separately. Windows also has a portable ZIP and a managed MSI. The builds do not have a Windows publisher signature or an Apple Developer ID signature and notarization, so Windows SmartScreen or macOS Gatekeeper may ask you to allow qrate the first time you open it.
 
 On macOS, install the base app from the Homebrew tap:
 

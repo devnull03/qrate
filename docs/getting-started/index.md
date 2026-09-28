@@ -58,9 +58,13 @@ row's file, for example `IMG_0042.jpg`. qrate uses this column to link rows to f
 
 ## Install qrate
 
-Download an installer or portable build for Windows, macOS, or Linux from
-[qrate releases](https://github.com/devnull03/qrate/releases). Run the installer, or unpack the
-portable build, then start qrate.
+Start with the **base** download for your platform on the
+[install page](https://qrate.dvnl.work/docs/install). It is the smaller package and offers to add
+PDF previews and the assistant when you first use them. Windows and Linux can also add video
+support on first use; macOS uses ffmpeg from Homebrew. Choose the full download
+for a computer with limited connectivity; macOS video still needs a separate ffmpeg install.
+Windows also has a portable ZIP and an MSI for managed deployments. Run the installer, or unpack
+the portable build, then start qrate.
 
 On macOS, you can also install the base app from the [qrate Homebrew tap](https://github.com/devnull03/homebrew-tap):
 
@@ -77,7 +81,8 @@ winget install --id devnull03.qrate --exact
 ```
 
 The Homebrew Cask installs the base app. Optional components can be installed from within qrate.
-The WinGet package uses the per-machine MSI.
+The tap may lag a prerelease; use the install page for the newest beta. The WinGet package uses
+the per-machine MSI.
 
 The builds do not have a Windows publisher signature or an Apple Developer ID signature and
 notarization. Windows SmartScreen can ask you to confirm. On macOS, try to open qrate once, then
