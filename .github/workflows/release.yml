@@ -614,11 +614,10 @@ jobs:
             too. Without ffmpeg those files fall back to a file-type icon; nothing else is affected.
 
             > [!NOTE]
-            > These builds are **unsigned**. This is about who Windows and macOS think
-            > published the app, and is separate from the signature qrate checks on an update.
+            > These builds do not have a Windows publisher signature or an Apple Developer ID
+            > signature and notarization. This is separate from the signature qrate checks on an update.
             > - **Windows:** SmartScreen may warn "unknown publisher" — click *More info → Run anyway*.
-            > - **macOS:** open it once, then choose *Open Anyway* under System Settings → Privacy & Security, or run
-            >   `xattr -dr com.apple.quarantine "/Applications/qrate.app"`.
+            > - **macOS:** try to open it once, then choose *Open Anyway* under System Settings → Privacy & Security.
 
   # Store signs the package after certification. Keep the unsigned upload as a workflow artifact,
   # separate from the established GitHub release downloads.

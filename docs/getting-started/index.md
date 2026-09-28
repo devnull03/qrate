@@ -63,8 +63,9 @@ row's file, for example `IMG_0042.jpg`. qrate uses this column to link rows to f
 3. Run the installer, or unpack the portable build.
 4. Start qrate.
 
-Releases are not signed yet. The first time you open qrate, Windows SmartScreen or macOS
-Gatekeeper can ask you to confirm.
+The builds do not have a Windows publisher signature or an Apple Developer ID signature and
+notarization. Windows SmartScreen can ask you to confirm. On macOS, try to open qrate once, then
+choose **Open Anyway** under System Settings → Privacy & Security.
 
 Every release shows PDF previews. The Windows downloads also include ffmpeg, which qrate uses
 for video previews. On macOS and Linux, install ffmpeg and put it on your `PATH` to see video
