@@ -50,14 +50,6 @@ const STAGE_MUTED: u32 = 0xa3a3a3;
 /// per project, the same way the main window keeps its own.
 const BOUNDS_KEY: &str = "pop_out_window_bounds";
 
-/// Silence `viewer`'s recording as it goes — only if it started it: the player is shared by the
-/// whole app, and the main window may be playing the same file.
-fn stop_playing(viewer: &Entity<Viewer>, cx: &mut App) {
-    if preview::playback::owner(cx) == Some(viewer.entity_id()) {
-        preview::playback::stop(cx);
-    }
-}
-
 /// The bounds last seen, for the project they belong to. The `.qrate` write is debounced, so a
 /// window closed and reopened inside that interval would otherwise read the size it had before.
 #[derive(Default)]
@@ -172,7 +164,7 @@ impl PopOut {
         cx.on_release(move |this: &mut Self, cx| {
             // A recording playing here would otherwise go on with nothing on screen to stop it.
             if let Some(viewer) = &this.viewer {
-                stop_playing(viewer, cx);
+                preview::playback::stop(viewer.entity_id(), cx);
             }
             // Only this window's own entry: a new pop-out may already have replaced it.
             if cx
@@ -317,7 +309,7 @@ impl PopOut {
             .and_then(|(row, state)| viewer::previewable(state.read(cx).delegate(), row));
         if self.viewer.as_ref().map(|viewer| &viewer.read(cx).path) != file.as_ref() {
             if let Some(leaving) = &self.viewer {
-                stop_playing(leaving, cx);
+                preview::playback::stop(leaving.entity_id(), cx);
             }
             self.viewer = file.map(|file| viewer::build(file, Scope::PopOut, window, cx));
             self._viewer_sub = self.viewer.as_ref().map(|viewer| {
@@ -1061,7 +1053,7 @@ mod tests {
     use gpui_component::table::TableState;
     use table::{QrateTableDelegate, TableChanged};
 
-    use super::{PopOut, stop_playing};
+    use super::PopOut;
 
     /// Three rows in a real grid, and the pop-out window watching it.
     fn window_over_a_table(
@@ -1310,7 +1302,7 @@ mod tests {
                 crate::viewer::build(shown.clone(), crate::viewer::Scope::Workspace, window, cx);
             preview::playback::play(&shown, main.entity_id(), cx);
             let before = preview::playback::playing(cx).map(|path| path.to_path_buf());
-            stop_playing(&popped, cx);
+            preview::playback::stop(popped.entity_id(), cx);
             assert_eq!(
                 preview::playback::playing(cx).map(|path| path.to_path_buf()),
                 before,
@@ -1318,7 +1310,16 @@ mod tests {
             );
 
             preview::playback::play(&shown, popped.entity_id(), cx);
-            stop_playing(&popped, cx);
+            let before = preview::playback::playing(cx).map(|path| path.to_path_buf());
+            crate::viewer::open_viewer(shown.clone(), crate::viewer::Scope::Workspace, window, cx);
+            crate::viewer::close_viewer(window, cx);
+            assert_eq!(
+                preview::playback::playing(cx).map(|path| path.to_path_buf()),
+                before,
+                "closing the main window's viewer leaves the pop-out playing"
+            );
+
+            preview::playback::stop(popped.entity_id(), cx);
             assert!(preview::playback::playing(cx).is_none(), "its own stops");
         });
 

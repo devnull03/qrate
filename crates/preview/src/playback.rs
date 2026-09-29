@@ -111,10 +111,11 @@ pub fn position(cx: &App) -> Option<(Duration, bool)> {
     Some((player.get_pos(), !player.is_paused() && !player.empty()))
 }
 
-/// Silence. The viewer calls this as it closes — without it the recording plays on over an empty
-/// screen, with nothing left on the page to stop it.
-pub fn stop(cx: &mut App) {
-    if cx.has_global::<Playback>() {
+/// Silence, if `owner` started what is playing. A view calls this as it closes or moves on —
+/// without it the recording plays on over an empty screen — and must not silence another
+/// window's recording on the way out.
+pub fn stop(owner: EntityId, cx: &mut App) {
+    if self::owner(cx) == Some(owner) {
         let playback = cx.global_mut::<Playback>();
         playback.player.clear();
         playback.playing = None;

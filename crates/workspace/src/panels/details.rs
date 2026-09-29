@@ -301,7 +301,7 @@ impl DetailsPanel {
         // Whatever was playing belonged to the row being left. Leaving it running would narrate
         // one item while the panel details another.
         if self.transport.is_some() {
-            preview::playback::stop(cx);
+            preview::playback::stop(cx.entity_id(), cx);
         }
         self.transport = path.and_then(|path| Transport::new(path, cx));
     }

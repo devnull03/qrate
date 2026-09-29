@@ -93,6 +93,7 @@ pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut Ap
         .try_global::<ActiveViewer>()
         .and_then(|active| active.return_focus.clone())
         .or_else(|| window.focused(cx));
+    stop_active(cx);
     let viewer = build(path, scope, window, cx);
     cx.set_global(ActiveViewer {
         viewer: Some(viewer),
@@ -280,9 +281,19 @@ pub(crate) fn next_row(
     }
 }
 
+/// Stop the recording the open viewer started, as it is closed or replaced by the next row's.
+fn stop_active(cx: &mut App) {
+    if let Some(viewer) = cx
+        .try_global::<ActiveViewer>()
+        .and_then(|active| active.viewer.clone())
+    {
+        preview::playback::stop(viewer.entity_id(), cx);
+    }
+}
+
 pub fn close_viewer(window: &mut Window, cx: &mut App) {
     // Without this the recording plays on over an empty screen, with nothing left to stop it.
-    preview::playback::stop(cx);
+    stop_active(cx);
     let return_focus = cx
         .try_global::<ActiveViewer>()
         .and_then(|active| active.return_focus.clone());
