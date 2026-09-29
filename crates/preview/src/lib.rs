@@ -164,13 +164,13 @@ impl Asset for Preview {
         cx: &mut App,
     ) -> impl Future<Output = Self::Output> + Send + 'static {
         let executor = cx.background_executor().clone();
-        DECODING.fetch_add(1, Ordering::Relaxed);
+        let decoding = Decoding::start();
         async move {
             executor
                 .spawn(async move {
+                    let _decoding = decoding;
                     let started = std::time::Instant::now();
                     let image = render(&path, max_edge, page, turns);
-                    DECODING.fetch_sub(1, Ordering::Relaxed);
                     log::debug!(
                         "preview: {} page {page} turned {turns} at {max_edge}px took {:?}",
                         path.display(),
@@ -184,6 +184,22 @@ impl Asset for Preview {
 }
 
 static DECODING: AtomicUsize = AtomicUsize::new(0);
+
+/// One decode in [`DECODING`], counted out when dropped, so a load gpui cancels still leaves.
+struct Decoding;
+
+impl Decoding {
+    fn start() -> Self {
+        DECODING.fetch_add(1, Ordering::Relaxed);
+        Decoding
+    }
+}
+
+impl Drop for Decoding {
+    fn drop(&mut self) {
+        DECODING.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 /// How many previews are being decoded right now, for a busy readout.
 pub fn decoding() -> usize {
