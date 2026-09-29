@@ -170,7 +170,7 @@ pub(crate) fn build(
         find: Find::default(),
         find_open: false,
         page_input: None,
-        strip_open: true,
+        strip_open: false,
         strip: UniformListScrollHandle::new(),
         split: cx.new(|_| ResizableState::default()),
         _probe: None,
