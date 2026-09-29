@@ -156,6 +156,7 @@ pub(crate) fn build(
         offset: Point::default(),
         drag_from: None,
         turns: 0,
+        shown: 0,
         pixels,
         scale: 1.0,
         frame: Rc::default(),
@@ -295,6 +296,9 @@ pub struct Viewer {
     drag_from: Option<Point<Pixels>>,
     /// Quarter turns clockwise, for a scan that was fed in sideways. A view, never saved.
     turns: u8,
+    /// The turn on screen: the last one decoded, kept up while `turns` decodes so a turn never
+    /// blanks the stage.
+    shown: u8,
     /// Upright pixel size, where the header says one — what "actual size" is measured against.
     pixels: Option<(u32, u32)>,
     /// The window's scale factor at the last render, so 1:1 means one image pixel per device pixel.
@@ -390,20 +394,20 @@ impl Viewer {
         self.fit().map(|(_, fit)| 1.0 / (fit * self.scale))
     }
 
-    /// How far the picture overhangs its frame on each side — the most it may be panned. Measured
-    /// on the image itself where its size is known, so the letterbox bars are not pannable.
+    /// The most the picture may be panned each way: to where its edge meets the frame's, from
+    /// outside when it overhangs and from inside when it is smaller.
     fn slack(&self) -> Point<Pixels> {
         let frame = self.frame.get().size;
         let shown = self.fit().map_or(frame, |(image, fit)| {
             size(px(image.width * fit), px(image.height * fit))
         });
         point(
-            ((shown.width * self.zoom - frame.width) / 2.).max(px(0.)),
-            ((shown.height * self.zoom - frame.height) / 2.).max(px(0.)),
+            ((shown.width * self.zoom - frame.width) / 2.).abs(),
+            ((shown.height * self.zoom - frame.height) / 2.).abs(),
         )
     }
 
-    /// Keep an edge of the picture on its frame's edge, so a drag cannot lose it off screen. Left
+    /// Keep the picture's edges against the frame's, so a drag cannot lose it off screen. Left
     /// alone before the frame has a size, which is only ever the case before the first paint.
     fn clamp_pan(&mut self) {
         if self.frame.get().size.width <= px(0.) {
@@ -420,6 +424,11 @@ impl Viewer {
         self.turns = (self.turns as i8 + delta).rem_euclid(4) as u8;
         self.zoom = 1.0;
         self.offset = Point::default();
+        log::debug!(
+            "viewer: {} turned to {}°",
+            self.path.display(),
+            self.turns as u16 * 90
+        );
     }
 
     /// Fit when zoomed, actual size when fitted; 2× for a file with no pixel size of its own, or
@@ -615,10 +624,20 @@ impl Render for Viewer {
             0 => self.find.on_page(page).cloned().collect(),
             _ => Vec::new(),
         };
-        let cursor = match (self.drag_from.is_some(), self.slack()) {
+        let wanted = preview::source(&self.path, cap, page, self.turns);
+        if preview::ready(&wanted, window, cx) {
+            self.shown = self.turns;
+        }
+        let picture = match self.shown == self.turns {
+            true => wanted,
+            false => preview::source(&self.path, cap, page, self.shown),
+        };
+        // gpui on Windows has no grab cursors and falls back to the arrow; the hand is its nearest.
+        let cursor = match (self.drag_from.is_some(), self.slack() != Point::default()) {
+            (false, false) => CursorStyle::Arrow,
+            _ if cfg!(windows) => CursorStyle::PointingHand,
             (true, _) => CursorStyle::ClosedHand,
-            (false, slack) if slack.x > px(0.) || slack.y > px(0.) => CursorStyle::OpenHand,
-            _ => CursorStyle::Arrow,
+            (false, true) => CursorStyle::OpenHand,
         };
         let readout = match self.actual_size() {
             Some(actual) => format!("{:.0}%", zoom / actual * 100.),
@@ -798,9 +817,7 @@ impl Render for Viewer {
                                         .children((!bare).then(|| {
                                             // `flex_shrink_0` keeps `relative(zoom)` past 1.
                                             // The id is what lets gpui keep a GIF's frame clock.
-                                            img(preview::source(
-                                                &self.path, cap, page, self.turns,
-                                            ))
+                                            img(picture)
                                             .id("viewer-image")
                                                 .flex_shrink_0()
                                                 .relative()
@@ -1287,6 +1304,15 @@ mod tests {
                     viewer.offset,
                     gpui::point(gpui::px(500.), gpui::px(-250.)),
                     "no further than the overhang on either side"
+                );
+
+                viewer.set_zoom(0.5, gpui::Point::default());
+                viewer.offset = gpui::point(gpui::px(5000.), gpui::px(5000.));
+                viewer.clamp_pan();
+                assert_eq!(
+                    viewer.offset,
+                    gpui::point(gpui::px(250.), gpui::px(125.)),
+                    "zoomed out, it still drags, as far as the frame's edge"
                 );
 
                 viewer.rotate(1);

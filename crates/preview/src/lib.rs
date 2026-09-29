@@ -161,7 +161,16 @@ impl Asset for Preview {
         let executor = cx.background_executor().clone();
         async move {
             executor
-                .spawn(async move { render(&path, max_edge, page, turns) })
+                .spawn(async move {
+                    let started = std::time::Instant::now();
+                    let image = render(&path, max_edge, page, turns);
+                    log::debug!(
+                        "preview: {} page {page} turned {turns} at {max_edge}px took {:?}",
+                        path.display(),
+                        started.elapsed()
+                    );
+                    image
+                })
                 .await
         }
     }
@@ -285,11 +294,10 @@ fn tiff_page(path: &Path, page: usize) -> Option<image::DynamicImage> {
 /// One stat per call, so call it when the selection changes rather than per frame.
 pub fn describe(path: &Path) -> Option<String> {
     let kind = extension(path).map(|extension| extension.to_uppercase());
-    let pixels = dimensions(path).map(|(width, height)| format!("{width} × {height}"));
     let size = std::fs::metadata(path)
         .ok()
         .map(|metadata| file_size(metadata.len()));
-    let parts: Vec<String> = [kind, pixels, size].into_iter().flatten().collect();
+    let parts: Vec<String> = [kind, size].into_iter().flatten().collect();
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
@@ -837,6 +845,18 @@ pub fn source(path: &Path, max_edge: u32, page: usize, turns: u8) -> ImageSource
         retain(&key, &image, BUDGET, window, cx);
         Some(Ok(image))
     }))
+}
+
+/// Whether `source` has finished decoding, starting it if not. gpui re-renders the asking view
+/// when it lands.
+///
+/// ponytail: a path handed to gpui counts as ready — it is only ever the upright picture the
+/// viewer opened with, already loaded.
+pub fn ready(source: &ImageSource, window: &mut Window, cx: &mut App) -> bool {
+    match source {
+        ImageSource::Custom(load) => load(window, cx).is_some(),
+        _ => true,
+    }
 }
 
 #[cfg(test)]
