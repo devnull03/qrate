@@ -37,11 +37,16 @@ fn launches_sibling_with_native_arguments_and_returns_status() {
     );
     let output = directory.0.join("arguments.txt");
     let mut names = vec![OsString::from("a project with spaces.qrate")];
-    #[cfg(unix)]
+    // macOS filesystems reject malformed UTF-8 filenames with EILSEQ, so the
+    // invalid-byte argument case can only use a path that exists on other Unix
+    // systems. Keep exercising native non-ASCII arguments on macOS instead.
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         use std::os::unix::ffi::OsStringExt;
         names.push(OsString::from_vec(b"project \xff.qrate".to_vec()));
     }
+    #[cfg(target_os = "macos")]
+    names.push(OsString::from("project résumé.qrate"));
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStringExt;
