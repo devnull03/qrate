@@ -766,18 +766,15 @@ impl Render for Viewer {
                                         .items_center()
                                         .gap_1()
                                         .cursor_pointer()
+                                        // The outline is on the picture, so it takes the page's shape.
                                         .child(
                                             div()
                                                 .w_full()
                                                 .flex_1()
                                                 .min_h_0()
-                                                .rounded(radius)
-                                                .border_2()
-                                                .border_color(match on {
-                                                    true => primary,
-                                                    false => transparent_black(),
-                                                })
-                                                .overflow_hidden()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
                                                 .child(
                                                     img(preview::source(
                                                         &this.path,
@@ -785,8 +782,14 @@ impl Render for Viewer {
                                                         index,
                                                         0,
                                                     ))
-                                                    .size_full()
-                                                    .object_fit(ObjectFit::Contain),
+                                                    .max_w_full()
+                                                    .max_h_full()
+                                                    .rounded(radius)
+                                                    .border_2()
+                                                    .border_color(match on {
+                                                        true => primary,
+                                                        false => transparent_black(),
+                                                    }),
                                                 ),
                                         )
                                         .child(
