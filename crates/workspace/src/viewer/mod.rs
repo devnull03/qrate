@@ -22,7 +22,7 @@ use std::time::Duration;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable, StyledExt as _,
+    ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable,
     button::{Button, ButtonVariants},
     input::{InputEvent, InputState},
     resizable::{ResizableState, h_resizable, resizable_panel},
@@ -893,20 +893,15 @@ impl Render for Viewer {
                             false => slot.bottom_4(),
                         })
                         .child(
-                            // Loud on purpose. These are the only controls a reader reaches for
-                            // constantly, and over a dimmed page a translucent pill of small
-                            // ghost buttons reads as decoration.
+                            // Same pill as the toolbar and row stepper.
                             div()
                                 .flex()
                                 .items_center()
-                                .gap_2()
-                                .px_2()
-                                .py_1()
+                                .gap_1()
+                                .p_1()
                                 .rounded(cx.theme().radius)
-                                .bg(cx.theme().background)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .shadow_lg()
+                                .bg(pill)
+                                .text_sm()
                                 .occlude()
                                 .map(|pill| match (&self.transport, &self.scrubber) {
                                     (Some(transport), _) => {
@@ -914,7 +909,7 @@ impl Render for Viewer {
                                     }
                                     (_, Some(scrubber)) => pill
                                         .child(
-                                            div().px_1().font_semibold().child(transport::clock(
+                                            div().px_1().child(transport::clock(
                                                 Duration::from_secs(self.scrub as u64),
                                             )),
                                         )
@@ -936,7 +931,8 @@ impl Render for Viewer {
                                         .child(
                                             Button::new("play-in-default-app")
                                                 .icon(IconName::ExternalLink)
-                                                .outline()
+                                                .ghost()
+                                                .small()
                                                 .tooltip("Play in the default app")
                                                 .on_click({
                                                     let path = self.path.clone();
@@ -958,7 +954,8 @@ impl Render for Viewer {
                                         .child(
                                             Button::new("previous-page")
                                                 .icon(IconName::ChevronLeft)
-                                                .outline()
+                                                .ghost()
+                                                .small()
                                                 .disabled(page == 0)
                                                 .tooltip("Previous page")
                                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -971,13 +968,13 @@ impl Render for Viewer {
                                         .child(
                                             div()
                                                 .px_1()
-                                                .font_semibold()
                                                 .child(format!("Page {} of {pages}", page + 1)),
                                         )
                                         .child(
                                             Button::new("next-page")
                                                 .icon(IconName::ChevronRight)
-                                                .outline()
+                                                .ghost()
+                                                .small()
                                                 .disabled(page + 1 >= pages)
                                                 .tooltip("Next page")
                                                 .on_click(cx.listener(|this, _, _, cx| {
