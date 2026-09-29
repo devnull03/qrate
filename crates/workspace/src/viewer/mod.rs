@@ -48,6 +48,8 @@ const PANEL_RANGE: std::ops::Range<Pixels> = px(240.)..px(720.);
 /// The page strip's width, and the height of one page in it: a thumbnail and its number.
 const STRIP: Pixels = px(128.);
 const STRIP_ROW: Pixels = px(168.);
+/// The most a page thumbnail may take inside a row, after its padding and number.
+const STRIP_THUMB: Size<Pixels> = size(px(112.), px(128.));
 
 /// How long a file has to stay open before its pages or duration are probed, and a query has to
 /// stay typed before it is searched. Stepping through videos or typing a word then starts one
@@ -197,6 +199,16 @@ pub(crate) fn build(
     });
     viewer.update(cx, |viewer, _| viewer._probe = Some(probe));
     viewer
+}
+
+/// The size a page thumbnail takes in the strip: its own shape, as large as fits the row. A page
+/// that has not decoded yet is drawn portrait, the shape most documents are.
+fn strip_frame(pixels: Option<(u32, u32)>) -> Size<Pixels> {
+    let (width, height) = pixels
+        .filter(|(width, height)| *width > 0 && *height > 0)
+        .map_or((3.0, 4.0), |(width, height)| (width as f32, height as f32));
+    let scale = (f32::from(STRIP_THUMB.width) / width).min(f32::from(STRIP_THUMB.height) / height);
+    size(px(width * scale), px(height * scale))
 }
 
 /// The page a typed number lands on: 1-based as the reader types it, clamped to the document.
@@ -738,10 +750,11 @@ impl Render for Viewer {
         // ponytail: they share PDFium's one lock with the page itself, so a jump can wait behind a
         // screenful of thumbnails; render the page first if that shows up.
         let strip = (strip_width > px(0.)).then(|| {
-            let (primary, muted, radius) = (
+            let (primary, muted, radius, tile) = (
                 cx.theme().primary,
                 cx.theme().muted_foreground,
                 cx.theme().radius,
+                cx.theme().muted,
             );
             div()
                 .w(STRIP)
@@ -753,7 +766,7 @@ impl Render for Viewer {
                     uniform_list(
                         "viewer-pages",
                         pages,
-                        cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                        cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
                             range
                                 .map(|index| {
                                     let on = index == this.page;
@@ -766,32 +779,30 @@ impl Render for Viewer {
                                         .items_center()
                                         .gap_1()
                                         .cursor_pointer()
-                                        // The outline is on the picture, so it takes the page's shape.
-                                        .child(
+                                        .child({
+                                            let source = preview::source(
+                                                &this.path,
+                                                preview::CARD,
+                                                index,
+                                                0,
+                                            );
+                                            let shape =
+                                                preview::decoded(&source, window, cx).flatten();
+                                            let frame = strip_frame(shape);
                                             div()
-                                                .w_full()
-                                                .flex_1()
-                                                .min_h_0()
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .child(
-                                                    img(preview::source(
-                                                        &this.path,
-                                                        preview::CARD,
-                                                        index,
-                                                        0,
-                                                    ))
-                                                    .max_w_full()
-                                                    .max_h_full()
-                                                    .rounded(radius)
-                                                    .border_2()
-                                                    .border_color(match on {
-                                                        true => primary,
-                                                        false => transparent_black(),
-                                                    }),
-                                                ),
-                                        )
+                                                .w(frame.width)
+                                                .h(frame.height)
+                                                .flex_none()
+                                                .rounded(radius)
+                                                .border_2()
+                                                .border_color(match on {
+                                                    true => primary,
+                                                    false => transparent_black(),
+                                                })
+                                                .overflow_hidden()
+                                                .bg(tile)
+                                                .child(img(source).size_full().rounded(radius))
+                                        })
                                         .child(
                                             div()
                                                 .text_xs()
@@ -1570,6 +1581,32 @@ mod tests {
             });
             close_viewer(window, cx);
         });
+    }
+
+    /// A page in the strip keeps its own shape and never leaves the row's box.
+    #[test]
+    fn a_strip_thumbnail_keeps_the_pages_shape_inside_the_row() {
+        use super::{STRIP_THUMB, strip_frame};
+        use gpui::{px, size};
+
+        assert_eq!(
+            strip_frame(Some((1000, 2000))),
+            size(px(64.), px(128.)),
+            "tall"
+        );
+        assert_eq!(
+            strip_frame(Some((2000, 1000))),
+            size(px(112.), px(56.)),
+            "wide"
+        );
+        let pending = strip_frame(None);
+        assert!(pending.height > pending.width, "portrait until it decodes");
+        assert!(pending.width <= STRIP_THUMB.width && pending.height <= STRIP_THUMB.height);
+        assert_eq!(
+            strip_frame(Some((0, 10))),
+            pending,
+            "a degenerate size is not divided by"
+        );
     }
 
     /// A typed page is 1-based, lands inside the document however far off it is, and anything
