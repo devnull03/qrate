@@ -22,8 +22,9 @@ use std::time::Duration;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable,
+    ActiveTheme, Disableable as _, Icon, IconName, Selectable as _, Sizable,
     button::{Button, ButtonVariants},
+    h_flex,
     input::{Input, InputEvent, InputState},
     resizable::{ResizableState, h_resizable, resizable_panel},
     slider::{Slider, SliderEvent, SliderState, SliderValue},
@@ -43,6 +44,10 @@ pub const VIEWER_CONTEXT: &str = "Viewer";
 /// wide enough to show context around a match; the ceiling stops the panel swallowing the page.
 const PANEL: Pixels = px(384.);
 const PANEL_RANGE: std::ops::Range<Pixels> = px(240.)..px(720.);
+
+/// The page strip's width, and the height of one page in it: a thumbnail and its number.
+const STRIP: Pixels = px(128.);
+const STRIP_ROW: Pixels = px(168.);
 
 /// How long a file has to stay open before its pages or duration are probed, and a query has to
 /// stay typed before it is searched. Stepping through videos or typing a word then starts one
@@ -165,6 +170,8 @@ pub(crate) fn build(
         find: Find::default(),
         find_open: false,
         page_input: None,
+        strip_open: true,
+        strip: UniformListScrollHandle::new(),
         split: cx.new(|_| ResizableState::default()),
         _probe: None,
     });
@@ -322,6 +329,9 @@ pub struct Viewer {
     pub(crate) find_open: bool,
     /// The go-to-page box in the bottom pill, built the first time the pill draws.
     page_input: Option<Entity<InputState>>,
+    /// Whether the page strip is showing, for a file with pages to list.
+    strip_open: bool,
+    strip: UniformListScrollHandle,
     /// The split between the page and the find panel, owned by `gpui_component`'s resizable — it
     /// carries the drag handle, the sizing and the propagation rules, none of which are ours to
     /// reinvent.
@@ -476,6 +486,12 @@ impl Viewer {
         self.page = page;
         self.zoom = 1.0;
         self.offset = Point::default();
+        self.strip.scroll_to_item(page, ScrollStrategy::Nearest);
+    }
+
+    /// Whether the file has pages to list: a document or image stack, not a video's seconds.
+    fn paged(&self) -> bool {
+        self.pages > 1 && self.scrubber.is_none() && !self.video
     }
 
     /// The page box, built on first use. It shows the current page whenever it is not being typed
@@ -693,6 +709,84 @@ impl Render for Viewer {
             .and_then(|id| crate::component_banner::banner(id, cx));
         let popped = self.scope == Scope::PopOut;
         let page_input = self.page_input(window, cx);
+        let paged = self.paged();
+        let strip_width = match paged && self.strip_open {
+            true => STRIP,
+            false => px(0.),
+        };
+        // Only the rows on screen are built, so a 300-page scan asks for a handful of thumbnails.
+        // ponytail: they share PDFium's one lock with the page itself, so a jump can wait behind a
+        // screenful of thumbnails; render the page first if that shows up.
+        let strip = (strip_width > px(0.)).then(|| {
+            let (primary, muted, radius) = (
+                cx.theme().primary,
+                cx.theme().muted_foreground,
+                cx.theme().radius,
+            );
+            div()
+                .w(STRIP)
+                .h_full()
+                .flex_none()
+                .bg(pill)
+                .occlude()
+                .child(
+                    uniform_list(
+                        "viewer-pages",
+                        pages,
+                        cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                            range
+                                .map(|index| {
+                                    let on = index == this.page;
+                                    div()
+                                        .id(("viewer-page", index))
+                                        .h(STRIP_ROW)
+                                        .p_2()
+                                        .flex()
+                                        .flex_col()
+                                        .items_center()
+                                        .gap_1()
+                                        .cursor_pointer()
+                                        .child(
+                                            div()
+                                                .w_full()
+                                                .flex_1()
+                                                .min_h_0()
+                                                .rounded(radius)
+                                                .border_2()
+                                                .border_color(match on {
+                                                    true => primary,
+                                                    false => transparent_black(),
+                                                })
+                                                .overflow_hidden()
+                                                .child(
+                                                    img(preview::source(
+                                                        &this.path,
+                                                        preview::CARD,
+                                                        index,
+                                                        0,
+                                                    ))
+                                                    .size_full()
+                                                    .object_fit(ObjectFit::Contain),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .when(!on, |label| label.text_color(muted))
+                                                .child((index + 1).to_string()),
+                                        )
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.show_page(index);
+                                            cx.notify();
+                                        }))
+                                })
+                                .collect()
+                        }),
+                    )
+                    .track_scroll(&self.strip)
+                    .size_full(),
+                )
+        });
 
         div()
             .track_focus(&self.focus_handle)
@@ -781,6 +875,8 @@ impl Render for Viewer {
                 }
             }))
             .child(
+                h_flex().size_full().children(strip).child(
+                div().flex_1().min_w_0().h_full().child(
                 h_resizable("viewer-split")
                     .with_state(&self.split)
                     .child(
@@ -888,12 +984,13 @@ impl Render for Viewer {
                             .visible(self.find_open && !popped)
                             .child(find::panel(&self.find, panel_width, false, cx)),
                     ),
+                )),
             )
             .child(
                 div()
                     .absolute()
                     .top_4()
-                    .left_4()
+                    .left(px(16.) + strip_width)
                     .px_2()
                     .py_1()
                     .rounded(cx.theme().radius)
@@ -994,6 +1091,29 @@ impl Render for Viewer {
                                                 }),
                                         ),
                                     _ => pill
+                                        .when(paged, |pill| {
+                                            pill.child(
+                                                Button::new("toggle-pages")
+                                                    .icon(Icon::new(IconName::PanelLeft).when(
+                                                        self.strip_open,
+                                                        |icon| icon.text_color(cx.theme().primary),
+                                                    ))
+                                                    .ghost()
+                                                    .small()
+                                                    .tooltip(match self.strip_open {
+                                                        true => "Hide pages",
+                                                        false => "Show pages",
+                                                    })
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.strip_open = !this.strip_open;
+                                                        this.strip.scroll_to_item(
+                                                            this.page,
+                                                            ScrollStrategy::Center,
+                                                        );
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                        })
                                         .child(
                                             Button::new("previous-page")
                                                 .icon(IconName::ChevronLeft)
@@ -1415,7 +1535,9 @@ mod tests {
 
             viewer.update(cx, |viewer, _| {
                 // A missing file reports one page, so give it a document to page through.
+                assert!(!viewer.paged(), "one page has nothing to list");
                 viewer.pages = 3;
+                assert!(viewer.paged(), "a document with pages gets the strip");
 
                 viewer.turn_page(-1);
                 assert_eq!(viewer.page, 0, "cannot go back from the first page");
@@ -1480,6 +1602,14 @@ mod tests {
             open_viewer("/nonexistent/scan.pdf".into(), Scope::Workspace, window, cx);
             let document = viewer_in(Scope::Workspace, cx).expect("just opened");
             document.update(cx, |viewer, _| assert!(viewer.transport.is_none()));
+
+            // A video's positions are seconds, which are the scrubber's and not a page strip's.
+            open_viewer("/nonexistent/clip.mp4".into(), Scope::Workspace, window, cx);
+            let video = viewer_in(Scope::Workspace, cx).expect("just opened");
+            video.update(cx, |viewer, _| {
+                viewer.pages = 6;
+                assert!(!viewer.paged());
+            });
 
             close_viewer(window, cx);
         });
