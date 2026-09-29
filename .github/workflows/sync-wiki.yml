@@ -1,0 +1,48 @@
+name: Sync docs to wiki
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - scripts/sync-wiki.py
+      - .github/workflows/sync-wiki.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-wiki
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Publish documentation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          wiki="$RUNNER_TEMP/qrate-wiki"
+          git clone "https://github.com/$REPOSITORY.wiki.git" "$wiki"
+          python3 scripts/sync-wiki.py "$wiki" --repository "$REPOSITORY"
+          git -C "$wiki" config user.name 'github-actions[bot]'
+          git -C "$wiki" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C "$wiki" add --all
+          if git -C "$wiki" diff --cached --quiet; then
+            echo 'Wiki already matches docs.'
+            exit 0
+          fi
+          revision="$(git rev-parse HEAD)"
+          git -C "$wiki" commit -m "docs: sync wiki from $revision"
+          git -C "$wiki" push origin HEAD
