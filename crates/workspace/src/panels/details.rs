@@ -1888,36 +1888,26 @@ mod tests {
         cx.add_window_view(DetailsPanel::new);
     }
 
-    /// A real table behind the panel, with autosave off so a committed edit doesn't write the
-    /// temp project file. Same shape as `table::delegate`'s own fixture.
+    /// A real table behind the panel: three rows, two of which share a Medium.
     fn project_with_table(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            gpui_component::init(cx);
-            let mut app = settings::AppSettings::default();
-            app.values.insert(
-                settings::AUTOSAVE_KEY.into(),
-                settings::Val::Text("off".into()),
-            );
-            cx.set_global(app);
-            cx.set_global(settings::project::CurrentProject {
-                file: std::env::temp_dir().join("qrate-details-edit.qrate"),
-                data: settings::project::ProjectData {
-                    name: "T".into(),
-                    columns: Vec::new(),
-                    headers: vec!["Medium".into(), "Title".into()],
-                    rows: vec![
-                        vec!["Film".into(), "one".into()],
-                        vec!["Video".into(), "two".into()],
-                        // Shares a Medium with row 0 but not a Title, so a selection of the two
-                        // has one agreed field and one mixed.
-                        vec!["Film".into(), "three".into()],
-                    ],
-                    row_ids: vec![1, 2, 3],
-                    values: Default::default(),
-                },
-            });
-        });
-        cx.add_window_view(table::TablePanel::new);
+        crate::test_support::open_table(
+            cx,
+            "qrate-details-edit.qrate",
+            settings::project::ProjectData {
+                name: "T".into(),
+                columns: Vec::new(),
+                headers: vec!["Medium".into(), "Title".into()],
+                rows: vec![
+                    vec!["Film".into(), "one".into()],
+                    vec!["Video".into(), "two".into()],
+                    // Shares a Medium with row 0 but not a Title, so a selection of the two has
+                    // one agreed field and one mixed.
+                    vec!["Film".into(), "three".into()],
+                ],
+                row_ids: vec![1, 2, 3],
+                values: Default::default(),
+            },
+        );
     }
 
     #[gpui::test]

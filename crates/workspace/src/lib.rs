@@ -934,3 +934,41 @@ mod tests {
         assert_eq!(children[0]["panel_name"], "ViewsPanel");
     }
 }
+
+/// What the panel and pop-out tests share: a real grid over a project, as the app builds one.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use gpui::{Entity, TestAppContext};
+    use gpui_component::table::TableState;
+    use table::QrateTableDelegate;
+
+    /// A table panel in its own window over `data`, saved to `file` in the temp directory. Autosave
+    /// is off, so a committed edit never writes that file.
+    pub(crate) fn open_table(
+        cx: &mut TestAppContext,
+        file: &str,
+        data: settings::project::ProjectData,
+    ) -> Entity<TableState<QrateTableDelegate>> {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            let mut app = settings::AppSettings::default();
+            app.values.insert(
+                settings::AUTOSAVE_KEY.into(),
+                settings::Val::Text("off".into()),
+            );
+            cx.set_global(app);
+            cx.set_global(settings::SettingsPersistence::default());
+            cx.set_global(settings::project::CurrentProject {
+                file: std::env::temp_dir().join(file),
+                data,
+            });
+        });
+        cx.add_window_view(table::TablePanel::new);
+        cx.update(|cx| {
+            cx.global::<table::TableStateHandle>()
+                .0
+                .upgrade()
+                .expect("the table panel publishes its state handle")
+        })
+    }
+}

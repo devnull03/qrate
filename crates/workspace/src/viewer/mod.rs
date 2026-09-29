@@ -1801,22 +1801,7 @@ mod tests {
     #[gpui::test]
     fn closing_the_viewer_leaves_nothing_playing(cx: &mut TestAppContext) {
         let cx = with_window(cx);
-        // 44-byte canonical WAV header, then a second of 8 kHz 16-bit mono silence.
-        let data = 8000usize * 2;
-        let mut wav = Vec::new();
-        wav.extend(b"RIFF");
-        wav.extend((36 + data as u32).to_le_bytes());
-        wav.extend(b"WAVEfmt ");
-        wav.extend(16u32.to_le_bytes());
-        wav.extend(1u16.to_le_bytes()); // PCM
-        wav.extend(1u16.to_le_bytes()); // mono
-        wav.extend(8000u32.to_le_bytes());
-        wav.extend(16000u32.to_le_bytes());
-        wav.extend(2u16.to_le_bytes());
-        wav.extend(16u16.to_le_bytes());
-        wav.extend(b"data");
-        wav.extend((data as u32).to_le_bytes());
-        wav.extend(std::iter::repeat_n(0u8, data));
+        let wav = preview::playback::silent_wav(8000);
 
         let path = std::env::temp_dir().join("qrate-viewer-close-stops.wav");
         std::fs::write(&path, &wav).unwrap();

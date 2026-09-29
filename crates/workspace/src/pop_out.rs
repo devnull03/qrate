@@ -1042,38 +1042,22 @@ mod tests {
         Entity<TableState<QrateTableDelegate>>,
         &mut VisualTestContext,
     ) {
-        cx.update(|cx| {
-            gpui_component::init(cx);
-            let mut app = settings::AppSettings::default();
-            app.values.insert(
-                settings::AUTOSAVE_KEY.into(),
-                settings::Val::Text("off".into()),
-            );
-            cx.set_global(app);
-            cx.set_global(settings::SettingsPersistence::default());
-            cx.set_global(settings::project::CurrentProject {
-                file: std::env::temp_dir().join("qrate-pop-out.qrate"),
-                data: settings::project::ProjectData {
-                    name: "Aderman Collection".into(),
-                    columns: Vec::new(),
-                    headers: vec!["Identifier".into(), "Title".into()],
-                    rows: vec![
-                        vec!["ADR-0042".into(), "Beacon Hill Park".into()],
-                        vec!["ADR-0043".into(), "Sawmill crew".into()],
-                        vec!["ADR-0044".into(), "Saanich mill".into()],
-                    ],
-                    row_ids: vec![11, 12, 13],
-                    values: Default::default(),
-                },
-            });
-        });
-        cx.add_window_view(table::TablePanel::new);
-        let state = cx.update(|cx| {
-            cx.global::<table::TableStateHandle>()
-                .0
-                .upgrade()
-                .expect("the table panel publishes its state handle")
-        });
+        let state = crate::test_support::open_table(
+            cx,
+            "qrate-pop-out.qrate",
+            settings::project::ProjectData {
+                name: "Aderman Collection".into(),
+                columns: Vec::new(),
+                headers: vec!["Identifier".into(), "Title".into()],
+                rows: vec![
+                    vec!["ADR-0042".into(), "Beacon Hill Park".into()],
+                    vec!["ADR-0043".into(), "Sawmill crew".into()],
+                    vec!["ADR-0044".into(), "Saanich mill".into()],
+                ],
+                row_ids: vec![11, 12, 13],
+                values: Default::default(),
+            },
+        );
         let (pop_out, cx) = cx.add_window_view(PopOut::new);
         (pop_out, state, cx)
     }
@@ -1254,21 +1238,7 @@ mod tests {
     /// and holds trivially on one without.
     #[gpui::test]
     fn leaving_a_file_stops_only_its_own_recording(cx: &mut TestAppContext) {
-        let data = 8000usize * 2;
-        let mut wav = Vec::new();
-        wav.extend(b"RIFF");
-        wav.extend((36 + data as u32).to_le_bytes());
-        wav.extend(b"WAVEfmt ");
-        wav.extend(16u32.to_le_bytes());
-        wav.extend(1u16.to_le_bytes());
-        wav.extend(1u16.to_le_bytes());
-        wav.extend(8000u32.to_le_bytes());
-        wav.extend(16000u32.to_le_bytes());
-        wav.extend(2u16.to_le_bytes());
-        wav.extend(16u16.to_le_bytes());
-        wav.extend(b"data");
-        wav.extend((data as u32).to_le_bytes());
-        wav.extend(std::iter::repeat_n(0u8, data));
+        let wav = preview::playback::silent_wav(8000);
         let shown = std::env::temp_dir().join("qrate-pop-out-shown.wav");
         std::fs::write(&shown, &wav).unwrap();
 

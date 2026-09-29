@@ -2259,7 +2259,13 @@ mod tests {
     fn project_with_notes(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
-            cx.set_global(settings::AppSettings::default());
+            // Autosave off, so no test here writes the temp project file.
+            let mut app = settings::AppSettings::default();
+            app.values.insert(
+                settings::AUTOSAVE_KEY.into(),
+                settings::Val::Text("off".into()),
+            );
+            cx.set_global(app);
             cx.set_global(settings::project::CurrentProject {
                 file: std::env::temp_dir().join("qrate-note-cancel.qrate"),
                 data: settings::project::ProjectData {
@@ -2281,10 +2287,6 @@ mod tests {
             use gpui::BorrowAppContext as _;
             cx.update_global::<settings::project::CurrentProject, _>(|project, _| {
                 project.data.rows = vec![vec!["Agnès Varda".into()], vec!["Varda, Agnès".into()]];
-                project.data.values.insert(
-                    settings::AUTOSAVE_KEY.into(),
-                    settings::Val::Text("off".into()),
-                );
                 project.data.values.insert(
                     settings::columns::COLUMN_SETTINGS_KEY.into(),
                     settings::Val::Text(r#"{"Title":{"variant_review":true}}"#.into()),
@@ -2394,15 +2396,6 @@ mod tests {
     #[gpui::test]
     fn grouped_fixes_write_every_cell_in_one_undo_step(cx: &mut TestAppContext) {
         project_with_notes(cx);
-        cx.update(|cx| {
-            use gpui::BorrowAppContext as _;
-            cx.update_global::<settings::project::CurrentProject, _>(|project, _| {
-                project.data.values.insert(
-                    settings::AUTOSAVE_KEY.into(),
-                    settings::Val::Text("off".into()),
-                );
-            });
-        });
         let (panel, cx) = cx.add_window_view(super::TablePanel::new);
         panel.update(cx, |panel, cx| {
             crate::set_cell_texts(
@@ -2524,30 +2517,17 @@ mod tests {
     }
 
     /// What Backspace and Delete do to the selection, and the promise that it is one undo step.
-    /// Autosave off so the temp project file is never written.
     #[gpui::test]
     fn clearing_the_selection_blanks_it_and_undoes_as_one_step(cx: &mut TestAppContext) {
+        project_with_notes(cx);
         cx.update(|cx| {
-            gpui_component::init(cx);
-            let mut app = settings::AppSettings::default();
-            app.values.insert(
-                settings::AUTOSAVE_KEY.into(),
-                settings::Val::Text("off".into()),
-            );
-            cx.set_global(app);
-            cx.set_global(settings::project::CurrentProject {
-                file: std::env::temp_dir().join("qrate-clear-range.qrate"),
-                data: settings::project::ProjectData {
-                    name: "T".into(),
-                    columns: Vec::new(),
-                    headers: vec!["Medium".into(), "Title".into()],
-                    rows: vec![
-                        vec!["Film".into(), "one".into()],
-                        vec!["Video".into(), "two".into()],
-                    ],
-                    row_ids: vec![1, 2],
-                    values: Default::default(),
-                },
+            use gpui::BorrowAppContext as _;
+            cx.update_global::<settings::project::CurrentProject, _>(|project, _| {
+                project.data.headers = vec!["Medium".into(), "Title".into()];
+                project.data.rows = vec![
+                    vec!["Film".into(), "one".into()],
+                    vec!["Video".into(), "two".into()],
+                ];
             });
         });
         let (panel, cx) = cx.add_window_view(super::TablePanel::new);
