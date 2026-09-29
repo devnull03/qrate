@@ -2058,6 +2058,14 @@ impl QrateTableDelegate {
         self.selection
     }
 
+    /// The source row the cursor is on: a cell's row or a whole row, and nothing for a column.
+    pub fn cursor_row(&self) -> Option<usize> {
+        match self.selection? {
+            Selection::Cell { row, .. } | Selection::Row(row) => Some(row),
+            Selection::Column(_) => None,
+        }
+    }
+
     /// Every selected item as source rows, in view order: the ⌘-clicked set unioned with whatever
     /// row the cursor is on. This is what Details, the gallery, the selection menu and the status
     /// bar all count — one answer to "what is selected", so none of them can disagree.
@@ -2065,10 +2073,7 @@ impl QrateTableDelegate {
     /// Filtered-away rows stay in the set but drop out here, so an action reaches what the
     /// archivist can actually see and clearing the filter brings the rest back.
     pub fn selected_source_rows(&self) -> Vec<usize> {
-        let cursor = match self.selection {
-            Some(Selection::Cell { row, .. } | Selection::Row(row)) => Some(row),
-            Some(Selection::Column(_)) | None => None,
-        };
+        let cursor = self.cursor_row();
         self.visible_rows
             .iter()
             .copied()

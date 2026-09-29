@@ -22,7 +22,7 @@ use gpui_component::{
 };
 use settings::MainWindowBounds;
 use settings::project::{CurrentProject, RowId};
-use table::{QrateTableDelegate, Selection, TableChanged, TablePanelHandle, TableStateHandle};
+use table::{QrateTableDelegate, TableChanged, TablePanelHandle, TableStateHandle};
 
 use crate::panels::DetailsPanel;
 use crate::viewer::{self, Scope, Viewer};
@@ -497,10 +497,7 @@ impl PopOut {
         let table_row = self
             .pinned
             .as_ref()
-            .and_then(|_| match delegate.selection() {
-                Some(Selection::Cell { row, .. } | Selection::Row(row)) => Some(row),
-                _ => None,
-            })
+            .and_then(|_| delegate.cursor_row())
             // Only the grid's cursor, not its whole selection: this runs on every repaint.
             .filter(|row| !self.rows.contains(row))
             .and_then(|row| delegate.view_row(row))

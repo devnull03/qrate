@@ -138,12 +138,9 @@ pub(crate) fn build(
                 window,
                 |this: &mut Viewer, table, _: &table::TableChanged, window, cx| {
                     let delegate = table.read(cx).delegate();
-                    let file = match delegate.selection() {
-                        Some(table::Selection::Cell { row, .. } | table::Selection::Row(row)) => {
-                            previewable(delegate, row)
-                        }
-                        _ => None,
-                    };
+                    let file = delegate
+                        .cursor_row()
+                        .and_then(|row| previewable(delegate, row));
                     if let Some(file) = file.filter(|file| *file != this.path) {
                         open_viewer(file, this.scope, window, cx);
                     }
@@ -233,12 +230,7 @@ pub(crate) fn step_row(delta: isize, cx: &mut App) {
     let target = {
         let delegate = state.read(cx).delegate();
         let visible = delegate.visible();
-        let from = match delegate.selection() {
-            Some(table::Selection::Cell { row, .. } | table::Selection::Row(row)) => {
-                delegate.view_row(row)
-            }
-            _ => None,
-        };
+        let from = delegate.cursor_row().and_then(|row| delegate.view_row(row));
         from.and_then(|from| {
             next_row(from, delta, visible.len(), |view| {
                 previewable(delegate, visible[view]).is_some()
