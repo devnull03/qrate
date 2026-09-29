@@ -19,6 +19,7 @@ pub mod playback;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use components::ComponentId;
@@ -159,11 +160,13 @@ impl Asset for Preview {
         cx: &mut App,
     ) -> impl Future<Output = Self::Output> + Send + 'static {
         let executor = cx.background_executor().clone();
+        DECODING.fetch_add(1, Ordering::Relaxed);
         async move {
             executor
                 .spawn(async move {
                     let started = std::time::Instant::now();
                     let image = render(&path, max_edge, page, turns);
+                    DECODING.fetch_sub(1, Ordering::Relaxed);
                     log::debug!(
                         "preview: {} page {page} turned {turns} at {max_edge}px took {:?}",
                         path.display(),
@@ -174,6 +177,13 @@ impl Asset for Preview {
                 .await
         }
     }
+}
+
+static DECODING: AtomicUsize = AtomicUsize::new(0);
+
+/// How many previews are being decoded right now, for a busy readout.
+pub fn decoding() -> usize {
+    DECODING.load(Ordering::Relaxed)
 }
 
 /// Page counts learned by whoever last opened each file: the thumbnail loader, from the disk cache
@@ -725,6 +735,20 @@ pub fn forget(path: &Path, cx: &mut App) {
         cx.remove_asset::<Preview>(key);
     }
     for image in dropped {
+        cx.drop_image(image, None);
+    }
+    cx.refresh_windows();
+}
+
+/// Drop every decoded picture and page count, so a cleared disk cache is drawn again from the
+/// files rather than from memory. Call it outside a frame, as [`release`] explains.
+pub fn forget_all(cx: &mut App) {
+    if let Ok(mut known) = PAGES.lock() {
+        known.clear();
+    }
+    let live = std::mem::take(cx.default_global::<Live>());
+    for (key, image) in live.entries.into_values() {
+        cx.remove_asset::<Preview>(&key);
         cx.drop_image(image, None);
     }
     cx.refresh_windows();
