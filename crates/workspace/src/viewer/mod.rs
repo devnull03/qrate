@@ -746,7 +746,10 @@ impl Render for Viewer {
             .needs
             .and_then(|id| crate::component_banner::banner(id, cx));
         let popped = self.scope == Scope::PopOut;
-        let page_input = self.page_input(window, cx);
+        // Only the page pill has one, so a photo, recording or video never builds it.
+        let page_input =
+            (self.has_controls() && self.transport.is_none() && self.scrubber.is_none())
+                .then(|| self.page_input(window, cx));
         let paged = self.paged();
         let strip_width = match paged && self.strip_open {
             true => STRIP,
@@ -1182,7 +1185,7 @@ impl Render for Viewer {
                                                         cx.notify();
                                                     },
                                                 ))
-                                                .child(Input::new(&page_input).small()),
+                                                .children(page_input.map(|input| Input::new(&input).small())),
                                         )
                                         .child(div().pr_1().child(format!("of {pages}")))
                                         .child(
