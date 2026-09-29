@@ -489,6 +489,19 @@ impl Viewer {
         self.strip.scroll_to_item(page, ScrollStrategy::Nearest);
     }
 
+    /// Zoom until the page spans the frame's width, starting at its top. A page already that wide
+    /// at fit stays at fit.
+    fn fit_width(&mut self) {
+        let Some((image, fit)) = self.fit() else {
+            return;
+        };
+        let zoom = f32::from(self.frame.get().size.width) / (image.width * fit);
+        self.set_zoom(zoom, Point::default());
+        if self.zoom > 1.0 {
+            self.offset.y = self.slack().y;
+        }
+    }
+
     /// Whether the file has pages to list: a document or image stack, not a video's seconds.
     fn paged(&self) -> bool {
         self.pages > 1 && self.scrubber.is_none() && !self.video
@@ -683,8 +696,15 @@ impl Render for Viewer {
             _ => Vec::new(),
         };
         let wanted = preview::source(&self.path, cap, page, self.turns);
-        if preview::ready(&wanted, window, cx) {
+        if let Some(size) = preview::decoded(&wanted, window, cx) {
             self.shown = self.turns;
+            // A PDF or TIFF page has no header size, and pages differ; what was drawn does.
+            if let Some((width, height)) = size {
+                self.pixels = Some(match self.turns % 2 {
+                    0 => (width, height),
+                    _ => (height, width),
+                });
+            }
         }
         let picture = match self.shown == self.turns {
             true => wanted,
@@ -863,6 +883,10 @@ impl Render for Viewer {
                             this.set_zoom(actual, Point::default());
                             cx.notify();
                         }
+                    }
+                    "w" if reading => {
+                        this.fit_width();
+                        cx.notify();
                     }
                     "r" if reading => {
                         this.rotate(if ev.keystroke.modifiers.shift { -1 } else { 1 });
@@ -1150,6 +1174,20 @@ impl Render for Viewer {
                                                 .tooltip("Next page")
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.turn_page(1);
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("fit-width")
+                                                .icon(
+                                                    Icon::empty()
+                                                        .path("icons/move-horizontal.svg"),
+                                                )
+                                                .ghost()
+                                                .small()
+                                                .tooltip("Fit to width (W)")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.fit_width();
                                                     cx.notify();
                                                 })),
                                         ),
@@ -1490,6 +1528,42 @@ mod tests {
                 assert_eq!(viewer.actual_size(), Some(4.0));
                 viewer.rotate(-2);
                 assert_eq!(viewer.turns, 3, "a turn back from upright wraps");
+            });
+            close_viewer(window, cx);
+        });
+    }
+
+    /// Fit to width fills the frame's width from the top of a tall page, and leaves a page that
+    /// is already as wide as its frame at fit.
+    #[gpui::test]
+    fn fit_width_fills_the_width_from_the_top(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
+        let path = std::path::PathBuf::from("/nonexistent/qrate-fit-width.pdf");
+        cx.update(|window, cx| {
+            open_viewer(path, Scope::Workspace, window, cx);
+            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+            viewer.update(cx, |viewer, _| {
+                viewer.frame.set(gpui::Bounds::new(
+                    gpui::Point::default(),
+                    gpui::size(gpui::px(1000.), gpui::px(500.)),
+                ));
+
+                // Portrait, fitted at a quarter: four times over to span the width.
+                viewer.pixels = Some((1000, 2000));
+                viewer.fit_width();
+                assert_eq!(viewer.zoom, 4.0);
+                assert_eq!(
+                    viewer.offset,
+                    gpui::point(gpui::px(0.), gpui::px(750.)),
+                    "the page's top edge on the frame's"
+                );
+
+                // Landscape already spans the width at fit.
+                viewer.show_page(0);
+                viewer.pixels = Some((2000, 1000));
+                viewer.fit_width();
+                assert_eq!(viewer.zoom, 1.0);
+                assert_eq!(viewer.offset, gpui::Point::default());
             });
             close_viewer(window, cx);
         });

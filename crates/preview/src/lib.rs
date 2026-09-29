@@ -871,15 +871,22 @@ pub fn source(path: &Path, max_edge: u32, page: usize, turns: u8) -> ImageSource
     }))
 }
 
-/// Whether `source` has finished decoding, starting it if not. gpui re-renders the asking view
-/// when it lands.
+/// `None` while `source` decodes, starting it if it has not started; gpui re-renders the asking
+/// view when it lands. Once done, the pixel size of what was decoded, if we decoded it.
 ///
-/// ponytail: a path handed to gpui counts as ready — it is only ever the upright picture the
-/// viewer opened with, already loaded.
-pub fn ready(source: &ImageSource, window: &mut Window, cx: &mut App) -> bool {
+/// ponytail: a path handed to gpui counts as done with no size — it is only ever the upright
+/// picture the viewer opened with, already loaded, whose size the header gave.
+pub fn decoded(
+    source: &ImageSource,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Option<(u32, u32)>> {
     match source {
-        ImageSource::Custom(load) => load(window, cx).is_some(),
-        _ => true,
+        ImageSource::Custom(load) => Some(load(window, cx)?.ok().map(|image| {
+            let size = image.size(0);
+            (size.width.0 as u32, size.height.0 as u32)
+        })),
+        _ => Some(None),
     }
 }
 
