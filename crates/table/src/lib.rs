@@ -44,6 +44,18 @@ pub use visual::remove_model as remove_visual_model;
 pub struct TablePanelHandle(pub WeakEntity<TablePanel>);
 impl Global for TablePanelHandle {}
 
+impl TablePanelHandle {
+    /// Run `run` on the centre table, when one is open.
+    pub fn update(cx: &mut App, run: impl FnOnce(&mut TablePanel, &mut gpui::Context<TablePanel>)) {
+        if let Some(panel) = cx
+            .try_global::<Self>()
+            .and_then(|handle| handle.0.upgrade())
+        {
+            panel.update(cx, run);
+        }
+    }
+}
+
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
 pub const TABLE_STRIPES_KEY: &str = "table_stripes";
 

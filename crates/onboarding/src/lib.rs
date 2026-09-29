@@ -706,18 +706,13 @@ fn show_me(guide: &Entity<Guide>, task: Task, window: &mut Window, cx: &mut App)
         }
         Task::AddFilesFolder => {
             let blank = guide.read(cx).kind == GuideKind::Blank;
-            if let Some(table) = cx
-                .try_global::<table::TablePanelHandle>()
-                .and_then(|handle| handle.0.upgrade())
-            {
-                table.update(cx, |table, cx| {
-                    if blank {
-                        table.choose_import_paths(window, cx)
-                    } else {
-                        table.choose_files_root(window, cx)
-                    }
-                });
-            }
+            table::TablePanelHandle::update(cx, |table, cx| {
+                if blank {
+                    table.choose_import_paths(window, cx)
+                } else {
+                    table.choose_files_root(window, cx)
+                }
+            });
         }
         Task::OpenRow | Task::SelectRow => {
             ensure_visible(guide, DETAILS_META.name, window, cx);

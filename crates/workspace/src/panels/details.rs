@@ -1273,14 +1273,9 @@ impl Render for DetailsPanel {
                     style.bg(cx.theme().secondary_hover)
                 })
                 .on_drop(|paths: &ExternalPaths, window, cx| {
-                    if let Some(table) = cx
-                        .try_global::<TablePanelHandle>()
-                        .and_then(|handle| handle.0.upgrade())
-                    {
-                        table.update(cx, |table, cx| {
-                            table.import_external_paths(paths.paths().to_vec(), window, cx)
-                        });
-                    }
+                    TablePanelHandle::update(cx, |table, cx| {
+                        table.import_external_paths(paths.paths().to_vec(), window, cx)
+                    });
                 })
                 .flex()
                 .flex_col()
@@ -1496,14 +1491,9 @@ impl Render for DetailsPanel {
                                 .small()
                                 .label("Locate file…")
                                 .on_click(move |_, window, cx| {
-                                    if let Some(table) = cx
-                                        .try_global::<TablePanelHandle>()
-                                        .and_then(|handle| handle.0.upgrade())
-                                    {
-                                        table.update(cx, |table, cx| {
-                                            table.locate_file(row, window, cx)
-                                        });
-                                    }
+                                    TablePanelHandle::update(cx, |table, cx| {
+                                        table.locate_file(row, window, cx)
+                                    });
                                 }),
                         ),
                 )
@@ -1635,14 +1625,9 @@ impl Render for DetailsPanel {
             .size_full()
             .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary_hover))
             .on_drop(|paths: &ExternalPaths, window, cx| {
-                if let Some(table) = cx
-                    .try_global::<TablePanelHandle>()
-                    .and_then(|handle| handle.0.upgrade())
-                {
-                    table.update(cx, |table, cx| {
-                        table.import_external_paths(paths.paths().to_vec(), window, cx)
-                    });
-                }
+                TablePanelHandle::update(cx, |table, cx| {
+                    table.import_external_paths(paths.paths().to_vec(), window, cx)
+                });
             })
             // The whole panel gives the bottom-strip crop back at once, rather than each scrolling
             // region padding itself: the split below sizes its panes against whatever height it is

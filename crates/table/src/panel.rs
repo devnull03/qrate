@@ -1882,14 +1882,6 @@ impl TablePanel {
 /// App-level handlers for the grid's menu commands, so the menu bar reaches them wherever focus
 /// sits rather than only while the grid holds it. Undo, Redo and Deselect are the app's own.
 pub fn register_global_actions(cx: &mut App) {
-    fn on_panel(cx: &mut App, run: impl FnOnce(&mut TablePanel, &mut Context<TablePanel>)) {
-        if let Some(panel) = cx
-            .try_global::<crate::TablePanelHandle>()
-            .and_then(|handle| handle.0.upgrade())
-        {
-            panel.update(cx, run);
-        }
-    }
     // A global handler runs while the dispatching window is taken out; wait for it to come back.
     fn in_window(
         cx: &mut App,
@@ -1915,12 +1907,12 @@ pub fn register_global_actions(cx: &mut App) {
     }
 
     cx.on_action(|_: &InsertRowAbove, cx| {
-        on_panel(cx, |this, cx| {
+        crate::TablePanelHandle::update(cx, |this, cx| {
             this.structural(|rows, _| crate::Structural::InsertRow { at: rows[0] }, cx)
         })
     });
     cx.on_action(|_: &InsertRowBelow, cx| {
-        on_panel(cx, |this, cx| {
+        crate::TablePanelHandle::update(cx, |this, cx| {
             this.structural(
                 |rows, _| crate::Structural::InsertRow {
                     at: rows[rows.len() - 1] + 1,
@@ -1930,7 +1922,7 @@ pub fn register_global_actions(cx: &mut App) {
         })
     });
     cx.on_action(|_: &DuplicateRow, cx| {
-        on_panel(cx, |this, cx| {
+        crate::TablePanelHandle::update(cx, |this, cx| {
             this.structural(
                 |rows, _| crate::Structural::DuplicateRow { row: rows[0] },
                 cx,
@@ -1938,45 +1930,47 @@ pub fn register_global_actions(cx: &mut App) {
         })
     });
     cx.on_action(|_: &DeleteRow, cx| {
-        on_panel(cx, |this, cx| {
+        crate::TablePanelHandle::update(cx, |this, cx| {
             this.structural(|rows, _| crate::Structural::DeleteRows(rows.to_vec()), cx)
         })
     });
     cx.on_action(|_: &InsertColumnLeft, cx| {
-        on_panel(cx, |this, cx| {
+        crate::TablePanelHandle::update(cx, |this, cx| {
             this.structural(|_, col| crate::Structural::InsertColumn { at: col }, cx)
         })
     });
     cx.on_action(|_: &InsertColumnRight, cx| {
-        on_panel(cx, |this, cx| {
+        crate::TablePanelHandle::update(cx, |this, cx| {
             this.structural(|_, col| crate::Structural::InsertColumn { at: col + 1 }, cx)
         })
     });
     cx.on_action(|_: &DeleteColumn, cx| {
-        on_panel(cx, |this, cx| {
+        crate::TablePanelHandle::update(cx, |this, cx| {
             this.structural(|_, col| crate::Structural::DeleteColumn { col }, cx)
         })
     });
     cx.on_action(|_: &IndentRow, cx| {
-        on_panel(cx, |this, cx| arrange(this, crate::Arrangement::Indent, cx))
+        crate::TablePanelHandle::update(cx, |this, cx| {
+            arrange(this, crate::Arrangement::Indent, cx)
+        })
     });
     cx.on_action(|_: &OutdentRow, cx| {
-        on_panel(cx, |this, cx| {
+        crate::TablePanelHandle::update(cx, |this, cx| {
             arrange(this, crate::Arrangement::Outdent, cx)
         })
     });
     cx.on_action(|_: &DeleteSubtree, cx| {
-        on_panel(cx, |this, cx| {
+        crate::TablePanelHandle::update(cx, |this, cx| {
             arrange(this, crate::Arrangement::DeleteSubtree, cx)
         })
     });
     cx.on_action(|_: &UnfreezeColumns, cx| {
-        on_panel(cx, |this, cx| {
+        crate::TablePanelHandle::update(cx, |this, cx| {
             crate::set_frozen_columns(&this.state.clone(), 0, cx)
         })
     });
     cx.on_action(|_: &ExpandAll, cx| {
-        on_panel(cx, |this, cx| {
+        crate::TablePanelHandle::update(cx, |this, cx| {
             let expanded = this.state.update(cx, |state, cx| {
                 state.delegate_mut().expand_all();
                 let expanded = state.delegate().expanded_rows();
@@ -1988,7 +1982,7 @@ pub fn register_global_actions(cx: &mut App) {
         })
     });
     cx.on_action(|_: &CollapseAll, cx| {
-        on_panel(cx, |this, cx| {
+        crate::TablePanelHandle::update(cx, |this, cx| {
             this.state.update(cx, |state, cx| {
                 state.delegate_mut().collapse_all();
                 state.refresh(cx);

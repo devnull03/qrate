@@ -687,12 +687,9 @@ impl PopOut {
                         .mt_1()
                         .label("Locate file…")
                         .on_click(move |_, window, cx| {
-                            if let Some(table) = cx
-                                .try_global::<TablePanelHandle>()
-                                .and_then(|handle| handle.0.upgrade())
-                            {
-                                table.update(cx, |table, cx| table.locate_file(row, window, cx));
-                            }
+                            TablePanelHandle::update(cx, |table, cx| {
+                                table.locate_file(row, window, cx)
+                            });
                         }),
                 ),
             Some((_, file, _)) => {

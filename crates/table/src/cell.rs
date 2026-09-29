@@ -128,14 +128,9 @@ pub(crate) fn render_cell(
                     return;
                 };
                 window.defer(cx, move |window, cx| {
-                    if let Some(panel) = cx
-                        .try_global::<crate::TablePanelHandle>()
-                        .and_then(|handle| handle.0.upgrade())
-                    {
-                        panel.update(cx, |panel, cx| {
-                            panel.link_dropped_file(row_ix, col_ix, path, window, cx)
-                        });
-                    }
+                    crate::TablePanelHandle::update(cx, |panel, cx| {
+                        panel.link_dropped_file(row_ix, col_ix, path, window, cx)
+                    });
                 });
             })
         })
