@@ -75,12 +75,6 @@ pub(crate) fn row_height(compact: bool, lines: usize, rem: Pixels) -> Pixels {
         + rem * crate::editor::LINE_HEIGHT.0 * lines.saturating_sub(1) as f32
 }
 
-/// The whole number of lines closest to a dragged row height, within what Settings offers.
-pub(crate) fn lines_at(compact: bool, height: Pixels, rem: Pixels) -> usize {
-    let extra = (height - row_height(compact, 1, rem)) / (rem * crate::editor::LINE_HEIGHT.0);
-    (extra.round().max(0.) as usize + 1).min(crate::MAX_ROW_LINES)
-}
-
 /// Push the settings the delegate caches into it. Called wherever either store changes, since the
 /// delegate reads no settings itself — it has no `App` in the paths that need them.
 fn apply_settings(delegate: &mut QrateTableDelegate, cx: &App) {
@@ -209,8 +203,6 @@ pub struct TablePanel {
     _revalidate_task: Option<Task<()>>,
     /// The watcher on the files folder, while the project has one.
     watch: Option<watch::FolderWatch>,
-    /// The row height a drag on a row-number edge is previewing, until it is released.
-    row_drag: Option<Pixels>,
 }
 
 impl TablePanel {
@@ -613,7 +605,6 @@ impl TablePanel {
             _autosave_task: None,
             _revalidate_task: None,
             watch: None,
-            row_drag: None,
         };
         panel.sync_watch(cx);
         cx.set_global(crate::TablePanelHandle(cx.entity().downgrade()));
@@ -2025,12 +2016,7 @@ impl Render for TablePanel {
         let stripe = settings::effective_bool(crate::TABLE_STRIPES_KEY, cx);
         let compact = settings::effective_text(crate::ROW_DENSITY_KEY, cx).as_ref() == "compact";
         let rem = window.rem_size();
-        if !cx.has_active_drag() {
-            self.row_drag = None;
-        }
-        let height = self
-            .row_drag
-            .unwrap_or_else(|| row_height(compact, crate::row_lines(cx), rem));
+        let height = row_height(compact, crate::row_lines(cx), rem);
 
         v_flex()
             .size_full()
@@ -2042,27 +2028,6 @@ impl Render for TablePanel {
             .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary_hover))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 this.import_external_paths(paths.paths().to_vec(), window, cx)
-            }))
-            .on_drag_move(cx.listener(
-                move |this, event: &DragMoveEvent<row_index::RowResize>, _, cx| {
-                    let from = cx
-                        .try_global::<row_index::RowResizeFrom>()
-                        .map_or(event.event.position.y, |from| from.0);
-                    let lines = crate::row_lines(cx);
-                    this.row_drag = Some(
-                        (row_height(compact, lines, rem) + event.event.position.y - from).clamp(
-                            row_height(compact, 1, rem),
-                            row_height(compact, crate::MAX_ROW_LINES, rem),
-                        ),
-                    );
-                    cx.notify();
-                },
-            ))
-            .on_drop(cx.listener(move |this, _: &row_index::RowResize, _, cx| {
-                if let Some(height) = this.row_drag.take() {
-                    crate::set_row_lines(lines_at(compact, height, rem), cx);
-                }
-                cx.notify();
             }))
             // Search, Replace and the find bar's own Escape are handled by `ViewsPanel`, which draws
             // the bar above every view. An action stops propagating by default, so declining an
@@ -2209,25 +2174,6 @@ mod tests {
         assert_eq!(super::row_height(false, 2, px(16.)), px(52.));
         assert_eq!(super::row_height(true, 4, px(16.)), px(88.));
         assert_eq!(super::row_height(false, 3, px(24.)), px(108.));
-    }
-
-    #[test]
-    fn a_dragged_height_snaps_to_the_nearest_line_within_range() {
-        use gpui::px;
-        for compact in [false, true] {
-            for rem in [px(16.), px(24.)] {
-                for lines in 1..=crate::MAX_ROW_LINES {
-                    let exact = super::row_height(compact, lines, rem);
-                    assert_eq!(super::lines_at(compact, exact, rem), lines);
-                    assert_eq!(super::lines_at(compact, exact + px(4.), rem), lines);
-                }
-            }
-        }
-        assert_eq!(super::lines_at(false, px(0.), px(16.)), 1);
-        assert_eq!(
-            super::lines_at(false, px(500.), px(16.)),
-            crate::MAX_ROW_LINES
-        );
     }
 
     #[test]

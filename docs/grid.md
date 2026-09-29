@@ -17,17 +17,13 @@ undo and **Ctrl+Shift+Z** (or **Ctrl+Y**) to redo. Undo and redo also cover addi
 removing, and reordering rows and columns, so a structural change is as safe to try as a
 cell edit. Undo goes back 200 steps by default. **Settings ▸ Table ▸ Editing ▸ Undo steps**
 raises that to 500, 1,000, or 2,000; each step keeps what it replaced, so a deeper history uses
-more memory.
+more memory. The [change history](history.md) keeps every change across sessions.
 
 **Settings ▸ Table ▸ Appearance ▸ Row density** chooses **Comfortable** (the default) or
 **Compact**, which uses smaller text and fits more rows on screen.
 
 **Settings ▸ Table ▸ Appearance ▸ Row height** sets how many lines of text a row holds: 1 (the
-default), 2, 3, or 4. All rows have the same height. You can also set it from the grid: point
-at the bottom edge of any row number until the pointer becomes a resize arrow, then drag up or
-down. Every row follows the drag, and when you release it the height snaps to the nearest whole
-line. Double-click the edge to go back to 1 line. The drag changes the project's own row height
-if the project overrides it, and your default if it does not.
+default), 2, 3, or 4. All rows have the same height.
 
 Undo steps, row density, and row height are defaults a project can override; see
 [Projects](projects.md#your-defaults-and-project-overrides).
