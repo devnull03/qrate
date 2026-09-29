@@ -1,7 +1,7 @@
 # GitHub wiki sync
 
 The [qrate wiki](https://github.com/devnull03/qrate/wiki) is generated from every Markdown
-page under `docs/` on `main`. Edit the source documentation here; edits to generated wiki
+page under `docs/` on `main`, excluding `docs/dev/`. Edit the source documentation here; edits to generated wiki
 pages are replaced on the next sync.
 
 `.github/workflows/sync-wiki.yml` publishes changes when documentation, the renderer, or
@@ -23,7 +23,9 @@ For example, `getting-started/index.md` becomes `getting-started`, and
 
 Links to documentation pages become wiki links. Links to other repository files and
 directories point to `main` on GitHub; images outside the wiki use raw repository URLs.
-Fenced code blocks are preserved. A generated sidebar lists all the documentation pages.
+Fenced code blocks are preserved. A generated sidebar lists the published documentation pages.
+Developer notes are excluded, and the wiki home omits the source index's **For contributors**
+section. Links from user guides to excluded pages point to the source files on GitHub.
 
 The wiki's `.qrate-docs-pages.json` records the files owned by the sync. When a source page
 is removed or renamed, its old generated page is removed. Other wiki pages are preserved.

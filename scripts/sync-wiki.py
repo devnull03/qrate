@@ -15,7 +15,10 @@ def main():
     parser.add_argument("--ref", default="main")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    docs = sorted((root / "docs").rglob("*.md"))
+    docs = sorted(
+        source for source in (root / "docs").rglob("*.md")
+        if source.relative_to(root / "docs").parts[0] != "dev"
+    )
     pages = {}
     for source in docs:
         relative = source.relative_to(root / "docs")
@@ -50,10 +53,12 @@ def main():
     reference = re.compile(r"^(\s{0,3}\[[^\]]+\]:\s*)(\S+)(.*)$")
     fence = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
     generated = {}
-    sections = {"User guide": [], "Getting started": [], "Plugins": [], "Developer notes": []}
+    sections = {"User guide": [], "Getting started": [], "Plugins": []}
     for source in docs:
         content = source.read_text(encoding="utf-8")
         name = pages[source.relative_to(root).as_posix()]
+        if name == "Home":
+            content = re.sub(r"\n## For contributors\n.*?(?=\n## |\Z)", "", content, flags=re.S)
         lines = []
         fenced = None
         for line in content.splitlines(keepends=True):
@@ -84,7 +89,7 @@ def main():
         )
         title = next((line[2:].strip() for line in content.splitlines() if line.startswith("# ")), name)
         folder = source.relative_to(root / "docs").parts[0]
-        section = {"getting-started": "Getting started", "plugins": "Plugins", "dev": "Developer notes"}.get(
+        section = {"getting-started": "Getting started", "plugins": "Plugins"}.get(
             folder, "User guide"
         )
         sections[section].append(f"- [{title}]({wiki_url}{quote(name, safe='')})\n")
