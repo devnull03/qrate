@@ -768,7 +768,14 @@ fn main() {
                         cx.update(|cx| {
                             // Switching projects drops the open one's table state; persist it first.
                             if settings::dirty::Dirty::has(settings::dirty::PROJECT_DATA, cx) {
-                                table::save_now(cx);
+                                if let Err(error) = table::save_now(cx) {
+                                    let message = format!(
+                                        "Couldn't save the current project before opening the handed-off target: {error}"
+                                    );
+                                    log::error!("{message}");
+                                    project_wizard::open_launcher_with_error(message.into(), cx);
+                                    return;
+                                }
                             }
                             open_target(target, cx)
                         });
