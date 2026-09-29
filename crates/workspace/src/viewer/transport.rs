@@ -154,7 +154,7 @@ pub fn toggle<V: Host>(this: &mut V, window: &mut Window, cx: &mut Context<V>) {
     if transport.is_current(cx) {
         preview::playback::toggle(cx);
     } else {
-        preview::playback::play(&path, cx);
+        preview::playback::play(&path, cx.entity_id(), cx);
     }
 
     if needs_tick {

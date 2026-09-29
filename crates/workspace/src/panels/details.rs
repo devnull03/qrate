@@ -7,7 +7,7 @@ use std::time::Duration;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, IconName, Sizable, StyledExt as _,
+    ActiveTheme, Icon, IconName, Sizable, StyledExt as _,
     button::{Button, ButtonVariants},
     dock::{BasePanel, DockPlacement, Panel, PanelEvent},
     h_flex,
@@ -100,10 +100,11 @@ pub struct DetailsPanel {
     /// The field editor, shared across whichever field is open — the same one-per-panel
     /// arrangement the grid uses for its cell editor.
     editor: Entity<TextareaState>,
-    /// `(source_rows, data_col)` of the field being edited, in the grid's own coordinates so a
-    /// filter change between opening and committing can't redirect the write. Several rows when
-    /// the field belongs to a bundle: one edit box writing the same value down the selection.
-    editing: Option<(Vec<usize>, usize, SharedString)>,
+    /// `(row ids, data_col, header)` of the field being edited. Ids rather than source rows, so a
+    /// row added or removed before the commit — from either window — can't redirect the write.
+    /// Several rows when the field belongs to a bundle: one edit box writing the same value down
+    /// the selection.
+    editing: Option<(Vec<settings::project::RowId>, usize, SharedString)>,
     /// Which of the selected items the preview stack is showing, and whether the pointer is over
     /// it — the step arrows only exist while it is, so they never cover the photo at rest.
     stack: usize,
@@ -146,6 +147,12 @@ pub struct DetailsPanel {
     /// What `transport` and `caption` were built from. `retarget` runs on every table change, so
     /// without it a keystroke in the grid would re-stat the file.
     file: Option<PathBuf>,
+    /// The rows described instead of the grid's selection, which makes this the pop-out's sidebar:
+    /// that window can be pinned to an item the grid has moved on from, and its stage already
+    /// shows the file, so there is no image pane here.
+    rows: Option<Vec<usize>>,
+    /// Repaints the Pop out button when that window opens or closes.
+    _pop_out_sub: Subscription,
 }
 
 impl DetailsPanel {
@@ -202,6 +209,9 @@ impl DetailsPanel {
             caption: None,
             _caption_task: None,
             file: None,
+            rows: None,
+            _pop_out_sub: cx
+                .observe_global::<crate::pop_out::PopOutWindow>(|_this: &mut Self, cx| cx.notify()),
         };
         this.bind(cx);
         this
@@ -235,20 +245,15 @@ impl DetailsPanel {
 
     /// The selected items as source rows in view order — what the whole panel is about, and the
     /// same list the grid, the gallery and the status bar count.
-    fn picked(&self, cx: &App) -> Vec<usize> {
+    pub(crate) fn picked(&self, cx: &App) -> Vec<usize> {
+        if let Some(rows) = &self.rows {
+            return rows.clone();
+        }
         self.state
             .as_ref()
             .and_then(|w| w.upgrade())
             .map(|s| s.read(cx).delegate().selected_source_rows())
             .unwrap_or_default()
-    }
-
-    /// The item the preview is showing: the stack's front card. Clamped rather than remembered, so
-    /// stepping to the fifth of five and then selecting two doesn't leave the preview blank.
-    fn front(&self, picked: &[usize]) -> Option<usize> {
-        picked
-            .get(self.stack.min(picked.len().checked_sub(1)?))
-            .copied()
     }
 
     /// Point the transport at whatever is selected now. A no-op while the selection stays on the
@@ -257,8 +262,13 @@ impl DetailsPanel {
     fn retarget(&mut self, cx: &mut Context<Self>) {
         self.fields = None;
         let picked = self.picked(cx);
-        let front = self.front(&picked);
+        let front = stack_front(&picked, self.stack);
         self.load_row_history(front, cx);
+        // The pop-out's stage has the file, its caption and its transport.
+        if self.rows.is_some() {
+            self.transport = None;
+            return;
+        }
         let path = front.and_then(|row| {
             let state = self.state.as_ref()?.upgrade()?;
             let delegate = state.read(cx).delegate();
@@ -283,9 +293,19 @@ impl DetailsPanel {
         // Whatever was playing belonged to the row being left. Leaving it running would narrate
         // one item while the panel details another.
         if self.transport.is_some() {
-            preview::playback::stop(cx);
+            preview::playback::stop(cx.entity_id(), cx);
         }
         self.transport = path.and_then(|path| Transport::new(path, cx));
+    }
+
+    /// Describe `rows` from now on, rather than the grid's selection.
+    pub(crate) fn show_rows(&mut self, rows: Vec<usize>, cx: &mut Context<Self>) {
+        if self.rows.as_ref() == Some(&rows) {
+            return;
+        }
+        self.rows = Some(rows);
+        self.retarget(cx);
+        cx.notify();
     }
 
     /// Re-read the front item's history, off the UI thread, when the item or the project file has
@@ -293,7 +313,7 @@ impl DetailsPanel {
     fn load_row_history(&mut self, front: Option<usize>, cx: &mut Context<Self>) {
         let row = front.and_then(|row| {
             let state = self.state.as_ref()?.upgrade()?;
-            state.read(cx).delegate().row_ids().get(row).copied()
+            state.read(cx).delegate().row_id(row)
         });
         let file = cx
             .try_global::<settings::project::CurrentProject>()
@@ -354,14 +374,18 @@ impl DetailsPanel {
     ) {
         // Whatever was open loses focus rather than being silently dropped.
         self.commit(cx);
-        let rows = self.picked(cx);
+        let picked = self.picked(cx);
         let located = self
             .state
             .as_ref()
             .and_then(|w| w.upgrade())
-            .and_then(|s| s.read(cx).delegate().data_col(header))
-            .filter(|_| !rows.is_empty());
-        let Some(col) = located else {
+            .filter(|_| !picked.is_empty())
+            .and_then(|s| {
+                let delegate = s.read(cx).delegate();
+                let rows = picked.iter().filter_map(|&row| delegate.row_id(row));
+                Some((rows.collect::<Vec<_>>(), delegate.data_col(header)?))
+            });
+        let Some((rows, col)) = located else {
             log::warn!("details: no column named {header} to edit");
             return;
         };
@@ -789,12 +813,7 @@ impl DetailsPanel {
     /// Move the preview stack one item along, wrapping at both ends so a bundle can be walked in
     /// either direction without hunting for the end of it.
     fn step_stack(&mut self, forward: bool, cx: &mut Context<Self>) {
-        let count = self.picked(cx).len().max(1);
-        let at = self.stack.min(count - 1);
-        self.stack = match forward {
-            true => (at + 1) % count,
-            false => (at + count - 1) % count,
-        };
+        self.stack = stack_step(self.stack, self.picked(cx).len(), forward);
         self.retarget(cx);
         cx.notify();
     }
@@ -803,15 +822,33 @@ impl DetailsPanel {
     /// validation and undo stay single-sourced. Clearing `editing` first keeps the `TableChanged`
     /// this provokes from re-entering as a second commit.
     fn commit(&mut self, cx: &mut Context<Self>) {
-        let Some((rows, col, _)) = self.editing.take() else {
+        let Some((ids, _, header)) = self.editing.take() else {
             return;
         };
         let value = self.editor.read(cx).value().clone();
+        // Resolved now, not when the editor opened: rows and columns may have moved since.
+        let Some(cells) = self
+            .state
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .and_then(|state| {
+                let delegate = state.read(cx).delegate();
+                let col = delegate.data_col(&header)?;
+                let at = delegate.row_positions();
+                let rows = ids.iter().filter_map(|id| at.get(id).copied());
+                Some(
+                    rows.map(|row| (row, col, value.clone()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+        else {
+            log::warn!("details: the field being edited is gone, so the edit was dropped");
+            return;
+        };
         // One batch, so setting a field across a bundle is a single undo step — and `apply_edit`
         // drops the rows whose text this didn't change, so committing an untouched shared field
         // costs nothing.
-        let cells = rows.into_iter().map(|row| (row, col, value.clone()));
-        table::write_cells(cells.collect(), settings::history::Origin::Details, cx);
+        table::write_cells(cells, settings::history::Origin::Details, cx);
         cx.notify();
     }
 
@@ -1019,6 +1056,24 @@ fn render_image_frame(
                                     }),
                             )
                         })
+                        // Beside fullscreen, since both open a bigger view — but for any file,
+                        // because the pop-out also says what it cannot show. One per project.
+                        .child({
+                            let open = crate::pop_out::is_open(cx);
+                            Button::new("pop-out")
+                                .icon(
+                                    Icon::empty()
+                                        .path("icons/app-window.svg")
+                                        .when(open, |icon| icon.text_color(cx.theme().primary)),
+                                )
+                                .ghost()
+                                .small()
+                                .tooltip(match open {
+                                    true => "Show pop-out window",
+                                    false => "Open in new window",
+                                })
+                                .on_click(|_, _, cx| crate::pop_out::open(cx))
+                        })
                         .child(action(
                             "open-image",
                             IconName::ExternalLink,
@@ -1044,12 +1099,17 @@ fn render_image_frame(
                 .absolute()
                 .top_1()
                 .left_1()
+                // The action chip opposite takes the rest; a narrow pane truncates rather than overlaps.
+                .max_w(relative(0.4))
                 .px_1p5()
                 .py_0p5()
                 .rounded(cx.theme().radius)
                 .bg(cx.theme().background)
                 .text_xs()
                 .text_color(cx.theme().foreground)
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
                 .child(caption)
         }))
         // Along the bottom of the frame, over the cover art rather than beside it: the pane is a
@@ -1073,6 +1133,22 @@ fn render_image_frame(
 /// One of the preview stack's step arrows, pinned to the edge its chevron points at and centred
 /// down the card. Full-height flex rather than a top offset: the pane is a height the user drags,
 /// so there is no fixed centre to hardcode.
+/// The item a stack of selected `rows` shows: the front card. Clamped rather than remembered, so
+/// stepping to the fifth of five and then selecting two doesn't leave the preview blank.
+pub(crate) fn stack_front(rows: &[usize], stack: usize) -> Option<usize> {
+    rows.get(stack.min(rows.len().checked_sub(1)?)).copied()
+}
+
+/// The front card after one step through `count` cards, wrapping at either end.
+pub(crate) fn stack_step(stack: usize, count: usize, forward: bool) -> usize {
+    let count = count.max(1);
+    let at = stack.min(count - 1);
+    match forward {
+        true => (at + 1) % count,
+        false => (at + count - 1) % count,
+    }
+}
+
 fn step(
     id: &'static str,
     left: bool,
@@ -1151,7 +1227,7 @@ fn shared_fields(delegate: &QrateTableDelegate, picked: &[usize]) -> Vec<SharedF
 impl Render for DetailsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let picked = self.picked(cx);
-        let front = self.front(&picked);
+        let front = stack_front(&picked, self.stack);
         let count = picked.len();
         let selection = self.state.as_ref().and_then(|w| w.upgrade()).map(|s| {
             let delegate = s.read(cx).delegate();
@@ -1185,6 +1261,10 @@ impl Render for DetailsPanel {
             == crate::ViewMode::Gallery;
 
         let Some((fields, image_path, lost)) = selection.filter(|(f, _, _)| !f.is_empty()) else {
+            // The pop-out's stage already says so, in a place a collapsed sidebar cannot hide.
+            if self.rows.is_some() {
+                return div().into_any_element();
+            }
             // Says what this panel is for and how to fill it, rather than only reporting that it
             // is empty — the multi-select gesture is the one thing here nobody discovers by luck.
             return div()
@@ -1193,14 +1273,9 @@ impl Render for DetailsPanel {
                     style.bg(cx.theme().secondary_hover)
                 })
                 .on_drop(|paths: &ExternalPaths, window, cx| {
-                    if let Some(table) = cx
-                        .try_global::<TablePanelHandle>()
-                        .and_then(|handle| handle.0.upgrade())
-                    {
-                        table.update(cx, |table, cx| {
-                            table.import_external_paths(paths.paths().to_vec(), window, cx)
-                        });
-                    }
+                    TablePanelHandle::update(cx, |table, cx| {
+                        table.import_external_paths(paths.paths().to_vec(), window, cx)
+                    });
                 })
                 .flex()
                 .flex_col()
@@ -1416,14 +1491,9 @@ impl Render for DetailsPanel {
                                 .small()
                                 .label("Locate file…")
                                 .on_click(move |_, window, cx| {
-                                    if let Some(table) = cx
-                                        .try_global::<TablePanelHandle>()
-                                        .and_then(|handle| handle.0.upgrade())
-                                    {
-                                        table.update(cx, |table, cx| {
-                                            table.locate_file(row, window, cx)
-                                        });
-                                    }
+                                    TablePanelHandle::update(cx, |table, cx| {
+                                        table.locate_file(row, window, cx)
+                                    });
                                 }),
                         ),
                 )
@@ -1555,20 +1625,15 @@ impl Render for DetailsPanel {
             .size_full()
             .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary_hover))
             .on_drop(|paths: &ExternalPaths, window, cx| {
-                if let Some(table) = cx
-                    .try_global::<TablePanelHandle>()
-                    .and_then(|handle| handle.0.upgrade())
-                {
-                    table.update(cx, |table, cx| {
-                        table.import_external_paths(paths.paths().to_vec(), window, cx)
-                    });
-                }
+                TablePanelHandle::update(cx, |table, cx| {
+                    table.import_external_paths(paths.paths().to_vec(), window, cx)
+                });
             })
             // The whole panel gives the bottom-strip crop back at once, rather than each scrolling
             // region padding itself: the split below sizes its panes against whatever height it is
             // handed, so a panel that grew 29px when the bottom dock closed re-scaled the image
             // pane under the pointer. Paid here, the split's height never changes.
-            .pb(crop)
+            .when(self.rows.is_none(), |panel| panel.pb(crop))
             .key_context(DETAILS_META.name)
             .track_focus(&self.focus_handle)
             .id("details-panel")
@@ -1600,9 +1665,10 @@ impl Render for DetailsPanel {
                             }
                         })
                         // Hidden in the gallery, not dropped: the split sizes its panels by index.
+                        // Never shown in the pop-out's sidebar, whose stage is the file.
                         .child(
                             resizable_panel()
-                                .visible(!gallery)
+                                .visible(!gallery && self.rows.is_none())
                                 .size(px(image_height))
                                 .size_range(px(80.)..px(600.))
                                 .flex_none()
@@ -1732,6 +1798,28 @@ mod tests {
 
     use super::{DetailsPanel, render_image_frame};
 
+    /// The stack wraps at both ends, and a remembered position past a smaller selection lands
+    /// on its last card rather than on nothing.
+    #[test]
+    fn the_stack_wraps_and_clamps_to_the_selection() {
+        use super::{stack_front, stack_step};
+
+        assert_eq!(
+            stack_step(2, 3, true),
+            0,
+            "past the last wraps to the first"
+        );
+        assert_eq!(
+            stack_step(0, 3, false),
+            2,
+            "before the first wraps to the last"
+        );
+        assert_eq!(stack_step(4, 2, true), 0, "a stale position clamps first");
+        assert_eq!(stack_step(0, 0, true), 0, "nothing selected goes nowhere");
+        assert_eq!(stack_front(&[7, 8], 5), Some(8));
+        assert_eq!(stack_front(&[], 0), None);
+    }
+
     /// Wraps `render_image_frame` in a root `Render` view so a test can actually draw it —
     /// `Img`'s real load/fallback logic runs during layout/paint, not at element construction,
     /// so building the element tree alone (without a window draw) wouldn't exercise it.
@@ -1800,36 +1888,26 @@ mod tests {
         cx.add_window_view(DetailsPanel::new);
     }
 
-    /// A real table behind the panel, with autosave off so a committed edit doesn't write the
-    /// temp project file. Same shape as `table::delegate`'s own fixture.
+    /// A real table behind the panel: three rows, two of which share a Medium.
     fn project_with_table(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            gpui_component::init(cx);
-            let mut app = settings::AppSettings::default();
-            app.values.insert(
-                settings::AUTOSAVE_KEY.into(),
-                settings::Val::Text("off".into()),
-            );
-            cx.set_global(app);
-            cx.set_global(settings::project::CurrentProject {
-                file: std::env::temp_dir().join("qrate-details-edit.qrate"),
-                data: settings::project::ProjectData {
-                    name: "T".into(),
-                    columns: Vec::new(),
-                    headers: vec!["Medium".into(), "Title".into()],
-                    rows: vec![
-                        vec!["Film".into(), "one".into()],
-                        vec!["Video".into(), "two".into()],
-                        // Shares a Medium with row 0 but not a Title, so a selection of the two
-                        // has one agreed field and one mixed.
-                        vec!["Film".into(), "three".into()],
-                    ],
-                    row_ids: vec![1, 2, 3],
-                    values: Default::default(),
-                },
-            });
-        });
-        cx.add_window_view(table::TablePanel::new);
+        crate::test_support::open_table(
+            cx,
+            "qrate-details-edit.qrate",
+            settings::project::ProjectData {
+                name: "T".into(),
+                columns: Vec::new(),
+                headers: vec!["Medium".into(), "Title".into()],
+                rows: vec![
+                    vec!["Film".into(), "one".into()],
+                    vec!["Video".into(), "two".into()],
+                    // Shares a Medium with row 0 but not a Title, so a selection of the two has
+                    // one agreed field and one mixed.
+                    vec!["Film".into(), "three".into()],
+                ],
+                row_ids: vec![1, 2, 3],
+                values: Default::default(),
+            },
+        );
     }
 
     #[gpui::test]
@@ -1976,7 +2054,7 @@ mod tests {
             panel.edit_field(&"Title".into(), &"".into(), window, cx);
             assert_eq!(
                 panel.editing,
-                Some((vec![0, 2], 1, "Title".into())),
+                Some((vec![1, 3], 1, "Title".into())),
                 "the write is aimed at both selected items"
             );
             panel
@@ -1999,6 +2077,47 @@ mod tests {
         assert_eq!(titles(cx), vec!["one", "two", "three"]);
     }
 
+    /// A row added above the item while its field is open must not redirect the write onto
+    /// whichever row slid into the old position — the other window can do this mid-edit.
+    #[gpui::test]
+    fn an_edit_lands_on_its_item_after_a_row_is_added_above_it(cx: &mut TestAppContext) {
+        project_with_table(cx);
+        let state = cx.update(|cx| {
+            cx.try_global::<table::TableStateHandle>()
+                .and_then(|h| h.0.upgrade())
+                .expect("the table panel publishes its state handle")
+        });
+        let (panel, cx) = cx.add_window_view(DetailsPanel::new);
+        state.update(cx, |state, cx| state.set_selected_cell(1, 2, cx));
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.edit_field(&"Title".into(), &"two".into(), window, cx);
+            panel.editor.update(cx, |editor, cx| {
+                editor.set_value("two, revised", window, cx)
+            });
+        });
+        state.update(cx, |state, _| {
+            state.delegate_mut().set_data(
+                &["Medium".into(), "Title".into()],
+                &[9, 1, 2, 3],
+                &[
+                    vec!["Photo".into(), "new".into()],
+                    vec!["Film".into(), "one".into()],
+                    vec!["Video".into(), "two".into()],
+                    vec!["Film".into(), "three".into()],
+                ],
+            )
+        });
+        panel.update(cx, |panel, cx| panel.commit(cx));
+
+        let titles = state.read_with(cx, |s, _| {
+            (0..4)
+                .map(|row| s.delegate().cell(row, 1).cloned().unwrap_or_default())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(titles, vec!["new", "one", "two, revised", "three"]);
+    }
+
     /// The DoD: a field edited in the panel lands in the grid, and undo — the grid's own history,
     /// which the panel must not have bypassed — puts it back. Also pins the name→column lookup:
     /// each field must write its own column, not the one at its position in the list.
@@ -2018,7 +2137,7 @@ mod tests {
             panel.edit_field(&"Title".into(), &"two".into(), window, cx);
             assert_eq!(
                 panel.editing,
-                Some((vec![1], 1, "Title".into())),
+                Some((vec![2], 1, "Title".into())),
                 "Title is data column 1"
             );
             panel.editor.update(cx, |editor, cx| {
@@ -2029,7 +2148,7 @@ mod tests {
             panel.edit_field(&"Medium".into(), &"Video".into(), window, cx);
             assert_eq!(
                 panel.editing,
-                Some((vec![1], 0, "Medium".into())),
+                Some((vec![2], 0, "Medium".into())),
                 "Medium is data column 0"
             );
             panel.editing = None;

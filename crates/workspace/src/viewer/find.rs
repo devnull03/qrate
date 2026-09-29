@@ -34,6 +34,8 @@ pub struct Find {
     /// Whether the document has any text to search. `None` until checked. A scan that was never
     /// OCR'd finds nothing for every query, and "No matches" would blame the query for it.
     pub layered: Option<bool>,
+    /// The search for `query`. Replaced by the next one, which drops it if it has not begun.
+    pub task: Option<Task<()>>,
 }
 
 impl Find {
@@ -82,7 +84,9 @@ impl Find {
 ///
 /// One row per hit rather than a box holding the whole document — a reader wants to see *where* a
 /// word turns up, and a wall of extracted text answers a question nobody asked.
-pub fn panel(find: &Find, width: Pixels, cx: &mut Context<Viewer>) -> AnyElement {
+///
+/// `docked` is the pop-out's sidebar tab, which has its own edge and no controls above it.
+pub fn panel(find: &Find, width: Pixels, docked: bool, cx: &mut Context<Viewer>) -> AnyElement {
     let empty = find.hits.is_empty();
     let rows: Vec<_> = find
         .hits
@@ -96,11 +100,11 @@ pub fn panel(find: &Find, width: Pixels, cx: &mut Context<Viewer>) -> AnyElement
         .gap_2()
         .p_2()
         // Clears the control cluster pinned to the overlay's top-right corner.
-        .pt_12()
+        .when(!docked, |panel| {
+            panel.pt_12().border_l_1().border_color(cx.theme().border)
+        })
         .occlude()
         .bg(cx.theme().background)
-        .border_l_1()
-        .border_color(cx.theme().border)
         .child(
             h_flex()
                 .gap_1()

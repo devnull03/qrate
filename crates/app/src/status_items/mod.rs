@@ -3,6 +3,7 @@ pub mod markup;
 mod new_files;
 mod panel_buttons;
 mod plugin_bar;
+mod previews_busy;
 
 use cell_location::CellLocation;
 use gpui::*;
@@ -11,6 +12,7 @@ use new_files::NewFilesButton;
 use panel_buttons::PanelButtons;
 use plugin_api::{Bar, BarContributions, Side};
 pub use plugin_bar::PluginBar;
+use previews_busy::PreviewsBusy;
 use window_wrapper::{BarRegistry, status_bar::StatusBarRegistry};
 use workspace::{BarSide, DockToggleButton, PANELS};
 
@@ -63,6 +65,13 @@ pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> St
     registry.items_mut().add_right_if(plugins, |cx| {
         !BarContributions::at(Bar::Status, Side::Right, cx).is_empty()
     });
+
+    let previews_busy = cx.new(PreviewsBusy::new);
+    registry
+        .items_mut()
+        .add_right_if(previews_busy.clone(), move |cx| {
+            previews_busy.read(cx).shown > 0
+        });
 
     // Text readout of the table's selected cell.
     let cell_location = cx.new(CellLocation::new);

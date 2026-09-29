@@ -10,7 +10,7 @@
 //! The two neighbours hold the parts with rules in them: [`find`] owns the search state, and
 //! [`highlight`] turns a hit's position on the page into a position on the screen.
 
-mod find;
+pub(crate) mod find;
 mod highlight;
 pub(crate) mod transport;
 
@@ -22,9 +22,10 @@ use std::time::Duration;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable, StyledExt as _,
+    ActiveTheme, Disableable as _, Icon, IconName, Selectable as _, Sizable,
     button::{Button, ButtonVariants},
-    input::{InputEvent, InputState},
+    h_flex,
+    input::{Input, InputEvent, InputState},
     resizable::{ResizableState, h_resizable, resizable_panel},
     slider::{Slider, SliderEvent, SliderState, SliderValue},
 };
@@ -44,6 +45,18 @@ pub const VIEWER_CONTEXT: &str = "Viewer";
 const PANEL: Pixels = px(384.);
 const PANEL_RANGE: std::ops::Range<Pixels> = px(240.)..px(720.);
 
+/// The page strip's width, and the height of one page in it: a thumbnail and its number.
+const STRIP: Pixels = px(128.);
+const STRIP_ROW: Pixels = px(168.);
+/// The most a page thumbnail may take inside a row, after its padding and number.
+const STRIP_THUMB: Size<Pixels> = size(px(112.), px(128.));
+
+/// How long a file has to stay open before its pages or duration are probed, and a query has to
+/// stay typed before it is searched. Stepping through videos or typing a word then starts one
+/// ffmpeg or one PDFium search, not one per file or per keystroke — neither can be stopped once
+/// running.
+const SETTLE: Duration = Duration::from_millis(150);
+
 /// Which slot mounts the viewer. Two, because they answer different asks: the Details panel's
 /// button means "show me this as big as the window allows", while a gallery card means "show me
 /// this instead of the thumbnails" — the side panels stay readable beside it.
@@ -53,6 +66,9 @@ pub enum Scope {
     Workspace,
     /// Over the centre panel only, leaving the docked panels visible.
     Centre,
+    /// The pop-out window's stage. Never the global viewer: that window owns its viewer, and
+    /// follows the selection itself so that it can stop following while pinned.
+    PopOut,
 }
 
 /// The currently-open viewer and the focus to restore. Both mount slots observe this.
@@ -73,24 +89,44 @@ pub fn viewer_in(scope: Scope, cx: &App) -> Option<Entity<Viewer>> {
 
 /// Opens `path` in the shared viewer overlay, replacing any viewer already open.
 pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut App) {
-    let document = preview::has_text(&path);
-    let video = preview::has_video(&path);
-    let details = preview::describe(&path);
-    let probe_path = path.clone();
     let return_focus = cx
         .try_global::<ActiveViewer>()
         .and_then(|active| active.return_focus.clone())
         .or_else(|| window.focused(cx));
+    stop_active(cx);
+    let viewer = build(path, scope, window, cx);
+    cx.set_global(ActiveViewer {
+        viewer: Some(viewer),
+        return_focus,
+    });
+}
+
+/// A viewer for `path`, not yet mounted anywhere.
+pub(crate) fn build(
+    path: PathBuf,
+    scope: Scope,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<Viewer> {
+    let document = preview::has_text(&path);
+    let video = preview::has_video(&path);
+    let details = preview::describe(&path);
+    let pixels = preview::dimensions(&path);
+    let probe_path = path.clone();
     let table = cx
         .try_global::<table::TableStateHandle>()
-        .and_then(|handle| handle.0.upgrade());
+        .and_then(|handle| handle.0.upgrade())
+        .filter(|_| scope != Scope::PopOut);
     let needs = preview::missing(&path);
     let viewer = cx.new(|cx| Viewer {
         needs,
         _components: cx.observe_global_in::<components::Components>(
             window,
             |this: &mut Viewer, window, cx| {
-                if this.needs.is_some() && preview::missing(&this.path).is_none() {
+                if this.scope != Scope::PopOut
+                    && this.needs.is_some()
+                    && preview::missing(&this.path).is_none()
+                {
                     open_viewer(this.path.clone(), this.scope, window, cx);
                 }
                 cx.notify();
@@ -102,12 +138,9 @@ pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut Ap
                 window,
                 |this: &mut Viewer, table, _: &table::TableChanged, window, cx| {
                     let delegate = table.read(cx).delegate();
-                    let file = match delegate.selection() {
-                        Some(table::Selection::Cell { row, .. } | table::Selection::Row(row)) => {
-                            previewable(delegate, row)
-                        }
-                        _ => None,
-                    };
+                    let file = delegate
+                        .cursor_row()
+                        .and_then(|row| previewable(delegate, row));
                     if let Some(file) = file.filter(|file| *file != this.path) {
                         open_viewer(file, this.scope, window, cx);
                     }
@@ -127,41 +160,67 @@ pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut Ap
         zoom: 1.0,
         offset: Point::default(),
         drag_from: None,
+        turns: 0,
+        shown: 0,
+        pixels,
+        header: pixels,
+        scale: 1.0,
         frame: Rc::default(),
         focus_handle: cx.focus_handle(),
         focused: false,
         find: Find::default(),
         find_open: false,
+        page_input: None,
+        strip_open: false,
+        strip: UniformListScrollHandle::new(),
         split: cx.new(|_| ResizableState::default()),
-    });
-    let probe = cx.background_executor().spawn(async move {
-        let seconds = preview::video_duration(&probe_path);
-        let pages = seconds.map_or_else(
-            || preview::page_count(&probe_path),
-            |seconds| seconds.max(1) as usize,
-        );
-        (seconds, pages)
+        _probe: None,
     });
     let weak = viewer.downgrade();
-    cx.spawn(async move |cx| {
-        let (seconds, pages) = probe.await;
+    let probe = cx.spawn(async move |cx| {
+        cx.background_executor().timer(SETTLE).await;
+        let (seconds, pages) = cx
+            .background_executor()
+            .spawn(async move {
+                let seconds = preview::video_duration(&probe_path);
+                let pages = seconds.map_or_else(
+                    || preview::page_count(&probe_path),
+                    |seconds| seconds.max(1) as usize,
+                );
+                (seconds, pages)
+            })
+            .await;
         cx.update(|cx| {
             if let Some(viewer) = weak.upgrade() {
                 viewer.update(cx, |viewer, cx| viewer.install_timeline(seconds, pages, cx));
             }
         });
-    })
-    .detach();
-    cx.set_global(ActiveViewer {
-        viewer: Some(viewer),
-        return_focus,
     });
+    viewer.update(cx, |viewer, _| viewer._probe = Some(probe));
+    viewer
+}
+
+/// The size a page thumbnail takes in the strip: its own shape, as large as fits the row. A page
+/// that has not decoded yet is drawn portrait, the shape most documents are.
+fn strip_frame(pixels: Option<(u32, u32)>) -> Size<Pixels> {
+    let (width, height) = pixels
+        .filter(|(width, height)| *width > 0 && *height > 0)
+        .map_or((3.0, 4.0), |(width, height)| (width as f32, height as f32));
+    let scale = (f32::from(STRIP_THUMB.width) / width).min(f32::from(STRIP_THUMB.height) / height);
+    size(px(width * scale), px(height * scale))
+}
+
+/// The page a typed number lands on: 1-based as the reader types it, clamped to the document.
+/// `None` for anything that is not a number, which leaves the page where it is.
+fn typed_page(text: &str, pages: usize) -> Option<usize> {
+    let number: usize = text.trim().parse().ok()?;
+    Some(number.clamp(1, pages.max(1)) - 1)
 }
 
 /// Select the next row, by `delta`, in the view's order that has something to preview. During a
 /// search the view is its hits, so this steps through the results. The open viewer follows the
 /// selection to that row's file.
-fn step_row(delta: isize, cx: &mut App) {
+pub(crate) fn step_row(delta: isize, cx: &mut App) {
     let Some(state) = cx
         .try_global::<table::TableStateHandle>()
         .and_then(|handle| handle.0.upgrade())
@@ -170,18 +229,9 @@ fn step_row(delta: isize, cx: &mut App) {
     };
     let target = {
         let delegate = state.read(cx).delegate();
-        let visible = delegate.visible();
-        let from = match delegate.selection() {
-            Some(table::Selection::Cell { row, .. } | table::Selection::Row(row)) => {
-                delegate.view_row(row)
-            }
-            _ => None,
-        };
-        from.and_then(|from| {
-            next_row(from, delta, visible.len(), |view| {
-                previewable(delegate, visible[view]).is_some()
-            })
-        })
+        delegate
+            .cursor_row()
+            .and_then(|row| next_previewable(delegate, row, delta))
     };
     if let Some(view) = target {
         state.update(cx, |state, cx| {
@@ -191,8 +241,22 @@ fn step_row(delta: isize, cx: &mut App) {
     }
 }
 
+/// The view index of the nearest row past source `row`, by `delta`, whose file the viewer can
+/// show. `None` at either end, or when `row` is filtered out of the view.
+pub(crate) fn next_previewable(
+    delegate: &table::QrateTableDelegate,
+    row: usize,
+    delta: isize,
+) -> Option<usize> {
+    let visible = delegate.visible();
+    let from = delegate.view_row(row)?;
+    next_row(from, delta, visible.len(), |view| {
+        previewable(delegate, visible[view]).is_some()
+    })
+}
+
 /// The file `row` links to, if the viewer can show it.
-fn previewable(delegate: &table::QrateTableDelegate, row: usize) -> Option<PathBuf> {
+pub(crate) fn previewable(delegate: &table::QrateTableDelegate, row: usize) -> Option<PathBuf> {
     delegate
         .row_image(row)
         .filter(|file| preview::can_preview(file))
@@ -219,9 +283,19 @@ fn next_row(
     }
 }
 
+/// Stop the recording the open viewer started, as it is closed or replaced by the next row's.
+fn stop_active(cx: &mut App) {
+    if let Some(viewer) = cx
+        .try_global::<ActiveViewer>()
+        .and_then(|active| active.viewer.clone())
+    {
+        preview::playback::stop(viewer.entity_id(), cx);
+    }
+}
+
 pub fn close_viewer(window: &mut Window, cx: &mut App) {
     // Without this the recording plays on over an empty screen, with nothing left to stop it.
-    preview::playback::stop(cx);
+    stop_active(cx);
     let return_focus = cx
         .try_global::<ActiveViewer>()
         .and_then(|active| active.return_focus.clone());
@@ -232,7 +306,7 @@ pub fn close_viewer(window: &mut Window, cx: &mut App) {
 }
 
 pub struct Viewer {
-    path: PathBuf,
+    pub(crate) path: PathBuf,
     /// File type and size, read once when the viewer opens rather than statting on every repaint.
     details: Option<String>,
     scope: Scope,
@@ -243,12 +317,12 @@ pub struct Viewer {
     pages: usize,
     /// Whether this file is a document at all, which is a different question from whether it has
     /// more than one page — a one-page PDF is still a document, and still says "1 / 1".
-    document: bool,
+    pub(crate) document: bool,
     /// Known from the extension immediately, before the duration probe finishes.
     video: bool,
     /// The playback transport, present exactly when the file is a recording. Gated on the format
     /// for the same reason `document` is: a silent tape is still audio and still gets a transport.
-    transport: Option<Transport>,
+    pub(crate) transport: Option<Transport>,
     /// The scrubber, present exactly when the file is a video ffmpeg could measure.
     ///
     scrubber: Option<Entity<SliderState>>,
@@ -261,26 +335,45 @@ pub struct Viewer {
     offset: Point<Pixels>,
     /// Last pointer position while dragging; `None` when not panning.
     drag_from: Option<Point<Pixels>>,
+    /// Quarter turns clockwise, for a scan that was fed in sideways. A view, never saved.
+    turns: u8,
+    /// The turn on screen: the last one decoded, kept up while `turns` decodes so a turn never
+    /// blanks the stage.
+    shown: u8,
+    /// Upright pixel size of what is on screen — what "actual size" is measured against.
+    pixels: Option<(u32, u32)>,
+    /// The file header's size, for the picture gpui draws from the file itself and never reports.
+    header: Option<(u32, u32)>,
+    /// The window's scale factor at the last render, so 1:1 means one image pixel per device pixel.
+    scale: f32,
     /// Window-space rect of the content box, from `canvas` prepaint — where scroll-zoom's anchor
     /// is measured from.
     frame: Rc<Cell<Bounds<Pixels>>>,
-    focus_handle: FocusHandle,
+    pub(crate) focus_handle: FocusHandle,
     /// Grabs focus on first render so Escape reaches [`Self`]; set once so we don't re-focus.
     focused: bool,
-    find: Find,
-    /// Whether the find panel is showing.
-    find_open: bool,
+    pub(crate) find: Find,
+    /// Whether the find panel is showing — in the pop-out, whether its sidebar is on Find.
+    pub(crate) find_open: bool,
+    /// The go-to-page box in the bottom pill, built the first time the pill draws.
+    page_input: Option<Entity<InputState>>,
+    /// Whether the page strip is showing, for a file with pages to list.
+    strip_open: bool,
+    strip: UniformListScrollHandle,
     /// The split between the page and the find panel, owned by `gpui_component`'s resizable — it
     /// carries the drag handle, the sizing and the propagation rules, none of which are ours to
     /// reinvent.
     split: Entity<ResizableState>,
     /// The optional part this file needs and does not have, which the viewer offers to install.
-    needs: Option<components::ComponentId>,
+    pub(crate) needs: Option<components::ComponentId>,
     /// Opens the file again once that part is installed, so its pages and timeline are read.
     _components: Subscription,
     /// Swaps in the selected row's file when the selection moves, from the find bar, the arrows or
     /// anywhere else.
     _follow: Option<Subscription>,
+    /// Reads the page count or duration. Held so that a viewer replaced before [`SETTLE`] is up
+    /// never starts it.
+    _probe: Option<Task<()>>,
 }
 
 impl Viewer {
@@ -315,17 +408,93 @@ impl Viewer {
         cx.notify();
     }
 
-    /// Clamp zoom to [0.1, 8] — below 1 zooms out past the initial fit — keeping the point at
-    /// `anchor` (relative to the frame's centre) still, and recenter once the image is no bigger
-    /// than its frame, where there's nothing to pan to.
+    /// Clamp zoom to [0.1, 8], widened to reach actual size either way — below 1 zooms out past
+    /// the initial fit — keeping the point at `anchor` (relative to the frame's centre) still. The
+    /// pan stays where the reader put it, inside the frame; only [`Self::fit_view`] recentres.
     fn set_zoom(&mut self, zoom: f32, anchor: Point<Pixels>) {
-        let zoom = zoom.clamp(0.1, 8.0);
+        let actual = self.actual_size();
+        let most = actual.map_or(8.0, |actual| actual.max(8.0));
+        let least = actual.map_or(0.1, |actual| actual.min(0.1));
+        let zoom = zoom.clamp(least, most);
         let scale = zoom / self.zoom;
         self.offset = anchor - (anchor - self.offset) * scale;
         self.zoom = zoom;
-        if self.zoom <= 1.0 {
-            self.offset = Point::default();
+        self.clamp_pan();
+    }
+
+    /// Back to fit, centred: the one view the pointer cannot land on exactly.
+    fn fit_view(&mut self) {
+        self.zoom = 1.0;
+        self.offset = Point::default();
+    }
+
+    /// The picture on screen's pixel size as turned, and the scale that fits it to the frame. `None`
+    /// where the file has no pixel size of its own, or before the frame has been laid out.
+    fn fit(&self) -> Option<(Size<f32>, f32)> {
+        let (width, height) = self.pixels?;
+        let image = match self.shown % 2 {
+            0 => size(width as f32, height as f32),
+            _ => size(height as f32, width as f32),
+        };
+        let frame = self.frame.get().size;
+        let fit =
+            (f32::from(frame.width) / image.width).min(f32::from(frame.height) / image.height);
+        (fit > 0.0).then_some((image, fit))
+    }
+
+    /// The zoom at which one pixel of the image is one pixel of the screen.
+    fn actual_size(&self) -> Option<f32> {
+        self.fit().map(|(_, fit)| 1.0 / (fit * self.scale))
+    }
+
+    /// The most the picture may be panned each way: to where its edge meets the frame's, from
+    /// outside when it overhangs and from inside when it is smaller.
+    fn slack(&self) -> Point<Pixels> {
+        let frame = self.frame.get().size;
+        let shown = self.fit().map_or(frame, |(image, fit)| {
+            size(px(image.width * fit), px(image.height * fit))
+        });
+        point(
+            ((shown.width * self.zoom - frame.width) / 2.).abs(),
+            ((shown.height * self.zoom - frame.height) / 2.).abs(),
+        )
+    }
+
+    /// Keep the picture's edges against the frame's, so a drag cannot lose it off screen. Left
+    /// alone before the frame has a size, which is only ever the case before the first paint.
+    fn clamp_pan(&mut self) {
+        if self.frame.get().size.width <= px(0.) {
+            return;
         }
+        let slack = self.slack();
+        self.offset.x = self.offset.x.clamp(-slack.x, slack.x);
+        self.offset.y = self.offset.y.clamp(-slack.y, slack.y);
+    }
+
+    /// A quarter turn clockwise, or back with `-1`. Starts from fit: the old zoom and pan were aimed
+    /// at a picture of a different shape.
+    fn rotate(&mut self, delta: i8) {
+        self.turns = (self.turns as i8 + delta).rem_euclid(4) as u8;
+        self.fit_view();
+        log::debug!(
+            "viewer: {} turned to {}°",
+            self.path.display(),
+            self.turns as u16 * 90
+        );
+    }
+
+    /// Fit when zoomed, actual size when fitted; 2× for a file with no pixel size of its own, or
+    /// whose actual size is the fit.
+    fn toggle_zoom(&mut self, anchor: Point<Pixels>) {
+        if (self.zoom - 1.0).abs() > 0.01 {
+            self.fit_view();
+            return;
+        }
+        let target = self
+            .actual_size()
+            .filter(|actual| (actual - 1.0).abs() > 0.05)
+            .unwrap_or(2.0);
+        self.set_zoom(target, anchor);
     }
 
     /// Move `delta` pages, stopping at either end rather than wrapping — a document has a first
@@ -347,12 +516,76 @@ impl Viewer {
     /// lands on a page directly rather than by stepping to it, and must reset the same things.
     fn show_page(&mut self, page: usize) {
         self.page = page;
-        self.zoom = 1.0;
-        self.offset = Point::default();
+        self.fit_view();
+        // A new page has no old turn decoded to keep up.
+        self.shown = self.turns;
+        self.strip.scroll_to_item(page, ScrollStrategy::Nearest);
+    }
+
+    /// Zoom until the page spans the frame's width, starting at its top. A page already that wide
+    /// at fit stays at fit.
+    fn fit_width(&mut self) {
+        let Some((image, fit)) = self.fit() else {
+            return;
+        };
+        let zoom = f32::from(self.frame.get().size.width) / (image.width * fit);
+        self.set_zoom(zoom, Point::default());
+        if self.zoom > 1.0 {
+            self.offset.y = self.slack().y;
+        }
+    }
+
+    /// Whether the file has pages to list: a document or image stack, not a video's seconds.
+    fn paged(&self) -> bool {
+        self.pages > 1 && self.scrubber.is_none() && !self.video
+    }
+
+    /// The page box, built on first use. It shows the current page whenever it is not being typed
+    /// in, and Enter goes to what was typed.
+    fn page_input(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        let input = match self.page_input.clone() {
+            Some(input) => input,
+            None => {
+                let input = cx.new(|cx| InputState::new(window, cx));
+                cx.subscribe_in(
+                    &input,
+                    window,
+                    |this, input, event: &InputEvent, window, cx| {
+                        if let InputEvent::PressEnter { .. } = event {
+                            if let Some(page) = typed_page(&input.read(cx).value(), this.pages) {
+                                this.show_page(page);
+                            }
+                            window.focus(&this.focus_handle, cx);
+                            cx.notify();
+                        }
+                    },
+                )
+                .detach();
+                self.page_input = Some(input.clone());
+                input
+            }
+        };
+        let current = (self.page + 1).to_string();
+        if !input.focus_handle(cx).is_focused(window) && input.read(cx).value() != current {
+            input.update(cx, |input, cx| input.set_value(current, window, cx));
+        }
+        input
+    }
+
+    /// Whether the bottom pill has anything to hold: page controls, a transport or a scrubber.
+    pub(crate) fn has_controls(&self) -> bool {
+        self.document || self.pages > 1 || self.transport.is_some() || self.scrubber.is_some()
+    }
+
+    /// Put the find panel away and hand the keys back to the page.
+    pub(crate) fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.find_open = false;
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
     }
 
     /// Show the find panel, building its query box the first time.
-    fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.find_open = true;
 
         // Asked once, on first open: it opens the document, and the answer cannot change while
@@ -422,7 +655,9 @@ impl Viewer {
 
         self.find.searching = true;
         let path = self.path.clone();
-        cx.spawn(async move |this, cx| {
+        // Replacing the task drops the previous query's search if it has not started yet.
+        self.find.task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SETTLE).await;
             let hits = cx
                 .background_executor()
                 .spawn({
@@ -443,8 +678,7 @@ impl Viewer {
                 cx.notify();
             })
             .ok();
-        })
-        .detach();
+        }));
         cx.notify();
     }
 
@@ -468,6 +702,7 @@ impl Render for Viewer {
             window.focus(&self.focus_handle, cx);
             self.focused = true;
         }
+        self.scale = window.scale_factor();
         let (zoom, offset, page, pages) = (self.zoom, self.offset, self.page, self.pages);
         let name: SharedString = self
             .path
@@ -488,13 +723,129 @@ impl Render for Viewer {
         };
         let pill = cx.theme().background.opacity(0.8);
         let accent = cx.theme().primary.opacity(0.55);
-        let marks: Vec<preview::Match> = self.find.on_page(page).cloned().collect();
+        // A hit's box is measured on the upright page, so a turned page shows none.
+        let marks: Vec<preview::Match> = match self.turns {
+            0 => self.find.on_page(page).cloned().collect(),
+            _ => Vec::new(),
+        };
+        let wanted = preview::source(&self.path, cap, page, self.turns);
+        if let Some(size) = preview::decoded(&wanted, window, cx) {
+            self.shown = self.turns;
+            // A PDF or TIFF page has no header size, and pages differ; what was drawn does.
+            self.pixels = match size {
+                Some((width, height)) => Some(match self.turns % 2 {
+                    0 => (width, height),
+                    _ => (height, width),
+                }),
+                None => self.header,
+            };
+        }
+        let picture = match self.shown == self.turns {
+            true => wanted,
+            false => preview::source(&self.path, cap, page, self.shown),
+        };
+        // gpui on Windows has no grab cursors and falls back to the arrow; the hand is its nearest.
+        let cursor = match (self.drag_from.is_some(), self.slack() != Point::default()) {
+            (false, false) => CursorStyle::Arrow,
+            _ if cfg!(windows) => CursorStyle::PointingHand,
+            (true, _) => CursorStyle::ClosedHand,
+            (false, true) => CursorStyle::OpenHand,
+        };
+        let readout = match self.actual_size() {
+            Some(actual) => format!("{:.0}%", zoom / actual * 100.),
+            None => format!("{:.0}%", zoom * 100.),
+        };
         // The panel's *live* width, straight off the resizable's state, so the rows re-trim as it
         // is dragged. Empty until the group has laid out once.
         let panel_width = self.split.read(cx).sizes().get(1).copied().unwrap_or(PANEL);
         let banner = self
             .needs
             .and_then(|id| crate::component_banner::banner(id, cx));
+        let popped = self.scope == Scope::PopOut;
+        // Only the page pill has one, so a photo, recording or video never builds it.
+        let page_input =
+            (self.has_controls() && self.transport.is_none() && self.scrubber.is_none())
+                .then(|| self.page_input(window, cx));
+        let paged = self.paged();
+        let strip_width = match paged && self.strip_open {
+            true => STRIP,
+            false => px(0.),
+        };
+        // Only the rows on screen are built, so a 300-page scan asks for a handful of thumbnails.
+        // ponytail: they share PDFium's one lock with the page itself, so a jump can wait behind a
+        // screenful of thumbnails; render the page first if that shows up.
+        let strip = (strip_width > px(0.)).then(|| {
+            let (primary, muted, radius, tile) = (
+                cx.theme().primary,
+                cx.theme().muted_foreground,
+                cx.theme().radius,
+                cx.theme().muted,
+            );
+            div()
+                .w(STRIP)
+                .h_full()
+                .flex_none()
+                .bg(pill)
+                .occlude()
+                .child(
+                    uniform_list(
+                        "viewer-pages",
+                        pages,
+                        cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
+                            range
+                                .map(|index| {
+                                    let on = index == this.page;
+                                    div()
+                                        .id(("viewer-page", index))
+                                        .h(STRIP_ROW)
+                                        .p_2()
+                                        .flex()
+                                        .flex_col()
+                                        .items_center()
+                                        .gap_1()
+                                        .cursor_pointer()
+                                        .child({
+                                            let source = preview::source(
+                                                &this.path,
+                                                preview::CARD,
+                                                index,
+                                                0,
+                                            );
+                                            let shape =
+                                                preview::decoded(&source, window, cx).flatten();
+                                            let frame = strip_frame(shape);
+                                            div()
+                                                .w(frame.width)
+                                                .h(frame.height)
+                                                .flex_none()
+                                                .rounded(radius)
+                                                .border_2()
+                                                .border_color(match on {
+                                                    true => primary,
+                                                    false => transparent_black(),
+                                                })
+                                                .overflow_hidden()
+                                                .bg(tile)
+                                                .child(img(source).size_full().rounded(radius))
+                                        })
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .when(!on, |label| label.text_color(muted))
+                                                .child((index + 1).to_string()),
+                                        )
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.show_page(index);
+                                            cx.notify();
+                                        }))
+                                })
+                                .collect()
+                        }),
+                    )
+                    .track_scroll(&self.strip)
+                    .size_full(),
+                )
+        });
 
         div()
             .track_focus(&self.focus_handle)
@@ -503,12 +854,11 @@ impl Render for Viewer {
             .role(Role::Group)
             .aria_label("File viewer")
             // The find panel is the inner layer, so Escape dismisses it before the viewer.
+            // The pop-out has no overlay to close: its window is what the viewer is.
             .on_action(cx.listener(|this, _: &CloseViewerLayer, window, cx| {
                 if this.find_open {
-                    this.find_open = false;
-                    window.focus(&this.focus_handle, cx);
-                    cx.notify();
-                } else {
+                    this.close_find(window, cx);
+                } else if this.scope != Scope::PopOut {
                     close_viewer(window, cx);
                 }
             }))
@@ -526,23 +876,28 @@ impl Render for Viewer {
             .occlude()
             // Dim what's behind so the file reads as the focus. Not a theme colour: a light
             // theme's background is white, which hides nothing and lights the room around a photo.
-            .bg(black().opacity(0.85))
+            // The pop-out's stage paints the same backdrop, whatever it is showing.
+            .when(!popped, |viewer| viewer.bg(black().opacity(0.85)))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 // Paging keys are only ours while the viewer itself holds focus: with the query
                 // box focused, left/right belong to its caret.
                 let reading = this.focus_handle.is_focused(window);
+                // Alt+←/→ steps the pop-out's stack of selected items, not the pages.
+                let paging = reading && this.scrubber.is_none() && !ev.keystroke.modifiers.alt;
+                // The pop-out's window handles Find and the rows, since both reach past the page.
+                let overlay = this.scope != Scope::PopOut;
                 match ev.keystroke.key.as_str() {
-                    "f" if ev.keystroke.modifiers.secondary() && this.document => {
+                    "f" if overlay && ev.keystroke.modifiers.secondary() && this.document => {
                         this.open_find(window, cx);
                     }
                     // The keys anyone reading a document reaches for first. Harmless on a photo,
                     // where there is only ever one page to move between — but kept off a video,
                     // whose position is the scrubber's, and whose thumb would be left behind.
-                    "left" | "pageup" if reading && this.scrubber.is_none() => {
+                    "left" | "pageup" if paging => {
                         this.turn_page(-1);
                         cx.notify();
                     }
-                    "right" | "pagedown" if reading && this.scrubber.is_none() => {
+                    "right" | "pagedown" if paging => {
                         this.turn_page(1);
                         cx.notify();
                     }
@@ -559,16 +914,32 @@ impl Render for Viewer {
                     }
                     // Back to fit, the one zoom the pointer cannot land on exactly.
                     "0" if reading => {
-                        this.set_zoom(1.0, Point::default());
+                        this.fit_view();
                         cx.notify();
                     }
-                    "up" | "down" if reading => {
+                    "1" if reading => {
+                        if let Some(actual) = this.actual_size() {
+                            this.set_zoom(actual, Point::default());
+                            cx.notify();
+                        }
+                    }
+                    "w" if reading => {
+                        this.fit_width();
+                        cx.notify();
+                    }
+                    "r" if reading => {
+                        this.rotate(if ev.keystroke.modifiers.shift { -1 } else { 1 });
+                        cx.notify();
+                    }
+                    "up" | "down" if reading && overlay => {
                         step_row(if ev.keystroke.key == "up" { -1 } else { 1 }, cx);
                     }
                     _ => {}
                 }
             }))
             .child(
+                h_flex().size_full().children(strip).child(
+                div().flex_1().min_w_0().h_full().child(
                 h_resizable("viewer-split")
                     .with_state(&self.split)
                     .child(
@@ -590,9 +961,14 @@ impl Render for Viewer {
                                         cx.notify();
                                     },
                                 ))
+                                .cursor(cursor)
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                                        if ev.click_count == 2 {
+                                            let anchor = ev.position - this.frame.get().center();
+                                            this.toggle_zoom(anchor);
+                                        }
                                         this.drag_from = Some(ev.position);
                                         cx.notify();
                                     }),
@@ -603,10 +979,19 @@ impl Render for Viewer {
                                     };
                                     this.offset.x += ev.position.x - last.x;
                                     this.offset.y += ev.position.y - last.y;
+                                    this.clamp_pan();
                                     this.drag_from = Some(ev.position);
                                     cx.notify();
                                 }))
                                 .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                        this.drag_from = None;
+                                        cx.notify();
+                                    }),
+                                )
+                                // Released over a panel or outside the window, the drag still ends.
+                                .on_mouse_up_out(
                                     MouseButton::Left,
                                     cx.listener(|this, _: &MouseUpEvent, _, cx| {
                                         this.drag_from = None;
@@ -633,7 +1018,9 @@ impl Render for Viewer {
                                         })
                                         .children((!bare).then(|| {
                                             // `flex_shrink_0` keeps `relative(zoom)` past 1.
-                                            img(preview::source(&self.path, cap, page))
+                                            // The id is what lets gpui keep a GIF's frame clock.
+                                            img(picture)
+                                            .id("viewer-image")
                                                 .flex_shrink_0()
                                                 .relative()
                                                 .w(relative(zoom))
@@ -657,15 +1044,16 @@ impl Render for Viewer {
                         resizable_panel()
                             .size(PANEL)
                             .size_range(PANEL_RANGE)
-                            .visible(self.find_open)
-                            .child(find::panel(&self.find, panel_width, cx)),
+                            .visible(self.find_open && !popped)
+                            .child(find::panel(&self.find, panel_width, false, cx)),
                     ),
+                )),
             )
             .child(
                 div()
                     .absolute()
                     .top_4()
-                    .left_4()
+                    .left(px(16.) + strip_width)
                     .px_2()
                     .py_1()
                     .rounded(cx.theme().radius)
@@ -692,10 +1080,7 @@ impl Render for Viewer {
             }))
             // Bottom pill: page controls (even for 1 page, or a TIFF stack), transport or scrubber.
             .when(
-                self.document
-                    || self.pages > 1
-                    || self.transport.is_some()
-                    || self.scrubber.is_some(),
+                self.has_controls(),
                 |viewer| {
                 viewer.child(
                     div()
@@ -711,20 +1096,15 @@ impl Render for Viewer {
                             false => slot.bottom_4(),
                         })
                         .child(
-                            // Loud on purpose. These are the only controls a reader reaches for
-                            // constantly, and over a dimmed page a translucent pill of small
-                            // ghost buttons reads as decoration.
+                            // Same pill as the toolbar and row stepper.
                             div()
                                 .flex()
                                 .items_center()
-                                .gap_2()
-                                .px_2()
-                                .py_1()
+                                .gap_1()
+                                .p_1()
                                 .rounded(cx.theme().radius)
-                                .bg(cx.theme().background)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .shadow_lg()
+                                .bg(pill)
+                                .text_sm()
                                 .occlude()
                                 .map(|pill| match (&self.transport, &self.scrubber) {
                                     (Some(transport), _) => {
@@ -732,7 +1112,7 @@ impl Render for Viewer {
                                     }
                                     (_, Some(scrubber)) => pill
                                         .child(
-                                            div().px_1().font_semibold().child(transport::clock(
+                                            div().px_1().child(transport::clock(
                                                 Duration::from_secs(self.scrub as u64),
                                             )),
                                         )
@@ -754,7 +1134,8 @@ impl Render for Viewer {
                                         .child(
                                             Button::new("play-in-default-app")
                                                 .icon(IconName::ExternalLink)
-                                                .outline()
+                                                .ghost()
+                                                .small()
                                                 .tooltip("Play in the default app")
                                                 .on_click({
                                                     let path = self.path.clone();
@@ -773,10 +1154,34 @@ impl Render for Viewer {
                                                 }),
                                         ),
                                     _ => pill
+                                        .when(paged, |pill| {
+                                            pill.child(
+                                                Button::new("toggle-pages")
+                                                    .icon(Icon::new(IconName::PanelLeft).when(
+                                                        self.strip_open,
+                                                        |icon| icon.text_color(cx.theme().primary),
+                                                    ))
+                                                    .ghost()
+                                                    .small()
+                                                    .tooltip(match self.strip_open {
+                                                        true => "Hide pages",
+                                                        false => "Show pages",
+                                                    })
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.strip_open = !this.strip_open;
+                                                        this.strip.scroll_to_item(
+                                                            this.page,
+                                                            ScrollStrategy::Center,
+                                                        );
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                        })
                                         .child(
                                             Button::new("previous-page")
                                                 .icon(IconName::ChevronLeft)
-                                                .outline()
+                                                .ghost()
+                                                .small()
                                                 .disabled(page == 0)
                                                 .tooltip("Previous page")
                                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -786,20 +1191,42 @@ impl Render for Viewer {
                                         )
                                         // Numbered from one: the page count a reader sees has to
                                         // match the one printed on the document.
+                                        .child(div().pl_1().child("Page"))
                                         .child(
                                             div()
-                                                .px_1()
-                                                .font_semibold()
-                                                .child(format!("Page {} of {pages}", page + 1)),
+                                                .w(px(52.))
+                                                .on_action(cx.listener(
+                                                    |this, _: &gpui_component::input::Escape, window, cx| {
+                                                        window.focus(&this.focus_handle, cx);
+                                                        cx.notify();
+                                                    },
+                                                ))
+                                                .children(page_input.map(|input| Input::new(&input).small())),
                                         )
+                                        .child(div().pr_1().child(format!("of {pages}")))
                                         .child(
                                             Button::new("next-page")
                                                 .icon(IconName::ChevronRight)
-                                                .outline()
+                                                .ghost()
+                                                .small()
                                                 .disabled(page + 1 >= pages)
                                                 .tooltip("Next page")
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.turn_page(1);
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("fit-width")
+                                                .icon(
+                                                    Icon::empty()
+                                                        .path("icons/move-horizontal.svg"),
+                                                )
+                                                .ghost()
+                                                .small()
+                                                .tooltip("Fit to width (W)")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.fit_width();
                                                     cx.notify();
                                                 })),
                                         ),
@@ -809,8 +1236,8 @@ impl Render for Viewer {
                 },
             )
             // Rows, not pages: the neighbouring files in the view's order, which during a search are
-            // the neighbouring results.
-            .child(
+            // the neighbouring results. The pop-out keeps these in its title bar instead.
+            .children((!popped).then(|| {
                 div()
                     .absolute()
                     .bottom_4()
@@ -835,9 +1262,10 @@ impl Render for Viewer {
                             .small()
                             .tooltip("Next row (↓)")
                             .on_click(|_, _, cx| step_row(1, cx)),
-                    ),
-            )
-            .child(
+                    )
+            }))
+            // Zoom has its keys and the wheel there; find is a sidebar tab, and closing is the window's.
+            .children((!popped).then(|| {
                 div()
                     .absolute()
                     .top_4()
@@ -863,12 +1291,23 @@ impl Render for Viewer {
                                 })
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     if this.find_open {
-                                        this.find_open = false;
-                                        window.focus(&this.focus_handle, cx);
-                                        cx.notify();
+                                        this.close_find(window, cx);
                                     } else {
                                         this.open_find(window, cx);
                                     }
+                                })),
+                        )
+                    })
+                    .when(!bare, |group| {
+                        group.child(
+                            Button::new("rotate")
+                                .icon(IconName::RotateCw)
+                                .ghost()
+                                .small()
+                                .tooltip("Rotate (R, Shift+R back)")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.rotate(1);
+                                    cx.notify();
                                 })),
                         )
                     })
@@ -880,6 +1319,21 @@ impl Render for Viewer {
                             .tooltip("Zoom out (-)")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.set_zoom(this.zoom / 1.25, Point::default());
+                                cx.notify();
+                            })),
+                    )
+                    // Percent of actual size where the file has one, else of the fit.
+                    .child(
+                        Button::new("zoom-readout")
+                            .label(readout)
+                            .ghost()
+                            .small()
+                            .tooltip(match self.actual_size() {
+                                Some(_) => "Toggle fit (0) and actual size (1)",
+                                None => "Toggle fit (0) and 2×",
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_zoom(Point::default());
                                 cx.notify();
                             })),
                     )
@@ -901,8 +1355,8 @@ impl Render for Viewer {
                             .small()
                             .tooltip("Close (Esc)")
                             .on_click(cx.listener(|_, _, window, cx| close_viewer(window, cx))),
-                    ),
-            )
+                    )
+            }))
     }
 }
 
@@ -914,7 +1368,7 @@ mod tests {
         VisualTestContext, Window, div,
     };
 
-    use crate::viewer::{Scope, close_viewer, next_row, open_viewer, viewer_in};
+    use crate::viewer::{Scope, build, close_viewer, next_row, open_viewer, viewer_in};
 
     #[test]
     fn stepping_rows_skips_what_cannot_be_previewed_and_stops_at_the_ends() {
@@ -959,6 +1413,35 @@ mod tests {
             close_viewer(window, cx);
             assert!(viewer_in(Scope::Workspace, cx).is_none());
             assert!(viewer_in(Scope::Centre, cx).is_none());
+        });
+    }
+
+    /// The pop-out owns its viewer. Building one must not take over the overlay's slot, and
+    /// closing the overlay must leave it alone.
+    #[gpui::test]
+    fn a_pop_out_viewer_and_the_overlay_do_not_touch_each_other(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
+        cx.update(|window, cx| {
+            open_viewer(
+                "/nonexistent/overlay.jpg".into(),
+                Scope::Workspace,
+                window,
+                cx,
+            );
+            let popped = build("/nonexistent/popped.jpg".into(), Scope::PopOut, window, cx);
+            let overlay = viewer_in(Scope::Workspace, cx).expect("the overlay is still open");
+            assert_ne!(overlay.entity_id(), popped.entity_id());
+            assert!(
+                viewer_in(Scope::PopOut, cx).is_none(),
+                "never a global viewer"
+            );
+
+            close_viewer(window, cx);
+            assert!(viewer_in(Scope::Workspace, cx).is_none());
+            assert_eq!(
+                popped.read(cx).path,
+                std::path::PathBuf::from("/nonexistent/popped.jpg")
+            );
         });
     }
 
@@ -1041,6 +1524,182 @@ mod tests {
         });
     }
 
+    /// A drag cannot lose the picture off screen, "actual size" follows the turn, and a turn starts
+    /// again from fit.
+    #[gpui::test]
+    fn panning_stops_at_the_edge_and_a_turn_swaps_the_actual_size(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
+        let path = std::path::PathBuf::from("/nonexistent/qrate-pan-test.png");
+        cx.update(|window, cx| {
+            open_viewer(path, Scope::Workspace, window, cx);
+            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+            viewer.update(cx, |viewer, _| {
+                // A 2000×1000 picture in a 1000×500 frame: fitted at half scale.
+                viewer.pixels = Some((2000, 1000));
+                viewer.frame.set(gpui::Bounds::new(
+                    gpui::Point::default(),
+                    gpui::size(gpui::px(1000.), gpui::px(500.)),
+                ));
+                assert_eq!(viewer.actual_size(), Some(2.0));
+
+                viewer.set_zoom(2.0, gpui::Point::default());
+                viewer.offset = gpui::point(gpui::px(5000.), gpui::px(-5000.));
+                viewer.clamp_pan();
+                assert_eq!(
+                    viewer.offset,
+                    gpui::point(gpui::px(500.), gpui::px(-250.)),
+                    "no further than the overhang on either side"
+                );
+
+                viewer.set_zoom(0.5, gpui::Point::default());
+                viewer.offset = gpui::point(gpui::px(5000.), gpui::px(5000.));
+                viewer.clamp_pan();
+                assert_eq!(
+                    viewer.offset,
+                    gpui::point(gpui::px(250.), gpui::px(125.)),
+                    "zoomed out, it still drags, as far as the frame's edge"
+                );
+                viewer.set_zoom(0.6, gpui::Point::default());
+                assert_ne!(
+                    viewer.offset,
+                    gpui::Point::default(),
+                    "zooming keeps the pan"
+                );
+                viewer.fit_view();
+                assert_eq!(viewer.offset, gpui::Point::default(), "fit recentres");
+
+                viewer.rotate(1);
+                assert_eq!(viewer.zoom, 1.0);
+                assert_eq!(viewer.offset, gpui::Point::default());
+                assert_eq!(
+                    viewer.actual_size(),
+                    Some(2.0),
+                    "measured on the upright picture still on screen"
+                );
+                // The turn lands: now 1000×2000 in the same frame, fitted at a quarter.
+                viewer.shown = viewer.turns;
+                assert_eq!(viewer.actual_size(), Some(4.0));
+                viewer.rotate(-2);
+                assert_eq!(viewer.turns, 3, "a turn back from upright wraps");
+            });
+            close_viewer(window, cx);
+        });
+    }
+
+    /// Fit to width fills the frame's width from the top of a tall page, and leaves a page that
+    /// is already as wide as its frame at fit.
+    #[gpui::test]
+    fn fit_width_fills_the_width_from_the_top(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
+        let path = std::path::PathBuf::from("/nonexistent/qrate-fit-width.pdf");
+        cx.update(|window, cx| {
+            open_viewer(path, Scope::Workspace, window, cx);
+            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+            viewer.update(cx, |viewer, _| {
+                viewer.frame.set(gpui::Bounds::new(
+                    gpui::Point::default(),
+                    gpui::size(gpui::px(1000.), gpui::px(500.)),
+                ));
+
+                // Portrait, fitted at a quarter: four times over to span the width.
+                viewer.pixels = Some((1000, 2000));
+                viewer.fit_width();
+                assert_eq!(viewer.zoom, 4.0);
+                assert_eq!(
+                    viewer.offset,
+                    gpui::point(gpui::px(0.), gpui::px(750.)),
+                    "the page's top edge on the frame's"
+                );
+
+                // Landscape already spans the width at fit.
+                viewer.show_page(0);
+                viewer.pixels = Some((2000, 1000));
+                viewer.fit_width();
+                assert_eq!(viewer.zoom, 1.0);
+                assert_eq!(viewer.offset, gpui::Point::default());
+            });
+            close_viewer(window, cx);
+        });
+    }
+
+    /// Actual size is reachable however small the file: an icon fitted far past 10× still gets
+    /// down to one pixel per pixel.
+    #[gpui::test]
+    fn actual_size_is_reachable_for_a_tiny_image(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
+        let path = std::path::PathBuf::from("/nonexistent/qrate-tiny.png");
+        cx.update(|window, cx| {
+            open_viewer(path, Scope::Workspace, window, cx);
+            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+            viewer.update(cx, |viewer, _| {
+                viewer.pixels = Some((32, 32));
+                viewer.frame.set(gpui::Bounds::new(
+                    gpui::Point::default(),
+                    gpui::size(gpui::px(1000.), gpui::px(500.)),
+                ));
+                let actual = viewer.actual_size().expect("has a size");
+                assert!(actual < 0.1);
+                viewer.set_zoom(actual, gpui::Point::default());
+                assert_eq!(viewer.zoom, actual);
+            });
+            close_viewer(window, cx);
+        });
+    }
+
+    /// A page in the strip keeps its own shape and never leaves the row's box.
+    #[test]
+    fn a_strip_thumbnail_keeps_the_pages_shape_inside_the_row() {
+        use super::{STRIP_THUMB, strip_frame};
+        use gpui::{px, size};
+
+        assert_eq!(
+            strip_frame(Some((1000, 2000))),
+            size(px(64.), px(128.)),
+            "tall"
+        );
+        assert_eq!(
+            strip_frame(Some((2000, 1000))),
+            size(px(112.), px(56.)),
+            "wide"
+        );
+        let pending = strip_frame(None);
+        assert!(pending.height > pending.width, "portrait until it decodes");
+        assert!(pending.width <= STRIP_THUMB.width && pending.height <= STRIP_THUMB.height);
+        assert_eq!(
+            strip_frame(Some((0, 10))),
+            pending,
+            "a degenerate size is not divided by"
+        );
+    }
+
+    /// A typed page is 1-based, lands inside the document however far off it is, and anything
+    /// that is not a number leaves the page alone.
+    #[test]
+    fn a_typed_page_is_one_based_and_clamped() {
+        use super::typed_page;
+
+        assert_eq!(typed_page("1", 300), Some(0));
+        assert_eq!(typed_page(" 42 ", 300), Some(41));
+        assert_eq!(
+            typed_page("999", 300),
+            Some(299),
+            "past the end is the last page"
+        );
+        assert_eq!(
+            typed_page("0", 300),
+            Some(0),
+            "before the start is the first page"
+        );
+        assert_eq!(typed_page("", 300), None);
+        assert_eq!(typed_page("x", 300), None);
+        assert_eq!(typed_page("-3", 300), None);
+        assert_eq!(
+            typed_page("5", 0),
+            Some(0),
+            "an uncounted file still has page one"
+        );
+    }
+
     /// Paging has to stop at both ends. Wrapping past the last page loses the reader's place, and
     /// an underflow on page zero would panic on a `usize` subtraction.
     #[gpui::test]
@@ -1053,7 +1712,9 @@ mod tests {
 
             viewer.update(cx, |viewer, _| {
                 // A missing file reports one page, so give it a document to page through.
+                assert!(!viewer.paged(), "one page has nothing to list");
                 viewer.pages = 3;
+                assert!(viewer.paged(), "a document with pages gets the strip");
 
                 viewer.turn_page(-1);
                 assert_eq!(viewer.page, 0, "cannot go back from the first page");
@@ -1119,6 +1780,14 @@ mod tests {
             let document = viewer_in(Scope::Workspace, cx).expect("just opened");
             document.update(cx, |viewer, _| assert!(viewer.transport.is_none()));
 
+            // A video's positions are seconds, which are the scrubber's and not a page strip's.
+            open_viewer("/nonexistent/clip.mp4".into(), Scope::Workspace, window, cx);
+            let video = viewer_in(Scope::Workspace, cx).expect("just opened");
+            video.update(cx, |viewer, _| {
+                viewer.pages = 6;
+                assert!(!viewer.paged());
+            });
+
             close_viewer(window, cx);
         });
     }
@@ -1132,29 +1801,15 @@ mod tests {
     #[gpui::test]
     fn closing_the_viewer_leaves_nothing_playing(cx: &mut TestAppContext) {
         let cx = with_window(cx);
-        // 44-byte canonical WAV header, then a second of 8 kHz 16-bit mono silence.
-        let data = 8000usize * 2;
-        let mut wav = Vec::new();
-        wav.extend(b"RIFF");
-        wav.extend((36 + data as u32).to_le_bytes());
-        wav.extend(b"WAVEfmt ");
-        wav.extend(16u32.to_le_bytes());
-        wav.extend(1u16.to_le_bytes()); // PCM
-        wav.extend(1u16.to_le_bytes()); // mono
-        wav.extend(8000u32.to_le_bytes());
-        wav.extend(16000u32.to_le_bytes());
-        wav.extend(2u16.to_le_bytes());
-        wav.extend(16u16.to_le_bytes());
-        wav.extend(b"data");
-        wav.extend((data as u32).to_le_bytes());
-        wav.extend(std::iter::repeat_n(0u8, data));
+        let wav = preview::playback::silent_wav(8000);
 
         let path = std::env::temp_dir().join("qrate-viewer-close-stops.wav");
         std::fs::write(&path, &wav).unwrap();
 
         cx.update(|window, cx| {
             open_viewer(path.clone(), Scope::Workspace, window, cx);
-            preview::playback::play(&path, cx);
+            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+            preview::playback::play(&path, viewer.entity_id(), cx);
             close_viewer(window, cx);
             assert!(
                 !preview::playback::position(cx).is_some_and(|(_, playing)| playing),
@@ -1191,6 +1846,7 @@ mod tests {
             open_viewer(path.clone(), Scope::Workspace, window, cx);
             viewer_in(Scope::Workspace, cx).expect("just opened")
         });
+        cx.executor().advance_clock(super::SETTLE);
         cx.run_until_parked();
         let scrubber = cx.update(|_, cx| {
             let scrubber = viewer

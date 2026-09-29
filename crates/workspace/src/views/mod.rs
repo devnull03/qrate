@@ -237,12 +237,7 @@ impl ViewsPanel {
             .and_then(WeakEntity::upgrade)
             .and_then(|state| {
                 let delegate = state.read(cx).delegate();
-                match delegate.selection()? {
-                    table::Selection::Cell { row, .. } | table::Selection::Row(row) => {
-                        delegate.view_row(row)
-                    }
-                    table::Selection::Column(_) => None,
-                }
+                delegate.view_row(delegate.cursor_row()?)
             });
         if cursor == self.gallery_followed {
             return;

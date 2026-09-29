@@ -40,12 +40,7 @@ impl Render for NewFilesButton {
             .label(format!("New files ({count})"))
             .tooltip("Files in the files folder that no row links to")
             .on_click(|_, window, cx| {
-                if let Some(table) = cx
-                    .try_global::<TablePanelHandle>()
-                    .and_then(|handle| handle.0.upgrade())
-                {
-                    table.update(cx, |table, cx| table.import_new_files(window, cx));
-                }
+                TablePanelHandle::update(cx, |table, cx| table.import_new_files(window, cx));
             })
             .into_any_element()
     }

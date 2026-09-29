@@ -132,22 +132,7 @@ mod tests {
     /// rather than erroring in a way that would look the same as an unreadable file.
     #[test]
     fn a_valid_recording_without_artwork_is_not_an_error() {
-        // 44-byte canonical WAV header describing one sample of silence.
-        let mut wav = Vec::new();
-        wav.extend(b"RIFF");
-        wav.extend(36u32.to_le_bytes());
-        wav.extend(b"WAVEfmt ");
-        wav.extend(16u32.to_le_bytes());
-        wav.extend(1u16.to_le_bytes()); // PCM
-        wav.extend(1u16.to_le_bytes()); // mono
-        wav.extend(8000u32.to_le_bytes());
-        wav.extend(16000u32.to_le_bytes());
-        wav.extend(2u16.to_le_bytes());
-        wav.extend(16u16.to_le_bytes());
-        wav.extend(b"data");
-        wav.extend(2u32.to_le_bytes());
-        wav.extend(0u16.to_le_bytes());
-
+        let wav = crate::playback::silent_wav(1);
         let path = std::env::temp_dir().join("qrate-audio-silent.wav");
         std::fs::write(&path, &wav).unwrap();
         assert!(audio::cover(&path).is_none(), "no artwork, but no panic");

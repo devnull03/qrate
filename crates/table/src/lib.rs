@@ -44,6 +44,18 @@ pub use visual::remove_model as remove_visual_model;
 pub struct TablePanelHandle(pub WeakEntity<TablePanel>);
 impl Global for TablePanelHandle {}
 
+impl TablePanelHandle {
+    /// Run `run` on the centre table, when one is open.
+    pub fn update(cx: &mut App, run: impl FnOnce(&mut TablePanel, &mut gpui::Context<TablePanel>)) {
+        if let Some(panel) = cx
+            .try_global::<Self>()
+            .and_then(|handle| handle.0.upgrade())
+        {
+            panel.update(cx, run);
+        }
+    }
+}
+
 /// Settings key (in either scope) for the alternating-row-stripe toggle.
 pub const TABLE_STRIPES_KEY: &str = "table_stripes";
 
@@ -401,12 +413,7 @@ pub(crate) fn file_rows(
 /// The rows `changes` put new text in or back into, as they now sit; `None` when a column moved,
 /// which can change what every row resolves to.
 fn changed_rows(delegate: &QrateTableDelegate, changes: &[Change]) -> Option<Vec<usize>> {
-    let position: std::collections::HashMap<_, _> = delegate
-        .row_ids()
-        .iter()
-        .enumerate()
-        .map(|(at, id)| (*id, at))
-        .collect();
+    let position = delegate.row_positions();
     changes
         .iter()
         .filter_map(|change| match change {
@@ -533,10 +540,7 @@ pub fn restore_to(to: EntryId, cx: &mut App) {
         else {
             continue;
         };
-        let position = row.and_then(|id| {
-            let delegate = state.read(cx).delegate();
-            delegate.row_ids().iter().position(|r| *r == id)
-        });
+        let position = row.and_then(|id| state.read(cx).delegate().row_of(id));
         if row.is_some() && position.is_none() {
             continue;
         }
@@ -571,11 +575,7 @@ pub fn restore_value(
     };
     let target = {
         let delegate = state.read(cx).delegate();
-        delegate
-            .row_ids()
-            .iter()
-            .position(|id| *id == row)
-            .zip(delegate.data_col(column))
+        delegate.row_of(row).zip(delegate.data_col(column))
     };
     if let Some((row, col)) = target {
         write_cell(row, col, text, Origin::Restore(from), cx);

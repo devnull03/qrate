@@ -791,7 +791,7 @@ fn previews_group(cx: &App) -> SettingGroup {
                                     };
                                     cx.update(|cx| {
                                         cx.set_global(CacheCleared(outcome.into()));
-                                        cx.refresh_windows();
+                                        preview::forget_all(cx);
                                     });
                                 })
                                 .detach();

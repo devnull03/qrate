@@ -21,3 +21,4 @@ components = { path = "../components" }
 [dev-dependencies]
 # `#[gpui::test]`, TestAppContext, and run_test are all behind this feature.
 gpui = { workspace = true, features = ["test-support"] }
+preview = { path = "../preview", features = ["test-support"] }

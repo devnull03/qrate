@@ -14,7 +14,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use gpui::{App, Global};
+use gpui::{App, EntityId, Global};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 
 pub use crate::audio::duration;
@@ -26,6 +26,9 @@ struct Playback {
     /// What was last handed to the player. There is one device and one recording, but more than
     /// one transport can be on screen — each has to know whether the position is even its own.
     playing: Option<PathBuf>,
+    /// The view whose transport started it. Two windows can show the same recording, and closing
+    /// one must not silence the other's.
+    owner: Option<EntityId>,
 }
 
 impl Global for Playback {}
@@ -36,9 +39,9 @@ fn player(cx: &App) -> Option<&Player> {
     Some(&cx.try_global::<Playback>()?.player)
 }
 
-/// Start `path` from the beginning, replacing whatever was playing. Opens the output device on
-/// first use, and stays quiet on a machine that has none.
-pub fn play(path: &Path, cx: &mut App) {
+/// Start `path` from the beginning for `owner`, replacing whatever was playing. Opens the output
+/// device on first use, and stays quiet on a machine that has none.
+pub fn play(path: &Path, owner: EntityId, cx: &mut App) {
     let opened = File::open(path)
         .map_err(|err| err.to_string())
         .and_then(|file| Decoder::new(BufReader::new(file)).map_err(|err| err.to_string()));
@@ -58,11 +61,13 @@ pub fn play(path: &Path, cx: &mut App) {
             _device: device,
             player,
             playing: None,
+            owner: None,
         });
     }
 
     let playback = cx.global_mut::<Playback>();
     playback.playing = Some(path.to_path_buf());
+    playback.owner = Some(owner);
     playback.player.clear();
     playback.player.append(source);
     playback.player.play();
@@ -72,6 +77,11 @@ pub fn play(path: &Path, cx: &mut App) {
 /// not describing it.
 pub fn playing(cx: &App) -> Option<&Path> {
     cx.try_global::<Playback>()?.playing.as_deref()
+}
+
+/// The view that started what is loaded.
+pub fn owner(cx: &App) -> Option<EntityId> {
+    cx.try_global::<Playback>()?.owner
 }
 
 /// Pause if playing, resume if paused. Does nothing before anything is loaded.
@@ -101,14 +111,38 @@ pub fn position(cx: &App) -> Option<(Duration, bool)> {
     Some((player.get_pos(), !player.is_paused() && !player.empty()))
 }
 
-/// Silence. The viewer calls this as it closes — without it the recording plays on over an empty
-/// screen, with nothing left on the page to stop it.
-pub fn stop(cx: &mut App) {
-    if cx.has_global::<Playback>() {
+/// Silence, if `owner` started what is playing. A view calls this as it closes or moves on —
+/// without it the recording plays on over an empty screen — and must not silence another
+/// window's recording on the way out.
+pub fn stop(owner: EntityId, cx: &mut App) {
+    if self::owner(cx) == Some(owner) {
         let playback = cx.global_mut::<Playback>();
         playback.player.clear();
         playback.playing = None;
+        playback.owner = None;
     }
+}
+
+/// A real WAV of `samples` of 8 kHz 16-bit mono silence — a canonical 44-byte header and the
+/// zeros — for tests that need a recording on disk.
+#[cfg(any(test, feature = "test-support"))]
+pub fn silent_wav(samples: usize) -> Vec<u8> {
+    let data = (samples * 2) as u32;
+    let mut wav = Vec::new();
+    wav.extend(b"RIFF");
+    wav.extend((36 + data).to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    wav.extend(16u32.to_le_bytes());
+    wav.extend(1u16.to_le_bytes()); // PCM
+    wav.extend(1u16.to_le_bytes()); // mono
+    wav.extend(8000u32.to_le_bytes());
+    wav.extend(16000u32.to_le_bytes());
+    wav.extend(2u16.to_le_bytes());
+    wav.extend(16u16.to_le_bytes());
+    wav.extend(b"data");
+    wav.extend(data.to_le_bytes());
+    wav.extend(std::iter::repeat_n(0u8, data as usize));
+    wav
 }
 
 #[cfg(test)]
@@ -120,23 +154,8 @@ mod tests {
     /// is every CI runner. Nothing here opens an output device.
     #[test]
     fn a_recordings_length_is_read_without_playing_it() {
-        // 44-byte canonical WAV header, then one second of 8 kHz 16-bit mono silence.
-        let samples = 8000usize;
-        let data = samples * 2;
-        let mut wav = Vec::new();
-        wav.extend(b"RIFF");
-        wav.extend((36 + data as u32).to_le_bytes());
-        wav.extend(b"WAVEfmt ");
-        wav.extend(16u32.to_le_bytes());
-        wav.extend(1u16.to_le_bytes()); // PCM
-        wav.extend(1u16.to_le_bytes()); // mono
-        wav.extend(8000u32.to_le_bytes());
-        wav.extend(16000u32.to_le_bytes());
-        wav.extend(2u16.to_le_bytes());
-        wav.extend(16u16.to_le_bytes());
-        wav.extend(b"data");
-        wav.extend((data as u32).to_le_bytes());
-        wav.extend(std::iter::repeat_n(0u8, data));
+        // One second of 8 kHz silence.
+        let wav = crate::playback::silent_wav(8000);
 
         let path = std::env::temp_dir().join("qrate-playback-duration.wav");
         std::fs::write(&path, &wav).unwrap();

@@ -221,6 +221,8 @@ impl App {
                 return false;
             }
             flush_all_state(cx);
+            // Its table goes with this window, and on Windows and Linux an open window keeps the app running.
+            workspace::close_pop_out(cx);
             true
         });
 
