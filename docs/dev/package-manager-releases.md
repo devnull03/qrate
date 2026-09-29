@@ -12,14 +12,14 @@ The Cask lives in [`devnull03/homebrew-tap`](https://github.com/devnull03/homebr
 components when the user requests them. The Cask declares `auto_updates true` because qrate also
 has an in-app updater. The app is not notarized; the Cask shows a first-launch Gatekeeper note.
 
-Set the `HOMEBREW_TAP_UPDATES_ENABLED` repository variable to `true` and add the
-`HOMEBREW_TAP_TOKEN` repository secret. The token needs Contents read/write access to
-`devnull03/homebrew-tap`. For each published stable release, the workflow reads the DMG checksum
+Add the `HOMEBREW_TAP_TOKEN` repository secret. The token needs Contents read/write access to
+`devnull03/homebrew-tap`. The job fails until the secret exists. To publish a release that was
+published before the secret existed, run **Update package managers** by hand with its tag. For each published stable release, the workflow reads the DMG checksum
 from `SHA256SUMS.txt`, updates the Cask version and checksum, and pushes a commit to the tap's
 `main` branch. It does not push a release that is still a draft.
 
-The current tap entry points at qrate 0.6.0-beta.1 so the Cask can be used before the first stable
-release. The update workflow replaces it with the next stable version.
+The tap entry pointed at qrate 0.6.0-beta.1 so the Cask could be used before the first stable
+release. The update workflow replaces it with each stable version.
 
 ## WinGet
 

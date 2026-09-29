@@ -3,17 +3,25 @@ name: Update package managers
 on:
   release:
     types: [released]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Stable release tag to publish, such as v0.6.0
+        required: true
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
 permissions:
   contents: read
 
 concurrency:
-  group: package-managers-${{ github.event.release.tag_name }}
+  group: package-managers-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   homebrew:
-    if: ${{ vars.HOMEBREW_TAP_UPDATES_ENABLED == 'true' && !github.event.release.prerelease }}
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     concurrency:
       group: homebrew-tap
@@ -21,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.TAG }}
           path: qrate
           persist-credentials: false
 
@@ -36,7 +44,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${GITHUB_REF_NAME}"
+          tag="$TAG"
           if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "::error::Homebrew updates require a stable vX.Y.Z tag: $tag"
             exit 1
@@ -70,7 +78,7 @@ jobs:
             echo "Cask already matches this release"
             exit 0
           fi
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           git -C homebrew-tap commit -m "qrate $version"
           gh auth setup-git
           git -C homebrew-tap push origin HEAD:main
@@ -91,8 +99,8 @@ jobs:
         env:
           WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_CREATE_GITHUB_TOKEN }}
           WINGET_PACKAGE_ID: ${{ vars.WINGET_PACKAGE_ID }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_NOTES_URL: ${{ github.event.release.html_url }}
+          RELEASE_TAG: ${{ env.TAG }}
+          RELEASE_NOTES_URL: https://github.com/devnull03/qrate/releases/tag/${{ env.TAG }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WINGET_CREATE_GITHUB_TOKEN)) {
             throw 'Set the WINGET_CREATE_GITHUB_TOKEN repository secret before enabling WinGet updates.'
