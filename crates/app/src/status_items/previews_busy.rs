@@ -3,12 +3,11 @@
 
 use std::time::Duration;
 
-use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{Sizable as _, h_flex, spinner::Spinner};
 
 pub struct PreviewsBusy {
-    shown: usize,
+    pub shown: usize,
     _poll: Task<()>,
 }
 
@@ -23,10 +22,15 @@ impl PreviewsBusy {
                     .await;
                 let now = preview::decoding();
                 let alive = this.update(cx, |this, cx| {
-                    if this.shown != now {
-                        this.shown = now;
-                        cx.notify();
+                    if this.shown == now {
+                        return;
                     }
+                    // Appearing or leaving changes the bar's dividers, which only the bar redraws.
+                    if (this.shown == 0) != (now == 0) {
+                        cx.refresh_windows();
+                    }
+                    this.shown = now;
+                    cx.notify();
                 });
                 if alive.is_err() {
                     break;
@@ -39,10 +43,9 @@ impl PreviewsBusy {
 
 impl Render for PreviewsBusy {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex().when(self.shown > 0, |row| {
-            row.gap_1()
-                .child(Spinner::new().xsmall())
-                .child(format!("Loading previews ({})", self.shown))
-        })
+        h_flex()
+            .gap_1()
+            .child(Spinner::new().xsmall())
+            .child(format!("Loading previews ({})", self.shown))
     }
 }

@@ -67,7 +67,11 @@ pub fn build_status_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> St
     });
 
     let previews_busy = cx.new(PreviewsBusy::new);
-    registry.items_mut().add_right(previews_busy);
+    registry
+        .items_mut()
+        .add_right_if(previews_busy.clone(), move |cx| {
+            previews_busy.read(cx).shown > 0
+        });
 
     // Text readout of the table's selected cell.
     let cell_location = cx.new(CellLocation::new);
