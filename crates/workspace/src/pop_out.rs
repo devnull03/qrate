@@ -156,6 +156,8 @@ pub struct PopOut {
     _table_sub: Option<Subscription>,
     /// Repaints when the viewer's pages, controls or find tab change under it.
     _viewer_sub: Option<Subscription>,
+    /// What the OS title bar was last told, so a table edit does not set it again unchanged.
+    window_title: String,
     _subs: Vec<Subscription>,
 }
 
@@ -232,6 +234,7 @@ impl PopOut {
             split: cx.new(|_| ResizableState::default()),
             _table_sub: None,
             _viewer_sub: None,
+            window_title: String::new(),
             _subs,
         };
         this.bind(window, cx);
@@ -317,13 +320,26 @@ impl PopOut {
                 stop_playing(leaving, cx);
             }
             self.viewer = file.map(|file| viewer::build(file, Scope::PopOut, window, cx));
-            self._viewer_sub = self
-                .viewer
-                .as_ref()
-                .map(|viewer| cx.observe(viewer, |_, _, cx| cx.notify()));
+            self._viewer_sub = self.viewer.as_ref().map(|viewer| {
+                // The viewer repaints itself on every pan and zoom; this window only draws
+                // its controls, tabs and find results.
+                let mut seen = None;
+                cx.observe(viewer, move |_, viewer, cx| {
+                    let viewer = viewer.read(cx);
+                    let now = (viewer.has_controls(), viewer.document, viewer.find_open);
+                    if viewer.find_open || seen != Some(now) {
+                        seen = Some(now);
+                        cx.notify();
+                    }
+                })
+            });
         }
         let (file, rest) = self.title(cx);
-        window.set_window_title(&format!("{file}{rest}"));
+        let title = format!("{file}{rest}");
+        if title != self.window_title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
         cx.notify();
     }
 
@@ -636,14 +652,19 @@ impl PopOut {
     /// The file, or what the stage says in its place, over the viewer's own backdrop.
     fn stage(&self, cx: &mut Context<Self>) -> AnyElement {
         let (fg, muted) = (rgb(STAGE_FG), rgb(STAGE_MUTED));
-        let front = self.front().zip(self.table()).map(|(row, state)| {
-            let delegate = state.read(cx).delegate();
-            (
-                row,
-                delegate.row_image(row).map(|path| path.to_path_buf()),
-                table::file_links::missing_file(delegate, row, cx).map(|(_, name)| name),
-            )
-        });
+        // Only the messages read it, and they show only when there is no viewer.
+        let front = self
+            .front()
+            .filter(|_| self.viewer.is_none())
+            .zip(self.table())
+            .map(|(row, state)| {
+                let delegate = state.read(cx).delegate();
+                (
+                    row,
+                    delegate.row_image(row).map(|path| path.to_path_buf()),
+                    table::file_links::missing_file(delegate, row, cx).map(|(_, name)| name),
+                )
+            });
 
         // What to say when there is nothing the viewer can draw. The one useful action goes with
         // it, where there is one.
