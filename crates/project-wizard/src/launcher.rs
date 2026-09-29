@@ -652,7 +652,7 @@ fn project_thumbnail(image: Thumbnail<'_>, size: Pixels, cx: &App) -> AnyElement
     let frame = div()
         .size(size)
         .flex_none()
-        .rounded_md()
+        .rounded(cx.theme().radius)
         .border_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().tiles)
@@ -665,7 +665,8 @@ fn project_thumbnail(image: Thumbnail<'_>, size: Pixels, cx: &App) -> AnyElement
                     example::THUMBNAIL.to_vec(),
                 )))
                 .size_full()
-                .object_fit(ObjectFit::Cover),
+                .object_fit(ObjectFit::Cover)
+                .rounded(cx.theme().radius),
             )
             .into_any_element(),
         Thumbnail::Recent(Some(path)) => frame

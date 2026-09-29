@@ -768,6 +768,7 @@ pub fn thumb(path: Option<&Path>, max_edge: u32, fit: ObjectFit, cx: &App) -> An
             Some(path) => {
                 let image = img(source(path, max_edge, 0, 0))
                     .object_fit(fit)
+                    .rounded(cx.theme().radius)
                     .with_fallback(placeholder);
                 frame.child(if cover {
                     image.size_full()
