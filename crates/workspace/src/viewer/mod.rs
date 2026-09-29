@@ -165,6 +165,7 @@ pub(crate) fn build(
         turns: 0,
         shown: 0,
         pixels,
+        header: pixels,
         scale: 1.0,
         frame: Rc::default(),
         focus_handle: cx.focus_handle(),
@@ -326,8 +327,10 @@ pub struct Viewer {
     /// The turn on screen: the last one decoded, kept up while `turns` decodes so a turn never
     /// blanks the stage.
     shown: u8,
-    /// Upright pixel size, where the header says one — what "actual size" is measured against.
+    /// Upright pixel size of what is on screen — what "actual size" is measured against.
     pixels: Option<(u32, u32)>,
+    /// The file header's size, for the picture gpui draws from the file itself and never reports.
+    header: Option<(u32, u32)>,
     /// The window's scale factor at the last render, so 1:1 means one image pixel per device pixel.
     scale: f32,
     /// Window-space rect of the content box, from `canvas` prepaint — where scroll-zoom's anchor
@@ -711,12 +714,13 @@ impl Render for Viewer {
         if let Some(size) = preview::decoded(&wanted, window, cx) {
             self.shown = self.turns;
             // A PDF or TIFF page has no header size, and pages differ; what was drawn does.
-            if let Some((width, height)) = size {
-                self.pixels = Some(match self.turns % 2 {
+            self.pixels = match size {
+                Some((width, height)) => Some(match self.turns % 2 {
                     0 => (width, height),
                     _ => (height, width),
-                });
-            }
+                }),
+                None => self.header,
+            };
         }
         let picture = match self.shown == self.turns {
             true => wanted,

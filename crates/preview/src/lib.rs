@@ -874,8 +874,8 @@ pub fn source(path: &Path, max_edge: u32, page: usize, turns: u8) -> ImageSource
 /// `None` while `source` decodes, starting it if it has not started; gpui re-renders the asking
 /// view when it lands. Once done, the pixel size of what was decoded, if we decoded it.
 ///
-/// ponytail: a path handed to gpui counts as done with no size — it is only ever the upright
-/// picture the viewer opened with, already loaded, whose size the header gave.
+/// A path handed to gpui counts as done with no size: it is the file itself, and [`dimensions`]
+/// already answers for it.
 pub fn decoded(
     source: &ImageSource,
     window: &mut Window,
