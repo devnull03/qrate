@@ -357,15 +357,9 @@ impl PopOut {
         };
         let target = {
             let delegate = state.read(cx).delegate();
-            let visible = delegate.visible();
             self.front()
-                .and_then(|row| delegate.view_row(row))
-                .and_then(|from| {
-                    viewer::next_row(from, delta, visible.len(), |view| {
-                        viewer::previewable(delegate, visible[view]).is_some()
-                    })
-                })
-                .and_then(|view| delegate.row_ids().get(visible[view]).copied())
+                .and_then(|row| viewer::next_previewable(delegate, row, delta))
+                .and_then(|view| delegate.row_ids().get(delegate.visible()[view]).copied())
         };
         if let Some(id) = target {
             self.pinned = Some(vec![id]);

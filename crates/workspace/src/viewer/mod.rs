@@ -229,13 +229,9 @@ pub(crate) fn step_row(delta: isize, cx: &mut App) {
     };
     let target = {
         let delegate = state.read(cx).delegate();
-        let visible = delegate.visible();
-        let from = delegate.cursor_row().and_then(|row| delegate.view_row(row));
-        from.and_then(|from| {
-            next_row(from, delta, visible.len(), |view| {
-                previewable(delegate, visible[view]).is_some()
-            })
-        })
+        delegate
+            .cursor_row()
+            .and_then(|row| next_previewable(delegate, row, delta))
     };
     if let Some(view) = target {
         state.update(cx, |state, cx| {
@@ -243,6 +239,20 @@ pub(crate) fn step_row(delta: isize, cx: &mut App) {
             state.set_selected_row(view, cx);
         });
     }
+}
+
+/// The view index of the nearest row past source `row`, by `delta`, whose file the viewer can
+/// show. `None` at either end, or when `row` is filtered out of the view.
+pub(crate) fn next_previewable(
+    delegate: &table::QrateTableDelegate,
+    row: usize,
+    delta: isize,
+) -> Option<usize> {
+    let visible = delegate.visible();
+    let from = delegate.view_row(row)?;
+    next_row(from, delta, visible.len(), |view| {
+        previewable(delegate, visible[view]).is_some()
+    })
 }
 
 /// The file `row` links to, if the viewer can show it.
@@ -254,7 +264,7 @@ pub(crate) fn previewable(delegate: &table::QrateTableDelegate, row: usize) -> O
 }
 
 /// The nearest view index past `from` in `delta`'s direction that `viewable` accepts, if any.
-pub(crate) fn next_row(
+fn next_row(
     from: usize,
     delta: isize,
     len: usize,
