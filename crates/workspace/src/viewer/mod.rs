@@ -412,11 +412,11 @@ impl Viewer {
         self.clamp_pan();
     }
 
-    /// The picture's pixel size as turned, and the scale that fits it to the frame. `None` where
-    /// the file has no pixel size of its own, or before the frame has been laid out.
+    /// The picture on screen's pixel size as turned, and the scale that fits it to the frame. `None`
+    /// where the file has no pixel size of its own, or before the frame has been laid out.
     fn fit(&self) -> Option<(Size<f32>, f32)> {
         let (width, height) = self.pixels?;
-        let image = match self.turns % 2 {
+        let image = match self.shown % 2 {
             0 => size(width as f32, height as f32),
             _ => size(height as f32, width as f32),
         };
@@ -503,6 +503,8 @@ impl Viewer {
         self.page = page;
         self.zoom = 1.0;
         self.offset = Point::default();
+        // A new page has no old turn decoded to keep up.
+        self.shown = self.turns;
         self.strip.scroll_to_item(page, ScrollStrategy::Nearest);
     }
 
@@ -1547,7 +1549,13 @@ mod tests {
                 viewer.rotate(1);
                 assert_eq!(viewer.zoom, 1.0);
                 assert_eq!(viewer.offset, gpui::Point::default());
-                // Now 1000×2000 in the same frame, fitted at a quarter.
+                assert_eq!(
+                    viewer.actual_size(),
+                    Some(2.0),
+                    "measured on the upright picture still on screen"
+                );
+                // The turn lands: now 1000×2000 in the same frame, fitted at a quarter.
+                viewer.shown = viewer.turns;
                 assert_eq!(viewer.actual_size(), Some(4.0));
                 viewer.rotate(-2);
                 assert_eq!(viewer.turns, 3, "a turn back from upright wraps");
