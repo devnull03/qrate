@@ -24,7 +24,7 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable,
     button::{Button, ButtonVariants},
-    input::{InputEvent, InputState},
+    input::{Input, InputEvent, InputState},
     resizable::{ResizableState, h_resizable, resizable_panel},
     slider::{Slider, SliderEvent, SliderState, SliderValue},
 };
@@ -164,6 +164,7 @@ pub(crate) fn build(
         focused: false,
         find: Find::default(),
         find_open: false,
+        page_input: None,
         split: cx.new(|_| ResizableState::default()),
         _probe: None,
     });
@@ -189,6 +190,13 @@ pub(crate) fn build(
     });
     viewer.update(cx, |viewer, _| viewer._probe = Some(probe));
     viewer
+}
+
+/// The page a typed number lands on: 1-based as the reader types it, clamped to the document.
+/// `None` for anything that is not a number, which leaves the page where it is.
+fn typed_page(text: &str, pages: usize) -> Option<usize> {
+    let number: usize = text.trim().parse().ok()?;
+    Some(number.clamp(1, pages.max(1)) - 1)
 }
 
 /// Select the next row, by `delta`, in the view's order that has something to preview. During a
@@ -312,6 +320,8 @@ pub struct Viewer {
     pub(crate) find: Find,
     /// Whether the find panel is showing — in the pop-out, whether its sidebar is on Find.
     pub(crate) find_open: bool,
+    /// The go-to-page box in the bottom pill, built the first time the pill draws.
+    page_input: Option<Entity<InputState>>,
     /// The split between the page and the find panel, owned by `gpui_component`'s resizable — it
     /// carries the drag handle, the sizing and the propagation rules, none of which are ours to
     /// reinvent.
@@ -466,6 +476,38 @@ impl Viewer {
         self.page = page;
         self.zoom = 1.0;
         self.offset = Point::default();
+    }
+
+    /// The page box, built on first use. It shows the current page whenever it is not being typed
+    /// in, and Enter goes to what was typed.
+    fn page_input(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        let input = match self.page_input.clone() {
+            Some(input) => input,
+            None => {
+                let input = cx.new(|cx| InputState::new(window, cx));
+                cx.subscribe_in(
+                    &input,
+                    window,
+                    |this, input, event: &InputEvent, window, cx| {
+                        if let InputEvent::PressEnter { .. } = event {
+                            if let Some(page) = typed_page(&input.read(cx).value(), this.pages) {
+                                this.show_page(page);
+                            }
+                            window.focus(&this.focus_handle, cx);
+                            cx.notify();
+                        }
+                    },
+                )
+                .detach();
+                self.page_input = Some(input.clone());
+                input
+            }
+        };
+        let current = (self.page + 1).to_string();
+        if !input.focus_handle(cx).is_focused(window) && input.read(cx).value() != current {
+            input.update(cx, |input, cx| input.set_value(current, window, cx));
+        }
+        input
     }
 
     /// Whether the bottom pill has anything to hold: page controls, a transport or a scrubber.
@@ -650,6 +692,7 @@ impl Render for Viewer {
             .needs
             .and_then(|id| crate::component_banner::banner(id, cx));
         let popped = self.scope == Scope::PopOut;
+        let page_input = self.page_input(window, cx);
 
         div()
             .track_focus(&self.focus_handle)
@@ -965,11 +1008,19 @@ impl Render for Viewer {
                                         )
                                         // Numbered from one: the page count a reader sees has to
                                         // match the one printed on the document.
+                                        .child(div().pl_1().child("Page"))
                                         .child(
                                             div()
-                                                .px_1()
-                                                .child(format!("Page {} of {pages}", page + 1)),
+                                                .w(px(52.))
+                                                .on_action(cx.listener(
+                                                    |this, _: &gpui_component::input::Escape, window, cx| {
+                                                        window.focus(&this.focus_handle, cx);
+                                                        cx.notify();
+                                                    },
+                                                ))
+                                                .child(Input::new(&page_input).small()),
                                         )
+                                        .child(div().pr_1().child(format!("of {pages}")))
                                         .child(
                                             Button::new("next-page")
                                                 .icon(IconName::ChevronRight)
@@ -1322,6 +1373,34 @@ mod tests {
             });
             close_viewer(window, cx);
         });
+    }
+
+    /// A typed page is 1-based, lands inside the document however far off it is, and anything
+    /// that is not a number leaves the page alone.
+    #[test]
+    fn a_typed_page_is_one_based_and_clamped() {
+        use super::typed_page;
+
+        assert_eq!(typed_page("1", 300), Some(0));
+        assert_eq!(typed_page(" 42 ", 300), Some(41));
+        assert_eq!(
+            typed_page("999", 300),
+            Some(299),
+            "past the end is the last page"
+        );
+        assert_eq!(
+            typed_page("0", 300),
+            Some(0),
+            "before the start is the first page"
+        );
+        assert_eq!(typed_page("", 300), None);
+        assert_eq!(typed_page("x", 300), None);
+        assert_eq!(typed_page("-3", 300), None);
+        assert_eq!(
+            typed_page("5", 0),
+            Some(0),
+            "an uncounted file still has page one"
+        );
     }
 
     /// Paging has to stop at both ends. Wrapping past the last page loses the reader's place, and
