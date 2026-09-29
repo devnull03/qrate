@@ -85,20 +85,6 @@ pub(crate) fn row_lines(cx: &App) -> usize {
         .map_or(1, |lines| lines.clamp(1, MAX_ROW_LINES))
 }
 
-/// Write the row height where it takes effect: the project's own value if it overrides the
-/// default, the user default otherwise. One line is stored as unset, like the Settings default.
-pub(crate) fn set_row_lines(lines: usize, cx: &mut App) {
-    let value = match lines.clamp(1, MAX_ROW_LINES) {
-        1 => SharedString::default(),
-        lines => lines.to_string().into(),
-    };
-    if settings::has_project_override(ROW_LINES_KEY, cx) {
-        settings::project::CurrentProject::set_text(ROW_LINES_KEY, value, cx);
-    } else {
-        settings::AppSettings::set_text(ROW_LINES_KEY, value, cx);
-    }
-}
-
 /// Settings key (either scope) for how many edits Undo can step back through.
 pub const UNDO_STEPS_KEY: &str = "undo_steps";
 
