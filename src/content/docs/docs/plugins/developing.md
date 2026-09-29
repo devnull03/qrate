@@ -2,7 +2,7 @@
 title: 'Develop plugins'
 description: 'create, test, and publish a plugin'
 sidebar:
-  order: 16
+  order: 17
 ---
 
 Use this guide to create, test, and publish a qrate plugin. For each hook and host function, see

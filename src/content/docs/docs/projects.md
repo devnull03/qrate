@@ -129,7 +129,7 @@ network cannot reach them, your IT staff can keep a copy on a server or a shared
 address, such as `https://mirror.example.org/qrate`, or a folder, such as
 `file:///D:/qrate-mirror`. qrate checks everything it downloads against its own signatures, so a
 mirror cannot change what you install. Anything the mirror does not have comes from the usual
-place. The mirror's layout is in [Setup and releases](https://github.com/devnull03/qrate/tree/main/docs/dev/SETUP.md).
+place. The mirror's layout is in [Setup and releases](https://github.com/devnull03/qrate/tree/origin/main/docs/dev/SETUP.md).
 
 ### Your defaults and project overrides
 

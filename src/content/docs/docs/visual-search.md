@@ -2,7 +2,7 @@
 title: 'Visual search'
 description: 'find records by what their pictures show'
 sidebar:
-  order: 10
+  order: 11
 ---
 
 Visual search finds records by what their pictures show, rather than by what their

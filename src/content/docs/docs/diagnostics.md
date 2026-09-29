@@ -2,7 +2,7 @@
 title: 'Diagnostics'
 description: 'the Problems panel, spelling, and fixes'
 sidebar:
-  order: 11
+  order: 12
 ---
 
 qrate checks project data continuously and lists what it finds in the Problems panel, in

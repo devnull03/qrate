@@ -2,7 +2,7 @@
 title: 'Keyboard shortcuts'
 description: 'every shortcut, in one table'
 sidebar:
-  order: 8
+  order: 9
 ---
 
 On macOS, use Cmd wherever this page says Ctrl, and Option wherever it says Alt. The menus show
@@ -58,9 +58,20 @@ Undo, redo, and **Esc** also work in the Details panel, which edits the same gri
 
 ## In the file viewer
 
+These work in the fullscreen viewer and in the pop-out window.
+
 | Shortcut | Command |
 |---|---|
-| **Esc** | Close the fullscreen viewer |
+| **=** and **-** | Zoom in and out |
+| **0** | Fit to the window |
+| **1** | Actual size |
+| **W** | Fit a page to the window's width |
+| **R** / **Shift+R** | Rotate clockwise / back |
+| **Left** / **Right**, **Page Up** / **Page Down** | Previous / next page |
+| **Ctrl+F** | Find in the document |
+| **Up** / **Down** | Previous / next row |
+| **Alt+Left** / **Alt+Right** | Previous / next selected item (pop-out window) |
+| **Esc** | Close the fullscreen viewer, or go back to Details in the pop-out window |
 
 See [The grid](/docs/grid) for what each command does, and [Projects](/docs/projects#saving) for
 how saving works.

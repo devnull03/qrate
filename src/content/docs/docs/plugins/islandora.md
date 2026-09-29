@@ -2,7 +2,7 @@
 title: 'Islandora plugin'
 description: 'use Islandora vocabularies in qrate'
 sidebar:
-  order: 18
+  order: 19
 ---
 
 Islandora is an open-source repository platform that libraries and archives use to publish digital

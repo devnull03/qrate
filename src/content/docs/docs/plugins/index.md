@@ -2,7 +2,7 @@
 title: 'Plugins'
 description: 'find, install, and manage plugins'
 sidebar:
-  order: 15
+  order: 16
 ---
 
 A plugin adds checks and commands to qrate. Install a plugin from the official catalog, review an

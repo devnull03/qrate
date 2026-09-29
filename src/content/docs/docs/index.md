@@ -15,6 +15,7 @@ install to your first export in five short steps.
 
 - [Projects](/docs/projects): create, import, open, and save a `.qrate` project, and add files or rows to it
 - [The grid](/docs/grid): edit cells, group rows, search, filter, and undo
+- [Change history](/docs/history): see, name, and restore every change to a project
 - [Keyboard shortcuts](/docs/shortcuts): every shortcut, in one table
 - [Files and photos](/docs/files-and-photos): link records to files, and view them
 - [Visual search](/docs/visual-search): find records by what their pictures show

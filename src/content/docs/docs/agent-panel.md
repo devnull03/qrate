@@ -2,13 +2,13 @@
 title: 'The Agent panel'
 description: 'how a local AI agent reads a project'
 sidebar:
-  order: 14
+  order: 15
 ---
 
 An external AI agent that you run yourself can read the project open in qrate. qrate
 allows this by default. To stop it, open **Settings ▸ Agent** and switch off **Allow
 agents to read this app**. The port closes immediately, with no relaunch needed. See
-[`AGENTS.md`](https://github.com/devnull03/qrate/blob/main/AGENTS.md) for the protocol.
+[`AGENTS.md`](https://github.com/devnull03/qrate/blob/origin/main/AGENTS.md) for the protocol.
 
 qrate listens on your own machine only, behind a token that changes at every launch. A
 program that could reach this connection could already read your `.qrate` file directly,

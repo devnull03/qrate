@@ -2,7 +2,7 @@
 title: 'Export and Google Sheets'
 description: 'CSV, Excel, JSON-LD, CSL-JSON, ZIP, and Sheets sync'
 sidebar:
-  order: 13
+  order: 14
 ---
 
 ## Exporting

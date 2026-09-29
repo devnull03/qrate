@@ -2,7 +2,7 @@
 title: 'Columns'
 description: 'column types, authority lists, and per-column settings'
 sidebar:
-  order: 12
+  order: 13
 ---
 
 Open **Settings ▸ Columns**, or choose **Data ▸ Column Settings…**, to configure a column.

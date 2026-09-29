@@ -78,19 +78,21 @@ To edit several rows at once, hold **Ctrl** and click each row. A field whose va
 the same shows **Mixed** and the number of values. The value that you type goes to every
 selected row. **Ctrl+Z** undoes an edit that you make in the Details panel.
 
-The Details panel also shows the notes and the change history of the selection.
+The Details panel also shows the notes and the [change history](/docs/history) of the selection.
 
 ## Look at the file
 
 The buttons on the preview in the Details panel do these tasks:
 
 - **View fullscreen** opens the file in the viewer. You can also click the preview.
+- **Open in new window** opens the file in a second window that follows the selection, so the
+  table and the file can be on different screens.
 - **Open in default app** opens the file in the app that your computer uses for it.
 - **Reveal in folder** shows the file in your file manager.
 
-In the viewer, you can zoom, pan, go through the pages of a document, and search inside it. The
-arrows at the bottom right go to the file of the previous or next row. Press **Esc** to close
-the viewer.
+In the viewer, you can zoom, pan, rotate, go through the pages of a document or jump to one,
+and search inside it. The arrows at the bottom right go to the file of the previous or next
+row. Press **Esc** to close the viewer.
 
 To see the whole collection as thumbnails, press **Ctrl+2** or choose **View ▸ Switch View ▸
 Gallery**. Press **Ctrl+1** to go back to the table.

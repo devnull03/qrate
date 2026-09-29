@@ -2,7 +2,7 @@
 title: 'Files and photos'
 description: 'link records to files, and view them'
 sidebar:
-  order: 9
+  order: 10
 ---
 
 A row can link to a file on disk: a photo, document, audio, or video file. qrate does not
@@ -117,13 +117,8 @@ All of these changes are one step, so one **Undo** reverses them.
 ## Viewing a file
 
 The Details panel (in the left dock in Table view, and the right dock in Gallery view) shows the file linked to the selected row. It
-previews images, documents, audio, and video directly. Click the preview to open it
-fullscreen, where you can zoom, pan, page through a multi-page document, and search inside
-it.
-
-The arrows in the bottom-right corner of the fullscreen view move to the file of the
-previous or next row, in the order the view shows them. During a search that means the
-previous or next result.
+previews images, documents, audio, and video directly. The caption on the preview gives the
+file's type and size. Click the preview to open it fullscreen.
 
 PDF previews need PDFium and video frame previews need ffmpeg. qrate looks for each one in
 three places, in this order: beside its own executable, then in the optional components qrate
@@ -133,11 +128,62 @@ install ffmpeg yourself. Without them, qrate shows a file-type icon instead of a
 the rest of the app works as normal. When one of them is installed while qrate runs, the PDFs
 and videos that showed an icon are drawn again.
 
-qrate keeps downscaled copies of your files so they open faster the second time. The cache
+### The fullscreen viewer
+
+- **Zoom** with the scroll wheel, the **−** and **+** buttons, or the **-** and **=** keys.
+  The readout between the buttons shows the zoom as a percentage of the file's actual size.
+  Click it, or press **0**, to fit the file to the window; press **1** for actual size.
+  Double-click to zoom to actual size at the pointer, and double-click again to fit.
+- **Pan** by dragging. The picture stops where its edge meets the edge of the window.
+- **Rotate** with the rotate button, **R** to turn clockwise, or **Shift+R** to turn back. This
+  only changes the view; the file is not changed, and the next file opens upright.
+- **Animated GIFs** play in the viewer. Thumbnails and the Details panel show the first frame.
+
+The arrows in the bottom-right corner of the fullscreen view move to the file of the
+previous or next row, in the order the view shows them. During a search that means the
+previous or next result. **Up** and **Down** do the same.
+
+### Documents
+
+A PDF or a multi-page TIFF shows its pages in the bar at the bottom of the viewer:
+
+- **◀** and **▶**, or **Left**, **Right**, **Page Up**, and **Page Down**, go to the
+  previous or next page.
+- Type a page number in the box and press **Enter** to go to it. A number past the end goes
+  to the last page. **Esc** puts the current page back.
+- The pages button shows a column of page thumbnails on the left. Click a page to go to it.
+- The fit-to-width button, or **W**, zooms the page to the width of the window and starts at
+  its top.
+- The search button, or **Ctrl+F**, opens a panel to search the document's text.
+
+### The pop-out window
+
+The **Open in new window** button on the Details preview opens the file in a second window,
+with its fields beside it. It follows the selection in the table, so you can keep the table
+on one screen and the file on another. The window has the same zoom, pan, rotate, and page
+controls as the fullscreen viewer.
+
+- The **Following** / **Pinned** toggle in the title bar keeps the window on its current item
+  while you move around the table. While it is pinned, the title bar shows which row the table
+  is on, with a **Jump** button to show that row instead.
+- **▲** and **▼** in the title bar move to the previous or next row.
+- When you select several rows, the window shows them as a stack. Step through them with the
+  arrows on the stack or **Alt+Left** and **Alt+Right**.
+- For a document, the side panel has **Details** and **Find** tabs. **Ctrl+F** opens Find, and
+  **Esc** goes back to Details.
+
+A project has one pop-out window. It opens at the size and on the screen where you last left
+it, and it closes when you close the project or the main window.
+
+### Thumbnails
+
+qrate keeps downscaled copies of your files so they open faster the second time. While it makes
+them, the status bar shows **Loading previews** and how many are in progress. The cache
 rebuilds itself as you browse. **Settings ▸ Table ▸ Previews ▸ Cache size** sets how large it
 may grow: 512 MB, 1 GB, 2 GB (the default), or 5 GB. Past that, the oldest thumbnails are
 dropped. To reclaim the space now, choose **Clear cache** in the same group; qrate then reports
-how many thumbnails it removed and how much space it freed.
+how many thumbnails it removed and how much space it freed, and makes the thumbnails on screen
+again from your files.
 
 ## Gallery view
 
