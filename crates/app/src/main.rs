@@ -588,10 +588,14 @@ fn main() {
     log::info!("site origin: {}", site::url("/"));
     let launch_args = std::env::args_os().skip(1).collect::<Vec<_>>();
     let onboarding_preview = cfg!(debug_assertions)
-        && launch_args.iter().any(|argument| argument == "--onboarding");
-    let initial_target = startup::launch_argument(launch_args.into_iter().filter(|argument| {
-        argument.as_os_str() != std::ffi::OsStr::new("--onboarding")
-    }));
+        && launch_args
+            .iter()
+            .any(|argument| argument == "--onboarding");
+    let initial_target = startup::launch_argument(
+        launch_args
+            .into_iter()
+            .filter(|argument| argument.as_os_str() != std::ffi::OsStr::new("--onboarding")),
+    );
     let (url_sender, url_receiver) = async_channel::unbounded();
     let handoff = initial_target
         .as_ref()
