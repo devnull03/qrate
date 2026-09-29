@@ -53,6 +53,10 @@ pub const FULL: u32 = 0;
 /// natural pixel size, so "no cap" still needs a number; this is generous enough to zoom into.
 const FULL_FALLBACK: u32 = 2048;
 
+/// The most a turned [`FULL`] picture keeps. gpui draws the upright one from the file; a turn is
+/// ours to hold, and a 60 MP scan held whole would outgrow [`BUDGET`] on its own.
+const TURNED: u32 = 4096;
+
 /// How much decoded image data may stay resident. gpui's asset cache never evicts on its own, so
 /// without a ceiling a scroll through a large collection retains every thumbnail it passes.
 ///
@@ -462,7 +466,13 @@ pub fn thumbnail_png(path: &Path, page: usize) -> Option<Vec<u8>> {
 /// back something gpui can draw. Runs on a background thread; `None` for anything that won't
 /// decode, which the caller turns into the icon.
 fn render(path: &Path, max_edge: u32, page: usize, turns: u8) -> Option<Arc<RenderImage>> {
-    let upright = thumbnail_pixels(path, max_edge, page)?;
+    let mut upright = thumbnail_pixels(path, max_edge, page)?;
+    if !turns.is_multiple_of(4)
+        && max_edge == FULL
+        && upright.width().max(upright.height()) > TURNED
+    {
+        upright = downscale(upright.into(), TURNED);
+    }
     let mut bgra = match turns % 4 {
         1 => image::imageops::rotate90(&upright),
         2 => image::imageops::rotate180(&upright),
@@ -1271,6 +1281,20 @@ mod tests {
 
         let _ = std::fs::remove_file(&big);
         let _ = std::fs::remove_file(&small);
+    }
+
+    /// A turned full-size picture is ours to hold, so it is capped; an upright one is not.
+    #[test]
+    fn a_turned_full_size_picture_is_capped() {
+        let wide = std::env::temp_dir().join("qrate-turned-cap-probe.png");
+        image::RgbaImage::from_pixel(5000, 10, image::Rgba([1, 2, 3, 255]))
+            .save(&wide)
+            .unwrap();
+        let turned = crate::render(&wide, crate::FULL, 0, 1).expect("decodes");
+        assert_eq!(i32::from(turned.size(0).height), crate::TURNED as i32);
+        let upright = crate::render(&wide, crate::FULL, 0, 0).expect("decodes");
+        assert_eq!(i32::from(upright.size(0).width), 5000);
+        let _ = std::fs::remove_file(&wide);
     }
 
     /// A second look at the same file must come off disk rather than decoding again — the reason
