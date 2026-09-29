@@ -64,7 +64,7 @@ These work in the fullscreen viewer and in the pop-out window.
 | **R** / **Shift+R** | Rotate clockwise / back |
 | **Left** / **Right**, **Page Up** / **Page Down** | Previous / next page |
 | **Ctrl+F** | Find in the document |
-| **Up** / **Down** | Previous / next row (fullscreen viewer) |
+| **Up** / **Down** | Previous / next row |
 | **Alt+Left** / **Alt+Right** | Previous / next selected item (pop-out window) |
 | **Esc** | Close the fullscreen viewer, or go back to Details in the pop-out window |
 

@@ -73,7 +73,7 @@ To edit several rows at once, hold **Ctrl** and click each row. A field whose va
 the same shows **Mixed** and the number of values. The value that you type goes to every
 selected row. **Ctrl+Z** undoes an edit that you make in the Details panel.
 
-The Details panel also shows the notes and the change history of the selection.
+The Details panel also shows the notes and the [change history](../history.md) of the selection.
 
 ## Look at the file
 
