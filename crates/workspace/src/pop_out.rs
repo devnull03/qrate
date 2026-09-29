@@ -250,9 +250,7 @@ impl PopOut {
     /// The item the stage shows: the stack's front card, clamped so a smaller selection never
     /// leaves it pointing past the end.
     fn front(&self) -> Option<usize> {
-        self.rows
-            .get(self.stack.min(self.rows.len().checked_sub(1)?))
-            .copied()
+        crate::panels::details::stack_front(&self.rows, self.stack)
     }
 
     /// Bring the rows, the stage and the sidebar up to date with the grid.
@@ -369,15 +367,10 @@ impl PopOut {
 
     /// Walk the stack of selected items, wrapping at both ends like the Details preview does.
     fn step_stack(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.rows.len();
-        if count < 2 {
+        if self.rows.len() < 2 {
             return;
         }
-        let at = self.stack.min(count - 1);
-        self.stack = match forward {
-            true => (at + 1) % count,
-            false => (at + count - 1) % count,
-        };
+        self.stack = crate::panels::details::stack_step(self.stack, self.rows.len(), forward);
         self.sync(window, cx);
     }
 

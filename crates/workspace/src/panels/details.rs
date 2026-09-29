@@ -256,21 +256,13 @@ impl DetailsPanel {
             .unwrap_or_default()
     }
 
-    /// The item the preview is showing: the stack's front card. Clamped rather than remembered, so
-    /// stepping to the fifth of five and then selecting two doesn't leave the preview blank.
-    fn front(&self, picked: &[usize]) -> Option<usize> {
-        picked
-            .get(self.stack.min(picked.len().checked_sub(1)?))
-            .copied()
-    }
-
     /// Point the transport at whatever is selected now. A no-op while the selection stays on the
     /// same file — this runs on every table change, and rebuilding would re-probe the file and
     /// throw away the position on every keystroke in the grid.
     fn retarget(&mut self, cx: &mut Context<Self>) {
         self.fields = None;
         let picked = self.picked(cx);
-        let front = self.front(&picked);
+        let front = stack_front(&picked, self.stack);
         self.load_row_history(front, cx);
         // The pop-out's stage has the file, its caption and its transport.
         if self.rows.is_some() {
@@ -822,12 +814,7 @@ impl DetailsPanel {
     /// Move the preview stack one item along, wrapping at both ends so a bundle can be walked in
     /// either direction without hunting for the end of it.
     fn step_stack(&mut self, forward: bool, cx: &mut Context<Self>) {
-        let count = self.picked(cx).len().max(1);
-        let at = self.stack.min(count - 1);
-        self.stack = match forward {
-            true => (at + 1) % count,
-            false => (at + count - 1) % count,
-        };
+        self.stack = stack_step(self.stack, self.picked(cx).len(), forward);
         self.retarget(cx);
         cx.notify();
     }
@@ -1152,6 +1139,22 @@ fn render_image_frame(
 /// One of the preview stack's step arrows, pinned to the edge its chevron points at and centred
 /// down the card. Full-height flex rather than a top offset: the pane is a height the user drags,
 /// so there is no fixed centre to hardcode.
+/// The item a stack of selected `rows` shows: the front card. Clamped rather than remembered, so
+/// stepping to the fifth of five and then selecting two doesn't leave the preview blank.
+pub(crate) fn stack_front(rows: &[usize], stack: usize) -> Option<usize> {
+    rows.get(stack.min(rows.len().checked_sub(1)?)).copied()
+}
+
+/// The front card after one step through `count` cards, wrapping at either end.
+pub(crate) fn stack_step(stack: usize, count: usize, forward: bool) -> usize {
+    let count = count.max(1);
+    let at = stack.min(count - 1);
+    match forward {
+        true => (at + 1) % count,
+        false => (at + count - 1) % count,
+    }
+}
+
 fn step(
     id: &'static str,
     left: bool,
@@ -1230,7 +1233,7 @@ fn shared_fields(delegate: &QrateTableDelegate, picked: &[usize]) -> Vec<SharedF
 impl Render for DetailsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let picked = self.picked(cx);
-        let front = self.front(&picked);
+        let front = stack_front(&picked, self.stack);
         let count = picked.len();
         let selection = self.state.as_ref().and_then(|w| w.upgrade()).map(|s| {
             let delegate = s.read(cx).delegate();
@@ -1815,6 +1818,28 @@ mod tests {
     use gpui::VisualTestContext;
 
     use super::{DetailsPanel, render_image_frame};
+
+    /// The stack wraps at both ends, and a remembered position past a smaller selection lands
+    /// on its last card rather than on nothing.
+    #[test]
+    fn the_stack_wraps_and_clamps_to_the_selection() {
+        use super::{stack_front, stack_step};
+
+        assert_eq!(
+            stack_step(2, 3, true),
+            0,
+            "past the last wraps to the first"
+        );
+        assert_eq!(
+            stack_step(0, 3, false),
+            2,
+            "before the first wraps to the last"
+        );
+        assert_eq!(stack_step(4, 2, true), 0, "a stale position clamps first");
+        assert_eq!(stack_step(0, 0, true), 0, "nothing selected goes nowhere");
+        assert_eq!(stack_front(&[7, 8], 5), Some(8));
+        assert_eq!(stack_front(&[], 0), None);
+    }
 
     /// Wraps `render_image_frame` in a root `Render` view so a test can actually draw it —
     /// `Img`'s real load/fallback logic runs during layout/paint, not at element construction,
