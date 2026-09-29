@@ -396,8 +396,8 @@ impl Viewer {
     }
 
     /// Clamp zoom to [0.1, 8], widened to reach actual size either way — below 1 zooms out past
-    /// the initial fit — keeping the point at `anchor` (relative to the frame's centre) still, and
-    /// recenter once the image is no bigger than its frame, where there's nothing to pan to.
+    /// the initial fit — keeping the point at `anchor` (relative to the frame's centre) still. The
+    /// pan stays where the reader put it, inside the frame; only [`Self::fit_view`] recentres.
     fn set_zoom(&mut self, zoom: f32, anchor: Point<Pixels>) {
         let actual = self.actual_size();
         let most = actual.map_or(8.0, |actual| actual.max(8.0));
@@ -406,10 +406,13 @@ impl Viewer {
         let scale = zoom / self.zoom;
         self.offset = anchor - (anchor - self.offset) * scale;
         self.zoom = zoom;
-        if self.zoom <= 1.0 {
-            self.offset = Point::default();
-        }
         self.clamp_pan();
+    }
+
+    /// Back to fit, centred: the one view the pointer cannot land on exactly.
+    fn fit_view(&mut self) {
+        self.zoom = 1.0;
+        self.offset = Point::default();
     }
 
     /// The picture on screen's pixel size as turned, and the scale that fits it to the frame. `None`
@@ -459,8 +462,7 @@ impl Viewer {
     /// at a picture of a different shape.
     fn rotate(&mut self, delta: i8) {
         self.turns = (self.turns as i8 + delta).rem_euclid(4) as u8;
-        self.zoom = 1.0;
-        self.offset = Point::default();
+        self.fit_view();
         log::debug!(
             "viewer: {} turned to {}°",
             self.path.display(),
@@ -472,7 +474,7 @@ impl Viewer {
     /// whose actual size is the fit.
     fn toggle_zoom(&mut self, anchor: Point<Pixels>) {
         if (self.zoom - 1.0).abs() > 0.01 {
-            self.set_zoom(1.0, anchor);
+            self.fit_view();
             return;
         }
         let target = self
@@ -501,8 +503,7 @@ impl Viewer {
     /// lands on a page directly rather than by stepping to it, and must reset the same things.
     fn show_page(&mut self, page: usize) {
         self.page = page;
-        self.zoom = 1.0;
-        self.offset = Point::default();
+        self.fit_view();
         // A new page has no old turn decoded to keep up.
         self.shown = self.turns;
         self.strip.scroll_to_item(page, ScrollStrategy::Nearest);
@@ -900,7 +901,7 @@ impl Render for Viewer {
                     }
                     // Back to fit, the one zoom the pointer cannot land on exactly.
                     "0" if reading => {
-                        this.set_zoom(1.0, Point::default());
+                        this.fit_view();
                         cx.notify();
                     }
                     "1" if reading => {
@@ -1545,6 +1546,14 @@ mod tests {
                     gpui::point(gpui::px(250.), gpui::px(125.)),
                     "zoomed out, it still drags, as far as the frame's edge"
                 );
+                viewer.set_zoom(0.6, gpui::Point::default());
+                assert_ne!(
+                    viewer.offset,
+                    gpui::Point::default(),
+                    "zooming keeps the pan"
+                );
+                viewer.fit_view();
+                assert_eq!(viewer.offset, gpui::Point::default(), "fit recentres");
 
                 viewer.rotate(1);
                 assert_eq!(viewer.zoom, 1.0);
