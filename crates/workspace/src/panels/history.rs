@@ -1055,12 +1055,7 @@ impl HistoryPanel {
             .map(|state| {
                 let delegate = state.read(cx).delegate();
                 (
-                    delegate
-                        .row_ids()
-                        .iter()
-                        .enumerate()
-                        .map(|(p, id)| (*id, p))
-                        .collect(),
+                    delegate.row_positions(),
                     delegate
                         .unsaved_history()
                         .iter()

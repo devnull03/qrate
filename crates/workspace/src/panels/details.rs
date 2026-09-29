@@ -313,7 +313,7 @@ impl DetailsPanel {
     fn load_row_history(&mut self, front: Option<usize>, cx: &mut Context<Self>) {
         let row = front.and_then(|row| {
             let state = self.state.as_ref()?.upgrade()?;
-            state.read(cx).delegate().row_ids().get(row).copied()
+            state.read(cx).delegate().row_id(row)
         });
         let file = cx
             .try_global::<settings::project::CurrentProject>()
@@ -382,8 +382,7 @@ impl DetailsPanel {
             .filter(|_| !picked.is_empty())
             .and_then(|s| {
                 let delegate = s.read(cx).delegate();
-                let ids = delegate.row_ids();
-                let rows = picked.iter().filter_map(|&row| ids.get(row).copied());
+                let rows = picked.iter().filter_map(|&row| delegate.row_id(row));
                 Some((rows.collect::<Vec<_>>(), delegate.data_col(header)?))
             });
         let Some((rows, col)) = located else {
@@ -835,12 +834,7 @@ impl DetailsPanel {
             .and_then(|state| {
                 let delegate = state.read(cx).delegate();
                 let col = delegate.data_col(&header)?;
-                let at: std::collections::HashMap<_, _> = delegate
-                    .row_ids()
-                    .iter()
-                    .enumerate()
-                    .map(|(row, id)| (*id, row))
-                    .collect();
+                let at = delegate.row_positions();
                 let rows = ids.iter().filter_map(|id| at.get(id).copied());
                 Some(
                     rows.map(|row| (row, col, value.clone()))

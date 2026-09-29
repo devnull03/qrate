@@ -401,12 +401,7 @@ pub(crate) fn file_rows(
 /// The rows `changes` put new text in or back into, as they now sit; `None` when a column moved,
 /// which can change what every row resolves to.
 fn changed_rows(delegate: &QrateTableDelegate, changes: &[Change]) -> Option<Vec<usize>> {
-    let position: std::collections::HashMap<_, _> = delegate
-        .row_ids()
-        .iter()
-        .enumerate()
-        .map(|(at, id)| (*id, at))
-        .collect();
+    let position = delegate.row_positions();
     changes
         .iter()
         .filter_map(|change| match change {
@@ -533,10 +528,7 @@ pub fn restore_to(to: EntryId, cx: &mut App) {
         else {
             continue;
         };
-        let position = row.and_then(|id| {
-            let delegate = state.read(cx).delegate();
-            delegate.row_ids().iter().position(|r| *r == id)
-        });
+        let position = row.and_then(|id| state.read(cx).delegate().row_of(id));
         if row.is_some() && position.is_none() {
             continue;
         }
@@ -571,11 +563,7 @@ pub fn restore_value(
     };
     let target = {
         let delegate = state.read(cx).delegate();
-        delegate
-            .row_ids()
-            .iter()
-            .position(|id| *id == row)
-            .zip(delegate.data_col(column))
+        delegate.row_of(row).zip(delegate.data_col(column))
     };
     if let Some((row, col)) = target {
         write_cell(row, col, text, Origin::Restore(from), cx);

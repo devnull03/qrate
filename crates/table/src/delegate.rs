@@ -1825,8 +1825,22 @@ impl QrateTableDelegate {
         );
     }
 
-    pub(crate) fn row_id(&self, source: usize) -> Option<settings::project::RowId> {
+    pub fn row_id(&self, source: usize) -> Option<settings::project::RowId> {
         self.row_ids.get(source).copied()
+    }
+
+    /// The source row `id` sits at now. A scan; for a batch of ids, [`Self::row_positions`].
+    pub fn row_of(&self, id: settings::project::RowId) -> Option<usize> {
+        self.row_ids.iter().position(|row| *row == id)
+    }
+
+    /// Where every row id sits now, for finding a batch of ids again after rows moved.
+    pub fn row_positions(&self) -> std::collections::HashMap<settings::project::RowId, usize> {
+        self.row_ids
+            .iter()
+            .enumerate()
+            .map(|(row, id)| (*id, row))
+            .collect()
     }
 
     pub fn row_ids(&self) -> &[settings::project::RowId] {

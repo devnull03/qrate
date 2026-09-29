@@ -258,7 +258,6 @@ impl PopOut {
         let mut kept = None;
         let rows = self.table().map_or_else(Vec::new, |state| {
             let delegate = state.read(cx).delegate();
-            let all = delegate.row_ids();
             match &self.pinned {
                 // Where the pin was last found, while every row is still there: a cell edit is the
                 // common change, and it moves nothing.
@@ -267,15 +266,14 @@ impl PopOut {
                         && ids
                             .iter()
                             .zip(&self.rows)
-                            .all(|(id, &row)| all.get(row) == Some(id)) =>
+                            .all(|(id, &row)| delegate.row_id(row) == Some(*id)) =>
                 {
                     self.rows.clone()
                 }
                 // Rows were added, removed or moved: one pass to find the pin again, dropping the
                 // items that are gone so the pass above matches again from the next change.
                 Some(ids) => {
-                    let at: std::collections::HashMap<_, _> =
-                        all.iter().enumerate().map(|(row, id)| (*id, row)).collect();
+                    let at = delegate.row_positions();
                     let (ids, rows): (Vec<_>, Vec<_>) = ids
                         .iter()
                         .filter_map(|id| Some((*id, *at.get(id)?)))
@@ -336,9 +334,9 @@ impl PopOut {
     /// The row ids of `rows`, which is what a pin holds on to.
     fn ids(&self, rows: &[usize], cx: &App) -> Vec<RowId> {
         self.table().map_or_else(Vec::new, |state| {
-            let ids = state.read(cx).delegate().row_ids();
+            let delegate = state.read(cx).delegate();
             rows.iter()
-                .filter_map(|&row| ids.get(row).copied())
+                .filter_map(|&row| delegate.row_id(row))
                 .collect()
         })
     }
@@ -357,7 +355,7 @@ impl PopOut {
             let delegate = state.read(cx).delegate();
             self.front()
                 .and_then(|row| viewer::next_previewable(delegate, row, delta))
-                .and_then(|view| delegate.row_ids().get(delegate.visible()[view]).copied())
+                .and_then(|view| delegate.row_id(delegate.visible()[view]))
         };
         if let Some(id) = target {
             self.pinned = Some(vec![id]);
