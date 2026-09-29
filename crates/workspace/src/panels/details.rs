@@ -7,7 +7,7 @@ use std::time::Duration;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Selectable as _, Sizable, StyledExt as _,
+    ActiveTheme, Icon, IconName, Sizable, StyledExt as _,
     button::{Button, ButtonVariants},
     dock::{BasePanel, DockPlacement, Panel, PanelEvent},
     h_flex,
@@ -1080,10 +1080,13 @@ fn render_image_frame(
                         .child({
                             let open = crate::pop_out::is_open(cx);
                             Button::new("pop-out")
-                                .icon(Icon::empty().path("icons/app-window.svg"))
+                                .icon(
+                                    Icon::empty()
+                                        .path("icons/app-window.svg")
+                                        .when(open, |icon| icon.text_color(cx.theme().primary)),
+                                )
                                 .ghost()
                                 .small()
-                                .selected(open)
                                 .tooltip(match open {
                                     true => "Show pop-out window",
                                     false => "Open in new window",
@@ -1115,12 +1118,17 @@ fn render_image_frame(
                 .absolute()
                 .top_1()
                 .left_1()
+                // The action chip opposite takes the rest; a narrow pane truncates rather than overlaps.
+                .max_w(relative(0.4))
                 .px_1p5()
                 .py_0p5()
                 .rounded(cx.theme().radius)
                 .bg(cx.theme().background)
                 .text_xs()
                 .text_color(cx.theme().foreground)
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
                 .child(caption)
         }))
         // Along the bottom of the frame, over the cover art rather than beside it: the pane is a
