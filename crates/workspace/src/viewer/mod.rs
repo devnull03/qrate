@@ -395,12 +395,14 @@ impl Viewer {
         cx.notify();
     }
 
-    /// Clamp zoom to [0.1, 8] — below 1 zooms out past the initial fit — keeping the point at
-    /// `anchor` (relative to the frame's centre) still, and recenter once the image is no bigger
-    /// than its frame, where there's nothing to pan to.
+    /// Clamp zoom to [0.1, 8], widened to reach actual size either way — below 1 zooms out past
+    /// the initial fit — keeping the point at `anchor` (relative to the frame's centre) still, and
+    /// recenter once the image is no bigger than its frame, where there's nothing to pan to.
     fn set_zoom(&mut self, zoom: f32, anchor: Point<Pixels>) {
-        let most = self.actual_size().map_or(8.0, |actual| actual.max(8.0));
-        let zoom = zoom.clamp(0.1, most);
+        let actual = self.actual_size();
+        let most = actual.map_or(8.0, |actual| actual.max(8.0));
+        let least = actual.map_or(0.1, |actual| actual.min(0.1));
+        let zoom = zoom.clamp(least, most);
         let scale = zoom / self.zoom;
         self.offset = anchor - (anchor - self.offset) * scale;
         self.zoom = zoom;
@@ -1582,6 +1584,30 @@ mod tests {
                 viewer.fit_width();
                 assert_eq!(viewer.zoom, 1.0);
                 assert_eq!(viewer.offset, gpui::Point::default());
+            });
+            close_viewer(window, cx);
+        });
+    }
+
+    /// Actual size is reachable however small the file: an icon fitted far past 10× still gets
+    /// down to one pixel per pixel.
+    #[gpui::test]
+    fn actual_size_is_reachable_for_a_tiny_image(cx: &mut TestAppContext) {
+        let cx = with_window(cx);
+        let path = std::path::PathBuf::from("/nonexistent/qrate-tiny.png");
+        cx.update(|window, cx| {
+            open_viewer(path, Scope::Workspace, window, cx);
+            let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
+            viewer.update(cx, |viewer, _| {
+                viewer.pixels = Some((32, 32));
+                viewer.frame.set(gpui::Bounds::new(
+                    gpui::Point::default(),
+                    gpui::size(gpui::px(1000.), gpui::px(500.)),
+                ));
+                let actual = viewer.actual_size().expect("has a size");
+                assert!(actual < 0.1);
+                viewer.set_zoom(actual, gpui::Point::default());
+                assert_eq!(viewer.zoom, actual);
             });
             close_viewer(window, cx);
         });
