@@ -72,9 +72,12 @@ On macOS, you can also install the base app from the [qrate Homebrew tap](https:
 brew install --cask devnull03/tap/qrate
 ```
 
-WinGet and the Microsoft Store are planned Windows install options. They will be available after
-their first package submissions are accepted. Until then, use a Windows download from GitHub
-Releases. Once the WinGet listing is live, install it with:
+On Windows, you can also install the base app from the
+[Microsoft Store](https://apps.microsoft.com/detail/9NL2FCHXTBMM). The Store keeps it up to date,
+so qrate's own updater is switched off in that install.
+
+WinGet is a planned Windows install option. It will be available after its first package
+submission is accepted. Once the WinGet listing is live, install it with:
 
 ```powershell
 winget install --id devnull03.qrate --exact

@@ -61,7 +61,7 @@ On macOS, install the base app from the Homebrew tap:
 brew install --cask devnull03/tap/qrate
 ```
 
-On Windows, install qrate with WinGet after its first community manifest is accepted:
+On Windows, install the base app from the [Microsoft Store](https://apps.microsoft.com/detail/9NL2FCHXTBMM), or with WinGet after its first community manifest is accepted:
 
 ```powershell
 winget install --id devnull03.qrate --exact

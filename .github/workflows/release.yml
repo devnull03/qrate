@@ -582,8 +582,9 @@ jobs:
             separately.
 
             - **Windows:** `*-base-setup.exe` (installer, asks for per-user or all-users). Full:
-              `*-<version>-setup.exe`, or `*-x86_64.zip` (portable). Deploying to managed machines?
-              See **Enterprise** below.
+              `*-<version>-setup.exe`, or `*-x86_64.zip` (portable). Also on the
+              [Microsoft Store](https://apps.microsoft.com/detail/9NL2FCHXTBMM), which updates it
+              for you. Deploying to managed machines? See **Enterprise** below.
             - **macOS:** `*-base-universal.dmg` (Intel + Apple Silicon). Full: `*-<version>-universal.dmg`.
             - **Linux:** `*-base-x86_64-linux.tar.gz` (Wayland + X11; needs a Vulkan driver).
               Full: `*-<version>-x86_64-linux.tar.gz`.
