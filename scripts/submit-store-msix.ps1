@@ -81,7 +81,7 @@ $packages += [ordered]@{
   minimumSystemRam = 'None'
 }
 $submission.applicationPackages = $packages
-$submission.targetPublishMode = 'Manual'
+$submission.targetPublishMode = 'Immediate'
 
 $body = [ordered]@{}
 foreach ($property in $submission.PSObject.Properties) {

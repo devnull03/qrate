@@ -43,9 +43,9 @@ the first package can be submitted by hand in Partner Center. After that submiss
 with age ratings, set
 `QRATE_STORE_SUBMISSIONS_ENABLED=true`; later stable tags submit automatically. Prerelease tags build
 the private MSIX workflow artifact but do not submit it to Partner Center. The submit job keeps
-Partner Center's existing publish mode and listing metadata, and stops after Partner Center accepts
-the submission for processing. Certification and any manual publication step remain visible in
-Partner Center.
+Partner Center's existing listing metadata, sets the submission to publish as soon as it passes
+certification, and stops after Partner Center accepts the submission for processing. Certification
+progress remains visible in Partner Center.
 
 The installer branch must be merged before its release tag is pushed. Tags created before this
 workflow change do not acquire an MSIX retroactively; use a new prerelease tag to test packaging.
