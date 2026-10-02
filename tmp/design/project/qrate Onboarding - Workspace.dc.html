@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<style>
+body{margin:0;background:#eceae6;font-family:system-ui,sans-serif}
+a{color:#1a73e8}a:hover{color:#1967d2}
+.dv-turn{padding:40px 44px 32px;border-bottom:1px solid rgba(0,0,0,.08);scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 6px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 15px/1.2 system-ui,sans-serif;color:#1a1a1a}
+.dv-tdesc{font:13px/1.5 system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:860px;margin:0 0 20px;text-wrap:pretty}
+.dv-opts{display:flex;flex-wrap:wrap;gap:36px;align-items:flex-start}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 12px/1.4 system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:1180px}
+.dv-pair{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
+.dv-th{font:500 10.5px ui-monospace,Menlo,monospace;color:rgba(0,0,0,.45);margin:0 0 6px}
+.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}
+.dv-next{margin:22px 0 0;font:12px/1.5 system-ui,sans-serif;color:rgba(0,0,0,.5)}
+.dv-new{font:600 10px ui-monospace,Menlo,monospace;padding:1px 5px;border-radius:3px;background:#d7e6fb;color:#174ea6}
+.dv-prop{font:600 10px ui-monospace,Menlo,monospace;padding:1px 5px;border-radius:3px;background:#fde7c2;color:#7a4b00}
+.qf{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;font-size:14px;line-height:20px;color:var(--fg);background:var(--bg);box-shadow:0 1px 3px rgba(0,0,0,.08),0 12px 32px rgba(0,0,0,.10)}
+.ql{--bg:#ffffff;--fg:#202124;--bd:#dadce0;--mu:#5f6368;--mubg:#f1f3f4;--pri:#1a73e8;--prifg:#fff;--sec:#f1f3f4;--sech:#e8eaed;--pop:#ffffff;--tiles:#f8f9fa;--tb:#f9fbfd;--seg:#f1f3f4;--thead:#e8eaed;--theadfg:#3c4043;--even:#f3f3f3;--act:#e8f0fe;--dl:#f8f9fa;--dlfg:#5f6368;--ok:#0f9d58;--warn:#f9ab00;--err:#d93025;--link:#1a73e8;--sh:0 6px 20px rgba(32,33,36,.18)}
+.qd{--bg:#2f2f2f;--fg:#bbbbbb;--bd:#212121;--mu:#8a8a8a;--mubg:#404040;--pri:#3c78d8;--prifg:#fff;--sec:#404040;--sech:#4a4a4a;--pop:#292929;--tiles:#292929;--tb:#292929;--seg:#333333;--thead:#242424;--theadfg:#cfcfcf;--even:#333333;--act:#3c78d833;--dl:#292929;--dlfg:#999999;--ok:#328e52;--warn:#f1c232;--err:#e62e2e;--link:#6d9eeb;--sh:0 8px 24px rgba(0,0,0,.5)}
+.zr:nth-child(even){background:var(--even)}
+.zf:nth-child(even){background:var(--tiles)}
+.rsel,.rsel:nth-child(even){background:var(--act)}
+.acell{box-shadow:inset 0 0 0 2px var(--pri)}
+.tcur{background:color-mix(in srgb,var(--pri) 7%,transparent)}
+.kf{outline:2px solid var(--pri);outline-offset:2px}
+</style>
+</helmet>
+
+<section class="dv-turn" id="intro" style="background:#f6f5f2">
+<div class="dv-thd"><span class="dv-tname" style="font-size:20px">qrate onboarding — first workspace visit &amp; learning in context</span></div>
+<p class="dv-tdesc">Frames 6–8 plus the guide's states and the narrow window. The window chrome, dock arrangement, view switcher, Details and Problems panels follow <code>workspace/src/lib.rs</code>, <code>views/mod.rs</code>, <code>window-wrapper</code> and the app's title and status items. Details starts on the left in Table, and Gallery's default layout moves it to the right. New pieces are a <b>Getting started card</b> with at most three tasks chosen from project state, plus <b>tips anchored to the real panel</b>, each shown once when its subject first appears. Neither dims or blocks the grid. <span class="dv-new">NEW</span> marks onboarding UI and <span class="dv-prop">PROPOSED</span> marks anything that needs other code changes. Frames 1–5 are in <a href="qrate Onboarding — Launcher &amp; Wizard.dc.html">qrate Onboarding — Launcher &amp; Wizard</a>.</p>
+</section>
+
+<section class="dv-turn" id="t6">
+<div class="dv-thd"><a class="dv-tid" href="#t6">6</a><span class="dv-tname">Blank project — "Name your first record"</span></div>
+<p class="dv-tdesc">qrate already creates one empty row for a blank project, so the first task is to type into it. Three placements for the same card follow. <a class="dv-oid" href="#6a">6a</a> floats in the grid's corner, <a class="dv-oid" href="#6b">6b</a> sits in the Details dock, and <a class="dv-oid" href="#6c">6c</a> lives in the status bar. 6c is the one that survives the 520 × 300 minimum window (see <a class="dv-oid" href="#11a">11a</a>).</p>
+<div class="dv-opts">
+
+<div class="dv-opt" id="6a">
+<div class="dv-olabel"><a class="dv-oid" href="#6a">6a</a><span><span class="dv-new">NEW</span> floating card, bottom-right of the centre. "Show me" on task 1 selected the first Title cell and anchored a tip to it.</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:1180px;height:720px;display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+  <div style="height:34px;flex:none;display:flex;align-items:center;background:var(--tb);border-bottom:1px solid var(--bd);font-size:12px;padding-left:8px">
+    <div style="flex:1;display:flex"><span style="padding:3px 8px">File</span><span style="padding:3px 8px">Edit</span><span style="padding:3px 8px">Insert</span><span style="padding:3px 8px">View</span><span style="padding:3px 8px">Data</span><span style="padding:3px 8px">Plugins</span><span style="padding:3px 8px">Help</span></div>
+    <div style="display:flex;gap:6px;align-items:center"><span>Untitled Catalog</span><span style="color:var(--mu)">· Author: Arnav</span></div>
+    <div style="flex:1;display:flex;justify-content:flex-end;align-items:center;gap:4px;padding-right:16px"><span style="padding:2px 6px;font-size:14px;color:var(--mu)">Feedback</span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path><path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4z" fill="currentColor"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M3 15h18"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M15 3v18"></path></svg></span></div>
+    <div style="display:flex;align-self:stretch"><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 6h10"></path></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="10" height="10"></rect></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 1l10 10M11 1 1 11"></path></svg></span></div>
+  </div>
+  <div style="flex:1;min-height:0;display:flex">
+    <div style="width:300px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--bd)">
+      <div style="height:30px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 8px 0 12px;background:var(--tb);border-bottom:1px solid var(--bd);font-size:13px"><span>Details</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg></div>
+      <div style="display:flex;flex-direction:column;font-size:13px">
+        <div class="zf" style="display:grid;grid-template-columns:96px 1fr;padding:7px 12px"><span style="color:var(--dlfg)">Title</span><span style="color:var(--mu)">Empty</span></div>
+        <div class="zf" style="display:grid;grid-template-columns:96px 1fr;padding:7px 12px"><span style="color:var(--dlfg)">File</span><span style="color:var(--mu)">Empty</span></div>
+      </div>
+    </div>
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;position:relative">
+      <div style="height:30px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px;background:var(--tb);border-bottom:1px solid var(--bd)">
+        <div style="display:flex;padding:2px;gap:2px;background:var(--seg);border-radius:6px;font-size:12px"><span style="display:flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:4px;background:var(--bg);box-shadow:0 1px 2px rgba(0,0,0,.14)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12h16M4 6h16M4 18h16"></path></svg>Table</span><span style="display:flex;align-items:center;gap:4px;height:20px;padding:0 8px;color:var(--mu)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="7" height="9" x="3" y="3" rx="1"></rect><rect width="7" height="5" x="14" y="3" rx="1"></rect><rect width="7" height="9" x="14" y="12" rx="1"></rect><rect width="7" height="5" x="3" y="16" rx="1"></rect></svg>Gallery</span></div>
+        <div style="flex:1"></div>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg>
+      </div>
+      <div style="display:grid;grid-template-columns:44px 260px 260px;height:32px;background:var(--thead);color:var(--theadfg);border-bottom:1px solid var(--bd);line-height:32px;width:max-content"><span></span><span style="padding:0 8px;border-left:1px solid var(--bd)">Title</span><span style="padding:0 8px;border-left:1px solid var(--bd);border-right:1px solid var(--bd)">File</span></div>
+      <div style="display:grid;grid-template-columns:44px 260px 260px;height:32px;background:var(--act);border-bottom:1px solid var(--bd);width:max-content"><span style="text-align:center;line-height:32px;font-weight:600">1</span><span class="acell kf" style="border-left:1px solid var(--bd);background:var(--bg);outline-offset:0"></span><span style="border-left:1px solid var(--bd);border-right:1px solid var(--bd)"></span></div>
+      <div style="position:absolute;left:62px;top:104px;width:268px;background:var(--pop);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);padding:12px;display:flex;flex-direction:column;gap:6px;font-size:13px;line-height:18px">
+        <div style="position:absolute;left:30px;top:-6px;width:10px;height:10px;background:var(--pop);border-left:1px solid var(--bd);border-top:1px solid var(--bd);transform:rotate(45deg)"></div>
+        <div style="font-weight:600;font-size:14px">Name your first record</div>
+        <div style="color:var(--mu)">Type a title and press Enter. This row is already here for you. Press Enter again to add the next one.</div>
+        <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:4px"><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;background:var(--pri);color:var(--prifg);font-size:12px">Got it</span></div>
+      </div>
+      <div style="position:absolute;right:16px;bottom:16px;width:292px;background:var(--pop);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);display:flex;flex-direction:column;font-size:13px;line-height:18px">
+        <div style="padding:12px 12px 8px;display:flex;flex-direction:column;gap:2px"><div style="font-size:12px;color:var(--mu)">Getting started · {{ gBlank.progress }}</div><div style="font-size:14px;font-weight:600">{{ gBlank.title }}</div><div style="color:var(--mu)">{{ gBlank.sub }}</div></div>
+        <div style="display:flex;flex-direction:column;padding:0 4px 4px">
+          <sc-for list="{{ gBlank.tasks }}" as="k" hint-placeholder-count="3">
+            <div class="{{ k.cls }}" style="display:flex;gap:10px;padding:8px;border-radius:6px;align-items:flex-start">
+              <sc-if value="{{ k.done }}"><span style="width:16px;height:16px;flex:none;border-radius:50%;background:var(--ok);color:#fff;font-size:11px;line-height:16px;text-align:center;margin-top:1px">✓</span></sc-if>
+              <sc-if value="{{ k.cur }}"><span style="width:16px;height:16px;flex:none;border-radius:50%;border:2px solid var(--pri);box-sizing:border-box;margin-top:1px"></span></sc-if>
+              <sc-if value="{{ k.todo }}"><span style="width:16px;height:16px;flex:none;border-radius:50%;border:1.5px solid var(--mu);box-sizing:border-box;margin-top:1px"></span></sc-if>
+              <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><span style="{{ k.tstyle }}">{{ k.title }}</span><sc-if value="{{ k.cur }}"><span style="color:var(--mu)">{{ k.hint }}</span></sc-if></div>
+              <sc-if value="{{ k.cur }}"><span style="color:var(--link);white-space:nowrap">Show me</span></sc-if>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:4px;padding:6px 8px;border-top:1px solid var(--bd)"><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;font-size:12px">Show me later</span><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;font-size:12px">Dismiss</span></div>
+      </div>
+    </div>
+  </div>
+  <div style="height:28px;flex:none;display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--tb);border-top:1px solid var(--bd);font-size:12px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg><span style="width:1px;height:12px;background:var(--bd)"></span><span style="color:var(--mu)">No problems</span><span style="flex:1"></span><span>Row 1, Col 1, 0 characters</span></div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+
+<div class="dv-opt" id="6b">
+<div class="dv-olabel"><a class="dv-oid" href="#6b">6b</a><span><span class="dv-new">NEW</span> the card sits at the top of the Details dock, where "Nothing selected" has spare room, so the grid is left clear. It moves with Details if the panel is dragged elsewhere.</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:1180px;height:720px;display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+  <div style="height:34px;flex:none;display:flex;align-items:center;background:var(--tb);border-bottom:1px solid var(--bd);font-size:12px;padding-left:8px">
+    <div style="flex:1;display:flex"><span style="padding:3px 8px">File</span><span style="padding:3px 8px">Edit</span><span style="padding:3px 8px">Insert</span><span style="padding:3px 8px">View</span><span style="padding:3px 8px">Data</span><span style="padding:3px 8px">Plugins</span><span style="padding:3px 8px">Help</span></div>
+    <div style="display:flex;gap:6px;align-items:center"><span>Untitled Catalog</span><span style="color:var(--mu)">· Author: Arnav</span></div>
+    <div style="flex:1;display:flex;justify-content:flex-end;align-items:center;gap:4px;padding-right:16px"><span style="padding:2px 6px;font-size:14px;color:var(--mu)">Feedback</span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path><path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4z" fill="currentColor"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M3 15h18"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M15 3v18"></path></svg></span></div>
+    <div style="display:flex;align-self:stretch"><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 6h10"></path></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="10" height="10"></rect></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 1l10 10M11 1 1 11"></path></svg></span></div>
+  </div>
+  <div style="flex:1;min-height:0;display:flex">
+    <div style="width:300px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--bd)">
+      <div style="height:30px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 8px 0 12px;background:var(--tb);border-bottom:1px solid var(--bd);font-size:13px"><span>Details</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg></div>
+      <div style="margin:10px;border:1px solid var(--bd);border-radius:8px;background:var(--tiles);display:flex;flex-direction:column;font-size:13px;line-height:18px">
+        <div style="padding:10px 12px 6px;display:flex;flex-direction:column;gap:2px"><div style="display:flex;justify-content:space-between;font-size:12px;color:var(--mu)"><span>Getting started · {{ gBlank.progress }}</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"></path></svg></div><div style="font-size:14px;font-weight:600">{{ gBlank.title }}</div></div>
+        <div style="display:flex;flex-direction:column;padding:0 4px 4px">
+          <sc-for list="{{ gBlank.tasks }}" as="k" hint-placeholder-count="3">
+            <div class="{{ k.cls }}" style="display:flex;gap:10px;padding:7px 8px;border-radius:6px;align-items:flex-start">
+              <sc-if value="{{ k.cur }}"><span style="width:16px;height:16px;flex:none;border-radius:50%;border:2px solid var(--pri);box-sizing:border-box;margin-top:1px"></span></sc-if>
+              <sc-if value="{{ k.todo }}"><span style="width:16px;height:16px;flex:none;border-radius:50%;border:1.5px solid var(--mu);box-sizing:border-box;margin-top:1px"></span></sc-if>
+              <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><span style="{{ k.tstyle }}">{{ k.title }}</span><sc-if value="{{ k.cur }}"><span style="color:var(--mu)">{{ k.hint }}</span><span style="color:var(--link)">Show me</span></sc-if></div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:4px;padding:4px 8px;border-top:1px solid var(--bd)"><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;font-size:12px">Show me later</span><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;font-size:12px">Dismiss</span></div>
+      </div>
+      <div style="padding:8px 12px;display:flex;flex-direction:column;gap:4px"><div>Nothing selected</div><div style="font-size:13px;color:var(--mu)">Select a row or a thumbnail to see its fields here. Hold Ctrl to pick several.</div></div>
+    </div>
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+      <div style="height:30px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px;background:var(--tb);border-bottom:1px solid var(--bd)">
+        <div style="display:flex;padding:2px;gap:2px;background:var(--seg);border-radius:6px;font-size:12px"><span style="display:flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:4px;background:var(--bg);box-shadow:0 1px 2px rgba(0,0,0,.14)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12h16M4 6h16M4 18h16"></path></svg>Table</span><span style="display:flex;align-items:center;gap:4px;height:20px;padding:0 8px;color:var(--mu)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="7" height="9" x="3" y="3" rx="1"></rect><rect width="7" height="5" x="14" y="3" rx="1"></rect><rect width="7" height="9" x="14" y="12" rx="1"></rect><rect width="7" height="5" x="3" y="16" rx="1"></rect></svg>Gallery</span></div>
+        <div style="flex:1"></div>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg>
+      </div>
+      <div style="display:grid;grid-template-columns:44px 260px 260px;height:32px;background:var(--thead);color:var(--theadfg);border-bottom:1px solid var(--bd);line-height:32px;width:max-content"><span></span><span style="padding:0 8px;border-left:1px solid var(--bd)">Title</span><span style="padding:0 8px;border-left:1px solid var(--bd);border-right:1px solid var(--bd)">File</span></div>
+      <div style="display:grid;grid-template-columns:44px 260px 260px;height:32px;border-bottom:1px solid var(--bd);width:max-content"><span style="text-align:center;line-height:32px;color:var(--mu)">1</span><span style="border-left:1px solid var(--bd)"></span><span style="border-left:1px solid var(--bd);border-right:1px solid var(--bd)"></span></div>
+    </div>
+  </div>
+  <div style="height:28px;flex:none;display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--tb);border-top:1px solid var(--bd);font-size:12px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg><span style="width:1px;height:12px;background:var(--bd)"></span><span style="color:var(--mu)">No problems</span><span style="flex:1"></span><span>No selection</span></div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+
+<div class="dv-opt" id="6c">
+<div class="dv-olabel"><a class="dv-oid" href="#6c">6c</a><span><span class="dv-new">NEW</span> the guide lives in the status bar as "Getting started · 0 of 3" and opens upward as a popover. When closed it takes up only a label, so it works at any window size.</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:1180px;height:720px;display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:8px;overflow:hidden;position:relative">
+  <div style="height:34px;flex:none;display:flex;align-items:center;background:var(--tb);border-bottom:1px solid var(--bd);font-size:12px;padding-left:8px">
+    <div style="flex:1;display:flex"><span style="padding:3px 8px">File</span><span style="padding:3px 8px">Edit</span><span style="padding:3px 8px">Insert</span><span style="padding:3px 8px">View</span><span style="padding:3px 8px">Data</span><span style="padding:3px 8px">Plugins</span><span style="padding:3px 8px">Help</span></div>
+    <div style="display:flex;gap:6px;align-items:center"><span>Untitled Catalog</span><span style="color:var(--mu)">· Author: Arnav</span></div>
+    <div style="flex:1;display:flex;justify-content:flex-end;align-items:center;gap:4px;padding-right:16px"><span style="padding:2px 6px;font-size:14px;color:var(--mu)">Feedback</span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path><path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4z" fill="currentColor"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M3 15h18"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M15 3v18"></path></svg></span></div>
+    <div style="display:flex;align-self:stretch"><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 6h10"></path></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="10" height="10"></rect></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 1l10 10M11 1 1 11"></path></svg></span></div>
+  </div>
+  <div style="flex:1;min-height:0;display:flex">
+    <div style="width:300px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--bd)">
+      <div style="height:30px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 8px 0 12px;background:var(--tb);border-bottom:1px solid var(--bd);font-size:13px"><span>Details</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg></div>
+      <div style="padding:8px 12px;display:flex;flex-direction:column;gap:4px"><div>Nothing selected</div><div style="font-size:13px;color:var(--mu)">Select a row or a thumbnail to see its fields here. Hold Ctrl to pick several.</div></div>
+    </div>
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+      <div style="height:30px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px;background:var(--tb);border-bottom:1px solid var(--bd)">
+        <div style="display:flex;padding:2px;gap:2px;background:var(--seg);border-radius:6px;font-size:12px"><span style="display:flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:4px;background:var(--bg);box-shadow:0 1px 2px rgba(0,0,0,.14)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12h16M4 6h16M4 18h16"></path></svg>Table</span><span style="display:flex;align-items:center;gap:4px;height:20px;padding:0 8px;color:var(--mu)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="7" height="9" x="3" y="3" rx="1"></rect><rect width="7" height="5" x="14" y="3" rx="1"></rect><rect width="7" height="9" x="14" y="12" rx="1"></rect><rect width="7" height="5" x="3" y="16" rx="1"></rect></svg>Gallery</span></div>
+        <div style="flex:1"></div>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg>
+      </div>
+      <div style="display:grid;grid-template-columns:44px 260px 260px;height:32px;background:var(--thead);color:var(--theadfg);border-bottom:1px solid var(--bd);line-height:32px;width:max-content"><span></span><span style="padding:0 8px;border-left:1px solid var(--bd)">Title</span><span style="padding:0 8px;border-left:1px solid var(--bd);border-right:1px solid var(--bd)">File</span></div>
+      <div style="display:grid;grid-template-columns:44px 260px 260px;height:32px;border-bottom:1px solid var(--bd);width:max-content"><span style="text-align:center;line-height:32px;color:var(--mu)">1</span><span style="border-left:1px solid var(--bd)"></span><span style="border-left:1px solid var(--bd);border-right:1px solid var(--bd)"></span></div>
+    </div>
+  </div>
+  <div style="position:absolute;left:8px;bottom:34px;width:300px;background:var(--pop);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);display:flex;flex-direction:column;font-size:13px;line-height:18px">
+    <div style="padding:12px 12px 8px;display:flex;flex-direction:column;gap:2px"><div style="display:flex;justify-content:space-between;font-size:12px;color:var(--mu)"><span>Getting started · {{ gBlank.progress }}</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"></path></svg></div><div style="font-size:14px;font-weight:600">{{ gBlank.title }}</div><div style="color:var(--mu)">{{ gBlank.sub }}</div></div>
+    <div style="display:flex;flex-direction:column;padding:0 4px 4px">
+      <sc-for list="{{ gBlank.tasks }}" as="k" hint-placeholder-count="3">
+        <div class="{{ k.cls }}" style="display:flex;gap:10px;padding:8px;border-radius:6px;align-items:flex-start">
+          <sc-if value="{{ k.cur }}"><span style="width:16px;height:16px;flex:none;border-radius:50%;border:2px solid var(--pri);box-sizing:border-box;margin-top:1px"></span></sc-if>
+          <sc-if value="{{ k.todo }}"><span style="width:16px;height:16px;flex:none;border-radius:50%;border:1.5px solid var(--mu);box-sizing:border-box;margin-top:1px"></span></sc-if>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><span style="{{ k.tstyle }}">{{ k.title }}</span><sc-if value="{{ k.cur }}"><span style="color:var(--mu)">{{ k.hint }}</span></sc-if></div>
+          <sc-if value="{{ k.cur }}"><span style="color:var(--link);white-space:nowrap">Show me</span></sc-if>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:4px;padding:6px 8px;border-top:1px solid var(--bd)"><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;font-size:12px">Show me later</span><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;font-size:12px">Dismiss</span></div>
+  </div>
+  <div style="height:28px;flex:none;display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--tb);border-top:1px solid var(--bd);font-size:12px"><span style="display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px;border-radius:10px;background:color-mix(in srgb,var(--pri) 14%,transparent);color:var(--fg)"><span style="width:7px;height:7px;border-radius:50%;background:var(--pri)"></span>Getting started · 0 of 3</span><span style="width:1px;height:12px;background:var(--bd)"></span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg><span style="color:var(--mu)">No problems</span><span style="flex:1"></span><span>No selection</span></div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+<p class="dv-next">Try next: "combine <a class="dv-oid" href="#6a">6a</a> at full width with <a class="dv-oid" href="#6c">6c</a> when narrow" · "make the card in <a class="dv-oid" href="#6b">6b</a> collapsible" · "show 'Add more fields' as the current task"</p>
+</section>
+
+<section class="dv-turn" id="t7">
+<div class="dv-thd"><a class="dv-tid" href="#t7">7</a><span class="dv-tname">Imported project — selected row, Details, Problems tip</span></div>
+<p class="dv-tdesc">This is a spreadsheet project with no linked files. Opening a row completed the first task. qrate found problems, so the next task points to the Problems panel, and a one-time tip anchored to that panel explains that a suggested correction changes a value only when you accept it. Reviewing a finding counts as progress. Applying a fix is never required to finish.</p>
+<div class="dv-opts">
+<div class="dv-opt" id="7a">
+<div class="dv-olabel"><a class="dv-oid" href="#7a">7a</a><span><span class="dv-new">NEW</span> guide card (1 of 3) and a Problems tip anchored to the panel title. Everything else is current UI.</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:1180px;height:720px;display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+  <div style="height:34px;flex:none;display:flex;align-items:center;background:var(--tb);border-bottom:1px solid var(--bd);font-size:12px;padding-left:8px">
+    <div style="flex:1;display:flex"><span style="padding:3px 8px">File</span><span style="padding:3px 8px">Edit</span><span style="padding:3px 8px">Insert</span><span style="padding:3px 8px">View</span><span style="padding:3px 8px">Data</span><span style="padding:3px 8px">Plugins</span><span style="padding:3px 8px">Help</span></div>
+    <div style="display:flex;gap:6px;align-items:center"><span>Aderman Family Collection</span><span style="color:var(--mu)">· Author: Arnav</span></div>
+    <div style="flex:1;display:flex;justify-content:flex-end;align-items:center;gap:4px;padding-right:16px"><span style="padding:2px 6px;font-size:14px;color:var(--mu)">Feedback</span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path><path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4z" fill="currentColor"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M3 15h18"></path><path d="M3 15h18v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="currentColor"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M15 3v18"></path></svg></span></div>
+    <div style="display:flex;align-self:stretch"><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 6h10"></path></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="10" height="10"></rect></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 1l10 10M11 1 1 11"></path></svg></span></div>
+  </div>
+  <div style="flex:1;min-height:0;display:flex">
+    <div style="width:300px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--bd)">
+      <div style="height:30px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 8px 0 12px;background:var(--tb);border-bottom:1px solid var(--bd);font-size:13px"><span>Details</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg></div>
+      <div style="display:flex;flex-direction:column;font-size:13px;line-height:18px">
+        <sc-for list="{{ impFields }}" as="f" hint-placeholder-count="8">
+          <div class="zf" style="display:grid;grid-template-columns:96px minmax(0,1fr);gap:8px;padding:7px 12px"><span style="color:var(--dlfg)">{{ f.k }}</span><span style="{{ f.vstyle }}">{{ f.v }}</span></div>
+        </sc-for>
+      </div>
+    </div>
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+      <div style="flex:1;min-height:0;display:flex;flex-direction:column;position:relative;overflow:hidden">
+        <div style="height:30px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px;background:var(--tb);border-bottom:1px solid var(--bd)">
+          <div style="display:flex;padding:2px;gap:2px;background:var(--seg);border-radius:6px;font-size:12px"><span style="display:flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:4px;background:var(--bg);box-shadow:0 1px 2px rgba(0,0,0,.14)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12h16M4 6h16M4 18h16"></path></svg>Table</span><span style="display:flex;align-items:center;gap:4px;height:20px;padding:0 8px;color:var(--mu)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="7" height="9" x="3" y="3" rx="1"></rect><rect width="7" height="5" x="14" y="3" rx="1"></rect><rect width="7" height="9" x="14" y="12" rx="1"></rect><rect width="7" height="5" x="3" y="16" rx="1"></rect></svg>Gallery</span></div>
+          <div style="flex:1"></div>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg>
+        </div>
+        <div style="display:grid;grid-template-columns:44px 200px 110px 140px minmax(0,1fr) 120px;height:32px;flex:none;background:var(--thead);color:var(--theadfg);border-bottom:1px solid var(--bd);line-height:32px"><span></span><span style="padding:0 8px;border-left:1px solid var(--bd)">title</span><span style="padding:0 8px;border-left:1px solid var(--bd)">date</span><span style="padding:0 8px;border-left:1px solid var(--bd)">creator</span><span style="padding:0 8px;border-left:1px solid var(--bd)">description</span><span style="padding:0 8px;border-left:1px solid var(--bd)">file</span></div>
+        <div style="display:flex;flex-direction:column">
+          <sc-for list="{{ rowsImp }}" as="r" hint-placeholder-count="10">
+            <div class="zr {{ r.cls }}" style="display:grid;grid-template-columns:44px 200px 110px 140px minmax(0,1fr) 120px;height:32px;line-height:32px;border-bottom:1px solid var(--bd);white-space:nowrap"><span style="text-align:center;color:var(--mu)">{{ r.n }}</span><span class="{{ r.tcls }}" style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.title }}</span><span style="{{ r.dstyle }}">{{ r.date }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.creator }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.desc }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis;color:var(--mu)">{{ r.file }}</span></div>
+          </sc-for>
+        </div>
+        <div style="position:absolute;right:16px;bottom:16px;width:292px;background:var(--pop);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);display:flex;flex-direction:column;font-size:13px;line-height:18px">
+          <div style="padding:12px 12px 8px;display:flex;flex-direction:column;gap:2px"><div style="font-size:12px;color:var(--mu)">Getting started · {{ gImp.progress }}</div><div style="font-size:14px;font-weight:600">{{ gImp.title }}</div><div style="color:var(--mu)">{{ gImp.sub }}</div></div>
+          <div style="display:flex;flex-direction:column;padding:0 4px 4px">
+            <sc-for list="{{ gImp.tasks }}" as="k" hint-placeholder-count="3">
+              <div class="{{ k.cls }}" style="display:flex;gap:10px;padding:8px;border-radius:6px;align-items:flex-start">
+                <sc-if value="{{ k.done }}"><span style="width:16px;height:16px;flex:none;border-radius:50%;background:var(--ok);color:#fff;font-size:11px;line-height:16px;text-align:center;margin-top:1px">✓</span></sc-if>
+                <sc-if value="{{ k.cur }}"><span style="width:16px;height:16px;flex:none;border-radius:50%;border:2px solid var(--pri);box-sizing:border-box;margin-top:1px"></span></sc-if>
+                <sc-if value="{{ k.todo }}"><span style="width:16px;height:16px;flex:none;border-radius:50%;border:1.5px solid var(--mu);box-sizing:border-box;margin-top:1px"></span></sc-if>
+                <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><span style="{{ k.tstyle }}">{{ k.title }}</span><sc-if value="{{ k.cur }}"><span style="color:var(--mu)">{{ k.hint }}</span></sc-if></div>
+                <sc-if value="{{ k.cur }}"><span style="color:var(--link);white-space:nowrap">Show me</span></sc-if>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:4px;padding:6px 8px;border-top:1px solid var(--bd)"><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;font-size:12px">Show me later</span><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;font-size:12px">Dismiss</span></div>
+        </div>
+      </div>
+      <div style="height:200px;flex:none;border-top:1px solid var(--bd);display:flex;flex-direction:column;position:relative">
+        <div style="position:absolute;left:10px;bottom:calc(100% + 10px);width:300px;background:var(--pop);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);padding:12px;display:flex;flex-direction:column;gap:6px;font-size:13px;line-height:18px;z-index:2">
+          <div style="position:absolute;left:28px;bottom:-6px;width:10px;height:10px;background:var(--pop);border-right:1px solid var(--bd);border-bottom:1px solid var(--bd);transform:rotate(45deg)"></div>
+          <div style="font-weight:600;font-size:14px">Review what qrate found</div>
+          <div style="color:var(--mu)">Each finding points to a cell. A suggested correction changes the value only if you accept it.</div>
+          <div style="color:var(--mu)">Looking through the list counts as progress. You don't have to fix anything.</div>
+          <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:4px"><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;background:var(--pri);color:var(--prifg);font-size:12px">Got it</span></div>
+        </div>
+        <div style="height:30px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 8px 0 12px;background:var(--tb);border-bottom:1px solid var(--bd);font-size:13px"><span class="kf" style="border-radius:3px;padding:0 4px;margin-left:-4px">Problems</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg></div>
+        <div style="height:30px;flex:none;display:flex;align-items:stretch;font-size:13px;border-bottom:1px solid var(--bd)"><span style="display:flex;align-items:center;padding:0 12px;background:var(--bg);box-shadow:inset 0 -2px 0 var(--pri)">All (11)</span><span style="display:flex;align-items:center;padding:0 12px;color:var(--mu)">Errors (0)</span><span style="display:flex;align-items:center;padding:0 12px;color:var(--mu)">Warnings (10)</span><span style="display:flex;align-items:center;padding:0 12px;color:var(--mu)">Notes (1)</span><span style="flex:1"></span><span style="display:flex;align-items:center;padding:0 12px">All sources</span></div>
+        <div style="display:flex;flex-direction:column;font-size:13px">
+          <sc-for list="{{ problems }}" as="p" hint-placeholder-count="4">
+            <div style="display:flex;gap:8px;align-items:center;height:28px;padding:0 12px;white-space:nowrap">
+              <sc-if value="{{ p.w }}"><svg style="flex:none" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg></sc-if>
+              <sc-if value="{{ p.n }}"><svg style="flex:none" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--pri)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg></sc-if>
+              <span style="color:var(--mu)">{{ p.loc }}</span><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">{{ p.msg }}</span><span style="color:var(--mu);font-size:12px">{{ p.src }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div style="height:28px;flex:none;display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--tb);border-top:1px solid var(--bd);font-size:12px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg><span style="width:1px;height:12px;background:var(--bd)"></span><span style="display:flex;gap:4px;align-items:center"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--err)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="m15 9-6 6"></path><path d="m9 9 6 6"></path></svg>0</span><span style="display:flex;gap:4px;align-items:center"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4"></path></svg>10</span><span style="flex:1"></span><span>Row 4, Col 1, 18 characters</span></div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</section>
+
+<section class="dv-turn" id="t8">
+<div class="dv-thd"><a class="dv-tid" href="#t8">8</a><span class="dv-tname">Linked media — Table to Gallery discovery</span></div>
+<p class="dv-tdesc">When files are linked, selecting a row shows its file above the fields in Details. The next task is Gallery, and its tip is anchored to the Gallery tab in the view switcher. After the switch, Gallery's default layout moves Details to the right, and a short tip anchored to that panel explains that it moved.</p>
+<div class="dv-opts">
+
+<div class="dv-opt" id="8a">
+<div class="dv-olabel"><a class="dv-oid" href="#8a">8a</a><span>Table view, row 2 selected, Details on the left with its file. <span class="dv-new">NEW</span> tip on the Gallery tab; card (1 of 3).</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:1180px;height:720px;display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+  <div style="height:34px;flex:none;display:flex;align-items:center;background:var(--tb);border-bottom:1px solid var(--bd);font-size:12px;padding-left:8px">
+    <div style="flex:1;display:flex"><span style="padding:3px 8px">File</span><span style="padding:3px 8px">Edit</span><span style="padding:3px 8px">Insert</span><span style="padding:3px 8px">View</span><span style="padding:3px 8px">Data</span><span style="padding:3px 8px">Plugins</span><span style="padding:3px 8px">Help</span></div>
+    <div style="display:flex;gap:6px;align-items:center"><span>Aderman Family Collection</span><span style="color:var(--mu)">· Author: Arnav</span></div>
+    <div style="flex:1;display:flex;justify-content:flex-end;align-items:center;gap:4px;padding-right:16px"><span style="padding:2px 6px;font-size:14px;color:var(--mu)">Feedback</span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path><path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4z" fill="currentColor"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M3 15h18"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M15 3v18"></path></svg></span></div>
+    <div style="display:flex;align-self:stretch"><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 6h10"></path></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="10" height="10"></rect></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 1l10 10M11 1 1 11"></path></svg></span></div>
+  </div>
+  <div style="flex:1;min-height:0;display:flex">
+    <div style="width:300px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--bd)">
+      <div style="height:30px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 8px 0 12px;background:var(--tb);border-bottom:1px solid var(--bd);font-size:13px"><span>Details</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg></div>
+      <div style="margin:10px;height:210px;flex:none;position:relative;border:1px solid var(--bd);border-radius:8px;background:repeating-linear-gradient(135deg,var(--tiles) 0 8px,var(--sech) 8px 9px);display:flex;align-items:center;justify-content:center"><span style="font:11px ui-monospace,Consolas,monospace;color:var(--mu)">linked photo · ADR_0002.jpg</span><span style="position:absolute;left:8px;top:8px;font-size:12px;padding:1px 6px;border-radius:4px;background:var(--pop);border:1px solid var(--bd)">JPG · 1.1 MB</span></div>
+      <div style="display:flex;flex-direction:column;font-size:13px;line-height:18px">
+        <sc-for list="{{ mediaFields }}" as="f" hint-placeholder-count="6">
+          <div class="zf" style="display:grid;grid-template-columns:96px minmax(0,1fr);gap:8px;padding:7px 12px"><span style="color:var(--dlfg)">{{ f.k }}</span><span style="{{ f.vstyle }}">{{ f.v }}</span></div>
+        </sc-for>
+      </div>
+    </div>
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;position:relative;overflow:hidden">
+      <div style="height:30px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px;background:var(--tb);border-bottom:1px solid var(--bd)">
+        <div style="display:flex;padding:2px;gap:2px;background:var(--seg);border-radius:6px;font-size:12px"><span style="display:flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:4px;background:var(--bg);box-shadow:0 1px 2px rgba(0,0,0,.14)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12h16M4 6h16M4 18h16"></path></svg>Table</span><span class="kf" style="display:flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:4px;outline-offset:1px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="7" height="9" x="3" y="3" rx="1"></rect><rect width="7" height="5" x="14" y="3" rx="1"></rect><rect width="7" height="9" x="14" y="12" rx="1"></rect><rect width="7" height="5" x="3" y="16" rx="1"></rect></svg>Gallery</span></div>
+        <div style="flex:1"></div>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg>
+      </div>
+      <div style="display:grid;grid-template-columns:44px 200px 110px 140px minmax(0,1fr) 120px;height:32px;flex:none;background:var(--thead);color:var(--theadfg);border-bottom:1px solid var(--bd);line-height:32px"><span></span><span style="padding:0 8px;border-left:1px solid var(--bd)">title</span><span style="padding:0 8px;border-left:1px solid var(--bd)">date</span><span style="padding:0 8px;border-left:1px solid var(--bd)">creator</span><span style="padding:0 8px;border-left:1px solid var(--bd)">description</span><span style="padding:0 8px;border-left:1px solid var(--bd)">file</span></div>
+      <div style="display:flex;flex-direction:column">
+        <sc-for list="{{ rowsMedia }}" as="r" hint-placeholder-count="10">
+          <div class="zr {{ r.cls }}" style="display:grid;grid-template-columns:44px 200px 110px 140px minmax(0,1fr) 120px;height:32px;line-height:32px;border-bottom:1px solid var(--bd);white-space:nowrap"><span style="text-align:center;color:var(--mu)">{{ r.n }}</span><span class="{{ r.tcls }}" style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.title }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.date }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.creator }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.desc }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis;color:var(--link)">{{ r.file }}</span></div>
+        </sc-for>
+      </div>
+      <div style="position:absolute;left:62px;top:40px;width:280px;background:var(--pop);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);padding:12px;display:flex;flex-direction:column;gap:6px;font-size:13px;line-height:18px">
+        <div style="position:absolute;left:44px;top:-6px;width:10px;height:10px;background:var(--pop);border-left:1px solid var(--bd);border-top:1px solid var(--bd);transform:rotate(45deg)"></div>
+        <div style="font-weight:600;font-size:14px">Browse in Gallery</div>
+        <div style="color:var(--mu)">See every linked file as a thumbnail. Selecting one selects its row, and Details moves to the right while you browse.</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px"><span style="font-size:12px;color:var(--mu)">Ctrl+2</span><div style="display:flex;gap:6px"><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;font-size:12px">Not now</span><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;background:var(--pri);color:var(--prifg);font-size:12px">Show Gallery</span></div></div>
+      </div>
+      <div style="position:absolute;right:16px;bottom:16px;width:292px;background:var(--pop);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);display:flex;flex-direction:column;font-size:13px;line-height:18px">
+        <div style="padding:12px 12px 8px;display:flex;flex-direction:column;gap:2px"><div style="font-size:12px;color:var(--mu)">Getting started · {{ gMedia.progress }}</div><div style="font-size:14px;font-weight:600">{{ gMedia.title }}</div><div style="color:var(--mu)">{{ gMedia.sub }}</div></div>
+        <div style="display:flex;flex-direction:column;padding:0 4px 4px">
+          <sc-for list="{{ gMedia.tasks }}" as="k" hint-placeholder-count="3">
+            <div class="{{ k.cls }}" style="display:flex;gap:10px;padding:8px;border-radius:6px;align-items:flex-start">
+              <sc-if value="{{ k.done }}"><span style="width:16px;height:16px;flex:none;border-radius:50%;background:var(--ok);color:#fff;font-size:11px;line-height:16px;text-align:center;margin-top:1px">✓</span></sc-if>
+              <sc-if value="{{ k.cur }}"><span style="width:16px;height:16px;flex:none;border-radius:50%;border:2px solid var(--pri);box-sizing:border-box;margin-top:1px"></span></sc-if>
+              <sc-if value="{{ k.todo }}"><span style="width:16px;height:16px;flex:none;border-radius:50%;border:1.5px solid var(--mu);box-sizing:border-box;margin-top:1px"></span></sc-if>
+              <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><span style="{{ k.tstyle }}">{{ k.title }}</span><sc-if value="{{ k.cur }}"><span style="color:var(--mu)">{{ k.hint }}</span></sc-if></div>
+              <sc-if value="{{ k.cur }}"><span style="color:var(--link);white-space:nowrap">Show me</span></sc-if>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:4px;padding:6px 8px;border-top:1px solid var(--bd)"><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;font-size:12px">Show me later</span><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;font-size:12px">Dismiss</span></div>
+      </div>
+    </div>
+  </div>
+  <div style="height:28px;flex:none;display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--tb);border-top:1px solid var(--bd);font-size:12px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg><span style="width:1px;height:12px;background:var(--bd)"></span><span style="display:flex;gap:4px;align-items:center"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--err)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="m15 9-6 6"></path><path d="m9 9 6 6"></path></svg>17</span><span style="display:flex;gap:4px;align-items:center"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4"></path></svg>10</span><span style="flex:1"></span><span>Row 2, Col 1, 25 characters</span></div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+
+<div class="dv-opt" id="8b">
+<div class="dv-olabel"><a class="dv-oid" href="#8b">8b</a><span>After "Show Gallery": Details is on the right (Gallery's default layout) and Problems is closed. <span class="dv-new">NEW</span> one-time tip anchored to Details; card advances to 2 of 3.</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:1180px;height:720px;display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+  <div style="height:34px;flex:none;display:flex;align-items:center;background:var(--tb);border-bottom:1px solid var(--bd);font-size:12px;padding-left:8px">
+    <div style="flex:1;display:flex"><span style="padding:3px 8px">File</span><span style="padding:3px 8px">Edit</span><span style="padding:3px 8px">Insert</span><span style="padding:3px 8px">View</span><span style="padding:3px 8px">Data</span><span style="padding:3px 8px">Plugins</span><span style="padding:3px 8px">Help</span></div>
+    <div style="display:flex;gap:6px;align-items:center"><span>Aderman Family Collection</span><span style="color:var(--mu)">· Author: Arnav</span></div>
+    <div style="flex:1;display:flex;justify-content:flex-end;align-items:center;gap:4px;padding-right:16px"><span style="padding:2px 6px;font-size:14px;color:var(--mu)">Feedback</span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M3 15h18"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M15 3v18"></path><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4z" fill="currentColor"></path></svg></span></div>
+    <div style="display:flex;align-self:stretch"><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 6h10"></path></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="10" height="10"></rect></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 1l10 10M11 1 1 11"></path></svg></span></div>
+  </div>
+  <div style="flex:1;min-height:0;display:flex">
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;position:relative;overflow:hidden">
+      <div style="height:30px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px;background:var(--tb);border-bottom:1px solid var(--bd)">
+        <div style="display:flex;padding:2px;gap:2px;background:var(--seg);border-radius:6px;font-size:12px"><span style="display:flex;align-items:center;gap:4px;height:20px;padding:0 8px;color:var(--mu)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12h16M4 6h16M4 18h16"></path></svg>Table</span><span style="display:flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:4px;background:var(--bg);box-shadow:0 1px 2px rgba(0,0,0,.14)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="7" height="9" x="3" y="3" rx="1"></rect><rect width="7" height="5" x="14" y="3" rx="1"></rect><rect width="7" height="9" x="14" y="12" rx="1"></rect><rect width="7" height="5" x="3" y="16" rx="1"></rect></svg>Gallery</span></div>
+        <div style="flex:1"></div>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2"><rect width="7" height="9" x="3" y="3" rx="1"></rect><rect width="7" height="5" x="14" y="3" rx="1"></rect><rect width="7" height="9" x="14" y="12" rx="1"></rect><rect width="7" height="5" x="3" y="16" rx="1"></rect></svg>
+        <div style="width:96px;height:4px;border-radius:2px;background:var(--sec);position:relative"><div style="position:absolute;left:0;top:0;bottom:0;width:50%;border-radius:2px;background:var(--pri)"></div><div style="position:absolute;left:calc(50% - 7px);top:-5px;width:14px;height:14px;border-radius:50%;background:#fff;border:1px solid var(--bd);box-shadow:0 1px 2px rgba(0,0,0,.2)"></div></div>
+        <span style="font-size:12px;color:var(--mu)">5 per row</span>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;padding:12px">
+        <sc-for list="{{ thumbs }}" as="g" hint-placeholder-count="15">
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <div class="{{ g.cls }}" style="aspect-ratio:1/1;border-radius:6px;border:1px solid var(--bd);background:repeating-linear-gradient(135deg,var(--tiles) 0 7px,var(--sech) 7px 8px);display:flex;align-items:flex-end;padding:6px;box-sizing:border-box"><span style="font:10px ui-monospace,Consolas,monospace;color:var(--mu)">{{ g.file }}</span></div>
+            <div style="font-size:12px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ g.title }}</div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+    <div style="width:340px;flex:none;display:flex;flex-direction:column;border-left:1px solid var(--bd);position:relative">
+      <div style="position:absolute;right:calc(100% + 12px);top:44px;width:250px;background:var(--pop);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);padding:12px;display:flex;flex-direction:column;gap:6px;font-size:13px;line-height:18px;z-index:2">
+        <div style="position:absolute;right:-6px;top:16px;width:10px;height:10px;background:var(--pop);border-right:1px solid var(--bd);border-top:1px solid var(--bd);transform:rotate(45deg)"></div>
+        <div style="font-weight:600;font-size:14px">Details moved here</div>
+        <div style="color:var(--mu)">In Gallery, the selected item's file and fields sit on the right. Switch back to Table and your layout returns.</div>
+        <div style="display:flex;justify-content:flex-end;margin-top:4px"><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;background:var(--pri);color:var(--prifg);font-size:12px">Got it</span></div>
+      </div>
+      <div style="height:30px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 8px 0 12px;background:var(--tb);border-bottom:1px solid var(--bd);font-size:13px"><span class="kf" style="border-radius:3px;padding:0 4px;margin-left:-4px">Details</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg></div>
+      <div style="margin:10px;height:240px;flex:none;position:relative;border:1px solid var(--bd);border-radius:8px;background:repeating-linear-gradient(135deg,var(--tiles) 0 8px,var(--sech) 8px 9px);display:flex;align-items:center;justify-content:center"><span style="font:11px ui-monospace,Consolas,monospace;color:var(--mu)">linked photo · ADR_0002.jpg</span><span style="position:absolute;left:8px;top:8px;font-size:12px;padding:1px 6px;border-radius:4px;background:var(--pop);border:1px solid var(--bd)">JPG · 1.1 MB</span></div>
+      <div style="display:flex;flex-direction:column;font-size:13px;line-height:18px">
+        <sc-for list="{{ mediaFields }}" as="f" hint-placeholder-count="6">
+          <div class="zf" style="display:grid;grid-template-columns:96px minmax(0,1fr);gap:8px;padding:7px 12px"><span style="color:var(--dlfg)">{{ f.k }}</span><span style="{{ f.vstyle }}">{{ f.v }}</span></div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+  <div style="height:28px;flex:none;display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--tb);border-top:1px solid var(--bd);font-size:12px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg><span style="width:1px;height:12px;background:var(--bd)"></span><span style="display:flex;gap:4px;align-items:center"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--err)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="m15 9-6 6"></path><path d="m9 9 6 6"></path></svg>17</span><span style="display:flex;gap:4px;align-items:center"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4"></path></svg>10</span><span style="width:1px;height:12px;background:var(--bd)"></span><span style="display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px;border-radius:10px;background:color-mix(in srgb,var(--pri) 14%,transparent)"><span style="width:7px;height:7px;border-radius:50%;background:var(--pri)"></span>Getting started · 2 of 3</span><span style="flex:1"></span><span>Row 2</span></div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+<p class="dv-next">Try next: "skip the Details tip in <a class="dv-oid" href="#8b">8b</a> and fold it into the Gallery tip" · "show an audio or PDF row in <a class="dv-oid" href="#8a">8a</a>"</p>
+</section>
+
+<section class="dv-turn" id="t9">
+<div class="dv-thd"><a class="dv-tid" href="#t9">9</a><span class="dv-tname">Guide states — dismissed, reopened, keyboard focus</span></div>
+<p class="dv-tdesc">Dismiss hides the card for this project and briefly says where to find it again. "Show me later" collapses it to the status-bar label (<a class="dv-oid" href="#6c">6c</a>). Help ▸ Getting started reopens the card with progress kept. Every callout is reachable from the keyboard. Arrival never steals focus from the grid, and Esc closes a tip and returns focus to the element it points at.</p>
+<div class="dv-opts">
+
+<div class="dv-opt" id="9a">
+<div class="dv-olabel"><a class="dv-oid" href="#9a">9a</a><span><span class="dv-new">NEW</span> dismissed: a toast in the card's place for ~6 s with Undo, and the grid is fully clear.</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:880px;height:420px;display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+  <div style="height:34px;flex:none;display:flex;align-items:center;background:var(--tb);border-bottom:1px solid var(--bd);font-size:12px;padding-left:8px">
+    <div style="flex:1;display:flex"><span style="padding:3px 8px">File</span><span style="padding:3px 8px">Edit</span><span style="padding:3px 8px">Insert</span><span style="padding:3px 8px">View</span><span style="padding:3px 8px">Data</span><span style="padding:3px 8px">Plugins</span><span style="padding:3px 8px">Help</span></div>
+    <div style="display:flex;gap:6px;align-items:center"><span>Aderman Family Collection</span></div>
+    <div style="flex:1;display:flex;justify-content:flex-end;align-items:center;gap:4px;padding-right:16px"><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M3 15h18"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M15 3v18"></path></svg></span></div>
+    <div style="display:flex;align-self:stretch"><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 6h10"></path></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="10" height="10"></rect></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 1l10 10M11 1 1 11"></path></svg></span></div>
+  </div>
+  <div style="flex:1;min-height:0;display:flex;flex-direction:column;position:relative;overflow:hidden">
+    <div style="height:30px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px;background:var(--tb);border-bottom:1px solid var(--bd)"><div style="display:flex;padding:2px;gap:2px;background:var(--seg);border-radius:6px;font-size:12px"><span style="display:flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:4px;background:var(--bg);box-shadow:0 1px 2px rgba(0,0,0,.14)">Table</span><span style="display:flex;align-items:center;gap:4px;height:20px;padding:0 8px;color:var(--mu)">Gallery</span></div></div>
+    <div style="display:grid;grid-template-columns:44px 200px 110px 140px minmax(0,1fr);height:32px;flex:none;background:var(--thead);color:var(--theadfg);border-bottom:1px solid var(--bd);line-height:32px"><span></span><span style="padding:0 8px;border-left:1px solid var(--bd)">title</span><span style="padding:0 8px;border-left:1px solid var(--bd)">date</span><span style="padding:0 8px;border-left:1px solid var(--bd)">creator</span><span style="padding:0 8px;border-left:1px solid var(--bd)">description</span></div>
+    <div style="display:flex;flex-direction:column">
+      <sc-for list="{{ rowsImp }}" as="r" hint-placeholder-count="10">
+        <div class="zr {{ r.cls }}" style="display:grid;grid-template-columns:44px 200px 110px 140px minmax(0,1fr);height:32px;line-height:32px;border-bottom:1px solid var(--bd);white-space:nowrap"><span style="text-align:center;color:var(--mu)">{{ r.n }}</span><span class="{{ r.tcls }}" style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.title }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden">{{ r.date }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden">{{ r.creator }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.desc }}</span></div>
+      </sc-for>
+    </div>
+    <div style="position:absolute;right:16px;bottom:16px;display:flex;align-items:center;gap:12px;padding:8px 8px 8px 12px;background:var(--pop);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);font-size:13px;line-height:18px"><span>Getting started hidden. Reopen it from <span style="font-weight:600">Help ▸ Getting started</span>.</span><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border:1px solid var(--bd);border-radius:4px;font-size:12px">Undo</span></div>
+  </div>
+  <div style="height:28px;flex:none;display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--tb);border-top:1px solid var(--bd);font-size:12px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg><span style="flex:1"></span><span>Row 4, Col 1, 18 characters</span></div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+
+<div class="dv-opt" id="9b">
+<div class="dv-olabel"><a class="dv-oid" href="#9b">9b</a><span><span class="dv-new">NEW</span> reopening: Help ▸ Getting started brings the card back with progress kept. Help ▸ User guide opens the docs. Projects that existed before this feature get only these entries and no first-run card.</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:880px;height:420px;display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:8px;overflow:hidden;position:relative">
+  <div style="height:34px;flex:none;display:flex;align-items:center;background:var(--tb);border-bottom:1px solid var(--bd);font-size:12px;padding-left:8px">
+    <div style="flex:1;display:flex"><span style="padding:3px 8px">File</span><span style="padding:3px 8px">Edit</span><span style="padding:3px 8px">Insert</span><span style="padding:3px 8px">View</span><span style="padding:3px 8px">Data</span><span style="padding:3px 8px">Plugins</span><span style="padding:3px 8px;background:var(--sech);border-radius:4px">Help</span></div>
+    <div style="display:flex;gap:6px;align-items:center"><span>Aderman Family Collection</span></div>
+    <div style="flex:1;display:flex;justify-content:flex-end;align-items:center;gap:4px;padding-right:16px"><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M3 15h18"></path></svg></span><span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M15 3v18"></path></svg></span></div>
+    <div style="display:flex;align-self:stretch"><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 6h10"></path></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="10" height="10"></rect></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 1l10 10M11 1 1 11"></path></svg></span></div>
+  </div>
+  <div style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
+    <div style="height:30px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px;background:var(--tb);border-bottom:1px solid var(--bd)"><div style="display:flex;padding:2px;gap:2px;background:var(--seg);border-radius:6px;font-size:12px"><span style="display:flex;align-items:center;height:20px;padding:0 8px;border-radius:4px;background:var(--bg);box-shadow:0 1px 2px rgba(0,0,0,.14)">Table</span><span style="display:flex;align-items:center;height:20px;padding:0 8px;color:var(--mu)">Gallery</span></div></div>
+    <div style="display:grid;grid-template-columns:44px 200px 110px 140px minmax(0,1fr);height:32px;flex:none;background:var(--thead);color:var(--theadfg);border-bottom:1px solid var(--bd);line-height:32px"><span></span><span style="padding:0 8px;border-left:1px solid var(--bd)">title</span><span style="padding:0 8px;border-left:1px solid var(--bd)">date</span><span style="padding:0 8px;border-left:1px solid var(--bd)">creator</span><span style="padding:0 8px;border-left:1px solid var(--bd)">description</span></div>
+    <div style="display:flex;flex-direction:column">
+      <sc-for list="{{ rowsImp }}" as="r" hint-placeholder-count="10">
+        <div class="zr {{ r.cls }}" style="display:grid;grid-template-columns:44px 200px 110px 140px minmax(0,1fr);height:32px;line-height:32px;border-bottom:1px solid var(--bd);white-space:nowrap"><span style="text-align:center;color:var(--mu)">{{ r.n }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.title }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden">{{ r.date }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden">{{ r.creator }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.desc }}</span></div>
+      </sc-for>
+    </div>
+  </div>
+  <div style="height:28px;flex:none;display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--tb);border-top:1px solid var(--bd);font-size:12px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg><span style="flex:1"></span><span>Row 4</span></div>
+  <div style="position:absolute;top:32px;left:302px;width:232px;background:var(--pop);border:1px solid var(--bd);border-radius:6px;box-shadow:var(--sh);padding:4px;font-size:13px;line-height:18px;display:flex;flex-direction:column">
+    <div style="display:flex;justify-content:space-between;padding:5px 10px;border-radius:4px;background:var(--sech);outline:2px solid var(--pri);outline-offset:-2px"><span>Getting started</span><span style="color:var(--mu);font-size:12px">1 of 3</span></div>
+    <div style="padding:5px 10px">User guide</div>
+    <div style="height:1px;background:var(--bd);margin:4px 0"></div>
+    <div style="display:flex;justify-content:space-between;padding:5px 10px"><span>GitHub</span><span style="color:var(--mu)">›</span></div>
+    <div style="padding:5px 10px">Releases</div>
+    <div style="height:1px;background:var(--bd);margin:4px 0"></div>
+    <div style="padding:5px 10px">Copy Debug Info</div>
+    <div style="display:flex;justify-content:space-between;padding:5px 10px"><span>Send Feedback</span><span style="color:var(--mu)">›</span></div>
+    <div style="padding:5px 10px">Open Logs Folder</div>
+    <div style="height:1px;background:var(--bd);margin:4px 0"></div>
+    <div style="padding:5px 10px">Version 0.5.0-beta.1</div>
+  </div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+
+<div class="dv-opt" id="9c">
+<div class="dv-olabel"><a class="dv-oid" href="#9c">9c</a><span><span class="dv-new">NEW</span> keyboard focus, shown with the theme's ring colour. Card order: task rows, then Show me later, then Dismiss (Enter on a task runs "Show me"). Tip order: primary action, then secondary. Esc closes and returns focus to the anchor.</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:860px;display:flex;flex-wrap:wrap;gap:24px;padding:24px;border:1px solid var(--bd);border-radius:8px;background:var(--tiles);align-items:flex-start;box-sizing:border-box">
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <div style="font-size:11px;font-family:ui-monospace,monospace;color:var(--mu)">Card · focus on current task</div>
+    <div style="width:292px;background:var(--pop);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);display:flex;flex-direction:column;font-size:13px;line-height:18px">
+      <div style="padding:12px 12px 8px;display:flex;flex-direction:column;gap:2px"><div style="font-size:12px;color:var(--mu)">Getting started · 1 of 3</div><div style="font-size:14px;font-weight:600">Your project is ready</div></div>
+      <div style="display:flex;flex-direction:column;padding:0 4px 4px;gap:2px">
+        <div style="display:flex;gap:10px;padding:8px;border-radius:6px"><span style="width:16px;height:16px;flex:none;border-radius:50%;background:var(--ok);color:#fff;font-size:11px;line-height:16px;text-align:center">✓</span><span style="color:var(--mu)">Open a row and check how your columns came across</span></div>
+        <div class="tcur kf" style="display:flex;gap:10px;padding:8px;border-radius:6px;outline-offset:-2px"><span style="width:16px;height:16px;flex:none;border-radius:50%;border:2px solid var(--pri);box-sizing:border-box"></span><span style="flex:1;font-weight:600">Review what qrate found</span><span style="color:var(--link)">Show me</span></div>
+        <div style="display:flex;gap:10px;padding:8px;border-radius:6px"><span style="width:16px;height:16px;flex:none;border-radius:50%;border:1.5px solid var(--mu);box-sizing:border-box"></span><span>Add a files folder</span></div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:4px;padding:6px 8px;border-top:1px solid var(--bd)"><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;font-size:12px">Show me later</span><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;font-size:12px">Dismiss</span></div>
+    </div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <div style="font-size:11px;font-family:ui-monospace,monospace;color:var(--mu)">Card · focus on Dismiss</div>
+    <div style="width:180px;background:var(--pop);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);display:flex;justify-content:flex-end;gap:4px;padding:6px 8px;font-size:12px"><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px">Show me later</span><span class="kf" style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;background:var(--sech)">Dismiss</span></div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <div style="font-size:11px;font-family:ui-monospace,monospace;color:var(--mu)">Tip · focus on primary</div>
+    <div style="position:relative;width:220px;background:var(--pop);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);padding:12px;display:flex;flex-direction:column;gap:6px;font-size:13px;line-height:18px;margin-top:8px">
+      <div style="position:absolute;left:24px;top:-6px;width:10px;height:10px;background:var(--pop);border-left:1px solid var(--bd);border-top:1px solid var(--bd);transform:rotate(45deg)"></div>
+      <div style="font-weight:600;font-size:14px">Browse in Gallery</div>
+      <div style="color:var(--mu)">See every linked file as a thumbnail.</div>
+      <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:4px"><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;font-size:12px">Not now</span><span class="kf" style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;background:var(--pri);color:var(--prifg);font-size:12px">Show Gallery</span></div>
+    </div>
+  </div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</section>
+
+<section class="dv-turn" id="t10">
+<div class="dv-thd"><a class="dv-tid" href="#t10">10</a><span class="dv-tname">Export — "Share or move your catalog"</span></div>
+<p class="dv-tdesc">Export is introduced the first time the user opens File ▸ Export, as a tip beside the submenu. It says that export includes every row, including rows hidden by a filter. Google Sheets sync is mentioned only as something to enable later, and the tip has no sign-in step.</p>
+<div class="dv-opts">
+<div class="dv-opt" id="10a">
+<div class="dv-olabel"><a class="dv-oid" href="#10a">10a</a><span>Current File menu and Export formats. <span class="dv-new">NEW</span> first-use tip.</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:880px;height:460px;display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:8px;overflow:hidden;position:relative">
+  <div style="height:34px;flex:none;display:flex;align-items:center;background:var(--tb);border-bottom:1px solid var(--bd);font-size:12px;padding-left:8px">
+    <div style="flex:1;display:flex"><span style="padding:3px 8px;background:var(--sech);border-radius:4px">File</span><span style="padding:3px 8px">Edit</span><span style="padding:3px 8px">Insert</span><span style="padding:3px 8px">View</span><span style="padding:3px 8px">Data</span><span style="padding:3px 8px">Plugins</span><span style="padding:3px 8px">Help</span></div>
+    <div><span>Aderman Family Collection</span></div>
+    <div style="flex:1"></div>
+    <div style="display:flex;align-self:stretch"><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 6h10"></path></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="10" height="10"></rect></svg></span><span style="width:44px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 1l10 10M11 1 1 11"></path></svg></span></div>
+  </div>
+  <div style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
+    <div style="height:30px;flex:none;background:var(--tb);border-bottom:1px solid var(--bd)"></div>
+    <div style="display:grid;grid-template-columns:44px 200px 110px 140px minmax(0,1fr);height:32px;flex:none;background:var(--thead);color:var(--theadfg);border-bottom:1px solid var(--bd);line-height:32px"><span></span><span style="padding:0 8px;border-left:1px solid var(--bd)">title</span><span style="padding:0 8px;border-left:1px solid var(--bd)">date</span><span style="padding:0 8px;border-left:1px solid var(--bd)">creator</span><span style="padding:0 8px;border-left:1px solid var(--bd)">description</span></div>
+    <div style="display:flex;flex-direction:column">
+      <sc-for list="{{ rowsImp }}" as="r" hint-placeholder-count="10">
+        <div class="zr" style="display:grid;grid-template-columns:44px 200px 110px 140px minmax(0,1fr);height:32px;line-height:32px;border-bottom:1px solid var(--bd);white-space:nowrap"><span style="text-align:center;color:var(--mu)">{{ r.n }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.title }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden">{{ r.date }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden">{{ r.creator }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.desc }}</span></div>
+      </sc-for>
+    </div>
+  </div>
+  <div style="position:absolute;top:32px;left:8px;width:236px;background:var(--pop);border:1px solid var(--bd);border-radius:6px;box-shadow:var(--sh);padding:4px;font-size:13px;line-height:18px;display:flex;flex-direction:column">
+    <div style="padding:4px 10px">New Project…</div><div style="height:1px;background:var(--bd);margin:4px 0"></div>
+    <div style="padding:4px 10px">Open Projects…</div><div style="padding:4px 10px">Save</div><div style="height:1px;background:var(--bd);margin:4px 0"></div>
+    <div style="padding:4px 10px">Import Files or Folders…</div><div style="padding:4px 10px">Import Spreadsheet…</div><div style="padding:4px 10px">Relink Missing Files…</div>
+    <div style="display:flex;justify-content:space-between;padding:4px 10px;background:var(--sech);border-radius:4px"><span>Export</span><span style="color:var(--mu)">›</span></div>
+    <div style="height:1px;background:var(--bd);margin:4px 0"></div><div style="padding:4px 10px">Settings</div><div style="height:1px;background:var(--bd);margin:4px 0"></div><div style="padding:4px 10px">Quit</div>
+  </div>
+  <div style="position:absolute;top:196px;left:246px;width:170px;background:var(--pop);border:1px solid var(--bd);border-radius:6px;box-shadow:var(--sh);padding:4px;font-size:13px;line-height:18px;display:flex;flex-direction:column">
+    <div style="padding:4px 10px">CSV</div><div style="padding:4px 10px">Excel</div><div style="padding:4px 10px">JSON-LD</div><div style="padding:4px 10px">CSL-JSON</div><div style="padding:4px 10px">ZIP archive</div>
+  </div>
+  <div style="position:absolute;top:192px;left:430px;width:280px;background:var(--pop);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);padding:12px;display:flex;flex-direction:column;gap:6px;font-size:13px;line-height:18px">
+    <div style="position:absolute;left:-6px;top:16px;width:10px;height:10px;background:var(--pop);border-left:1px solid var(--bd);border-bottom:1px solid var(--bd);transform:rotate(45deg)"></div>
+    <div style="font-weight:600;font-size:14px">Share or move your catalog</div>
+    <div style="color:var(--mu)">Every export includes <span style="color:var(--fg);font-weight:600">all 252 rows</span>, including rows hidden by a filter.</div>
+    <div style="color:var(--mu)">To keep a Google Sheet in sync, turn it on in Settings ▸ Google first.</div>
+    <div style="display:flex;justify-content:flex-end;margin-top:4px"><span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;background:var(--pri);color:var(--prifg);font-size:12px">Got it</span></div>
+  </div>
+  <div style="height:28px;flex:none;display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--tb);border-top:1px solid var(--bd);font-size:12px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg><span style="flex:1"></span><span>No selection</span></div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</section>
+
+<section class="dv-turn" id="t11">
+<div class="dv-thd"><a class="dv-tid" href="#t11">11</a><span class="dv-tname">Narrow window — 520 × 300 minimum</span></div>
+<p class="dv-tdesc">At the minimum size the docks are closed and the grid gets the space, so the floating card would cover it. Below a threshold (proposed: centre narrower than 640 px or shorter than 360 px), the guide falls back to the status-bar label from <a class="dv-oid" href="#6c">6c</a>. Tips shrink to 220 px and stay attached to their anchor.</p>
+<div class="dv-opts">
+
+<div class="dv-opt" id="11a">
+<div class="dv-olabel"><a class="dv-oid" href="#11a">11a</a><span>Collapsed: status-bar label only. The title bar drops the project name before it drops controls.</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:520px;height:300px;display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+  <div style="height:34px;flex:none;display:flex;align-items:center;background:var(--tb);border-bottom:1px solid var(--bd);font-size:12px;padding-left:4px">
+    <div style="flex:1;display:flex"><span style="padding:3px 6px">File</span><span style="padding:3px 6px">Edit</span><span style="padding:3px 6px">Insert</span><span style="padding:3px 6px">View</span><span style="padding:3px 6px">Data</span><span style="padding:3px 6px">Plugins</span><span style="padding:3px 6px">Help</span></div>
+    <div style="display:flex;align-items:center;padding-right:6px"><span style="width:24px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path></svg></span><span style="width:24px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M3 15h18"></path></svg></span><span style="width:24px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M15 3v18"></path></svg></span></div>
+    <div style="display:flex;align-self:stretch"><span style="width:40px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 6h10"></path></svg></span><span style="width:40px;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="10" height="10"></rect></svg></span><span style="width:40px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 1l10 10M11 1 1 11"></path></svg></span></div>
+  </div>
+  <div style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
+    <div style="height:30px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px;background:var(--tb);border-bottom:1px solid var(--bd)"><div style="display:flex;padding:2px;gap:2px;background:var(--seg);border-radius:6px;font-size:12px"><span style="display:flex;align-items:center;height:20px;padding:0 8px;border-radius:4px;background:var(--bg);box-shadow:0 1px 2px rgba(0,0,0,.14)">Table</span><span style="display:flex;align-items:center;height:20px;padding:0 8px;color:var(--mu)">Gallery</span></div><div style="flex:1"></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg></div>
+    <div style="display:grid;grid-template-columns:40px 190px 110px minmax(0,1fr);height:30px;flex:none;background:var(--thead);color:var(--theadfg);border-bottom:1px solid var(--bd);line-height:30px;font-size:13px"><span></span><span style="padding:0 8px;border-left:1px solid var(--bd)">title</span><span style="padding:0 8px;border-left:1px solid var(--bd)">date</span><span style="padding:0 8px;border-left:1px solid var(--bd)">creator</span></div>
+    <div style="display:flex;flex-direction:column;font-size:13px">
+      <sc-for list="{{ rowsImp }}" as="r" hint-placeholder-count="6">
+        <div class="zr {{ r.cls }}" style="display:grid;grid-template-columns:40px 190px 110px minmax(0,1fr);height:30px;line-height:30px;border-bottom:1px solid var(--bd);white-space:nowrap"><span style="text-align:center;color:var(--mu)">{{ r.n }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.title }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden">{{ r.date }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.creator }}</span></div>
+      </sc-for>
+    </div>
+  </div>
+  <div style="height:28px;flex:none;display:flex;align-items:center;gap:10px;padding:0 10px;background:var(--tb);border-top:1px solid var(--bd);font-size:12px"><span style="display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px;border-radius:10px;background:color-mix(in srgb,var(--pri) 14%,transparent)"><span style="width:7px;height:7px;border-radius:50%;background:var(--pri)"></span>Getting started · 1 of 3</span><span style="display:flex;gap:4px;align-items:center"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4"></path></svg>10</span><span style="flex:1"></span><span>Row 4</span></div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+
+<div class="dv-opt" id="11b">
+<div class="dv-olabel"><a class="dv-oid" href="#11b">11b</a><span>Expanded from the label: a compact list that fits within 238 px of body height. The current task keeps its "Show me" action.</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:520px;height:300px;display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:8px;overflow:hidden;position:relative">
+  <div style="height:34px;flex:none;display:flex;align-items:center;background:var(--tb);border-bottom:1px solid var(--bd);font-size:12px;padding-left:4px">
+    <div style="flex:1;display:flex"><span style="padding:3px 6px">File</span><span style="padding:3px 6px">Edit</span><span style="padding:3px 6px">Insert</span><span style="padding:3px 6px">View</span><span style="padding:3px 6px">Data</span><span style="padding:3px 6px">Plugins</span><span style="padding:3px 6px">Help</span></div>
+    <div style="display:flex;align-items:center;padding-right:6px"><span style="width:24px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path></svg></span><span style="width:24px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M3 15h18"></path></svg></span><span style="width:24px;height:24px;display:flex;align-items:center;justify-content:center"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M15 3v18"></path></svg></span></div>
+    <div style="display:flex;align-self:stretch"><span style="width:40px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 6h10"></path></svg></span><span style="width:40px;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="10" height="10"></rect></svg></span><span style="width:40px;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 1l10 10M11 1 1 11"></path></svg></span></div>
+  </div>
+  <div style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
+    <div style="height:30px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px;background:var(--tb);border-bottom:1px solid var(--bd)"><div style="display:flex;padding:2px;gap:2px;background:var(--seg);border-radius:6px;font-size:12px"><span style="display:flex;align-items:center;height:20px;padding:0 8px;border-radius:4px;background:var(--bg);box-shadow:0 1px 2px rgba(0,0,0,.14)">Table</span><span style="display:flex;align-items:center;height:20px;padding:0 8px;color:var(--mu)">Gallery</span></div></div>
+    <div style="display:grid;grid-template-columns:40px 190px 110px minmax(0,1fr);height:30px;flex:none;background:var(--thead);color:var(--theadfg);border-bottom:1px solid var(--bd);line-height:30px;font-size:13px"><span></span><span style="padding:0 8px;border-left:1px solid var(--bd)">title</span><span style="padding:0 8px;border-left:1px solid var(--bd)">date</span><span style="padding:0 8px;border-left:1px solid var(--bd)">creator</span></div>
+    <div style="display:flex;flex-direction:column;font-size:13px">
+      <sc-for list="{{ rowsImp }}" as="r" hint-placeholder-count="6">
+        <div class="zr {{ r.cls }}" style="display:grid;grid-template-columns:40px 190px 110px minmax(0,1fr);height:30px;line-height:30px;border-bottom:1px solid var(--bd);white-space:nowrap"><span style="text-align:center;color:var(--mu)">{{ r.n }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.title }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden">{{ r.date }}</span><span style="padding:0 8px;border-left:1px solid var(--bd);overflow:hidden;text-overflow:ellipsis">{{ r.creator }}</span></div>
+      </sc-for>
+    </div>
+  </div>
+  <div style="position:absolute;left:6px;bottom:32px;width:272px;background:var(--pop);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);display:flex;flex-direction:column;font-size:12px;line-height:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px 4px"><span style="font-weight:600;font-size:13px">Getting started · 1 of 3</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"></path></svg></div>
+    <div style="display:flex;flex-direction:column;padding:0 4px 4px">
+      <div style="display:flex;gap:8px;padding:5px 6px;align-items:center"><span style="width:14px;height:14px;flex:none;border-radius:50%;background:var(--ok);color:#fff;font-size:10px;line-height:14px;text-align:center">✓</span><span style="color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Open a row and check your columns</span></div>
+      <div class="tcur" style="display:flex;gap:8px;padding:5px 6px;border-radius:6px;align-items:center"><span style="width:14px;height:14px;flex:none;border-radius:50%;border:2px solid var(--pri);box-sizing:border-box"></span><span style="flex:1;font-weight:600">Review what qrate found</span><span style="color:var(--link)">Show me</span></div>
+      <div style="display:flex;gap:8px;padding:5px 6px;align-items:center"><span style="width:14px;height:14px;flex:none;border-radius:50%;border:1.5px solid var(--mu);box-sizing:border-box"></span><span>Add a files folder</span></div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:2px;padding:4px 6px;border-top:1px solid var(--bd)"><span style="display:inline-flex;align-items:center;height:22px;padding:0 8px">Show me later</span><span style="display:inline-flex;align-items:center;height:22px;padding:0 8px">Dismiss</span></div>
+  </div>
+  <div style="height:28px;flex:none;display:flex;align-items:center;gap:10px;padding:0 10px;background:var(--tb);border-top:1px solid var(--bd);font-size:12px"><span style="display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px;border-radius:10px;background:color-mix(in srgb,var(--pri) 24%,transparent)"><span style="width:7px;height:7px;border-radius:50%;background:var(--pri)"></span>Getting started · 1 of 3</span><span style="flex:1"></span><span>Row 4</span></div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+<p class="dv-next">Try next: "narrow version of the Problems tip" · "show the wizard at its 480 × 520 minimum"</p>
+</section>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;themes&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Light + Dark&quot;,&quot;Light only&quot;,&quot;Dark only&quot;],&quot;default&quot;:&quot;Light + Dark&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const L = { cls: 'ql', name: 'Qrate Light' }, D = { cls: 'qd', name: 'Qrate Dark' };
+    const m = this.props.themes ?? 'Light + Dark';
+    const themes = m === 'Light only' ? [L] : m === 'Dark only' ? [D] : [L, D];
+    const base = [
+      ['Letter to Margaret Aderman', '1906-09-16', 'Aderman, John', 'Handwritten letter describing the voyage west', 'ADR_0001.jpg'],
+      ['Family portrait, Victoria', 'ca. 1910', 'Unknown', 'Studio portrait of six family members', 'ADR_0002.jpg'],
+      ['Sawmill crew', '1912', 'Aderman, John', 'Crew posed in front of the mill', 'ADR_0003.jpg'],
+      ['Wedding invitation', 'Sept 16 1921', '', 'Printed card with gold border', 'ADR_0004.jpg'],
+      ['Ledger, general store', '1915/1918', 'Aderman & Sons', 'Bound account ledger, 212 pages', 'ADR_0005.pdf'],
+      ['Postcard from Lucknow', '1908', 'Aderman, Ruth', 'Postcard showing the Residency', 'ADR_0006.jpg'],
+      ['Oral history, side A', '1978-03-02', 'Aderman, Ruth', 'Interview recorded on cassette', 'ADR_0007.mp3'],
+      ['Harbour at dusk', 'ca. 1925', 'Unknown', 'Glass plate negative', 'ADR_0008.jpg'],
+      ['School certificate', '1919', 'Victoria High School', 'Certificate of completion', 'ADR_0009.jpg'],
+      ['Letter from Punjab', '1911', 'Aderman, John', 'Two-page letter with envelope', 'ADR_0010.jpg'],
+      ['Garden party', 'ca. 1930', 'Unknown', 'Guests on the lawn', 'ADR_0011.jpg'],
+      ['Ship manifest', '1905', 'CPR', 'Passenger list excerpt', 'ADR_0012.pdf'],
+    ];
+    const mk = (sel) => base.slice(0, 10).map((r, i) => ({
+      n: i + 1, title: r[0], date: r[1], creator: r[2], desc: r[3], file: r[4],
+      cls: i + 1 === sel ? 'rsel' : '', tcls: i + 1 === sel ? 'acell' : '',
+      dstyle: Object.assign({ padding: '0 8px', borderLeft: '1px solid var(--bd)', overflow: 'hidden', textOverflow: 'ellipsis' },
+        r[1] === 'Sept 16 1921' ? { textDecoration: 'underline wavy var(--warn)', textUnderlineOffset: '3px' } : {}),
+    }));
+    const fld = (k, v, link) => ({ k, v: v || 'Empty', vstyle: !v ? { color: 'var(--mu)' } : link ? { color: 'var(--link)' } : {} });
+    const task = (title, state, hint) => ({
+      title, hint, done: state === 'done', cur: state === 'cur', todo: state === 'todo',
+      cls: state === 'cur' ? 'tcur' : '',
+      tstyle: state === 'done' ? { color: 'var(--mu)' } : state === 'cur' ? { fontWeight: 600 } : {},
+    });
+    return {
+      themes,
+      rowsImp: mk(4),
+      rowsMedia: mk(2),
+      impFields: [fld('identifier', 'ADR-0004'), fld('title', 'Wedding invitation'), fld('date', 'Sept 16 1921'), fld('creator', ''), fld('description', 'Printed card with gold border'), fld('subject', 'Weddings'), fld('extent', '1 card'), fld('file', 'ADR_0004.jpg')],
+      mediaFields: [fld('identifier', 'ADR-0002'), fld('title', 'Family portrait, Victoria'), fld('date', 'ca. 1910'), fld('creator', 'Unknown'), fld('description', 'Studio portrait of six family members'), fld('file', 'ADR_0002.jpg', true)],
+      problems: [
+        { w: true, loc: 'Row 4 · date', msg: '"Sept 16 1921" isn\u2019t a recognised date. Suggested: 1921-09-16', src: 'dates' },
+        { w: true, loc: 'Row 1 · description', msg: 'misspelled: voyge', src: 'spell' },
+        { w: true, loc: 'Row 6 · description', msg: 'misspelled: Residancy', src: 'spell' },
+        { n: true, loc: 'Row 9 · creator', msg: 'Check school name against the 1919 yearbook', src: 'note' },
+      ],
+      thumbs: base.concat(base.slice(0, 3)).map((r, i) => ({ title: r[0], file: r[4], cls: i === 1 ? 'kf' : '' })),
+      gBlank: { progress: '0 of 3', title: 'Your project is ready', sub: 'Untitled Catalog.qrate · 1 empty row', tasks: [
+        task('Name your first record', 'cur', 'Type in the first Title cell. The row is already there.'),
+        task('Add more fields', 'todo'), task('Add a files folder', 'todo')] },
+      gImp: { progress: '1 of 3', title: 'Your project is ready', sub: '248 rows imported from aderman_collection.csv', tasks: [
+        task('Open a row and check how your columns came across', 'done'),
+        task('Review what qrate found', 'cur', '11 findings in Problems. Reviewing counts; fixing is up to you.'),
+        task('Add a files folder', 'todo')] },
+      gMedia: { progress: '1 of 3', title: 'Your project is ready', sub: '252 rows · 231 linked files', tasks: [
+        task('Select a row to see its file and fields', 'done'),
+        task('Browse in Gallery', 'cur', 'Every linked file as a thumbnail.'),
+        task('Review what qrate found', 'todo')] },
+    };
+  }
+}
+</script>
+</body>
+</html>
