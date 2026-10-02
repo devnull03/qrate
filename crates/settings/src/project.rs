@@ -700,15 +700,6 @@ impl Region {
     pub const SCALE: u16 = 10_000;
 }
 
-/// Today, from SQLite's own clock — the one dependency here that already knows what day it is.
-/// Local rather than UTC: an archivist reading "filed 2026-08-14" means their own Tuesday.
-pub fn today(path: &Path) -> Option<String> {
-    open_ro(path)
-        .ok()?
-        .query_row("SELECT date('now','localtime')", [], |r| r.get(0))
-        .ok()
-}
-
 /// Every stored note. A file written before `__notes` existed yields an empty vec, the same
 /// tolerance [`qrate_export::read_dataset`] gives a blank project's missing `dataset_main`.
 pub fn read_notes(path: &Path) -> Result<Vec<StoredNote>> {

@@ -190,6 +190,8 @@ pub struct NoteMeta {
     /// Where on the row's file it points; `None` for a note on the data itself.
     pub region: Option<Region>,
     pub kind: Option<NoteKind>,
+    /// When its words or kind last changed, and by whom.
+    pub edited: Option<Filed>,
 }
 
 /// Everything a note write can change.
@@ -350,6 +352,7 @@ impl Diagnostics {
                         filed: None,
                         region: None,
                         kind: None,
+                        edited: None,
                     }
                 });
                 continue;
@@ -649,27 +652,27 @@ impl Diagnostics {
         Self::put(id, location, after, origin, cx);
     }
 
-    /// Stamp for a note being filed right now: today's date from the project file's own clock, and
-    /// whoever the archivist has told the app they are. Either half may be missing.
-    fn filed_now(cx: &App) -> Option<Filed> {
-        let date = cx
-            .try_global::<settings::project::CurrentProject>()
-            .and_then(|p| settings::project::today(&p.file))
-            .map(SharedString::from);
+    /// Stamp for a note being filed or reworded at `at`: the local time to the minute, and whoever
+    /// the archivist has told the app they are.
+    fn stamp(at: i64, cx: &App) -> Filed {
+        let date = settings::history::local_times(&[at])
+            .pop()
+            .map(|(day, time)| format!("{day} {time}").into());
         let author = settings::history::author(cx).map(SharedString::from);
-        (date.is_some() || author.is_some()).then_some(Filed { date, author })
+        Filed { date, author }
     }
 
     /// Every note write ends here: note `id` becomes `after` — filed at `location` if it is new,
     /// removed if `after` is `None` — then logged and saved together. Writes straight through to
     /// `__notes`: this is a deliberate act, not the hot path the debounced setting writer exists for.
     fn put(id: NoteId, location: Location, after: Option<Body>, origin: Origin, cx: &mut App) {
-        let filed = Self::filed_now(cx);
         let author = settings::history::author(cx);
         let before = Self::body(id, cx).map(|(_, body)| body);
         if before == after {
             return;
         }
+        let entry = Entry::new(origin, Vec::new(), author);
+        let stamp = Self::stamp(entry.at, cx);
         let this = cx.default_global::<Self>();
         let at = this
             .items
@@ -687,8 +690,15 @@ impl Diagnostics {
                 kind_before: before.as_ref().and_then(|b| b.kind),
                 kind_after: after.as_ref().and_then(|b| b.kind),
             };
-            Entry::new(origin, vec![change], author)
+            Entry {
+                changes: vec![change],
+                ..entry
+            }
         });
+        let reworded = before
+            .as_ref()
+            .zip(after.as_ref())
+            .is_some_and(|(b, a)| b.message != a.message || b.kind != a.kind);
         match (at, after) {
             // In place, keeping its severity and its original filing stamp: correcting a
             // transcription is not re-observing the item.
@@ -698,6 +708,9 @@ impl Diagnostics {
                 if let Some(note) = d.note.as_mut() {
                     note.region = body.region;
                     note.kind = body.kind;
+                    if reworded {
+                        note.edited = Some(stamp);
+                    }
                 }
             }
             (Some(ix), None) => {
@@ -711,9 +724,10 @@ impl Diagnostics {
                 group: None,
                 note: Some(NoteMeta {
                     id,
-                    filed,
+                    filed: Some(stamp),
                     region: body.region,
                     kind: body.kind,
+                    edited: None,
                 }),
             }),
             (None, None) => {}
@@ -848,6 +862,9 @@ fn load_project_notes(cx: &mut App) {
     }
 
     let stored = settings::project::read_notes(&file).unwrap_or_default();
+    let edits = settings::history::note_edits(&file)
+        .inspect_err(|err| log::warn!("could not read when notes were last edited: {err}"))
+        .unwrap_or_default();
     cx.default_global::<Diagnostics>().loaded = Some(file);
 
     // Republished under `Source::Note`, exactly as if a note had just been attached, so the
@@ -876,6 +893,10 @@ fn load_project_notes(cx: &mut App) {
                 },
                 region: n.region,
                 kind: n.kind,
+                edited: edits.get(&n.id).map(|(date, author)| Filed {
+                    date: Some(date.clone().into()),
+                    author: author.clone().map(SharedString::from),
+                }),
             }),
         })
         .collect();
@@ -1123,6 +1144,17 @@ mod tests {
             let moved = Region { x: 5000, ..stamp };
             Diagnostics::move_note(id, moved, cx);
             assert_eq!(region(cx), Some(moved));
+            let edited =
+                |cx: &App| Diagnostics::note(id, cx).and_then(|d| d.note.as_ref()?.edited.clone());
+            assert_eq!(edited(cx), None, "a move is not a rewording");
+            Diagnostics::edit_note(
+                id,
+                "customs stamp, Lisbon 1931".into(),
+                Some(NoteKind::Transcription),
+                Origin::Typed,
+                cx,
+            );
+            assert!(edited(cx).is_some_and(|e| e.date.is_some()));
 
             Diagnostics::edit_note(id, "".into(), None, Origin::Clear, cx);
             assert!(Diagnostics::note(id, cx).is_none());
