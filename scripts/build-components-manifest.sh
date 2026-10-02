@@ -39,9 +39,9 @@ for triple in ${QRATE_COMPONENTS_REQUIRE:-}; do
 done
 
 # Which qrate versions a component version works with, in plain version order. PDFium's ABI is
-# fixed by pdfium-render and Pi speaks one bridge protocol, so those two are good for this minor
-# line only: move either pin in a minor release. ffmpeg is run as a command and the weights are
-# data, so they stay good from here on.
+# fixed by pdfium-render and the Pi extension calls one `qrate agent` contract, so those two are
+# good for this minor line only: move either pin in a minor release. ffmpeg is run as a command
+# and the weights are data, so they stay good from here on.
 core="${VERSION%%[-+]*}"
 IFS=. read -r major minor _ <<< "$core"
 this_line=">=$major.$minor.0-0, <$major.$((minor + 1)).0-0"

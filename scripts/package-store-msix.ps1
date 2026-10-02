@@ -17,6 +17,11 @@ function Fail([string] $Message) {
 if (-not (Test-Path -LiteralPath $SourceExe -PathType Leaf)) {
   Fail "application executable not found: $SourceExe"
 }
+# The agent component is installed on demand, and its Pi reads the project through this program.
+$sourceCli = Join-Path (Split-Path -Parent $SourceExe) 'qrate-cli.exe'
+if (-not (Test-Path -LiteralPath $sourceCli -PathType Leaf)) {
+  Fail "qrate-cli.exe not found beside the application executable: $sourceCli"
+}
 foreach ($value in @($IdentityName, $IdentityPublisher, $PublisherDisplayName)) {
   if ([string]::IsNullOrWhiteSpace($value)) { Fail 'all Partner Center identity values are required' }
 }
@@ -49,6 +54,7 @@ if (-not $makeAppx) { Fail 'Windows SDK MakeAppx.exe was not found' }
 try {
   New-Item -ItemType Directory -Path (Join-Path $stage 'Assets') -Force | Out-Null
   Copy-Item -LiteralPath $SourceExe -Destination (Join-Path $stage 'qrate.exe')
+  Copy-Item -LiteralPath $sourceCli -Destination (Join-Path $stage 'qrate-cli.exe')
   $marker = [ordered]@{
     schema = 1
     kind = 'windows-store'
@@ -108,6 +114,9 @@ try {
   $unpackedMarker = Get-Content -LiteralPath (Join-Path $unpacked 'qrate-install.json') -Raw | ConvertFrom-Json
   if ($unpackedMarker.kind -ne 'windows-store' -or $unpackedMarker.flavor -ne 'base' -or $unpackedMarker.packaged_version -ne $QrateVersion) {
     Fail 'the package install marker does not declare this Store base build'
+  }
+  if (-not (Test-Path -LiteralPath (Join-Path $unpacked 'qrate-cli.exe') -PathType Leaf)) {
+    Fail 'the package does not contain qrate-cli.exe'
   }
   foreach ($excluded in @('qrate-update-helper.exe', 'pdfium.dll', 'ffmpeg.exe', 'agent')) {
     if (Test-Path -LiteralPath (Join-Path $unpacked $excluded)) { Fail "base package unexpectedly contains $excluded" }

@@ -169,8 +169,6 @@ jobs:
           lipo -info libpdfium.dylib || true
 
       - name: Fetch embedded Pi agent
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           chmod +x scripts/fetch-agent-runtime.sh
           ./scripts/fetch-agent-runtime.sh . darwin-universal
@@ -255,8 +253,6 @@ jobs:
 
       - name: Fetch embedded Pi agent
         shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: ./scripts/fetch-agent-runtime.ps1 -Destination dist/portable
 
       # The optional components are packed from the same pinned files the full bundle ships. This
@@ -340,7 +336,7 @@ jobs:
         run: |
           $ver = "${{ needs.version.outputs.version }}"
           ./scripts/package-store-msix.ps1 `
-            -SourceExe target/release/app.exe `
+            -SourceExe target/release/qrate.exe `
             -OutputPath "dist/qrate-$ver-x64.msix" `
             -QrateVersion $ver `
             -IdentityName $env:QRATE_STORE_IDENTITY_NAME `
@@ -437,8 +433,6 @@ jobs:
           cargo build --release -p updater --bin qrate-update-helper
 
       - name: Package tarball
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           chmod +x scripts/fetch-binaries.sh
           ver="${{ needs.version.outputs.version }}"
@@ -448,6 +442,8 @@ jobs:
           cp target/release/qrate "$stage/qrate"
           cp target/release/qrate-cli "$stage/qrate-cli"
           ln -s ../qrate-cli "$stage/bin/qrate"
+          # man looks in share/man beside a bin directory on PATH, so these need no MANPATH.
+          "$stage/qrate-cli" man "$stage/share/man/man1"
           cp target/release/qrate-update-helper "$stage/qrate-update-helper"
           chmod +x "$stage/qrate-update-helper"
           printf '{\n  "schema": 1,\n  "kind": "linux-tar",\n  "packaged_version": "%s"\n}\n' \
@@ -477,6 +473,10 @@ jobs:
               { echo "::error::the full tarball is missing $part"; exit 1; }
             ! tar -tzf "dist/$base.tar.gz" | grep -q "^$base/$part" ||
               { echo "::error::the base tarball carries $part"; exit 1; }
+          done
+          for part in qrate-cli bin/qrate share/man/man1/qrate.1; do
+            tar -tzf "dist/$base.tar.gz" | grep -qx "$base/$part" ||
+              { echo "::error::the tarballs are missing $part"; exit 1; }
           done
           rm -rf "$base"
 
@@ -635,10 +635,15 @@ jobs:
             the parts qrate downloads by itself; you do not need to download them.
 
             ### Command line
-            Each package includes the `qrate-cli` console program. On Windows, installers add the
-            package's separate `bin` directory to `PATH`; its `qrate.exe` is the CLI, while
-            shortcuts and URL associations launch the GUI `qrate.exe`.
-            The portable ZIP does not change `PATH`; add its `bin` directory yourself.
+            Each package includes the `qrate` command: open a project, check which one is open,
+            and let an AI agent read it. `qrate help` lists the commands, and the
+            [command-line guide](https://qrate.dvnl.work/docs/cli) covers them, shell completion
+            and the manual pages.
+
+            On Windows, installers add the package's separate `bin` directory to `PATH`; its
+            `qrate.exe` is the CLI, while shortcuts and URL associations launch the GUI
+            `qrate.exe`. The portable ZIP does not change `PATH`; add its `bin` directory
+            yourself. The Microsoft Store package does not put `qrate` on `PATH`.
 
             On macOS, the CLI is `/Applications/qrate.app/Contents/MacOS/qrate-cli`. To expose it
             without an administrator account:

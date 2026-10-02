@@ -39,8 +39,6 @@ jobs:
       - name: Check Unix agent runtime package
         if: runner.os != 'Windows'
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           chmod +x scripts/fetch-agent-runtime.sh
           destination="$RUNNER_TEMP/qrate-agent-runtime"
@@ -64,8 +62,6 @@ jobs:
       - name: Check Windows agent runtime package
         if: runner.os == 'Windows'
         shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           $destination = Join-Path $env:RUNNER_TEMP "qrate-agent-runtime"
           ./scripts/fetch-agent-runtime.ps1 -Destination $destination
