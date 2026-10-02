@@ -51,6 +51,10 @@ pub struct ReviewerCapabilities {
 ///
 /// `row_data` is the row as JSON — column name to value — so a provider needs no notion of grids.
 #[async_trait]
+#[allow(
+    clippy::double_must_use,
+    reason = "async-trait 0.1.89 adds it; the release that stops needs syn 3"
+)]
 pub trait DataReviewer: Send + Sync {
     async fn initialize(&self) -> Result<()>;
     async fn validate_row(
