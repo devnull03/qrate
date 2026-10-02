@@ -944,7 +944,7 @@ mod tests {
                 source: Source::Note,
                 message: "look at this".into(),
                 group: None,
-                filed: None,
+                note: None,
             };
             // A cell note, a whole-row note, and a whole-column note — one per marker site.
             Diagnostics::set(
@@ -969,7 +969,7 @@ mod tests {
                     source: v.clone(),
                     message: "bad".into(),
                     group: None,
-                    filed: None,
+                    note: None,
                 }],
                 cx,
             );

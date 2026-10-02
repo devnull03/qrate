@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use rusqlite::{Connection, OptionalExtension as _};
+use rusqlite::Connection;
 use serde_json::{Value, json};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,6 +14,10 @@ pub struct ProjectNote {
     pub message: String,
     pub created_at: Option<String>,
     pub author: Option<String>,
+    /// Stable identity, `None` in a file written before notes had one.
+    pub id: Option<i64>,
+    /// Where on the row's file the note points, as the app's JSON. `None` for a note on the data.
+    pub region: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,24 +28,21 @@ pub struct SheetNote {
     pub text: String,
 }
 
-/// Older projects may not have a notes table or provenance columns yet.
+/// Older projects may not have a notes table, or any of the columns added to it since.
 pub fn read_project_notes(conn: &Connection) -> rusqlite::Result<Vec<ProjectNote>> {
     if !crate::table_exists(conn, "__notes")? {
         return Ok(Vec::new());
     }
-    let provenance: bool = conn
-        .query_row(
-            "SELECT 1 FROM pragma_table_info('__notes') WHERE name='created_at'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?
-        .is_some();
-    let columns = if provenance {
-        "created_at, author"
-    } else {
-        "NULL AS created_at, NULL AS author"
-    };
+    let present: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('__notes')")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let columns = ["created_at", "author", "note_id", "region"]
+        .map(|name| match present.iter().any(|p| p == name) {
+            true => name.to_string(),
+            false => format!("NULL AS {name}"),
+        })
+        .join(", ");
     let mut stmt = conn.prepare(&format!(
         "SELECT dataset, row_ix, column_name, severity, message, {columns} FROM __notes"
     ))?;
@@ -54,6 +55,8 @@ pub fn read_project_notes(conn: &Connection) -> rusqlite::Result<Vec<ProjectNote
             message: row.get(4)?,
             created_at: row.get(5)?,
             author: row.get(6)?,
+            id: row.get(7)?,
+            region: row.get(8)?,
         })
     })?
     .collect()
@@ -166,6 +169,8 @@ mod tests {
             message: message.into(),
             author: None,
             created_at: None,
+            id: None,
+            region: None,
         };
         let placed = sheet_notes(
             &headers,

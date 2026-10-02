@@ -608,11 +608,17 @@ fn describe(entry: &Entry, rows: &HashMap<RowId, usize>) -> String {
                 column,
                 before,
                 after,
+                region_before,
+                region_after,
+                ..
             },
         ] => {
             let what = match (before, after) {
+                (None, _) if region_after.is_some() => "Marked a region",
                 (None, _) => "Added a note",
+                (_, None) if region_before.is_some() => "Removed a region",
                 (_, None) => "Removed a note",
+                _ if before == after && region_before != region_after => "Moved a region",
                 _ => "Edited a note",
             };
             match (id, column) {

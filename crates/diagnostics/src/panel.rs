@@ -988,7 +988,7 @@ mod tests {
                     summary: "misspelled: recieve".into(),
                     subject: Some("recieve".into()),
                 }),
-                filed: None,
+                note: None,
             })
             .collect()
     }
@@ -1245,7 +1245,7 @@ mod tests {
                     source: Source::Note,
                     message: "m".into(),
                     group: None,
-                    filed: None,
+                    note: None,
                 })
                 .collect(),
                 cx,
@@ -1263,7 +1263,7 @@ mod tests {
                 source: Source::Validator("test".into()),
                 message: "computed".into(),
                 group: None,
-                filed: None,
+                note: None,
             };
             assert!(Filter::All.admits(&computed));
             assert!(!Filter::Notes.admits(&computed));
@@ -1316,7 +1316,7 @@ mod tests {
                             source: Source::Validator(source.into()),
                             message: "m".into(),
                             group: None,
-                            filed: None,
+                            note: None,
                         })
                         .collect(),
                     cx,
@@ -1331,7 +1331,7 @@ mod tests {
                     source: Source::Note,
                     message: "user note".into(),
                     group: None,
-                    filed: None,
+                    note: None,
                 }],
                 cx,
             );

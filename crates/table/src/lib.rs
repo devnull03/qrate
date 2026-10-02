@@ -520,10 +520,7 @@ pub fn restore_to(to: EntryId, cx: &mut App) {
     settle(&state, &applied, Origin::Restore(to), cx);
 
     for note in notes {
-        let Change::Note {
-            row, column, after, ..
-        } = note
-        else {
+        let Change::Note { row, column, .. } = &note else {
             continue;
         };
         let position = row.and_then(|id| state.read(cx).delegate().row_of(id));
@@ -533,15 +530,10 @@ pub fn restore_to(to: EntryId, cx: &mut App) {
         let location = diagnostics::Location {
             dataset: diagnostics::DATASET_MAIN.into(),
             row: position,
-            row_id: row,
-            column: column.map(Into::into),
+            row_id: *row,
+            column: column.clone().map(Into::into),
         };
-        diagnostics::Diagnostics::set_note(
-            location,
-            after.unwrap_or_default().into(),
-            Origin::Restore(to),
-            cx,
-        );
+        diagnostics::Diagnostics::apply_note(location, &note, Origin::Restore(to), cx);
     }
 }
 

@@ -427,7 +427,11 @@ impl DetailsPanel {
                             // Which field it hangs off, when it hangs off one: without it a note
                             // about the date and a note about the photographer read as two
                             // remarks on the same thing.
-                            let filed = note.filed.as_ref().and_then(diagnostics::Filed::label);
+                            let filed = note
+                                .note
+                                .as_ref()
+                                .and_then(|n| n.filed.as_ref())
+                                .and_then(diagnostics::Filed::label);
                             let meta = match (note.location.column.as_ref(), filed) {
                                 (Some(column), Some(filed)) => Some(format!("{column} · {filed}")),
                                 (Some(column), None) => Some(column.to_string()),
@@ -619,6 +623,7 @@ impl DetailsPanel {
                             column,
                             before,
                             after,
+                            ..
                         } if *row == row_id => {
                             let verb = match (before, after) {
                                 (None, _) => "added",

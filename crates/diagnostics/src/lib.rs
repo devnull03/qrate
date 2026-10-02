@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use gpui::{App, Global, Hsla, SharedString};
 use gpui_component::ActiveTheme as _;
 use settings::history::{Change, Entry, Origin};
+pub use settings::project::{NoteId, Region};
 
 /// The one dataset a project can hold today. `__notes` keys by name so a second sheet is new
 /// rows rather than a new table.
@@ -176,9 +177,18 @@ pub struct Diagnostic {
     pub source: Source,
     pub message: SharedString,
     pub group: Option<DiagnosticGroup>,
-    /// Who filed this and when, for authored notes. Always `None` on a computed finding — a
-    /// validator's output is recomputed on open, so it has no history to carry.
+    /// Set on every authored note, never on a computed finding — a validator's output is
+    /// recomputed on open, so it has no identity or history to carry.
+    pub note: Option<NoteMeta>,
+}
+
+/// What an authored note carries beyond its text.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct NoteMeta {
+    pub id: NoteId,
     pub filed: Option<Filed>,
+    /// Where on the row's file it points; `None` for a note on the data itself.
+    pub region: Option<Region>,
 }
 
 impl Diagnostic {
@@ -320,8 +330,18 @@ impl Diagnostics {
         mut items: Vec<Diagnostic>,
         columns: &settings::columns::ColumnSettingsMap,
     ) {
+        let mut next = self.next_note_id();
         for diagnostic in &mut items {
             if diagnostic.source == Source::Note {
+                // Every note in the store is addressable by id, whichever way it arrived.
+                diagnostic.note.get_or_insert_with(|| {
+                    next += 1;
+                    NoteMeta {
+                        id: next - 1,
+                        filed: None,
+                        region: None,
+                    }
+                });
                 continue;
             }
             if diagnostic.severity == Severity::Note {
@@ -429,18 +449,26 @@ impl Diagnostics {
         Self::at(dataset, row, column, cx).map(|d| d.severity).min()
     }
 
-    /// The note filed here, if any — what the `Notes ▸` menu offers to edit rather than add. The
-    /// *first* of them: editing is how a single note is corrected, while a second observation
-    /// about the same item is added rather than overwriting the first.
+    /// The region-less note filed here, if any — what the grid's `Notes ▸` menu offers to edit
+    /// rather than add. The *first* of them: editing is how a single note is corrected, while a
+    /// second observation about the same item is added rather than overwriting the first.
     pub fn note_at(
         dataset: &str,
         row: Option<usize>,
         column: Option<&str>,
         cx: &App,
     ) -> Option<SharedString> {
-        Self::at(dataset, row, column, cx)
-            .find(|d| d.source == Source::Note)
-            .map(|d| d.message.clone())
+        Self::plain_note_at(dataset, row, column, cx).map(|d| d.message.clone())
+    }
+
+    fn plain_note_at<'a>(
+        dataset: &'a str,
+        row: Option<usize>,
+        column: Option<&'a str>,
+        cx: &'a App,
+    ) -> Option<&'a Diagnostic> {
+        Self::notes_at(dataset, row, column, cx)
+            .find(|d| d.note.as_ref().is_none_or(|n| n.region.is_none()))
     }
 
     /// Every note filed here, oldest first — what the Notes panel lists. An item accumulates
@@ -476,26 +504,119 @@ impl Diagnostics {
             .filter(move |d| d.location.dataset == dataset && d.source == Source::Note)
     }
 
-    /// File another note here without disturbing the ones already at this location. `set_note`'s
-    /// counterpart: that one corrects, this one adds.
-    #[cfg(test)]
-    pub fn add_note(location: Location, message: SharedString, cx: &mut App) {
+    /// One note, by the id history and the note card address it by.
+    pub fn note(id: NoteId, cx: &App) -> Option<&Diagnostic> {
+        Self::all(cx)
+            .iter()
+            .find(|d| d.note.as_ref().is_some_and(|n| n.id == id))
+    }
+
+    fn next_note_id(&self) -> NoteId {
+        // ponytail: a timestamp, so an id a deleted note left in the log is never handed out again
+        // without storing a counter.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as NoteId);
+        let last = self
+            .items
+            .iter()
+            .filter_map(|d| d.note.as_ref())
+            .map(|n| n.id)
+            .max();
+        now.max(last.unwrap_or(0) + 1)
+    }
+
+    /// File a new note beside whatever is already at `location`, on `region` of the row's file when
+    /// it is about part of the picture. An empty message files nothing.
+    pub fn file_note(
+        location: Location,
+        region: Option<Region>,
+        message: SharedString,
+        origin: Origin,
+        cx: &mut App,
+    ) -> Option<NoteId> {
         if message.trim().is_empty() {
-            return;
+            return None;
         }
-        let filed = Self::filed_now(cx);
-        let logged = Self::note_entry(&location, None, Some(&message), Origin::Typed, cx);
-        let this = cx.default_global::<Self>();
-        this.items.push(Diagnostic {
+        let id = cx.default_global::<Self>().next_note_id();
+        Self::put(id, location, Some((message, region)), origin, cx);
+        Some(id)
+    }
+
+    /// Rewrite one note's text, keeping where it points; empty text deletes it.
+    pub fn edit_note(id: NoteId, message: SharedString, origin: Origin, cx: &mut App) {
+        let Some(note) = Self::note(id, cx) else {
+            return;
+        };
+        let (location, region) = (
+            note.location.clone(),
+            note.note.as_ref().and_then(|n| n.region),
+        );
+        let after = (!message.trim().is_empty()).then_some((message, region));
+        Self::put(id, location, after, origin, cx);
+    }
+
+    /// Move or reshape the region one note points at.
+    pub fn move_note(id: NoteId, region: Region, cx: &mut App) {
+        let Some(note) = Self::note(id, cx) else {
+            return;
+        };
+        let (location, message) = (note.location.clone(), note.message.clone());
+        Self::put(
+            id,
             location,
-            severity: Severity::Note,
-            source: Source::Note,
-            message,
-            group: None,
-            filed,
-        });
-        this.reindex();
-        this.persist(&logged);
+            Some((message, Some(region))),
+            Origin::Drawn,
+            cx,
+        );
+    }
+
+    /// Correct the region-less note at `location`, or file one if there is none; an empty
+    /// `message` deletes it. The grid's note editor, which only ever shows that one note.
+    pub fn set_note(location: Location, message: SharedString, origin: Origin, cx: &mut App) {
+        let existing = Self::plain_note_at(
+            &location.dataset,
+            location.row,
+            location.column.as_deref(),
+            cx,
+        )
+        .and_then(|d| d.note.as_ref())
+        .map(|n| n.id);
+        match existing {
+            Some(id) => Self::edit_note(id, message, origin, cx),
+            None => {
+                Self::file_note(location, None, message, origin, cx);
+            }
+        }
+    }
+
+    /// Replay a logged note change, as a restore does: the note it names takes the change's
+    /// `after`, filed again at `location` if it has since been deleted. A change logged before notes
+    /// had ids names the region-less note at `location`.
+    pub fn apply_note(location: Location, change: &Change, origin: Origin, cx: &mut App) {
+        let Change::Note {
+            id,
+            after,
+            region_after,
+            ..
+        } = change
+        else {
+            return;
+        };
+        let id = id
+            .or_else(|| {
+                Self::plain_note_at(
+                    &location.dataset,
+                    location.row,
+                    location.column.as_deref(),
+                    cx,
+                )
+                .and_then(|d| d.note.as_ref())
+                .map(|n| n.id)
+            })
+            .unwrap_or_else(|| cx.default_global::<Self>().next_note_id());
+        let after = after.as_ref().map(|text| (text.into(), *region_after));
+        Self::put(id, location, after, origin, cx);
     }
 
     /// Stamp for a note being filed right now: today's date from the project file's own clock, and
@@ -509,64 +630,67 @@ impl Diagnostics {
         (date.is_some() || author.is_some()).then_some(Filed { date, author })
     }
 
-    /// The log entry for one note going from `before` to `after`. Empty when nothing changed, or
-    /// when no project is open to log it in.
-    fn note_entry(
-        location: &Location,
-        before: Option<&SharedString>,
-        after: Option<&SharedString>,
+    /// Every note write ends here: note `id` becomes `after` — filed at `location` if it is new,
+    /// removed if `after` is `None` — then logged and saved together. Writes straight through to
+    /// `__notes`: this is a deliberate act, not the hot path the debounced setting writer exists for.
+    fn put(
+        id: NoteId,
+        location: Location,
+        after: Option<(SharedString, Option<Region>)>,
         origin: Origin,
-        cx: &App,
-    ) -> Vec<Entry> {
-        if before == after || location.dataset != DATASET_MAIN {
-            return Vec::new();
-        }
-        let change = Change::Note {
-            row: location.row_id,
-            column: location.column.as_ref().map(|c| c.to_string()),
-            before: before.map(|b| b.to_string()),
-            after: after.map(|a| a.to_string()),
-        };
-        vec![Entry::new(
-            origin,
-            vec![change],
-            settings::history::author(cx),
-        )]
-    }
-
-    /// Attach a note here, replacing any note already at this location; an empty `message` deletes
-    /// it. Writes straight through to `__notes` — this is a deliberate keystroke, not the hot path
-    /// the debounced setting writer exists for.
-    pub fn set_note(location: Location, message: SharedString, origin: Origin, cx: &mut App) {
-        let (before, filed) = Self::notes_at(
-            &location.dataset,
-            location.row,
-            location.column.as_deref(),
-            cx,
-        )
-        .next()
-        .map(|d| (Some(d.message.clone()), d.filed.clone()))
-        .unwrap_or_default();
-        let after = (!message.trim().is_empty()).then_some(&message);
-        let logged = Self::note_entry(&location, before.as_ref(), after, origin, cx);
-        // Keeps the original filing stamp: correcting a transcription is not re-observing the
-        // item, and re-dating it to today would erase when the observation was actually made.
-        let filed = filed.or_else(|| Self::filed_now(cx));
+        cx: &mut App,
+    ) {
+        let filed = Self::filed_now(cx);
+        let author = settings::history::author(cx);
         let this = cx.default_global::<Self>();
-        this.items
-            .retain(|d| d.source != Source::Note || d.location != location);
-        if !message.trim().is_empty() {
-            this.items.push(Diagnostic {
+        let at = this
+            .items
+            .iter()
+            .position(|d| d.note.as_ref().is_some_and(|n| n.id == id));
+        let before = at.map(|ix| {
+            let d = &this.items[ix];
+            (d.message.clone(), d.note.as_ref().and_then(|n| n.region))
+        });
+        if before == after {
+            return;
+        }
+        let logged = (location.dataset == DATASET_MAIN).then(|| {
+            let change = Change::Note {
+                row: location.row_id,
+                column: location.column.as_ref().map(|c| c.to_string()),
+                before: before.as_ref().map(|(text, _)| text.to_string()),
+                after: after.as_ref().map(|(text, _)| text.to_string()),
+                id: Some(id),
+                region_before: before.and_then(|(_, region)| region),
+                region_after: after.as_ref().and_then(|(_, region)| *region),
+            };
+            Entry::new(origin, vec![change], author)
+        });
+        match (at, after) {
+            // In place, keeping its severity and its original filing stamp: correcting a
+            // transcription is not re-observing the item.
+            (Some(ix), Some((message, region))) => {
+                let d = &mut this.items[ix];
+                d.message = message;
+                if let Some(note) = d.note.as_mut() {
+                    note.region = region;
+                }
+            }
+            (Some(ix), None) => {
+                this.items.remove(ix);
+            }
+            (None, Some((message, region))) => this.items.push(Diagnostic {
                 location,
                 severity: Severity::Note,
                 source: Source::Note,
                 message,
                 group: None,
-                filed,
-            });
+                note: Some(NoteMeta { id, filed, region }),
+            }),
+            (None, None) => {}
         }
         this.reindex();
-        this.persist(&logged);
+        this.persist(logged.as_slice());
     }
 
     /// Rebind authored notes to the current source positions after a structural edit or its undo.
@@ -601,6 +725,9 @@ impl Diagnostics {
                     column: item.location.column.as_ref().map(|c| c.to_string()),
                     before: Some(item.message.to_string()),
                     after: None,
+                    id: item.note.as_ref().map(|n| n.id),
+                    region_before: item.note.as_ref().and_then(|n| n.region),
+                    region_after: None,
                 });
                 return false;
             };
@@ -640,21 +767,24 @@ impl Diagnostics {
             .items
             .iter()
             .filter(|d| d.source == Source::Note)
-            .map(|d| settings::project::StoredNote {
+            .filter_map(|d| Some((d, d.note.as_ref()?)))
+            .map(|(d, note)| settings::project::StoredNote {
                 dataset: d.location.dataset.to_string(),
                 row: d.location.row,
                 row_id: d.location.row_id,
                 column: d.location.column.as_ref().map(|c| c.to_string()),
                 severity: d.severity.key().into(),
                 message: d.message.to_string(),
-                created_at: d
+                created_at: note
                     .filed
                     .as_ref()
                     .and_then(|f| f.date.as_ref().map(SharedString::to_string)),
-                author: d
+                author: note
                     .filed
                     .as_ref()
                     .and_then(|f| f.author.as_ref().map(SharedString::to_string)),
+                id: note.id,
+                region: note.region,
             })
             .collect();
         if let Err(err) = settings::project::write_notes(file, SOURCE_NOTE, &notes, history) {
@@ -703,13 +833,17 @@ fn load_project_notes(cx: &mut App) {
             source: Source::Note,
             message: n.message.clone().into(),
             group: None,
-            filed: match (&n.created_at, &n.author) {
-                (None, None) => None,
-                (date, author) => Some(Filed {
-                    date: date.clone().map(SharedString::from),
-                    author: author.clone().map(SharedString::from),
-                }),
-            },
+            note: Some(NoteMeta {
+                id: n.id,
+                filed: match (&n.created_at, &n.author) {
+                    (None, None) => None,
+                    (date, author) => Some(Filed {
+                        date: date.clone().map(SharedString::from),
+                        author: author.clone().map(SharedString::from),
+                    }),
+                },
+                region: n.region,
+            }),
         })
         .collect();
     Diagnostics::set(&Source::Note, DATASET_MAIN, items, cx);
@@ -740,7 +874,9 @@ mod tests {
     // Never `use super::*` here: this module's parent has `use gpui::*` in scope transitively,
     // and the chained glob makes gpui's `test` macro shadow the `#[test]` its own expansion
     // emits, recursing until rustc's stack overflows.
-    use crate::{DATASET_MAIN, Diagnostic, Diagnostics, Filed, Location, Severity, Source, init};
+    use crate::{
+        DATASET_MAIN, Diagnostic, Diagnostics, Filed, Location, Region, Severity, Source, init,
+    };
     use gpui::{App, SharedString, TestAppContext};
     use settings::history::Origin;
     use settings::project::{CurrentProject, ProjectData, ProjectSpec, StoredNote};
@@ -797,8 +933,20 @@ mod tests {
                 row_id: None,
                 column: column.map(Into::into),
             };
-            Diagnostics::add_note(at(Some("Date taken")), "1962 is a guess".into(), cx);
-            Diagnostics::add_note(at(None), "whole print is faded".into(), cx);
+            Diagnostics::file_note(
+                at(Some("Date taken")),
+                None,
+                "1962 is a guess".into(),
+                Origin::Typed,
+                cx,
+            );
+            Diagnostics::file_note(
+                at(None),
+                None,
+                "whole print is faded".into(),
+                Origin::Typed,
+                cx,
+            );
 
             assert_eq!(
                 Diagnostics::notes_at(DATASET_MAIN, Some(3), None, cx).count(),
@@ -830,13 +978,14 @@ mod tests {
             source,
             message: msg.into(),
             group: None,
-            filed: None,
+            note: None,
         }
     }
 
-    /// An item accumulates observations over decades. `add_note` files another beside the ones
-    /// already there; `set_note` corrects a single one and — the part worth pinning — keeps its
-    /// original filing stamp, because fixing a typo is not re-observing the object in 2026.
+    /// An item accumulates observations over decades. `file_note` files another beside the ones
+    /// already there; `set_note` corrects a single one and — the part worth pinning — leaves the
+    /// others alone and keeps its original filing stamp, because fixing a typo is not re-observing
+    /// the object in 2026.
     #[gpui::test]
     fn notes_accumulate_and_a_correction_keeps_its_original_date(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -848,12 +997,16 @@ mod tests {
             };
             let filed = |cx: &App| {
                 Diagnostics::notes_at(DATASET_MAIN, Some(1), None, cx)
-                    .map(|d| (d.message.to_string(), d.filed.clone()))
+                    .map(|d| {
+                        let filed = d.note.as_ref().and_then(|n| n.filed.clone());
+                        (d.message.to_string(), filed)
+                    })
                     .collect::<Vec<_>>()
             };
 
-            Diagnostics::add_note(cell.clone(), "verso inscription".into(), cx);
-            Diagnostics::add_note(cell.clone(), "same backdrop as row 12".into(), cx);
+            for text in ["verso inscription", "same backdrop as row 12"] {
+                Diagnostics::file_note(cell.clone(), None, text.into(), Origin::Typed, cx);
+            }
             assert_eq!(
                 Diagnostics::notes_at(DATASET_MAIN, Some(1), None, cx).count(),
                 2,
@@ -865,9 +1018,12 @@ mod tests {
                 date: Some("1998-03-04".into()),
                 author: Some("MA".into()),
             });
-            cx.default_global::<Diagnostics>().items[0].filed = original.clone();
+            cx.default_global::<Diagnostics>().items[0]
+                .note
+                .as_mut()
+                .unwrap()
+                .filed = original.clone();
 
-            // set_note collapses to one and keeps that stamp.
             Diagnostics::set_note(
                 cell,
                 "verso inscription, in pencil".into(),
@@ -875,11 +1031,80 @@ mod tests {
                 cx,
             );
             let notes = filed(cx);
-            assert_eq!(notes.len(), 1, "a correction replaces rather than adds");
+            assert_eq!(
+                notes.len(),
+                2,
+                "a correction touches only the note it corrects"
+            );
             assert_eq!(notes[0].0, "verso inscription, in pencil");
+            assert_eq!(notes[1].0, "same backdrop as row 12");
             assert_eq!(
                 notes[0].1, original,
                 "the filing date is not moved to today"
+            );
+        });
+    }
+
+    /// A note on part of the image shares its row's location with the row's own note, so the grid's
+    /// editor must never reach it: editing or deleting the row note leaves the region where it was.
+    /// Moving the region, deleting it, and restoring it all go by id, and each is logged.
+    #[gpui::test]
+    fn a_region_note_is_addressed_by_id_alone(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let row = Location {
+                dataset: DATASET_MAIN.into(),
+                row: Some(2),
+                row_id: Some(3),
+                column: None,
+            };
+            let stamp = Region {
+                page: 1,
+                x: 6000,
+                y: 7000,
+                w: 1500,
+                h: 1200,
+                of: None,
+            };
+            let id = Diagnostics::file_note(
+                row.clone(),
+                Some(stamp),
+                "customs stamp, Lisbon".into(),
+                Origin::Typed,
+                cx,
+            )
+            .unwrap();
+            Diagnostics::set_note(row.clone(), "faded".into(), Origin::Typed, cx);
+            Diagnostics::set_note(row.clone(), "".into(), Origin::Clear, cx);
+            assert_eq!(Diagnostics::note_at(DATASET_MAIN, Some(2), None, cx), None);
+            let region = |cx: &App| Diagnostics::note(id, cx).and_then(|d| d.note.as_ref()?.region);
+            assert_eq!(
+                region(cx),
+                Some(stamp),
+                "the row note's edits never touched it"
+            );
+
+            let moved = Region { x: 5000, ..stamp };
+            Diagnostics::move_note(id, moved, cx);
+            assert_eq!(region(cx), Some(moved));
+
+            Diagnostics::edit_note(id, "".into(), Origin::Clear, cx);
+            assert!(Diagnostics::note(id, cx).is_none());
+
+            // The deletion's inverse, as a restore replays it, files it back under the same id.
+            let deleted = settings::history::Change::Note {
+                row: Some(3),
+                column: None,
+                before: Some("customs stamp, Lisbon".into()),
+                after: None,
+                id: Some(id),
+                region_before: Some(moved),
+                region_after: None,
+            };
+            Diagnostics::apply_note(row, &deleted.inverse(), Origin::Restore(1), cx);
+            assert_eq!(region(cx), Some(moved));
+            assert_eq!(
+                Diagnostics::note(id, cx).map(|d| d.message.as_ref()),
+                Some("customs stamp, Lisbon")
             );
         });
     }
@@ -932,6 +1157,8 @@ mod tests {
                     message: "check this".into(),
                     created_at: None,
                     author: None,
+                    id: 1,
+                    region: None,
                 },
                 StoredNote {
                     dataset: DATASET_MAIN.into(),
@@ -942,6 +1169,8 @@ mod tests {
                     message: "whole row".into(),
                     created_at: None,
                     author: None,
+                    id: 2,
+                    region: None,
                 },
             ],
             &[],
@@ -1050,7 +1279,7 @@ mod tests {
                     source: v.clone(),
                     message: "typo".into(),
                     group: None,
-                    filed: None,
+                    note: None,
                 }],
                 cx,
             );

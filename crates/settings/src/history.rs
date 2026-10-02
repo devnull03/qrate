@@ -20,7 +20,7 @@ use gpui::App;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
-use crate::project::RowId;
+use crate::project::{NoteId, Region, RowId};
 
 pub type EntryId = i64;
 
@@ -44,6 +44,8 @@ pub enum Origin {
     Redo,
     /// Put back by restoring the project, or a single value, to this entry.
     Restore(EntryId),
+    /// A note's region drawn, moved, or resized on the image.
+    Drawn,
 }
 
 impl Origin {
@@ -62,6 +64,7 @@ impl Origin {
             Origin::Undo => "Undo".into(),
             Origin::Redo => "Redo".into(),
             Origin::Restore(id) => format!("Restored to #{id}"),
+            Origin::Drawn => "Drawn on the image".into(),
         }
     }
 }
@@ -111,6 +114,13 @@ pub enum Change {
         column: Option<String>,
         before: Option<String>,
         after: Option<String>,
+        /// Which note, where a location holds several. `None` in entries from before notes had ids.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<NoteId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region_before: Option<Region>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region_after: Option<Region>,
     },
 }
 
@@ -179,11 +189,17 @@ impl Change {
                 column,
                 before,
                 after,
+                id,
+                region_before,
+                region_after,
             } => Change::Note {
                 row,
                 column,
                 before: after,
                 after: before,
+                id,
+                region_before: region_after,
+                region_after: region_before,
             },
         }
     }
@@ -622,6 +638,16 @@ mod tests {
                 column: None,
                 before: Some("faded".into()),
                 after: None,
+                id: Some(7),
+                region_before: Some(crate::project::Region {
+                    page: 2,
+                    x: 1200,
+                    y: 500,
+                    w: 2500,
+                    h: 0,
+                    of: Some((4000, 3000)),
+                }),
+                region_after: None,
             }],
             None,
         );
@@ -636,6 +662,20 @@ mod tests {
             vec![typed, fixed, note]
         );
         assert_eq!(entries_after(&path, 2).unwrap().len(), 1);
+    }
+
+    /// A note change logged before notes had ids or regions still reads, as a change to the one
+    /// note at its location — a year-old log is the point of keeping one.
+    #[test]
+    fn a_note_change_from_before_ids_still_reads() {
+        let old = r#"{"Note":{"row":3,"column":"Title","before":null,"after":"verso"}}"#;
+        let Change::Note {
+            id, region_after, ..
+        } = serde_json::from_str(old).unwrap()
+        else {
+            panic!("not a note change");
+        };
+        assert_eq!((id, region_after), (None, None));
     }
 
     /// The panel pages newest first, a name sticks to its entry until it is taken away, and

@@ -583,17 +583,27 @@ const NOTES_DDL: &str = r#"
       source      TEXT NOT NULL,
       message     TEXT NOT NULL,
       created_at  TEXT,
-      author      TEXT
+      author      TEXT,
+      note_id     INTEGER,
+      region      TEXT
     );
 "#;
 
-/// Bring a `__notes` table written before notes carried provenance up to the columns above.
-/// Nullable, so every existing row reads back with no date and no author and renders as the bare
-/// note it has always been — there is nothing to backfill, because that information was never
-/// captured. Idempotent: a duplicate-column error is the table already being current.
-fn add_note_provenance(tx: &rusqlite::Transaction<'_>) -> Result<()> {
-    for column in ["created_at", "author"] {
-        match tx.execute(&format!("ALTER TABLE __notes ADD COLUMN {column} TEXT"), []) {
+/// Bring a `__notes` table written by an older qrate up to the columns above. Nullable, so every
+/// existing row reads back as the bare note it has always been — there is nothing to backfill,
+/// because that information was never captured. Idempotent: a duplicate-column error is the table
+/// already being current.
+fn add_note_columns(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    for (column, kind) in [
+        ("created_at", "TEXT"),
+        ("author", "TEXT"),
+        ("note_id", "INTEGER"),
+        ("region", "TEXT"),
+    ] {
+        match tx.execute(
+            &format!("ALTER TABLE __notes ADD COLUMN {column} {kind}"),
+            [],
+        ) {
             Ok(_) => {}
             // `duplicate column name` is the only error worth swallowing; anything else means the
             // table is not what we think it is and the caller should hear about it.
@@ -624,6 +634,33 @@ pub struct StoredNote {
     /// is worth keeping even unsigned.
     pub created_at: Option<String>,
     pub author: Option<String>,
+    /// What history entries name this note by, since a location can hold several.
+    pub id: NoteId,
+    /// Set when the note points at part of the row's file rather than at its data.
+    pub region: Option<Region>,
+}
+
+pub type NoteId = i64;
+
+/// Where on a row's file a note points, in [`Region::SCALE`]ths of the upright page — a W3C
+/// `xywh=percent:` fragment at two decimals. Fractions because a PDF page has no pixel size of its
+/// own, and integers so a region compares exactly. Zero width and height is a pin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Region {
+    /// Zero-based page of a PDF or image stack; `0` for a single image.
+    pub page: u32,
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+    /// The page's pixel size when the region was drawn, for a file that has one — how a viewer
+    /// notices the file was replaced underneath the note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub of: Option<(u32, u32)>,
+}
+
+impl Region {
+    pub const SCALE: u16 = 10_000;
 }
 
 /// Today, from SQLite's own clock — the one dependency here that already knows what day it is.
@@ -649,9 +686,24 @@ pub fn read_notes(path: &Path) -> Result<Vec<StoredNote>> {
             .map(|(source, id)| id.map(|id| (id, source)))
             .collect::<rusqlite::Result<_>>()?
     };
+    // A file from before notes had ids numbers them here, in table order: the same numbers on
+    // every open until the next save writes them down.
+    let mut next = notes.iter().filter_map(|n| n.id).max().unwrap_or(0);
     Ok(notes
         .into_iter()
         .map(|note| StoredNote {
+            id: note.id.unwrap_or_else(|| {
+                next += 1;
+                next
+            }),
+            // A region this build can't parse leaves the note on its row rather than losing it.
+            region: note.region.as_deref().and_then(|json| {
+                serde_json::from_str(json)
+                    .inspect_err(|err| {
+                        log::warn!("ignoring a note's unreadable region {json}: {err}")
+                    })
+                    .ok()
+            }),
             row: match note.dataset.as_str() {
                 "dataset_main" if !row_positions.is_empty() => {
                     note.row_id.and_then(|id| row_positions.get(&id).copied())
@@ -682,15 +734,16 @@ pub fn write_notes(
     let mut conn = open_rw(path)?;
     let tx = conn.transaction()?;
     tx.execute_batch(NOTES_DDL).context("Create __notes")?;
-    add_note_provenance(&tx)?;
+    add_note_columns(&tx)?;
     tx.execute("DELETE FROM __notes WHERE source = ?1", params![source])
         .context("Clear notes")?;
     {
         let mut stmt = tx.prepare(
-            "INSERT INTO __notes(dataset, row_ix, column_name, severity, source, message, created_at, author)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO __notes(dataset, row_ix, column_name, severity, source, message, created_at, author, note_id, region)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
         for n in notes {
+            let region = n.region.as_ref().map(serde_json::to_string).transpose()?;
             stmt.execute(params![
                 n.dataset,
                 n.row_id,
@@ -699,7 +752,9 @@ pub fn write_notes(
                 source,
                 n.message,
                 n.created_at,
-                n.author
+                n.author,
+                n.id,
+                region
             ])
             .context("Insert note")?;
         }
@@ -1309,6 +1364,8 @@ mod tests {
             message: msg.into(),
             created_at: None,
             author: None,
+            id: row.map_or(0, |row| row as NoteId + 1),
+            region: None,
         }
     }
 
@@ -1377,17 +1434,29 @@ mod tests {
         assert_eq!(old.len(), 1, "the old note survives the schema it predates");
         assert_eq!(old[0].message, "verso inscription");
         assert_eq!(old[0].created_at, None, "nothing to backfill, so no date");
+        assert_eq!(old[0].id, 1, "numbered on read, before any save");
 
-        // Saving anything upgrades the table, and a note filed now carries its provenance.
+        // Saving anything upgrades the table, and a note filed now carries its provenance and
+        // where on the image it points.
         let mut fresh = note(Some(2), Some("Title"), "identified by her daughter");
         fresh.created_at = Some("2026-08-14".into());
         fresh.author = Some("rk".into());
-        write_notes(&path, "import", &[fresh], &[]).unwrap();
+        fresh.id = 41;
+        fresh.region = Some(Region {
+            page: 0,
+            x: 100,
+            y: 200,
+            w: 3000,
+            h: 1500,
+            of: None,
+        });
+        write_notes(&path, "import", std::slice::from_ref(&fresh), &[]).unwrap();
 
         let after = read_notes(&path).unwrap();
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].created_at.as_deref(), Some("2026-08-14"));
         assert_eq!(after[0].author.as_deref(), Some("rk"));
+        assert_eq!((after[0].id, after[0].region), (41, fresh.region));
     }
 
     #[test]
@@ -1980,6 +2049,8 @@ mod tests {
                     message: "on item 2".into(),
                     created_at: None,
                     author: None,
+                    id: 2,
+                    region: None,
                 },
                 StoredNote {
                     dataset: "dataset_main".into(),
@@ -1990,6 +2061,8 @@ mod tests {
                     message: "on item 5".into(),
                     created_at: None,
                     author: None,
+                    id: 5,
+                    region: None,
                 },
             ],
             &[],
