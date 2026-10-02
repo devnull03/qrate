@@ -43,7 +43,7 @@ Collection data rarely lives in just one place. A spreadsheet names an object, a
 
 *Review a collection record, its linked media, and every problem found across the project in one workspace.*
 
-![qrate's agent bridge shows that an agent can stage findings but only an archivist can apply a change.](docs/assets/final-report/agent-bridge.png)
+![qrate's Agent panel shows that an agent can stage findings but only an archivist can apply a change.](docs/assets/final-report/agent-bridge.png)
 
 *Optional AI review is advisory: it stages findings for the archivist to accept or reject.*
 
@@ -91,6 +91,7 @@ qrate works without an account. Google Sheets integration is off until you enabl
 - [Columns](docs/columns.md): types, authority lists, and project settings
 - [Export and Google Sheets](docs/export-and-sync.md): move data in and out
 - [Agent panel](docs/agent-panel.md): review data with an optional local agent
+- [Command line](docs/cli/index.md): open projects and let an agent read them with the `qrate` command
 - [Plugins](docs/plugins/index.md): discover, install, or write extensions
 
 ## Contributing

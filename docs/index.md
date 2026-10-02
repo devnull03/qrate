@@ -22,6 +22,12 @@ install to your first export in five short steps.
 - [Export and Google Sheets](export-and-sync.md): CSV, Excel, JSON-LD, CSL-JSON, ZIP, and Sheets sync
 - [The Agent panel](agent-panel.md): how a local AI agent reads a project
 
+## Command line
+
+- [The qrate command](cli/index.md): open projects and read the open project from a terminal
+- [Command reference](cli/commands.md): every `qrate` command, its options, and its output
+- [Agents and skills](cli/agents.md): let an AI agent read the open project, and the skills that teach it how
+
 ## Plugins
 
 - [Plugins](plugins/index.md): find, install, and manage plugins

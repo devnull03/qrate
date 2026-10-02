@@ -50,6 +50,14 @@ client id. Never commit the JSON; `.gitignore` covers `client_secret_*.json`, an
 themselves belong in the environment or in the credential endpoint (`site-oauth-handoff.md`),
 never in source.
 
+**The Agent panel in a checkout:** `cargo run` builds only the desktop app. Its Pi reads the project
+through the `qrate-cli` beside the executable, so build that too or the panel reports the assistant
+as unavailable:
+
+```powershell
+cargo build -p qrate-cli
+```
+
 **Plugins in local Windows builds:** use the development runner to read the public catalog key,
 build qrate, register the debug executable for `qrate://`, run it, and remove that temporary
 registration when qrate exits:
@@ -70,7 +78,7 @@ running it, use:
 .\scripts\register-dev-protocol.ps1
 ```
 
-Browser links then launch `target\debug\app.exe`; if that development instance is already running,
+Browser links then launch `target\debug\qrate.exe`; if that development instance is already running,
 the new process hands the link to it and exits. Remove the development override before testing an
 installed build:
 

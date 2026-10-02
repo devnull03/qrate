@@ -25,7 +25,7 @@ Unicode true
   !define VERSION "0.0.0"
 !endif
 !ifndef SRCEXE
-  !define SRCEXE "..\target\release\app.exe"
+  !define SRCEXE "..\target\release\qrate.exe"
 !endif
 ; Directory holding the preview sidecars (pdfium.dll, ffmpeg.exe). Normally the same folder as
 ; SRCEXE, since scripts/fetch-binaries.sh puts them beside the executable. Both are optional.
@@ -60,6 +60,8 @@ Unicode true
 ; administrator rights, and a per-user install needs none — the all-users option is still on the
 ; install-mode page for anyone who wants it, and MSI is the route for deploying to a whole site.
 !define MULTIUSER_INSTALLMODE_DEFAULT_CURRENTUSER
+; The installer is 32-bit, so plain $PROGRAMFILES would put the 64-bit app in Program Files (x86).
+!define MULTIUSER_USE_PROGRAMFILES64
 !define MULTIUSER_INSTALLMODE_INSTDIR "${APPNAME}"
 !define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_KEY "Software\${APPNAME}"
 !define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_VALUENAME "InstallDir"
@@ -72,8 +74,32 @@ SetCompressor /SOLID lzma
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
 !include "LogicLib.nsh"
+!include "WinMessages.nsh"
 
 Var UpdateRestart
+
+; NSIS strings stop at 1024 characters, so PATH is edited by PowerShell straight in the registry,
+; unexpanded, and never read into an NSIS variable. $1 = "1" to add $INSTDIR\bin, "" to remove it.
+!macro PATH_EDIT UN
+Function ${UN}EditPath
+  ${If} $MultiUser.InstallMode == "AllUsers"
+    StrCpy $0 "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+  ${Else}
+    StrCpy $0 "HKCU:\Environment"
+  ${EndIf}
+  System::Call 'Kernel32::SetEnvironmentVariable(t "QRATE_PATH_KEY", t "$0")i'
+  System::Call 'Kernel32::SetEnvironmentVariable(t "QRATE_PATH_DIR", t "$INSTDIR\bin")i'
+  System::Call 'Kernel32::SetEnvironmentVariable(t "QRATE_PATH_ADD", t "$1")i'
+  nsExec::ExecToLog `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$k = $$env:QRATE_PATH_KEY; $$d = $$env:QRATE_PATH_DIR; $$p = (Get-Item $$k).GetValue('Path', '', 'DoNotExpandEnvironmentNames'); $$e = @($$p -split ';' | Where-Object { $$_ -and $$_ -ne $$d }); if ($$env:QRATE_PATH_ADD) { $$e += $$d }; $$n = $$e -join ';'; if ($$n -ne $$p) { New-ItemProperty $$k Path -Value $$n -PropertyType ExpandString -Force | Out-Null }"`
+  Pop $0
+  ${If} $0 != "0"
+    DetailPrint "Could not update PATH for $INSTDIR\bin (exit $0)"
+  ${EndIf}
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+FunctionEnd
+!macroend
+!insertmacro PATH_EDIT ""
+!insertmacro PATH_EDIT "un."
 
 !define MUI_ICON   "${ICONFILE}"
 !define MUI_UNICON "${ICONFILE}"
@@ -113,7 +139,11 @@ FunctionEnd
 Section "Install"
   SetOutPath "$INSTDIR"
   File /oname=${EXENAME} "${SRCEXE}"
+  File /oname=qrate-cli.exe "${SRCDIR}\qrate-cli.exe"
   File /oname=qrate-update-helper.exe "${SRCDIR}\qrate-update-helper.exe"
+  SetOutPath "$INSTDIR\bin"
+  File /oname=qrate.exe "${SRCDIR}\bin\qrate.exe"
+  SetOutPath "$INSTDIR"
 
   FileOpen $0 "$INSTDIR\qrate-install.json" w
   FileWrite $0 '{$\r$\n  "schema": 1,$\r$\n  "kind": "windows-nsis",$\r$\n  "packaged_version": "${VERSION}",$\r$\n  "flavor": "${FLAVOR}"$\r$\n}$\r$\n'
@@ -170,6 +200,10 @@ Section "Install"
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoModify" 1
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoRepair" 1
 
+  ; Only bin\ is PATH-facing, so `qrate` in a terminal is the CLI and never the GUI.
+  StrCpy $1 "1"
+  Call EditPath
+
   ${If} $UpdateRestart == "1"
     Exec '"$INSTDIR\${EXENAME}"'
   ${EndIf}
@@ -184,6 +218,9 @@ SectionEnd
 Section "un.qrate" SEC_UNAPP
   SectionIn RO
   Delete "$INSTDIR\${EXENAME}"
+  Delete "$INSTDIR\qrate-cli.exe"
+  Delete "$INSTDIR\bin\qrate.exe"
+  RMDir "$INSTDIR\bin"
   Delete "$INSTDIR\pdfium.dll"
   Delete "$INSTDIR\ffmpeg.exe"
   Delete "$INSTDIR\qrate-update-helper.exe"
@@ -198,6 +235,8 @@ Section "un.qrate" SEC_UNAPP
   System::Call 'Shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
   DeleteRegKey SHCTX "${UNINSTKEY}"
   DeleteRegKey SHCTX "Software\${APPNAME}"
+  StrCpy $1 ""
+  Call un.EditPath
 
   ; Caches and downloaded tooling always go: they are rebuilt or re-fetched on demand, so keeping
   ; them costs ~100 MB and buys nothing once qrate is gone.
@@ -208,7 +247,7 @@ Section "un.qrate" SEC_UNAPP
   RMDir /r "${DATADIR}\pi-agent\bin"
   Delete "${DATADIR}\pi-agent\models-store.json"
   Delete "${DATADIR}\pi-agent\SYSTEM.md"
-  Delete "${DATADIR}\agent-bridge.json"
+  Delete "${DATADIR}\app-control.json"
 SectionEnd
 
 Section /o "un.Settings, plugins and dictionary" SEC_UNDATA

@@ -2,13 +2,19 @@
 
 This project uses **teach-first pairing**. The goal is for the user to learn the rationale and mechanics of the codebase, not just to receive automated patches.
 
-`AGENTS.md` is the vendor-neutral companion to this file: it documents the bridge into a *running*
-qrate for any agent runtime. Nothing in that bridge writes a cell — an agent reads live state and
-stages findings the archivist accepts by hand. Change `crates/ai/src/agent.rs`,
-`crates/app/src/agent_bridge.rs`, `crates/table/src/agent.rs`, `crates/agent-runtime`, or
-`crates/workspace/src/panels/agent.rs` (the panel the bridge reports itself into) and `AGENTS.md` is
-part of that change — nothing in CI checks it. The `X-Agent` header an agent names itself with only
-exists to fill a column in that panel, so the two drift together.
+`AGENTS.md` is the vendor-neutral companion to this file: it documents the `qrate agent` commands
+that read a *running* qrate for any agent runtime. None of them writes a cell — an agent reads live
+state and stages findings the archivist accepts by hand. Change `crates/ai/src/agent.rs`,
+`crates/cli`, `crates/app/src/app_control.rs`, `crates/table/src/agent.rs`, `crates/agent-runtime`,
+or `crates/workspace/src/panels/agent.rs` (the panel agent calls are recorded in) and `AGENTS.md` is
+part of that change — nothing in CI checks it. The `--agent` name an agent passes only exists to
+fill a column in that panel, so the two drift together. `app_control` is private to one release;
+the CLI's JSON and exit codes are the public contract.
+
+A command or flag that changes in `crates/cli` also changes `docs/cli/commands.md`, the page users
+read. `qrate help`, the completions and the man pages are generated from the parser and need
+nothing; `skills/qrate-cli` lists no flags for the same reason, so it only moves when the workflow
+does.
 
 ## Core Directives
 
@@ -75,6 +81,7 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | `onboarding` | Getting started — the workspace guide card, its one-time tips, the export tip. Plugs in as a `workspace::WorkspaceExtension`; its per-project keys live in `settings::onboarding` so `project-wizard` can switch it on without depending on it |
 | `window-wrapper` | shared window chrome: title bar, status bar, the window registry |
 | `settings` | `AppSettings` (user-wide) and `.qrate` (per project), column config, plugin settings |
+| `cli` | the public `qrate` command; launches the private desktop binary and controls open projects without linking GPUI |
 | `project-wizard` | new/open project flow, recent projects, the launcher |
 | `data-exchange` | spreadsheet and Google Sheets imports, desktop Google Sheets integration, preview |
 | `file-ingest` | filesystem inventory and duplicate resolution for folder-backed projects and live imports. Only lists paths and decides duplicates; never maps columns or touches a project |
