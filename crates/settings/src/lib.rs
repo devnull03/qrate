@@ -43,6 +43,9 @@ pub const AUTOSAVE_KEY: &str = "autosave";
 /// User-wide author for new notes and history entries. Empty leaves them unsigned.
 pub const NOTE_AUTHOR_KEY: &str = "note_author";
 
+/// Set once the annotation composer has asked for a name, signed or skipped, so it never asks again.
+pub const NOTE_AUTHOR_ASKED_KEY: &str = "note_author_asked";
+
 /// `AppSettings` key for whether Google Sheets export and sync are enabled. User-wide only: a
 /// project must not opt the person using qrate into an external service. Authentication is a
 /// separate action, and public-sheet import does not use this setting.

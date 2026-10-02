@@ -168,6 +168,8 @@ pub(crate) fn build(
         ],
         row,
         hovered: None,
+        draw: None,
+        composer: None,
         hint: None,
         transport: Transport::new(path.clone(), cx),
         path,
@@ -334,6 +336,10 @@ pub struct Viewer {
     pub(crate) row: Option<RowId>,
     /// The region under the pointer.
     hovered: Option<diagnostics::NoteId>,
+    /// A new region being dragged out in annotate mode.
+    draw: Option<annotate::Draw>,
+    /// The note being written for a region just marked.
+    composer: Option<annotate::Composer>,
     /// A passing word at the foot of the stage, gone when its timer fires.
     hint: Option<(SharedString, Task<()>)>,
     /// Repaints when a note, the annotation toggles, or the lit Notes card change.
@@ -776,7 +782,11 @@ impl Render for Viewer {
             false => preview::source(&self.path, cap, page, self.shown),
         };
         // gpui on Windows has no grab cursors and falls back to the arrow; the hand is its nearest.
+        let marking = self.annotating(cx)
+            && cx.try_global::<annotate::Annotating>().map(|a| a.tool)
+                != Some(annotate::Tool::Select);
         let cursor = match (self.drag_from.is_some(), self.slack() != Point::default()) {
+            _ if marking => CursorStyle::Crosshair,
             (false, false) => CursorStyle::Arrow,
             _ if cfg!(windows) => CursorStyle::PointingHand,
             (true, _) => CursorStyle::ClosedHand,
@@ -800,6 +810,12 @@ impl Render for Viewer {
         let paged = self.paged();
         let marks = self.row_marks(cx);
         let layer = annotate::layer(self, &marks, cx);
+        let tools = annotate::tools(self, cx);
+        let hint = self
+            .hint
+            .as_ref()
+            .map(|(hint, _)| hint.clone())
+            .or_else(|| self.standing_hint(&marks, cx));
         let marking = annotate::buttons(self, cx);
         let (marking, popped_marking) = match self.scope == Scope::PopOut {
             true => (None, Some(marking)),
@@ -894,7 +910,8 @@ impl Render for Viewer {
             // The find panel is the inner layer, so Escape dismisses it before the viewer.
             // The pop-out has no overlay to close: its window is what the viewer is.
             .on_action(cx.listener(|this, _: &CloseViewerLayer, window, cx| {
-                if this.find_open {
+                if this.cancel(window, cx) {
+                } else if this.find_open {
                     this.close_find(window, cx);
                 } else if this.scope != Scope::PopOut {
                     close_viewer(window, cx);
@@ -970,6 +987,7 @@ impl Render for Viewer {
                         cx.notify();
                     }
                     "n" if reading && this.row.is_some() => this.toggle_hidden(cx),
+                    "a" if reading => this.toggle_annotate(cx),
                     "up" | "down" if reading && overlay => {
                         step_row(if ev.keystroke.key == "up" { -1 } else { 1 }, cx);
                     }
@@ -1004,6 +1022,9 @@ impl Render for Viewer {
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                                        if this.press(ev.position, cx) {
+                                            return;
+                                        }
                                         if ev.click_count == 2 {
                                             let anchor = ev.position - this.frame.get().center();
                                             this.toggle_zoom(anchor);
@@ -1013,6 +1034,9 @@ impl Render for Viewer {
                                     }),
                                 )
                                 .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                                    if this.drag_to(ev.position, cx) {
+                                        return;
+                                    }
                                     let Some(last) = this.drag_from else {
                                         this.hover(ev.position, cx);
                                         return;
@@ -1025,7 +1049,8 @@ impl Render for Viewer {
                                 }))
                                 .on_mouse_up(
                                     MouseButton::Left,
-                                    cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                    cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                                        this.release(window, cx);
                                         this.drag_from = None;
                                         cx.notify();
                                     }),
@@ -1033,7 +1058,8 @@ impl Render for Viewer {
                                 // Released over a panel or outside the window, the drag still ends.
                                 .on_mouse_up_out(
                                     MouseButton::Left,
-                                    cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                    cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                                        this.release(window, cx);
                                         this.drag_from = None;
                                         cx.notify();
                                     }),
@@ -1412,7 +1438,17 @@ impl Render for Viewer {
                     .occlude()
                     .child(marking)
             }))
-            .children(self.hint.as_ref().map(|(hint, _)| {
+            .children(tools.map(|tools| {
+                div()
+                    .absolute()
+                    .left(px(16.) + strip_width)
+                    .top_0()
+                    .bottom_0()
+                    .flex()
+                    .items_center()
+                    .child(tools)
+            }))
+            .children(hint.map(|hint| {
                 div()
                     .absolute()
                     .left_0()
@@ -1430,7 +1466,7 @@ impl Render for Viewer {
                             .rounded(px(6.))
                             .bg(pill)
                             .text_size(px(13.))
-                            .child(hint.clone()),
+                            .child(hint),
                     )
             }))
     }

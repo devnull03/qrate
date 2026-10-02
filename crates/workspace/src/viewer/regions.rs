@@ -24,7 +24,7 @@ fn turn((x, y): (f32, f32), turns: u8) -> (f32, f32) {
     (0..turns % 4).fold((x, y), |(x, y), _| (1. - y, x))
 }
 
-fn span(a: (f32, f32), b: (f32, f32)) -> Rect {
+pub fn span(a: (f32, f32), b: (f32, f32)) -> Rect {
     [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)]
 }
 
