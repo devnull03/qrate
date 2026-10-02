@@ -18,7 +18,7 @@ use settings::history::Origin;
 use settings::project::RowId;
 
 use crate::viewer::Viewer;
-use crate::viewer::regions::{self, Rect};
+use crate::viewer::regions::{self, Grip, Rect};
 
 /// Annotate mode, the tool in hand, and whether regions are hidden. App-wide, since stepping to the
 /// next row builds a new viewer and should not put the pen down.
@@ -80,6 +80,31 @@ pub(super) struct Draw {
     pub(super) from: (f32, f32),
     pub(super) to: (f32, f32),
 }
+
+/// A selected region being moved or resized, by one of its [`Grip`]s.
+pub(super) struct Grab {
+    id: NoteId,
+    grip: Grip,
+    rect: Rect,
+    from: (f32, f32),
+    to: (f32, f32),
+}
+
+impl Grab {
+    fn rect(&self) -> Rect {
+        regions::drag(
+            self.rect,
+            self.grip,
+            (self.to.0 - self.from.0, self.to.1 - self.from.1),
+        )
+    }
+}
+
+/// The region selected in the viewer, which the Notes panel brings into view.
+#[derive(Default)]
+pub(crate) struct Picked(pub Option<NoteId>);
+
+impl Global for Picked {}
 
 /// The card a new region's note is written in, beside the region until it is saved or dropped.
 pub(super) struct Composer {
@@ -150,7 +175,10 @@ impl Viewer {
             .iter()
             .filter(|m| m.region.page as usize == self.page)
             .map(|m| {
-                let rect = regions::shown(&m.region, self.shown);
+                let rect = match self.grab.as_ref().filter(|grab| grab.id == m.id) {
+                    Some(grab) => grab.rect(),
+                    None => regions::shown(&m.region, self.shown),
+                };
                 (*m, rect, regions::on_screen(page, rect))
             })
             .collect();
@@ -210,11 +238,37 @@ impl Viewer {
         if self.composer.is_some() {
             return true;
         }
-        let (on, tool, _) = state(cx);
-        if !on || self.row.is_none() || !self.ready() || tool == Tool::Select {
+        let (on, tool, hidden) = state(cx);
+        if !on || self.row.is_none() || !self.ready() {
             return false;
         }
         let at = regions::at(self.page_box(), self.local(position));
+        if tool == Tool::Select {
+            let local = self.local(position);
+            let placed = match hidden {
+                true => Vec::new(),
+                false => self.placed(&self.row_marks(cx)),
+            };
+            let handle = self
+                .selected
+                .and_then(|id| placed.iter().find(|(m, ..)| m.id == id))
+                .and_then(|(m, rect, b)| Some((m.id, Grip::under(*b, local)?, *rect)));
+            let boxes: Vec<_> = placed.iter().map(|(m, _, b)| (m.id, *b)).collect();
+            let grabbed = handle.or_else(|| {
+                let id = regions::hit(&boxes, local)?;
+                let (_, rect, _) = placed.iter().find(|(m, ..)| m.id == id)?;
+                Some((id, Grip::Move, *rect))
+            });
+            self.select(grabbed.map(|(id, ..)| id), cx);
+            self.grab = grabbed.map(|(id, grip, rect)| Grab {
+                id,
+                grip,
+                rect,
+                from: at,
+                to: at,
+            });
+            return grabbed.is_some();
+        }
         self.draw = Some(Draw { from: at, to: at });
         cx.notify();
         true
@@ -223,6 +277,11 @@ impl Viewer {
     /// Follow the pointer with the gesture under way. `false` when there is none.
     pub(super) fn drag_to(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) -> bool {
         let at = regions::at(self.page_box(), self.local(position));
+        if let Some(grab) = self.grab.as_mut() {
+            grab.to = at;
+            cx.notify();
+            return true;
+        }
         match self.draw.as_mut() {
             Some(draw) => {
                 draw.to = at;
@@ -235,6 +294,20 @@ impl Viewer {
 
     /// End the gesture: a drag marks a box, a click a pin, and either opens the composer.
     pub(super) fn release(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(grab) = self.grab.take() {
+            let moved = grab.rect();
+            let of = self
+                .row_marks(cx)
+                .into_iter()
+                .find(|m| m.id == grab.id)
+                .and_then(|m| m.region.of);
+            if moved != grab.rect {
+                let region = regions::upright(moved, self.shown, self.page as u32, of);
+                Diagnostics::move_note(grab.id, region, cx);
+            }
+            cx.notify();
+            return;
+        }
         let Some(Draw { from, to }) = self.draw.take() else {
             return;
         };
@@ -312,9 +385,40 @@ impl Viewer {
         cx.notify();
     }
 
-    /// Put away whatever annotate mode has in hand: the composer, else a drag. `false` if neither.
+    pub(super) fn select(&mut self, id: Option<NoteId>, cx: &mut Context<Self>) {
+        self.selected = id;
+        cx.set_global(Picked(id));
+        cx.notify();
+    }
+
+    /// Ask before deleting the selected region.
+    pub(super) fn ask_delete(&mut self, cx: &mut Context<Self>) {
+        if self.annotating(cx) && state(cx).1 == Tool::Select {
+            self.deleting = self.selected;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.deleting.take() {
+            Diagnostics::edit_note(id, SharedString::default(), None, Origin::Drawn, cx);
+            self.select(None, cx);
+        }
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    /// Put away whatever annotate mode has in hand, innermost first: the composer, a confirmation,
+    /// a drag, then the selection. `false` if there was nothing.
     pub(super) fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let had = self.composer.take().is_some() || self.draw.take().is_some();
+        let had = self.composer.take().is_some()
+            || self.deleting.take().is_some()
+            || self.draw.take().is_some()
+            || self.grab.take().is_some();
+        if !had && self.selected.is_some() {
+            self.select(None, cx);
+            return true;
+        }
         if had {
             window.focus(&self.focus_handle, cx);
             cx.notify();
@@ -443,7 +547,7 @@ pub(super) fn layer(this: &Viewer, marks: &[Mark], cx: &mut Context<Viewer>) -> 
         false => Vec::new(),
     };
     let lit = cx.try_global::<Lit>().and_then(|lit| lit.0);
-    let focus = this.hovered.or(lit);
+    let focus = this.hovered.or(lit).or(this.selected);
     let focus_box = focus.and_then(|id| placed.iter().find(|(m, ..)| m.id == id).map(|p| p.2));
     let crowded = focus_box.is_some_and(|f| {
         placed
@@ -669,6 +773,83 @@ pub(super) fn layer(this: &Viewer, marks: &[Mark], cx: &mut Context<Viewer>) -> 
                     )
             });
 
+    let deleting = this
+        .deleting
+        .and_then(|id| {
+            Some((
+                Diagnostics::note(id, cx)?,
+                placed.iter().find(|p| p.0.id == id)?,
+            ))
+        })
+        .map(|(note, (mark, _, b))| {
+            let right = b.origin.x + b.size.width + px(12.);
+            let left = match right + px(252.) > frame.width - px(12.) {
+                true => b.origin.x - px(264.),
+                false => right,
+            }
+            .max(px(12.));
+            let top = b.origin.y.min(frame.height - px(112.)).max(px(12.));
+            let author = note
+                .note
+                .as_ref()
+                .and_then(|n| n.filed.as_ref()?.author.clone());
+            let question = match author {
+                Some(author) => format!("Delete annotation #{} by {author}?", mark.number),
+                None => format!("Delete annotation #{}?", mark.number),
+            };
+            div()
+                .absolute()
+                .left(left)
+                .top(top)
+                .w(px(252.))
+                .occlude()
+                .child(
+                    v_flex()
+                        .gap_1p5()
+                        .px_2p5()
+                        .pt_2p5()
+                        .pb_2()
+                        .bg(theme.popover)
+                        .text_color(theme.popover_foreground)
+                        .border_1()
+                        .border_color(theme.border)
+                        .rounded(px(6.))
+                        .shadow_md()
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .child(question)
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("History keeps a copy you can restore."),
+                        )
+                        .child(
+                            h_flex()
+                                .justify_end()
+                                .gap_1p5()
+                                .mt_0p5()
+                                .child(
+                                    Button::new("delete-cancel")
+                                        .label("Cancel")
+                                        .small()
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.cancel(window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("delete-confirm")
+                                        .label("Delete")
+                                        .danger()
+                                        .small()
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.delete(window, cx)
+                                        })),
+                                ),
+                        ),
+                )
+        });
+
     div()
         .absolute()
         .top_0()
@@ -765,7 +946,10 @@ pub(super) fn layer(this: &Viewer, marks: &[Mark], cx: &mut Context<Viewer>) -> 
                     .text_size(px(10.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(white)
-                    .bg(dark)
+                    .bg(match this.selected == Some(m.id) {
+                        true => theme.primary,
+                        false => dark.into(),
+                    })
                     .border(px(1.5))
                     .border_color(white)
                     .shadow_sm()
@@ -787,11 +971,25 @@ pub(super) fn layer(this: &Viewer, marks: &[Mark], cx: &mut Context<Viewer>) -> 
                             .border(px(1.5))
                             .border_color(white.opacity(0.92))
                             .when(focus == Some(m.id), |inner| inner.bg(white.opacity(0.18))),
-                    ),
+                    )
+                    .when(this.selected == Some(m.id), |region| {
+                        region.children(Grip::HANDLES.map(|grip| {
+                            let (u, v) = grip.anchor();
+                            div()
+                                .absolute()
+                                .left(b.size.width * u - px(regions::HANDLE / 2. + 1.5))
+                                .top(b.size.height * v - px(regions::HANDLE / 2. + 1.5))
+                                .size(px(regions::HANDLE))
+                                .bg(white)
+                                .border(px(1.5))
+                                .border_color(rgb(0x111111))
+                        }))
+                    }),
             }
         }))
         .children(badges.into_iter().map(|badge| {
             let faded = badge.members.iter().all(|id| dim(*id));
+            let picked = badge.members.iter().any(|id| this.selected == Some(*id));
             div()
                 .absolute()
                 .left(badge.at.x - px(1.5))
@@ -807,12 +1005,21 @@ pub(super) fn layer(this: &Viewer, marks: &[Mark], cx: &mut Context<Viewer>) -> 
                 .text_size(px(10.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(white)
-                .bg(black().opacity(0.9))
+                .bg(match picked {
+                    true => theme.primary,
+                    false => black().opacity(0.9),
+                })
                 .opacity(if faded { 0.4 } else { 1. })
                 .child(badge.label)
         }))
-        .children(card.filter(|_| this.draw.is_none() && this.composer.is_none()))
+        .children(card.filter(|_| {
+            this.draw.is_none()
+                && this.grab.is_none()
+                && this.composer.is_none()
+                && this.deleting.is_none()
+        }))
         .children(composer)
+        .children(deleting)
         .into_any_element()
 }
 
@@ -823,7 +1030,7 @@ mod tests {
     use settings::history::Origin;
 
     use crate::viewer::Scope;
-    use crate::viewer::annotate::{Annotating, marks, unasked};
+    use crate::viewer::annotate::{Annotating, Tool, marks, unasked};
 
     /// A row's regions are numbered in the order they were filed, and nothing else on the row —
     /// its plain notes, another row's regions — takes a number.
@@ -910,6 +1117,69 @@ mod tests {
                     (2500, 2500, 2500, 2500)
                 );
                 assert!(!unasked(cx), "skipping counts as asked");
+            });
+        });
+    }
+
+    /// The Select tool picks a region up by its middle and moves it; Delete asks first, and only
+    /// the confirmation removes it.
+    #[gpui::test]
+    fn a_selected_region_moves_and_deletes_on_confirmation(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            gpui_component::init(cx);
+            let state = cx.default_global::<Annotating>();
+            state.on = true;
+            state.tool = Tool::Select;
+            let location = Location {
+                dataset: DATASET_MAIN.into(),
+                row: Some(0),
+                row_id: Some(3),
+                column: None,
+            };
+            let stamp = Region {
+                page: 0,
+                x: 2500,
+                y: 2500,
+                w: 2500,
+                h: 2500,
+                of: None,
+            };
+            let id = Diagnostics::file_note(
+                location,
+                Some(stamp),
+                None,
+                "stamp".into(),
+                Origin::Drawn,
+                cx,
+            )
+            .unwrap();
+            let viewer = crate::viewer::build(
+                "/nonexistent/qrate-select.png".into(),
+                Some(3),
+                Scope::Workspace,
+                window,
+                cx,
+            );
+            viewer.update(cx, |viewer, cx| {
+                viewer.frame.set(gpui::Bounds {
+                    origin: gpui::point(gpui::px(0.), gpui::px(0.)),
+                    size: gpui::size(gpui::px(400.), gpui::px(300.)),
+                });
+                viewer.pixels = Some((400, 300));
+                assert!(viewer.press(gpui::point(gpui::px(150.), gpui::px(110.)), cx));
+                assert_eq!(viewer.selected, Some(id));
+                viewer.drag_to(gpui::point(gpui::px(190.), gpui::px(110.)), cx);
+                viewer.release(window, cx);
+                let moved = marks(3, cx)[0].region;
+                assert_eq!((moved.x, moved.y, moved.w), (3500, 2500, 2500));
+
+                viewer.ask_delete(cx);
+                assert_eq!(viewer.deleting, Some(id));
+                assert_eq!(marks(3, cx).len(), 1, "asking deletes nothing");
+                viewer.delete(window, cx);
+                assert!(marks(3, cx).is_empty());
+                assert_eq!(viewer.selected, None);
             });
         });
     }

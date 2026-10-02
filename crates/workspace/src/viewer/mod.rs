@@ -169,6 +169,9 @@ pub(crate) fn build(
         row,
         hovered: None,
         draw: None,
+        selected: None,
+        grab: None,
+        deleting: None,
         composer: None,
         hint: None,
         transport: Transport::new(path.clone(), cx),
@@ -338,6 +341,11 @@ pub struct Viewer {
     hovered: Option<diagnostics::NoteId>,
     /// A new region being dragged out in annotate mode.
     draw: Option<annotate::Draw>,
+    /// The region the Select tool picked, and the move or resize under way on it.
+    selected: Option<diagnostics::NoteId>,
+    grab: Option<annotate::Grab>,
+    /// The region whose deletion is waiting to be confirmed.
+    deleting: Option<diagnostics::NoteId>,
     /// The note being written for a region just marked.
     composer: Option<annotate::Composer>,
     /// A passing word at the foot of the stage, gone when its timer fires.
@@ -988,6 +996,7 @@ impl Render for Viewer {
                     }
                     "n" if reading && this.row.is_some() => this.toggle_hidden(cx),
                     "a" if reading => this.toggle_annotate(cx),
+                    "delete" | "backspace" if reading => this.ask_delete(cx),
                     "up" | "down" if reading && overlay => {
                         step_row(if ev.keystroke.key == "up" { -1 } else { 1 }, cx);
                     }
