@@ -119,6 +119,18 @@ pub fn page_count(path: &Path) -> Option<usize> {
     usize::try_from(document.pages().len()).ok()
 }
 
+/// The first page's size in points, rounded: the shape a document has before any page is drawn.
+/// `None` when PDFium is absent or the file will not open.
+pub fn page_size(path: &Path) -> Option<(u32, u32)> {
+    let pdfium = locked()?;
+    let document = pdfium.load_pdf_from_file(path, None).ok()?;
+    let page = document.pages().get(0).ok()?;
+    Some((
+        page.width().value.round() as u32,
+        page.height().value.round() as u32,
+    ))
+}
+
 /// The text layer of every page, one page per line break. Empty for a scan that was never OCR'd.
 ///
 /// ponytail: holds the PDFium lock for the whole document, so a 500-page PDF stalls gallery
@@ -319,6 +331,11 @@ trailer<</Root 1 0 R>>";
         let path = std::env::temp_dir().join("qrate-pdf-probe.pdf");
         std::fs::write(&path, pdf).unwrap();
 
+        assert_eq!(
+            pdf::page_size(&path),
+            super::pdfium().map(|_| (200, 100)),
+            "the MediaBox, or nothing without the library"
+        );
         let rendered = pdf::decode(&path, 128, 0);
         match (super::pdfium().is_some(), rendered) {
             (true, Some(page)) => {

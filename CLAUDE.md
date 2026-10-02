@@ -79,7 +79,7 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | `data-exchange` | spreadsheet and Google Sheets imports, desktop Google Sheets integration, preview |
 | `file-ingest` | filesystem inventory and duplicate resolution for folder-backed projects and live imports. Only lists paths and decides duplicates; never maps columns or touches a project |
 | `updater` | signed update manifests, install provenance, and the `qrate-update-helper` binary that applies an update after qrate exits |
-| `qrate-export` | shared project reader and CSV/Excel/JSON-LD/CSL-JSON/ZIP writers; optional browser WASM API |
+| `qrate-export` | shared project reader and CSV/Excel/JSON-LD/CSL-JSON/IIIF/ZIP writers; optional browser WASM API |
 | `diagnostics` | the validator, spelling checks, fixes, and the problems panel |
 | `checks` | date and authority validators, registered by `app` through the `diagnostics` crate |
 | `spellcheck` | dictionary catalogue behind `diagnostics::spelling` |

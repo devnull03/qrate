@@ -130,32 +130,53 @@ pub fn frame_at(path: &Path, max_edge: u32, seconds: u32) -> Option<DynamicImage
     run(&binary()?, path, max_edge, Some(&seconds.to_string()))
 }
 
-/// How long the clip runs, in whole seconds.
+/// How long the clip runs in seconds, and the pixel size of its picture.
 ///
-/// ffmpeg prints this on stderr as part of the banner it emits when asked to open a file with no
+/// ffmpeg prints both on stderr as part of the banner it emits when asked to open a file with no
 /// output to write — which is why this cannot go through [`run`], whose `-v error` suppresses it.
 /// ffprobe would answer directly, but shipping it means a second binary in the installer and both
 /// bundle scripts; the banner's format has been stable for over a decade.
-pub fn duration(path: &Path) -> Option<u32> {
-    let output = Command::new(binary()?)
-        .arg("-nostdin")
-        .arg("-i")
-        .arg(path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .ok()?;
-
-    // `Duration: 00:04:03.20, start: ...`. Unparseable for a stream with no known length, which
-    // reads as "no timeline" rather than as an error.
+pub fn probe(path: &Path) -> (Option<f64>, Option<(u32, u32)>) {
+    let output = binary().and_then(|binary| {
+        Command::new(binary)
+            .arg("-nostdin")
+            .arg("-i")
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .ok()
+    });
+    let Some(output) = output else {
+        return (None, None);
+    };
     let banner = String::from_utf8_lossy(&output.stderr);
+    (running_time(&banner), frame_size(&banner))
+}
+
+/// `Duration: 00:04:03.20, start: ...`. Unparseable for a stream with no known length, which
+/// reads as "no timeline" rather than as an error.
+fn running_time(banner: &str) -> Option<f64> {
     let clock = banner.split_once("Duration: ")?.1.split(',').next()?;
     let mut fields = clock.split(':');
-    let hours: u32 = fields.next()?.trim().parse().ok()?;
-    let minutes: u32 = fields.next()?.parse().ok()?;
-    let seconds: f32 = fields.next()?.parse().ok()?;
-    Some(hours * 3600 + minutes * 60 + seconds as u32)
+    let hours: f64 = fields.next()?.trim().parse().ok()?;
+    let minutes: f64 = fields.next()?.parse().ok()?;
+    let seconds: f64 = fields.next()?.parse().ok()?;
+    Some(hours * 3600.0 + minutes * 60.0 + seconds)
+}
+
+/// `Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p, 1920x1080 [SAR 1:1 DAR 16:9], ...`:
+/// the size is the one comma-separated field that opens with `WxH`.
+///
+/// ponytail: the stored size, so a phone clip filmed upright reports itself sideways. Read the
+/// stream's rotation if a collection of those turns up.
+fn frame_size(banner: &str) -> Option<(u32, u32)> {
+    let stream = banner.lines().find(|line| line.contains("Video: "))?;
+    stream.split(", ").find_map(|field| {
+        let (width, height) = field.split_whitespace().next()?.split_once('x')?;
+        Some((width.parse().ok()?, height.parse().ok()?))
+    })
 }
 
 fn run(binary: &Path, path: &Path, max_edge: u32, seek: Option<&str>) -> Option<DynamicImage> {
@@ -274,6 +295,19 @@ mod tests {
     /// other than its opening. A `frame_at` that ignored its seek would look right until someone
     /// noticed every position showing the same picture.
     #[test]
+    fn the_banner_gives_up_a_length_and_a_frame_size() {
+        let banner = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'clip.mp4':\n  \
+            Duration: 01:02:03.50, start: 0.000000, bitrate: 2500 kb/s\n  \
+            Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), \
+            yuv420p(tv, bt709, progressive), 1920x1080 [SAR 1:1 DAR 16:9], 30 fps\n";
+        assert_eq!(super::running_time(banner), Some(3723.5));
+        assert_eq!(super::frame_size(banner), Some((1920, 1080)));
+        let live = "  Duration: N/A, start: 0.000000\n  Stream #0:0: Audio: aac, 44100 Hz\n";
+        assert_eq!(super::running_time(live), None);
+        assert_eq!(super::frame_size(live), None);
+    }
+
+    #[test]
     fn a_clip_reports_its_length_and_yields_a_frame_from_the_middle() {
         let Some(binary) = super::binary() else {
             eprintln!("skipping: ffmpeg is not installed");
@@ -291,7 +325,11 @@ mod tests {
             return;
         }
 
-        assert_eq!(media::duration(&path), Some(4), "a four-second clip");
+        assert_eq!(
+            media::probe(&path),
+            (Some(4.0), Some((320, 240))),
+            "a four-second clip"
+        );
         let opening = media::frame_at(&path, 128, 0).expect("a frame at the start");
         let later = media::frame_at(&path, 128, 3).expect("a frame three seconds in");
         assert_ne!(

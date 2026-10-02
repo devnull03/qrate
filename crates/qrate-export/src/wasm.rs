@@ -1,17 +1,52 @@
 //! Browser adapter for the shared project reader and format writers.
 
+use std::collections::HashMap;
 use std::io::Cursor;
+use std::path::PathBuf;
 
 use rusqlite::{Connection, MAIN_DB, OptionalExtension};
 use wasm_bindgen::prelude::*;
 
-use crate::export::{CslMapping, ExportComponent};
-use crate::{ColumnType, QRATE_APPLICATION_ID, QRATE_SCHEMA_VERSION, read_dataset};
+use crate::export::{ArchiveFile, CslMapping, ExportComponent};
+use crate::{
+    ColumnType, IiifError, IiifInput, PhotoIndex, QRATE_APPLICATION_ID, QRATE_SCHEMA_VERSION,
+    read_dataset,
+};
 
 #[derive(serde::Deserialize)]
 struct DescriptionLevel {
     key: String,
     label: String,
+}
+
+/// A file the page found in the folder the archivist picked, measured by the browser. A zero
+/// stands for a size or a running time the file does not have.
+#[derive(serde::Deserialize)]
+struct MeasuredFile {
+    path: String,
+    #[serde(default)]
+    width: u32,
+    #[serde(default)]
+    height: u32,
+    #[serde(default)]
+    duration: f64,
+}
+
+/// A IIIF manifest, and what it could not carry over, in the words the desktop app uses.
+#[wasm_bindgen]
+pub struct IiifExport {
+    manifest: Vec<u8>,
+    summary: String,
+}
+
+#[wasm_bindgen]
+impl IiifExport {
+    pub fn manifest(&self) -> Vec<u8> {
+        self.manifest.clone()
+    }
+    pub fn summary(&self) -> String {
+        self.summary.clone()
+    }
 }
 
 fn error(code: &str, detail: impl std::fmt::Display) -> JsError {
@@ -27,6 +62,7 @@ pub struct Project {
     structure: Vec<ExportComponent>,
     types: Vec<(String, String)>,
     mapping: Option<CslMapping>,
+    iiif_base: Option<String>,
     sheet_notes: Vec<crate::SheetNote>,
 }
 
@@ -128,6 +164,7 @@ impl Project {
             structure,
             types,
             mapping,
+            iiif_base: setting("iiif_base_url")?,
             sheet_notes,
         })
     }
@@ -180,6 +217,70 @@ impl Project {
             serde_wasm_bindgen::from_value(mapping).map_err(|e| error("mapping", e))?;
         serde_json::to_vec_pretty(&crate::csl_items(&self.headers, &self.rows, &mapping))
             .map_err(|e| error("write", e))
+    }
+    /// The web address the desktop app last published this project's manifest at.
+    pub fn iiif_base(&self) -> Option<String> {
+        self.iiif_base.clone()
+    }
+    /// `files` is every file in the folder the archivist picked, as `{path, width, height,
+    /// duration}` with paths relative to that folder.
+    pub fn to_iiif(
+        &self,
+        base_url: &str,
+        label: &str,
+        files: JsValue,
+    ) -> Result<IiifExport, JsError> {
+        let files: Vec<MeasuredFile> =
+            serde_wasm_bindgen::from_value(files).map_err(|e| error("files", e))?;
+        let measured: HashMap<PathBuf, &MeasuredFile> = files
+            .iter()
+            .map(|file| (PathBuf::from(&file.path), file))
+            .collect();
+        let index = PhotoIndex::from_paths(measured.keys().cloned());
+        let columns: Vec<(String, ColumnType)> = self
+            .types
+            .iter()
+            .map(|(name, ty)| (name.clone(), ColumnType::from_declared(ty)))
+            .collect();
+        let declared: Vec<String> = columns
+            .iter()
+            .filter(|(_, kind)| *kind == ColumnType::Filename)
+            .map(|(name, _)| name.clone())
+            .collect();
+        let linked: Vec<Option<ArchiveFile>> = self
+            .rows
+            .iter()
+            .map(|row| {
+                let path = index.resolve_row(&self.headers, &declared, row)?;
+                Some(ArchiveFile {
+                    source_path: Some(path.to_string_lossy().replace('\\', "/")),
+                    path,
+                })
+            })
+            .collect();
+        let media = crate::iiif_media(&linked, |path| {
+            measured.get(path).map_or((None, None), |file| {
+                (Some((file.width, file.height)), Some(file.duration))
+            })
+        });
+        let (manifest, issues) = crate::iiif_manifest(&IiifInput {
+            base_url,
+            label,
+            headers: &self.headers,
+            row_ids: &self.row_ids,
+            rows: &self.rows,
+            structure: &self.structure,
+            columns: &columns,
+            media: &media,
+        })
+        .map_err(|err| match err {
+            IiifError::BaseUrl => error("address", err),
+            IiifError::Empty => error("nothing", err),
+        })?;
+        Ok(IiifExport {
+            manifest: serde_json::to_vec_pretty(&manifest).map_err(|e| error("write", e))?,
+            summary: crate::iiif_summary(&issues),
+        })
     }
     pub fn sheet_values(&self) -> JsValue {
         let mut values = vec![&self.headers];

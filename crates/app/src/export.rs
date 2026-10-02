@@ -2,7 +2,7 @@
 //!
 //! Everything the writers need is read out of `cx` before any dialog opens, so the spawned task
 //! only carries plain values. The formats themselves live in `qrate-export`; what's here is the
-//! action, the save dialog, and the CSL field-mapping picker.
+//! action, the save dialog, the CSL field-mapping picker, and the IIIF address prompt.
 
 use std::cell::RefCell;
 use std::fs::File;
@@ -19,11 +19,12 @@ use gpui::{
 };
 use gpui_component::button::Button;
 use gpui_component::dialog::DialogButtonProps;
+use gpui_component::input::{Input, InputState};
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::notification::Notification;
 use gpui_component::{Sizable as _, WindowExt as _, h_flex};
 use qrate_export::export::{self, ArchiveFile, CSL_FIELDS, CslMapping, ExportComponent};
-use qrate_export::{ProjectNote, SheetNote};
+use qrate_export::{IiifInput, ProjectNote, SheetNote};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use settings::columns::ColumnType;
@@ -45,6 +46,9 @@ pub const CSV_DELIMITERS: &[(&str, &str)] = &[
     ("semicolon", "Semicolon"),
     ("tab", "Tab"),
 ];
+
+/// `__settings` key for the web address the open project's IIIF manifest is published at.
+const IIIF_BASE_KEY: &str = "iiif_base_url";
 
 /// `__settings` key for the folder the open project last exported into.
 const EXPORT_FOLDER_KEY: &str = "last_export_folder";
@@ -93,8 +97,10 @@ struct ExportGrid {
     /// Each column's note, for the formats that carry notes; the row notes are read from the
     /// project file off the UI thread.
     column_notes: Vec<(String, String)>,
-    /// Where a ZIP finds each row's linked file. `None` for every other format.
+    /// Where a ZIP or a IIIF manifest finds each row's linked file. `None` for the other formats.
     files: Option<ZipFiles>,
+    /// What a IIIF manifest is built on. `None` for every other format.
+    iiif: Option<IiifTarget>,
     csv: export::CsvOptions,
 }
 
@@ -104,12 +110,20 @@ struct ZipFiles {
     declared: Vec<String>,
 }
 
+/// The web address a manifest is published at, the project's name, and each column's type.
+struct IiifTarget {
+    base_url: String,
+    label: String,
+    columns: Vec<(String, ColumnType)>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 pub enum ExportFormat {
     Csv,
     Xlsx,
     JsonLd,
     Csl,
+    Iiif,
     Zip,
     GoogleSheet,
     GoogleSheetSync,
@@ -134,11 +148,12 @@ const MAX_PLUGIN_EXPORT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Menu order. Each entry is the label and the extension of the file the save dialog offers, which
 /// is named after the project; the Sheets target never touches disk, so it has no name to suggest.
-pub const EXPORT_FORMATS: [(ExportFormat, &str, Option<&str>); 7] = [
+pub const EXPORT_FORMATS: [(ExportFormat, &str, Option<&str>); 8] = [
     (ExportFormat::Csv, "CSV…", Some("csv")),
     (ExportFormat::Xlsx, "Excel (.xlsx)…", Some("xlsx")),
     (ExportFormat::JsonLd, "JSON-LD…", Some("jsonld")),
     (ExportFormat::Csl, "Zotero (CSL-JSON)…", Some("json")),
+    (ExportFormat::Iiif, "IIIF Manifest…", Some("json")),
     (ExportFormat::Zip, "ZIP Archive…", Some("zip")),
     (ExportFormat::GoogleSheet, "New Google Sheet…", None),
     (ExportFormat::GoogleSheetSync, "Sync to Google Sheet…", None),
@@ -342,7 +357,7 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
         .iter()
         .map(|column| (column.name.clone(), column.notes.clone()))
         .collect::<Vec<_>>();
-    let files = (format == ExportFormat::Zip).then(|| ZipFiles {
+    let files = matches!(format, ExportFormat::Zip | ExportFormat::Iiif).then(|| ZipFiles {
         folder: project
             .data
             .values
@@ -351,6 +366,16 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
             .unwrap_or_default(),
         declared: table::photos::declared_file_columns(&project.data),
     });
+    let iiif = (format == ExportFormat::Iiif).then(|| IiifTarget {
+        base_url: project
+            .data
+            .values
+            .get(IIIF_BASE_KEY)
+            .map(|v| v.text().to_string())
+            .unwrap_or_default(),
+        label: title.clone(),
+        columns: declared,
+    });
     let grid = ExportGrid {
         headers,
         row_ids,
@@ -358,6 +383,7 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
         structure,
         column_notes,
         files,
+        iiif,
         csv: csv_options(cx),
     };
     // A project that already knows its spreadsheet refills that one; otherwise "Sync" asks
@@ -382,6 +408,9 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
     }
     if format == ExportFormat::Csl {
         return ask_csl_mapping(file, title, grid.headers, grid.rows, window, cx);
+    }
+    if format == ExportFormat::Iiif {
+        return ask_iiif_address(file, title, grid, window, cx);
     }
     save_as(format, file, title, grid, CslMapping::new(), cx);
 }
@@ -410,17 +439,18 @@ fn sheet_notes(file: &Path, grid: &ExportGrid) -> anyhow::Result<Vec<SheetNote>>
 
 /// Each row's linked file, and where it sat in the source tree. Scans the files folder, so it runs
 /// off the UI thread.
-fn archive_files(grid: &ExportGrid, files: &ZipFiles) -> Vec<ArchiveFile> {
+fn archive_files(grid: &ExportGrid, files: &ZipFiles) -> Vec<Option<ArchiveFile>> {
     let root = Path::new(&files.folder);
     table::photos::resolve_row_images(&grid.headers, &grid.rows, &files.folder, &files.declared)
         .into_iter()
-        .flatten()
-        .map(|path| ArchiveFile {
-            source_path: Some(match qrate_export::relative_to(root, &path) {
-                Some(relative) => relative.to_string_lossy().replace('\\', "/"),
-                None => path.to_string_lossy().into_owned(),
-            }),
-            path,
+        .map(|path| {
+            path.map(|path| ArchiveFile {
+                source_path: Some(match qrate_export::relative_to(root, &path) {
+                    Some(relative) => relative.to_string_lossy().replace('\\', "/"),
+                    None => path.to_string_lossy().into_owned(),
+                }),
+                path,
+            })
         })
         .collect()
 }
@@ -513,11 +543,15 @@ fn save_as(
 ) {
     let window = cx.active_window();
     let directory = export_folder(&project_file, cx);
-    let suggested = EXPORT_FORMATS
-        .iter()
-        .find(|(f, _, _)| *f == format)
-        .and_then(|(_, _, extension)| *extension)
-        .map(|extension| suggested_name(&title, extension));
+    let suggested = match format {
+        // The manifest's own address ends in this name.
+        ExportFormat::Iiif => Some("manifest.json".to_string()),
+        _ => EXPORT_FORMATS
+            .iter()
+            .find(|(f, _, _)| *f == format)
+            .and_then(|(_, _, extension)| *extension)
+            .map(|extension| suggested_name(&title, extension)),
+    };
     let receiver = cx.prompt_for_new_path(&directory, suggested.as_deref());
 
     cx.spawn(async move |cx| {
@@ -530,13 +564,13 @@ fn save_as(
         let task = cx.background_spawn({
             let (path, progress) = (path.clone(), progress.clone());
             async move {
-                let result = (|| -> anyhow::Result<()> {
+                let result = (|| -> anyhow::Result<Option<String>> {
                     let parent = path.parent().unwrap_or_else(|| Path::new("."));
                     let temporary = tempfile::Builder::new()
                         .prefix(".qrate-export-")
                         .tempfile_in(parent)?
                         .into_temp_path();
-                    write_export(
+                    let outcome = write_export(
                         format,
                         &project_file,
                         &temporary,
@@ -548,7 +582,7 @@ fn save_as(
                         anyhow::bail!(CANCELLED);
                     }
                     temporary.persist(&path)?;
-                    Ok(())
+                    Ok(outcome)
                 })();
                 progress.done.store(true, Ordering::Release);
                 result
@@ -587,7 +621,8 @@ fn save_as(
             |name| name.to_string_lossy().into_owned(),
         );
         let note = match task.await {
-            Ok(()) => Notification::success(format!(
+            Ok(Some(outcome)) => Notification::success(outcome),
+            Ok(None) => Notification::success(format!(
                 "Exported {rows} row{} to {name}",
                 if rows == 1 { "" } else { "s" }
             )),
@@ -604,7 +639,8 @@ fn save_as(
     .detach();
 }
 
-/// Write `grid` to `path` in `format`. Runs on the background executor.
+/// Write `grid` to `path` in `format`, answering with what to tell the archivist when "exported
+/// every row" is not the whole story. Runs on the background executor.
 fn write_export(
     format: ExportFormat,
     project_file: &Path,
@@ -612,7 +648,7 @@ fn write_export(
     grid: &ExportGrid,
     mapping: &CslMapping,
     progress: &Arc<Progress>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<String>> {
     let ExportGrid {
         headers,
         row_ids,
@@ -630,11 +666,35 @@ fn write_export(
             &export::jsonld_hierarchy_value(headers, row_ids, rows, structure),
         )?,
         ExportFormat::Csl => export::write_json(path, &export::csl_items(headers, rows, mapping))?,
+        ExportFormat::Iiif => {
+            let (Some(target), Some(files)) = (&grid.iiif, &grid.files) else {
+                anyhow::bail!("the IIIF export was started without its web address");
+            };
+            let (manifest, issues) = qrate_export::iiif_manifest(&IiifInput {
+                base_url: &target.base_url,
+                label: &target.label,
+                headers,
+                row_ids,
+                rows,
+                structure,
+                columns: &target.columns,
+                media: &qrate_export::iiif_media(&archive_files(grid, files), preview::extent),
+            })?;
+            export::write_json(path, &manifest)?;
+            let shown = manifest["items"].as_array().map_or(0, Vec::len);
+            let mut outcome = format!("Exported {shown} of {} rows to a IIIF manifest", rows.len());
+            let summary = qrate_export::iiif_summary(&issues);
+            if !summary.is_empty() {
+                outcome = format!("{outcome}: {summary}");
+            }
+            log::info!("{outcome}");
+            return Ok(Some(outcome));
+        }
         ExportFormat::Zip => {
-            let images = grid
+            let images: Vec<ArchiveFile> = grid
                 .files
                 .as_ref()
-                .map(|files| archive_files(grid, files))
+                .map(|files| archive_files(grid, files).into_iter().flatten().collect())
                 .unwrap_or_default();
             let total: u64 = images
                 .iter()
@@ -651,7 +711,77 @@ fn write_export(
         // Handled in `run` — they have no path to write to.
         ExportFormat::GoogleSheet | ExportFormat::GoogleSheetSync => {}
     }
-    Ok(())
+    Ok(None)
+}
+
+/// Where the manifest will be published. Every address in a IIIF manifest is a web address and
+/// qrate hosts nothing, so only the archivist knows it. Opens on the project's last answer.
+fn ask_iiif_address(
+    project_file: PathBuf,
+    title: String,
+    grid: ExportGrid,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let saved = grid
+        .iiif
+        .as_ref()
+        .map(|target| target.base_url.clone())
+        .unwrap_or_default();
+    let input = cx.new(|cx| {
+        InputState::new(window, cx)
+            .placeholder("https://example.org/iiif/my-collection")
+            .default_value(saved)
+    });
+    // The dialog's builder re-runs on every frame, but the grid is handed over once.
+    let grid = Rc::new(RefCell::new(Some(grid)));
+    window.open_dialog(cx, move |dialog, _, _| {
+        let (input, for_ok) = (input.clone(), input.clone());
+        let (grid, project_file, title) = (grid.clone(), project_file.clone(), title.clone());
+        dialog
+            .title("Export a IIIF Manifest")
+            .w(gpui::px(460.0))
+            .content(move |content, _, _| {
+                content
+                    .p_4()
+                    .gap_2()
+                    .child(
+                        "The web address of the folder this manifest will be published in. Put \
+                         the linked files in a files folder beside it, laid out as the ZIP \
+                         Archive export lays them out.",
+                    )
+                    .child(Input::new(&input).w_full())
+            })
+            .button_props(DialogButtonProps::default().ok_text("Export…"))
+            .on_ok(move |_: &ClickEvent, window, cx| {
+                let base_url = for_ok.read(cx).value().trim().to_string();
+                if let Err(err) = qrate_export::iiif::base_url(&base_url) {
+                    window.push_notification(
+                        Notification::error(err.to_string()).id::<ExportNotice>(),
+                        cx,
+                    );
+                    return false;
+                }
+                let Some(mut grid) = grid.borrow_mut().take() else {
+                    return true;
+                };
+                if cx.has_global::<CurrentProject>() {
+                    CurrentProject::set_text(IIIF_BASE_KEY, base_url.clone().into(), cx);
+                }
+                if let Some(target) = grid.iiif.as_mut() {
+                    target.base_url = base_url;
+                }
+                save_as(
+                    ExportFormat::Iiif,
+                    project_file.clone(),
+                    title.clone(),
+                    grid,
+                    CslMapping::new(),
+                    cx,
+                );
+                true
+            })
+    });
 }
 
 /// Which column feeds which CSL field. Opens on the saved answer, or on what the declared column
@@ -768,6 +898,7 @@ fn ask_csl_mapping(
                         structure: Vec::new(),
                         column_notes: Vec::new(),
                         files: None,
+                        iiif: None,
                         csv: export::CsvOptions::default(),
                     },
                     mapping,
@@ -1095,5 +1226,76 @@ async fn sign_in(
             log::error!("Google sync could not sign in: {err}");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use qrate_export::export::CslMapping;
+    use settings::columns::ColumnType;
+
+    use super::{ExportFormat, ExportGrid, IiifTarget, Progress, ZipFiles, write_export};
+
+    /// The sample collection's scans are real JPEGs, so this measures files the way an export does.
+    #[test]
+    fn a_iiif_export_measures_the_linked_files_and_reports_the_rest() {
+        let photos = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sample/photos");
+        let row = |id: &str, caption: &str| vec![id.to_string(), caption.to_string()];
+        let grid = ExportGrid {
+            headers: vec!["Digital ID".into(), "Caption".into()],
+            row_ids: vec![1, 2, 3],
+            rows: vec![
+                row("1", "Yad Vashem Memorial"),
+                row("2", "Dome of the Rock"),
+                row("999", "Never scanned"),
+            ],
+            structure: Vec::new(),
+            column_notes: Vec::new(),
+            files: Some(ZipFiles {
+                folder: photos.to_string_lossy().into_owned(),
+                declared: vec!["Digital ID".into()],
+            }),
+            iiif: Some(IiifTarget {
+                base_url: "https://example.org/iiif/aderman".into(),
+                label: "Aderman".into(),
+                columns: vec![
+                    ("Digital ID".into(), ColumnType::Filename),
+                    ("Caption".into(), ColumnType::Title),
+                ],
+            }),
+            csv: Default::default(),
+        };
+        let out = tempfile::tempdir().unwrap();
+        let path = out.path().join("manifest.json");
+        let outcome = write_export(
+            ExportFormat::Iiif,
+            Path::new("unused.qrate"),
+            &path,
+            &grid,
+            &CslMapping::new(),
+            &Arc::new(Progress::default()),
+        )
+        .unwrap();
+        assert_eq!(
+            outcome.as_deref(),
+            Some("Exported 2 of 3 rows to a IIIF manifest: left out 1 row with no linked file")
+        );
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let canvases = manifest["items"].as_array().unwrap();
+        assert_eq!(canvases.len(), 2);
+        let (width, height) = preview::dimensions(&photos.join("1.jpg")).unwrap();
+        assert!(width > 0 && height > 0);
+        assert_eq!(canvases[0]["width"], width);
+        assert_eq!(canvases[0]["height"], height);
+        assert_eq!(canvases[0]["label"]["none"][0], "Yad Vashem Memorial");
+        assert_eq!(
+            canvases[0]["items"][0]["items"][0]["body"]["id"],
+            "https://example.org/iiif/aderman/files/1.jpg"
+        );
     }
 }
