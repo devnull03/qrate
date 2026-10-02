@@ -1236,6 +1236,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.5.67"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1248e420506b523e97ebd7b610656114abadbe73b04279a86768a12ce1860837"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.5.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1252,6 +1261,16 @@ name = "clap_lex"
 version = "0.7.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
+
+[[package]]
+name = "clap_mangen"
+version = "0.2.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e30ffc187e2e3aeafcd1c6e2aa416e29739454c0ccaa419226d5ecd181f2d78"
+dependencies = [
+ "clap",
+ "roff",
+]
 
 [[package]]
 name = "clustering"
@@ -6657,9 +6676,11 @@ dependencies = [
 
 [[package]]
 name = "qrate-cli"
-version = "0.6.0-beta.2"
+version = "0.6.0"
 dependencies = [
  "clap",
+ "clap_complete",
+ "clap_mangen",
  "dirs 6.0.0",
  "serde",
  "serde_json",
@@ -7229,6 +7250,12 @@ dependencies = [
  "symphonia",
  "thiserror 2.0.18",
 ]
+
+[[package]]
+name = "roff"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
 name = "ropey"

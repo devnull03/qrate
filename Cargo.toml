@@ -59,6 +59,9 @@ anyhow = "1"
 # clap 4.6 moves its derive macro to syn 3 while the workspace uses syn 2. Stay on the last 4.5
 # release so this small binary does not compile a second parser stack.
 clap = { version = "=4.5.53", features = ["derive"] }
+# The generators follow the same line, so they resolve against that clap rather than a second one.
+clap_complete = "~4.5"
+clap_mangen = "0.2"
 # Reads xlsx/xlsm/xlsb/xls/ods through one API, so the wizard gains every desktop
 # spreadsheet format for the price of one extension match.
 calamine = { version = "0.31", features = ["dates"] }

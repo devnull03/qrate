@@ -1,90 +1,179 @@
 use std::{
     fs,
-    io::{Read, Write},
+    io::{IsTerminal as _, Read, Write},
     net::TcpStream,
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, ExitStatus, Stdio},
 };
 
-use clap::{CommandFactory as _, Parser, Subcommand};
+use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const REFUSED: i32 = 1;
 const USAGE: i32 = 2;
 const UNAVAILABLE: i32 = 3;
 
+const AFTER_HELP: &str = "\
+Exit codes:
+  0  The command completed.
+  1  qrate refused the request, or the command failed. A refusal is JSON on stdout.
+  2  The command line or its input was not valid.
+  3  qrate is not running or could not be reached.
+
+Examples:
+  qrate catalog.qrate                     Open a project.
+  qrate app status                        Is qrate running, and with which project?
+  qrate project info --format json        The open project, as JSON.
+  echo '{\"limit\":5}' | qrate agent query   Five rows of the open project.
+
+Documentation: https://qrate.dvnl.work/docs/cli";
+
+const WAIT_HELP: &str = "Wait for the desktop application to exit and return its exit status";
+const FORMAT_HELP: &str = "Defaults to `human` on a terminal and `json` in a pipe";
+
+const AGENT_AFTER_HELP: &str = "\
+Every command but `overview` reads one JSON object on stdin and prints one JSON object on stdout.
+No command changes a cell: `stage-findings` publishes drafts that only the archivist can apply.
+
+Examples:
+  qrate agent overview --agent codex
+  echo '{\"source\":{\"kind\":\"selected_rows\"},\"select\":[\"Title\"]}' | qrate agent query
+  qrate agent stage-findings --agent codex < findings.json
+
+The full contract: https://github.com/devnull03/qrate/blob/main/AGENTS.md";
+
+/// Open qrate and read the project that is open in it.
+///
+/// With no command, `qrate` opens the desktop application, and `qrate <PROJECT>` opens a project
+/// in it. The other commands talk to the qrate that is already running: they read the project on
+/// screen, unsaved edits included, and none of them changes a cell.
 #[derive(Debug, Parser)]
-#[command(
-    name = "qrate",
-    version,
-    about = "Launch the qrate desktop application"
-)]
+#[command(name = "qrate", bin_name = "qrate", version, after_help = AFTER_HELP)]
 struct Cli {
-    /// Project file to open.
+    /// A .qrate project file or a qrate:// link to open.
     project: Option<PathBuf>,
-    /// Wait for the desktop process to exit and return its exit status.
-    #[arg(long, global = true)]
+    #[arg(long, help = WAIT_HELP)]
     wait: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
+enum Format {
+    Human,
+    Json,
+}
+
+impl Format {
+    fn json(format: Option<Self>) -> bool {
+        format.map_or_else(
+            || !std::io::stdout().is_terminal(),
+            |format| format == Self::Json,
+        )
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Open a project, or show the project launcher.
-    Open { project: Option<PathBuf> },
+    Open {
+        /// A .qrate project file or a qrate:// link to open.
+        project: Option<PathBuf>,
+        #[arg(long, help = WAIT_HELP)]
+        wait: bool,
+    },
     /// Inspect or launch the desktop application.
     App {
         #[command(subcommand)]
         command: AppCommand,
     },
-    /// Inspect the active desktop project.
+    /// Inspect the project open in qrate.
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
     },
-    /// Read the live project as an agent. Parameters are JSON on stdin; the answer is JSON on stdout.
+    /// Read the open project as an agent: JSON in on stdin, JSON out on stdout.
+    #[command(after_help = AGENT_AFTER_HELP)]
     Agent {
-        /// Name shown in qrate's Agent panel. Defaults to $QRATE_AGENT. A label, not proof.
+        /// The name shown in qrate's Agent panel. Defaults to $QRATE_AGENT. A label, not proof.
         #[arg(long, global = true)]
         agent: Option<String>,
         #[command(subcommand)]
         command: AgentCommand,
     },
+    /// Print a completion script for a shell.
+    ///
+    /// Load the script from your shell's startup file, for example
+    /// `qrate completion bash > ~/.local/share/bash-completion/completions/qrate`.
+    Completion { shell: clap_complete::Shell },
+    /// Write the manual pages into a directory.
+    ///
+    /// One page for `qrate` and one for each command, such as `qrate-agent-query.1`. Put the
+    /// directory's parent on MANPATH, or write straight into a `man1` directory man already reads.
+    Man { directory: PathBuf },
     /// Print the qrate CLI version.
     Version,
 }
 
 #[derive(Debug, Subcommand)]
 enum AppCommand {
-    /// Show whether qrate is running and its active project.
-    Status,
-    /// Print the resolved desktop executable path.
+    /// Show whether qrate is running and which project is open.
+    ///
+    /// Exits 0 either way; read the answer, not the exit code.
+    Status {
+        #[arg(long, value_enum, help = FORMAT_HELP)]
+        format: Option<Format>,
+    },
+    /// Print the path of the desktop executable this command launches.
     Path,
     /// Launch qrate without opening a project.
-    Launch,
+    Launch {
+        #[arg(long, help = WAIT_HELP)]
+        wait: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum ProjectCommand {
-    /// Show metadata for the active desktop project.
-    Info,
+    /// Show the open project's name, path, source, files folder, and row and column counts.
+    ///
+    /// Exits 1 when qrate has no project open.
+    Info {
+        #[arg(long, value_enum, help = FORMAT_HELP)]
+        format: Option<Format>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Subcommand)]
 enum AgentCommand {
     /// Project, columns, selection, diagnostic counts and revision. Takes no input.
+    ///
+    /// Start here, and keep `revision`: `program-run` and `stage-findings` need that exact number.
     Overview,
     /// Bounded rows or diagnostics.
+    ///
+    /// stdin: {"source": {"kind": "all_rows" | "selected_rows" | "rows" | "search" |
+    /// "diagnostics"}, "select": [...], "where": [...], "distinct": ..., "group_by": [...],
+    /// "order_by": {...}, "limit": 1-50, "cursor": ...}. Every field is optional; `{}` is the
+    /// first 20 rows.
     Query,
     /// Validate and activate a confined Luau program without running it.
+    ///
+    /// stdin: {"source": "<Luau>"}. The program has no network, filesystem, process, or clock.
     ProgramSave,
     /// Run the saved program once at an exact revision.
+    ///
+    /// stdin: {"revision": <from overview>, "args": <any JSON>}.
     ProgramRun,
     /// Up to four 512-pixel PNG thumbnails.
+    ///
+    /// stdin: {"items": [{"row": <source row>, "page": <page, default 0>}]}.
     Thumbnails,
     /// Publish a complete batch of draft findings. Never changes a cell.
+    ///
+    /// stdin: {"revision": <from overview>, "findings": [{"row", "column", "severity",
+    /// "message", "expected", "replacement"?}]}. The batch replaces this agent's earlier drafts.
     StageFindings,
 }
 
@@ -129,32 +218,52 @@ fn main() {
     let cli = parse_args(std::env::args_os()).unwrap_or_else(|error| error.exit());
     let result = match cli.command {
         Some(Command::Version) => {
-            println!("{}", env!("CARGO_PKG_VERSION"));
+            print(env!("CARGO_PKG_VERSION"));
             Ok(None)
         }
+        Some(Command::Completion { shell }) => {
+            clap_complete::generate(shell, &mut Cli::command(), "qrate", &mut std::io::stdout());
+            Ok(None)
+        }
+        Some(Command::Man { directory }) => fs::create_dir_all(&directory)
+            .and_then(|()| clap_mangen::generate_to(Cli::command(), &directory))
+            .map(|()| None)
+            .map_err(|error| {
+                Failure::Other(format!(
+                    "cannot write manual pages to {}: {error}",
+                    directory.display()
+                ))
+            }),
         Some(Command::App {
-            command: AppCommand::Status,
-        }) => app_status(),
+            command: AppCommand::Status { format },
+        }) => app_status(Format::json(format)),
         Some(Command::App {
             command: AppCommand::Path,
         }) => executable().map(|executable| {
-            println!("{}", desktop_path(&executable).display());
+            print(&display_path(&desktop_path(&executable)));
             None
         }),
         Some(Command::App {
-            command: AppCommand::Launch,
-        }) => {
-            executable().and_then(|executable| launch(&desktop_path(&executable), None, cli.wait))
-        }
+            command: AppCommand::Launch { wait },
+        }) => executable()
+            .and_then(|executable| launch(&desktop_path(&executable), None, cli.wait || wait)),
         Some(Command::Project {
-            command: ProjectCommand::Info,
-        }) => project_info(),
+            command: ProjectCommand::Info { format },
+        }) => project_info(Format::json(format)),
+        Some(Command::Agent { command, .. })
+            if !matches!(command, AgentCommand::Overview) && std::io::stdin().is_terminal() =>
+        {
+            Err(Failure::Usage(
+                "this command reads a JSON object on stdin; pipe one in, or see `qrate help agent`"
+                    .into(),
+            ))
+        }
         Some(Command::Agent { agent, command }) => agent_call(
             command,
             agent.or_else(|| std::env::var("QRATE_AGENT").ok()),
             &mut std::io::stdin(),
         ),
-        Some(Command::Open { project }) => open(project, cli.wait),
+        Some(Command::Open { project, wait }) => open(project, cli.wait || wait),
         None => open(cli.project, cli.wait),
     };
     match result {
@@ -166,7 +275,7 @@ fn main() {
         }
         Ok(None) => {}
         Err(Failure::Refused(body)) => {
-            println!("{body}");
+            print(&body);
             std::process::exit(REFUSED);
         }
         // The public CLI has a console even when the desktop binary does not.
@@ -179,6 +288,22 @@ fn main() {
 fn fail(error: String, code: i32) -> ! {
     eprintln!("qrate: {error}");
     std::process::exit(code);
+}
+
+/// `println!` panics when the reader has gone, which is ordinary for `qrate … | head`.
+fn print(text: &str) {
+    if writeln!(std::io::stdout(), "{text}").is_err() {
+        std::process::exit(1);
+    }
+}
+
+/// Windows canonical paths carry a `\\?\` prefix that cmd.exe and most tools refuse.
+fn display_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(plain) if !plain.starts_with(r"UNC\") => plain.to_owned(),
+        _ => text.into_owned(),
+    }
 }
 
 /// Canonical, so a symlink such as `~/.local/bin/qrate` still finds the install it points into.
@@ -202,60 +327,64 @@ struct AppControlDescriptor {
     token: String,
 }
 
-#[derive(Deserialize)]
-struct ProjectInfoResponse {
-    project: ProjectInfo,
-}
-
-#[derive(Deserialize)]
-struct ProjectInfo {
-    name: String,
-    path: String,
-    source: Option<String>,
-    created_at: Option<String>,
-    link_method: Option<String>,
-    files_folder: Option<String>,
-    row_count: usize,
-    column_count: usize,
-}
-
-fn project_info() -> Result<Option<ExitStatus>, Failure> {
+fn project_info(json: bool) -> Result<Option<ExitStatus>, Failure> {
     let body = match app_request("GET", "/v1/project/info", None, None)? {
-        (409, _) => {
+        (409, _) if !json => {
             return Err(Failure::Other(
                 "no project is active; run `qrate <PROJECT.qrate>`".into(),
             ));
         }
         response => accept(response)?,
     };
-    let info: ProjectInfoResponse = serde_json::from_str(&body)
+    let info: Value = serde_json::from_str(&body)
         .map_err(|error| Failure::Other(format!("invalid qrate project info: {error}")))?;
-    let project = info.project;
-    let or = |value: Option<String>, missing: &str| value.unwrap_or_else(|| missing.to_owned());
-    println!("name: {}", project.name);
-    println!("path: {}", project.path);
-    println!("source: {}", or(project.source, "none"));
-    println!("created: {}", or(project.created_at, "unknown"));
-    println!("link method: {}", or(project.link_method, "none"));
-    println!("files folder: {}", or(project.files_folder, "none"));
-    println!("rows: {}", project.row_count);
-    println!("columns: {}", project.column_count);
+    print(&project_report(&info["project"], json));
     Ok(None)
 }
 
-fn app_status() -> Result<Option<ExitStatus>, Failure> {
-    let body = match app_request("GET", "/v1/status", None, None) {
-        Err(Failure::Unavailable(_)) => {
-            println!("stopped");
-            return Ok(None);
+fn project_report(project: &Value, json: bool) -> String {
+    if json {
+        return project.to_string();
+    }
+    let text = |key: &str, missing: &str| project[key].as_str().unwrap_or(missing).to_owned();
+    [
+        format!("name: {}", text("name", "unknown")),
+        format!("path: {}", text("path", "unknown")),
+        format!("source: {}", text("source", "none")),
+        format!("created: {}", text("created_at", "unknown")),
+        format!("link method: {}", text("link_method", "none")),
+        format!("files folder: {}", text("files_folder", "none")),
+        format!("rows: {}", project["row_count"]),
+        format!("columns: {}", project["column_count"]),
+    ]
+    .join("\n")
+}
+
+fn app_status(json: bool) -> Result<Option<ExitStatus>, Failure> {
+    let project = match app_request("GET", "/v1/status", None, None) {
+        Err(Failure::Unavailable(_)) => None,
+        response => {
+            let status: Value = serde_json::from_str(&accept(response?)?)
+                .map_err(|error| Failure::Other(format!("invalid qrate status: {error}")))?;
+            Some(status["project"].clone())
         }
-        response => accept(response?)?,
     };
-    let status: Value = serde_json::from_str(&body)
-        .map_err(|error| Failure::Other(format!("invalid qrate status: {error}")))?;
-    println!("running");
-    println!("project: {}", status["project"].as_str().unwrap_or("none"));
+    print(&status_report(project, json));
     Ok(None)
+}
+
+/// `project` is `None` when qrate is not running, and JSON null when it has no project open.
+fn status_report(project: Option<Value>, json: bool) -> String {
+    match (project, json) {
+        (project, true) => {
+            json!({ "running": project.is_some(), "project": project.unwrap_or_default() })
+                .to_string()
+        }
+        (None, false) => "stopped".into(),
+        (Some(project), false) => {
+            format!("running\nproject: {}", project.as_str().unwrap_or("none"))
+        }
+    }
 }
 
 fn agent_call(
@@ -270,7 +399,7 @@ fn agent_call(
         agent.as_deref(),
         Some(&request),
     )?)?;
-    println!("{body}");
+    print(&body);
     Ok(None)
 }
 
@@ -431,13 +560,98 @@ fn launch(
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser as _;
+    use clap::{CommandFactory as _, Parser as _};
+    use serde_json::json;
 
     use super::{
-        AgentCommand, Cli, Command, Failure, ProjectCommand, accept, agent_request, desktop_path,
-        launch, parse_args, parse_response, validate_project,
+        AgentCommand, AppCommand, Cli, Command, Failure, Format, ProjectCommand, accept,
+        agent_request, desktop_path, display_path, launch, parse_args, parse_response,
+        project_report, status_report, validate_project,
     };
     use std::path::Path;
+
+    #[test]
+    fn the_command_tree_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn shows_a_path_other_tools_accept() {
+        let shown = |path: &str| display_path(Path::new(path));
+        assert_eq!(shown(r"\\?\C:\qrate\qrate.exe"), r"C:\qrate\qrate.exe");
+        assert_eq!(shown(r"\\?\UNC\host\share\q"), r"\\?\UNC\host\share\q");
+        assert_eq!(shown("/opt/qrate/qrate"), "/opt/qrate/qrate");
+    }
+
+    #[test]
+    fn reports_status_and_project_in_both_formats() {
+        assert_eq!(status_report(None, false), "stopped");
+        assert_eq!(
+            status_report(None, true),
+            r#"{"running":false,"project":null}"#
+        );
+        assert_eq!(
+            status_report(Some(json!(null)), false),
+            "running\nproject: none"
+        );
+        assert_eq!(
+            status_report(Some(json!("a.qrate")), true),
+            r#"{"running":true,"project":"a.qrate"}"#
+        );
+        let project = json!({ "name": "a", "path": "a.qrate", "row_count": 3, "column_count": 2 });
+        assert_eq!(project_report(&project, true), project.to_string());
+        assert_eq!(
+            project_report(&project, false).lines().collect::<Vec<_>>(),
+            [
+                "name: a",
+                "path: a.qrate",
+                "source: none",
+                "created: unknown",
+                "link method: none",
+                "files folder: none",
+                "rows: 3",
+                "columns: 2"
+            ]
+        );
+        let cli = Cli::try_parse_from(["qrate", "project", "info", "--format", "json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Project {
+                command: ProjectCommand::Info {
+                    format: Some(Format::Json)
+                }
+            })
+        ));
+        assert!(Format::json(Some(Format::Json)) && !Format::json(Some(Format::Human)));
+        assert!(Cli::try_parse_from(["qrate", "app", "status", "--format", "xml"]).is_err());
+        assert!(Cli::try_parse_from(["qrate", "agent", "overview", "--format", "json"]).is_err());
+    }
+
+    #[test]
+    fn writes_completions_and_a_manual_page_per_command() {
+        let mut script = Vec::new();
+        clap_complete::generate(
+            clap_complete::Shell::Bash,
+            &mut Cli::command(),
+            "qrate",
+            &mut script,
+        );
+        assert!(
+            String::from_utf8(script)
+                .unwrap()
+                .contains("stage-findings")
+        );
+        assert!(Cli::try_parse_from(["qrate", "completion", "powershell"]).is_ok());
+        assert!(Cli::try_parse_from(["qrate", "completion", "cmd"]).is_err());
+
+        let directory = std::env::temp_dir().join(format!("qrate man test {}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        clap_mangen::generate_to(Cli::command(), &directory).unwrap();
+        let page = std::fs::read_to_string(directory.join("qrate.1")).unwrap();
+        assert!(page.contains("Exit codes"));
+        assert!(directory.join("qrate-agent-query.1").is_file());
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 
     #[test]
     fn parses_version_command() {
@@ -455,26 +669,43 @@ mod tests {
         let cli = Cli::try_parse_from(["qrate", "open", "--wait", "my project.qrate"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Command::Open { project: Some(_) })
+            Some(Command::Open {
+                project: Some(_),
+                wait: true
+            })
         ));
-        assert!(cli.wait);
         assert!(Cli::try_parse_from(["qrate", "open"]).is_ok());
         let cli = Cli::try_parse_from(["qrate", "--wait", "open"]).unwrap();
-        assert!(cli.wait && matches!(cli.command, Some(Command::Open { project: None })));
+        assert!(
+            cli.wait
+                && matches!(
+                    cli.command,
+                    Some(Command::Open {
+                        project: None,
+                        wait: false
+                    })
+                )
+        );
         assert!(parse_args(["qrate", "a.qrate", "open", "b.qrate"]).is_err());
         assert!(Cli::try_parse_from(["qrate", "--unknown"]).is_err());
         assert!(Cli::try_parse_from(["qrate", "a.qrate", "b.qrate"]).is_err());
         let cli = Cli::try_parse_from(["qrate", "app", "launch", "--wait"]).unwrap();
-        assert!(cli.wait);
+        assert!(matches!(
+            cli.command,
+            Some(Command::App {
+                command: AppCommand::Launch { wait: true }
+            })
+        ));
         let cli = Cli::try_parse_from(["qrate", "--wait", "app", "launch"]).unwrap();
         assert!(cli.wait);
+        assert!(Cli::try_parse_from(["qrate", "agent", "overview", "--wait"]).is_err());
         assert!(Cli::try_parse_from(["qrate", "app", "status"]).is_ok());
         assert!(Cli::try_parse_from(["qrate", "app", "path"]).is_ok());
         let cli = Cli::try_parse_from(["qrate", "project", "info"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Project {
-                command: ProjectCommand::Info
+                command: ProjectCommand::Info { format: None }
             })
         ));
         assert!(Cli::try_parse_from(["qrate", "project"]).is_err());
