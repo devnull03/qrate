@@ -358,6 +358,28 @@ pub fn dimensions(path: &Path) -> Option<(u32, u32)> {
     })
 }
 
+/// How much room a file takes when it is shown, for whichever it has: a picture's pixels, a
+/// document's first page in points, a recording's seconds, a video's both.
+///
+/// Opens the file, and spawns ffmpeg for a video, so ask it off the UI thread.
+pub fn extent(path: &Path) -> (Option<(u32, u32)>, Option<f64>) {
+    let Some(extension) = extension(path) else {
+        return (None, None);
+    };
+    if pdf::handles(&extension) {
+        return (pdf::page_size(path), None);
+    }
+    if audio::handles(&extension) {
+        let length = audio::duration(path).map(|length| length.as_secs_f64());
+        return (None, length);
+    }
+    if media::handles(&extension) {
+        let (seconds, size) = media::probe(path);
+        return (size, seconds.filter(|_| media::is_video(&extension)));
+    }
+    (dimensions(path), None)
+}
+
 /// `2.4 MB`. Powers of 1024 with the unit names every file manager on the three platforms shows,
 /// and whole bytes below a kilobyte — "0.3 KB" reads as a rounding of something, not as a stub.
 pub fn file_size(bytes: u64) -> String {
@@ -412,7 +434,10 @@ pub fn has_video(path: &Path) -> bool {
 ///
 /// Spawns ffmpeg, so it costs about a tenth of a second: ask it when a viewer opens, never per row.
 pub fn video_duration(path: &Path) -> Option<u32> {
-    has_video(path).then(|| media::duration(path)).flatten()
+    has_video(path)
+        .then(|| media::probe(path).0)
+        .flatten()
+        .map(|seconds| seconds as u32)
 }
 
 /// Whether a recording carries artwork, and so whether there is anything to look at while it
