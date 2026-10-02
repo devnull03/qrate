@@ -1,18 +1,18 @@
 # The Agent panel
 
-An external AI agent that you run yourself can read the project open in qrate. qrate
-allows this by default. To stop it, open **Settings ▸ Agent** and switch off **Allow
-agents to read this app**. The port closes immediately, with no relaunch needed. See
-[`AGENTS.md`](../AGENTS.md) for the protocol.
+An AI agent that you run yourself can read the project open in qrate. It does this with the
+`qrate agent` commands. qrate allows this by default. To stop it, open **Settings ▸ Agent**
+and switch off **Allow agents to read this app**. qrate refuses every agent command from
+then on, with no relaunch needed. See [Agents and skills](cli/agents.md) for how to set up an
+agent, and [`AGENTS.md`](../AGENTS.md) for the full contract.
 
-qrate listens on your own machine only, behind a token that changes at every launch. A
-program that could reach this connection could already read your `.qrate` file directly,
-so the bridge does not widen what a local program can see. It does show unsaved edits,
-which the file does not.
+Only a program that runs as you, on your own machine, can ask. A program that can do that
+could already read your `.qrate` file directly, so the commands do not widen what a local
+program can see. They do show unsaved edits, which the file does not.
 
 The **Agent** panel, in the right dock, has two tabs. **Terminal** runs qrate's bundled Pi agent.
-**Log** lists everything that happened on the bridge. An agent cannot change a cell through the
-bridge. It can only read data and stage findings that you accept or ignore.
+**Log** lists every agent command that reached qrate. An agent cannot change a cell. It can
+only read data and stage findings that you accept or ignore.
 
 ## Start Pi
 
@@ -36,8 +36,8 @@ An entry has up to six parts:
 | --- | --- |
 | `+2:07` | Time since the first entry of this session, in minutes and seconds. Not a clock time. |
 | `claude-code` | The name the agent gave itself. See [Names are not proof](#names-are-not-proof). |
-| `query` | The method the agent called, or `connected` / `disconnected`. |
-| `AllRows, max 20` | What the agent asked for. Absent for a method that takes no parameters. |
+| `query` | The command the agent ran, or `connected`. |
+| `AllRows, max 20` | What the agent asked for. Absent for a command that takes no parameters. |
 | `20 returned, 180 remaining` | What qrate answered, or why it refused. |
 | `4ms` | How long qrate took to answer. |
 
@@ -51,21 +51,20 @@ puts cell contents in this list.
 
 | Reason | What happened |
 | --- | --- |
-| `forbidden` | The caller sent a wrong token or no token. qrate makes a new token at each launch. |
-| `malformed_request` | The caller sent a method or a parameter the protocol does not have. |
+| `agent access is off in Settings` | **Allow agents to read this app** is switched off. |
+| `malformed_request` | The caller sent a command or a parameter that qrate does not have. |
 | `project_unavailable` | No project is open. |
 | `invalid_query_limit`, `too_many_query_fields`, `too_many_thumbnails`, `too_many_findings` | The caller asked for more than one call permits. |
 | `stale_cursor` | The project changed since the revision the caller named, so it has to read again. |
 
-**A connect or disconnect** shows in blue. The protocol has no session: each call is one
-request, one answer, and a closed socket. qrate infers both events. `connected` is the
-first call from a name that passes the token check. `disconnected` is one minute of
-silence from that name.
+**A first call** shows in blue as `connected`. Each `qrate agent` command is its own short
+program, so there is no session to open or close. `connected` marks the first time qrate
+sees a name.
 
 ## Staged findings
 
-`stage_findings` is the only method that changes what you see. Its result reads
-`2 staged, 1 stale`.
+The `stage-findings` command is the only one that changes what you see. The log shows it as
+`stage_findings`, and its result reads `2 staged, 1 stale`.
 
 - **Staged** findings go to the Problems panel, beside your own validators' findings. A
   finding that proposes a new value also offers it under that finding in the cell's
@@ -78,9 +77,9 @@ project. A proposal changes a cell only after you click it in the Problems menu.
 
 ## Names are not proof
 
-The name in an entry is a label the caller chose, in an `X-Agent` header. qrate cannot
-verify it. Anything that holds the token can claim any name. Use the name to tell two of
-your own agents apart, not to decide whether to trust a caller.
+The name in an entry is a label the caller chose, with `--agent` or the `QRATE_AGENT`
+environment variable. qrate cannot verify it. Any local program can claim any name. Use the
+name to tell two of your own agents apart, not to decide whether to trust a caller.
 
 ## Copy an entry
 

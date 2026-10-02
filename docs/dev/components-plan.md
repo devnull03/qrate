@@ -374,7 +374,7 @@ Rules checked after verification:
 - `size`, `installed_size` and `sha256` are well formed. `arch: "any"` matches every platform.
 - `app` is a `semver::VersionReq`. The receipt copies it, so after an app update `locate` stops
   returning a component the new version cannot use. Why it matters: `pdfium-render`'s API feature
-  fixes the PDFium ABI it expects, and the Pi extension speaks one bridge protocol (`AGENTS.md`: protocol 2).
+  fixes the PDFium ABI it expects, and the Pi extension calls one `qrate agent` contract (`AGENTS.md`).
 
 CLIP's asset lives in one fixed release (`components-clip-b33cedf`), uploaded once, because putting
 607 MB into every release adds nothing. Each release's `components.json` points at it. The tar is

@@ -10,6 +10,9 @@ command, its input, exit codes, and limits. If you do not have that file, fetch 
 repository root before going further. This skill deliberately does not restate the contract, so a
 command that changes in qrate's code cannot leave a stale copy standing here.
 
+If the shell cannot find `qrate`, or you are not sure the right project is on screen, use the
+[qrate-cli](../qrate-cli/SKILL.md) skill first.
+
 ## Name yourself
 
 Pass `--agent <your runtime>` (or set `QRATE_AGENT`) on every call — `claude-code`, `codex`, `pi`,

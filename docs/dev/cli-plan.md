@@ -3,8 +3,13 @@
 Status: implementation in progress. The packaged `qrate` launcher, `open`, `--wait`, `version`,
 help, project-path forwarding, `qrate://` forwarding, and the read-only app-control foundation exist.
 Implemented app commands are `status`, `path`, and `launch`. `qrate project info` reads the active
-desktop project. `qrate agent` replaces the loopback agent bridge for live review. `quit`, other
-project-data commands, and direct-file commands remain proposed.
+desktop project. `qrate agent` replaces the loopback agent bridge for live review. `completion` and
+`man` are generated from the parser. `quit`, other project-data commands, and direct-file commands
+remain proposed.
+
+What shipped differs from the proposal below in two places, and the shipped behavior wins:
+`--format` is `human|json` and belongs to `app status` and `project info` rather than being global,
+and exit code `3` means qrate could not be reached. The user-facing reference is `docs/cli/`.
 
 ## Decision
 
@@ -110,11 +115,14 @@ standard output. Send progress, warnings, and errors to standard error.
 | Code | Meaning |
 |---:|---|
 | `0` | The command completed. |
-| `1` | The operation failed. |
-| `2` | The command syntax was invalid. |
-| `3` | Validation reached the `--fail-on` level. |
-| `4` | A lock, stale revision, or other conflict stopped a write. |
-| `5` | Authentication or a remote service failed. |
+| `1` | The operation failed, or qrate refused it. A refusal is JSON on standard output. |
+| `2` | The command syntax or its input was invalid. |
+| `3` | qrate is not running or could not be reached. |
+| `4` | A lock, stale revision, or other conflict stopped a write. Proposed. |
+| `5` | Authentication or a remote service failed. Proposed. |
+| `6` | Validation reached the `--fail-on` level. Proposed. |
+
+Codes `0` to `3` are shipped and are what `AGENTS.md` and the Pi extension rely on.
 
 JSON errors use one object with `code`, `message`, and optional `details` fields. Stable scripts must
 use `code`, not parse `message`.
@@ -413,7 +421,9 @@ qrate completion <bash|zsh|fish|powershell|elvish>
 qrate man <OUTPUT_DIR>
 ```
 
-Generate these files from the parser. Do not keep hand-written completion files.
+Shipped. Both come from the parser through `clap_complete` and `clap_mangen`, so there is no
+hand-written completion file or manual page to keep in step. The Linux tarball carries the pages in
+`share/man/man1`.
 
 ## Installation and `PATH`
 

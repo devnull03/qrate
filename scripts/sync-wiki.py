@@ -53,7 +53,7 @@ def main():
     reference = re.compile(r"^(\s{0,3}\[[^\]]+\]:\s*)(\S+)(.*)$")
     fence = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
     generated = {}
-    sections = {"User guide": [], "Getting started": [], "Plugins": []}
+    sections = {"User guide": [], "Getting started": [], "Command line": [], "Plugins": []}
     for source in docs:
         content = source.read_text(encoding="utf-8")
         name = pages[source.relative_to(root).as_posix()]
@@ -89,9 +89,11 @@ def main():
         )
         title = next((line[2:].strip() for line in content.splitlines() if line.startswith("# ")), name)
         folder = source.relative_to(root / "docs").parts[0]
-        section = {"getting-started": "Getting started", "plugins": "Plugins"}.get(
-            folder, "User guide"
-        )
+        section = {
+            "getting-started": "Getting started",
+            "cli": "Command line",
+            "plugins": "Plugins",
+        }.get(folder, "User guide")
         sections[section].append(f"- [{title}]({wiki_url}{quote(name, safe='')})\n")
 
     generated["_Sidebar.md"] = "\n".join(

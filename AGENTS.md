@@ -5,13 +5,15 @@
 
 ## Reading a running qrate
 
+First confirm the right project is on screen: `qrate app status` and `qrate project info` print JSON in a pipe (`{"running": …, "project": …}`), and `qrate <PROJECT.qrate>` opens one. `qrate help <command>` documents every option; [`skills/qrate-cli`](skills/qrate-cli/SKILL.md) covers finding and driving the command.
+
 Run `qrate agent <command>`. The parameters are one JSON object on stdin, and the answer is JSON on stdout. Name yourself with `--agent codex` or `QRATE_AGENT=codex`. The name only labels your calls in qrate's Agent panel; it proves nothing about who you are.
 
 | Exit | Meaning | Where to look |
 |---|---|---|
 | `0` | Answered | stdout: the response |
 | `1` | Refused, for example a stale revision, bad parameters, or agent access switched off in Settings ▸ Agent | stdout: `{"error": …}` |
-| `2` | Usage error, such as stdin that is not a JSON object | stderr |
+| `2` | Usage error, such as stdin that is not a JSON object, or a terminal where stdin should be | stderr |
 | `3` | qrate is not running or cannot be reached | stderr |
 
 No command changes a cell. `stage-findings` only replaces this agent's draft findings in the Problems panel. It can also offer whole-cell replacements under a finding in that cell's Problems menu. Only the archivist applies them.

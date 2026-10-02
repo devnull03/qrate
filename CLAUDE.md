@@ -11,6 +11,11 @@ part of that change — nothing in CI checks it. The `--agent` name an agent pas
 fill a column in that panel, so the two drift together. `app_control` is private to one release;
 the CLI's JSON and exit codes are the public contract.
 
+A command or flag that changes in `crates/cli` also changes `docs/cli/commands.md`, the page users
+read. `qrate help`, the completions and the man pages are generated from the parser and need
+nothing; `skills/qrate-cli` lists no flags for the same reason, so it only moves when the workflow
+does.
+
 ## Core Directives
 
 - **Explicit Rationales:** When asked to edit the codebase, always state the rationale (trade-offs, principles, or patterns) before or alongside the change.
