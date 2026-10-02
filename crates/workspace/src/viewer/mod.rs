@@ -11,6 +11,7 @@
 //! [`highlight`] turns a hit's position on the page into a position on the screen.
 
 mod annotate;
+pub(crate) use annotate::{Lit, Picked, marks, reveal};
 pub(crate) mod find;
 mod highlight;
 mod regions;
@@ -30,6 +31,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     resizable::{ResizableState, h_resizable, resizable_panel},
     slider::{Slider, SliderEvent, SliderState, SliderValue},
+    v_flex,
 };
 
 use settings::project::RowId;
@@ -122,8 +124,20 @@ pub(crate) fn build(
 ) -> Entity<Viewer> {
     let document = preview::has_text(&path);
     let video = preview::has_video(&path);
-    let details = preview::describe(&path);
-    let pixels = preview::dimensions(&path);
+    let shape = row.and_then(|row| {
+        let marks = annotate::marks(row, cx);
+        let of = marks.iter().find_map(|m| m.region.of);
+        (!marks.is_empty()).then_some(of)
+    });
+    let missing = shape.is_some() && !path.exists();
+    let details = match missing {
+        true => Some("File not found".to_string()),
+        false => preview::describe(&path),
+    };
+    let pixels = match missing {
+        true => shape.flatten().or(Some((1500, 2000))),
+        false => preview::dimensions(&path),
+    };
     let probe_path = path.clone();
     let table = cx
         .try_global::<table::TableStateHandle>()
@@ -154,7 +168,7 @@ pub(crate) fn build(
                         return;
                     };
                     let id = delegate.row_id(row);
-                    let file = previewable(delegate, row);
+                    let file = shown_file(delegate, row, cx);
                     if let Some(file) = file.filter(|file| *file != this.path || id != this.row) {
                         open_viewer(file, id, this.scope, window, cx);
                     }
@@ -165,9 +179,13 @@ pub(crate) fn build(
             cx.observe_global::<diagnostics::Diagnostics>(|_, cx| cx.notify()),
             cx.observe_global::<annotate::Annotating>(|_, cx| cx.notify()),
             cx.observe_global::<annotate::Lit>(|_, cx| cx.notify()),
+            cx.observe_global::<annotate::Reveal>(|this: &mut Viewer, cx| this.follow_reveal(cx)),
         ],
         row,
+        missing,
         hovered: None,
+        stepped: None,
+        revealing: None,
         draw: None,
         selected: None,
         grab: None,
@@ -190,7 +208,7 @@ pub(crate) fn build(
         turns: 0,
         shown: 0,
         pixels,
-        header: pixels,
+        header: pixels.filter(|_| !missing),
         scale: 1.0,
         frame: Rc::default(),
         focus_handle: cx.focus_handle(),
@@ -290,6 +308,26 @@ pub(crate) fn previewable(delegate: &table::QrateTableDelegate, row: usize) -> O
         .map(|file| file.to_path_buf())
 }
 
+/// What the viewer opens for `row`: its file, or, when that is missing and the row has regions,
+/// where the file should be, so they are drawn on a stand-in page.
+pub(crate) fn shown_file(
+    delegate: &table::QrateTableDelegate,
+    row: usize,
+    cx: &App,
+) -> Option<PathBuf> {
+    previewable(delegate, row).or_else(|| {
+        annotate::marks(delegate.row_id(row)?, cx).first()?;
+        let (_, name) = table::file_links::missing_file(delegate, row, cx)?;
+        let folder = cx
+            .try_global::<settings::project::CurrentProject>()?
+            .data
+            .values
+            .get(settings::project::FILES_FOLDER_KEY)?
+            .text();
+        Some(PathBuf::from(folder.as_ref()).join(name.trim()))
+    })
+}
+
 /// The nearest view index past `from` in `delta`'s direction that `viewable` accepts, if any.
 fn next_row(
     from: usize,
@@ -337,8 +375,12 @@ pub struct Viewer {
     /// The item the file belongs to, whose region notes are drawn over it. `None` for a file
     /// opened on its own.
     pub(crate) row: Option<RowId>,
+    /// The file is gone but the row has regions, drawn on a stand-in page of their stored size.
+    pub(crate) missing: bool,
     /// The region under the pointer.
     hovered: Option<diagnostics::NoteId>,
+    /// The region `[` and `]` last zoomed to, whose card stays up until the page changes.
+    stepped: Option<diagnostics::NoteId>,
     /// A new region being dragged out in annotate mode.
     draw: Option<annotate::Draw>,
     /// The region the Select tool picked, and the move or resize under way on it.
@@ -350,8 +392,11 @@ pub struct Viewer {
     composer: Option<annotate::Composer>,
     /// A passing word at the foot of the stage, gone when its timer fires.
     hint: Option<(SharedString, Task<()>)>,
-    /// Repaints when a note, the annotation toggles, or the lit Notes card change.
-    _notes: [Subscription; 3],
+    /// Repaints when a note, the annotation toggles, or the lit Notes card change, and turns to a
+    /// revealed region.
+    _notes: [Subscription; 4],
+    /// The region to zoom to once the frame has a size.
+    revealing: Option<diagnostics::Region>,
     /// File type and size, read once when the viewer opens rather than statting on every repaint.
     details: Option<String>,
     scope: Scope,
@@ -489,6 +534,9 @@ impl Viewer {
 
     /// The zoom at which one pixel of the image is one pixel of the screen.
     fn actual_size(&self) -> Option<f32> {
+        if self.missing {
+            return None;
+        }
         self.fit().map(|(_, fit)| 1.0 / (fit * self.scale))
     }
 
@@ -561,6 +609,7 @@ impl Viewer {
     /// lands on a page directly rather than by stepping to it, and must reset the same things.
     fn show_page(&mut self, page: usize) {
         self.page = page;
+        self.stepped = None;
         self.fit_view();
         // A new page has no old turn decoded to keep up.
         self.shown = self.turns;
@@ -619,7 +668,11 @@ impl Viewer {
 
     /// Whether the bottom pill has anything to hold: page controls, a transport or a scrubber.
     pub(crate) fn has_controls(&self) -> bool {
-        self.document || self.pages > 1 || self.transport.is_some() || self.scrubber.is_some()
+        !self.missing
+            && (self.document
+                || self.pages > 1
+                || self.transport.is_some()
+                || self.scrubber.is_some())
     }
 
     /// Put the find panel away and hand the keys back to the page.
@@ -748,6 +801,15 @@ impl Render for Viewer {
             self.focused = true;
         }
         self.scale = window.scale_factor();
+        if let Some(region) = self.revealing {
+            match self.fit() {
+                Some(_) => {
+                    self.revealing = None;
+                    self.zoom_to(&region);
+                }
+                None => cx.on_next_frame(window, |_, _, cx| cx.notify()),
+            }
+        }
         let (zoom, offset, page, pages) = (self.zoom, self.offset, self.page, self.pages);
         let name: SharedString = self
             .path
@@ -818,6 +880,12 @@ impl Render for Viewer {
         let paged = self.paged();
         let marks = self.row_marks(cx);
         let layer = annotate::layer(self, &marks, cx);
+        let stand_in = self.missing.then(|| self.page_box());
+        let changed = self.header.zip(
+            marks
+                .iter()
+                .find_map(|m| m.region.of.filter(|of| Some(*of) != self.header)),
+        );
         let tools = annotate::tools(self, cx);
         let hint = self
             .hint
@@ -837,6 +905,12 @@ impl Render for Viewer {
         // ponytail: they share PDFium's one lock with the page itself, so a jump can wait behind a
         // screenful of thumbnails; render the page first if that shows up.
         let strip = (strip_width > px(0.)).then(|| {
+            let mut counts = vec![0usize; pages];
+            for mark in &marks {
+                if let Some(count) = counts.get_mut(mark.region.page as usize) {
+                    *count += 1;
+                }
+            }
             let (primary, muted, radius, tile) = (
                 cx.theme().primary,
                 cx.theme().muted_foreground,
@@ -877,6 +951,7 @@ impl Render for Viewer {
                                                 preview::decoded(&source, window, cx).flatten();
                                             let frame = strip_frame(shape);
                                             div()
+                                                .relative()
                                                 .w(frame.width)
                                                 .h(frame.height)
                                                 .flex_none()
@@ -889,6 +964,28 @@ impl Render for Viewer {
                                                 .overflow_hidden()
                                                 .bg(tile)
                                                 .child(img(source).size_full().rounded(radius))
+                                                .when(counts[index] > 0, |thumb| {
+                                                    thumb.child(
+                                                        div()
+                                                            .absolute()
+                                                            .top_1()
+                                                            .right_1()
+                                                            .h(px(16.))
+                                                            .min_w(px(16.))
+                                                            .px_1()
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .rounded_full()
+                                                            .border_1()
+                                                            .border_color(white())
+                                                            .bg(black().opacity(0.9))
+                                                            .text_color(white())
+                                                            .text_size(px(10.))
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .child(counts[index].to_string()),
+                                                    )
+                                                })
                                         })
                                         .child(
                                             div()
@@ -996,6 +1093,8 @@ impl Render for Viewer {
                     }
                     "n" if reading && this.row.is_some() => this.toggle_hidden(cx),
                     "a" if reading => this.toggle_annotate(cx),
+                    "[" if reading => this.step_mark(-1, cx),
+                    "]" if reading => this.step_mark(1, cx),
                     "delete" | "backspace" if reading => this.ask_delete(cx),
                     "up" | "down" if reading && overlay => {
                         step_row(if ev.keystroke.key == "up" { -1 } else { 1 }, cx);
@@ -1091,7 +1190,7 @@ impl Render for Viewer {
                                                 .left_0()
                                                 .size_full()
                                         })
-                                        .children((!bare).then(|| {
+                                        .children((!bare && !self.missing).then(|| {
                                             // `flex_shrink_0` keeps `relative(zoom)` past 1.
                                             // The id is what lets gpui keep a GIF's frame clock.
                                             img(picture)
@@ -1103,6 +1202,17 @@ impl Render for Viewer {
                                                 .left(offset.x)
                                                 .top(offset.y)
                                                 .object_fit(ObjectFit::Contain)
+                                        }))
+                                        .children(stand_in.map(|page| {
+                                            div()
+                                                .absolute()
+                                                .left(page.origin.x)
+                                                .top(page.origin.y)
+                                                .w(page.size.width)
+                                                .h(page.size.height)
+                                                .border_2()
+                                                .border_dashed()
+                                                .border_color(white().opacity(0.45))
                                         }))
                                         // Hit boxes over the page, for the hits that are on it.
                                         .when(!hits.is_empty(), |area| {
@@ -1153,6 +1263,107 @@ impl Render for Viewer {
                     .flex()
                     .justify_center()
                     .child(div().max_w(px(560.)).occlude().child(banner))
+            }))
+            .when(self.missing, |viewer| {
+                let count = marks.len();
+                let row = self.location(cx).and_then(|location| location.row);
+                viewer.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            v_flex()
+                                .items_center()
+                                .gap_2()
+                                .max_w(px(340.))
+                                .px_5()
+                                .py_4()
+                                .rounded(px(8.))
+                                .bg(pill)
+                                .text_center()
+                                .occlude()
+                                .child(
+                                    Icon::empty()
+                                        .path("icons/file-x.svg")
+                                        .size(px(40.))
+                                        .text_color(cx.theme().warning),
+                                )
+                                .child("File not found")
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_family("monospace")
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(self.path.display().to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "{count} {} kept with this item. They line up again once the file is found.",
+                                            match count {
+                                                1 => "annotation is",
+                                                _ => "annotations are",
+                                            }
+                                        )),
+                                )
+                                .children(row.map(|row| {
+                                    Button::new("locate-file")
+                                        .label("Locate file…")
+                                        .small()
+                                        .on_click(move |_, window, cx| {
+                                            table::TablePanelHandle::update(cx, |table, cx| {
+                                                table.locate_file(row, window, cx)
+                                            })
+                                        })
+                                })),
+                        ),
+                )
+            })
+            .children(changed.map(|((width, height), (was_width, was_height))| {
+                div()
+                    .absolute()
+                    .top(px(68.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .max_w(px(520.))
+                            .px_3()
+                            .py_1p5()
+                            .rounded(px(6.))
+                            .bg(cx.theme().popover)
+                            .text_color(cx.theme().popover_foreground)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .shadow_md()
+                            .text_size(px(13.))
+                            .occlude()
+                            .child(
+                                Icon::new(IconName::TriangleAlert)
+                                    .small()
+                                    .text_color(cx.theme().warning),
+                            )
+                            .child("This image changed since it was annotated. Regions may not line up.")
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .whitespace_nowrap()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!(
+                                        "{was_width} × {was_height} → {width} × {height}"
+                                    )),
+                            ),
+                    )
             }))
             // Bottom pill: page controls (even for 1 page, or a TIFF stack), transport or scrubber.
             .when(

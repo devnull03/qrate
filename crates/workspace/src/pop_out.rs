@@ -304,7 +304,7 @@ impl PopOut {
             .zip(self.table())
             .map(|(row, state)| {
                 let delegate = state.read(cx).delegate();
-                (viewer::previewable(delegate, row), delegate.row_id(row))
+                (viewer::shown_file(delegate, row, cx), delegate.row_id(row))
             })
             .unwrap_or_default();
         let showing = self.viewer.as_ref().map(|viewer| {

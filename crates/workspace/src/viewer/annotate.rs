@@ -17,8 +17,8 @@ use gpui_component::{
 use settings::history::Origin;
 use settings::project::RowId;
 
-use crate::viewer::Viewer;
 use crate::viewer::regions::{self, Grip, Rect};
+use crate::viewer::{Scope, Viewer};
 
 /// Annotate mode, the tool in hand, and whether regions are hidden. App-wide, since stepping to the
 /// next row builds a new viewer and should not put the pen down.
@@ -36,6 +36,37 @@ impl Global for Annotating {}
 pub(crate) struct Lit(pub Option<NoteId>);
 
 impl Global for Lit {}
+
+/// The region a Notes card was clicked for, which the viewer showing its row turns to and zooms on.
+#[derive(Default)]
+pub(crate) struct Reveal(pub Option<NoteId>);
+
+impl Global for Reveal {}
+
+/// Show region `id` in a viewer: the pop-out's when the click came from there, else the open
+/// overlay if it shows the row, else a new one over the workspace.
+pub(crate) fn reveal(id: NoteId, in_pop_out: bool, window: &mut Window, cx: &mut App) {
+    let Some(row_id) = Diagnostics::note(id, cx).and_then(|note| note.location.row_id) else {
+        return;
+    };
+    let shown = crate::viewer::viewer_in(Scope::Workspace, cx)
+        .or_else(|| crate::viewer::viewer_in(Scope::Centre, cx))
+        .is_some_and(|viewer| viewer.read(cx).row == Some(row_id));
+    if !in_pop_out && !shown {
+        let file = cx
+            .try_global::<table::TableStateHandle>()
+            .and_then(|handle| handle.0.upgrade())
+            .and_then(|table| {
+                let delegate = table.read(cx).delegate();
+                crate::viewer::shown_file(delegate, delegate.row_of(row_id)?, cx)
+            });
+        let Some(file) = file else {
+            return;
+        };
+        crate::viewer::open_viewer(file, Some(row_id), Scope::Workspace, window, cx);
+    }
+    cx.set_global(Reveal(Some(id)));
+}
 
 /// One of the row's region notes, numbered in the order they were filed.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -220,11 +251,11 @@ impl Viewer {
 
     /// Whether this viewer can mark: annotate mode is on and the file belongs to a row.
     pub(super) fn annotating(&self, cx: &App) -> bool {
-        self.row.is_some() && state(cx).0
+        self.row.is_some() && !self.missing && state(cx).0
     }
 
     pub(super) fn toggle_annotate(&mut self, cx: &mut Context<Self>) {
-        if self.row.is_none() {
+        if self.row.is_none() || self.missing {
             return;
         }
         let annotating = cx.default_global::<Annotating>();
@@ -414,7 +445,8 @@ impl Viewer {
         let had = self.composer.take().is_some()
             || self.deleting.take().is_some()
             || self.draw.take().is_some()
-            || self.grab.take().is_some();
+            || self.grab.take().is_some()
+            || self.stepped.take().is_some();
         if !had && self.selected.is_some() {
             self.select(None, cx);
             return true;
@@ -444,14 +476,88 @@ impl Viewer {
     /// What the foot of the stage says while annotate mode waits for a first region on this page.
     pub(super) fn standing_hint(&self, marks: &[Mark], cx: &App) -> Option<SharedString> {
         let (_, tool, hidden) = state(cx);
-        let empty = !marks.iter().any(|m| m.region.page as usize == self.page);
-        (self.annotating(cx) && empty && !hidden && self.composer.is_none())
+        let on_page: Vec<_> = marks
+            .iter()
+            .filter(|m| m.region.page as usize == self.page)
+            .collect();
+        if let Some(at) = self
+            .stepped
+            .and_then(|id| on_page.iter().position(|m| m.id == id))
+            .filter(|_| !hidden)
+        {
+            return Some(
+                format!(
+                    "{} of {} on this page · [ previous · ] next",
+                    at + 1,
+                    on_page.len()
+                )
+                .into(),
+            );
+        }
+        (self.annotating(cx) && on_page.is_empty() && !hidden && self.composer.is_none())
             .then_some(match tool {
                 Tool::Rect => "Drag to mark a region, click to drop a pin",
                 Tool::Pin => "Click to drop a pin",
                 Tool::Select => return None,
             })
             .map(SharedString::from)
+    }
+
+    /// Turn to the region the Notes panel asked for, zooming once the page is laid out.
+    pub(super) fn follow_reveal(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = cx.try_global::<Reveal>().and_then(|reveal| reveal.0) else {
+            return;
+        };
+        let Some(mark) = self.row_marks(cx).into_iter().find(|m| m.id == id) else {
+            return;
+        };
+        if mark.region.page as usize != self.page {
+            self.show_page(mark.region.page as usize);
+        }
+        self.stepped = Some(id);
+        self.revealing = Some(mark.region);
+        cx.notify();
+    }
+
+    /// Zoom to the previous or next region on this page, stopping at either end as pages do.
+    pub(super) fn step_mark(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let mut on_page = self.row_marks(cx);
+        on_page.retain(|m| m.region.page as usize == self.page);
+        let last = on_page.len() as isize - 1;
+        if last < 0 || hidden(cx) {
+            return;
+        }
+        let at = self
+            .stepped
+            .and_then(|id| on_page.iter().position(|m| m.id == id));
+        let next = match at {
+            Some(at) => (at as isize + delta).clamp(0, last),
+            None if delta < 0 => last,
+            None => 0,
+        };
+        let mark = on_page[next as usize];
+        self.stepped = Some(mark.id);
+        self.zoom_to(&mark.region);
+        cx.notify();
+    }
+
+    /// Centre `region` and zoom until it spans half the frame, the way W fits the width.
+    pub(super) fn zoom_to(&mut self, region: &Region) {
+        let Some((image, fit)) = self.fit() else {
+            return;
+        };
+        let [l, t, r, b] = regions::shown(region, self.shown);
+        let (width, height) = (image.width * fit, image.height * fit);
+        let frame = self.frame.get().size;
+        let zoom = (f32::from(frame.width) * 0.5 / (width * (r - l)))
+            .min(f32::from(frame.height) * 0.5 / (height * (b - t)))
+            .clamp(1., 8.);
+        self.zoom = zoom;
+        self.offset = point(
+            px(width * zoom * (0.5 - (l + r) / 2.)),
+            px(height * zoom * (0.5 - (t + b) / 2.)),
+        );
+        self.clamp_pan();
     }
 
     pub(super) fn toggle_hidden(&mut self, cx: &mut Context<Self>) {
@@ -480,8 +586,8 @@ pub(super) fn buttons(this: &Viewer, cx: &mut Context<Viewer>) -> AnyElement {
                 .icon(Icon::empty().path("icons/square-pen.svg"))
                 .ghost()
                 .small()
-                .selected(on && this.row.is_some())
-                .disabled(this.row.is_none())
+                .selected(on && this.row.is_some() && !this.missing)
+                .disabled(this.row.is_none() || this.missing)
                 .tooltip("Annotate (A)")
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_annotate(cx))),
         )
@@ -547,7 +653,7 @@ pub(super) fn layer(this: &Viewer, marks: &[Mark], cx: &mut Context<Viewer>) -> 
         false => Vec::new(),
     };
     let lit = cx.try_global::<Lit>().and_then(|lit| lit.0);
-    let focus = this.hovered.or(lit).or(this.selected);
+    let focus = this.hovered.or(this.stepped).or(lit).or(this.selected);
     let focus_box = focus.and_then(|id| placed.iter().find(|(m, ..)| m.id == id).map(|p| p.2));
     let crowded = focus_box.is_some_and(|f| {
         placed
@@ -566,7 +672,7 @@ pub(super) fn layer(this: &Viewer, marks: &[Mark], cx: &mut Context<Viewer>) -> 
     let badges = regions::badges(&boxes);
 
     let card = focus
-        .filter(|id| Some(*id) == this.hovered)
+        .filter(|id| Some(*id) == this.hovered.or(this.stepped))
         .and_then(|id| {
             Some((
                 Diagnostics::note(id, cx)?,
@@ -932,7 +1038,11 @@ pub(super) fn layer(this: &Viewer, marks: &[Mark], cx: &mut Context<Viewer>) -> 
         }))
         .children(placed.iter().map(|(m, rect, b)| {
             let pin = rect[0] == rect[2] && rect[1] == rect[3];
-            let opacity = if dim(m.id) { 0.4 } else { 1. };
+            let opacity = match (dim(m.id), this.missing) {
+                (true, _) => 0.4,
+                (false, true) => 0.5,
+                (false, false) => 1.,
+            };
             match pin {
                 true => div()
                     .absolute()
@@ -963,12 +1073,16 @@ pub(super) fn layer(this: &Viewer, marks: &[Mark], cx: &mut Context<Viewer>) -> 
                     .h(b.size.height)
                     .rounded(px(1.))
                     .border(px(1.5))
-                    .border_color(black().opacity(0.7))
+                    .border_color(match this.missing {
+                        true => transparent_black(),
+                        false => black().opacity(0.7),
+                    })
                     .opacity(opacity)
                     .child(
                         div()
                             .size_full()
                             .border(px(1.5))
+                            .when(this.missing, |inner| inner.border_dashed())
                             .border_color(white.opacity(0.92))
                             .when(focus == Some(m.id), |inner| inner.bg(white.opacity(0.18))),
                     )
@@ -1155,7 +1269,11 @@ mod tests {
             )
             .unwrap();
             let viewer = crate::viewer::build(
-                "/nonexistent/qrate-select.png".into(),
+                {
+                    let path = std::env::temp_dir().join("qrate-select.png");
+                    std::fs::write(&path, b"").unwrap();
+                    path
+                },
                 Some(3),
                 Scope::Workspace,
                 window,
@@ -1181,6 +1299,167 @@ mod tests {
                 assert!(marks(3, cx).is_empty());
                 assert_eq!(viewer.selected, None);
             });
+        });
+    }
+
+    /// `]` zooms to the first region on the page and centres it; `[` from there stays put at the
+    /// first, as a page turn stops at the first page.
+    #[gpui::test]
+    fn stepping_zooms_to_each_region_on_the_page(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            gpui_component::init(cx);
+            let location = Location {
+                dataset: DATASET_MAIN.into(),
+                row: Some(0),
+                row_id: Some(4),
+                column: None,
+            };
+            let corner = Region {
+                page: 0,
+                x: 0,
+                y: 0,
+                w: 2500,
+                h: 2500,
+                of: None,
+            };
+            let first = Diagnostics::file_note(
+                location.clone(),
+                Some(corner),
+                None,
+                "a".into(),
+                Origin::Drawn,
+                cx,
+            );
+            Diagnostics::file_note(
+                location,
+                Some(Region { x: 5000, ..corner }),
+                None,
+                "b".into(),
+                Origin::Drawn,
+                cx,
+            );
+            let viewer = crate::viewer::build(
+                {
+                    let path = std::env::temp_dir().join("qrate-step.png");
+                    std::fs::write(&path, b"").unwrap();
+                    path
+                },
+                Some(4),
+                Scope::Workspace,
+                window,
+                cx,
+            );
+            viewer.update(cx, |viewer, cx| {
+                viewer.frame.set(gpui::Bounds {
+                    origin: gpui::point(gpui::px(0.), gpui::px(0.)),
+                    size: gpui::size(gpui::px(400.), gpui::px(300.)),
+                });
+                viewer.pixels = Some((400, 300));
+                viewer.step_mark(1, cx);
+                assert_eq!(viewer.stepped, first);
+                assert_eq!(viewer.zoom, 2.);
+                assert_eq!(
+                    (viewer.offset.x, viewer.offset.y),
+                    (gpui::px(200.), gpui::px(150.))
+                );
+                viewer.step_mark(-1, cx);
+                assert_eq!(viewer.stepped, first);
+                viewer.step_mark(1, cx);
+                assert_ne!(viewer.stepped, first);
+                assert!(
+                    viewer
+                        .standing_hint(&marks(4, cx), cx)
+                        .is_some_and(|h| h.starts_with("2 of 2"))
+                );
+            });
+        });
+    }
+
+    /// A row whose file is gone still shows its regions, on a page of the size they were marked
+    /// on, but cannot take new ones.
+    #[gpui::test]
+    fn a_missing_file_keeps_its_regions_and_turns_annotating_off(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            gpui_component::init(cx);
+            cx.default_global::<Annotating>().on = true;
+            let location = Location {
+                dataset: DATASET_MAIN.into(),
+                row: Some(0),
+                row_id: Some(5),
+                column: None,
+            };
+            let region = Region {
+                page: 0,
+                x: 0,
+                y: 0,
+                w: 2500,
+                h: 2500,
+                of: Some((4000, 3000)),
+            };
+            Diagnostics::file_note(location, Some(region), None, "a".into(), Origin::Drawn, cx);
+            let viewer = crate::viewer::build(
+                "/nonexistent/qrate-gone.tif".into(),
+                Some(5),
+                Scope::Workspace,
+                window,
+                cx,
+            );
+            viewer.update(cx, |viewer, cx| {
+                assert!(viewer.missing);
+                assert_eq!(viewer.pixels, Some((4000, 3000)));
+                assert!(!viewer.annotating(cx));
+                assert!(!viewer.has_controls());
+            });
+        });
+    }
+
+    /// Clicking a Notes card for a row the overlay already shows turns it to the region's page and
+    /// zooms there once the page has a size.
+    #[gpui::test]
+    fn revealing_a_region_turns_to_its_page_and_zooms(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let (id, region) = cx.update(|window, cx| {
+            gpui_component::init(cx);
+            let location = Location {
+                dataset: DATASET_MAIN.into(),
+                row: Some(0),
+                row_id: Some(6),
+                column: None,
+            };
+            let region = Region {
+                page: 2,
+                x: 2500,
+                y: 2500,
+                w: 2500,
+                h: 2500,
+                of: None,
+            };
+            let id =
+                Diagnostics::file_note(location, Some(region), None, "a".into(), Origin::Drawn, cx)
+                    .unwrap();
+            let path = std::env::temp_dir().join("qrate-reveal.png");
+            std::fs::write(&path, b"").unwrap();
+            crate::viewer::open_viewer(path, Some(6), Scope::Workspace, window, cx);
+            crate::viewer::reveal(id, false, window, cx);
+            (id, region)
+        });
+        cx.update(|window, cx| {
+            let viewer = crate::viewer::viewer_in(Scope::Workspace, cx).unwrap();
+            viewer.update(cx, |viewer, _| {
+                assert_eq!(viewer.page, 2);
+                assert_eq!(viewer.stepped, Some(id));
+                assert_eq!(viewer.revealing, Some(region));
+                viewer.frame.set(gpui::Bounds {
+                    origin: gpui::point(gpui::px(0.), gpui::px(0.)),
+                    size: gpui::size(gpui::px(400.), gpui::px(300.)),
+                });
+                viewer.pixels = Some((400, 300));
+                viewer.zoom_to(&region);
+                assert_eq!(viewer.zoom, 2.);
+            });
+            crate::viewer::close_viewer(window, cx);
         });
     }
 }
