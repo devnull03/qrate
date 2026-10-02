@@ -16,6 +16,7 @@ qrate <COMMAND> [OPTIONS]
 | [`qrate app path`](#qrate-app-path) | Print the path of the desktop app |
 | [`qrate app launch`](#qrate-app-launch) | Start qrate without a project |
 | [`qrate project info`](#qrate-project-info) | Show a summary of the open project |
+| [`qrate export`](#qrate-export) | Write the open project to a file |
 | [`qrate agent`](#qrate-agent) | Read the open project as an agent |
 | [`qrate completion`](#qrate-completion) | Print a completion script for a shell |
 | [`qrate man`](#qrate-man) | Write the manual pages into a folder |
@@ -123,6 +124,48 @@ output. If qrate is not running, the command exits with `3`.
 | Option | Meaning |
 |---|---|
 | `--format human` or `--format json` | Choose the output. The default is `human` in a terminal and `json` in a pipe. |
+
+## qrate export
+
+```sh
+qrate export --list
+qrate export csv catalog.csv
+qrate export zip catalog.zip --overwrite
+```
+
+Writes the project that is open in qrate to a file. The file holds what is on screen, so
+edits that are not saved yet are included. The result is the same as the matching entry in
+**File ▸ Export**, but qrate shows no dialog.
+
+`--list` shows the formats that the running qrate can write:
+
+```text
+csv                      CSV
+xlsx                     Excel (.xlsx)
+jsonld                   JSON-LD
+csl                      Zotero (CSL-JSON)
+zip                      ZIP Archive
+```
+
+The list comes from qrate, not from the command. A newer qrate can show more formats. An
+enabled plugin that has exports adds one line for each, with the id `<plugin>/<export>`.
+The Google Sheets entries of the menu are not in the list, because they do not write a file.
+
+In a pipe, `--list` prints JSON: `{"exports":[{"id":"csv","label":"CSV"}]}`.
+
+`csl` uses the field mapping that the project saved the last time you exported to Zotero
+from the menu. If the project has none, qrate derives the mapping from the column types.
+
+On success the command prints the full path of the file. If the file already exists, the
+command exits with `1` and writes nothing, unless you give `--overwrite`. If qrate does not
+know the format, or has no project open, the command exits with `1` and prints
+`{"error":"unknown_export"}` or `{"error":"no_active_project"}` on standard output. If qrate
+is not running, the command exits with `3`.
+
+| Option | Meaning |
+|---|---|
+| `--list` | Show the formats and do not export. |
+| `--overwrite` | Replace the output file if it exists. |
 
 ## qrate agent
 

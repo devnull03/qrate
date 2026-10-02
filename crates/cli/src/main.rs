@@ -4,6 +4,7 @@ use std::{
     net::TcpStream,
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, ExitStatus, Stdio},
+    time::Duration,
 };
 
 use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
@@ -13,6 +14,8 @@ use serde_json::{Value, json};
 const REFUSED: i32 = 1;
 const USAGE: i32 = 2;
 const UNAVAILABLE: i32 = 3;
+/// How long a read may wait for qrate. An export has none: a ZIP copies every linked file.
+const ANSWER_TIMEOUT: Option<Duration> = Some(Duration::from_secs(30));
 
 const AFTER_HELP: &str = "\
 Exit codes:
@@ -92,6 +95,23 @@ enum Command {
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
+    },
+    /// Write the open project to a file, in any format File ▸ Export offers.
+    ///
+    /// Unsaved edits are included. `--list` shows the formats the running qrate can write, which
+    /// include those of enabled plugins.
+    Export {
+        /// A format id from `--list`, such as `csv`, or a plugin's `<plugin>/<export>`.
+        #[arg(required_unless_present = "list", requires = "output")]
+        export: Option<String>,
+        /// The file to write.
+        output: Option<PathBuf>,
+        /// List the formats instead of exporting.
+        #[arg(long, conflicts_with = "export")]
+        list: bool,
+        /// Replace OUTPUT if it already exists.
+        #[arg(long)]
+        overwrite: bool,
     },
     /// Read the open project as an agent: JSON in on stdin, JSON out on stdout.
     #[command(after_help = AGENT_AFTER_HELP)]
@@ -250,6 +270,14 @@ fn main() {
         Some(Command::Project {
             command: ProjectCommand::Info { format },
         }) => project_info(Format::json(format)),
+        Some(Command::Export { list: true, .. }) => export_list(Format::json(None)),
+        Some(Command::Export {
+            export: Some(export),
+            output: Some(output),
+            overwrite,
+            ..
+        }) => export_to(&export, &output, overwrite),
+        Some(Command::Export { .. }) => unreachable!("clap requires an export and an output"),
         Some(Command::Agent { command, .. })
             if !matches!(command, AgentCommand::Overview) && std::io::stdin().is_terminal() =>
         {
@@ -328,7 +356,7 @@ struct AppControlDescriptor {
 }
 
 fn project_info(json: bool) -> Result<Option<ExitStatus>, Failure> {
-    let body = match app_request("GET", "/v1/project/info", None, None)? {
+    let body = match app_request("GET", "/v1/project/info", None, None, ANSWER_TIMEOUT)? {
         (409, _) if !json => {
             return Err(Failure::Other(
                 "no project is active; run `qrate <PROJECT.qrate>`".into(),
@@ -361,7 +389,7 @@ fn project_report(project: &Value, json: bool) -> String {
 }
 
 fn app_status(json: bool) -> Result<Option<ExitStatus>, Failure> {
-    let project = match app_request("GET", "/v1/status", None, None) {
+    let project = match app_request("GET", "/v1/status", None, None, ANSWER_TIMEOUT) {
         Err(Failure::Unavailable(_)) => None,
         response => {
             let status: Value = serde_json::from_str(&accept(response?)?)
@@ -387,6 +415,59 @@ fn status_report(project: Option<Value>, json: bool) -> String {
     }
 }
 
+fn export_list(json: bool) -> Result<Option<ExitStatus>, Failure> {
+    let body = accept(app_request(
+        "GET",
+        "/v1/exports",
+        None,
+        None,
+        ANSWER_TIMEOUT,
+    )?)?;
+    if json {
+        print(&body);
+        return Ok(None);
+    }
+    let listing: Value = serde_json::from_str(&body)
+        .map_err(|error| Failure::Other(format!("invalid export list: {error}")))?;
+    for export in listing["exports"].as_array().into_iter().flatten() {
+        print(&format!(
+            "{:<24} {}",
+            export["id"].as_str().unwrap_or_default(),
+            export["label"].as_str().unwrap_or_default()
+        ));
+    }
+    Ok(None)
+}
+
+fn export_to(export: &str, output: &Path, overwrite: bool) -> Result<Option<ExitStatus>, Failure> {
+    // qrate resolves the path, and its working directory is not this one.
+    let output = std::path::absolute(output)
+        .map_err(|error| Failure::Usage(format!("cannot resolve {}: {error}", output.display())))?;
+    if !overwrite && output.exists() {
+        return Err(Failure::Other(format!(
+            "{} already exists; pass --overwrite to replace it",
+            display_path(&output)
+        )));
+    }
+    let path = output
+        .to_str()
+        .ok_or_else(|| Failure::Usage(format!("{} is not valid Unicode", output.display())))?;
+    let request = json!({ "export": export, "path": path }).to_string();
+    match app_request("POST", "/v1/export", None, Some(&request), None)? {
+        (500, body) => Err(Failure::Other(
+            serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|error| error["detail"].as_str().map(str::to_owned))
+                .unwrap_or(body),
+        )),
+        response => {
+            accept(response)?;
+            print(&display_path(&output));
+            Ok(None)
+        }
+    }
+}
+
 fn agent_call(
     command: AgentCommand,
     agent: Option<String>,
@@ -398,6 +479,7 @@ fn agent_call(
         "/v1/agent",
         agent.as_deref(),
         Some(&request),
+        ANSWER_TIMEOUT,
     )?)?;
     print(&body);
     Ok(None)
@@ -438,6 +520,7 @@ fn app_request(
     route: &str,
     agent: Option<&str>,
     body: Option<&str>,
+    timeout: Option<Duration>,
 ) -> Result<(u16, String), Failure> {
     let not_running = || Failure::Unavailable("qrate is not running".into());
     let path = dirs::data_local_dir()
@@ -458,7 +541,6 @@ fn app_request(
         .filter(|address| address.starts_with("127.0.0.1:"))
         .ok_or_else(|| Failure::Other("invalid app-control endpoint".into()))?;
     let mut stream = TcpStream::connect(address).map_err(|_| not_running())?;
-    let timeout = Some(std::time::Duration::from_secs(30));
     let _ = stream
         .set_read_timeout(timeout)
         .and_then(|()| stream.set_write_timeout(timeout));
@@ -710,6 +792,33 @@ mod tests {
         ));
         assert!(Cli::try_parse_from(["qrate", "project"]).is_err());
         assert!(Cli::try_parse_from(["qrate", "project", "verify"]).is_err());
+    }
+
+    #[test]
+    fn parses_export_forms() {
+        let parsed = |args: &[&str]| {
+            parse_args(std::iter::once("qrate").chain(args.iter().copied())).map(|cli| cli.command)
+        };
+        assert!(matches!(
+            parsed(&["export", "--list"]),
+            Ok(Some(Command::Export {
+                list: true,
+                export: None,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            parsed(&["export", "islandora/workbench", "out.json", "--overwrite"]),
+            Ok(Some(Command::Export { export: Some(ref id), output: Some(_), overwrite: true, .. }))
+                if id == "islandora/workbench"
+        ));
+        for invalid in [
+            &["export"][..],
+            &["export", "csv"],
+            &["export", "--list", "csv"],
+        ] {
+            assert!(parsed(invalid).is_err(), "{invalid:?} parsed");
+        }
     }
 
     #[test]
