@@ -114,6 +114,13 @@ fn prepare() -> Result<AgentRuntime, String> {
             )
         })
         .ok_or_else(|| "qrate cannot locate its own executable".to_owned())?;
+    if !cli.is_file() {
+        return Err(format!(
+            "{} is missing, so the assistant could not read the project; reinstall qrate, or in \
+             a checkout run `cargo build -p qrate-cli`",
+            cli.display()
+        ));
+    }
     Ok(AgentRuntime {
         program,
         leading_args: Vec::new(),
