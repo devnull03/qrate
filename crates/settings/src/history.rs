@@ -20,7 +20,7 @@ use gpui::App;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
-use crate::project::{NoteId, Region, RowId};
+use crate::project::{NoteId, NoteKind, Region, RowId};
 
 pub type EntryId = i64;
 
@@ -121,6 +121,10 @@ pub enum Change {
         region_before: Option<Region>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region_after: Option<Region>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind_before: Option<NoteKind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind_after: Option<NoteKind>,
     },
 }
 
@@ -192,6 +196,8 @@ impl Change {
                 id,
                 region_before,
                 region_after,
+                kind_before,
+                kind_after,
             } => Change::Note {
                 row,
                 column,
@@ -200,6 +206,8 @@ impl Change {
                 id,
                 region_before: region_after,
                 region_after: region_before,
+                kind_before: kind_after,
+                kind_after: kind_before,
             },
         }
     }
@@ -648,6 +656,8 @@ mod tests {
                     of: Some((4000, 3000)),
                 }),
                 region_after: None,
+                kind_before: Some(crate::project::NoteKind::Question),
+                kind_after: None,
             }],
             None,
         );
@@ -670,12 +680,15 @@ mod tests {
     fn a_note_change_from_before_ids_still_reads() {
         let old = r#"{"Note":{"row":3,"column":"Title","before":null,"after":"verso"}}"#;
         let Change::Note {
-            id, region_after, ..
+            id,
+            region_after,
+            kind_after,
+            ..
         } = serde_json::from_str(old).unwrap()
         else {
             panic!("not a note change");
         };
-        assert_eq!((id, region_after), (None, None));
+        assert_eq!((id, region_after, kind_after), (None, None, None));
     }
 
     /// The panel pages newest first, a name sticks to its entry until it is taken away, and

@@ -400,6 +400,7 @@ fn sheet_notes(file: &Path, grid: &ExportGrid) -> anyhow::Result<Vec<SheetNote>>
             author: note.author,
             id: Some(note.id),
             region: note.region.and_then(|r| serde_json::to_string(&r).ok()),
+            kind: note.kind.map(|kind| kind.key().to_string()),
         })
         .collect::<Vec<_>>();
     Ok(qrate_export::sheet_notes(

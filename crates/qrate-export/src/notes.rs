@@ -18,6 +18,8 @@ pub struct ProjectNote {
     pub id: Option<i64>,
     /// Where on the row's file the note points, as the app's JSON. `None` for a note on the data.
     pub region: Option<String>,
+    /// Note, transcription or question, as stored; `None` when its author did not say.
+    pub kind: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,7 +39,7 @@ pub fn read_project_notes(conn: &Connection) -> rusqlite::Result<Vec<ProjectNote
         .prepare("SELECT name FROM pragma_table_info('__notes')")?
         .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
-    let columns = ["created_at", "author", "note_id", "region"]
+    let columns = ["created_at", "author", "note_id", "region", "kind"]
         .map(|name| match present.iter().any(|p| p == name) {
             true => name.to_string(),
             false => format!("NULL AS {name}"),
@@ -57,6 +59,7 @@ pub fn read_project_notes(conn: &Connection) -> rusqlite::Result<Vec<ProjectNote
             author: row.get(6)?,
             id: row.get(7)?,
             region: row.get(8)?,
+            kind: row.get(9)?,
         })
     })?
     .collect()
@@ -115,6 +118,9 @@ pub fn sheet_notes(
         if note.severity != "note" {
             scope.push(format!("{} note", note.severity));
         }
+        if let Some(kind) = note.kind.as_ref().filter(|kind| *kind != "note") {
+            scope.push(kind.clone());
+        }
         if let Some(author) = note.author.as_ref().filter(|s| !s.trim().is_empty()) {
             scope.push(author.clone());
         }
@@ -171,6 +177,7 @@ mod tests {
             created_at: None,
             id: None,
             region: None,
+            kind: None,
         };
         let placed = sheet_notes(
             &headers,

@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use gpui::{App, Global, Hsla, SharedString};
 use gpui_component::ActiveTheme as _;
 use settings::history::{Change, Entry, Origin};
-pub use settings::project::{NoteId, Region};
+pub use settings::project::{NoteId, NoteKind, Region};
 
 /// The one dataset a project can hold today. `__notes` keys by name so a second sheet is new
 /// rows rather than a new table.
@@ -189,6 +189,15 @@ pub struct NoteMeta {
     pub filed: Option<Filed>,
     /// Where on the row's file it points; `None` for a note on the data itself.
     pub region: Option<Region>,
+    pub kind: Option<NoteKind>,
+}
+
+/// Everything a note write can change.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Body {
+    message: SharedString,
+    region: Option<Region>,
+    kind: Option<NoteKind>,
 }
 
 impl Diagnostic {
@@ -340,6 +349,7 @@ impl Diagnostics {
                         id: next - 1,
                         filed: None,
                         region: None,
+                        kind: None,
                     }
                 });
                 continue;
@@ -531,6 +541,7 @@ impl Diagnostics {
     pub fn file_note(
         location: Location,
         region: Option<Region>,
+        kind: Option<NoteKind>,
         message: SharedString,
         origin: Origin,
         cx: &mut App,
@@ -539,36 +550,50 @@ impl Diagnostics {
             return None;
         }
         let id = cx.default_global::<Self>().next_note_id();
-        Self::put(id, location, Some((message, region)), origin, cx);
+        let body = Body {
+            message,
+            region,
+            kind,
+        };
+        Self::put(id, location, Some(body), origin, cx);
         Some(id)
     }
 
-    /// Rewrite one note's text, keeping where it points; empty text deletes it.
-    pub fn edit_note(id: NoteId, message: SharedString, origin: Origin, cx: &mut App) {
-        let Some(note) = Self::note(id, cx) else {
+    /// Rewrite one note's text and kind, keeping where it points; empty text deletes it.
+    pub fn edit_note(
+        id: NoteId,
+        message: SharedString,
+        kind: Option<NoteKind>,
+        origin: Origin,
+        cx: &mut App,
+    ) {
+        let Some((location, mut body)) = Self::body(id, cx) else {
             return;
         };
-        let (location, region) = (
-            note.location.clone(),
-            note.note.as_ref().and_then(|n| n.region),
-        );
-        let after = (!message.trim().is_empty()).then_some((message, region));
+        body.message = message;
+        body.kind = kind;
+        let after = (!body.message.trim().is_empty()).then_some(body);
         Self::put(id, location, after, origin, cx);
     }
 
     /// Move or reshape the region one note points at.
     pub fn move_note(id: NoteId, region: Region, cx: &mut App) {
-        let Some(note) = Self::note(id, cx) else {
+        let Some((location, mut body)) = Self::body(id, cx) else {
             return;
         };
-        let (location, message) = (note.location.clone(), note.message.clone());
-        Self::put(
-            id,
-            location,
-            Some((message, Some(region))),
-            Origin::Drawn,
-            cx,
-        );
+        body.region = Some(region);
+        Self::put(id, location, Some(body), Origin::Drawn, cx);
+    }
+
+    fn body(id: NoteId, cx: &App) -> Option<(Location, Body)> {
+        let d = Self::note(id, cx)?;
+        let meta = d.note.as_ref()?;
+        let body = Body {
+            message: d.message.clone(),
+            region: meta.region,
+            kind: meta.kind,
+        };
+        Some((d.location.clone(), body))
     }
 
     /// Correct the region-less note at `location`, or file one if there is none; an empty
@@ -581,11 +606,11 @@ impl Diagnostics {
             cx,
         )
         .and_then(|d| d.note.as_ref())
-        .map(|n| n.id);
+        .map(|n| (n.id, n.kind));
         match existing {
-            Some(id) => Self::edit_note(id, message, origin, cx),
+            Some((id, kind)) => Self::edit_note(id, message, kind, origin, cx),
             None => {
-                Self::file_note(location, None, message, origin, cx);
+                Self::file_note(location, None, None, message, origin, cx);
             }
         }
     }
@@ -598,6 +623,7 @@ impl Diagnostics {
             id,
             after,
             region_after,
+            kind_after,
             ..
         } = change
         else {
@@ -615,7 +641,11 @@ impl Diagnostics {
                 .map(|n| n.id)
             })
             .unwrap_or_else(|| cx.default_global::<Self>().next_note_id());
-        let after = after.as_ref().map(|text| (text.into(), *region_after));
+        let after = after.as_ref().map(|text| Body {
+            message: text.into(),
+            region: *region_after,
+            kind: *kind_after,
+        });
         Self::put(id, location, after, origin, cx);
     }
 
@@ -633,59 +663,58 @@ impl Diagnostics {
     /// Every note write ends here: note `id` becomes `after` — filed at `location` if it is new,
     /// removed if `after` is `None` — then logged and saved together. Writes straight through to
     /// `__notes`: this is a deliberate act, not the hot path the debounced setting writer exists for.
-    fn put(
-        id: NoteId,
-        location: Location,
-        after: Option<(SharedString, Option<Region>)>,
-        origin: Origin,
-        cx: &mut App,
-    ) {
+    fn put(id: NoteId, location: Location, after: Option<Body>, origin: Origin, cx: &mut App) {
         let filed = Self::filed_now(cx);
         let author = settings::history::author(cx);
+        let before = Self::body(id, cx).map(|(_, body)| body);
+        if before == after {
+            return;
+        }
         let this = cx.default_global::<Self>();
         let at = this
             .items
             .iter()
             .position(|d| d.note.as_ref().is_some_and(|n| n.id == id));
-        let before = at.map(|ix| {
-            let d = &this.items[ix];
-            (d.message.clone(), d.note.as_ref().and_then(|n| n.region))
-        });
-        if before == after {
-            return;
-        }
         let logged = (location.dataset == DATASET_MAIN).then(|| {
             let change = Change::Note {
                 row: location.row_id,
                 column: location.column.as_ref().map(|c| c.to_string()),
-                before: before.as_ref().map(|(text, _)| text.to_string()),
-                after: after.as_ref().map(|(text, _)| text.to_string()),
+                before: before.as_ref().map(|b| b.message.to_string()),
+                after: after.as_ref().map(|b| b.message.to_string()),
                 id: Some(id),
-                region_before: before.and_then(|(_, region)| region),
-                region_after: after.as_ref().and_then(|(_, region)| *region),
+                region_before: before.as_ref().and_then(|b| b.region),
+                region_after: after.as_ref().and_then(|b| b.region),
+                kind_before: before.as_ref().and_then(|b| b.kind),
+                kind_after: after.as_ref().and_then(|b| b.kind),
             };
             Entry::new(origin, vec![change], author)
         });
         match (at, after) {
             // In place, keeping its severity and its original filing stamp: correcting a
             // transcription is not re-observing the item.
-            (Some(ix), Some((message, region))) => {
+            (Some(ix), Some(body)) => {
                 let d = &mut this.items[ix];
-                d.message = message;
+                d.message = body.message;
                 if let Some(note) = d.note.as_mut() {
-                    note.region = region;
+                    note.region = body.region;
+                    note.kind = body.kind;
                 }
             }
             (Some(ix), None) => {
                 this.items.remove(ix);
             }
-            (None, Some((message, region))) => this.items.push(Diagnostic {
+            (None, Some(body)) => this.items.push(Diagnostic {
                 location,
                 severity: Severity::Note,
                 source: Source::Note,
-                message,
+                message: body.message,
                 group: None,
-                note: Some(NoteMeta { id, filed, region }),
+                note: Some(NoteMeta {
+                    id,
+                    filed,
+                    region: body.region,
+                    kind: body.kind,
+                }),
             }),
             (None, None) => {}
         }
@@ -728,6 +757,8 @@ impl Diagnostics {
                     id: item.note.as_ref().map(|n| n.id),
                     region_before: item.note.as_ref().and_then(|n| n.region),
                     region_after: None,
+                    kind_before: item.note.as_ref().and_then(|n| n.kind),
+                    kind_after: None,
                 });
                 return false;
             };
@@ -785,6 +816,7 @@ impl Diagnostics {
                     .and_then(|f| f.author.as_ref().map(SharedString::to_string)),
                 id: note.id,
                 region: note.region,
+                kind: note.kind,
             })
             .collect();
         if let Err(err) = settings::project::write_notes(file, SOURCE_NOTE, &notes, history) {
@@ -843,6 +875,7 @@ fn load_project_notes(cx: &mut App) {
                     }),
                 },
                 region: n.region,
+                kind: n.kind,
             }),
         })
         .collect();
@@ -875,7 +908,8 @@ mod tests {
     // and the chained glob makes gpui's `test` macro shadow the `#[test]` its own expansion
     // emits, recursing until rustc's stack overflows.
     use crate::{
-        DATASET_MAIN, Diagnostic, Diagnostics, Filed, Location, Region, Severity, Source, init,
+        DATASET_MAIN, Diagnostic, Diagnostics, Filed, Location, NoteKind, Region, Severity, Source,
+        init,
     };
     use gpui::{App, SharedString, TestAppContext};
     use settings::history::Origin;
@@ -936,12 +970,14 @@ mod tests {
             Diagnostics::file_note(
                 at(Some("Date taken")),
                 None,
+                None,
                 "1962 is a guess".into(),
                 Origin::Typed,
                 cx,
             );
             Diagnostics::file_note(
                 at(None),
+                None,
                 None,
                 "whole print is faded".into(),
                 Origin::Typed,
@@ -1005,7 +1041,7 @@ mod tests {
             };
 
             for text in ["verso inscription", "same backdrop as row 12"] {
-                Diagnostics::file_note(cell.clone(), None, text.into(), Origin::Typed, cx);
+                Diagnostics::file_note(cell.clone(), None, None, text.into(), Origin::Typed, cx);
             }
             assert_eq!(
                 Diagnostics::notes_at(DATASET_MAIN, Some(1), None, cx).count(),
@@ -1068,6 +1104,7 @@ mod tests {
             let id = Diagnostics::file_note(
                 row.clone(),
                 Some(stamp),
+                Some(NoteKind::Transcription),
                 "customs stamp, Lisbon".into(),
                 Origin::Typed,
                 cx,
@@ -1087,7 +1124,7 @@ mod tests {
             Diagnostics::move_note(id, moved, cx);
             assert_eq!(region(cx), Some(moved));
 
-            Diagnostics::edit_note(id, "".into(), Origin::Clear, cx);
+            Diagnostics::edit_note(id, "".into(), None, Origin::Clear, cx);
             assert!(Diagnostics::note(id, cx).is_none());
 
             // The deletion's inverse, as a restore replays it, files it back under the same id.
@@ -1099,9 +1136,15 @@ mod tests {
                 id: Some(id),
                 region_before: Some(moved),
                 region_after: None,
+                kind_before: Some(NoteKind::Transcription),
+                kind_after: None,
             };
             Diagnostics::apply_note(row, &deleted.inverse(), Origin::Restore(1), cx);
             assert_eq!(region(cx), Some(moved));
+            assert_eq!(
+                Diagnostics::note(id, cx).and_then(|d| d.note.as_ref()?.kind),
+                Some(NoteKind::Transcription)
+            );
             assert_eq!(
                 Diagnostics::note(id, cx).map(|d| d.message.as_ref()),
                 Some("customs stamp, Lisbon")
@@ -1159,6 +1202,7 @@ mod tests {
                     author: None,
                     id: 1,
                     region: None,
+                    kind: None,
                 },
                 StoredNote {
                     dataset: DATASET_MAIN.into(),
@@ -1171,6 +1215,7 @@ mod tests {
                     author: None,
                     id: 2,
                     region: None,
+                    kind: None,
                 },
             ],
             &[],

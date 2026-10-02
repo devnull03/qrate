@@ -585,7 +585,8 @@ const NOTES_DDL: &str = r#"
       created_at  TEXT,
       author      TEXT,
       note_id     INTEGER,
-      region      TEXT
+      region      TEXT,
+      kind        TEXT
     );
 "#;
 
@@ -599,6 +600,7 @@ fn add_note_columns(tx: &rusqlite::Transaction<'_>) -> Result<()> {
         ("author", "TEXT"),
         ("note_id", "INTEGER"),
         ("region", "TEXT"),
+        ("kind", "TEXT"),
     ] {
         match tx.execute(
             &format!("ALTER TABLE __notes ADD COLUMN {column} {kind}"),
@@ -638,9 +640,44 @@ pub struct StoredNote {
     pub id: NoteId,
     /// Set when the note points at part of the row's file rather than at its data.
     pub region: Option<Region>,
+    pub kind: Option<NoteKind>,
 }
 
 pub type NoteId = i64;
+
+/// What sort of observation a note is, when its author said. `None` is simply a note.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteKind {
+    Note,
+    Transcription,
+    Question,
+}
+
+impl NoteKind {
+    pub const ALL: [NoteKind; 3] = [NoteKind::Note, NoteKind::Transcription, NoteKind::Question];
+
+    /// The `__notes.kind` text.
+    pub fn key(self) -> &'static str {
+        match self {
+            NoteKind::Note => "note",
+            NoteKind::Transcription => "transcription",
+            NoteKind::Question => "question",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.key() == key)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            NoteKind::Note => "Note",
+            NoteKind::Transcription => "Transcription",
+            NoteKind::Question => "Question",
+        }
+    }
+}
 
 /// Where on a row's file a note points, in [`Region::SCALE`]ths of the upright page — a W3C
 /// `xywh=percent:` fragment at two decimals. Fractions because a PDF page has no pixel size of its
@@ -704,6 +741,12 @@ pub fn read_notes(path: &Path) -> Result<Vec<StoredNote>> {
                     })
                     .ok()
             }),
+            kind: note.kind.as_deref().and_then(|key| {
+                NoteKind::from_key(key).or_else(|| {
+                    log::warn!("ignoring a note's unknown kind {key:?}");
+                    None
+                })
+            }),
             row: match note.dataset.as_str() {
                 "dataset_main" if !row_positions.is_empty() => {
                     note.row_id.and_then(|id| row_positions.get(&id).copied())
@@ -739,8 +782,8 @@ pub fn write_notes(
         .context("Clear notes")?;
     {
         let mut stmt = tx.prepare(
-            "INSERT INTO __notes(dataset, row_ix, column_name, severity, source, message, created_at, author, note_id, region)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO __notes(dataset, row_ix, column_name, severity, source, message, created_at, author, note_id, region, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )?;
         for n in notes {
             let region = n.region.as_ref().map(serde_json::to_string).transpose()?;
@@ -754,7 +797,8 @@ pub fn write_notes(
                 n.created_at,
                 n.author,
                 n.id,
-                region
+                region,
+                n.kind.map(NoteKind::key)
             ])
             .context("Insert note")?;
         }
@@ -1366,6 +1410,7 @@ mod tests {
             author: None,
             id: row.map_or(0, |row| row as NoteId + 1),
             region: None,
+            kind: None,
         }
     }
 
@@ -1450,6 +1495,7 @@ mod tests {
             h: 1500,
             of: None,
         });
+        fresh.kind = Some(NoteKind::Transcription);
         write_notes(&path, "import", std::slice::from_ref(&fresh), &[]).unwrap();
 
         let after = read_notes(&path).unwrap();
@@ -1457,6 +1503,7 @@ mod tests {
         assert_eq!(after[0].created_at.as_deref(), Some("2026-08-14"));
         assert_eq!(after[0].author.as_deref(), Some("rk"));
         assert_eq!((after[0].id, after[0].region), (41, fresh.region));
+        assert_eq!(after[0].kind, Some(NoteKind::Transcription));
     }
 
     #[test]
@@ -2051,6 +2098,7 @@ mod tests {
                     author: None,
                     id: 2,
                     region: None,
+                    kind: None,
                 },
                 StoredNote {
                     dataset: "dataset_main".into(),
@@ -2063,6 +2111,7 @@ mod tests {
                     author: None,
                     id: 5,
                     region: None,
+                    kind: None,
                 },
             ],
             &[],
