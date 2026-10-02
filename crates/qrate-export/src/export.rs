@@ -4,7 +4,7 @@
 //! Everything here takes the grid as plain `headers` + `rows` — the same pair
 //! `table::save_now` persists — so nothing in this file needs a window or a project handle.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -371,32 +371,11 @@ pub fn zip_to(
             .map_err(std::io::Error::from)?,
     )?;
 
-    let mut taken: HashSet<String> = HashSet::new();
-    for image in images {
-        let Some(fallback) = image.path.file_name().and_then(|n| n.to_str()) else {
+    let mut written: HashSet<String> = HashSet::new();
+    for (image, name) in images.iter().zip(archive_names(images)) {
+        let Some(name) = name.filter(|name| written.insert(name.clone())) else {
             continue;
         };
-        // A file linked from outside the files folder goes under `files/outside/`.
-        let relative = match image.source_path.as_deref() {
-            Some(source) if Path::new(source).is_absolute() => format!("outside/{fallback}"),
-            source => source
-                .and_then(safe_archive_path)
-                .unwrap_or_else(|| fallback.to_string()),
-        };
-        // Two folders can hold the same filename, and a zip entry that repeats one silently wins.
-        let mut name = relative;
-        for n in 2.. {
-            if taken.insert(name.clone()) {
-                break;
-            }
-            let stem = Path::new(&name).file_stem().unwrap_or_default();
-            let parent = Path::new(&name).parent().unwrap_or_else(|| Path::new(""));
-            let mut renamed = format!("{}_{n}", stem.to_string_lossy());
-            if let Some(ext) = image.path.extension().and_then(|e| e.to_str()) {
-                renamed = format!("{renamed}.{ext}");
-            }
-            name = parent.join(renamed).to_string_lossy().replace('\\', "/");
-        }
         match File::open(&image.path) {
             Ok(mut file) => {
                 zip.start_file(format!("files/{name}"), binary)?;
@@ -410,6 +389,45 @@ pub fn zip_to(
     }
     zip.finish()?;
     Ok(())
+}
+
+/// Where each file lands below `files/`, in the ZIP archive and in a IIIF manifest's addresses
+/// alike. `None` for a path with no file name. Rows that link the same file share one name.
+pub fn archive_names(images: &[ArchiveFile]) -> Vec<Option<String>> {
+    let mut taken: HashSet<String> = HashSet::new();
+    let mut named: HashMap<&Path, String> = HashMap::new();
+    images
+        .iter()
+        .map(|image| {
+            if let Some(name) = named.get(image.path.as_path()) {
+                return Some(name.clone());
+            }
+            let fallback = image.path.file_name().and_then(|n| n.to_str())?;
+            // A file linked from outside the files folder goes under `files/outside/`.
+            let relative = match image.source_path.as_deref() {
+                Some(source) if Path::new(source).is_absolute() => format!("outside/{fallback}"),
+                source => source
+                    .and_then(safe_archive_path)
+                    .unwrap_or_else(|| fallback.to_string()),
+            };
+            // Two folders can hold the same filename, and a repeated zip entry silently wins.
+            let mut name = relative;
+            for n in 2.. {
+                if taken.insert(name.clone()) {
+                    break;
+                }
+                let stem = Path::new(&name).file_stem().unwrap_or_default();
+                let parent = Path::new(&name).parent().unwrap_or_else(|| Path::new(""));
+                let mut renamed = format!("{}_{n}", stem.to_string_lossy());
+                if let Some(ext) = image.path.extension().and_then(|e| e.to_str()) {
+                    renamed = format!("{renamed}.{ext}");
+                }
+                name = parent.join(renamed).to_string_lossy().replace('\\', "/");
+            }
+            named.insert(&image.path, name.clone());
+            Some(name)
+        })
+        .collect()
 }
 
 fn safe_archive_path(source: &str) -> Option<String> {
@@ -723,6 +741,28 @@ mod tests {
             ]
             .into_iter()
             .collect()
+        );
+    }
+
+    #[test]
+    fn rows_linking_one_file_share_its_name_and_namesakes_are_told_apart() {
+        let file = |path: &str, source: &str| ArchiveFile {
+            path: path.into(),
+            source_path: Some(source.into()),
+        };
+        let absolute = |name: &str| {
+            let path = std::env::temp_dir().join(name).join("1.jpg");
+            file(&path.to_string_lossy(), &path.to_string_lossy())
+        };
+        assert_eq!(
+            super::archive_names(&[
+                file("/files/a/1.jpg", "a/1.jpg"),
+                file("/files/a/1.jpg", "a/1.jpg"),
+                absolute("x"),
+                absolute("y"),
+            ]),
+            ["a/1.jpg", "a/1.jpg", "outside/1.jpg", "outside/1_2.jpg"]
+                .map(|name| Some(name.into()))
         );
     }
 

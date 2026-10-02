@@ -6,6 +6,7 @@ pub mod columns;
 pub mod description;
 pub mod export;
 pub mod filenames;
+pub mod iiif;
 pub mod notes;
 pub mod photos;
 #[cfg(feature = "wasm")]
@@ -13,8 +14,12 @@ pub mod wasm;
 
 pub use columns::ColumnType;
 pub use export::{
-    ArchiveFile, CSL_FIELDS, CslMapping, CsvOptions, ExportComponent, csl_items, csv_bytes,
-    derive_csl_mapping, jsonld_hierarchy_value, project_structure_columns, xlsx_bytes, zip_to,
+    ArchiveFile, CSL_FIELDS, CslMapping, CsvOptions, ExportComponent, archive_names, csl_items,
+    csv_bytes, derive_csl_mapping, jsonld_hierarchy_value, project_structure_columns, xlsx_bytes,
+    zip_to,
+};
+pub use iiif::{
+    IiifError, IiifInput, IiifIssue, IiifMedia, IiifProblem, iiif_manifest, iiif_summary,
 };
 pub use notes::{ProjectNote, SheetNote, read_project_notes, sheet_note_request_body, sheet_notes};
 pub use photos::{PhotoIndex, relative_to};
