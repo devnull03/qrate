@@ -84,6 +84,7 @@ fn card(
         return div().w(px(card_w)).into_any_element();
     };
     let path = delegate.row_image(source).map(std::path::Path::to_path_buf);
+    let row_id = delegate.row_id(source);
     let caption = delegate
         .row_fields(source)
         .into_iter()
@@ -205,7 +206,13 @@ fn card(
                     return;
                 }
                 if let Some(path) = viewable.clone() {
-                    crate::viewer::open_viewer(path, crate::ViewerScope::Centre, window, cx);
+                    crate::viewer::open_viewer(
+                        path,
+                        row_id,
+                        crate::ViewerScope::Centre,
+                        window,
+                        cx,
+                    );
                 }
             }
         })

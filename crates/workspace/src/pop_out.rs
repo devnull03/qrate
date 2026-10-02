@@ -299,15 +299,25 @@ impl PopOut {
         self.details
             .update(cx, |details, cx| details.show_rows(rows, cx));
 
-        let file = self
+        let (file, row) = self
             .front()
             .zip(self.table())
-            .and_then(|(row, state)| viewer::previewable(state.read(cx).delegate(), row));
-        if self.viewer.as_ref().map(|viewer| &viewer.read(cx).path) != file.as_ref() {
+            .map(|(row, state)| {
+                let delegate = state.read(cx).delegate();
+                (viewer::previewable(delegate, row), delegate.row_id(row))
+            })
+            .unwrap_or_default();
+        let showing = self.viewer.as_ref().map(|viewer| {
+            let viewer = viewer.read(cx);
+            (viewer.path.clone(), viewer.row)
+        });
+        if showing.as_ref().map(|(path, _)| path) != file.as_ref()
+            || showing.as_ref().is_some_and(|(_, shown)| *shown != row)
+        {
             if let Some(leaving) = &self.viewer {
                 preview::playback::stop(leaving.entity_id(), cx);
             }
-            self.viewer = file.map(|file| viewer::build(file, Scope::PopOut, window, cx));
+            self.viewer = file.map(|file| viewer::build(file, row, Scope::PopOut, window, cx));
             self._viewer_sub = self.viewer.as_ref().map(|viewer| {
                 // The viewer repaints itself on every pan and zoom; this window only draws
                 // its controls, tabs and find results.
@@ -1244,11 +1254,21 @@ mod tests {
 
         let (_, cx) = cx.add_window_view(|_, _| Blank);
         cx.update(|window, cx| {
-            let popped =
-                crate::viewer::build(shown.clone(), crate::viewer::Scope::PopOut, window, cx);
+            let popped = crate::viewer::build(
+                shown.clone(),
+                None,
+                crate::viewer::Scope::PopOut,
+                window,
+                cx,
+            );
             // The same recording, open in the main window too.
-            let main =
-                crate::viewer::build(shown.clone(), crate::viewer::Scope::Workspace, window, cx);
+            let main = crate::viewer::build(
+                shown.clone(),
+                None,
+                crate::viewer::Scope::Workspace,
+                window,
+                cx,
+            );
             preview::playback::play(&shown, main.entity_id(), cx);
             let before = preview::playback::playing(cx).map(|path| path.to_path_buf());
             preview::playback::stop(popped.entity_id(), cx);
@@ -1260,7 +1280,13 @@ mod tests {
 
             preview::playback::play(&shown, popped.entity_id(), cx);
             let before = preview::playback::playing(cx).map(|path| path.to_path_buf());
-            crate::viewer::open_viewer(shown.clone(), crate::viewer::Scope::Workspace, window, cx);
+            crate::viewer::open_viewer(
+                shown.clone(),
+                None,
+                crate::viewer::Scope::Workspace,
+                window,
+                cx,
+            );
             crate::viewer::close_viewer(window, cx);
             assert_eq!(
                 preview::playback::playing(cx).map(|path| path.to_path_buf()),

@@ -993,6 +993,7 @@ impl Panel for DetailsPanel {
 /// stack during type-checking instead of just hitting a slow compile.
 fn render_image_frame(
     image_path: Option<PathBuf>,
+    row: Option<settings::project::RowId>,
     caption: Option<String>,
     transport: Option<AnyElement>,
     cx: &App,
@@ -1054,6 +1055,7 @@ fn render_image_frame(
                                     .on_click(move |_, window, cx| {
                                         crate::open_viewer(
                                             path.clone(),
+                                            row,
                                             crate::ViewerScope::Workspace,
                                             window,
                                             cx,
@@ -1234,8 +1236,10 @@ impl Render for DetailsPanel {
         let picked = self.picked(cx);
         let front = stack_front(&picked, self.stack);
         let count = picked.len();
+        let mut front_id = None;
         let selection = self.state.as_ref().and_then(|w| w.upgrade()).map(|s| {
             let delegate = s.read(cx).delegate();
+            front_id = front.and_then(|row| delegate.row_id(row));
             let image = front.and_then(|row| delegate.row_image(row).map(Path::to_path_buf));
             let lost = front.filter(|_| count == 1).and_then(|row| {
                 table::file_links::missing_file(delegate, row, cx).map(|(_, name)| (row, name))
@@ -1686,6 +1690,7 @@ impl Render for DetailsPanel {
                                 .map(|pane| match count > 1 {
                                     false => pane.child(render_image_frame(
                                         image_path,
+                                        front_id,
                                         self.caption.clone(),
                                         transport,
                                         cx,
@@ -1732,6 +1737,7 @@ impl Render for DetailsPanel {
                                                     .bottom(px(10.))
                                                     .child(render_image_frame(
                                                         image_path,
+                                                        front_id,
                                                         self.caption.clone(),
                                                         transport,
                                                         cx,
@@ -1833,7 +1839,7 @@ mod tests {
     impl Render for ImageFrameProbe {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let caption = self.0.as_deref().and_then(preview::describe);
-            render_image_frame(self.0.clone(), caption, None, cx)
+            render_image_frame(self.0.clone(), None, caption, None, cx)
         }
     }
 

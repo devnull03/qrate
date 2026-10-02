@@ -10,8 +10,10 @@
 //! The two neighbours hold the parts with rules in them: [`find`] owns the search state, and
 //! [`highlight`] turns a hit's position on the page into a position on the screen.
 
+mod annotate;
 pub(crate) mod find;
 mod highlight;
+mod regions;
 pub(crate) mod transport;
 
 use std::cell::Cell;
@@ -29,6 +31,8 @@ use gpui_component::{
     resizable::{ResizableState, h_resizable, resizable_panel},
     slider::{Slider, SliderEvent, SliderState, SliderValue},
 };
+
+use settings::project::RowId;
 
 use crate::viewer::find::Find;
 use crate::viewer::transport::Transport;
@@ -87,14 +91,21 @@ pub fn viewer_in(scope: Scope, cx: &App) -> Option<Entity<Viewer>> {
     (viewer.read(cx).scope == scope).then_some(viewer)
 }
 
-/// Opens `path` in the shared viewer overlay, replacing any viewer already open.
-pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut App) {
+/// Opens `path` in the shared viewer overlay, replacing any viewer already open. `row` is the item
+/// it belongs to, whose region notes are drawn over it.
+pub fn open_viewer(
+    path: PathBuf,
+    row: Option<RowId>,
+    scope: Scope,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let return_focus = cx
         .try_global::<ActiveViewer>()
         .and_then(|active| active.return_focus.clone())
         .or_else(|| window.focused(cx));
     stop_active(cx);
-    let viewer = build(path, scope, window, cx);
+    let viewer = build(path, row, scope, window, cx);
     cx.set_global(ActiveViewer {
         viewer: Some(viewer),
         return_focus,
@@ -104,6 +115,7 @@ pub fn open_viewer(path: PathBuf, scope: Scope, window: &mut Window, cx: &mut Ap
 /// A viewer for `path`, not yet mounted anywhere.
 pub(crate) fn build(
     path: PathBuf,
+    row: Option<RowId>,
     scope: Scope,
     window: &mut Window,
     cx: &mut App,
@@ -127,7 +139,7 @@ pub(crate) fn build(
                     && this.needs.is_some()
                     && preview::missing(&this.path).is_none()
                 {
-                    open_viewer(this.path.clone(), this.scope, window, cx);
+                    open_viewer(this.path.clone(), this.row, this.scope, window, cx);
                 }
                 cx.notify();
             },
@@ -138,15 +150,25 @@ pub(crate) fn build(
                 window,
                 |this: &mut Viewer, table, _: &table::TableChanged, window, cx| {
                     let delegate = table.read(cx).delegate();
-                    let file = delegate
-                        .cursor_row()
-                        .and_then(|row| previewable(delegate, row));
-                    if let Some(file) = file.filter(|file| *file != this.path) {
-                        open_viewer(file, this.scope, window, cx);
+                    let Some(row) = delegate.cursor_row() else {
+                        return;
+                    };
+                    let id = delegate.row_id(row);
+                    let file = previewable(delegate, row);
+                    if let Some(file) = file.filter(|file| *file != this.path || id != this.row) {
+                        open_viewer(file, id, this.scope, window, cx);
                     }
                 },
             )
         }),
+        _notes: [
+            cx.observe_global::<diagnostics::Diagnostics>(|_, cx| cx.notify()),
+            cx.observe_global::<annotate::Annotating>(|_, cx| cx.notify()),
+            cx.observe_global::<annotate::Lit>(|_, cx| cx.notify()),
+        ],
+        row,
+        hovered: None,
+        hint: None,
         transport: Transport::new(path.clone(), cx),
         path,
         details,
@@ -307,6 +329,15 @@ pub fn close_viewer(window: &mut Window, cx: &mut App) {
 
 pub struct Viewer {
     pub(crate) path: PathBuf,
+    /// The item the file belongs to, whose region notes are drawn over it. `None` for a file
+    /// opened on its own.
+    pub(crate) row: Option<RowId>,
+    /// The region under the pointer.
+    hovered: Option<diagnostics::NoteId>,
+    /// A passing word at the foot of the stage, gone when its timer fires.
+    hint: Option<(SharedString, Task<()>)>,
+    /// Repaints when a note, the annotation toggles, or the lit Notes card change.
+    _notes: [Subscription; 3],
     /// File type and size, read once when the viewer opens rather than statting on every repaint.
     details: Option<String>,
     scope: Scope,
@@ -724,7 +755,7 @@ impl Render for Viewer {
         let pill = cx.theme().background.opacity(0.8);
         let accent = cx.theme().primary.opacity(0.55);
         // A hit's box is measured on the upright page, so a turned page shows none.
-        let marks: Vec<preview::Match> = match self.turns {
+        let hits: Vec<preview::Match> = match self.turns {
             0 => self.find.on_page(page).cloned().collect(),
             _ => Vec::new(),
         };
@@ -767,6 +798,13 @@ impl Render for Viewer {
             (self.has_controls() && self.transport.is_none() && self.scrubber.is_none())
                 .then(|| self.page_input(window, cx));
         let paged = self.paged();
+        let marks = self.row_marks(cx);
+        let layer = annotate::layer(self, &marks, cx);
+        let marking = annotate::buttons(self, cx);
+        let (marking, popped_marking) = match self.scope == Scope::PopOut {
+            true => (None, Some(marking)),
+            false => (Some(marking), None),
+        };
         let strip_width = match paged && self.strip_open {
             true => STRIP,
             false => px(0.),
@@ -931,6 +969,7 @@ impl Render for Viewer {
                         this.rotate(if ev.keystroke.modifiers.shift { -1 } else { 1 });
                         cx.notify();
                     }
+                    "n" if reading && this.row.is_some() => this.toggle_hidden(cx),
                     "up" | "down" if reading && overlay => {
                         step_row(if ev.keystroke.key == "up" { -1 } else { 1 }, cx);
                     }
@@ -975,6 +1014,7 @@ impl Render for Viewer {
                                 )
                                 .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
                                     let Some(last) = this.drag_from else {
+                                        this.hover(ev.position, cx);
                                         return;
                                     };
                                     this.offset.x += ev.position.x - last.x;
@@ -1030,11 +1070,12 @@ impl Render for Viewer {
                                                 .object_fit(ObjectFit::Contain)
                                         }))
                                         // Hit boxes over the page, for the hits that are on it.
-                                        .when(!marks.is_empty(), |area| {
+                                        .when(!hits.is_empty(), |area| {
                                             area.child(highlight::overlay(
-                                                marks, zoom, offset, accent,
+                                                hits, zoom, offset, accent,
                                             ))
-                                        }),
+                                        })
+                                        .child(layer),
                                 ),
                         ),
                     )
@@ -1275,6 +1316,9 @@ impl Render for Viewer {
                     .p_1()
                     .rounded(cx.theme().radius)
                     .bg(pill)
+                    .occlude()
+                    .children(marking)
+                    .child(div().w_px().h(px(16.)).mx_0p5().bg(cx.theme().border))
                     // Only for a format that can carry text at all — offered on a photo it would
                     // open a panel that can never find anything.
                     .when(self.document, |group| {
@@ -1357,6 +1401,38 @@ impl Render for Viewer {
                             .on_click(cx.listener(|_, _, window, cx| close_viewer(window, cx))),
                     )
             }))
+            .children(popped_marking.map(|marking| {
+                div()
+                    .absolute()
+                    .top_4()
+                    .right_4()
+                    .p_1()
+                    .rounded(cx.theme().radius)
+                    .bg(pill)
+                    .occlude()
+                    .child(marking)
+            }))
+            .children(self.hint.as_ref().map(|(hint, _)| {
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .map(|slot| match self.has_controls() {
+                        true => slot.bottom(px(64.)),
+                        false => slot.bottom_5(),
+                    })
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .px_3()
+                            .py_1()
+                            .rounded(px(6.))
+                            .bg(pill)
+                            .text_size(px(13.))
+                            .child(hint.clone()),
+                    )
+            }))
     }
 }
 
@@ -1401,12 +1477,12 @@ mod tests {
         let cx = with_window(cx);
         let path = std::path::PathBuf::from("/nonexistent/qrate-scope-test.jpg");
         cx.update(|window, cx| {
-            open_viewer(path.clone(), Scope::Centre, window, cx);
+            open_viewer(path.clone(), None, Scope::Centre, window, cx);
             assert!(viewer_in(Scope::Centre, cx).is_some());
             assert!(viewer_in(Scope::Workspace, cx).is_none());
 
             // Opening in the other scope replaces rather than stacks.
-            open_viewer(path, Scope::Workspace, window, cx);
+            open_viewer(path, None, Scope::Workspace, window, cx);
             assert!(viewer_in(Scope::Workspace, cx).is_some());
             assert!(viewer_in(Scope::Centre, cx).is_none());
 
@@ -1424,11 +1500,18 @@ mod tests {
         cx.update(|window, cx| {
             open_viewer(
                 "/nonexistent/overlay.jpg".into(),
+                None,
                 Scope::Workspace,
                 window,
                 cx,
             );
-            let popped = build("/nonexistent/popped.jpg".into(), Scope::PopOut, window, cx);
+            let popped = build(
+                "/nonexistent/popped.jpg".into(),
+                None,
+                Scope::PopOut,
+                window,
+                cx,
+            );
             let overlay = viewer_in(Scope::Workspace, cx).expect("the overlay is still open");
             assert_ne!(overlay.entity_id(), popped.entity_id());
             assert!(
@@ -1453,6 +1536,7 @@ mod tests {
             caller.focus(window, cx);
             open_viewer(
                 "/nonexistent/qrate-focus-test.jpg".into(),
+                None,
                 Scope::Workspace,
                 window,
                 cx,
@@ -1474,6 +1558,7 @@ mod tests {
         cx.update(|window, cx| {
             open_viewer(
                 "/nonexistent/qrate-reentrant-close-test.jpg".into(),
+                None,
                 Scope::Workspace,
                 window,
                 cx,
@@ -1492,7 +1577,7 @@ mod tests {
         let path = std::env::temp_dir().join("qrate-viewer-details.jpg");
         std::fs::write(&path, b"abc").unwrap();
         cx.update(|window, cx| {
-            open_viewer(path.clone(), Scope::Workspace, window, cx);
+            open_viewer(path.clone(), None, Scope::Workspace, window, cx);
             std::fs::remove_file(&path).unwrap();
             let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
             assert!(viewer.read(cx).details.is_some());
@@ -1507,7 +1592,7 @@ mod tests {
         let cx = with_window(cx);
         let path = std::path::PathBuf::from("/nonexistent/qrate-zoom-test.png");
         cx.update(|window, cx| {
-            open_viewer(path, Scope::Workspace, window, cx);
+            open_viewer(path, None, Scope::Workspace, window, cx);
             let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
             viewer.update(cx, |viewer, _| {
                 let cursor = gpui::point(gpui::px(120.), gpui::px(-40.));
@@ -1531,7 +1616,7 @@ mod tests {
         let cx = with_window(cx);
         let path = std::path::PathBuf::from("/nonexistent/qrate-pan-test.png");
         cx.update(|window, cx| {
-            open_viewer(path, Scope::Workspace, window, cx);
+            open_viewer(path, None, Scope::Workspace, window, cx);
             let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
             viewer.update(cx, |viewer, _| {
                 // A 2000×1000 picture in a 1000×500 frame: fitted at half scale.
@@ -1593,7 +1678,7 @@ mod tests {
         let cx = with_window(cx);
         let path = std::path::PathBuf::from("/nonexistent/qrate-fit-width.pdf");
         cx.update(|window, cx| {
-            open_viewer(path, Scope::Workspace, window, cx);
+            open_viewer(path, None, Scope::Workspace, window, cx);
             let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
             viewer.update(cx, |viewer, _| {
                 viewer.frame.set(gpui::Bounds::new(
@@ -1629,7 +1714,7 @@ mod tests {
         let cx = with_window(cx);
         let path = std::path::PathBuf::from("/nonexistent/qrate-tiny.png");
         cx.update(|window, cx| {
-            open_viewer(path, Scope::Workspace, window, cx);
+            open_viewer(path, None, Scope::Workspace, window, cx);
             let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
             viewer.update(cx, |viewer, _| {
                 viewer.pixels = Some((32, 32));
@@ -1707,7 +1792,7 @@ mod tests {
         let cx = with_window(cx);
         let path = std::path::PathBuf::from("/nonexistent/qrate-paging-test.pdf");
         cx.update(|window, cx| {
-            open_viewer(path, Scope::Workspace, window, cx);
+            open_viewer(path, None, Scope::Workspace, window, cx);
             let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
 
             viewer.update(cx, |viewer, _| {
@@ -1747,7 +1832,7 @@ mod tests {
         let cx = with_window(cx);
         let path = std::path::PathBuf::from("/nonexistent/qrate-single-page.jpg");
         cx.update(|window, cx| {
-            open_viewer(path, Scope::Centre, window, cx);
+            open_viewer(path, None, Scope::Centre, window, cx);
             let viewer = viewer_in(Scope::Centre, cx).expect("just opened");
             viewer.update(cx, |viewer, _| {
                 assert_eq!(
@@ -1769,19 +1854,37 @@ mod tests {
     fn only_a_recording_gets_a_transport(cx: &mut TestAppContext) {
         let cx = with_window(cx);
         cx.update(|window, cx| {
-            open_viewer("/nonexistent/take.wav".into(), Scope::Workspace, window, cx);
+            open_viewer(
+                "/nonexistent/take.wav".into(),
+                None,
+                Scope::Workspace,
+                window,
+                cx,
+            );
             let recording = viewer_in(Scope::Workspace, cx).expect("just opened");
             recording.update(cx, |viewer, _| {
                 assert!(viewer.transport.is_some(), "a WAV is a recording");
                 assert!(!viewer.document);
             });
 
-            open_viewer("/nonexistent/scan.pdf".into(), Scope::Workspace, window, cx);
+            open_viewer(
+                "/nonexistent/scan.pdf".into(),
+                None,
+                Scope::Workspace,
+                window,
+                cx,
+            );
             let document = viewer_in(Scope::Workspace, cx).expect("just opened");
             document.update(cx, |viewer, _| assert!(viewer.transport.is_none()));
 
             // A video's positions are seconds, which are the scrubber's and not a page strip's.
-            open_viewer("/nonexistent/clip.mp4".into(), Scope::Workspace, window, cx);
+            open_viewer(
+                "/nonexistent/clip.mp4".into(),
+                None,
+                Scope::Workspace,
+                window,
+                cx,
+            );
             let video = viewer_in(Scope::Workspace, cx).expect("just opened");
             video.update(cx, |viewer, _| {
                 viewer.pages = 6;
@@ -1807,7 +1910,7 @@ mod tests {
         std::fs::write(&path, &wav).unwrap();
 
         cx.update(|window, cx| {
-            open_viewer(path.clone(), Scope::Workspace, window, cx);
+            open_viewer(path.clone(), None, Scope::Workspace, window, cx);
             let viewer = viewer_in(Scope::Workspace, cx).expect("just opened");
             preview::playback::play(&path, viewer.entity_id(), cx);
             close_viewer(window, cx);
@@ -1843,7 +1946,7 @@ mod tests {
 
         // An emitted event is delivered when the update flushes, so each half is its own update.
         let viewer = cx.update(|window, cx| {
-            open_viewer(path.clone(), Scope::Workspace, window, cx);
+            open_viewer(path.clone(), None, Scope::Workspace, window, cx);
             viewer_in(Scope::Workspace, cx).expect("just opened")
         });
         cx.executor().advance_clock(super::SETTLE);
@@ -1887,6 +1990,7 @@ mod tests {
         cx.update(|window, cx| {
             open_viewer(
                 "/nonexistent/one-page.pdf".into(),
+                None,
                 Scope::Workspace,
                 window,
                 cx,
@@ -1897,7 +2001,13 @@ mod tests {
                 assert!(viewer.document, "a PDF is a document at any length");
             });
 
-            open_viewer("/nonexistent/scan.jpg".into(), Scope::Workspace, window, cx);
+            open_viewer(
+                "/nonexistent/scan.jpg".into(),
+                None,
+                Scope::Workspace,
+                window,
+                cx,
+            );
             let photo = viewer_in(Scope::Workspace, cx).expect("just opened");
             photo.update(cx, |viewer, _| assert!(!viewer.document));
 
