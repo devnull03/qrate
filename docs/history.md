@@ -43,6 +43,10 @@ The button in the panel's title bar filters the list:
 - **Fixes**, which includes spelling fixes
 - **Named versions**, which shows only the changes that you named
 
+Changes to annotations appear as **Annotation added**, **moved**, **resized**, **edited**, and
+**deleted**, with a crop of the part of the file they mark. A move or resize shows the crop
+before and after.
+
 ## One cell's history
 
 Right-click a cell in the grid and choose **Show edit history**. The History panel opens and

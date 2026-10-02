@@ -111,5 +111,12 @@ Right-click a cell and choose **Notes ▸ Add note…**, use **Insert ▸ Note�
 Notes tab of the Problems panel. If you set an author name in **Settings ▸ Application**, each
 new note records it.
 
+Point at a cell, a row number, or a column header that has a note to read it. The card shows the
+whole note, who wrote it, and when; a note that has been reworded says "edited". The column's
+description and any problems found in the cell follow under a line.
+
+A note can also point at part of the row's file. See
+[Annotations](files-and-photos.md#annotations).
+
 Excel exports keep notes as cell comments, and Google Sheets exports add them as cell notes.
 CSV, JSON-LD, CSL-JSON, and ZIP exports leave them out.

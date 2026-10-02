@@ -66,7 +66,12 @@ These work in the fullscreen viewer and in the pop-out window.
 | **Ctrl+F** | Find in the document |
 | **Up** / **Down** | Previous / next row |
 | **Alt+Left** / **Alt+Right** | Previous / next selected item (pop-out window) |
-| **Esc** | Close the fullscreen viewer, or go back to Details in the pop-out window |
+| **A** | Turn annotate mode on or off |
+| **N** | Hide or show annotations |
+| **[** / **]** | Previous / next annotation on the page |
+| **Delete** | Delete the selected annotation (asks first) |
+| **Ctrl+Enter** | Save the note being written |
+| **Esc** | Put away the note card, the selection, or the find panel; then close the fullscreen viewer, or go back to Details in the pop-out window |
 
 See [The grid](grid.md) for what each command does, and [Projects](projects.md#saving) for
 how saving works.
