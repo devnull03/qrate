@@ -19,7 +19,8 @@ pub use export::{
     zip_to,
 };
 pub use iiif::{
-    IiifError, IiifInput, IiifIssue, IiifMedia, IiifProblem, iiif_manifest, iiif_summary,
+    IiifError, IiifInput, IiifIssue, IiifMedia, IiifProblem, iiif_manifest, iiif_media,
+    iiif_summary,
 };
 pub use notes::{ProjectNote, SheetNote, read_project_notes, sheet_note_request_body, sheet_notes};
 pub use photos::{PhotoIndex, relative_to};

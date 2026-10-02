@@ -6,12 +6,13 @@
 //! web address the archivist says the export will be published at.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
 use crate::ColumnType;
-use crate::export::ExportComponent;
+use crate::export::{ArchiveFile, ExportComponent, archive_names};
 
 const CONTEXT: &str = "http://iiif.io/api/presentation/3/context.json";
 
@@ -24,6 +25,29 @@ pub struct IiifMedia {
     pub size: Option<(u32, u32)>,
     /// Seconds, for a recording or a video.
     pub duration: Option<f64>,
+}
+
+/// Each row's linked file under the name it is published by. `extent` answers with a file's pixel
+/// size and its running time, whichever it has.
+pub fn iiif_media(
+    linked: &[Option<ArchiveFile>],
+    extent: impl Fn(&Path) -> (Option<(u32, u32)>, Option<f64>),
+) -> Vec<Option<IiifMedia>> {
+    let files: Vec<ArchiveFile> = linked.iter().flatten().cloned().collect();
+    let mut names = archive_names(&files).into_iter();
+    linked
+        .iter()
+        .map(|file| {
+            let file = file.as_ref()?;
+            let path = names.next().flatten()?;
+            let (size, duration) = extent(&file.path);
+            Some(IiifMedia {
+                path,
+                size,
+                duration,
+            })
+        })
+        .collect()
 }
 
 /// Everything a manifest is built from. `columns` pairs each declared column with its type, and
@@ -66,17 +90,22 @@ pub struct IiifIssue {
     pub problem: IiifProblem,
 }
 
+/// The address a manifest is built on, without its trailing slash.
+pub fn base_url(value: &str) -> Result<&str, IiifError> {
+    let base = value.trim().trim_end_matches('/');
+    base.strip_prefix("https://")
+        .or_else(|| base.strip_prefix("http://"))
+        .filter(|host| {
+            !host.is_empty() && !host.contains(|c: char| c.is_whitespace() || c == '?' || c == '#')
+        })
+        .map(|_| base)
+        .ok_or(IiifError::BaseUrl)
+}
+
 /// The manifest, and what it had to leave out. Addresses are stable: a row keeps its Canvas
 /// address for as long as it keeps its row id.
 pub fn iiif_manifest(input: &IiifInput) -> Result<(Value, Vec<IiifIssue>), IiifError> {
-    let base = input.base_url.trim().trim_end_matches('/');
-    let host = base
-        .strip_prefix("https://")
-        .or_else(|| base.strip_prefix("http://"))
-        .ok_or(IiifError::BaseUrl)?;
-    if host.is_empty() || host.contains(|c: char| c.is_whitespace() || c == '?' || c == '#') {
-        return Err(IiifError::BaseUrl);
-    }
+    let base = base_url(input.base_url)?;
 
     let column = |kind: ColumnType| {
         input
@@ -428,11 +457,32 @@ fn rights_uri(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        IiifError, IiifInput, IiifIssue, IiifMedia, IiifProblem, iiif_manifest, iiif_summary,
-        nav_date, rights_uri,
+        IiifError, IiifInput, IiifIssue, IiifMedia, IiifProblem, iiif_manifest, iiif_media,
+        iiif_summary, nav_date, rights_uri,
     };
     use crate::ColumnType;
-    use crate::export::ExportComponent;
+    use crate::export::{ArchiveFile, ExportComponent};
+
+    #[test]
+    fn each_row_keeps_its_own_file_when_some_rows_link_none() {
+        let file = |path: &str| {
+            Some(ArchiveFile {
+                path: path.into(),
+                source_path: Some(path.into()),
+            })
+        };
+        let media = iiif_media(&[None, file("a/1.jpg"), None, file("b/1.jpg")], |path| {
+            (Some((path.to_string_lossy().len() as u32, 1)), None)
+        });
+        assert_eq!(
+            media
+                .iter()
+                .map(|media| media.as_ref().map(|media| media.path.as_str()))
+                .collect::<Vec<_>>(),
+            [None, Some("a/1.jpg"), None, Some("b/1.jpg")]
+        );
+        assert_eq!(media[3].as_ref().unwrap().size, Some((7, 1)));
+    }
 
     fn image(path: &str) -> Option<IiifMedia> {
         Some(IiifMedia {
