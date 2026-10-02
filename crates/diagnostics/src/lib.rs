@@ -6,6 +6,7 @@
 //! panel asks the app to reveal a cell.
 
 pub mod fixes;
+pub mod note_card;
 mod panel;
 mod validator;
 pub use fixes::{Fix, FixProviders, GroupFix, GroupFixProviders, GroupMember, SourceActions};

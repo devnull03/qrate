@@ -66,7 +66,7 @@ pub(crate) fn render_td(
     };
     let location = delegate.location(Some(row_ix), None);
     let worst = Diagnostics::worst_at(&location.dataset, Some(row_ix), None, cx);
-    let tip = note::tooltip_text(delegate, &location, cx);
+    let tip = note::tip(delegate, &location, cx);
     let depth = delegate.row_depth(view_ix);
     let children = delegate.row_child_count(row_ix);
     let expanded = delegate.row_expanded(row_ix);
@@ -152,11 +152,9 @@ pub(crate) fn render_td(
         })
         .child(SharedString::from((row_ix + 1).to_string()))
         .when_some(worst, |d, severity| d.child(note::marker(severity, cx)))
-        .when_some(tip, |d, text| {
-            d.tooltip(move |window, cx| {
-                gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
-            })
-            .tooltip_show_delay(note::HOVER_DELAY)
+        .when_some(tip, |d, tip| {
+            d.tooltip(move |window, cx| note::tip_view(Some(&tip), None, window, cx))
+                .tooltip_show_delay(note::HOVER_DELAY)
         })
         .context_menu(move |menu, window, cx| note::menu(Target::Row(row_ix), menu, window, cx))
         .when_some(

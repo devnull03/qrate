@@ -98,7 +98,7 @@ pub(crate) fn render_th(
 
     let location = delegate.location(None, Some(data_col));
     let worst = Diagnostics::worst_at(&location.dataset, None, location.column.as_deref(), cx);
-    let tip = note::tooltip_text(delegate, &location, cx);
+    let tip = note::tip(delegate, &location, cx);
     let note_editor = note::editor(delegate, None, Some(data_col), cx);
 
     h_flex()
@@ -120,11 +120,9 @@ pub(crate) fn render_th(
             cx.notify();
         }))
         .when_some(worst, |th, severity| th.child(note::marker(severity, cx)))
-        .when_some(tip, |th, text| {
-            th.tooltip(move |window, cx| {
-                gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
-            })
-            .tooltip_show_delay(note::HOVER_DELAY)
+        .when_some(tip, |th, tip| {
+            th.tooltip(move |window, cx| note::tip_view(Some(&tip), None, window, cx))
+                .tooltip_show_delay(note::HOVER_DELAY)
         })
         .context_menu(move |menu, window, cx| {
             note::menu(Target::Column(data_col), menu, window, cx)
