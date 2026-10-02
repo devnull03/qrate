@@ -81,9 +81,9 @@ viewer still shows it.
 
 Which files a manifest can present:
 
-- **Pictures**: JPEG, PNG, GIF, WebP, BMP, TIFF, AVIF, and JPEG 2000. Web browsers cannot show
-  TIFF or JPEG 2000 directly, so convert those for viewing or publish them through an image
-  server.
+- **Pictures**: JPEG, PNG, GIF, WebP, BMP, TIFF, AVIF, HEIC, and JPEG 2000. Most web browsers
+  cannot show TIFF, HEIC, or JPEG 2000 directly, so convert those for viewing or publish them
+  through an image server.
 - **Recordings and video**, with their running time. Video needs ffmpeg.
 - **PDF documents**, at the size of their first page. This needs PDFium. Not every
   viewer shows documents. Mirador, for one, shows only their description.

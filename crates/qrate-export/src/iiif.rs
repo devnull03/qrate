@@ -370,8 +370,9 @@ fn text(value: &str) -> Value {
     json!({ "none": [value] })
 }
 
-/// The IIIF content type and the media type of a file, by its extension. A PDF is `Text`, which
-/// is how viewers that show documents expect to be handed one.
+/// The IIIF content type and the media type of a file, by its extension: every kind
+/// `preview::extent` can measure. A PDF is `Text`, which is how viewers that show documents expect
+/// to be handed one.
 fn content_type(path: &str) -> Option<(&'static str, &'static str)> {
     let extension = path.rsplit_once('.')?.1.to_ascii_lowercase();
     Some(match extension.as_str() {
@@ -383,12 +384,19 @@ fn content_type(path: &str) -> Option<(&'static str, &'static str)> {
         "tif" | "tiff" => ("Image", "image/tiff"),
         "avif" => ("Image", "image/avif"),
         "jp2" => ("Image", "image/jp2"),
+        "jpf" | "jpx" => ("Image", "image/jpx"),
+        "j2k" => ("Image", "image/j2c"),
+        "heic" => ("Image", "image/heic"),
+        "heif" => ("Image", "image/heif"),
         "mp4" | "m4v" => ("Video", "video/mp4"),
         "mov" => ("Video", "video/quicktime"),
         "webm" => ("Video", "video/webm"),
         "mkv" => ("Video", "video/x-matroska"),
         "avi" => ("Video", "video/x-msvideo"),
         "mpg" | "mpeg" => ("Video", "video/mpeg"),
+        "wmv" => ("Video", "video/x-ms-wmv"),
+        "flv" => ("Video", "video/x-flv"),
+        "m2ts" => ("Video", "video/mp2t"),
         "mp3" => ("Sound", "audio/mpeg"),
         "wav" => ("Sound", "audio/wav"),
         "flac" => ("Sound", "audio/flac"),
@@ -457,8 +465,8 @@ fn rights_uri(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        IiifError, IiifInput, IiifIssue, IiifMedia, IiifProblem, iiif_manifest, iiif_media,
-        iiif_summary, nav_date, rights_uri,
+        IiifError, IiifInput, IiifIssue, IiifMedia, IiifProblem, content_type, iiif_manifest,
+        iiif_media, iiif_summary, nav_date, rights_uri,
     };
     use crate::ColumnType;
     use crate::export::{ArchiveFile, ExportComponent};
@@ -742,6 +750,25 @@ mod tests {
         ] {
             assert_eq!(nav_date(not_an_instant), None, "{not_an_instant}");
         }
+    }
+
+    #[test]
+    fn every_kind_of_file_preview_measures_has_a_type() {
+        for still in ["a.JP2", "a.jpf", "a.jpx", "a.j2k", "a.heic", "a.avif"] {
+            assert_eq!(
+                content_type(still).map(|(kind, _)| kind),
+                Some("Image"),
+                "{still}"
+            );
+        }
+        for video in ["a.wmv", "a.flv", "a.m2ts", "a.mov"] {
+            assert_eq!(
+                content_type(video).map(|(kind, _)| kind),
+                Some("Video"),
+                "{video}"
+            );
+        }
+        assert_eq!(content_type("a.docx"), None);
     }
 
     #[test]
