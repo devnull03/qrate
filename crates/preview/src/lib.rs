@@ -1436,6 +1436,32 @@ mod tests {
         });
     }
 
+    /// A picture answers with pixels and a recording with seconds, never the other's.
+    #[test]
+    fn a_file_reports_the_extent_its_kind_has() {
+        use image::ImageEncoder as _;
+
+        let picture = std::env::temp_dir().join("qrate-extent-probe.png");
+        image::codecs::png::PngEncoder::new(std::fs::File::create(&picture).unwrap())
+            .write_image(&[0u8; 4 * 3 * 2], 3, 2, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        assert_eq!(crate::extent(&picture), (Some((3, 2)), None));
+
+        // Two seconds of 8 kHz silence.
+        let recording = std::env::temp_dir().join("qrate-extent-probe.wav");
+        std::fs::write(&recording, crate::playback::silent_wav(16000)).unwrap();
+        let (size, seconds) = crate::extent(&recording);
+        assert_eq!(size, None);
+        assert!((seconds.expect("a valid WAV has a length") - 2.0).abs() < 0.01);
+
+        assert_eq!(
+            crate::extent(Path::new("/nonexistent/notes.docx")),
+            (None, None)
+        );
+        let _ = std::fs::remove_file(&picture);
+        let _ = std::fs::remove_file(&recording);
+    }
+
     /// A phone photo stored sideways with an EXIF turn has to come out upright in every thumbnail,
     /// as it does in the viewer, where gpui applies the tag itself. The viewer's own rotation is
     /// applied on top of that, never instead of it.
