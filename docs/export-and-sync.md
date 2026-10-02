@@ -86,7 +86,7 @@ Which files a manifest can present:
   server.
 - **Recordings and video**, with their running time. Video needs ffmpeg.
 - **PDF documents**, at the size of their first page. This needs PDFium. Not every
-  viewer shows documents: Universal Viewer does, and Mirador shows only their description.
+  viewer shows documents. Mirador, for one, shows only their description.
 
 ffmpeg and PDFium are the same parts that draw previews. See
 [Viewing a file](files-and-photos.md#viewing-a-file).
