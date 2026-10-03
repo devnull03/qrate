@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,7 +10,7 @@ use gpui_component::dock::{BasePanel, DockPlacement, Panel, PanelEvent};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::{
-    ActiveTheme as _, IconName, Sizable as _, VirtualListScrollHandle,
+    ActiveTheme as _, Icon, IconName, Sizable as _, VirtualListScrollHandle,
     button::{Button, ButtonVariants as _},
     h_flex, v_flex, v_virtual_list,
 };
@@ -533,6 +533,94 @@ fn narrowed<'a>(entry: &'a Entry, cell: Option<&(RowId, Vec<String>)>) -> Option
     })
 }
 
+/// What a change to a region note did, or `None` for any other change.
+pub(crate) fn annotation(change: &Change) -> Option<&'static str> {
+    let Change::Note {
+        before,
+        after,
+        region_before,
+        region_after,
+        ..
+    } = change
+    else {
+        return None;
+    };
+    let resized = region_before
+        .zip(*region_after)
+        .is_some_and(|(a, b)| (a.w, a.h) != (b.w, b.h));
+    Some(match (before, after) {
+        _ if region_before.is_none() && region_after.is_none() => return None,
+        (None, _) => "Annotation added",
+        (_, None) => "Annotation deleted",
+        _ if before == after && resized => "Annotation resized",
+        _ if before == after => "Annotation moved",
+        _ => "Annotation edited",
+    })
+}
+
+/// The region a note change is about, cut from `path`: both sides of a move or resize, else the
+/// one it had. `None` for a change that is not about a region.
+pub(crate) fn note_crops(change: &Change, path: Option<&Path>, cx: &App) -> Option<AnyElement> {
+    let Change::Note {
+        region_before,
+        region_after,
+        ..
+    } = change
+    else {
+        return None;
+    };
+    let moved = region_before.zip(*region_after).filter(|(a, b)| a != b);
+    let sides: Vec<_> = match moved {
+        Some((before, after)) => vec![before, after],
+        None => region_after.or(*region_before).into_iter().collect(),
+    };
+    let first = sides.first()?;
+    let pages = path.and_then(preview::known_pages).unwrap_or(1);
+    let (muted, radius) = (cx.theme().muted, px(4.));
+    let crop = |region: &diagnostics::Region| {
+        div()
+            .size(px(40.))
+            .flex_none()
+            .rounded(radius)
+            .overflow_hidden()
+            .bg(muted)
+            .children(path.filter(|path| path.exists()).map(|path| {
+                img(preview::crop(
+                    path,
+                    region.page as usize,
+                    [region.x, region.y, region.w, region.h],
+                ))
+                .size_full()
+                .object_fit(ObjectFit::Cover)
+            }))
+    };
+    Some(
+        h_flex()
+            .flex_none()
+            .gap_1()
+            .child(crop(first))
+            .children(sides.get(1).map(|after| {
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Icon::new(IconName::ArrowRight)
+                            .xsmall()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(crop(after))
+            }))
+            .when(pages > 1, |crops| {
+                crops.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("p. {}", first.page + 1)),
+                )
+            })
+            .into_any_element(),
+    )
+}
+
 /// `3 Sep 2026`, from a `YYYY-MM-DD` day.
 fn date_label(day: &str) -> String {
     const MONTHS: [&str; 12] = [
@@ -608,13 +696,14 @@ fn describe(entry: &Entry, rows: &HashMap<RowId, usize>) -> String {
                 column,
                 before,
                 after,
+                ..
             },
         ] => {
-            let what = match (before, after) {
+            let what = annotation(&changes[0]).unwrap_or(match (before, after) {
                 (None, _) => "Added a note",
                 (_, None) => "Removed a note",
                 _ => "Edited a note",
-            };
+            });
             match (id, column) {
                 (Some(id), Some(column)) => format!("{what} on {column}, {}", row(id)),
                 (Some(id), None) => format!("{what} on {}", row(id)),
@@ -792,6 +881,31 @@ impl HistoryPanel {
         positions: &HashMap<RowId, usize>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let crops = match row {
+            Row::Saved { ix, .. } => self.view.get(*ix).map(|listed| &listed.entry),
+            Row::Pending(ix) => self.pending.get(*ix).map(|(entry, _)| entry),
+            _ => None,
+        }
+        .and_then(|entry| {
+            let [change] = entry.changes.as_slice() else {
+                return None;
+            };
+            let file = match change {
+                Change::Note { row: Some(id), .. } => cx
+                    .try_global::<TableStateHandle>()
+                    .and_then(|handle| handle.0.upgrade())
+                    .and_then(|table| {
+                        let row = *positions.get(id)?;
+                        table
+                            .read(cx)
+                            .delegate()
+                            .row_image(row)
+                            .map(Path::to_path_buf)
+                    }),
+                _ => None,
+            };
+            note_crops(change, file.as_deref(), cx)
+        });
         let theme = cx.theme();
         let (muted, border, hover_bg, accent) = (
             theme.muted_foreground,
@@ -865,12 +979,20 @@ impl HistoryPanel {
                     .when(matches!(entry.origin, Origin::Undo | Origin::Redo), |row| {
                         row.opacity(0.6)
                     })
-                    .child(clipped(describe(entry, positions)).text_sm())
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(meta(entry, at.clone())),
+                        h_flex().gap_2().children(crops).child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_0p5()
+                                .child(clipped(describe(entry, positions)).text_sm())
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child(meta(entry, at.clone())),
+                                ),
+                        ),
                     )
                     .into_any_element()
             }
@@ -901,6 +1023,14 @@ impl HistoryPanel {
                             ] => Some((*row, column.clone(), before.clone())),
                             _ => None,
                         };
+                        let note = match listed.entry.changes.as_slice() {
+                            [
+                                change @ Change::Note {
+                                    row, id: Some(_), ..
+                                },
+                            ] => Some((change.clone(), *row)),
+                            _ => None,
+                        };
                         let (restore, name, unname) =
                             (listed.clone(), panel.clone(), panel.clone());
                         let labelled = listed.label.is_some();
@@ -919,6 +1049,23 @@ impl HistoryPanel {
                                     )
                                 },
                             ))
+                        })
+                        .when_some(note, |menu, (change, row)| {
+                            let label = match annotation(&change) {
+                                Some(_) => "Restore This Annotation",
+                                None => "Restore This Note",
+                            };
+                            menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                                let at = row.and_then(|row| {
+                                    cx.try_global::<TableStateHandle>()?
+                                        .0
+                                        .upgrade()?
+                                        .read(cx)
+                                        .delegate()
+                                        .row_of(row)
+                                });
+                                diagnostics::Diagnostics::restore_note(&change, at, id, cx);
+                            }))
                         })
                         .separator()
                         .item(PopupMenuItem::new("Name This Version…").on_click(
@@ -960,12 +1107,20 @@ impl HistoryPanel {
                         )
                     })
                     .when_some(naming, |row, input| row.child(Input::new(&input).xsmall()))
-                    .child(clipped(describe(entry, positions)).text_sm())
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(meta(entry, when(&listed.day, &listed.time))),
+                        h_flex().gap_2().children(crops).child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_0p5()
+                                .child(clipped(describe(entry, positions)).text_sm())
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child(meta(entry, when(&listed.day, &listed.time))),
+                                ),
+                        ),
                     )
                     .context_menu(actions)
                     .into_any_element()
@@ -1255,7 +1410,7 @@ impl Render for HistoryPanel {
 #[cfg(test)]
 mod tests {
     // Never `use super::*` here: the parent has `use gpui::*` in scope.
-    use super::{HistoryPanel, PAGE, day_label, describe, narrowed};
+    use super::{HistoryPanel, PAGE, annotation, day_label, describe, narrowed};
     use gpui::TestAppContext;
     use settings::history::{Change, Entry, Origin};
     use std::collections::HashMap;
@@ -1412,5 +1567,52 @@ mod tests {
             None,
         );
         assert_eq!(describe(&many, &rows), "2 cells in Title");
+    }
+
+    /// A change to a region note is named for what happened to the annotation; a move keeps the
+    /// size, a resize changes it, and a note with no region is not an annotation at all.
+    #[test]
+    fn annotation_changes_say_what_happened_to_the_region() {
+        let region = |x, w| settings::project::Region {
+            page: 0,
+            x,
+            y: 0,
+            w,
+            h: 100,
+            of: None,
+        };
+        let note = |before: Option<&str>, after: Option<&str>, a, b| Change::Note {
+            row: Some(1),
+            column: None,
+            before: before.map(Into::into),
+            after: after.map(Into::into),
+            id: Some(1),
+            region_before: a,
+            region_after: b,
+            kind_before: None,
+            kind_after: None,
+        };
+        let r = Some(region(0, 100));
+        assert_eq!(
+            annotation(&note(None, Some("a"), None, r)),
+            Some("Annotation added")
+        );
+        assert_eq!(
+            annotation(&note(Some("a"), None, r, None)),
+            Some("Annotation deleted")
+        );
+        assert_eq!(
+            annotation(&note(Some("a"), Some("a"), r, Some(region(50, 100)))),
+            Some("Annotation moved")
+        );
+        assert_eq!(
+            annotation(&note(Some("a"), Some("a"), r, Some(region(0, 200)))),
+            Some("Annotation resized")
+        );
+        assert_eq!(
+            annotation(&note(Some("a"), Some("b"), r, r)),
+            Some("Annotation edited")
+        );
+        assert_eq!(annotation(&note(None, Some("a"), None, None)), None);
     }
 }

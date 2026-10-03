@@ -6,8 +6,8 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, BorderStyle, Bounds, Context, ElementId, EmptyView, ExternalPaths,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels, SharedString,
+    AnyElement, BorderStyle, Bounds, Context, ElementId, ExternalPaths, InteractiveElement as _,
+    IntoElement, MouseButton, ParentElement as _, Pixels, SharedString,
     StatefulInteractiveElement as _, Styled as _, StyledText, TextOverflow, Window, canvas, div,
     fill, outline, point, px, size,
 };
@@ -75,7 +75,7 @@ pub(crate) fn render_cell(
     };
     let marked = worst_from(true);
     let flagged = worst_from(false);
-    let tip = note::tooltip_text(delegate, &location, cx);
+    let tip = note::tip(delegate, &location, cx);
     let note_editor = note::editor(delegate, Some(row_ix), Some(col_ix), cx);
 
     let mode = delegate.text_mode(col_ix);
@@ -155,16 +155,7 @@ pub(crate) fn render_cell(
         .when(tip.is_some() || cut_short, |cell| {
             cell.tooltip(move |window, cx| {
                 let truncated = cut_short && layout.len() != text.len();
-                let tip: Option<SharedString> = match (tip.clone(), truncated) {
-                    (Some(tip), true) => Some(format!("{text}\n\n{tip}").into()),
-                    (Some(tip), false) => Some(tip),
-                    (None, true) => Some(text.clone()),
-                    (None, false) => None,
-                };
-                match tip {
-                    Some(tip) => gpui_component::tooltip::Tooltip::new(tip).build(window, cx),
-                    None => cx.new(|_| EmptyView).into(),
-                }
+                note::tip_view(tip.as_ref(), truncated.then(|| text.clone()), window, cx)
             })
             .tooltip_show_delay(note::HOVER_DELAY)
         })

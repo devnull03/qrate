@@ -50,6 +50,7 @@ pub struct ReviewerCapabilities {
 /// What the agent panel asks of a model: does this row describe this image, and where doesn't it.
 ///
 /// `row_data` is the row as JSON — column name to value — so a provider needs no notion of grids.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait DataReviewer: Send + Sync {
     async fn initialize(&self) -> Result<()>;

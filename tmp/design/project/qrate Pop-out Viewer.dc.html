@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<style>
+body{margin:0;background:#eceae6;font-family:system-ui,sans-serif}
+a{color:#1a73e8}a:hover{color:#1967d2}
+.dv-turn{padding:40px 44px 32px;border-bottom:1px solid rgba(0,0,0,.08);scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 6px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 15px/1.2 system-ui,sans-serif;color:#1a1a1a}
+.dv-tdesc{font:13px/1.5 system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:900px;margin:0 0 20px;text-wrap:pretty}
+.dv-opts{display:flex;flex-wrap:wrap;gap:36px;align-items:flex-start}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 12px/1.4 system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:1100px}
+.dv-pair{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
+.dv-th{font:500 10.5px ui-monospace,Menlo,monospace;color:rgba(0,0,0,.45);margin:0 0 6px}
+.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}
+.dv-new{font:600 10px ui-monospace,Menlo,monospace;padding:1px 5px;border-radius:3px;background:#d7e6fb;color:#174ea6}
+.dv-chk{font:600 10px ui-monospace,Menlo,monospace;padding:1px 5px;border-radius:3px;background:#fde7c2;color:#7a4b00}
+.dv-list{font:13px/1.55 system-ui,sans-serif;color:rgba(0,0,0,.65);max-width:900px;margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.qf{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;font-size:14px;line-height:20px;color:var(--fg);background:var(--bg);box-shadow:0 1px 3px rgba(0,0,0,.08),0 12px 32px rgba(0,0,0,.10)}
+.ql{--bg:#ffffff;--fg:#202124;--bd:#dadce0;--mu:#5f6368;--mubg:#f1f3f4;--pri:#1a73e8;--prifg:#fff;--sech:#e8eaed;--pop:#ffffff;--tiles:#f8f9fa;--tb:#f9fbfd;--act:#e8f0fe;--warn:#f9ab00;--link:#1a73e8;--sh:0 6px 20px rgba(32,33,36,.18);--shl:0 10px 32px rgba(32,33,36,.28)}
+.qd{--bg:#2f2f2f;--fg:#bbbbbb;--bd:#212121;--mu:#8a8a8a;--mubg:#404040;--pri:#3c78d8;--prifg:#fff;--sech:#4a4a4a;--pop:#292929;--tiles:#333333;--tb:#292929;--act:#3c78d833;--warn:#f1c232;--link:#6d9eeb;--sh:0 8px 24px rgba(0,0,0,.5);--shl:0 12px 36px rgba(0,0,0,.6)}
+.sd{--stage:linear-gradient(rgba(0,0,0,.85),rgba(0,0,0,.85)),var(--bg);--sfg:#e8e8e8;--smu:#a3a3a3}
+.st{--stage:var(--mubg);--sfg:var(--fg);--smu:var(--mu)}
+.zr:nth-child(even){background:color-mix(in srgb,var(--mubg) 40%,transparent)}
+.ph{background:repeating-linear-gradient(135deg,#dedede 0 8px,#d2d2d2 8px 9px);box-shadow:0 2px 14px rgba(0,0,0,.35)}
+.phd{background:repeating-linear-gradient(135deg,#3c3c3c 0 8px,#353535 8px 9px);box-shadow:0 2px 14px rgba(0,0,0,.35)}
+.pinon{background:color-mix(in srgb,var(--pri) 14%,transparent);color:var(--pri)}
+.pinoff{color:var(--mu)}
+.pbh{background:var(--sech)}
+.pbo{background:color-mix(in srgb,var(--pri) 16%,transparent);color:var(--pri)}
+.cur{background:var(--act)}
+</style>
+</helmet>
+
+<section class="dv-turn" id="intro" style="background:#f6f5f2">
+<div class="dv-thd"><span class="dv-tname" style="font-size:20px">qrate — Pop-out Viewer window</span></div>
+<p class="dv-tdesc">A second window that shows the selected row's file at full size, with the row's fields beside it. It follows the table selection, so on two monitors the table sits on one screen and the scan fills the other. Chrome, sidebar and pills use theme tokens. <span class="dv-new">NEW</span> marks new UI, <span class="dv-chk">TO CHECK</span> marks copy or behaviour I guessed. Tweaks switch Light/Dark and the stage background.</p>
+<ul class="dv-list">
+<li><b>Stage:</b> the file sits on the viewer's own backdrop (black 85% over <code>background</code>), so the pop-out looks like the full-screen viewer and a photo is never shown on white. Title bar and sidebar follow the theme. Switch the tweak to "Theme stage" to compare <code>muted.background</code>.</li>
+<li><b>Sidebar:</b> right side, 320px by default, drag 240–720px, collapsed with the title bar's panel button (same icon as the main window). It holds Details without the image pane.</li>
+<li><b>Find:</b> for documents the sidebar gets a <b>Details | Find</b> tab strip, and Ctrl+F switches to Find. This keeps the window to two columns at 800px wide. Esc returns to Details, then does nothing further (the pop-out has no overlay to close).</li>
+<li><b>Following:</b> the title bar's left side has the follow toggle, ▲▼ and "Row 42 of 318". ↑/↓ and ▲▼ move the table selection too, so both windows always agree unless pinned.</li>
+</ul>
+</section>
+
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Pop out button in the Details image pane</span></div>
+<p class="dv-tdesc">Lucide <code>app-window</code> at 16px, placed second in the action chip after Maximize, since both open a larger view. One pop-out per project: when it is open the button stays highlighted and clicking it focuses the existing window.</p>
+<div class="dv-opts">
+<sc-for list="{{ btnStates }}" as="b" hint-placeholder-count="3">
+<div class="dv-opt" id="{{ b.id }}">
+<div class="dv-olabel"><a class="dv-oid" href="#{{ b.id }}">{{ b.id }}</a><span>{{ b.label }}</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:320px;height:360px;border:1px solid var(--bd);border-radius:8px;display:flex;flex-direction:column;font-size:13px;line-height:18px">
+  <div style="height:30px;flex:none;display:flex;align-items:center;padding:0 12px;background:var(--tb);border-bottom:1px solid var(--bd);border-radius:8px 8px 0 0">Details</div>
+  <div style="margin:10px;height:190px;flex:none;position:relative;border:1px solid var(--bd);border-radius:4px;background:var(--mubg);display:flex;align-items:center;justify-content:center">
+    <div class="ph" style="width:220px;height:165px;display:flex;align-items:center;justify-content:center;box-shadow:none"><span style="font:11px ui-monospace,Consolas,monospace;color:#666">ADR_0042.tif</span></div>
+    <span style="position:absolute;left:6px;top:6px;font-size:12px;line-height:16px;padding:1px 6px;border-radius:4px;background:var(--bg)">TIFF · 24.1 MB</span>
+    <div style="position:absolute;right:6px;top:6px;display:flex;gap:2px;padding:2px;border-radius:4px;background:var(--bg)">
+      <span style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"></path><path d="M9 21H3v-6"></path><path d="M21 3l-7 7"></path><path d="M3 21l7-7"></path></svg></span>
+      <span class="{{ b.cls }}" style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:4px;position:relative"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"></rect><path d="M10 4v4"></path><path d="M2 8h20"></path><path d="M6 4v4"></path></svg>
+        <sc-if value="{{ b.tip }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:30px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:12px;line-height:16px;padding:4px 8px;border-radius:4px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);box-shadow:var(--sh);z-index:2">{{ b.tipTxt }}</span></sc-if>
+      </span>
+      <span style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path></svg></span>
+      <span style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"></path></svg></span>
+    </div>
+  </div>
+  <div style="display:flex;flex-direction:column">
+    <div class="zr" style="display:grid;grid-template-columns:35% minmax(0,1fr);gap:8px;padding:6px 12px"><span style="color:var(--mu)">Identifier</span><span>ADR-0042</span></div>
+    <div class="zr" style="display:grid;grid-template-columns:35% minmax(0,1fr);gap:8px;padding:6px 12px"><span style="color:var(--mu)">Title</span><span>Aderman family at Beacon Hill Park</span></div>
+    <div class="zr" style="display:grid;grid-template-columns:35% minmax(0,1fr);gap:8px;padding:6px 12px"><span style="color:var(--mu)">Date</span><span>ca. 1915</span></div>
+  </div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-for>
+</div>
+</section>
+
+<section class="dv-turn" id="t2">
+<div class="dv-thd"><a class="dv-tid" href="#t2">2</a><span class="dv-tname">Pop-out window — states</span></div>
+<p class="dv-tdesc">Keys match the full-screen viewer: ←/→ or PgUp/PgDn turn pages, ↑/↓ move to the previous or next row with a previewable file (and move the table selection), +/−/0 zoom, scroll zooms, drag pans, Ctrl+F opens Find. The window closes by itself when the project closes.</p>
+<div class="dv-opts">
+<sc-for list="{{ frames }}" as="f" hint-placeholder-count="4">
+<div class="dv-opt" id="{{ f.id }}">
+<div class="dv-olabel"><a class="dv-oid" href="#{{ f.id }}">{{ f.id }}</a><span><b style="color:#1a1a1a;font-weight:600">{{ f.name }}.</b> {{ f.label }} <sc-if value="{{ f.chk }}" hint-placeholder-val="{{ false }}"><span class="dv-chk">TO CHECK</span></sc-if></span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }} · {{ f.dims }}</div>
+<div style="{{ f.winStyle }}">
+<div class="qf {{ t.cls }} {{ stg }}" style="width:100%;height:100%;box-sizing:border-box;display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+  <div style="height:32px;flex:none;display:flex;align-items:center;gap:8px;background:var(--tb);border-bottom:1px solid var(--bd);font-size:12px;padding-left:6px">
+    <div style="flex:1;min-width:0;display:flex;align-items:center;gap:4px">
+      <span class="{{ f.pinCls }}" style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;white-space:nowrap"><svg width="14" height="14" viewBox="0 0 24 24" fill="{{ f.pinFill }}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"></path><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path></svg>{{ f.pinLabel }}</span>
+      <span style="width:1px;height:14px;background:var(--bd);margin:0 2px"></span>
+      <span style="width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"></path></svg></span>
+      <span style="width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></span>
+      <span style="color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ f.rowTxt }}</span>
+      <sc-if value="{{ f.pinned }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px;margin-left:4px;border-radius:10px;background:var(--mubg);white-space:nowrap">Table is on row 57<span style="color:var(--link)">Jump</span></span></sc-if>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;min-width:0;max-width:42%">
+      <sc-if value="{{ f.dirty }}" hint-placeholder-val="{{ false }}"><span style="width:6px;height:6px;border-radius:50%;background:var(--fg);flex:none"></span></sc-if>
+      <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ f.titleFile }}<span style="color:var(--mu)">{{ f.titleRest }}</span></span>
+    </div>
+    <div style="flex:1;display:flex;justify-content:flex-end;align-items:center;align-self:stretch">
+      <span style="width:26px;height:24px;display:flex;align-items:center;justify-content:center;margin-right:8px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M15 3v18"></path><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4z" fill="{{ f.sideFill }}"></path></svg></span>
+      <span style="width:44px;align-self:stretch;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 6h10"></path></svg></span><span style="width:44px;align-self:stretch;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="10" height="10"></rect></svg></span><span style="width:44px;align-self:stretch;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1 1l10 10M11 1 1 11"></path></svg></span>
+    </div>
+  </div>
+  <div style="flex:1;min-height:0;display:flex">
+    <div style="flex:1;min-width:0;position:relative;overflow:hidden;background:var(--stage);color:var(--sfg);display:flex;align-items:center;justify-content:center">
+
+      <sc-if value="{{ f.isImage }}" hint-placeholder-val="{{ false }}">
+        <div class="ph" style="{{ f.mediaStyle }}"><div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font:12px ui-monospace,Consolas,monospace;color:#666">{{ f.phLabel }}</div></div>
+      </sc-if>
+
+      <sc-if value="{{ f.isPdf }}" hint-placeholder-val="{{ false }}">
+        <div style="{{ f.mediaStyle }}"><div style="width:100%;height:100%;box-sizing:border-box;background:#fafafa;box-shadow:0 2px 14px rgba(0,0,0,.35);padding:9% 10%;display:flex;flex-direction:column;gap:9px">
+          <sc-for list="{{ pageLines }}" as="ln" hint-placeholder-count="20"><div style="{{ ln.s }}"></div></sc-for>
+        </div></div>
+        <div style="position:absolute;left:50%;bottom:16px;transform:translateX(-50%);display:flex;align-items:center;gap:4px;padding:4px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--shl);font-size:13px">
+          <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg></span>
+          <span style="padding:0 6px;white-space:nowrap">Page 3 of 12</span>
+          <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg></span>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ f.isVideo }}" hint-placeholder-val="{{ false }}">
+        <div class="phd" style="{{ f.mediaStyle }}"><div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font:12px ui-monospace,Consolas,monospace;color:#9a9a9a">video frame at 01:12</div></div>
+        <div style="position:absolute;left:50%;bottom:16px;transform:translateX(-50%);display:flex;align-items:center;gap:10px;padding:4px 4px 4px 12px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--shl);font-size:13px;white-space:nowrap">
+          <span style="font-variant-numeric:tabular-nums">01:12</span>
+          <span style="width:240px;height:4px;border-radius:2px;background:var(--mubg);position:relative"><span style="position:absolute;left:0;top:0;bottom:0;width:26%;border-radius:2px;background:var(--pri)"></span><span style="position:absolute;left:26%;top:50%;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:var(--bg);border:2px solid var(--pri);box-sizing:border-box"></span></span>
+          <span style="font-variant-numeric:tabular-nums;color:var(--mu)">04:38</span>
+          <span style="width:1px;height:16px;background:var(--bd)"></span>
+          <span style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path></svg>Play in the default app</span>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ f.isAudio }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ f.hasArt }}" hint-placeholder-val="{{ false }}">
+          <div class="ph" style="{{ f.mediaStyle }}"><div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font:12px ui-monospace,Consolas,monospace;color:#666">embedded artwork</div></div>
+        </sc-if>
+        <div style="{{ f.transportPos }}">
+          <div style="display:flex;align-items:center;gap:10px;padding:4px 12px 4px 4px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--shl);font-size:13px;white-space:nowrap">
+            <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg></span>
+            <span style="font-variant-numeric:tabular-nums">{{ f.aNow }}</span>
+            <span style="width:240px;height:4px;border-radius:2px;background:var(--mubg);position:relative"><span style="{{ f.aFill }}"></span></span>
+            <span style="font-variant-numeric:tabular-nums;color:var(--mu)">{{ f.aTotal }}</span>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ f.isNoprev }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;padding:24px">
+          <div style="position:relative;width:64px;height:64px;color:var(--smu)"><svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path></svg><span style="position:absolute;left:0;right:0;bottom:14px;font-size:11px;font-weight:600;letter-spacing:.04em">{{ f.typeTag }}</span></div>
+          <div style="font-size:13px;color:var(--smu)">{{ f.noprevMsg }}</div>
+          <span style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);font-size:13px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path></svg>Open in the default app</span>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ f.isMissing }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;padding:24px;max-width:420px">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path><path d="m14.5 12.5-5 5"></path><path d="m9.5 12.5 5 5"></path></svg>
+          <div style="font-size:14px">File not found</div>
+          <div style="font:12px ui-monospace,Consolas,monospace;color:var(--smu);word-break:break-all">D:\Aderman\scans\ADR_0131.tif</div>
+          <span style="display:inline-flex;align-items:center;height:28px;padding:0 10px;margin-top:4px;border-radius:4px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);font-size:13px">Locate file…</span>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ f.isEmpty }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;padding:24px;max-width:360px">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--smu)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"></rect><rect width="7" height="5" x="14" y="3" rx="1"></rect><rect width="7" height="9" x="14" y="12" rx="1"></rect><rect width="7" height="5" x="3" y="16" rx="1"></rect></svg>
+          <div style="font-size:14px;margin-top:4px">Nothing selected</div>
+          <div style="font-size:13px;color:var(--smu);text-wrap:pretty">Select a row in the table to see its file here. This window follows the selection.</div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ f.isMulti }}" hint-placeholder-val="{{ false }}">
+        <div style="{{ f.mediaStyle }}">
+          <div style="width:100%;height:100%;position:relative">
+            <div class="ph" style="position:absolute;inset:0;transform:translate(16px,-16px);opacity:.45"></div>
+            <div class="ph" style="position:absolute;inset:0;transform:translate(8px,-8px);opacity:.7"></div>
+            <div class="ph" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:12px ui-monospace,Consolas,monospace;color:#666">ADR_0043.tif</div>
+          </div>
+        </div>
+        <span style="position:absolute;left:16px;top:50%;margin-top:-18px;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--pop) 80%,transparent);color:var(--fg);border:1px solid var(--bd)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg></span>
+        <span style="position:absolute;right:16px;top:50%;margin-top:-18px;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--pop) 80%,transparent);color:var(--fg);border:1px solid var(--bd)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg></span>
+        <div style="position:absolute;left:50%;bottom:16px;transform:translateX(-50%);display:flex;align-items:center;gap:4px;padding:4px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--shl);font-size:13px;white-space:nowrap">
+          <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg></span>
+          <span style="padding:0 4px">Item 2 of 3</span>
+          <span style="display:flex;gap:4px;padding:0 4px"><span style="width:6px;height:6px;border-radius:50%;background:var(--mubg)"></span><span style="width:6px;height:6px;border-radius:50%;background:var(--pri)"></span><span style="width:6px;height:6px;border-radius:50%;background:var(--mubg)"></span></span>
+          <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg></span>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ f.isBanner }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center">
+          <div style="position:relative;width:64px;height:64px;color:var(--smu)"><svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path></svg><span style="position:absolute;left:0;right:0;bottom:14px;font-size:11px;font-weight:600;letter-spacing:.04em">PDF</span></div>
+        </div>
+        <div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:calc(100% - 24px);max-width:560px;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:8px 8px 8px 12px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--sh);font-size:13px">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--pri)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg>
+          <span style="flex:1;min-width:0">PDF preview needs the PDF component, which isn't installed.</span>
+          <span style="display:inline-flex;align-items:center;height:24px;padding:0 10px;border-radius:4px;background:var(--pri);color:var(--prifg);font-size:12px;white-space:nowrap">Install…</span>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ f.hasPill }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;left:12px;top:12px;display:flex;flex-direction:column;padding:4px 8px;border-radius:4px;background:color-mix(in srgb,var(--pop) 80%,transparent);color:var(--fg);font-size:13px;line-height:18px;max-width:50%">
+          <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ f.file }}</span><span style="font-size:12px;line-height:16px;color:var(--mu)">{{ f.cap }}</span>
+        </div>
+      </sc-if>
+    </div>
+
+    <sc-if value="{{ f.side }}" hint-placeholder-val="{{ true }}">
+    <div style="{{ f.sbStyle }}">
+    <div style="height:100%;display:flex;flex-direction:column;border-left:1px solid var(--bd);background:var(--bg);font-size:13px;line-height:18px;position:relative">
+      <sc-if value="{{ f.doc }}" hint-placeholder-val="{{ false }}">
+        <div style="height:30px;flex:none;display:flex;align-items:stretch;gap:2px;padding:0 8px;background:var(--tb);border-bottom:1px solid var(--bd)">
+          <span style="{{ f.tabDetails }}">Details</span><span style="{{ f.tabFind }}">Find</span>
+        </div>
+      </sc-if>
+      <sc-if value="{{ f.plainHead }}" hint-placeholder-val="{{ true }}">
+        <div style="height:30px;flex:none;display:flex;align-items:center;padding:0 12px;background:var(--tb);border-bottom:1px solid var(--bd)">Details</div>
+      </sc-if>
+
+      <sc-if value="{{ f.findTab }}" hint-placeholder-val="{{ false }}">
+        <div style="padding:8px;border-bottom:1px solid var(--bd)">
+          <div style="height:28px;display:flex;align-items:center;gap:6px;padding:0 4px 0 8px;border:1px solid var(--pri);border-radius:4px;box-shadow:0 0 0 2px color-mix(in srgb,var(--pri) 20%,transparent)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+            <span style="flex:1">Aderman</span><span style="color:var(--mu);font-size:12px">2 of 6</span>
+            <span style="width:22px;height:22px;display:flex;align-items:center;justify-content:center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"></path></svg></span><span style="width:22px;height:22px;display:flex;align-items:center;justify-content:center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></span>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;padding:4px 0">
+          <sc-for list="{{ matches }}" as="m" hint-placeholder-count="6">
+            <div class="{{ m.cls }}" style="display:flex;flex-direction:column;gap:2px;padding:6px 12px"><span style="font-size:12px;color:var(--mu)">Page {{ m.p }}</span><span>{{ m.pre }}<span style="background:color-mix(in srgb,var(--pri) 55%,transparent);border-radius:2px">{{ m.hit }}</span>{{ m.post }}</span></div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ f.showFields }}" hint-placeholder-val="{{ true }}">
+        <sc-if value="{{ f.multi }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:8px 12px;border-bottom:1px solid var(--bd)"><span style="font-weight:600">3 items · shared fields</span><span style="font-size:12px;color:var(--mu)">edits apply to all</span></div>
+        </sc-if>
+        <sc-if value="{{ f.missing }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 8px 6px 12px;background:color-mix(in srgb,var(--warn) 12%,transparent)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>
+            <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">File not found: ADR_0131.tif</span>
+            <span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;background:var(--bg);border:1px solid var(--bd);font-size:12px;white-space:nowrap">Locate file…</span>
+          </div>
+        </sc-if>
+        <div style="display:flex;flex-direction:column">
+          <sc-for list="{{ f.fields }}" as="r" hint-placeholder-count="8">
+            <div class="zr" style="display:grid;grid-template-columns:35% minmax(0,1fr);gap:8px;padding:6px 12px;position:relative">
+              <span style="color:var(--mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.k }}</span><span style="{{ r.vstyle }}">{{ r.v }}</span>
+              <sc-if value="{{ r.edit }}" hint-placeholder-val="{{ false }}">
+                <div style="position:absolute;left:calc(35% + 2px);right:6px;top:2px;z-index:2;display:flex;flex-direction:column;background:var(--pop);border:1px solid var(--pri);border-radius:4px;box-shadow:var(--sh)">
+                  <div style="padding:6px 8px;min-height:72px">{{ r.full }}<span style="display:inline-block;width:1px;height:15px;background:var(--fg);vertical-align:-3px;margin-left:1px"></span></div>
+                  <div style="padding:4px 8px;border-top:1px solid var(--bd);font-size:12px;color:var(--mu)">Enter to save · Shift+Enter for a new line</div>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+        <div style="flex:1;min-height:8px"></div>
+        <div style="height:28px;flex:none;display:flex;align-items:center;gap:6px;padding:0 8px;border-top:1px solid var(--bd);background:var(--tb)">
+          <sc-if value="{{ f.notes }}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></sc-if>
+          <sc-if value="{{ f.notesClosed }}" hint-placeholder-val="{{ true }}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg></sc-if>
+          <span>Notes</span>
+        </div>
+        <sc-if value="{{ f.notes }}" hint-placeholder-val="{{ false }}">
+          <div style="height:110px;flex:none;padding:8px 12px;border-top:1px solid var(--bd);box-sizing:border-box;text-wrap:pretty">Edith names the farm on Cedar Hill Road at 12:40. Cross-check against the 1921 census before adding it to Place.</div>
+        </sc-if>
+        <div style="height:28px;flex:none;display:flex;align-items:center;gap:6px;padding:0 8px;border-top:1px solid var(--bd);background:var(--tb)">
+          <sc-if value="{{ f.hist }}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></sc-if>
+          <sc-if value="{{ f.histClosed }}" hint-placeholder-val="{{ true }}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg></sc-if>
+          <span>History</span>
+        </div>
+        <sc-if value="{{ f.hist }}" hint-placeholder-val="{{ false }}">
+          <div style="height:120px;flex:none;display:flex;flex-direction:column;border-top:1px solid var(--bd);overflow:hidden">
+            <sc-for list="{{ history }}" as="h" hint-placeholder-count="3">
+              <div style="display:flex;flex-direction:column;padding:5px 12px"><span>{{ h.what }}</span><span style="font-size:12px;color:var(--mu)">{{ h.when }}</span></div>
+            </sc-for>
+          </div>
+        </sc-if>
+      </sc-if>
+    </div>
+    </div>
+    </sc-if>
+  </div>
+</div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-for>
+</div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;themes&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Light + Dark&quot;,&quot;Light only&quot;,&quot;Dark only&quot;],&quot;default&quot;:&quot;Light + Dark&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;stage&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Dark stage&quot;,&quot;Theme stage&quot;],&quot;default&quot;:&quot;Dark stage&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const L = { cls: 'ql', name: 'Qrate Light' }, D = { cls: 'qd', name: 'Qrate Dark' };
+    const m = this.props.themes ?? 'Light + Dark';
+    const themes = m === 'Light only' ? [L] : m === 'Dark only' ? [D] : [L, D];
+    const stg = (this.props.stage ?? 'Dark stage') === 'Dark stage' ? 'sd' : 'st';
+    const clamp = { display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' };
+    const fld = (k, v, o = {}) => ({
+      k, v: o.mixed ? 'Mixed (3 values)' : (v || 'Empty'), full: v, edit: !!o.edit,
+      vstyle: Object.assign({}, clamp, !v && !o.mixed ? { color: 'var(--mu)' } : o.mixed ? { color: 'var(--mu)', fontStyle: 'italic' } : o.link ? { color: 'var(--link)' } : {}),
+    });
+    const row = (id, title, date, creator, desc, subj, format, file, o = {}) => [
+      fld('Identifier', id), fld('Title', title), fld('Date', date), fld('Creator', creator),
+      fld('Description', desc, { edit: o.edit }), fld('Subjects', subj), fld('Format', format), fld('File', file, { link: !o.missing }),
+    ];
+    const r42 = (edit) => row('ADR-0042', 'Aderman family at Beacon Hill Park', 'ca. 1915', 'Aderman, John', 'Six family members seated on a picnic blanket; the sawmill crew\u2019s wagon is visible behind them.', 'Families; Picnics; Beacon Hill Park (Victoria, B.C.)', 'Photographic print', 'ADR_0042.tif', { edit });
+    const def = { w: 1120, h: 700, sw: 320, side: true, pinned: false, dirty: false, kind: 'image', ratio: 4 / 3, padB: 0, doc: false, findTab: false, multi: false, missing: false, notes: false, hist: false, chk: false,
+      row: 42, file: 'ADR_0042.tif', cap: 'TIFF · 24.1 MB', fields: r42(false), phLabel: 'scan · ADR_0042.tif' };
+    const list = [
+      { id: '2a', name: 'Image', label: 'Following the table. The Description value is open in the same floating editor as Details; Enter saves and the change shows in both windows.', w: 1280, h: 800, dirty: true, fields: r42(true) },
+      { id: '2b', name: 'Pinned', label: 'The pin keeps row 42 on screen while the table moves on. A chip shows where the table is; Jump moves this window there. Click the pin again to follow. ▲▼ still step rows, but only in this window.', pinned: true },
+      { id: '2c', name: 'Multi-page PDF with Find', label: 'Documents add a Details | Find tab strip. Ctrl+F opens Find; matches are highlighted on the page with primary at 55%. Find keeps the sidebar\u2019s width.', kind: 'pdf', ratio: 8.5 / 11, padB: 56, doc: true, findTab: true, sw: 360, row: 57, file: 'ADR_0057.pdf', cap: 'PDF · 3.2 MB · 12 pages',
+        fields: row('ADR-0057', 'Letter to Margaret Aderman', '1906-09-16', 'Aderman, John', 'Handwritten letter describing the voyage west', 'Emigration; Correspondence', 'Letter, 12 pages', 'ADR_0057.pdf') },
+      { id: '2d', name: 'Video', label: 'Scrub-only, as in the viewer; sound plays in the OS player. History is expanded.', kind: 'video', ratio: 16 / 9, padB: 56, row: 88, file: 'ADR_0088.mp4', cap: 'MP4 · 412 MB · 04:38', hist: true,
+        fields: row('ADR-0088', 'Opening of the Saanich mill (home movie)', '1924', 'Aderman, Walter', '16 mm home movie transferred to digital; crowd, ribbon cutting, first log through the saw.', 'Sawmills; Ceremonies', 'Film transfer, 4 min 38 s', 'ADR_0088.mp4') },
+      { id: '2e', name: 'Audio with artwork', label: 'Artwork fills the stage, transport sits in the bottom pill. Notes is expanded.', kind: 'audio', art: true, ratio: 1, padB: 56, row: 101, file: 'ADR_0101.mp3', cap: 'MP3 · 5.8 MB · 03:15', notes: true, aNow: '00:48', aTotal: '03:15', aPct: 25,
+        fields: row('ADR-0101', 'Oral history: Edith Aderman, part 1', '1978-05-02', 'Aderman, Edith', 'Edith recalls the family\u2019s first farm and the move to Victoria.', 'Oral histories; Farms', 'Audio recording', 'ADR_0101.mp3') },
+      { id: '2f', name: 'Audio without artwork', label: 'No artwork, so the transport moves to the vertical centre, as in the viewer.', kind: 'audio', art: false, row: 102, file: 'ADR_0102.wav', cap: 'WAV · 64.2 MB · 06:22', aNow: '02:10', aTotal: '06:22', aPct: 34,
+        fields: row('ADR-0102', 'Oral history: Edith Aderman, part 2', '1978-05-02', 'Aderman, Edith', 'Continues from part 1: school years and the 1921 wedding.', 'Oral histories; Weddings', 'Audio recording', 'ADR_0102.wav') },
+      { id: '2g', name: 'No preview', label: 'A type icon and the one useful action. The sidebar is unchanged.', kind: 'noprev', row: 120, file: 'ADR_0120.docx', cap: 'DOCX · 88 KB', typeTag: 'DOCX', noprevMsg: 'No preview for DOCX files',
+        fields: row('ADR-0120', 'Transcription of the voyage letters', '1998', 'Aderman, Ruth', 'Typed transcription of letters ADR-0057 to ADR-0061.', 'Correspondence; Transcriptions', 'Word document', 'ADR_0120.docx') },
+      { id: '2h', name: 'Missing file', label: 'The stage explains; the sidebar keeps the same warning strip as Details. Both Locate file… buttons do the same thing.', kind: 'missing', missing: true, row: 131, file: 'ADR_0131.tif',
+        fields: row('ADR-0131', 'Sawmill crew', '1912', 'Aderman, John', 'Crew posed in front of the mill', 'Sawmills; Workers', 'Photographic print', 'ADR_0131.tif', { missing: true }) },
+      { id: '2i', name: 'Nothing selected', label: 'The message lives on the stage so it survives a collapsed sidebar. Title bar drops the file name.', kind: 'empty' },
+      { id: '2j', name: 'Several rows selected', label: 'The stage shows one card of the stack; ◀▶ (visible on hover) and Alt+←/→ step through it, since ←/→ already turn pages. Stepping changes only what is shown; the table selection and the shared-field edits stay on all three.', chk: true, kind: 'multi', multi: true, padB: 56,
+        fields: [fld('Identifier', '', { mixed: true }), fld('Title', '', { mixed: true }), fld('Date', 'ca. 1915'), fld('Creator', 'Aderman, John'), fld('Description', '', { mixed: true }), fld('Subjects', 'Families; Beacon Hill Park (Victoria, B.C.)'), fld('Format', 'Photographic print'), fld('File', '', { mixed: true })] },
+      { id: '2k', name: 'Component not installed', label: 'Same banner as the viewer, top centre, 560px max. Copy and button label are placeholders.', chk: true, kind: 'banner', doc: true, row: 63, file: 'ADR_0063.pdf', cap: 'PDF · 1.4 MB',
+        fields: row('ADR-0063', 'Deed of land, Saanich', '1919-03-11', 'Province of British Columbia', 'Deed transferring lot 14 to John Aderman.', 'Land records', 'Legal document', 'ADR_0063.pdf') },
+      { id: '2l', name: '800 × 600', label: 'Smallest supported size. Sidebar at 280px; the title bar truncates the file name before the row controls.', w: 800, h: 600, sw: 280 },
+      { id: '2m', name: '800 × 600, sidebar collapsed', label: 'Collapsed with the title bar\u2019s panel button; the stage takes the full width. At 4K the sidebar keeps its width (max 720px) and the stage gets the rest.', w: 800, h: 600, side: false },
+    ];
+    const frames = list.map((o) => {
+      const f = Object.assign({}, def, o);
+      const sw = f.side ? f.sw : 0;
+      const W = f.w - 2 - sw - 64, H = f.h - 2 - 32 - 64 - f.padB;
+      let mw = W, mh = mw / f.ratio; if (mh > H) { mh = H; mw = mh * f.ratio; }
+      const k = f.kind;
+      const tab = (on) => ({ display: 'flex', alignItems: 'center', padding: '0 8px', color: on ? 'var(--fg)' : 'var(--mu)', boxShadow: on ? 'inset 0 -2px 0 var(--pri)' : 'none' });
+      const title = k === 'empty' ? { titleFile: '', titleRest: 'Aderman Collection \u2014 qrate' } : k === 'multi' ? { titleFile: '3 items', titleRest: ' \u2014 Aderman Collection \u2014 qrate' } : { titleFile: f.file, titleRest: ' \u2014 Aderman Collection \u2014 qrate' };
+      return Object.assign(f, title, {
+        dims: f.w + ' × ' + f.h,
+        winStyle: { width: f.w + 'px', height: f.h + 'px' },
+        sbStyle: { width: f.sw + 'px', flex: 'none', minWidth: 0 },
+        mediaStyle: { width: Math.round(mw) + 'px', height: Math.round(mh) + 'px', flex: 'none', marginBottom: f.padB + 'px' },
+        pinCls: f.pinned ? 'pinon' : 'pinoff', pinFill: f.pinned ? 'currentColor' : 'none', pinLabel: f.pinned ? 'Pinned' : 'Following',
+        sideFill: f.side ? 'currentColor' : 'none',
+        rowTxt: k === 'empty' ? 'No selection' : k === 'multi' ? 'Rows 42\u201344 · 3 selected' : 'Row ' + f.row + ' of 318',
+        isImage: k === 'image', isPdf: k === 'pdf', isVideo: k === 'video', isAudio: k === 'audio', hasArt: !!f.art, isNoprev: k === 'noprev', isMissing: k === 'missing', isEmpty: k === 'empty', isMulti: k === 'multi', isBanner: k === 'banner',
+        hasPill: ['image', 'pdf', 'video', 'audio', 'multi'].includes(k),
+        transportPos: f.art ? { position: 'absolute', left: '50%', bottom: '16px', transform: 'translateX(-50%)' } : { display: 'flex' },
+        aFill: { position: 'absolute', left: 0, top: 0, bottom: 0, width: (f.aPct || 0) + '%', borderRadius: '2px', background: 'var(--pri)' },
+        plainHead: !f.doc, tabDetails: tab(!f.findTab), tabFind: tab(f.findTab),
+        showFields: !f.findTab && k !== 'empty', notesClosed: !f.notes, histClosed: !f.hist,
+        file: k === 'multi' ? 'ADR_0043.tif' : f.file, cap: k === 'multi' ? 'TIFF · 22.8 MB' : f.cap,
+      });
+    });
+    const grey = '#d4d4d4', hl = 'color-mix(in srgb,var(--pri) 55%,transparent)', hlCur = 'var(--pri)';
+    const widths = [60, 0, 96, 92, 98, 88, 94, 70, 0, 97, 91, 95, 89, 60, 0, 93, 96, 90, 98, 74];
+    const pageLines = widths.map((w, i) => {
+      const s = { height: w ? '6px' : '4px', width: (w || 0) + '%', borderRadius: '1px', background: grey, flex: 'none' };
+      if (i === 3) s.background = `linear-gradient(90deg, ${grey} 0 22%, ${hl} 22% 42%, ${grey} 42%)`;
+      if (i === 11) { s.background = `linear-gradient(90deg, ${grey} 0 55%, ${hlCur} 55% 76%, ${grey} 76%)`; s.height = '8px'; }
+      if (i === 17) s.background = `linear-gradient(90deg, ${hl} 0 20%, ${grey} 20%)`;
+      return { s };
+    });
+    return {
+      themes, stg, frames, pageLines,
+      btnStates: [
+        { id: '1a', label: 'Default. Pop out sits second in the chip, after Maximize.', tip: false, cls: '' },
+        { id: '1b', label: 'Hover shows the tooltip.', tip: true, tipTxt: 'Open in new window', cls: 'pbh' },
+        { id: '1c', label: 'Pop-out already open: the button stays highlighted, and clicking it brings that window forward.', tip: true, tipTxt: 'Show pop-out window', cls: 'pbo' },
+      ],
+      matches: [
+        { p: 1, pre: 'My dear Margaret ', hit: 'Aderman', post: ', we reached Winnipeg…', cls: '' },
+        { p: 3, pre: '…asked for Mr. ', hit: 'Aderman', post: ' at the mill office…', cls: 'cur' },
+        { p: 3, pre: '…the ', hit: 'Aderman', post: ' boys have found work…', cls: '' },
+        { p: 5, pre: '…care of J. ', hit: 'Aderman', post: ', General Delivery…', cls: '' },
+        { p: 9, pre: '…tell Mother ', hit: 'Aderman', post: ' the trunk arrived…', cls: '' },
+        { p: 12, pre: 'Your loving husband, John ', hit: 'Aderman', post: '', cls: '' },
+      ],
+      history: [
+        { what: 'Description edited', when: 'Today, 10:42 · Arnav' },
+        { what: 'Subjects: added \u201cCeremonies\u201d', when: 'Today, 10:40 · Arnav' },
+        { what: 'Date: 1920s \u2192 1924', when: 'Sep 24, 16:05 · Arnav' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>
