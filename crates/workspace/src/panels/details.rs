@@ -1131,6 +1131,9 @@ impl DetailsPanel {
             .as_ref()
             .map_or(&[], |state| state.read(cx).delegate().unsaved_history());
         let numbers = crate::viewer::marks(row_id, cx);
+        let row_now = state
+            .as_ref()
+            .and_then(|state| state.read(cx).delegate().row_of(row_id));
         let file = state.as_ref().and_then(|state| {
             let delegate = state.read(cx).delegate();
             delegate
@@ -1151,7 +1154,7 @@ impl DetailsPanel {
             Option<EntryId>,
             String,
             String,
-            Option<(String, SharedString)>,
+            Option<Change>,
             Option<AnyElement>,
         );
         let quote = |text: &str| match text.is_empty() {
@@ -1178,7 +1181,7 @@ impl DetailsPanel {
                             after,
                         } if *row == row_id => (
                             format!("{column}: {} → {}", quote(before), quote(after)),
-                            Some((column.clone(), SharedString::from(before.clone()))),
+                            Some(change.clone()),
                         ),
                         Change::Note {
                             row: Some(row),
@@ -1193,7 +1196,7 @@ impl DetailsPanel {
                                     .iter()
                                     .find(|m| Some(m.id) == *note)
                                     .map_or(String::new(), |m| format!(" #{}", m.number));
-                                (format!("{what}{number}"), None)
+                                (format!("{what}{number}"), Some(change.clone()))
                             }
                             None => {
                                 let verb = match (before, after) {
@@ -1384,7 +1387,7 @@ impl DetailsPanel {
                                             )
                                             .when_some(
                                                 id.zip(restore),
-                                                |line, (id, (column, before))| {
+                                                |line, (id, change)| {
                                                     line.child(
                                                         Button::new((
                                                             "details-history-restore",
@@ -1393,15 +1396,29 @@ impl DetailsPanel {
                                                         .icon(IconName::Undo2)
                                                         .ghost()
                                                         .xsmall()
-                                                        .tooltip("Restore this value")
-                                                        .on_click(move |_, _, cx| {
-                                                            table::restore_value(
+                                                        .tooltip(match change {
+                                                            Change::Note { .. } => {
+                                                                "Restore this annotation"
+                                                            }
+                                                            _ => "Restore this value",
+                                                        })
+                                                        .on_click(move |_, _, cx| match &change {
+                                                            Change::Cell {
+                                                                column,
+                                                                before,
+                                                                ..
+                                                            } => table::restore_value(
                                                                 row_id,
-                                                                &column,
-                                                                before.clone(),
+                                                                column,
+                                                                before.clone().into(),
                                                                 id,
                                                                 cx,
-                                                            )
+                                                            ),
+                                                            note => {
+                                                                diagnostics::Diagnostics::restore_note(
+                                                                    note, row_now, id, cx,
+                                                                )
+                                                            }
                                                         }),
                                                     )
                                                 },

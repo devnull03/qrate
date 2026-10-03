@@ -1023,6 +1023,14 @@ impl HistoryPanel {
                             ] => Some((*row, column.clone(), before.clone())),
                             _ => None,
                         };
+                        let note = match listed.entry.changes.as_slice() {
+                            [
+                                change @ Change::Note {
+                                    row, id: Some(_), ..
+                                },
+                            ] => Some((change.clone(), *row)),
+                            _ => None,
+                        };
                         let (restore, name, unname) =
                             (listed.clone(), panel.clone(), panel.clone());
                         let labelled = listed.label.is_some();
@@ -1041,6 +1049,23 @@ impl HistoryPanel {
                                     )
                                 },
                             ))
+                        })
+                        .when_some(note, |menu, (change, row)| {
+                            let label = match annotation(&change) {
+                                Some(_) => "Restore This Annotation",
+                                None => "Restore This Note",
+                            };
+                            menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                                let at = row.and_then(|row| {
+                                    cx.try_global::<TableStateHandle>()?
+                                        .0
+                                        .upgrade()?
+                                        .read(cx)
+                                        .delegate()
+                                        .row_of(row)
+                                });
+                                diagnostics::Diagnostics::restore_note(&change, at, id, cx);
+                            }))
                         })
                         .separator()
                         .item(PopupMenuItem::new("Name This Version…").on_click(

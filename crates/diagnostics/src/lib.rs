@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 use gpui::{App, Global, Hsla, SharedString};
 use gpui_component::ActiveTheme as _;
-use settings::history::{Change, Entry, Origin};
+use settings::history::{Change, Entry, EntryId, Origin};
 pub use settings::project::{NoteId, NoteKind, Region};
 
 /// The one dataset a project can hold today. `__notes` keys by name so a second sheet is new
@@ -578,6 +578,35 @@ impl Diagnostics {
         body.kind = kind;
         let after = (!body.message.trim().is_empty()).then_some(body);
         Self::put(id, location, after, origin, cx);
+    }
+
+    /// Put a note back the way `change` found it, as a restore of entry `from`: its words, kind and
+    /// region, or gone if it did not exist yet. `row` is where its item sits now.
+    pub fn restore_note(change: &Change, row: Option<usize>, from: EntryId, cx: &mut App) {
+        let Change::Note {
+            row: row_id,
+            column,
+            before,
+            id: Some(id),
+            region_before,
+            kind_before,
+            ..
+        } = change
+        else {
+            return;
+        };
+        let location = Location {
+            dataset: DATASET_MAIN.into(),
+            row,
+            row_id: *row_id,
+            column: column.as_deref().map(|c| SharedString::from(c.to_string())),
+        };
+        let body = before.as_ref().map(|message| Body {
+            message: message.clone().into(),
+            region: *region_before,
+            kind: *kind_before,
+        });
+        Self::put(*id, location, body, Origin::Restore(from), cx);
     }
 
     /// Move or reshape the region one note points at.
@@ -1558,6 +1587,78 @@ mod tests {
             );
             assert_eq!(Diagnostics::all(cx)[0].location.row_id, Some(40));
             assert!(Diagnostics::ignored(cx).is_empty());
+        });
+    }
+
+    /// Restoring an annotation's entry puts it back as the entry found it: a move undone, and a
+    /// deleted note back under its own id.
+    #[gpui::test]
+    fn restoring_a_note_change_puts_the_annotation_back(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let location = Location {
+                dataset: DATASET_MAIN.into(),
+                row: Some(0),
+                row_id: Some(9),
+                column: None,
+            };
+            let stamp = Region {
+                page: 0,
+                x: 100,
+                y: 100,
+                w: 500,
+                h: 500,
+                of: None,
+            };
+            let id = Diagnostics::file_note(
+                location,
+                Some(stamp),
+                Some(NoteKind::Question),
+                "stamp".into(),
+                Origin::Drawn,
+                cx,
+            )
+            .unwrap();
+            let moved = Region { x: 900, ..stamp };
+            Diagnostics::move_note(id, moved, cx);
+            let change =
+                |before: Option<&str>, region_before, after: Option<&str>, region_after| {
+                    settings::history::Change::Note {
+                        row: Some(9),
+                        column: None,
+                        before: before.map(Into::into),
+                        after: after.map(Into::into),
+                        id: Some(id),
+                        region_before,
+                        region_after,
+                        kind_before: Some(NoteKind::Question),
+                        kind_after: Some(NoteKind::Question),
+                    }
+                };
+            let region = |cx: &App| Diagnostics::note(id, cx).and_then(|d| d.note.as_ref()?.region);
+
+            Diagnostics::restore_note(
+                &change(Some("stamp"), Some(stamp), Some("stamp"), Some(moved)),
+                Some(0),
+                1,
+                cx,
+            );
+            assert_eq!(region(cx), Some(stamp));
+
+            Diagnostics::edit_note(id, SharedString::default(), None, Origin::Drawn, cx);
+            assert!(Diagnostics::note(id, cx).is_none());
+            Diagnostics::restore_note(
+                &change(Some("stamp"), Some(stamp), None, None),
+                Some(0),
+                2,
+                cx,
+            );
+            let back = Diagnostics::note(id, cx).expect("the deleted note is back");
+            assert_eq!(back.message, SharedString::from("stamp"));
+            assert_eq!(
+                back.note.as_ref().and_then(|n| n.kind),
+                Some(NoteKind::Question)
+            );
+            assert_eq!(region(cx), Some(stamp));
         });
     }
 }
