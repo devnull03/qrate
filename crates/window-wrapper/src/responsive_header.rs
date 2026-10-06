@@ -240,10 +240,10 @@ impl Element for ResponsiveHeader {
             })
             .unwrap_or(self.stages.len() - 1);
         if previous != Some(selected) {
-            if layout.state.read(cx).menu_open {
-                if let Some(focus) = layout.state.read(cx).action_context.clone() {
-                    focus.focus(window, cx);
-                }
+            if layout.state.read(cx).menu_open
+                && let Some(focus) = layout.state.read(cx).action_context.clone()
+            {
+                focus.focus(window, cx);
             }
             layout.state.update(cx, |state, _| {
                 state.stage = Some(selected);
