@@ -67,6 +67,9 @@ impl RenderOnce for AppTitleBar {
         let dirty = self.dirty;
 
         TitleBar::new()
+            // macOS reserves this space for its traffic lights; other platforms can start
+            // the menu close to the window edge.
+            .when(!cfg!(target_os = "macos"), |bar| bar.pl(px(4.)))
             .text_xs()
             .text_color(cx.theme().foreground)
             .child(

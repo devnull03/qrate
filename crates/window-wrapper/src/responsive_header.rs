@@ -4,6 +4,7 @@
 
 use std::rc::Rc;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     IconName, Sizable as _,
@@ -85,7 +86,15 @@ impl Element for ResponsiveHeader {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, HeaderLayout) {
-        let mut expanded = (self.expanded)(window, cx);
+        // AvailableSpace::Definite sets the space available to a root, not its width. The
+        // stretch container gives the original header that width after intrinsic measurement.
+        let mut expanded = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_stretch()
+            .child((self.expanded)(window, cx))
+            .into_any_element();
         let minimum_width = expanded
             .layout_as_root(
                 size(
@@ -133,7 +142,9 @@ impl Element for ResponsiveHeader {
                         .icon(IconName::Menu)
                         .ghost()
                         .xsmall()
-                        .occlude()
+                        .when(self.menu_left, |button| {
+                            button.with_size(px(28.)).size(px(30.))
+                        })
                         .tooltip("Header controls"),
                 )
                 .content(move |_, window, cx| {
@@ -150,7 +161,15 @@ impl Element for ResponsiveHeader {
                 .min_w_0()
                 .truncate()
                 .child((self.title)(window, cx));
-            let row = h_flex().size_full().min_w_0().gap_1().px_2();
+            // Occlude the drag region behind the whole popup host. Occluding its button
+            // instead blocks the host's mouse-down listener as well as the titlebar.
+            let menu = div().flex_none().occlude().child(menu);
+            let row = h_flex()
+                .size_full()
+                .min_w_0()
+                .gap_1()
+                .px_2()
+                .when(self.menu_left, |row| row.pl_0());
             if self.menu_left {
                 row.child(menu).child(title)
             } else {
