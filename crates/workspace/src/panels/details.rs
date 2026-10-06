@@ -41,7 +41,6 @@ const ROW_HISTORY_LIMIT: i64 = 50;
 
 /// Height of the Notes sub-panel's header bar, which is the whole of it while collapsed.
 const NOTES_HEADER_H: f32 = 28.;
-const NOTES_FILTERS_MIN_REM: f32 = 26.;
 /// What a collapsed sub-panel occupies: its header, plus the rule the section draws above it.
 const SECTION_STRIP_H: f32 = NOTES_HEADER_H + 1.;
 /// The least height a sub-panel, or the field list above it, is worth showing in.
@@ -813,12 +812,14 @@ impl DetailsPanel {
                                     }
                                 })
                                 .child(
-                                    h_flex()
-                                        .flex_wrap()
+                                    div()
+                                        .w_full()
+                                        .min_w_0()
+                                        .whitespace_normal()
                                         .text_xs()
                                         .line_height(px(16.))
                                         .text_color(theme.muted_foreground)
-                                        .child(lead)
+                                        .child(format!("{lead} · {author}"))
                                         .children(edited.map(|tip| {
                                             div()
                                                 .id(ElementId::NamedInteger(
@@ -834,8 +835,7 @@ impl DetailsPanel {
                                                     )
                                                     .build(window, cx)
                                                 })
-                                        }))
-                                        .child(format!(" · {author}")),
+                                        })),
                                 )
                                 .when(changed, |body| {
                                     body.child(
@@ -936,7 +936,35 @@ impl DetailsPanel {
         }
 
         let open = self.notes_open;
-        let filters_min_width = window.rem_size() * NOTES_FILTERS_MIN_REM;
+        let count_label = match (total, shown) {
+            (0, _) => "none".to_string(),
+            (total, shown) if shown == total => total.to_string(),
+            (total, shown) => format!("{shown} of {total}"),
+        };
+        let text_width = |text: &str, bold: bool| {
+            let mut run = window.text_style().to_run(text.len());
+            if bold {
+                run.font.weight = FontWeight::SEMIBOLD;
+            }
+            window
+                .text_system()
+                .shape_line(
+                    text.to_string().into(),
+                    window.rem_size() * 0.75,
+                    &[run],
+                    None,
+                )
+                .width
+        };
+        let filters_min_width = text_width("Notes", true)
+            + text_width(&count_label, false)
+            + ["All", "On image", "On fields", "Mine"]
+                .into_iter()
+                .map(|label| text_width(label, false))
+                .sum::<Pixels>()
+            // Header padding, toggle, gaps, segment padding, and Mine's padding/border.
+            + window.rem_size() * (1. + 1.25 + 5. * 0.375 + 3. * 0.75 + 0.5)
+            + px(6.);
         let compact = self.notes_header_width.get() < filters_min_width;
         let segment = |label: &'static str, value: NotesFilter| {
             div()
@@ -1026,17 +1054,14 @@ impl DetailsPanel {
                                 cx.notify();
                             })),
                     )
-                    .child(div().text_xs().font_semibold().child("Notes"))
+                    .child(div().flex_none().text_xs().font_semibold().child("Notes"))
                     .child(
                         div()
+                            .flex_none()
                             .text_xs()
                             .whitespace_nowrap()
                             .text_color(theme.muted_foreground)
-                            .child(match (total, shown) {
-                                (0, _) => "none".to_string(),
-                                (total, shown) if shown == total => total.to_string(),
-                                (total, shown) => format!("{shown} of {total}"),
-                            }),
+                            .child(count_label),
                     )
                     .child(div().flex_1().min_w_0())
                     .when(open && total > 0 && compact, |header| {
@@ -1107,6 +1132,7 @@ impl DetailsPanel {
                         header
                             .child(
                                 h_flex()
+                                    .flex_none()
                                     .p(px(2.))
                                     .rounded(px(5.))
                                     .bg(theme.muted)

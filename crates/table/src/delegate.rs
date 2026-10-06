@@ -9,6 +9,7 @@ use gpui::{
     Task, Window, div, px,
 };
 use gpui_component::{
+    ActiveTheme as _,
     input::TextareaState,
     table::{Column, TableDelegate, TableState},
 };
@@ -2507,9 +2508,13 @@ impl TableDelegate for QrateTableDelegate {
         self.visible_rows.len()
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+    fn column(&self, col_ix: usize, cx: &App) -> Column {
         if col_ix == row_index::COL_IX {
-            return row_index::column();
+            return row_index::column(
+                self.row_ids.len(),
+                self.hierarchy.children(None).len() != self.row_ids.len(),
+                cx.theme().font_size,
+            );
         }
         let column = self.columns[col_ix - 1].clone();
         // The library's fixed region is however many leading columns carry this, so a count is the

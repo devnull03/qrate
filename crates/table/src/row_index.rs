@@ -1,5 +1,3 @@
-use std::sync::OnceLock;
-
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     Context, FontWeight, InteractiveElement as _, IntoElement, SharedString, div, prelude::*, px,
@@ -17,8 +15,6 @@ use crate::delegate::QrateTableDelegate;
 use crate::note::{self, Target};
 
 pub(crate) const COL_IX: usize = 0;
-
-const WIDTH: f32 = 128.;
 
 #[derive(Clone)]
 struct RowDrag(usize);
@@ -38,18 +34,19 @@ impl gpui::Render for RowDragPreview {
     }
 }
 
-pub(crate) fn column() -> Column {
-    static COLUMN: OnceLock<Column> = OnceLock::new();
-    COLUMN
-        .get_or_init(|| {
-            Column::new("__row_ix", "")
-                .fixed_left()
-                .resizable(false)
-                .movable(false)
-                .selectable(false)
-                .width(px(WIDTH))
-        })
-        .clone()
+pub(crate) fn column(rows: usize, hierarchical: bool, font_size: gpui::Pixels) -> Column {
+    let digits = rows.max(1).ilog10() + 1;
+    let width = if hierarchical {
+        px(128.)
+    } else {
+        (font_size * (digits as f32 * 0.6 + 1.5)).max(px(36.))
+    };
+    Column::new("__row_ix", "")
+        .fixed_left()
+        .resizable(false)
+        .movable(false)
+        .selectable(false)
+        .width(width)
 }
 
 pub(crate) fn render_td(
