@@ -461,6 +461,7 @@ impl DetailsPanel {
         let delegate = state.read(cx);
         let delegate = delegate.delegate();
         let me = settings::history::author(cx);
+        let can_filter_mine = me.is_some();
         let chosen = cx.try_global::<crate::viewer::Picked>().and_then(|p| p.0);
         let (filter, mine) = (self.notes_filter, self.notes_mine);
         let in_pop_out = self.rows.is_some();
@@ -1088,7 +1089,7 @@ impl DetailsPanel {
                                         menu.separator().item(
                                             PopupMenuItem::new("Only mine")
                                                 .checked(mine)
-                                                .disabled(me.is_none())
+                                                .disabled(!can_filter_mine)
                                                 .on_click(move |_, _, cx| {
                                                     panel
                                                         .update(cx, |this, cx| {
@@ -1120,8 +1121,8 @@ impl DetailsPanel {
                                     .xsmall()
                                     .outline()
                                     .selected(mine)
-                                    .disabled(me.is_none())
-                                    .tooltip(match me.is_none() {
+                                    .disabled(!can_filter_mine)
+                                    .tooltip(match !can_filter_mine {
                                         true => "Set your name in Settings to filter your notes",
                                         false => "Only notes you signed",
                                     })
