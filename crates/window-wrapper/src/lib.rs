@@ -1,4 +1,5 @@
 pub mod bar;
+pub mod responsive_header;
 pub mod status_bar;
 pub mod title_bar;
 pub mod window_registry;

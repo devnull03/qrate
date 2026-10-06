@@ -1,5 +1,4 @@
-//! qrate's dock appearance: the library's `DockSkin`, with one change — a single panel's title
-//! row is a strip of its own, tinted like the title bar and ruled off from the panel under it.
+//! qrate's dock appearance: a ruled title strip and shared overflow behavior for every header.
 //!
 //! The library draws a lone panel's title straight on the panel's own background with nothing
 //! between the two, so the name, the view switcher and the panel's first row of content run
@@ -13,12 +12,13 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_base::ResizeHandleContext;
 use gpui_component::ActiveTheme as _;
 use gpui_component::dock::{
-    DockArea, DockAreaRenderer, DockContext, DockSkin, DropIndicator, NodeId, PanelState,
-    PanelStyle, TabGroupContext, TabGroupRenderer, TilesRenderer,
+    DockArea, DockAreaRenderer, DockContext, DockSkin, DropIndicator, NodeId, PanelHandle,
+    PanelState, PanelStyle, TabGroupContext, TabGroupRenderer, TilesRenderer,
 };
 
 pub(crate) struct QrateSkin {
@@ -145,17 +145,41 @@ impl TabGroupRenderer for QrateTabGroup {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        let plain = self.draws_plain_title(group, cx);
-        let bar = self.inner.render_tab_bar(group, window, cx);
-        if !plain {
-            return bar;
+        if !group.panels().iter().any(|panel| panel.visible(cx)) {
+            return self.inner.render_tab_bar(group, window, cx);
         }
+        let plain = self.draws_plain_title(group, cx);
+        let inner = self.inner.clone();
+        let expanded_group = group.clone();
+        let title_group = group.clone();
+        let bar = window_wrapper::responsive_header::ResponsiveHeader::new(
+            "dock-responsive-header",
+            px(30.),
+            move |window, cx| inner.render_tab_bar(&expanded_group, window, cx),
+            move |window, cx| {
+                let title = title_group
+                    .active_panel()
+                    .map(|panel| match PanelHandle::of(panel) {
+                        Some(handle) => match handle.tab_name(cx) {
+                            Some(name) => name.into_any_element(),
+                            None => handle.title(window, cx),
+                        },
+                        None => SharedString::from(panel.panel_name(cx)).into_any_element(),
+                    });
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .children(title)
+                    .into_any_element()
+            },
+        );
         div()
             .flex_none()
             .w_full()
             .bg(cx.theme().tab_bar)
-            .border_b_1()
-            .border_color(cx.theme().border)
+            .when(plain, |bar| {
+                bar.border_b_1().border_color(cx.theme().border)
+            })
             .child(bar)
             .into_any_element()
     }

@@ -10832,6 +10832,7 @@ dependencies = [
  "serde_json",
  "settings",
  "table",
+ "window-wrapper",
 ]
 
 [[package]]
