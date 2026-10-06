@@ -6,7 +6,7 @@ use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::combobox::{Combobox, ComboboxEvent, ComboboxState};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent};
-use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_component::searchable_list::{SearchableListDelegate, SearchableListItem};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{
@@ -511,6 +511,82 @@ impl BasePanel for ProblemsPanel {
 }
 
 impl Panel for ProblemsPanel {
+    fn dropdown_menu(
+        &mut self,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let panel = cx.entity().downgrade();
+        let filters = PopupMenu::build(window, cx, |menu, _, _| {
+            Filter::ALL
+                .into_iter()
+                .zip(self.counts)
+                .fold(menu, |menu, (filter, count)| {
+                    let panel = panel.clone();
+                    menu.item(
+                        PopupMenuItem::new(format!("{} ({count})", filter.label()))
+                            .checked(self.filter == filter)
+                            .on_click(move |_, _, cx| {
+                                panel
+                                    .update(cx, |this, cx| {
+                                        this.filter = filter;
+                                        this.refresh(cx);
+                                        cx.notify();
+                                    })
+                                    .ok();
+                            }),
+                    )
+                })
+        });
+        let menu = menu.item(PopupMenuItem::submenu("Show", filters));
+        let menu = menu.when(
+            self.filter != Filter::Notes && self.sources.len() > 1,
+            |menu| {
+                let sources = PopupMenu::build(window, cx, |menu, _, _| {
+                    self.sources.iter().fold(menu, |menu, source| {
+                        let panel = panel.clone();
+                        let source = source.clone();
+                        menu.item(
+                            PopupMenuItem::new(source.clone())
+                                .checked(!self.excluded_sources.contains(&source))
+                                .on_click(move |_, _, cx| {
+                                    panel
+                                        .update(cx, |this, cx| {
+                                            if !this.excluded_sources.remove(&source) {
+                                                this.excluded_sources.insert(source.clone());
+                                            }
+                                            this.refresh(cx);
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                }),
+                        )
+                    })
+                });
+                menu.item(PopupMenuItem::submenu("Sources", sources))
+            },
+        );
+        menu.when(
+            self.filter != Filter::Notes && (self.ignored_count > 0 || self.show_ignored),
+            |menu| {
+                menu.item(
+                    PopupMenuItem::new(format!("Show ignored ({})", self.ignored_count))
+                        .checked(self.show_ignored)
+                        .on_click(move |_, _, cx| {
+                            panel
+                                .update(cx, |this, cx| {
+                                    this.show_ignored = !this.show_ignored;
+                                    this.refresh(cx);
+                                    cx.notify();
+                                })
+                                .ok();
+                        }),
+                )
+            },
+        )
+    }
+
     // The filter tabs sit in the title (the bar's stretching slot, so they stay left) and the
     // source picker in the suffix, so the list starts right under the title bar.
     fn title(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

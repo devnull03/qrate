@@ -825,10 +825,46 @@ impl Panel for HistoryPanel {
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         let panel = cx.entity().downgrade();
-        menu.item(
-            PopupMenuItem::new("Clear History…")
-                .on_click(move |_, window, cx| Self::confirm_clear(panel.clone(), window, cx)),
-        )
+        let (filter, named_only) = (self.filter, self.named_only);
+        let filters = PopupMenu::build(_w, cx, |menu, _, _| {
+            let menu = Filter::ALL.into_iter().fold(menu, |menu, pick| {
+                let panel = panel.clone();
+                menu.item(
+                    PopupMenuItem::new(pick.label())
+                        .checked(!named_only && pick == filter)
+                        .on_click(move |_, _, cx| {
+                            panel
+                                .update(cx, |this, cx| {
+                                    this.filter = pick;
+                                    this.named_only = false;
+                                    this.stale = true;
+                                    cx.notify();
+                                })
+                                .ok();
+                        }),
+                )
+            });
+            let panel = panel.clone();
+            menu.separator().item(
+                PopupMenuItem::new("Named versions")
+                    .checked(named_only)
+                    .on_click(move |_, _, cx| {
+                        panel
+                            .update(cx, |this, cx| {
+                                this.named_only = !this.named_only;
+                                this.stale = true;
+                                cx.notify();
+                            })
+                            .ok();
+                    }),
+            )
+        });
+        menu.item(PopupMenuItem::submenu("Show", filters))
+            .separator()
+            .item(
+                PopupMenuItem::new("Clear History…")
+                    .on_click(move |_, window, cx| Self::confirm_clear(panel.clone(), window, cx)),
+            )
     }
 }
 

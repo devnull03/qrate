@@ -20,6 +20,7 @@ use gpui_component::{
     dock::{BasePanel, DockArea, Panel, PanelEvent},
     h_flex,
     input::Escape,
+    menu::{PopupMenu, PopupMenuItem},
     slider::{Slider, SliderEvent, SliderState},
     tab::{Tab, TabBar},
     v_flex,
@@ -364,6 +365,81 @@ impl BasePanel for ViewsPanel {
 }
 
 impl Panel for ViewsPanel {
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        Some(self.view.label().into())
+    }
+
+    fn dropdown_menu(
+        &mut self,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let panel = cx.entity().downgrade();
+        let views = PopupMenu::build(window, cx, |menu, _, _| {
+            ViewMode::ALL.into_iter().fold(menu, |menu, mode| {
+                let panel = panel.clone();
+                menu.item(
+                    PopupMenuItem::new(mode.label())
+                        .checked(self.view == mode)
+                        .on_click(move |_, window, cx| {
+                            if let Some(panel) = panel.upgrade() {
+                                switch(&panel, mode, window, cx);
+                            }
+                        }),
+                )
+            })
+        });
+        let menu = menu.item(PopupMenuItem::submenu("View", views));
+        let table = self.table.downgrade();
+        let menu = menu.item(
+            PopupMenuItem::new("Find in table")
+                .icon(IconName::Search)
+                .on_click(move |_, window, cx| {
+                    table
+                        .update(cx, |table, cx| table.toggle_search(window, cx))
+                        .ok();
+                }),
+        );
+        menu.when(self.view == ViewMode::Gallery, |menu| {
+            let selected = self.thumb.read(cx).value().start().round() as usize;
+            let thumb = self.thumb.clone();
+            let density = PopupMenu::build(window, cx, |menu, _, _| {
+                (gallery::COLS_MIN as usize..=gallery::COLS_MAX as usize).fold(
+                    menu,
+                    |menu, count| {
+                        let thumb = thumb.clone();
+                        menu.item(
+                            PopupMenuItem::new(count.to_string())
+                                .checked(count == selected)
+                                .on_click(move |_, window, cx| {
+                                    thumb.update(cx, |thumb, cx| {
+                                        thumb.set_value(count as f32, window, cx)
+                                    });
+                                    let value = SharedString::from(count.to_string());
+                                    if cx.has_global::<settings::project::CurrentProject>() {
+                                        settings::project::CurrentProject::set_text(
+                                            gallery::COLUMNS_KEY,
+                                            value,
+                                            cx,
+                                        );
+                                    } else {
+                                        settings::AppSettings::set_text(
+                                            gallery::COLUMNS_KEY,
+                                            value,
+                                            cx,
+                                        );
+                                    }
+                                    cx.refresh_windows();
+                                }),
+                        )
+                    },
+                )
+            });
+            menu.item(PopupMenuItem::submenu("Cards per row", density))
+        })
+    }
+
     /// The centre has no name worth showing, so the title cell carries the view switcher instead —
     /// which puts it at the far left of the same row as the Find button and the ⋯ menu.
     ///

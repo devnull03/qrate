@@ -20,6 +20,7 @@ use gpui_component::dock::{
     DockArea, DockAreaRenderer, DockContext, DockSkin, DropIndicator, NodeId, PanelHandle,
     PanelState, PanelStyle, TabGroupContext, TabGroupRenderer, TilesRenderer,
 };
+use gpui_component::menu::PopupMenuItem;
 
 pub(crate) struct QrateSkin {
     inner: Rc<DockSkin>,
@@ -152,6 +153,7 @@ impl TabGroupRenderer for QrateTabGroup {
         let inner = self.inner.clone();
         let expanded_group = group.clone();
         let title_group = group.clone();
+        let menu_group = group.clone();
         let bar = window_wrapper::responsive_header::ResponsiveHeader::new(
             "dock-responsive-header",
             px(30.),
@@ -160,10 +162,17 @@ impl TabGroupRenderer for QrateTabGroup {
                 let title = title_group
                     .active_panel()
                     .map(|panel| match PanelHandle::of(panel) {
-                        Some(handle) => match handle.tab_name(cx) {
-                            Some(name) => name.into_any_element(),
-                            None => handle.title(window, cx),
-                        },
+                        Some(handle) => {
+                            let label = crate::panel_registry::PANELS
+                                .iter()
+                                .find(|meta| meta.name == panel.panel_name(cx))
+                                .map(|meta| SharedString::from(meta.label))
+                                .or_else(|| handle.tab_name(cx));
+                            match label {
+                                Some(label) => label.into_any_element(),
+                                None => handle.title(window, cx),
+                            }
+                        }
                         None => SharedString::from(panel.panel_name(cx)).into_any_element(),
                     });
                 div()
@@ -171,6 +180,73 @@ impl TabGroupRenderer for QrateTabGroup {
                     .truncate()
                     .children(title)
                     .into_any_element()
+            },
+            move |menu, window, cx, _focus| {
+                let Some(panel) = menu_group.active_panel() else {
+                    return menu;
+                };
+                let handle = PanelHandle::of(panel);
+                let menu = match handle {
+                    Some(handle) => handle.dropdown_menu(menu, window, cx),
+                    None => menu,
+                };
+                let menu = menu.when(
+                    menu_group
+                        .panels()
+                        .iter()
+                        .filter(|panel| panel.visible(cx))
+                        .count()
+                        > 1,
+                    |menu| {
+                        let tabs_group = menu_group.clone();
+                        menu.submenu("Panels", window, cx, move |menu, _, cx| {
+                            tabs_group
+                                .panels()
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, panel)| panel.visible(cx))
+                                .fold(menu, |menu, (ix, panel)| {
+                                    let label = crate::panel_registry::PANELS
+                                        .iter()
+                                        .find(|meta| meta.name == panel.panel_name(cx))
+                                        .map(|meta| SharedString::from(meta.label))
+                                        .or_else(|| {
+                                            PanelHandle::of(panel)
+                                                .and_then(|handle| handle.tab_name(cx))
+                                        })
+                                        .unwrap_or_else(|| panel.panel_name(cx).into());
+                                    let group = tabs_group.clone();
+                                    menu.item(
+                                        PopupMenuItem::new(label)
+                                            .checked(ix == group.active_ix())
+                                            .on_click(move |_, window, cx| {
+                                                group.select_tab(ix, window, cx)
+                                            }),
+                                    )
+                                })
+                        })
+                    },
+                );
+                let zoomed = menu_group.is_zoomed();
+                let zoom_allowed = zoomed
+                    || (panel.zoomable(cx)
+                        && handle.and_then(|handle| handle.zoom_control(cx)).is_some());
+                let group = menu_group.clone();
+                let menu = menu.separator().item(
+                    PopupMenuItem::new(if zoomed { "Zoom out" } else { "Zoom in" })
+                        .disabled(!zoom_allowed)
+                        .on_click(move |_, window, cx| group.toggle_zoom(window, cx)),
+                );
+                if menu_group.is_closable() {
+                    let group = menu_group.clone();
+                    let id = panel.panel_id(cx);
+                    menu.separator().item(
+                        PopupMenuItem::new("Close panel")
+                            .on_click(move |_, window, cx| group.close(id, window, cx)),
+                    )
+                } else {
+                    menu
+                }
             },
         );
         div()

@@ -3,19 +3,22 @@ use gpui::*;
 use gpui_component::{ActiveTheme, TitleBar};
 
 use crate::bar::{BarItems, BarRegistry};
-use crate::responsive_header::ResponsiveHeader;
+use crate::responsive_header::{HeaderMenu, ResponsiveHeader};
 
 #[derive(Default)]
-pub struct TitleBarRegistry(BarItems);
+pub struct TitleBarRegistry {
+    items: BarItems,
+    pub overflow_menu: Option<HeaderMenu>,
+}
 
 impl Global for TitleBarRegistry {}
 
 impl BarRegistry for TitleBarRegistry {
     fn items(&self) -> &BarItems {
-        &self.0
+        &self.items
     }
     fn items_mut(&mut self) -> &mut BarItems {
-        &mut self.0
+        &mut self.items
     }
 }
 
@@ -60,23 +63,23 @@ impl RenderOnce for AppTitleBar {
             .map(|r| (views(&r.items().left), views(&r.items().right)))
             .unwrap_or_default();
 
-        let overflow_left = left.clone();
-        let overflow_right = right.clone();
         let compact_title = self.title.clone();
         let compact_author = self.author.clone();
+        let measure_left = left.clone();
+        let measure_right = right.clone();
         let dirty = self.dirty;
 
         TitleBar::new()
             // macOS reserves this space for its traffic lights; other platforms can start
             // the menu close to the window edge.
-            .when(!cfg!(target_os = "macos"), |bar| bar.pl(px(4.)))
+            .when(!cfg!(target_os = "macos"), |bar| bar.pl(px(8.)))
             .text_xs()
             .text_color(cx.theme().foreground)
             .child(
                 ResponsiveHeader::new(
                     "app-responsive-header",
                     gpui_component::TITLE_BAR_HEIGHT,
-                    move |_, cx| {
+                    move |window, cx| {
                         gpui_component::h_flex()
                             .size_full()
                             .min_w_0()
@@ -90,7 +93,7 @@ impl RenderOnce for AppTitleBar {
                             .child(
                                 gpui_component::h_flex()
                                     .flex_1()
-                                    .min_w(px(48.))
+                                    .min_w(window.rem_size() * 3.)
                                     .justify_center()
                                     .gap_1p5()
                                     .overflow_hidden()
@@ -153,23 +156,36 @@ impl RenderOnce for AppTitleBar {
                             )
                             .into_any_element()
                     },
+                    move |menu, window, cx, focus| {
+                        let builder = cx
+                            .try_global::<TitleBarRegistry>()
+                            .and_then(|registry| registry.overflow_menu.clone());
+                        match builder {
+                            Some(builder) => builder(menu, window, cx, focus),
+                            None => menu,
+                        }
+                    },
                 )
-                .menu_left()
-                .overflow_content(move |_, _| {
+                .measure_controls(move |window, _| {
                     gpui_component::h_flex()
                         .gap_2()
                         .child(
                             gpui_component::h_flex()
+                                .flex_none()
                                 .gap_1()
-                                .children(overflow_left.clone()),
+                                .children(measure_left.clone()),
                         )
+                        .child(div().flex_none().w(window.rem_size() * 3.))
                         .child(
                             gpui_component::h_flex()
+                                .flex_none()
+                                .pr_4()
                                 .gap_1()
-                                .children(overflow_right.clone()),
+                                .children(measure_right.clone()),
                         )
                         .into_any_element()
-                }),
+                })
+                .menu_left(),
             )
     }
 }

@@ -1,5 +1,5 @@
-//! Width-aware headers. Measure the existing header's minimum layout width, then move its
-//! controls into a popup when the parent cannot provide that space. Only the visible tree is
+//! Width-aware headers. Measure the existing header's intrinsic width, then move its
+//! controls into a dropdown when the parent cannot provide that space. Only the visible tree is
 //! prepainted, so hidden controls cannot intercept clicks or become tab stops.
 
 use std::rc::Rc;
@@ -10,17 +10,26 @@ use gpui_component::{
     IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    popover::Popover,
+    menu::{DropdownMenu as _, PopupMenu},
 };
 
 type Content = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
+pub type HeaderMenu =
+    Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>, Option<FocusHandle>) -> PopupMenu>;
+
+#[derive(Default)]
+struct HeaderState {
+    action_context: Option<FocusHandle>,
+    menu_open: bool,
+}
 
 pub struct ResponsiveHeader {
     id: ElementId,
     height: Pixels,
     expanded: Content,
+    measurement: Option<Content>,
     title: Content,
-    overflow: Option<Content>,
+    menu: HeaderMenu,
     menu_left: bool,
 }
 
@@ -30,23 +39,26 @@ impl ResponsiveHeader {
         height: Pixels,
         expanded: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
         title: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
+        menu: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>, Option<FocusHandle>) -> PopupMenu
+        + 'static,
     ) -> Self {
         Self {
             id: id.into(),
             height,
             expanded: Rc::new(expanded),
+            measurement: None,
             title: Rc::new(title),
-            overflow: None,
+            menu: Rc::new(menu),
             menu_left: false,
         }
     }
 
-    /// By default the popup contains the original header, including any custom controls.
-    pub fn overflow_content(
+    /// Measure controls separately when the title should truncate before controls collapse.
+    pub fn measure_controls(
         mut self,
         content: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
     ) -> Self {
-        self.overflow = Some(Rc::new(content));
+        self.measurement = Some(Rc::new(content));
         self
     }
 
@@ -66,6 +78,7 @@ impl IntoElement for ResponsiveHeader {
 pub struct HeaderLayout {
     expanded: AnyElement,
     minimum_width: Pixels,
+    state: Entity<HeaderState>,
 }
 
 impl Element for ResponsiveHeader {
@@ -86,6 +99,11 @@ impl Element for ResponsiveHeader {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, HeaderLayout) {
+        let state = window.use_keyed_state("header-focus", cx, |_, _| HeaderState::default());
+        if !state.read(cx).menu_open {
+            let focus = window.focused(cx);
+            state.update(cx, |state, _| state.action_context = focus);
+        }
         // AvailableSpace::Definite sets the space available to a root, not its width. The
         // stretch container gives the original header that width after intrinsic measurement.
         let mut expanded = div()
@@ -95,10 +113,18 @@ impl Element for ResponsiveHeader {
             .items_stretch()
             .child((self.expanded)(window, cx))
             .into_any_element();
-        let minimum_width = expanded
+        let mut measurement = self.measurement.as_ref().map(|content| {
+            div()
+                .id("header-measurement")
+                .child(content(window, cx))
+                .into_any_element()
+        });
+        let minimum_width = measurement
+            .as_mut()
+            .unwrap_or(&mut expanded)
             .layout_as_root(
                 size(
-                    AvailableSpace::MinContent,
+                    AvailableSpace::MaxContent,
                     AvailableSpace::Definite(self.height),
                 ),
                 window,
@@ -112,6 +138,7 @@ impl Element for ResponsiveHeader {
             HeaderLayout {
                 expanded,
                 minimum_width,
+                state,
             },
         )
     }
@@ -126,35 +153,35 @@ impl Element for ResponsiveHeader {
         cx: &mut App,
     ) -> AnyElement {
         let mut visible = if layout.minimum_width > bounds.size.width {
-            let content = self
-                .overflow
-                .clone()
-                .unwrap_or_else(|| self.expanded.clone());
-            let width = layout.minimum_width;
-            let menu = Popover::new("header-overflow")
-                .anchor(if self.menu_left {
-                    Anchor::TopLeft
-                } else {
-                    Anchor::TopRight
+            let builder = self.menu.clone();
+            let focus_state = layout.state.clone();
+            let open_state = layout.state.clone();
+            let menu = Button::new("header-overflow-trigger")
+                .icon(IconName::Menu)
+                .ghost()
+                .xsmall()
+                .when(self.menu_left, |button| {
+                    // A compact titlebar button: the custom size yields a 15px icon.
+                    button.with_size(px(20.)).size(px(24.))
                 })
-                .trigger(
-                    Button::new("header-overflow-trigger")
-                        .icon(IconName::Menu)
-                        .ghost()
-                        .xsmall()
-                        .when(self.menu_left, |button| {
-                            button.with_size(px(28.)).size(px(30.))
-                        })
-                        .tooltip("Header controls"),
+                .tooltip("Header controls")
+                .dropdown_menu_with_anchor(
+                    if self.menu_left {
+                        Anchor::TopLeft
+                    } else {
+                        Anchor::TopRight
+                    },
+                    move |menu, window, cx| {
+                        let focus = focus_state.read(cx).action_context.clone();
+                        let menu = match &focus {
+                            Some(focus) => menu.action_context(focus.clone()),
+                            None => menu,
+                        };
+                        builder(menu, window, cx, focus)
+                    },
                 )
-                .content(move |_, window, cx| {
-                    // Very long plugin controls remain reachable even on small displays.
-                    div()
-                        .id("header-overflow-content")
-                        .min_w_0()
-                        .w(width.min((window.viewport_size().width - px(32.)).max(px(20.))))
-                        .overflow_x_scroll()
-                        .child(div().w(width).child(content(window, cx)))
+                .on_open_change(move |open, _, cx| {
+                    open_state.update(cx, |state, _| state.menu_open = *open);
                 });
             let title = div()
                 .flex_1()
@@ -177,7 +204,9 @@ impl Element for ResponsiveHeader {
             }
             .into_any_element()
         } else {
-            // The measured tree is reused; controls are never rendered twice in one header.
+            // A resize can remove an open dropdown without its close callback being called.
+            layout.state.update(cx, |state, _| state.menu_open = false);
+            // Reuse the expanded tree after measurement.
             std::mem::replace(&mut layout.expanded, div().into_any_element())
         };
         visible.prepaint_as_root(

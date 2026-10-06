@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::dock::{BasePanel, DockPlacement, Panel, PanelEvent};
-use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{
@@ -398,6 +398,72 @@ impl BasePanel for AgentPanel {
 }
 
 impl Panel for AgentPanel {
+    fn dropdown_menu(
+        &mut self,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let panel = cx.entity().downgrade();
+        let views = PopupMenu::build(window, cx, |menu, _, _| {
+            View::ALL.into_iter().fold(menu, |menu, view| {
+                let panel = panel.clone();
+                menu.item(
+                    PopupMenuItem::new(view.label())
+                        .checked(view == self.view)
+                        .on_click(move |_, _, cx| {
+                            panel
+                                .update(cx, |this, cx| {
+                                    this.view = view;
+                                    if view == View::Terminal && !this.terminal.is_running() {
+                                        this.opened_auth_urls.clear();
+                                        this.terminal.start(true, cx);
+                                    }
+                                    cx.notify();
+                                })
+                                .ok();
+                        }),
+                )
+            })
+        });
+        let menu = menu.item(PopupMenuItem::submenu("View", views));
+        let new_session = panel.clone();
+        let stop = panel.clone();
+        menu.separator()
+            .item(
+                PopupMenuItem::new("New Pi session").on_click(move |_, _, cx| {
+                    new_session
+                        .update(cx, |this, cx| {
+                            this.opened_auth_urls.clear();
+                            this.view = View::Terminal;
+                            this.terminal.new_session(cx);
+                            cx.notify();
+                        })
+                        .ok();
+                }),
+            )
+            .item(
+                PopupMenuItem::new("Stop Pi")
+                    .disabled(!self.terminal.is_running())
+                    .on_click(move |_, _, cx| {
+                        stop.update(cx, |this, cx| {
+                            this.terminal.stop();
+                            cx.notify();
+                        })
+                        .ok();
+                    }),
+            )
+            .item(PopupMenuItem::new("Restart Pi").on_click(move |_, _, cx| {
+                panel
+                    .update(cx, |this, cx| {
+                        this.opened_auth_urls.clear();
+                        this.terminal.start(true, cx);
+                        cx.notify();
+                    })
+                    .ok();
+            }))
+    }
+
     fn title(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from("Agent")
     }
