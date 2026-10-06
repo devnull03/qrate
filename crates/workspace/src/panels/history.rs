@@ -10,9 +10,9 @@ use gpui_component::dock::{BasePanel, DockPlacement, Panel, PanelEvent};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, VirtualListScrollHandle,
+    ActiveTheme as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex, v_virtual_list,
+    h_flex, v_flex,
 };
 use settings::history::{Change, Entry, EntryId, Listed, Origin, ShowCellHistory};
 use settings::project::{CurrentProject, RowId};
@@ -36,8 +36,8 @@ const PAGE: i64 = 200;
 /// one burst of work and collapse under one row.
 const BURST_SECS: i64 = 5 * 60;
 
-/// One line of the list, as the virtual list addresses it. Holds indices rather than text: the
-/// whole list is walked every render to place it, but only the rows on screen are ever formatted.
+/// One dynamically measured list row; its text is formatted only when it is rendered.
+#[derive(PartialEq)]
 enum Row {
     Header(SharedString),
     /// Into [`HistoryPanel::pending`].
@@ -54,18 +54,6 @@ enum Row {
     },
     More,
 }
-
-/// The heights the list places rows by, which are also the heights the rows are given. Measuring
-/// instead would mean building every row to find out how tall it is, which is the whole cost
-/// virtualizing is here to avoid — so a row is told its height rather than asked for it. Change
-/// one of these and change the row it belongs to.
-const HEADER_H: f32 = 28.;
-const ROW_H: f32 = 48.;
-/// The extra line a named version carries above its description.
-const LABEL_H: f32 = 18.;
-/// The box that appears while that name is being typed.
-const NAMING_H: f32 = 28.;
-const MORE_H: f32 = 40.;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Filter {
@@ -116,7 +104,7 @@ pub struct HistoryPanel {
     /// Whether this is the panel its dock is showing, which is what [`Self::visible`]
     /// reports: a dock with one visible panel draws a title bar instead of a tab strip.
     active: bool,
-    list_scroll: VirtualListScrollHandle,
+    list_scroll: ListState,
     saved: Vec<Listed>,
     /// Whether a "Load older" would find anything.
     more: bool,
@@ -131,12 +119,8 @@ pub struct HistoryPanel {
     naming: Option<(EntryId, Entity<InputState>, Subscription)>,
     /// One cell to show the changes of, as its row and every name its column has had.
     cell: Option<(RowId, Vec<String>)>,
-    /// What the list is showing, rebuilt by [`Self::rebuild`] whenever `stale`: the flattened rows,
-    /// the saved entries they index into once filtered and narrowed, the entries not on disk yet
-    /// with the meta line each needs, and each grid row's position. On `self` because the virtual
-    /// list draws a range of them later, from a callback that is handed the panel and nothing else.
+    /// Flattened rows, rebuilt when the data, filters, expansion, or naming change.
     list: Rc<Vec<Row>>,
-    sizes: Rc<Vec<Size<Pixels>>>,
     view: Rc<Vec<Listed>>,
     pending: Rc<Vec<(Entry, String)>>,
     positions: Rc<HashMap<RowId, usize>>,
@@ -161,7 +145,7 @@ impl HistoryPanel {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             active: false,
-            list_scroll: VirtualListScrollHandle::new(),
+            list_scroll: ListState::new(0, ListAlignment::Top, px(200.)),
             saved: Vec::new(),
             more: false,
             read_at: None,
@@ -171,7 +155,6 @@ impl HistoryPanel {
             naming: None,
             cell: None,
             list: Rc::default(),
-            sizes: Rc::default(),
             view: Rc::default(),
             pending: Rc::default(),
             positions: Rc::default(),
@@ -850,29 +833,6 @@ impl Panel for HistoryPanel {
 }
 
 impl HistoryPanel {
-    /// How tall the list places a row, which is also the height the row is given — see the
-    /// constants above.
-    fn row_size(&self, row: &Row) -> Size<Pixels> {
-        let height = match row {
-            Row::Header(_) => HEADER_H,
-            Row::More => MORE_H,
-            Row::Pending(_) | Row::Burst { .. } => ROW_H,
-            Row::Saved { ix, .. } => match self.view.get(*ix) {
-                None => ROW_H,
-                Some(listed) => {
-                    let naming = self
-                        .naming
-                        .as_ref()
-                        .is_some_and(|(id, _, _)| *id == listed.entry.id);
-                    ROW_H
-                        + if listed.label.is_some() { LABEL_H } else { 0. }
-                        + if naming { NAMING_H } else { 0. }
-                }
-            },
-        };
-        size(px(0.), px(height))
-    }
-
     /// One row of the list, built only when it is on screen. `AnyElement` because the arms are
     /// different elements, which is the case the crate's style note allows it for.
     fn draw_row(
@@ -914,14 +874,12 @@ impl HistoryPanel {
             theme.accent_foreground,
         );
         let panel = cx.entity().downgrade();
-        let height = self.row_size(row).height;
 
-        // ponytail: always offered, since gpui cannot tell us whether the text was cut
-        let clipped = |text: String| {
+        let description = |text: String| {
             div()
                 .id("text")
-                .overflow_hidden()
-                .text_ellipsis()
+                .min_w_0()
+                .whitespace_normal()
                 .child(text.clone())
                 .tooltip(move |window, cx| {
                     gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
@@ -937,7 +895,7 @@ impl HistoryPanel {
 
         match row {
             Row::Header(text) => div()
-                .h(height)
+                .w_full()
                 .px_2()
                 .pt_2()
                 .pb_1()
@@ -948,7 +906,7 @@ impl HistoryPanel {
                 .into_any_element(),
 
             Row::More => div()
-                .h(height)
+                .w_full()
                 .p_2()
                 .child(
                     Button::new("history-older")
@@ -968,8 +926,8 @@ impl HistoryPanel {
                         "history-unsaved".into(),
                         *ix as u64,
                     ))
-                    .h(height)
                     .w_full()
+                    .min_w_0()
                     .gap_0p5()
                     .px_2()
                     .py_1()
@@ -980,19 +938,18 @@ impl HistoryPanel {
                         row.opacity(0.6)
                     })
                     .child(
-                        h_flex().gap_2().children(crops).child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_0p5()
-                                .child(clipped(describe(entry, positions)).text_sm())
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(muted)
-                                        .child(meta(entry, at.clone())),
-                                ),
-                        ),
+                        h_flex()
+                            .min_w_0()
+                            .items_start()
+                            .gap_2()
+                            .children(crops)
+                            .child(description(describe(entry, positions)).flex_1().text_sm()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(meta(entry, at.clone())),
                     )
                     .into_any_element()
             }
@@ -1085,8 +1042,8 @@ impl HistoryPanel {
                 };
                 v_flex()
                     .id(ElementId::NamedInteger("history-entry".into(), id as u64))
-                    .h(height)
                     .w_full()
+                    .min_w_0()
                     .gap_0p5()
                     .px_2()
                     .py_1()
@@ -1108,19 +1065,18 @@ impl HistoryPanel {
                     })
                     .when_some(naming, |row, input| row.child(Input::new(&input).xsmall()))
                     .child(
-                        h_flex().gap_2().children(crops).child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_0p5()
-                                .child(clipped(describe(entry, positions)).text_sm())
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(muted)
-                                        .child(meta(entry, when(&listed.day, &listed.time))),
-                                ),
-                        ),
+                        h_flex()
+                            .min_w_0()
+                            .items_start()
+                            .gap_2()
+                            .children(crops)
+                            .child(description(describe(entry, positions)).flex_1().text_sm()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(meta(entry, when(&listed.day, &listed.time))),
                     )
                     .context_menu(actions)
                     .into_any_element()
@@ -1142,8 +1098,8 @@ impl HistoryPanel {
                 };
                 h_flex()
                     .id(ElementId::NamedInteger("history-burst".into(), id as u64))
-                    .h(height)
                     .w_full()
+                    .min_w_0()
                     .gap_1()
                     .px_2()
                     .py_1()
@@ -1172,11 +1128,15 @@ impl HistoryPanel {
                     )
                     .child(
                         v_flex()
+                            .flex_1()
                             .min_w_0()
                             .gap_0p5()
                             .child(
-                                clipped(format!("{len} edits · {}", describe(&summary, positions)))
-                                    .text_sm(),
+                                description(format!(
+                                    "{len} edits · {}",
+                                    describe(&summary, positions)
+                                ))
+                                .text_sm(),
                             )
                             .child(div().text_xs().text_color(muted).child(meta(
                                 &head.entry,
@@ -1299,7 +1259,23 @@ impl HistoryPanel {
         self.pending = Rc::new(pending);
         self.view = Rc::new(view);
         self.positions = Rc::new(positions);
-        self.sizes = Rc::new(list.iter().map(|row| self.row_size(row)).collect());
+        let prefix = self
+            .list
+            .iter()
+            .zip(&list)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let suffix = self.list[prefix..]
+            .iter()
+            .rev()
+            .zip(list[prefix..].iter().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        self.list_scroll.splice(
+            prefix..self.list.len() - suffix,
+            list.len() - prefix - suffix,
+        );
+        self.list_scroll.remeasure();
         self.list = Rc::new(list);
     }
 }
@@ -1321,10 +1297,12 @@ impl Render for HistoryPanel {
             format!("{}, {at}", names[0])
         });
         let empty = self.pending.is_empty() && self.view.is_empty();
-        let sizes = self.sizes.clone();
 
         v_flex()
             .size_full()
+            .min_h_0()
+            .min_w_0()
+            .relative()
             .track_focus(&self.focus_handle)
             .id("history-panel")
             .role(Role::Group)
@@ -1384,21 +1362,21 @@ impl Render for HistoryPanel {
             .when(!empty, |panel| {
                 panel
                     .child(
-                        v_virtual_list(
-                            cx.entity(),
-                            "history-list",
-                            sizes,
-                            move |this, range, _window, cx| {
-                                let (list, positions) = (this.list.clone(), this.positions.clone());
-                                list[range]
-                                    .iter()
-                                    .map(|row| this.draw_row(row, &positions, cx))
-                                    .collect::<Vec<_>>()
-                            },
-                        )
+                        list(self.list_scroll.clone(), {
+                            let panel = cx.entity().downgrade();
+                            move |ix, _, cx| {
+                                panel
+                                    .update(cx, |this, cx| {
+                                        this.draw_row(&this.list[ix], &this.positions, cx)
+                                    })
+                                    .unwrap_or_else(|_| div().into_any_element())
+                            }
+                        })
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
                         .pr_2()
-                        .pb(px(8.) + crop)
-                        .track_scroll(&self.list_scroll),
+                        .pb(px(8.) + crop),
                     )
                     .child(gpui_component::scroll::Scrollbar::vertical(
                         &self.list_scroll,

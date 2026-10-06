@@ -423,8 +423,8 @@ pub struct Viewer {
     zoom: f32,
     /// Pan translation from the centered position.
     offset: Point<Pixels>,
-    /// Last pointer position while dragging; `None` when not panning.
-    drag_from: Option<Point<Pixels>>,
+    /// Button and last pointer position while panning.
+    drag_from: Option<(MouseButton, Point<Pixels>)>,
     /// Quarter turns clockwise, for a scan that was fed in sideways. A view, never saved.
     turns: u8,
     /// The turn on screen: the last one decoded, kept up while `turns` decodes so a turn never
@@ -856,10 +856,11 @@ impl Render for Viewer {
             && cx.try_global::<annotate::Annotating>().map(|a| a.tool)
                 != Some(annotate::Tool::Select);
         let cursor = match (self.drag_from.is_some(), self.slack() != Point::default()) {
+            (true, _) if cfg!(windows) => CursorStyle::PointingHand,
+            (true, _) => CursorStyle::ClosedHand,
             _ if marking => CursorStyle::Crosshair,
             (false, false) => CursorStyle::Arrow,
             _ if cfg!(windows) => CursorStyle::PointingHand,
-            (true, _) => CursorStyle::ClosedHand,
             (false, true) => CursorStyle::OpenHand,
         };
         let readout = match self.actual_size() {
@@ -1015,7 +1016,7 @@ impl Render for Viewer {
             // The find panel is the inner layer, so Escape dismisses it before the viewer.
             // The pop-out has no overlay to close: its window is what the viewer is.
             .on_action(cx.listener(|this, _: &CloseViewerLayer, window, cx| {
-                if this.cancel(window, cx) {
+                if this.exit_annotate(window, cx) || this.cancel(window, cx) {
                 } else if this.find_open {
                     this.close_find(window, cx);
                 } else if this.scope != Scope::PopOut {
@@ -1130,6 +1131,9 @@ impl Render for Viewer {
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                                        if matches!(this.drag_from, Some((MouseButton::Middle, _))) {
+                                            return;
+                                        }
                                         if this.press(ev.position, cx) {
                                             return;
                                         }
@@ -1137,27 +1141,39 @@ impl Render for Viewer {
                                             let anchor = ev.position - this.frame.get().center();
                                             this.toggle_zoom(anchor);
                                         }
-                                        this.drag_from = Some(ev.position);
+                                        this.drag_from = Some((MouseButton::Left, ev.position));
+                                        cx.notify();
+                                    }),
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Middle,
+                                    cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                                        this.draw = None;
+                                        this.grab = None;
+                                        this.drag_from = Some((MouseButton::Middle, ev.position));
                                         cx.notify();
                                     }),
                                 )
                                 .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
-                                    if this.drag_to(ev.position, cx) {
+                                    if this.drag_from.is_none() && this.drag_to(ev.position, cx) {
                                         return;
                                     }
-                                    let Some(last) = this.drag_from else {
+                                    let Some((button, last)) = this.drag_from else {
                                         this.hover(ev.position, cx);
                                         return;
                                     };
                                     this.offset.x += ev.position.x - last.x;
                                     this.offset.y += ev.position.y - last.y;
                                     this.clamp_pan();
-                                    this.drag_from = Some(ev.position);
+                                    this.drag_from = Some((button, ev.position));
                                     cx.notify();
                                 }))
                                 .on_mouse_up(
                                     MouseButton::Left,
                                     cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                                        if matches!(this.drag_from, Some((MouseButton::Middle, _))) {
+                                            return;
+                                        }
                                         this.release(window, cx);
                                         this.drag_from = None;
                                         cx.notify();
@@ -1167,9 +1183,30 @@ impl Render for Viewer {
                                 .on_mouse_up_out(
                                     MouseButton::Left,
                                     cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                                        if matches!(this.drag_from, Some((MouseButton::Middle, _))) {
+                                            return;
+                                        }
                                         this.release(window, cx);
                                         this.drag_from = None;
                                         cx.notify();
+                                    }),
+                                )
+                                .on_mouse_up(
+                                    MouseButton::Middle,
+                                    cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                        if matches!(this.drag_from, Some((MouseButton::Middle, _))) {
+                                            this.drag_from = None;
+                                            cx.notify();
+                                        }
+                                    }),
+                                )
+                                .on_mouse_up_out(
+                                    MouseButton::Middle,
+                                    cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                        if matches!(this.drag_from, Some((MouseButton::Middle, _))) {
+                                            this.drag_from = None;
+                                            cx.notify();
+                                        }
                                     }),
                                 )
                                 .child(

@@ -12,6 +12,7 @@ use gpui_component::{
     dock::{BasePanel, DockPlacement, Panel, PanelEvent},
     h_flex,
     input::{Escape, InputEvent, Textarea, TextareaState},
+    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     resizable::{resizable_panel, v_resizable},
     scroll::ScrollableElement,
     table::TableState,
@@ -40,6 +41,7 @@ const ROW_HISTORY_LIMIT: i64 = 50;
 
 /// Height of the Notes sub-panel's header bar, which is the whole of it while collapsed.
 const NOTES_HEADER_H: f32 = 28.;
+const NOTES_FILTERS_MIN_REM: f32 = 26.;
 /// What a collapsed sub-panel occupies: its header, plus the rule the section draws above it.
 const SECTION_STRIP_H: f32 = NOTES_HEADER_H + 1.;
 /// The least height a sub-panel, or the field list above it, is worth showing in.
@@ -168,6 +170,8 @@ pub struct DetailsPanel {
     /// The note being reworded in its card.
     note_edit: Option<(diagnostics::NoteId, Entity<TextareaState>)>,
     notes_scroll: ScrollHandle,
+    history_scroll: ScrollHandle,
+    notes_header_width: Rc<Cell<Pixels>>,
     /// Set when the viewer picks a region, so its card is scrolled into view on the next paint.
     follow_pick: Cell<bool>,
     /// Each file's pixel size, read once rather than on every paint.
@@ -238,6 +242,8 @@ impl DetailsPanel {
             notes_hover: None,
             note_edit: None,
             notes_scroll: ScrollHandle::new(),
+            history_scroll: ScrollHandle::new(),
+            notes_header_width: Rc::default(),
             follow_pick: Cell::new(false),
             headers: RefCell::default(),
             _notes_subs: [
@@ -443,7 +449,12 @@ impl DetailsPanel {
     ///
     /// Returns `AnyElement` because it is one child of a deeply chained builder — see the note on
     /// `render_image_frame`.
-    fn notes_panel(&self, picked: &[usize], cx: &mut Context<Self>) -> AnyElement {
+    fn notes_panel(
+        &self,
+        picked: &[usize],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(state) = self.state.as_ref().and_then(|w| w.upgrade()) else {
             return div().into_any_element();
         };
@@ -924,6 +935,8 @@ impl DetailsPanel {
         }
 
         let open = self.notes_open;
+        let filters_min_width = window.rem_size() * NOTES_FILTERS_MIN_REM;
+        let compact = self.notes_header_width.get() < filters_min_width;
         let segment = |label: &'static str, value: NotesFilter| {
             div()
                 .id(label)
@@ -946,11 +959,16 @@ impl DetailsPanel {
             .debug_selector(|| "details-notes-panel".into())
             .size_full()
             .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
             .border_t_1()
             .border_color(theme.border)
             .child(
                 h_flex()
+                    .relative()
                     .flex_none()
+                    .w_full()
+                    .min_w_0()
                     .h(px(NOTES_HEADER_H))
                     .items_center()
                     .gap_1p5()
@@ -959,6 +977,27 @@ impl DetailsPanel {
                     // Opaque: the notes scroll under this, and a transparent strip let them read
                     // through the heading.
                     .bg(theme.background)
+                    .child({
+                        let width = self.notes_header_width.clone();
+                        let panel = cx.entity().downgrade();
+                        canvas(
+                            move |bounds, window, _| {
+                                let was_compact = width.get() < filters_min_width;
+                                width.set(bounds.size.width);
+                                if was_compact != (bounds.size.width < filters_min_width) {
+                                    let panel = panel.clone();
+                                    window.on_next_frame(move |_, cx| {
+                                        panel.update(cx, |_, cx| cx.notify()).ok();
+                                    });
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                    })
                     .child(
                         Button::new("details-notes-toggle")
                             .icon(match open {
@@ -998,8 +1037,72 @@ impl DetailsPanel {
                                 (total, shown) => format!("{shown} of {total}"),
                             }),
                     )
-                    .child(div().flex_1())
-                    .when(open && total > 0, |header| {
+                    .child(div().flex_1().min_w_0())
+                    .when(open && total > 0 && compact, |header| {
+                        let panel = cx.entity().downgrade();
+                        let label = match filter {
+                            NotesFilter::All => "All notes",
+                            NotesFilter::Image => "On image",
+                            NotesFilter::Fields => "On fields",
+                        };
+                        let tip = if mine {
+                            format!("{label} · Only mine")
+                        } else {
+                            label.to_string()
+                        };
+                        header.child(
+                            Button::new("notes-filters")
+                                .icon(IconName::Menu)
+                                .ghost()
+                                .xsmall()
+                                .selected(filter != NotesFilter::All || mine)
+                                .tooltip(format!("Filter notes: {tip}"))
+                                .dropdown_menu_with_anchor(
+                                    Anchor::TopRight,
+                                    move |menu: PopupMenu, _, _| {
+                                        let menu = [
+                                            ("All notes", NotesFilter::All),
+                                            ("On image", NotesFilter::Image),
+                                            ("On fields", NotesFilter::Fields),
+                                        ]
+                                        .into_iter()
+                                        .fold(
+                                            menu,
+                                            |menu, (label, value)| {
+                                                let panel = panel.clone();
+                                                menu.item(
+                                                    PopupMenuItem::new(label)
+                                                        .checked(filter == value)
+                                                        .on_click(move |_, _, cx| {
+                                                            panel
+                                                                .update(cx, |this, cx| {
+                                                                    this.notes_filter = value;
+                                                                    cx.notify();
+                                                                })
+                                                                .ok();
+                                                        }),
+                                                )
+                                            },
+                                        );
+                                        let panel = panel.clone();
+                                        menu.separator().item(
+                                            PopupMenuItem::new("Only mine")
+                                                .checked(mine)
+                                                .disabled(me.is_none())
+                                                .on_click(move |_, _, cx| {
+                                                    panel
+                                                        .update(cx, |this, cx| {
+                                                            this.notes_mine = !this.notes_mine;
+                                                            cx.notify();
+                                                        })
+                                                        .ok();
+                                                }),
+                                        )
+                                    },
+                                ),
+                        )
+                    })
+                    .when(open && total > 0 && !compact, |header| {
                         header
                             .child(
                                 h_flex()
@@ -1033,6 +1136,7 @@ impl DetailsPanel {
                 section.child(
                     v_flex()
                         .id("details-notes-list")
+                        .relative()
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
@@ -1224,13 +1328,12 @@ impl DetailsPanel {
                             let Change::Note { before, after, .. } = change else {
                                 return crops;
                             };
-                            h_flex()
-                                .flex_1()
+                            v_flex()
+                                .w_full()
                                 .min_w_0()
-                                .items_start()
-                                .gap_2()
+                                .gap_1()
                                 .child(crops)
-                                .child(v_flex().flex_1().min_w_0().gap_0p5().text_xs().map(
+                                .child(v_flex().w_full().min_w_0().gap_0p5().text_xs().map(
                                     |text| {
                                         match (before, after) {
                                             (Some(before), Some(after)) if before == after => text
@@ -1306,6 +1409,8 @@ impl DetailsPanel {
             .debug_selector(|| "details-history-panel".into())
             .size_full()
             .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
             .border_t_1()
             .border_color(border)
             .child(
@@ -1354,9 +1459,14 @@ impl DetailsPanel {
             .when(open, |section| {
                 section.child(
                     div()
+                        .id("details-history-list")
+                        .relative()
                         .flex_1()
                         .min_h_0()
-                        .overflow_y_scrollbar()
+                        .min_w_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.history_scroll)
+                        .vertical_scrollbar(&self.history_scroll)
                         .px_3()
                         .pb_2()
                         .child(
@@ -1364,64 +1474,75 @@ impl DetailsPanel {
                                 .gap_1()
                                 .children(lines.into_iter().enumerate().map(
                                     |(ix, (id, what, meta, restore, crops))| {
-                                        h_flex()
+                                        v_flex()
+                                            .w_full()
+                                            .min_w_0()
+                                            .flex_none()
                                             .gap_1()
-                                            .items_start()
                                             .p_1p5()
                                             .rounded(radius)
                                             .border_1()
                                             .border_color(border)
-                                            .children(crops)
                                             .child(
-                                                v_flex()
-                                                    .flex_1()
+                                                h_flex()
                                                     .min_w_0()
-                                                    .gap_0p5()
-                                                    .child(div().text_xs().child(what))
+                                                    .items_start()
+                                                    .gap_1()
                                                     .child(
                                                         div()
+                                                            .flex_1()
+                                                            .min_w_0()
                                                             .text_xs()
-                                                            .text_color(muted)
-                                                            .child(meta),
+                                                            .child(what),
+                                                    )
+                                                    .when_some(
+                                                        id.zip(restore),
+                                                        |line, (id, change)| {
+                                                            line.child(
+                                                                Button::new((
+                                                                    "details-history-restore",
+                                                                    ix,
+                                                                ))
+                                                                .flex_none()
+                                                                .icon(IconName::Undo2)
+                                                                .ghost()
+                                                                .xsmall()
+                                                                .tooltip(match change {
+                                                                    Change::Note { .. } => {
+                                                                        "Restore this annotation"
+                                                                    }
+                                                                    _ => "Restore this value",
+                                                                })
+                                                                .on_click(move |_, _, cx| match &change {
+                                                                    Change::Cell {
+                                                                        column,
+                                                                        before,
+                                                                        ..
+                                                                    } => table::restore_value(
+                                                                        row_id,
+                                                                        column,
+                                                                        before.clone().into(),
+                                                                        id,
+                                                                        cx,
+                                                                    ),
+                                                                    note => {
+                                                                        diagnostics::Diagnostics::restore_note(
+                                                                            note, row_now, id, cx,
+                                                                        )
+                                                                    }
+                                                                }),
+                                                            )
+                                                        },
                                                     ),
                                             )
-                                            .when_some(
-                                                id.zip(restore),
-                                                |line, (id, change)| {
-                                                    line.child(
-                                                        Button::new((
-                                                            "details-history-restore",
-                                                            ix,
-                                                        ))
-                                                        .icon(IconName::Undo2)
-                                                        .ghost()
-                                                        .xsmall()
-                                                        .tooltip(match change {
-                                                            Change::Note { .. } => {
-                                                                "Restore this annotation"
-                                                            }
-                                                            _ => "Restore this value",
-                                                        })
-                                                        .on_click(move |_, _, cx| match &change {
-                                                            Change::Cell {
-                                                                column,
-                                                                before,
-                                                                ..
-                                                            } => table::restore_value(
-                                                                row_id,
-                                                                column,
-                                                                before.clone().into(),
-                                                                id,
-                                                                cx,
-                                                            ),
-                                                            note => {
-                                                                diagnostics::Diagnostics::restore_note(
-                                                                    note, row_now, id, cx,
-                                                                )
-                                                            }
-                                                        }),
-                                                    )
-                                                },
+                                            .children(crops)
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .min_w_0()
+                                                    .text_xs()
+                                                    .text_color(muted)
+                                                    .child(meta),
                                             )
                                     },
                                 ))
@@ -1950,7 +2071,7 @@ impl Render for DetailsPanel {
 
         // Built before the field rows below, which borrow `cx` for as long as they stay a lazy
         // iterator — this needs `&mut cx` and cannot wait for them.
-        let notes = (count > 0).then(|| self.notes_panel(&picked, cx));
+        let notes = (count > 0).then(|| self.notes_panel(&picked, window, cx));
         let history = (count == 1).then(|| self.history_panel(cx));
         let notes_floor = section_footprint(notes.is_some(), self.notes_open);
         let history_floor = section_footprint(history.is_some(), self.history_open);

@@ -264,6 +264,23 @@ impl Viewer {
         cx.notify();
     }
 
+    pub(super) fn exit_annotate(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.annotating(cx) {
+            return false;
+        }
+        cx.default_global::<Annotating>().on = false;
+        self.composer = None;
+        self.deleting = None;
+        self.draw = None;
+        self.grab = None;
+        self.stepped = None;
+        self.revealing = None;
+        self.drag_from = None;
+        self.select(None, cx);
+        window.focus(&self.focus_handle, cx);
+        true
+    }
+
     /// Start a gesture under the pointer. `false` leaves the press to panning.
     pub(super) fn press(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) -> bool {
         if self.composer.is_some() {
@@ -757,7 +774,9 @@ pub(super) fn layer(this: &Viewer, marks: &[Mark], cx: &mut Context<Viewer>) -> 
                     .occlude()
                     .on_action(cx.listener(
                         |this, _: &gpui_component::input::Escape, window, cx| {
-                            this.cancel(window, cx);
+                            if !this.exit_annotate(window, cx) {
+                                this.cancel(window, cx);
+                            }
                         },
                     ))
                     .child(

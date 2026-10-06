@@ -167,8 +167,9 @@ never changed.
 - With **Select**, click an annotation to select it. Drag it to move it, or drag a handle to
   resize it. **Delete** asks before it removes the annotation, and History keeps a copy you can
   restore.
-- **Esc** puts away whatever you are doing: the note card, the confirmation, the drag, then the
-  selection.
+- Hold the middle mouse button and drag to pan while annotating. Release it to return to the
+  annotation tool.
+- **Esc** exits annotate mode and cancels any unfinished note or drag.
 
 Annotations are numbered in the order they were made. Point at one to read its note. Press
 **N**, or the eye button, to hide them all and see the file underneath. **[** and **]** step to
