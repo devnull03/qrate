@@ -1,6 +1,5 @@
-//! Width-aware headers. Measure the existing header's intrinsic width, then move its
-//! controls into a dropdown when the parent cannot provide that space. Only the visible tree is
-//! prepainted, so hidden controls cannot intercept clicks or become tab stops.
+//! Measured, ordered header layouts. Panel owners decide which controls remain visible at
+//! each stage and supply matching dropdown entries for the controls that disappear.
 
 use std::rc::Rc;
 
@@ -13,27 +12,66 @@ use gpui_component::{
     menu::{DropdownMenu as _, PopupMenu},
 };
 
+use crate::panel_headers::PanelHeaderRegistry;
+
 type Content = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 pub type HeaderMenu =
     Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>, Option<FocusHandle>) -> PopupMenu>;
+
+/// One candidate, ordered from most visible controls to least visible controls.
+#[derive(Clone)]
+pub struct HeaderStage {
+    content: Content,
+    measurement: Option<Content>,
+    menu: Option<HeaderMenu>,
+    truncate: bool,
+}
+
+impl HeaderStage {
+    pub fn new(content: impl Fn(&mut Window, &mut App) -> AnyElement + 'static) -> Self {
+        Self {
+            content: Rc::new(content),
+            measurement: None,
+            menu: None,
+            truncate: false,
+        }
+    }
+
+    pub fn with_menu(mut self, menu: HeaderMenu) -> Self {
+        self.menu = Some(menu);
+        self
+    }
+
+    pub fn truncate(mut self) -> Self {
+        self.truncate = true;
+        self
+    }
+
+    pub fn measure_controls(
+        mut self,
+        content: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
+    ) -> Self {
+        self.measurement = Some(Rc::new(content));
+        self
+    }
+}
 
 #[derive(Default)]
 struct HeaderState {
     action_context: Option<FocusHandle>,
     menu_open: bool,
+    stage: Option<usize>,
 }
 
 pub struct ResponsiveHeader {
     id: ElementId,
     height: Pixels,
-    expanded: Content,
-    measurement: Option<Content>,
-    title: Content,
-    menu: HeaderMenu,
+    stages: Vec<HeaderStage>,
     menu_left: bool,
 }
 
 impl ResponsiveHeader {
+    /// Default policy for simple headers: normal controls, then a title and dropdown.
     pub fn new(
         id: impl Into<ElementId>,
         height: Pixels,
@@ -42,23 +80,48 @@ impl ResponsiveHeader {
         menu: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>, Option<FocusHandle>) -> PopupMenu
         + 'static,
     ) -> Self {
+        Self::from_stages(
+            id,
+            height,
+            vec![
+                HeaderStage::new(expanded),
+                HeaderStage::new(title).truncate().with_menu(Rc::new(menu)),
+            ],
+        )
+    }
+
+    pub fn from_stages(id: impl Into<ElementId>, height: Pixels, stages: Vec<HeaderStage>) -> Self {
+        assert!(
+            !stages.is_empty(),
+            "a responsive header needs at least one stage"
+        );
         Self {
             id: id.into(),
             height,
-            expanded: Rc::new(expanded),
-            measurement: None,
-            title: Rc::new(title),
-            menu: Rc::new(menu),
+            stages,
             menu_left: false,
         }
     }
 
-    /// Measure controls separately when the title should truncate before controls collapse.
+    /// Let a registered panel replace the default stages without changing the dock skin.
+    pub fn panel_stages(
+        mut self,
+        name: &str,
+        view: AnyView,
+        common_menu: HeaderMenu,
+        cx: &mut App,
+    ) -> Self {
+        let defaults = self.stages.clone();
+        let stages = PanelHeaderRegistry::stages(name, view, self.stages, common_menu, cx);
+        self.stages = if stages.is_empty() { defaults } else { stages };
+        self
+    }
+
     pub fn measure_controls(
         mut self,
         content: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
     ) -> Self {
-        self.measurement = Some(Rc::new(content));
+        self.stages[0] = self.stages[0].clone().measure_controls(content);
         self
     }
 
@@ -76,8 +139,7 @@ impl IntoElement for ResponsiveHeader {
 }
 
 pub struct HeaderLayout {
-    expanded: AnyElement,
-    minimum_width: Pixels,
+    widths: Vec<Pixels>,
     state: Entity<HeaderState>,
 }
 
@@ -99,47 +161,56 @@ impl Element for ResponsiveHeader {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, HeaderLayout) {
-        let state = window.use_keyed_state("header-focus", cx, |_, _| HeaderState::default());
+        let state = window.use_keyed_state("header-state", cx, |_, _| HeaderState::default());
         if !state.read(cx).menu_open {
             let focus = window.focused(cx);
             state.update(cx, |state, _| state.action_context = focus);
         }
-        // AvailableSpace::Definite sets the space available to a root, not its width. The
-        // stretch container gives the original header that width after intrinsic measurement.
-        let mut expanded = div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .items_stretch()
-            .child((self.expanded)(window, cx))
-            .into_any_element();
-        let mut measurement = self.measurement.as_ref().map(|content| {
-            div()
-                .id("header-measurement")
-                .child(content(window, cx))
-                .into_any_element()
-        });
-        let minimum_width = measurement
-            .as_mut()
-            .unwrap_or(&mut expanded)
-            .layout_as_root(
-                size(
-                    AvailableSpace::MaxContent,
-                    AvailableSpace::Definite(self.height),
-                ),
-                window,
-                cx,
-            )
-            .width;
+        let widths = self
+            .stages
+            .iter()
+            .enumerate()
+            .map(|(ix, stage)| {
+                let content = stage.measurement.as_ref().unwrap_or(&stage.content);
+                let body = content(window, cx);
+                let body = if stage.menu.is_some() {
+                    // Probes contain a stateless button-sized box. Creating live dropdowns here
+                    // would retain an open popup after its stage stopped being visible.
+                    let menu_width = if self.menu_left {
+                        px(24.)
+                    } else {
+                        window.rem_size() * 1.25
+                    };
+                    h_flex()
+                        .gap_1()
+                        .px_2()
+                        .when(self.menu_left, |row| row.pl_0())
+                        .child(body)
+                        .child(div().flex_none().w(menu_width))
+                        .into_any_element()
+                } else {
+                    body
+                };
+                let mut probe = div()
+                    .id(ElementId::NamedInteger("header-probe".into(), ix as u64))
+                    .child(body)
+                    .into_any_element();
+                probe
+                    .layout_as_root(
+                        size(
+                            AvailableSpace::MaxContent,
+                            AvailableSpace::Definite(self.height),
+                        ),
+                        window,
+                        cx,
+                    )
+                    .width
+            })
+            .collect();
         let mut frame = div().w_full().min_w_0().h(self.height).into_any_element();
-        let layout = frame.request_layout(window, cx);
         (
-            layout,
-            HeaderLayout {
-                expanded,
-                minimum_width,
-                state,
-            },
+            frame.request_layout(window, cx),
+            HeaderLayout { widths, state },
         )
     }
 
@@ -152,8 +223,37 @@ impl Element for ResponsiveHeader {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        let mut visible = if layout.minimum_width > bounds.size.width {
-            let builder = self.menu.clone();
+        let previous = layout.state.read(cx).stage;
+        // Collapse as soon as controls stop fitting. Require another 8px before restoring a
+        // wider stage, so small resize/font rounding changes cannot oscillate between stages.
+        let selected = layout
+            .widths
+            .iter()
+            .enumerate()
+            .position(|(ix, width)| {
+                let buffer = if previous.is_some_and(|previous| ix < previous) {
+                    px(8.)
+                } else {
+                    px(0.)
+                };
+                *width + buffer <= bounds.size.width
+            })
+            .unwrap_or(self.stages.len() - 1);
+        if previous != Some(selected) {
+            if layout.state.read(cx).menu_open {
+                if let Some(focus) = layout.state.read(cx).action_context.clone() {
+                    focus.focus(window, cx);
+                }
+            }
+            layout.state.update(cx, |state, _| {
+                state.stage = Some(selected);
+                state.menu_open = false;
+            });
+        }
+        let stage = &self.stages[selected];
+        let body = (stage.content)(window, cx);
+        let body = if let Some(builder) = &stage.menu {
+            let builder = builder.clone();
             let focus_state = layout.state.clone();
             let open_state = layout.state.clone();
             let menu = Button::new("header-overflow-trigger")
@@ -161,7 +261,6 @@ impl Element for ResponsiveHeader {
                 .ghost()
                 .xsmall()
                 .when(self.menu_left, |button| {
-                    // A compact titlebar button: the custom size yields a 15px icon.
                     button.with_size(px(20.)).size(px(24.))
                 })
                 .tooltip("Header controls")
@@ -183,13 +282,12 @@ impl Element for ResponsiveHeader {
                 .on_open_change(move |open, _, cx| {
                     open_state.update(cx, |state, _| state.menu_open = *open);
                 });
-            let title = div()
+            let body = div()
                 .flex_1()
                 .min_w_0()
-                .truncate()
-                .child((self.title)(window, cx));
-            // Occlude the drag region behind the whole popup host. Occluding its button
-            // instead blocks the host's mouse-down listener as well as the titlebar.
+                .when(stage.truncate, |body| body.truncate())
+                .child(body);
+            // The host occludes the native drag region; its trigger must not occlude the host.
             let menu = div().flex_none().occlude().child(menu);
             let row = h_flex()
                 .size_full()
@@ -198,17 +296,27 @@ impl Element for ResponsiveHeader {
                 .px_2()
                 .when(self.menu_left, |row| row.pl_0());
             if self.menu_left {
-                row.child(menu).child(title)
+                row.child(menu).child(body)
             } else {
-                row.child(title).child(menu)
+                row.child(body).child(menu)
             }
             .into_any_element()
         } else {
-            // A resize can remove an open dropdown without its close callback being called.
-            layout.state.update(cx, |state, _| state.menu_open = false);
-            // Reuse the expanded tree after measurement.
-            std::mem::replace(&mut layout.expanded, div().into_any_element())
+            body
         };
+        // Definite available space alone does not force a root's width. Stretch the selected
+        // header so its existing left/right justification still spans the panel.
+        let mut visible = div()
+            .id(ElementId::NamedInteger(
+                "header-stage".into(),
+                selected as u64,
+            ))
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_stretch()
+            .child(body)
+            .into_any_element();
         visible.prepaint_as_root(
             bounds.origin,
             size(

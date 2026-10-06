@@ -154,42 +154,13 @@ impl TabGroupRenderer for QrateTabGroup {
         let expanded_group = group.clone();
         let title_group = group.clone();
         let menu_group = group.clone();
-        let bar = window_wrapper::responsive_header::ResponsiveHeader::new(
-            "dock-responsive-header",
-            px(30.),
-            move |window, cx| inner.render_tab_bar(&expanded_group, window, cx),
-            move |window, cx| {
-                let title = title_group
-                    .active_panel()
-                    .map(|panel| match PanelHandle::of(panel) {
-                        Some(handle) => {
-                            let label = crate::panel_registry::PANELS
-                                .iter()
-                                .find(|meta| meta.name == panel.panel_name(cx))
-                                .map(|meta| SharedString::from(meta.label))
-                                .or_else(|| handle.tab_name(cx));
-                            match label {
-                                Some(label) => label.into_any_element(),
-                                None => handle.title(window, cx),
-                            }
-                        }
-                        None => SharedString::from(panel.panel_name(cx)).into_any_element(),
-                    });
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .children(title)
-                    .into_any_element()
-            },
-            move |menu, window, cx, _focus| {
+        let common_menu: window_wrapper::responsive_header::HeaderMenu =
+            Rc::new(move |menu, window, cx, _focus| {
                 let Some(panel) = menu_group.active_panel() else {
                     return menu;
                 };
                 let handle = PanelHandle::of(panel);
-                let menu = match handle {
-                    Some(handle) => handle.dropdown_menu(menu, window, cx),
-                    None => menu,
-                };
+
                 let menu = menu.when(
                     menu_group
                         .panels()
@@ -247,8 +218,48 @@ impl TabGroupRenderer for QrateTabGroup {
                 } else {
                     menu
                 }
+            });
+        let full_menu = common_menu.clone();
+        let full_menu_group = group.clone();
+        let bar = window_wrapper::responsive_header::ResponsiveHeader::new(
+            "dock-responsive-header",
+            px(30.),
+            move |window, cx| inner.render_tab_bar(&expanded_group, window, cx),
+            move |window, cx| {
+                let title = title_group
+                    .active_panel()
+                    .map(|panel| match PanelHandle::of(panel) {
+                        Some(handle) => {
+                            let label = crate::panel_registry::PANELS
+                                .iter()
+                                .find(|meta| meta.name == panel.panel_name(cx))
+                                .map(|meta| SharedString::from(meta.label))
+                                .or_else(|| handle.tab_name(cx));
+                            match label {
+                                Some(label) => label.into_any_element(),
+                                None => handle.title(window, cx),
+                            }
+                        }
+                        None => SharedString::from(panel.panel_name(cx)).into_any_element(),
+                    });
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .children(title)
+                    .into_any_element()
+            },
+            move |menu, window, cx, focus| {
+                let menu = match full_menu_group.active_panel().and_then(PanelHandle::of) {
+                    Some(handle) => handle.dropdown_menu(menu, window, cx),
+                    None => menu,
+                };
+                full_menu(menu, window, cx, focus)
             },
         );
+        let bar = match group.active_panel() {
+            Some(panel) => bar.panel_stages(panel.panel_name(cx), panel.view(), common_menu, cx),
+            None => bar,
+        };
         div()
             .flex_none()
             .w_full()

@@ -2,22 +2,48 @@
 
 ## Design
 
-A header has three representations supplied by its owner:
+A header has an ordered list of stages supplied by its owner. Each stage contains:
 
-1. The normal header, including its inline controls.
-2. A compact title containing text, without a second set of controls.
-3. A builder for standard dropdown menu items representing those controls.
+1. The controls that remain visible inline.
+2. An optional builder for standard dropdown items representing the hidden controls.
+3. An optional measurement representation and truncation policy.
 
 `window-wrapper::responsive_header::ResponsiveHeader` handles measurement and switching.
-It accepts a menu builder, not popup content. Putting the original header into a popup is
-therefore not part of its API.
+`HeaderStage` describes each candidate. `ResponsiveHeader::new` keeps the default two stages:
+the full header, followed by a compact title and dropdown. `from_stages` accepts a custom list.
+Dropdowns accept menu items rather than the original header as popup content.
+
+## Panel policy
+
+Panels can implement `window-wrapper::panel_headers::PanelHeaders` and register their type
+with `PanelHeaderRegistry::register`, using their `Panel::panel_name`. The dock skin passes
+the default stages and a shared menu builder for tab selection, zoom, and close commands.
+The panel supplies its stages and combines that builder with its own hidden controls.
+The registry stores function pointers, not panel entities; content closures can use weak
+panel references. Panels without a registered policy retain the default two stages.
+
+Problems supplies four stages, from widest to narrowest:
+
+1. Named severity tabs, source picker, and ignored toggle.
+2. Named severity tabs and hamburger; source and ignored controls move into the menu.
+3. Severity icons and counts with label tooltips; secondary controls stay in the menu.
+4. Plain Problems title and hamburger; severity choices also move into the menu.
+
+Intermediate menus omit the severity choices that remain visible inline. All stages share
+the same filter state and callbacks.
 
 ## Layout
 
-- Measure the normal header's intrinsic width, including controls inside the title slot.
+- Measure each stage's intrinsic width, including controls inside the title slot and the
+  hamburger's width, gaps, and padding. Choose the first stage that fits.
 - Stretch the visible header to its parent's full width so existing alignment stays intact.
-- When the controls cannot fit, show the compact title and one menu button.
-- Truncate the compact title. Keep the menu button at its fixed size.
+- Collapse immediately when controls stop fitting. Require eight extra pixels to restore a
+  wider stage, preventing oscillation around a breakpoint.
+- Use the final stage as the fallback. Truncate its title and keep the menu button fixed.
+- Measurement probes have separate element IDs and a stateless box in place of the
+  hamburger. Only the selected stage creates a live dropdown and receives paint/input.
+  Content builders also run during measurement and must not mutate application state.
+- Changing stages dismisses an open dropdown and restores the captured action focus.
 - The main window measures its controls with a three-rem title placeholder. Long project and
   author names truncate before the controls collapse. Native window buttons remain outside
   this layout, and macOS retains its traffic-light padding.
