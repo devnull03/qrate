@@ -319,6 +319,9 @@ impl Viewer {
             });
             return grabbed.is_some();
         }
+        if !self.page_box().contains(&self.local(position)) {
+            return false;
+        }
         if hidden {
             cx.default_global::<Annotating>().hidden = false;
         }
@@ -1248,6 +1251,17 @@ mod tests {
                     size: gpui::size(gpui::px(400.), gpui::px(300.)),
                 });
                 viewer.pixels = Some((400, 300));
+                assert!(viewer.press(gpui::point(gpui::px(100.), gpui::px(75.)), cx));
+                viewer.drag_to(gpui::point(gpui::px(200.), gpui::px(150.)), cx);
+                viewer.release(window, cx);
+                assert!(viewer.composer.is_some(), "the composer opens");
+                viewer.composer = None;
+                viewer.zoom = 0.5;
+                assert!(
+                    !viewer.press(gpui::point(gpui::px(10.), gpui::px(10.)), cx),
+                    "a press beside the page marks nothing"
+                );
+                viewer.zoom = 1.;
                 assert!(viewer.press(gpui::point(gpui::px(100.), gpui::px(75.)), cx));
                 viewer.drag_to(gpui::point(gpui::px(200.), gpui::px(150.)), cx);
                 viewer.release(window, cx);
