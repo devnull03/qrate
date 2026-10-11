@@ -1016,7 +1016,13 @@ impl HistoryPanel {
                             _ => None,
                         };
                         let note = match listed.entry.changes.as_slice() {
-                            [change @ Change::Note { id: Some(_), .. }] => Some(change.clone()),
+                            [
+                                change @ Change::Note {
+                                    id: Some(_),
+                                    before: Some(_),
+                                    ..
+                                },
+                            ] => Some(change.clone()),
                             _ => None,
                         };
                         let (restore, name, unname) =

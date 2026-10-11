@@ -1332,7 +1332,10 @@ impl DetailsPanel {
                                     .iter()
                                     .find(|m| Some(m.id) == *note)
                                     .map_or(String::new(), |m| format!(" #{}", m.number));
-                                (format!("{what}{number}"), Some(change.clone()))
+                                (
+                                    format!("{what}{number}"),
+                                    before.is_some().then(|| change.clone()),
+                                )
                             }
                             None => {
                                 let verb = match (before, after) {

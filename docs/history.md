@@ -80,8 +80,9 @@ Right-click a saved change for these commands:
 - **Restore This Value** puts one cell back to the value it had before the change. This command
   shows only for a change to one cell.
 - **Restore This Annotation** puts an annotation back the way it was before the change: its
-  place on the file, its words, and its kind. A deleted annotation comes back. For a note on a
-  cell or row, the command is **Restore This Note**.
+  place on the file, its words, and its kind. A deleted annotation comes back. The change that
+  added an annotation has nothing earlier to restore, so it does not show the command. For a
+  note on a cell or row, the command is **Restore This Note**.
 
 The **History** section of the Details panel has a restore button on each saved change to a
 cell or an annotation.
