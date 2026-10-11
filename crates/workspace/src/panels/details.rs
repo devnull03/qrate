@@ -504,8 +504,9 @@ impl DetailsPanel {
                         let meta = note.note.as_ref();
                         let number = meta
                             .and_then(|n| numbers.iter().find(|m| m.id == n.id).map(|m| m.number));
-                        let of = meta.and_then(|n| n.region?.of);
-                        let changed = header.is_some() && of.is_some() && of != header;
+                        let changed = header
+                            .zip(meta.and_then(|n| n.region))
+                            .is_some_and(|(header, region)| !region.fits(header));
                         (note.clone(), number, changed)
                     })
                     .collect();

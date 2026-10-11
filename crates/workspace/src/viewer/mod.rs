@@ -882,11 +882,10 @@ impl Render for Viewer {
         let marks = self.row_marks(cx);
         let layer = annotate::layer(self, &marks, cx);
         let stand_in = self.missing.then(|| self.page_box());
-        let changed = self.header.zip(
-            marks
-                .iter()
-                .find_map(|m| m.region.of.filter(|of| Some(*of) != self.header)),
-        );
+        let changed = self.header.and_then(|header| {
+            let stale = marks.iter().find(|m| !m.region.fits(header))?;
+            Some((header, stale.region.of?))
+        });
         let tools = annotate::tools(self, cx);
         let hint = self
             .hint

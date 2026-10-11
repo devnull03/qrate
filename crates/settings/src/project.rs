@@ -698,6 +698,16 @@ pub struct Region {
 
 impl Region {
     pub const SCALE: u16 = 10_000;
+
+    /// Whether a page of `size` pixels still has the shape this region was drawn on. A region is
+    /// fractions of its page, so the same picture at another resolution fits.
+    pub fn fits(&self, size: (u32, u32)) -> bool {
+        self.of.is_none_or(|(width, height)| {
+            let a = u64::from(width) * u64::from(size.1);
+            let b = u64::from(height) * u64::from(size.0);
+            a.abs_diff(b) * 100 <= a.max(b)
+        })
+    }
 }
 
 /// Every stored note. A file written before `__notes` existed yields an empty vec, the same
@@ -1415,6 +1425,27 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    /// A region drawn on a 4000×3000 scan still fits the same scan at half the resolution, and
+    /// stops fitting once the page is another shape.
+    #[test]
+    fn a_region_fits_its_page_at_any_resolution() {
+        let region = Region {
+            page: 0,
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+            of: Some((4000, 3000)),
+        };
+        assert!(region.fits((2000, 1500)));
+        assert!(
+            region.fits((2001, 1500)),
+            "a pixel of rounding is not a new shape"
+        );
+        assert!(!region.fits((3000, 4000)));
+        assert!(Region { of: None, ..region }.fits((3000, 4000)));
     }
 
     #[test]

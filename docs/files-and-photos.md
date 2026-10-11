@@ -178,8 +178,10 @@ the previous or next annotation on the page and zoom to it.
 On a PDF or a multi-page TIFF, an annotation belongs to its page. The page thumbnails show how
 many annotations each page has.
 
-If a file is replaced with one of a different size, the viewer says so: annotations stay where
-their coordinates put them, and you can move or resize them by hand. If the file is missing,
+If a file is replaced with one of a different shape, the viewer says so: annotations stay where
+their coordinates put them, and you can move or resize them by hand. An annotation you have
+put back in place no longer counts as out of date, and the same picture at another resolution
+never does. If the file is missing,
 the viewer still draws the annotations on an outline of the page, with a **Locate file…**
 button. You cannot add annotations until the file is found.
 

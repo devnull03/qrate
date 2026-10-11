@@ -344,11 +344,12 @@ impl Viewer {
     pub(super) fn release(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(grab) = self.grab.take() {
             let moved = grab.rect();
-            let of = self
-                .row_marks(cx)
-                .into_iter()
-                .find(|m| m.id == grab.id)
-                .and_then(|m| m.region.of);
+            let of = self.header.or_else(|| {
+                self.row_marks(cx)
+                    .into_iter()
+                    .find(|m| m.id == grab.id)
+                    .and_then(|m| m.region.of)
+            });
             if moved != grab.rect {
                 let region = regions::upright(moved, self.shown, self.page as u32, of);
                 Diagnostics::move_note(grab.id, region, cx);
