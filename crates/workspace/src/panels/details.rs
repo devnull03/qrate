@@ -173,8 +173,8 @@ pub struct DetailsPanel {
     notes_header_width: Rc<Cell<Pixels>>,
     /// Set when the viewer picks a region, so its card is scrolled into view on the next paint.
     follow_pick: Cell<bool>,
-    /// Each file's pixel size, read once rather than on every paint.
-    headers: RefCell<HashMap<PathBuf, Option<(u32, u32)>>>,
+    /// Each file's pixel size, read again only when the file on disk is a different one.
+    headers: RefCell<HashMap<PathBuf, (Option<String>, Option<(u32, u32)>)>>,
     /// Repaints when a note changes, and follows the region the viewer picks.
     _notes_subs: [Subscription; 2],
 }
@@ -482,7 +482,7 @@ impl DetailsPanel {
                     .map(|id| crate::viewer::marks(id, cx))
                     .unwrap_or_default();
                 let path = delegate.row_image(row).map(Path::to_path_buf);
-                let header = path.as_deref().and_then(|path| self.header(path));
+                let header = std::cell::OnceCell::new();
                 let notes: Vec<_> =
                     diagnostics::Diagnostics::notes_in_row(diagnostics::DATASET_MAIN, row, cx)
                         .collect();
@@ -504,8 +504,10 @@ impl DetailsPanel {
                         let meta = note.note.as_ref();
                         let number = meta
                             .and_then(|n| numbers.iter().find(|m| m.id == n.id).map(|m| m.number));
-                        let changed = header
-                            .zip(meta.and_then(|n| n.region))
+                        let region = meta.and_then(|n| n.region);
+                        let changed = region
+                            .and_then(|_| *header.get_or_init(|| self.header(path.as_deref()?)))
+                            .zip(region)
                             .is_some_and(|(header, region)| !region.fits(header));
                         (note.clone(), number, changed)
                     })
@@ -1239,13 +1241,18 @@ impl DetailsPanel {
         cx.notify();
     }
 
-    /// The pixel size of `path` as it is on disk now, read once per file.
+    /// The pixel size of `path` as it is on disk now, read once per version of the file.
     fn header(&self, path: &Path) -> Option<(u32, u32)> {
-        *self
-            .headers
-            .borrow_mut()
-            .entry(path.to_path_buf())
-            .or_insert_with(|| preview::dimensions(path))
+        let version = preview::cache::key(path, 0, 0);
+        let mut headers = self.headers.borrow_mut();
+        match headers.get(path) {
+            Some((seen, size)) if *seen == version => *size,
+            _ => {
+                let size = preview::dimensions(path);
+                headers.insert(path.to_path_buf(), (version, size));
+                size
+            }
+        }
     }
 
     /// The History sub-panel: what has happened to the front item, newest first — each field's old
