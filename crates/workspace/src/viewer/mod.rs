@@ -1116,8 +1116,14 @@ impl Render for Viewer {
                         resizable_panel().child(
                             // Padding is the only sizing input; pan/zoom stay off the find panel.
                             div()
+                                .id("viewer-stage")
                                 .size_full()
                                 .p_8()
+                                .on_hover(cx.listener(|this, over: &bool, _, cx| {
+                                    if !over && this.hovered.take().is_some() {
+                                        cx.notify();
+                                    }
+                                }))
                                 .on_scroll_wheel(cx.listener(
                                     |this, ev: &ScrollWheelEvent, _, cx| {
                                         // Any scroll zooms — trackpad pixel deltas and wheel line
