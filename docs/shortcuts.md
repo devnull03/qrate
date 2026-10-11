@@ -71,6 +71,7 @@ These work in the fullscreen viewer and in the pop-out window.
 | **N** | Hide or show annotations |
 | **[** / **]** | Previous / next annotation on the page |
 | **Delete** | Delete the selected annotation (asks first) |
+| **Ctrl+Z** | Take back the last annotation you added, moved, or resized since the file was opened |
 | **Ctrl+Enter** | Save the note being written |
 | **Esc** | Exit annotate mode and cancel unfinished work; otherwise dismiss the selection or find panel, then close the fullscreen viewer or return to Details in the pop-out window |
 

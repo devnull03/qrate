@@ -167,6 +167,8 @@ never changed.
 - With **Select**, click an annotation to select it. Drag it to move it, or drag a handle to
   resize it. **Delete** asks before it removes the annotation, and History keeps a copy you can
   restore.
+- **Ctrl+Z** takes back the last annotation you added, moved, or resized since you opened the
+  file. History keeps every step either way.
 - Hold the middle mouse button and drag to pan while annotating. Release it to return to the
   annotation tool.
 - **Esc** exits annotate mode and cancels any unfinished note or drag.

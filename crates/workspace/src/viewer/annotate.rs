@@ -342,15 +342,12 @@ impl Viewer {
     pub(super) fn release(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(grab) = self.grab.take() {
             let moved = grab.rect();
-            let of = self.header.or_else(|| {
-                self.row_marks(cx)
-                    .into_iter()
-                    .find(|m| m.id == grab.id)
-                    .and_then(|m| m.region.of)
-            });
-            if moved != grab.rect {
+            let was = self.row_marks(cx).into_iter().find(|m| m.id == grab.id);
+            if let Some(was) = was.filter(|_| moved != grab.rect) {
+                let of = self.header.or(was.region.of);
                 let region = regions::upright(moved, self.shown, self.page as u32, of);
-                Diagnostics::move_note(grab.id, region, cx);
+                self.undo.push((grab.id, Some(was.region)));
+                Diagnostics::move_note(grab.id, region, Origin::Drawn, cx);
             }
             cx.notify();
             return;
@@ -418,7 +415,7 @@ impl Viewer {
         let Some(composer) = self.composer.take() else {
             return;
         };
-        if let Some(location) = self.location(cx) {
+        let filed = self.location(cx).and_then(|location| {
             Diagnostics::file_note(
                 location,
                 Some(composer.region),
@@ -426,10 +423,31 @@ impl Viewer {
                 message.trim().to_string().into(),
                 Origin::Drawn,
                 cx,
-            );
-        }
+            )
+        });
+        self.undo.extend(filed.map(|id| (id, None)));
         window.focus(&self.focus_handle, cx);
         cx.notify();
+    }
+
+    /// Take back the last region this viewer added, moved or resized.
+    pub(super) fn undo_mark(&mut self, cx: &mut Context<Self>) {
+        let Some((id, was)) = self.undo.pop() else {
+            return;
+        };
+        match was {
+            Some(region) => {
+                Diagnostics::move_note(id, region, Origin::Undo, cx);
+                self.hint("Annotation put back", cx);
+            }
+            None => {
+                Diagnostics::edit_note(id, SharedString::default(), None, Origin::Undo, cx);
+                if self.selected == Some(id) {
+                    self.select(None, cx);
+                }
+                self.hint("Annotation removed", cx);
+            }
+        }
     }
 
     pub(super) fn select(&mut self, id: Option<NoteId>, cx: &mut Context<Self>) {
@@ -1309,6 +1327,8 @@ mod tests {
                 viewer.release(window, cx);
                 let moved = marks(3, cx)[0].region;
                 assert_eq!((moved.x, moved.y, moved.w), (3500, 2500, 2500));
+                viewer.undo_mark(cx);
+                assert_eq!(marks(3, cx)[0].region.x, 2500, "undo puts the move back");
 
                 viewer.ask_delete(cx);
                 assert_eq!(viewer.deleting, Some(id));

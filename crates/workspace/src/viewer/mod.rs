@@ -189,6 +189,7 @@ pub(crate) fn build(
         draw: None,
         selected: None,
         grab: None,
+        undo: Vec::new(),
         deleting: None,
         composer: None,
         hint: None,
@@ -386,6 +387,9 @@ pub struct Viewer {
     /// The region the Select tool picked, and the move or resize under way on it.
     selected: Option<diagnostics::NoteId>,
     grab: Option<annotate::Grab>,
+    /// What undo puts back, oldest first: a region as it was before a move or resize, or `None`
+    /// for one this viewer added.
+    undo: Vec<(diagnostics::NoteId, Option<diagnostics::Region>)>,
     /// The region whose deletion is waiting to be confirmed.
     deleting: Option<diagnostics::NoteId>,
     /// The note being written for a region just marked.
@@ -1091,6 +1095,7 @@ impl Render for Viewer {
                         this.rotate(if ev.keystroke.modifiers.shift { -1 } else { 1 });
                         cx.notify();
                     }
+                    "z" if reading && ev.keystroke.modifiers.secondary() => this.undo_mark(cx),
                     "n" if reading && this.row.is_some() => this.toggle_hidden(cx),
                     "a" if reading => this.toggle_annotate(cx),
                     "[" if reading => this.step_mark(-1, cx),

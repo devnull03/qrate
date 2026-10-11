@@ -645,12 +645,12 @@ impl Diagnostics {
     }
 
     /// Move or reshape the region one note points at.
-    pub fn move_note(id: NoteId, region: Region, cx: &mut App) {
+    pub fn move_note(id: NoteId, region: Region, origin: Origin, cx: &mut App) {
         let Some((location, mut body)) = Self::body(id, cx) else {
             return;
         };
         body.region = Some(region);
-        Self::put(id, location, Some(body), Origin::Drawn, cx);
+        Self::put(id, location, Some(body), origin, cx);
     }
 
     fn body(id: NoteId, cx: &App) -> Option<(Location, Body)> {
@@ -1208,7 +1208,7 @@ mod tests {
             );
 
             let moved = Region { x: 5000, ..stamp };
-            Diagnostics::move_note(id, moved, cx);
+            Diagnostics::move_note(id, moved, Origin::Drawn, cx);
             assert_eq!(region(cx), Some(moved));
             let edited =
                 |cx: &App| Diagnostics::note(id, cx).and_then(|d| d.note.as_ref()?.edited.clone());
@@ -1655,7 +1655,7 @@ mod tests {
             )
             .unwrap();
             let moved = Region { x: 900, ..stamp };
-            Diagnostics::move_note(id, moved, cx);
+            Diagnostics::move_note(id, moved, Origin::Drawn, cx);
             let change =
                 |before: Option<&str>, region_before, after: Option<&str>, region_after| {
                     settings::history::Change::Note {
