@@ -566,7 +566,7 @@ pub(crate) fn note_crops(change: &Change, path: Option<&Path>, cx: &App) -> Opti
             .rounded(radius)
             .overflow_hidden()
             .bg(muted)
-            .children(path.filter(|path| path.exists()).map(|path| {
+            .children(path.map(|path| {
                 img(preview::crop(
                     path,
                     region.page as usize,
