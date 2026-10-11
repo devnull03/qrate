@@ -153,9 +153,20 @@ Section "Install"
 
   ; A project file opens in qrate and uses the icon embedded in the installed executable.
   WriteRegStr SHCTX "Software\Classes\.qrate" "" "qrate.Project"
+  WriteRegStr SHCTX "Software\Classes\.qrate\OpenWithProgids" "qrate.Project" ""
   WriteRegStr SHCTX "Software\Classes\qrate.Project" "" "qrate project"
   WriteRegStr SHCTX "Software\Classes\qrate.Project\DefaultIcon" "" "$INSTDIR\${EXENAME},0"
   WriteRegStr SHCTX "Software\Classes\qrate.Project\shell\open\command" "" '"$INSTDIR\${EXENAME}" "%1"'
+  WriteRegStr SHCTX "Software\Classes\Applications\${EXENAME}" "FriendlyAppName" "qrate"
+  WriteRegStr SHCTX "Software\Classes\Applications\${EXENAME}\SupportedTypes" ".qrate" ""
+  WriteRegStr SHCTX "Software\Classes\Applications\${EXENAME}\shell\open\command" "" '"$INSTDIR\${EXENAME}" "%1"'
+
+  WriteRegStr SHCTX "Software\Classes\Directory\shell\qrate" "" "Open with qrate"
+  WriteRegStr SHCTX "Software\Classes\Directory\shell\qrate" "Icon" "$INSTDIR\${EXENAME},0"
+  WriteRegStr SHCTX "Software\Classes\Directory\shell\qrate\command" "" '"$INSTDIR\${EXENAME}" "%1"'
+  WriteRegStr SHCTX "Software\Classes\Directory\Background\shell\qrate" "" "Open with qrate"
+  WriteRegStr SHCTX "Software\Classes\Directory\Background\shell\qrate" "Icon" "$INSTDIR\${EXENAME},0"
+  WriteRegStr SHCTX "Software\Classes\Directory\Background\shell\qrate\command" "" '"$INSTDIR\${EXENAME}" "%V"'
   System::Call 'Shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 
   ; Uninstaller + Add/Remove Programs entry. SHCTX is HKLM for an all-users install, HKCU for a
@@ -195,6 +206,11 @@ Section "un.qrate" SEC_UNAPP
   Delete "$DESKTOP\${APPNAME}.lnk"
   DeleteRegKey SHCTX "Software\Classes\qrate"
   DeleteRegKey SHCTX "Software\Classes\qrate.Project"
+  DeleteRegValue SHCTX "Software\Classes\.qrate\OpenWithProgids" "qrate.Project"
+  DeleteRegKey /ifempty SHCTX "Software\Classes\.qrate\OpenWithProgids"
+  DeleteRegKey SHCTX "Software\Classes\Applications\${EXENAME}"
+  DeleteRegKey SHCTX "Software\Classes\Directory\shell\qrate"
+  DeleteRegKey SHCTX "Software\Classes\Directory\Background\shell\qrate"
   System::Call 'Shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
   DeleteRegKey SHCTX "${UNINSTKEY}"
   DeleteRegKey SHCTX "Software\${APPNAME}"

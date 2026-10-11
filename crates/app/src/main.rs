@@ -10,6 +10,10 @@ mod export;
 mod google;
 mod instance_handoff;
 mod logging;
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+mod macos_services;
+mod open_target;
 mod plugin_marketplace;
 mod site;
 mod status_items;
@@ -587,32 +591,36 @@ fn main() {
     log::info!("site origin: {}", site::url("/"));
     let onboarding_preview =
         cfg!(debug_assertions) && std::env::args().any(|argument| argument == "--onboarding");
-    let initial_project = std::env::args_os()
+    let initial_target = std::env::args_os()
         .skip(1)
-        .map(std::path::PathBuf::from)
-        .find(|path| {
-            path.extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("qrate"))
-        });
-    let initial_link = std::env::args()
-        .find(|argument| argument.starts_with("qrate://"))
-        .filter(|link| {
-            plugin_package::parse_install_link(link)
-                .inspect_err(|error| log::warn!("ignored invalid plugin install link: {error:#}"))
-                .is_ok()
-        });
+        .find_map(|argument| open_target::OpenTarget::parse(&argument));
+    let initial_link = match &initial_target {
+        Some(open_target::OpenTarget::Plugin(link)) => Some(link.as_str()),
+        _ => None,
+    };
     if initial_link.is_some() {
         log::info!("received plugin install link at startup");
     }
+    let initial_request = match &initial_target {
+        Some(open_target::OpenTarget::Plugin(link)) => Some(link.clone()),
+        Some(open_target::OpenTarget::Project(path) | open_target::OpenTarget::Folder(path)) => {
+            std::path::absolute(path)
+                .ok()
+                .and_then(|path| url::Url::from_file_path(path).ok())
+                .map(String::from)
+        }
+        None => None,
+    };
     let (url_sender, url_receiver) = async_channel::unbounded();
-    if !instance_handoff::start(initial_link.as_deref(), url_sender.clone()) {
+    if !instance_handoff::start(initial_request.as_deref(), url_sender.clone()) {
         return;
     }
     let app = gpui_platform::application().with_assets(assets::Assets);
+    #[cfg(target_os = "macos")]
+    macos_services::register(url_sender.clone());
     app.on_open_urls(move |urls| {
         for url in urls {
-            log::info!("received plugin install link from the operating system");
+            log::info!("received an open request from the operating system");
             let _ = url_sender.try_send(url);
         }
     });
@@ -622,7 +630,7 @@ fn main() {
         gpui_component::init(cx);
         cx.register_url_scheme("qrate").detach();
         #[cfg(target_os = "linux")]
-        instance_handoff::register_linux_scheme();
+        instance_handoff::register_linux_handlers();
 
         // Settings ------------------------------------
         let settings = load_app_settings().unwrap_or_else(|error| {
@@ -769,7 +777,9 @@ fn main() {
 
         cx.spawn(async move |cx| {
             while let Ok(link) = url_receiver.recv().await {
-                cx.update(|cx| open_install_link(&link, cx));
+                if let Some(target) = open_target::OpenTarget::parse(link.as_ref()) {
+                    cx.update(|cx| open_os_target(target, cx));
+                }
             }
         })
         .detach();
@@ -781,33 +791,71 @@ fn main() {
         })
         .detach();
 
-        match initial_link {
-            Some(link) if open_install_link(&link, cx) => {}
-            _ if initial_project.as_ref().is_some_and(
-                |path| match project_wizard::open_project(path, cx) {
-                    Ok(name) => {
-                        project_wizard::record_opened(
-                            name,
-                            path.to_string_lossy().into_owned(),
-                            cx,
-                        );
-                        open_main_window(cx);
-                        true
-                    }
-                    Err(error) => {
-                        log::error!("could not open project {}: {error:#}", path.display());
-                        project_wizard::open_launcher_with_error(
-                            format!("Couldn't open {} — {error:#}", path.display()).into(),
-                            cx,
-                        );
-                        true
-                    }
-                },
-            ) => {}
-            // The launcher is the normal startup window; it opens the main window or the wizard.
-            _ => project_wizard::open_launcher_window(cx),
+        match initial_target {
+            Some(target) => open_os_target(target, cx),
+            None => project_wizard::open_launcher_window(cx),
         }
     });
+}
+
+fn open_os_target(target: open_target::OpenTarget, cx: &mut gpui::App) {
+    match target {
+        open_target::OpenTarget::Plugin(link) => {
+            if !open_install_link(&link, cx) {
+                project_wizard::open_launcher_window(cx);
+            }
+        }
+        open_target::OpenTarget::Folder(path) => {
+            project_wizard::open_project_wizard_seeded(EntryKind::Blank, None, vec![path], cx);
+            if let Some(launcher) =
+                WindowRegistry::focus_or_clear(project_wizard::launcher::LAUNCHER_WINDOW_KIND, cx)
+            {
+                launcher
+                    .update(cx, |_, window, _| window.remove_window())
+                    .ok();
+            }
+        }
+        open_target::OpenTarget::Project(path) => {
+            if let Some(window) = cx.active_window() {
+                window
+                    .update(cx, |_, window, cx| {
+                        resolve_unsaved(
+                            "Save them before opening another project?",
+                            window,
+                            cx,
+                            Box::new(move |cx| open_project_target(path, cx)),
+                        );
+                    })
+                    .ok();
+            } else {
+                open_project_target(path, cx);
+            }
+        }
+    }
+}
+
+fn open_project_target(path: std::path::PathBuf, cx: &mut gpui::App) {
+    match project_wizard::open_project(&path, cx) {
+        Ok(name) => {
+            settings::dirty::clear(settings::dirty::PROJECT_DATA, cx);
+            project_wizard::record_opened(name, path.to_string_lossy().into_owned(), cx);
+            open_main_window(cx);
+            if let Some(launcher) =
+                WindowRegistry::focus_or_clear(project_wizard::launcher::LAUNCHER_WINDOW_KIND, cx)
+            {
+                launcher
+                    .update(cx, |_, window, _| window.remove_window())
+                    .ok();
+            }
+        }
+        Err(error) => {
+            log::error!("could not open project {}: {error:#}", path.display());
+            project_wizard::open_launcher_with_error(
+                format!("Couldn't open {} — {error:#}", path.display()).into(),
+                cx,
+            );
+        }
+    }
 }
 
 fn open_install_link(link: &str, cx: &mut gpui::App) -> bool {

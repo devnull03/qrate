@@ -42,11 +42,25 @@ open, choose **Data ▸ Load Column Config…**.
 You can drop material onto the launcher instead of browsing: a `.qrate` file opens it, a
 spreadsheet starts a spreadsheet import, and files or folders start a folder-based project.
 
+You can also choose **Open with qrate** for a folder in your file manager. This opens the
+blank-project wizard with the files folder selected, a suggested name from the folder, and
+the default Title and File columns. Review the name and save location, then continue through
+the wizard to create the project. Files stay in their existing folder.
+
+On Windows, the installer adds the folder action to Explorer's right-click menu (under
+**Show more options** on Windows 11), including the background menu inside a folder. On macOS,
+choose **Services ▸ Open with qrate** in Finder. On Linux, launch the installed app once to
+register it, then choose qrate from your file manager's **Open With** menu; its location varies
+by desktop. The Windows Store package registers `.qrate` files but does not add the folder menu.
+
 ## Open a project
 
 Choose **File ▸ Open Projects…** or press **Ctrl+O** to show the launcher. It lists recent
 projects. Pick one to open it, or browse to any `.qrate` file. If a project cannot be opened, the
 launcher says why above the list.
+
+Installed copies of qrate also appear in the operating system's **Open With** choices for
+`.qrate` files. Choosing qrate opens that project directly.
 
 If the open project has unsaved changes when you open or create another one, qrate asks first.
 See [Saving](#saving).
