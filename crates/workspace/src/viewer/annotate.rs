@@ -286,8 +286,8 @@ impl Viewer {
         if self.composer.is_some() {
             return true;
         }
-        let (on, tool, hidden) = state(cx);
-        if !on || self.row.is_none() || !self.ready() {
+        let (_, tool, hidden) = state(cx);
+        if !self.annotating(cx) || !self.ready() {
             return false;
         }
         let at = regions::at(self.page_box(), self.local(position));
@@ -1429,6 +1429,8 @@ mod tests {
                 assert!(viewer.missing);
                 assert_eq!(viewer.pixels, Some((4000, 3000)));
                 assert!(!viewer.annotating(cx));
+                assert!(!viewer.press(gpui::point(gpui::px(100.), gpui::px(75.)), cx));
+                assert!(viewer.draw.is_none());
                 assert!(!viewer.has_controls());
             });
         });
