@@ -832,38 +832,23 @@ pub(super) fn layer(this: &Viewer, marks: &[Mark], cx: &mut Context<Viewer>) -> 
                                     Textarea::new(&composer.text).appearance(false).h(px(54.)),
                                 ),
                             )
-                            .child(h_flex().gap_1().px_2().pb_2().children(NoteKind::ALL.map(
-                                |kind| {
-                                    let on = composer.kind == Some(kind);
-                                    div()
-                                        .id(kind.key())
-                                        .h(px(20.))
-                                        .px_2()
-                                        .flex()
-                                        .items_center()
-                                        .rounded(px(10.))
-                                        .border_1()
-                                        .text_xs()
-                                        .cursor_pointer()
-                                        .map(|chip| match on {
-                                            true => chip
-                                                .bg(theme.primary.opacity(0.14))
-                                                .text_color(theme.primary)
-                                                .border_color(theme.primary.opacity(0.5)),
-                                            false => chip
-                                                .text_color(theme.muted_foreground)
-                                                .border_color(theme.border),
-                                        })
-                                        .child(kind.label())
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            if let Some(composer) = this.composer.as_mut() {
-                                                composer.kind =
-                                                    (composer.kind != Some(kind)).then_some(kind);
-                                            }
-                                            cx.notify();
-                                        }))
-                                },
-                            )))
+                            .child(div().px_2().pb_2().child({
+                                let viewer = cx.entity().downgrade();
+                                diagnostics::note_card::kind_chips(
+                                    composer.kind,
+                                    move |kind, _, cx| {
+                                        viewer
+                                            .update(cx, |this, cx| {
+                                                if let Some(composer) = this.composer.as_mut() {
+                                                    composer.kind = kind;
+                                                }
+                                                cx.notify();
+                                            })
+                                            .ok();
+                                    },
+                                    cx,
+                                )
+                            }))
                             .children(composer.sign.as_ref().map(|sign| {
                                 v_flex()
                                     .gap_1p5()

@@ -166,8 +166,12 @@ pub struct DetailsPanel {
     /// Only the notes signed with the archivist's own name.
     notes_mine: bool,
     notes_hover: Option<diagnostics::NoteId>,
-    /// The note being reworded in its card.
-    note_edit: Option<(diagnostics::NoteId, Entity<TextareaState>)>,
+    /// The note being reworded in its card, and the kind picked for it there.
+    note_edit: Option<(
+        diagnostics::NoteId,
+        Entity<TextareaState>,
+        Option<diagnostics::NoteKind>,
+    )>,
     notes_scroll: ScrollHandle,
     history_scroll: ScrollHandle,
     notes_header_width: Rc<Cell<Pixels>>,
@@ -618,8 +622,8 @@ impl DetailsPanel {
                 let editing = self
                     .note_edit
                     .as_ref()
-                    .filter(|(editing, _)| Some(*editing) == id)
-                    .map(|(_, text)| text.clone());
+                    .filter(|(editing, ..)| Some(*editing) == id)
+                    .map(|(_, text, kind)| (text.clone(), *kind));
                 let filed = meta.as_ref().and_then(|n| n.filed.clone());
                 let lead = match (region, number) {
                     (Some(region), Some(number)) => [
@@ -799,10 +803,29 @@ impl DetailsPanel {
                                 .text_size(px(13.))
                                 .line_height(px(18.))
                                 .map(|body| match editing {
-                                    Some(text) => body.child(
+                                    Some((text, kind)) => body.child(
                                         v_flex()
                                             .gap_1()
                                             .child(Textarea::new(&text).h(px(54.)))
+                                            .child({
+                                                let panel = cx.entity().downgrade();
+                                                diagnostics::note_card::kind_chips(
+                                                    kind,
+                                                    move |kind, _, cx| {
+                                                        panel
+                                                            .update(cx, |this, cx| {
+                                                                if let Some(edit) =
+                                                                    this.note_edit.as_mut()
+                                                                {
+                                                                    edit.2 = kind;
+                                                                }
+                                                                cx.notify();
+                                                            })
+                                                            .ok();
+                                                    },
+                                                    cx,
+                                                )
+                                            })
                                             .child(
                                                 div()
                                                     .text_xs()
@@ -1242,9 +1265,9 @@ impl DetailsPanel {
                 } = event
                 {
                     let message = text.read(cx).value();
-                    let kind = diagnostics::Diagnostics::note(id, cx)
-                        .and_then(|note| note.note.as_ref()?.kind);
-                    this.note_edit = None;
+                    let Some((_, _, kind)) = this.note_edit.take() else {
+                        return;
+                    };
                     if !message.trim().is_empty() {
                         diagnostics::Diagnostics::edit_note(
                             id,
@@ -1260,7 +1283,8 @@ impl DetailsPanel {
             },
         )
         .detach();
-        self.note_edit = Some((id, text));
+        let kind = diagnostics::Diagnostics::note(id, cx).and_then(|note| note.note.as_ref()?.kind);
+        self.note_edit = Some((id, text, kind));
         cx.notify();
     }
 

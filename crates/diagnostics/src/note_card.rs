@@ -1,11 +1,16 @@
 //! The note hover card: one note whole, then who filed it and when. The viewer shows it on a region
 //! and the grid on a cell; each caller only decides where it goes.
 
+use std::rc::Rc;
+
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, App, IntoElement, ParentElement, SharedString, Styled, div, px};
+use gpui::{
+    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement as _, Styled, Window, div, px,
+};
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable as _, h_flex, v_flex};
 
-use crate::{Diagnostic, Severity, severity_color};
+use crate::{Diagnostic, NoteKind, Severity, severity_color};
 
 pub const WIDTH: f32 = 280.;
 
@@ -28,6 +33,46 @@ pub fn byline(note: &Diagnostic) -> SharedString {
     .collect::<Vec<SharedString>>()
     .join(" · ")
     .into()
+}
+
+/// The kinds a note can be, as chips with `current` lit. A note nobody gave a kind is a plain
+/// note, and picking that one hands `pick` `None` so it stays stored that way.
+pub fn kind_chips(
+    current: Option<NoteKind>,
+    pick: impl Fn(Option<NoteKind>, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
+    let theme = cx.theme();
+    let pick = Rc::new(pick);
+    h_flex()
+        .gap_1()
+        .children(NoteKind::ALL.map(|kind| {
+            let pick = pick.clone();
+            div()
+                .id(kind.key())
+                .h(px(20.))
+                .px_2()
+                .flex()
+                .items_center()
+                .rounded(px(10.))
+                .border_1()
+                .text_xs()
+                .cursor_pointer()
+                .map(|chip| match current.unwrap_or(NoteKind::Note) == kind {
+                    true => chip
+                        .bg(theme.primary.opacity(0.14))
+                        .text_color(theme.primary)
+                        .border_color(theme.primary.opacity(0.5)),
+                    false => chip
+                        .text_color(theme.muted_foreground)
+                        .border_color(theme.border),
+                })
+                .child(kind.label())
+                .on_click(move |_, window, cx| {
+                    pick((kind != NoteKind::Note).then_some(kind), window, cx)
+                })
+        }))
+        .into_any_element()
 }
 
 /// `note` over its [`byline`]. What a cell's tooltip used to say — the column's `description` and
