@@ -65,6 +65,9 @@ settings, layout, and other project settings always save as you change them.
 Press **Ctrl+S**, or choose **File ▸ Save**, to save at any time, whatever the autosave setting.
 A dot in the title bar means the project has changes that are not saved yet.
 
+In a narrow window, the title bar's menus and controls move into the **☰** menu on the left.
+The project name and author shorten to fit; the window buttons stay visible.
+
 If a save fails, for example because the drive is full or the file is read-only, qrate tells you
 and keeps your changes open. Autosave tries again after your next edit, and **Ctrl+S** tries
 at once and shows the reason if it fails again.

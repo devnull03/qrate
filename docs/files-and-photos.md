@@ -151,6 +151,45 @@ A PDF or a multi-page TIFF shows its pages in the bar at the bottom of the viewe
   its top.
 - The search button, or **Ctrl+F**, opens a panel to search the document's text.
 
+### Annotations
+
+An annotation is a note about part of a file: a box around a stamp, or a pin on a face. It
+belongs to the row, like any other note, and is kept in the `.qrate` file. The file itself is
+never changed.
+
+- Press **A**, or the annotate button at the top of the viewer, to turn annotate mode on. The
+  tools appear on the left edge: **Select**, **Rectangle**, and **Pin**.
+- With **Rectangle**, drag to mark a box, or click to drop a pin. With **Pin**, click.
+- Write the note in the card that opens beside it. You can mark it as a **Note**, a
+  **Transcription**, or a **Question**. Press **Ctrl+Enter**, or click **Save**.
+- The first time you save without an author name set, qrate asks how to sign your notes. You
+  can skip this; the note is then saved unsigned, and qrate does not ask again.
+- With **Select**, click an annotation to select it. Drag it to move it, or drag a handle to
+  resize it. **Delete** asks before it removes the annotation, and History keeps a copy you can
+  restore.
+- Hold the middle mouse button and drag to pan while annotating. Release it to return to the
+  annotation tool.
+- **Esc** exits annotate mode and cancels any unfinished note or drag.
+
+Annotations are numbered in the order they were made. Point at one to read its note. Press
+**N**, or the eye button, to hide them all and see the file underneath. **[** and **]** step to
+the previous or next annotation on the page and zoom to it.
+
+On a PDF or a multi-page TIFF, an annotation belongs to its page. The page thumbnails show how
+many annotations each page has.
+
+If a file is replaced with one of a different size, the viewer says so: annotations stay where
+their coordinates put them, and you can move or resize them by hand. If the file is missing,
+the viewer still draws the annotations on an outline of the page, with a **Locate file…**
+button. You cannot add annotations until the file is found.
+
+The **Notes** section of the Details panel lists the selected items' notes, with a small crop
+of the part each annotation marks. Point at a card to light its annotation in the viewer, and
+click it to zoom the viewer to it. Hover a card to edit, delete, or show the history of its
+note. The buttons above the list show **All** notes, only those **On image**, or only those
+**On fields**, and **Mine** shows only the notes you signed. In the gallery, a badge in the
+bottom-left corner of a tile counts its annotations.
+
 ### The pop-out window
 
 The **Open in new window** button on the Details preview opens the file in a second window,

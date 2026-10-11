@@ -43,6 +43,12 @@ The button in the panel's title bar filters the list:
 - **Fixes**, which includes spelling fixes
 - **Named versions**, which shows only the changes that you named
 
+When a panel is too narrow for its header controls, open the **☰** menu to reach them.
+
+Changes to annotations appear as **Annotation added**, **moved**, **resized**, **edited**, and
+**deleted**, with a crop of the part of the file they mark. A move or resize shows the crop
+before and after.
+
 ## One cell's history
 
 Right-click a cell in the grid and choose **Show edit history**. The History panel opens and
@@ -73,11 +79,17 @@ Right-click a saved change for these commands:
   a new change in the history, so **Ctrl+Z** undoes it.
 - **Restore This Value** puts one cell back to the value it had before the change. This command
   shows only for a change to one cell.
+- **Restore This Annotation** puts an annotation back the way it was before the change: its
+  place on the file, its words, and its kind. A deleted annotation comes back. For a note on a
+  cell or row, the command is **Restore This Note**.
 
-Neither command deletes history. The changes that a restore reverses stay in the list.
+The **History** section of the Details panel has a restore button on each saved change to a
+cell or an annotation.
+
+None of these commands deletes history. The changes that a restore reverses stay in the list.
 
 ## Clear the history
 
-Open the panel's menu and choose **Clear History…**. qrate asks you to confirm. After you
-clear the history, you cannot restore the project to any point before that moment. Clearing
-the history does not change your data.
+Open the panel's menu and choose **Clear History…**. qrate asks you to confirm, then saves your
+current edits before clearing the history. You cannot restore the project to any point before
+that moment. Clearing the history does not change your data.

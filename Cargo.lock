@@ -1877,6 +1877,7 @@ dependencies = [
  "gpui-pre",
  "log",
  "settings",
+ "window-wrapper",
 ]
 
 [[package]]
@@ -10832,6 +10833,7 @@ dependencies = [
  "serde_json",
  "settings",
  "table",
+ "window-wrapper",
 ]
 
 [[package]]

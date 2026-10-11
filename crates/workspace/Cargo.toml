@@ -17,6 +17,7 @@ settings = { path = "../settings" }
 table = { path = "../table" }
 agent-runtime = { path = "../agent-runtime" }
 components = { path = "../components" }
+window-wrapper = { path = "../window-wrapper" }
 
 [dev-dependencies]
 # `#[gpui::test]`, TestAppContext, and run_test are all behind this feature.

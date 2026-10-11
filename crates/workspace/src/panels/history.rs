@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,9 +10,9 @@ use gpui_component::dock::{BasePanel, DockPlacement, Panel, PanelEvent};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::{
-    ActiveTheme as _, IconName, Sizable as _, VirtualListScrollHandle,
+    ActiveTheme as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex, v_virtual_list,
+    h_flex, v_flex,
 };
 use settings::history::{Change, Entry, EntryId, Listed, Origin, ShowCellHistory};
 use settings::project::{CurrentProject, RowId};
@@ -36,8 +36,8 @@ const PAGE: i64 = 200;
 /// one burst of work and collapse under one row.
 const BURST_SECS: i64 = 5 * 60;
 
-/// One line of the list, as the virtual list addresses it. Holds indices rather than text: the
-/// whole list is walked every render to place it, but only the rows on screen are ever formatted.
+/// One dynamically measured list row; its text is formatted only when it is rendered.
+#[derive(PartialEq)]
 enum Row {
     Header(SharedString),
     /// Into [`HistoryPanel::pending`].
@@ -54,18 +54,6 @@ enum Row {
     },
     More,
 }
-
-/// The heights the list places rows by, which are also the heights the rows are given. Measuring
-/// instead would mean building every row to find out how tall it is, which is the whole cost
-/// virtualizing is here to avoid — so a row is told its height rather than asked for it. Change
-/// one of these and change the row it belongs to.
-const HEADER_H: f32 = 28.;
-const ROW_H: f32 = 48.;
-/// The extra line a named version carries above its description.
-const LABEL_H: f32 = 18.;
-/// The box that appears while that name is being typed.
-const NAMING_H: f32 = 28.;
-const MORE_H: f32 = 40.;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Filter {
@@ -116,7 +104,7 @@ pub struct HistoryPanel {
     /// Whether this is the panel its dock is showing, which is what [`Self::visible`]
     /// reports: a dock with one visible panel draws a title bar instead of a tab strip.
     active: bool,
-    list_scroll: VirtualListScrollHandle,
+    list_scroll: ListState,
     saved: Vec<Listed>,
     /// Whether a "Load older" would find anything.
     more: bool,
@@ -131,12 +119,8 @@ pub struct HistoryPanel {
     naming: Option<(EntryId, Entity<InputState>, Subscription)>,
     /// One cell to show the changes of, as its row and every name its column has had.
     cell: Option<(RowId, Vec<String>)>,
-    /// What the list is showing, rebuilt by [`Self::rebuild`] whenever `stale`: the flattened rows,
-    /// the saved entries they index into once filtered and narrowed, the entries not on disk yet
-    /// with the meta line each needs, and each grid row's position. On `self` because the virtual
-    /// list draws a range of them later, from a callback that is handed the panel and nothing else.
+    /// Flattened rows, rebuilt when the data, filters, expansion, or naming change.
     list: Rc<Vec<Row>>,
-    sizes: Rc<Vec<Size<Pixels>>>,
     view: Rc<Vec<Listed>>,
     pending: Rc<Vec<(Entry, String)>>,
     positions: Rc<HashMap<RowId, usize>>,
@@ -161,7 +145,7 @@ impl HistoryPanel {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             active: false,
-            list_scroll: VirtualListScrollHandle::new(),
+            list_scroll: ListState::new(0, ListAlignment::Top, px(200.)),
             saved: Vec::new(),
             more: false,
             read_at: None,
@@ -171,7 +155,6 @@ impl HistoryPanel {
             naming: None,
             cell: None,
             list: Rc::default(),
-            sizes: Rc::default(),
             view: Rc::default(),
             pending: Rc::default(),
             positions: Rc::default(),
@@ -484,7 +467,7 @@ impl HistoryPanel {
         let answer = window.prompt(
             PromptLevel::Critical,
             "Clear this project's history?",
-            Some("Every recorded change is forgotten and nothing before now can be restored. The data itself is not changed."),
+            Some("Current edits are saved first. Every recorded change is forgotten and nothing before now can be restored. The data itself is not changed."),
             &["Clear History", "Cancel"],
             cx,
         );
@@ -493,10 +476,9 @@ impl HistoryPanel {
                 return;
             }
             cx.update(|cx| {
-                if let Some(file) = cx.try_global::<CurrentProject>().map(|p| p.file.clone())
-                    && let Err(err) = settings::history::clear(&file)
-                {
+                if let Err(err) = table::clear_history(cx) {
                     log::error!("couldn't clear the project history: {err}");
+                    return;
                 }
                 panel.update(cx, |this, cx| this.reload(true, cx)).ok();
             });
@@ -531,6 +513,94 @@ fn narrowed<'a>(entry: &'a Entry, cell: Option<&(RowId, Vec<String>)>) -> Option
             ..entry.clone()
         })
     })
+}
+
+/// What a change to a region note did, or `None` for any other change.
+pub(crate) fn annotation(change: &Change) -> Option<&'static str> {
+    let Change::Note {
+        before,
+        after,
+        region_before,
+        region_after,
+        ..
+    } = change
+    else {
+        return None;
+    };
+    let resized = region_before
+        .zip(*region_after)
+        .is_some_and(|(a, b)| (a.w, a.h) != (b.w, b.h));
+    Some(match (before, after) {
+        _ if region_before.is_none() && region_after.is_none() => return None,
+        (None, _) => "Annotation added",
+        (_, None) => "Annotation deleted",
+        _ if before == after && resized => "Annotation resized",
+        _ if before == after => "Annotation moved",
+        _ => "Annotation edited",
+    })
+}
+
+/// The region a note change is about, cut from `path`: both sides of a move or resize, else the
+/// one it had. `None` for a change that is not about a region.
+pub(crate) fn note_crops(change: &Change, path: Option<&Path>, cx: &App) -> Option<AnyElement> {
+    let Change::Note {
+        region_before,
+        region_after,
+        ..
+    } = change
+    else {
+        return None;
+    };
+    let moved = region_before.zip(*region_after).filter(|(a, b)| a != b);
+    let sides: Vec<_> = match moved {
+        Some((before, after)) => vec![before, after],
+        None => region_after.or(*region_before).into_iter().collect(),
+    };
+    let first = sides.first()?;
+    let pages = path.and_then(preview::known_pages).unwrap_or(1);
+    let (muted, radius) = (cx.theme().muted, px(4.));
+    let crop = |region: &diagnostics::Region| {
+        div()
+            .size(px(40.))
+            .flex_none()
+            .rounded(radius)
+            .overflow_hidden()
+            .bg(muted)
+            .children(path.filter(|path| path.exists()).map(|path| {
+                img(preview::crop(
+                    path,
+                    region.page as usize,
+                    [region.x, region.y, region.w, region.h],
+                ))
+                .size_full()
+                .object_fit(ObjectFit::Cover)
+            }))
+    };
+    Some(
+        h_flex()
+            .flex_none()
+            .gap_1()
+            .child(crop(first))
+            .children(sides.get(1).map(|after| {
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Icon::new(IconName::ArrowRight)
+                            .xsmall()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(crop(after))
+            }))
+            .when(pages > 1, |crops| {
+                crops.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("p. {}", first.page + 1)),
+                )
+            })
+            .into_any_element(),
+    )
 }
 
 /// `3 Sep 2026`, from a `YYYY-MM-DD` day.
@@ -608,13 +678,14 @@ fn describe(entry: &Entry, rows: &HashMap<RowId, usize>) -> String {
                 column,
                 before,
                 after,
+                ..
             },
         ] => {
-            let what = match (before, after) {
+            let what = annotation(&changes[0]).unwrap_or(match (before, after) {
                 (None, _) => "Added a note",
                 (_, None) => "Removed a note",
                 _ => "Edited a note",
-            };
+            });
             match (id, column) {
                 (Some(id), Some(column)) => format!("{what} on {column}, {}", row(id)),
                 (Some(id), None) => format!("{what} on {}", row(id)),
@@ -753,37 +824,50 @@ impl Panel for HistoryPanel {
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         let panel = cx.entity().downgrade();
-        menu.item(
-            PopupMenuItem::new("Clear History…")
-                .on_click(move |_, window, cx| Self::confirm_clear(panel.clone(), window, cx)),
-        )
+        let (filter, named_only) = (self.filter, self.named_only);
+        let filters = PopupMenu::build(_w, cx, |menu, _, _| {
+            let menu = Filter::ALL.into_iter().fold(menu, |menu, pick| {
+                let panel = panel.clone();
+                menu.item(
+                    PopupMenuItem::new(pick.label())
+                        .checked(!named_only && pick == filter)
+                        .on_click(move |_, _, cx| {
+                            panel
+                                .update(cx, |this, cx| {
+                                    this.filter = pick;
+                                    this.named_only = false;
+                                    this.stale = true;
+                                    cx.notify();
+                                })
+                                .ok();
+                        }),
+                )
+            });
+            let panel = panel.clone();
+            menu.separator().item(
+                PopupMenuItem::new("Named versions")
+                    .checked(named_only)
+                    .on_click(move |_, _, cx| {
+                        panel
+                            .update(cx, |this, cx| {
+                                this.named_only = !this.named_only;
+                                this.stale = true;
+                                cx.notify();
+                            })
+                            .ok();
+                    }),
+            )
+        });
+        menu.item(PopupMenuItem::submenu("Show", filters))
+            .separator()
+            .item(
+                PopupMenuItem::new("Clear History…")
+                    .on_click(move |_, window, cx| Self::confirm_clear(panel.clone(), window, cx)),
+            )
     }
 }
 
 impl HistoryPanel {
-    /// How tall the list places a row, which is also the height the row is given — see the
-    /// constants above.
-    fn row_size(&self, row: &Row) -> Size<Pixels> {
-        let height = match row {
-            Row::Header(_) => HEADER_H,
-            Row::More => MORE_H,
-            Row::Pending(_) | Row::Burst { .. } => ROW_H,
-            Row::Saved { ix, .. } => match self.view.get(*ix) {
-                None => ROW_H,
-                Some(listed) => {
-                    let naming = self
-                        .naming
-                        .as_ref()
-                        .is_some_and(|(id, _, _)| *id == listed.entry.id);
-                    ROW_H
-                        + if listed.label.is_some() { LABEL_H } else { 0. }
-                        + if naming { NAMING_H } else { 0. }
-                }
-            },
-        };
-        size(px(0.), px(height))
-    }
-
     /// One row of the list, built only when it is on screen. `AnyElement` because the arms are
     /// different elements, which is the case the crate's style note allows it for.
     fn draw_row(
@@ -792,6 +876,31 @@ impl HistoryPanel {
         positions: &HashMap<RowId, usize>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let crops = match row {
+            Row::Saved { ix, .. } => self.view.get(*ix).map(|listed| &listed.entry),
+            Row::Pending(ix) => self.pending.get(*ix).map(|(entry, _)| entry),
+            _ => None,
+        }
+        .and_then(|entry| {
+            let [change] = entry.changes.as_slice() else {
+                return None;
+            };
+            let file = match change {
+                Change::Note { row: Some(id), .. } => cx
+                    .try_global::<TableStateHandle>()
+                    .and_then(|handle| handle.0.upgrade())
+                    .and_then(|table| {
+                        let row = *positions.get(id)?;
+                        table
+                            .read(cx)
+                            .delegate()
+                            .row_image(row)
+                            .map(Path::to_path_buf)
+                    }),
+                _ => None,
+            };
+            note_crops(change, file.as_deref(), cx)
+        });
         let theme = cx.theme();
         let (muted, border, hover_bg, accent) = (
             theme.muted_foreground,
@@ -800,14 +909,12 @@ impl HistoryPanel {
             theme.accent_foreground,
         );
         let panel = cx.entity().downgrade();
-        let height = self.row_size(row).height;
 
-        // ponytail: always offered, since gpui cannot tell us whether the text was cut
-        let clipped = |text: String| {
+        let description = |text: String| {
             div()
                 .id("text")
-                .overflow_hidden()
-                .text_ellipsis()
+                .min_w_0()
+                .whitespace_normal()
                 .child(text.clone())
                 .tooltip(move |window, cx| {
                     gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
@@ -823,7 +930,7 @@ impl HistoryPanel {
 
         match row {
             Row::Header(text) => div()
-                .h(height)
+                .w_full()
                 .px_2()
                 .pt_2()
                 .pb_1()
@@ -834,7 +941,7 @@ impl HistoryPanel {
                 .into_any_element(),
 
             Row::More => div()
-                .h(height)
+                .w_full()
                 .p_2()
                 .child(
                     Button::new("history-older")
@@ -854,8 +961,8 @@ impl HistoryPanel {
                         "history-unsaved".into(),
                         *ix as u64,
                     ))
-                    .h(height)
                     .w_full()
+                    .min_w_0()
                     .gap_0p5()
                     .px_2()
                     .py_1()
@@ -865,7 +972,14 @@ impl HistoryPanel {
                     .when(matches!(entry.origin, Origin::Undo | Origin::Redo), |row| {
                         row.opacity(0.6)
                     })
-                    .child(clipped(describe(entry, positions)).text_sm())
+                    .child(
+                        h_flex()
+                            .min_w_0()
+                            .items_start()
+                            .gap_2()
+                            .children(crops)
+                            .child(description(describe(entry, positions)).flex_1().text_sm()),
+                    )
                     .child(
                         div()
                             .text_xs()
@@ -901,6 +1015,10 @@ impl HistoryPanel {
                             ] => Some((*row, column.clone(), before.clone())),
                             _ => None,
                         };
+                        let note = match listed.entry.changes.as_slice() {
+                            [change @ Change::Note { id: Some(_), .. }] => Some(change.clone()),
+                            _ => None,
+                        };
                         let (restore, name, unname) =
                             (listed.clone(), panel.clone(), panel.clone());
                         let labelled = listed.label.is_some();
@@ -920,6 +1038,15 @@ impl HistoryPanel {
                                 },
                             ))
                         })
+                        .when_some(note, |menu, change| {
+                            let label = match annotation(&change) {
+                                Some(_) => "Restore This Annotation",
+                                None => "Restore This Note",
+                            };
+                            menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                                table::restore_note(&change, id, cx);
+                            }))
+                        })
                         .separator()
                         .item(PopupMenuItem::new("Name This Version…").on_click(
                             move |_, window, cx| {
@@ -938,8 +1065,8 @@ impl HistoryPanel {
                 };
                 v_flex()
                     .id(ElementId::NamedInteger("history-entry".into(), id as u64))
-                    .h(height)
                     .w_full()
+                    .min_w_0()
                     .gap_0p5()
                     .px_2()
                     .py_1()
@@ -960,7 +1087,14 @@ impl HistoryPanel {
                         )
                     })
                     .when_some(naming, |row, input| row.child(Input::new(&input).xsmall()))
-                    .child(clipped(describe(entry, positions)).text_sm())
+                    .child(
+                        h_flex()
+                            .min_w_0()
+                            .items_start()
+                            .gap_2()
+                            .children(crops)
+                            .child(description(describe(entry, positions)).flex_1().text_sm()),
+                    )
                     .child(
                         div()
                             .text_xs()
@@ -987,8 +1121,8 @@ impl HistoryPanel {
                 };
                 h_flex()
                     .id(ElementId::NamedInteger("history-burst".into(), id as u64))
-                    .h(height)
                     .w_full()
+                    .min_w_0()
                     .gap_1()
                     .px_2()
                     .py_1()
@@ -1017,11 +1151,15 @@ impl HistoryPanel {
                     )
                     .child(
                         v_flex()
+                            .flex_1()
                             .min_w_0()
                             .gap_0p5()
                             .child(
-                                clipped(format!("{len} edits · {}", describe(&summary, positions)))
-                                    .text_sm(),
+                                description(format!(
+                                    "{len} edits · {}",
+                                    describe(&summary, positions)
+                                ))
+                                .text_sm(),
                             )
                             .child(div().text_xs().text_color(muted).child(meta(
                                 &head.entry,
@@ -1144,7 +1282,23 @@ impl HistoryPanel {
         self.pending = Rc::new(pending);
         self.view = Rc::new(view);
         self.positions = Rc::new(positions);
-        self.sizes = Rc::new(list.iter().map(|row| self.row_size(row)).collect());
+        let prefix = self
+            .list
+            .iter()
+            .zip(&list)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let suffix = self.list[prefix..]
+            .iter()
+            .rev()
+            .zip(list[prefix..].iter().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        self.list_scroll.splice(
+            prefix..self.list.len() - suffix,
+            list.len() - prefix - suffix,
+        );
+        self.list_scroll.remeasure();
         self.list = Rc::new(list);
     }
 }
@@ -1166,10 +1320,12 @@ impl Render for HistoryPanel {
             format!("{}, {at}", names[0])
         });
         let empty = self.pending.is_empty() && self.view.is_empty();
-        let sizes = self.sizes.clone();
 
         v_flex()
             .size_full()
+            .min_h_0()
+            .min_w_0()
+            .relative()
             .track_focus(&self.focus_handle)
             .id("history-panel")
             .role(Role::Group)
@@ -1229,21 +1385,21 @@ impl Render for HistoryPanel {
             .when(!empty, |panel| {
                 panel
                     .child(
-                        v_virtual_list(
-                            cx.entity(),
-                            "history-list",
-                            sizes,
-                            move |this, range, _window, cx| {
-                                let (list, positions) = (this.list.clone(), this.positions.clone());
-                                list[range]
-                                    .iter()
-                                    .map(|row| this.draw_row(row, &positions, cx))
-                                    .collect::<Vec<_>>()
-                            },
-                        )
+                        list(self.list_scroll.clone(), {
+                            let panel = cx.entity().downgrade();
+                            move |ix, _, cx| {
+                                panel
+                                    .update(cx, |this, cx| {
+                                        this.draw_row(&this.list[ix], &this.positions, cx)
+                                    })
+                                    .unwrap_or_else(|_| div().into_any_element())
+                            }
+                        })
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
                         .pr_2()
-                        .pb(px(8.) + crop)
-                        .track_scroll(&self.list_scroll),
+                        .pb(px(8.) + crop),
                     )
                     .child(gpui_component::scroll::Scrollbar::vertical(
                         &self.list_scroll,
@@ -1255,7 +1411,7 @@ impl Render for HistoryPanel {
 #[cfg(test)]
 mod tests {
     // Never `use super::*` here: the parent has `use gpui::*` in scope.
-    use super::{HistoryPanel, PAGE, day_label, describe, narrowed};
+    use super::{HistoryPanel, PAGE, annotation, day_label, describe, narrowed};
     use gpui::TestAppContext;
     use settings::history::{Change, Entry, Origin};
     use std::collections::HashMap;
@@ -1412,5 +1568,52 @@ mod tests {
             None,
         );
         assert_eq!(describe(&many, &rows), "2 cells in Title");
+    }
+
+    /// A change to a region note is named for what happened to the annotation; a move keeps the
+    /// size, a resize changes it, and a note with no region is not an annotation at all.
+    #[test]
+    fn annotation_changes_say_what_happened_to_the_region() {
+        let region = |x, w| settings::project::Region {
+            page: 0,
+            x,
+            y: 0,
+            w,
+            h: 100,
+            of: None,
+        };
+        let note = |before: Option<&str>, after: Option<&str>, a, b| Change::Note {
+            row: Some(1),
+            column: None,
+            before: before.map(Into::into),
+            after: after.map(Into::into),
+            id: Some(1),
+            region_before: a,
+            region_after: b,
+            kind_before: None,
+            kind_after: None,
+        };
+        let r = Some(region(0, 100));
+        assert_eq!(
+            annotation(&note(None, Some("a"), None, r)),
+            Some("Annotation added")
+        );
+        assert_eq!(
+            annotation(&note(Some("a"), None, r, None)),
+            Some("Annotation deleted")
+        );
+        assert_eq!(
+            annotation(&note(Some("a"), Some("a"), r, Some(region(50, 100)))),
+            Some("Annotation moved")
+        );
+        assert_eq!(
+            annotation(&note(Some("a"), Some("a"), r, Some(region(0, 200)))),
+            Some("Annotation resized")
+        );
+        assert_eq!(
+            annotation(&note(Some("a"), Some("b"), r, r)),
+            Some("Annotation edited")
+        );
+        assert_eq!(annotation(&note(None, Some("a"), None, None)), None);
     }
 }

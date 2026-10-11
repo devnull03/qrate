@@ -9,6 +9,7 @@ use gpui::{
     Task, Window, div, px,
 };
 use gpui_component::{
+    ActiveTheme as _,
     input::TextareaState,
     table::{Column, TableDelegate, TableState},
 };
@@ -974,6 +975,7 @@ impl QrateTableDelegate {
                 .collect()
         };
         match step {
+            Step::Notes(notes) => notes.clone(),
             Step::Cells(cells) => cells
                 .iter()
                 .map(|(row, col, before, after)| Change::Cell {
@@ -1054,8 +1056,65 @@ impl QrateTableDelegate {
         let mut reshaped = Reshaped::default();
         self.replay(step, forward, &mut changes, &mut reshaped);
         self.settle(reshaped);
-        self.log(origin, changes.clone());
+        self.log(
+            origin,
+            changes
+                .iter()
+                .filter(|change| !matches!(change, Change::Note { .. }))
+                .cloned()
+                .collect(),
+        );
         changes
+    }
+
+    /// Keep the latest deleted notes with the row step, including notes edited between replays.
+    pub(crate) fn track_row_notes(&mut self, rows: &[RowId], notes: Vec<Change>, forward: bool) {
+        let Some(step) = self.history.replayed_mut(forward) else {
+            return;
+        };
+        if !matches!(step, Step::Batch(_)) {
+            let original = std::mem::replace(step, Step::Batch(Vec::new()));
+            *step = Step::Batch(vec![original]);
+        }
+        let Step::Batch(steps) = step else {
+            unreachable!();
+        };
+        for step in steps.iter_mut() {
+            if let Step::Notes(notes) = step {
+                notes.retain(|note| {
+                    !matches!(note, Change::Note { row: Some(row), .. } if rows.contains(row))
+                });
+            }
+        }
+        steps.retain(|step| !matches!(step, Step::Notes(notes) if notes.is_empty()));
+        if !notes.is_empty() {
+            steps.push(Step::Notes(match forward {
+                true => notes,
+                false => notes.iter().rev().map(Change::inverse).collect(),
+            }));
+        }
+    }
+
+    /// Saved and pending changes after an entry, without duplicating a background save's log.
+    pub(crate) fn history_since(
+        &self,
+        file: &std::path::Path,
+        after: EntryId,
+    ) -> anyhow::Result<Vec<Entry>> {
+        let _turn = self
+            .ledger
+            .write
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut entries = settings::history::entries_after(file, after)?;
+        let skip = (self
+            .ledger
+            .written
+            .load(Ordering::SeqCst)
+            .saturating_sub(self.saved_history) as usize)
+            .min(self.unsaved.len());
+        entries.extend_from_slice(&self.unsaved[skip..]);
+        Ok(entries)
     }
 
     /// Put the grid back the way `changes` say, by identity rather than position: the log's
@@ -1260,6 +1319,7 @@ impl QrateTableDelegate {
             changes.extend(self.changes(step).iter().rev().map(Change::inverse));
         }
         match step {
+            Step::Notes(_) => {}
             Step::Cells(cells) => {
                 for (row, col, before, after) in cells {
                     let text = if forward { after } else { before };
@@ -2507,9 +2567,13 @@ impl TableDelegate for QrateTableDelegate {
         self.visible_rows.len()
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+    fn column(&self, col_ix: usize, cx: &App) -> Column {
         if col_ix == row_index::COL_IX {
-            return row_index::column();
+            return row_index::column(
+                self.row_ids.len(),
+                self.hierarchy.children(None).len() != self.row_ids.len(),
+                cx.theme().font_size,
+            );
         }
         let column = self.columns[col_ix - 1].clone();
         // The library's fixed region is however many leading columns carry this, so a count is the

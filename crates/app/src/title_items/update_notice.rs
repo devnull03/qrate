@@ -8,6 +8,48 @@ use gpui_component::{
 };
 
 use crate::update_check::{AutoUpdater, UpdateStatus};
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
+
+pub(super) fn overflow_menu(menu: PopupMenu, cx: &mut Context<PopupMenu>) -> PopupMenu {
+    let Some(updater) = AutoUpdater::get(cx) else {
+        return menu;
+    };
+    if !updater.read(cx).visible() {
+        return menu;
+    }
+    let status = updater.read(cx).status().clone();
+    let menu = menu.separator();
+    let menu = match &status {
+        UpdateStatus::Downloading { version, .. } => menu.item(
+            PopupMenuItem::new(format!(
+                "Downloading qrate v{version}… {}%",
+                status.progress_percent().unwrap_or_default()
+            ))
+            .disabled(true),
+        ),
+        UpdateStatus::Ready { .. } => {
+            menu.item(PopupMenuItem::new("Restart to update").on_click(crate::restart_for_update))
+        }
+        UpdateStatus::Restarting => menu.item(PopupMenuItem::new("Restarting…").disabled(true)),
+        UpdateStatus::Error { .. } => menu.item(
+            PopupMenuItem::new("Update failed — open About")
+                .on_click(|_, _, cx| crate::about::open_about_window(cx)),
+        ),
+        _ => return menu,
+    };
+    if matches!(
+        status,
+        UpdateStatus::Ready { .. } | UpdateStatus::Error { .. }
+    ) {
+        menu.item(
+            PopupMenuItem::new("Dismiss update notice").on_click(move |_, _, cx| {
+                updater.update(cx, |updater, cx| updater.dismiss(cx));
+            }),
+        )
+    } else {
+        menu
+    }
+}
 
 pub struct UpdateNotice {
     updater: Option<Entity<AutoUpdater>>,

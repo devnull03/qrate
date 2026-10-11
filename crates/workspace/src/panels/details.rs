@@ -1,5 +1,5 @@
-use std::cell::Cell;
-use std::collections::HashSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -7,11 +7,12 @@ use std::time::Duration;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable, StyledExt as _,
+    ActiveTheme, Disableable as _, Icon, IconName, Selectable as _, Sizable, StyledExt as _,
     button::{Button, ButtonVariants},
     dock::{BasePanel, DockPlacement, Panel, PanelEvent},
     h_flex,
-    input::{Escape, InputEvent, TextareaState},
+    input::{Escape, InputEvent, Textarea, TextareaState},
+    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     resizable::{resizable_panel, v_resizable},
     scroll::ScrollableElement,
     table::TableState,
@@ -66,6 +67,14 @@ const EDITOR_MAX_WINDOW_SHARE: f32 = 0.4;
 /// can run to paragraphs, and one field must not push every other field off the panel — the full
 /// text is a click away in the editor.
 const VALUE_LINE_CLAMP: usize = 4;
+
+/// Which notes the Notes section lists.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NotesFilter {
+    All,
+    Image,
+    Fields,
+}
 
 /// Where Details starts out and what it puts in the status bar. `default_placement` is only the
 /// starting point — the user can dock it anywhere, and that choice is what gets persisted.
@@ -153,6 +162,21 @@ pub struct DetailsPanel {
     rows: Option<Vec<usize>>,
     /// Repaints the Pop out button when that window opens or closes.
     _pop_out_sub: Subscription,
+    notes_filter: NotesFilter,
+    /// Only the notes signed with the archivist's own name.
+    notes_mine: bool,
+    notes_hover: Option<diagnostics::NoteId>,
+    /// The note being reworded in its card.
+    note_edit: Option<(diagnostics::NoteId, Entity<TextareaState>)>,
+    notes_scroll: ScrollHandle,
+    history_scroll: ScrollHandle,
+    notes_header_width: Rc<Cell<Pixels>>,
+    /// Set when the viewer picks a region, so its card is scrolled into view on the next paint.
+    follow_pick: Cell<bool>,
+    /// Each file's pixel size, read once rather than on every paint.
+    headers: RefCell<HashMap<PathBuf, Option<(u32, u32)>>>,
+    /// Repaints when a note changes, and follows the region the viewer picks.
+    _notes_subs: [Subscription; 2],
 }
 
 impl DetailsPanel {
@@ -212,6 +236,22 @@ impl DetailsPanel {
             rows: None,
             _pop_out_sub: cx
                 .observe_global::<crate::pop_out::PopOutWindow>(|_this: &mut Self, cx| cx.notify()),
+            notes_filter: NotesFilter::All,
+            notes_mine: false,
+            notes_hover: None,
+            note_edit: None,
+            notes_scroll: ScrollHandle::new(),
+            history_scroll: ScrollHandle::new(),
+            notes_header_width: Rc::default(),
+            follow_pick: Cell::new(false),
+            headers: RefCell::default(),
+            _notes_subs: [
+                cx.observe_global::<diagnostics::Diagnostics>(|_this: &mut Self, cx| cx.notify()),
+                cx.observe_global::<crate::viewer::Picked>(|this: &mut Self, cx| {
+                    this.follow_pick.set(true);
+                    cx.notify();
+                }),
+            ],
         };
         this.bind(cx);
         this
@@ -402,65 +442,562 @@ impl DetailsPanel {
         cx.notify();
     }
 
-    /// The Notes sub-panel: a collapsible list of what has been written about the selection, newest
-    /// group last, headed by the item it belongs to once more than one item is picked.
+    /// The Notes sub-panel: what has been written about the selection, grouped by item. A note on
+    /// a region of the file shows a crop of it; hovering lights the region in the viewer and a
+    /// click zooms the viewer to it.
     ///
     /// Returns `AnyElement` because it is one child of a deeply chained builder — see the note on
     /// `render_image_frame`.
-    fn notes_panel(&self, picked: &[usize], cx: &mut Context<Self>) -> AnyElement {
+    fn notes_panel(
+        &self,
+        picked: &[usize],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(state) = self.state.as_ref().and_then(|w| w.upgrade()) else {
             return div().into_any_element();
         };
         let delegate = state.read(cx);
         let delegate = delegate.delegate();
-        /// One note as the panel draws it: what it says, and who filed it when.
-        type Note = (SharedString, Option<SharedString>);
-        /// The notes on one selected item, under that item's title.
-        type Group = (SharedString, Vec<Note>);
+        let me = settings::history::author(cx);
+        let can_filter_mine = me.is_some();
+        let chosen = cx.try_global::<crate::viewer::Picked>().and_then(|p| p.0);
+        let (filter, mine) = (self.notes_filter, self.notes_mine);
+        let in_pop_out = self.rows.is_some();
 
+        struct Group {
+            name: SharedString,
+            title: SharedString,
+            path: Option<PathBuf>,
+            missing: Option<(usize, SharedString)>,
+            paged: bool,
+            cards: Vec<(diagnostics::Diagnostic, Option<usize>, bool)>,
+        }
+        let mut total = 0;
         let groups: Vec<Group> = picked
             .iter()
             .filter_map(|&row| {
+                let numbers = delegate
+                    .row_id(row)
+                    .map(|id| crate::viewer::marks(id, cx))
+                    .unwrap_or_default();
+                let path = delegate.row_image(row).map(Path::to_path_buf);
+                let header = path.as_deref().and_then(|path| self.header(path));
                 let notes: Vec<_> =
                     diagnostics::Diagnostics::notes_in_row(diagnostics::DATASET_MAIN, row, cx)
-                        .map(|note| {
-                            // Which field it hangs off, when it hangs off one: without it a note
-                            // about the date and a note about the photographer read as two
-                            // remarks on the same thing.
-                            let filed = note.filed.as_ref().and_then(diagnostics::Filed::label);
-                            let meta = match (note.location.column.as_ref(), filed) {
-                                (Some(column), Some(filed)) => Some(format!("{column} · {filed}")),
-                                (Some(column), None) => Some(column.to_string()),
-                                (None, filed) => filed.map(Into::into),
-                            };
-                            (note.message.clone(), meta.map(SharedString::from))
-                        })
                         .collect();
-                if notes.is_empty() {
+                total += notes.len();
+                let cards: Vec<_> = notes
+                    .into_iter()
+                    .filter(|note| {
+                        let meta = note.note.as_ref();
+                        let on_image = meta.is_some_and(|n| n.region.is_some());
+                        let author = meta.and_then(|n| n.filed.as_ref()?.author.as_deref());
+                        let place = match filter {
+                            NotesFilter::All => true,
+                            NotesFilter::Image => on_image,
+                            NotesFilter::Fields => !on_image,
+                        };
+                        place && (!mine || (me.is_some() && author == me.as_deref()))
+                    })
+                    .map(|note| {
+                        let meta = note.note.as_ref();
+                        let number = meta
+                            .and_then(|n| numbers.iter().find(|m| m.id == n.id).map(|m| m.number));
+                        let of = meta.and_then(|n| n.region?.of);
+                        let changed = header.is_some() && of.is_some() && of != header;
+                        (note.clone(), number, changed)
+                    })
+                    .collect();
+                if cards.is_empty() {
                     return None;
                 }
-                let title = delegate
+                let regions = cards.iter().any(|(_, number, _)| number.is_some());
+                let missing = regions
+                    .then(|| table::file_links::missing_file(delegate, row, cx))
+                    .flatten()
+                    .map(|(_, name)| (row, name));
+                let mut fields = delegate
                     .row_fields(row)
                     .into_iter()
                     .map(|(_, value)| value)
-                    .find(|value| !value.is_empty())
-                    .unwrap_or_default();
-                Some((title, notes))
+                    .filter(|value| !value.is_empty());
+                let (name, title) = (
+                    fields.next().unwrap_or_default(),
+                    fields.next().unwrap_or_default(),
+                );
+                let paged = path
+                    .as_deref()
+                    .and_then(preview::known_pages)
+                    .is_some_and(|pages| pages > 1);
+                Some(Group {
+                    name,
+                    title,
+                    path,
+                    missing,
+                    paged,
+                    cards,
+                })
             })
             .collect();
-        let total: usize = groups.iter().map(|(_, notes)| notes.len()).sum();
-        let several = picked.len() > 1;
+        let shown: usize = groups.iter().map(|g| g.cards.len()).sum();
+
+        // Flat, so the picked card can be scrolled to by index.
+        let mut index = 0;
+        let mut chosen_at = None;
+        let theme = cx.theme().clone();
+        let mut entries: Vec<AnyElement> = Vec::new();
+        for group in groups {
+            entries.push(
+                h_flex()
+                    .gap_1p5()
+                    .px_1()
+                    .pt_1()
+                    .text_xs()
+                    .min_w_0()
+                    .text_color(theme.muted_foreground)
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_semibold()
+                            .text_color(theme.foreground)
+                            .child(group.name.clone()),
+                    )
+                    .child(div().min_w_0().truncate().child(group.title.clone()))
+                    .into_any_element(),
+            );
+            index += 1;
+            if let Some((row, name)) = group.missing.clone() {
+                entries.push(
+                    h_flex()
+                        .gap_2()
+                        .pl_2()
+                        .pr_1p5()
+                        .py_1()
+                        .rounded(theme.radius)
+                        .bg(theme.warning.opacity(0.12))
+                        .child(
+                            Icon::new(IconName::TriangleAlert)
+                                .xsmall()
+                                .text_color(theme.warning),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .child(format!("File not found: {name}")),
+                        )
+                        .child(
+                            Button::new(("notes-locate", row))
+                                .label("Locate file…")
+                                .xsmall()
+                                .on_click(move |_, window, cx| {
+                                    TablePanelHandle::update(cx, |table, cx| {
+                                        table.locate_file(row, window, cx)
+                                    })
+                                }),
+                        )
+                        .into_any_element(),
+                );
+                index += 1;
+            }
+            for (note, number, changed) in group.cards {
+                let meta = note.note.clone();
+                let id = meta.as_ref().map(|n| n.id);
+                let region = meta.as_ref().and_then(|n| n.region);
+                let on = id.is_some() && id == chosen;
+                if on {
+                    chosen_at = Some(index);
+                }
+                let hovered = id.is_some() && id == self.notes_hover;
+                let editing = self
+                    .note_edit
+                    .as_ref()
+                    .filter(|(editing, _)| Some(*editing) == id)
+                    .map(|(_, text)| text.clone());
+                let filed = meta.as_ref().and_then(|n| n.filed.clone());
+                let lead = match (region, number) {
+                    (Some(region), Some(number)) => [
+                        Some(format!("#{number}")),
+                        group.paged.then(|| format!("page {}", region.page + 1)),
+                        Some(
+                            meta.as_ref()
+                                .and_then(|n| n.kind)
+                                .map_or("Note", |kind| kind.label())
+                                .to_string(),
+                        ),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>(),
+                    _ => note
+                        .location
+                        .column
+                        .iter()
+                        .map(|column| column.to_string())
+                        .collect(),
+                };
+                let lead = lead
+                    .into_iter()
+                    .chain(
+                        filed
+                            .as_ref()
+                            .and_then(|f| f.date.as_ref())
+                            .map(|d| d.to_string()),
+                    )
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let author: SharedString = filed
+                    .as_ref()
+                    .and_then(|f| f.author.clone())
+                    .unwrap_or_else(|| "Unsigned".into());
+                let edited = meta.as_ref().and_then(|n| n.edited.clone()).map(|e| {
+                    let by = e
+                        .author
+                        .clone()
+                        .unwrap_or_else(|| "someone unsigned".into());
+                    match e.date {
+                        Some(date) => format!("Edited {date} by {by}"),
+                        None => format!("Edited by {by}"),
+                    }
+                });
+                let thumb = region.map(|region| {
+                    let pin = region.w == 0 && region.h == 0;
+                    let scale = f32::from(diagnostics::Region::SCALE);
+                    let (x, y) = (f32::from(region.x) / scale, f32::from(region.y) / scale);
+                    let (w, h) = (f32::from(region.w) / scale, f32::from(region.h) / scale);
+                    let (border, muted, tile) = (theme.border, theme.muted_foreground, theme.muted);
+                    let map = move || {
+                        div()
+                            .size(px(48.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_dashed()
+                            .border_color(border)
+                            .bg(tile)
+                            .child(
+                                div()
+                                    .relative()
+                                    .w(px(34.))
+                                    .h(px(26.))
+                                    .border_1()
+                                    .border_color(muted.opacity(0.6))
+                                    .child(match pin {
+                                        true => div()
+                                            .absolute()
+                                            .left(relative(x))
+                                            .top(relative(y))
+                                            .ml(px(-2.))
+                                            .mt(px(-2.))
+                                            .size(px(4.))
+                                            .rounded_full()
+                                            .bg(muted),
+                                        false => div()
+                                            .absolute()
+                                            .left(relative(x))
+                                            .top(relative(y))
+                                            .w(relative(w))
+                                            .h(relative(h))
+                                            .border_1()
+                                            .border_color(muted)
+                                            .bg(muted.opacity(0.25)),
+                                    }),
+                            )
+                            .into_any_element()
+                    };
+                    match group.path.as_deref().filter(|_| group.missing.is_none()) {
+                        Some(path) => div()
+                            .relative()
+                            .size(px(48.))
+                            .flex_none()
+                            .rounded(px(4.))
+                            .overflow_hidden()
+                            .child(
+                                img(preview::crop(
+                                    path,
+                                    region.page as usize,
+                                    [region.x, region.y, region.w, region.h],
+                                ))
+                                .size_full()
+                                .object_fit(ObjectFit::Cover)
+                                .with_fallback(map),
+                            )
+                            .when(pin, |thumb| {
+                                thumb.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(19.))
+                                        .top(px(19.))
+                                        .size(px(10.))
+                                        .rounded_full()
+                                        .bg(rgb(0x161616))
+                                        .border(px(1.5))
+                                        .border_color(white()),
+                                )
+                            })
+                            .into_any_element(),
+                        None => div().flex_none().child(map()).into_any_element(),
+                    }
+                });
+                entries.push(
+                    h_flex()
+                        .id(ElementId::NamedInteger(
+                            "note-card".into(),
+                            id.unwrap_or_default() as u64,
+                        ))
+                        .relative()
+                        .items_start()
+                        .gap_2()
+                        .p_2()
+                        .rounded(px(6.))
+                        .border_1()
+                        .map(|card| match (on, hovered) {
+                            (true, _) => card.border_color(theme.primary).bg(theme.table_active),
+                            (false, true) => card
+                                .border_color(theme.border)
+                                .bg(theme.muted.opacity(0.55)),
+                            (false, false) => card.border_color(theme.border).bg(theme.background),
+                        })
+                        .when(region.is_some(), |card| card.cursor_pointer())
+                        .on_hover(cx.listener(move |this, hover: &bool, _, cx| {
+                            let now = match hover {
+                                true => id,
+                                false => this.notes_hover.filter(|was| Some(*was) != id),
+                            };
+                            if now != this.notes_hover {
+                                this.notes_hover = now;
+                                let lit = now.filter(|_| region.is_some());
+                                cx.set_global(crate::viewer::Lit(lit));
+                                cx.notify();
+                            }
+                        }))
+                        .when_some(id.filter(|_| region.is_some()), |card, id| {
+                            card.on_click(move |_, window, cx| {
+                                cx.set_global(crate::viewer::Picked(Some(id)));
+                                crate::viewer::reveal(id, in_pop_out, window, cx);
+                            })
+                        })
+                        .children(thumb)
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap(px(3.))
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .map(|body| match editing {
+                                    Some(text) => body.child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(Textarea::new(&text).h(px(54.)))
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(match cfg!(target_os = "macos") {
+                                                        true => "⌘Enter to save, Esc to cancel",
+                                                        false => {
+                                                            "Ctrl+Enter to save, Esc to cancel"
+                                                        }
+                                                    }),
+                                            ),
+                                    ),
+                                    None => {
+                                        body.child(div().line_clamp(3).child(note.message.clone()))
+                                    }
+                                })
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .min_w_0()
+                                        .whitespace_normal()
+                                        .text_xs()
+                                        .line_height(px(16.))
+                                        .text_color(theme.muted_foreground)
+                                        .child(format!("{lead} · {author}"))
+                                        .children(edited.map(|tip| {
+                                            div()
+                                                .id(ElementId::NamedInteger(
+                                                    "note-edited".into(),
+                                                    id.unwrap_or_default() as u64,
+                                                ))
+                                                .ml_1()
+                                                .underline()
+                                                .child("edited")
+                                                .tooltip(move |window, cx| {
+                                                    gpui_component::tooltip::Tooltip::new(
+                                                        tip.clone(),
+                                                    )
+                                                    .build(window, cx)
+                                                })
+                                        })),
+                                )
+                                .when(changed, |body| {
+                                    body.child(
+                                        h_flex().child(
+                                            h_flex()
+                                                .gap_1()
+                                                .h(px(20.))
+                                                .px_1p5()
+                                                .mt_0p5()
+                                                .rounded(px(4.))
+                                                .bg(theme.warning.opacity(0.12))
+                                                .text_xs()
+                                                .child(
+                                                    Icon::new(IconName::TriangleAlert)
+                                                        .xsmall()
+                                                        .text_color(theme.warning),
+                                                )
+                                                .child("Image changed since annotated"),
+                                        ),
+                                    )
+                                }),
+                        )
+                        .when_some(
+                            id.filter(|_| hovered && self.note_edit.is_none()),
+                            |card, id| {
+                                let kind = meta.as_ref().and_then(|n| n.kind);
+                                let message = note.message.clone();
+                                card.child(
+                                    h_flex()
+                                        .absolute()
+                                        .top(px(5.))
+                                        .right(px(5.))
+                                        .gap(px(1.))
+                                        .p(px(1.))
+                                        .rounded(px(4.))
+                                        .bg(theme.popover)
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .shadow_md()
+                                        .child(
+                                            Button::new(ElementId::NamedInteger(
+                                                "note-edit".into(),
+                                                id as u64,
+                                            ))
+                                            .icon(Icon::empty().path("icons/pencil.svg"))
+                                            .ghost()
+                                            .xsmall()
+                                            .tooltip("Edit")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.edit_note(id, &message, window, cx);
+                                            })),
+                                        )
+                                        .child(
+                                            Button::new(ElementId::NamedInteger(
+                                                "note-history".into(),
+                                                id as u64,
+                                            ))
+                                            .icon(Icon::empty().path("icons/history.svg"))
+                                            .ghost()
+                                            .xsmall()
+                                            .tooltip("Show history")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.history_open = true;
+                                                cx.notify();
+                                            })),
+                                        )
+                                        .child(
+                                            Button::new(ElementId::NamedInteger(
+                                                "note-delete".into(),
+                                                id as u64,
+                                            ))
+                                            .icon(IconName::Delete)
+                                            .ghost()
+                                            .xsmall()
+                                            .tooltip("Delete")
+                                            .on_click(move |_, _, cx| {
+                                                diagnostics::Diagnostics::edit_note(
+                                                    id,
+                                                    SharedString::default(),
+                                                    kind,
+                                                    Origin::Details,
+                                                    cx,
+                                                );
+                                            }),
+                                        ),
+                                )
+                            },
+                        )
+                        .into_any_element(),
+                );
+                index += 1;
+            }
+        }
+        if self.follow_pick.take()
+            && let Some(at) = chosen_at
+        {
+            self.notes_scroll.scroll_to_item(at);
+        }
 
         let open = self.notes_open;
+        let count_label = match (total, shown) {
+            (0, _) => "none".to_string(),
+            (total, shown) if shown == total => total.to_string(),
+            (total, shown) => format!("{shown} of {total}"),
+        };
+        let text_width = |text: &str, bold: bool| {
+            let mut run = window.text_style().to_run(text.len());
+            if bold {
+                run.font.weight = FontWeight::SEMIBOLD;
+            }
+            window
+                .text_system()
+                .shape_line(
+                    text.to_string().into(),
+                    window.rem_size() * 0.75,
+                    &[run],
+                    None,
+                )
+                .width
+        };
+        let filters_min_width = text_width("Notes", true)
+            + text_width(&count_label, false)
+            + ["All", "On image", "On fields", "Mine"]
+                .into_iter()
+                .map(|label| text_width(label, false))
+                .sum::<Pixels>()
+            // Header padding, toggle, gaps, segment padding, and Mine's padding/border.
+            + window.rem_size() * (1. + 1.25 + 5. * 0.375 + 3. * 0.75 + 0.5)
+            + px(6.);
+        let compact = self.notes_header_width.get() < filters_min_width;
+        let segment = |label: &'static str, value: NotesFilter| {
+            div()
+                .id(label)
+                .px_1p5()
+                .py(px(2.))
+                .rounded(px(3.))
+                .whitespace_nowrap()
+                .cursor_pointer()
+                .map(|segment| match filter == value {
+                    true => segment.bg(theme.background).text_color(theme.foreground),
+                    false => segment.text_color(theme.muted_foreground),
+                })
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.notes_filter = value;
+                    cx.notify();
+                }))
+        };
         v_flex()
             .debug_selector(|| "details-notes-panel".into())
             .size_full()
             .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
             .border_t_1()
-            .border_color(cx.theme().border)
+            .border_color(theme.border)
             .child(
                 h_flex()
+                    .relative()
                     .flex_none()
+                    .w_full()
+                    .min_w_0()
                     .h(px(NOTES_HEADER_H))
                     .items_center()
                     .gap_1p5()
@@ -468,7 +1005,28 @@ impl DetailsPanel {
                     .py_1()
                     // Opaque: the notes scroll under this, and a transparent strip let them read
                     // through the heading.
-                    .bg(cx.theme().background)
+                    .bg(theme.background)
+                    .child({
+                        let width = self.notes_header_width.clone();
+                        let panel = cx.entity().downgrade();
+                        canvas(
+                            move |bounds, window, _| {
+                                let was_compact = width.get() < filters_min_width;
+                                width.set(bounds.size.width);
+                                if was_compact != (bounds.size.width < filters_min_width) {
+                                    let panel = panel.clone();
+                                    window.on_next_frame(move |_, cx| {
+                                        panel.update(cx, |_, cx| cx.notify()).ok();
+                                    });
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                    })
                     .child(
                         Button::new("details-notes-toggle")
                             .icon(match open {
@@ -496,67 +1054,197 @@ impl DetailsPanel {
                                 cx.notify();
                             })),
                     )
-                    .child(div().text_xs().font_semibold().child("Notes"))
+                    .child(div().flex_none().text_xs().font_semibold().child("Notes"))
                     .child(
                         div()
+                            .flex_none()
                             .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(match total {
-                                0 => "none".to_string(),
-                                n => n.to_string(),
-                            }),
-                    ),
+                            .whitespace_nowrap()
+                            .text_color(theme.muted_foreground)
+                            .child(count_label),
+                    )
+                    .child(div().flex_1().min_w_0())
+                    .when(open && total > 0 && compact, |header| {
+                        let panel = cx.entity().downgrade();
+                        let label = match filter {
+                            NotesFilter::All => "All notes",
+                            NotesFilter::Image => "On image",
+                            NotesFilter::Fields => "On fields",
+                        };
+                        let tip = if mine {
+                            format!("{label} · Only mine")
+                        } else {
+                            label.to_string()
+                        };
+                        header.child(
+                            Button::new("notes-filters")
+                                .icon(IconName::Menu)
+                                .ghost()
+                                .xsmall()
+                                .selected(filter != NotesFilter::All || mine)
+                                .tooltip(format!("Filter notes: {tip}"))
+                                .dropdown_menu_with_anchor(
+                                    Anchor::TopRight,
+                                    move |menu: PopupMenu, _, _| {
+                                        let menu = [
+                                            ("All notes", NotesFilter::All),
+                                            ("On image", NotesFilter::Image),
+                                            ("On fields", NotesFilter::Fields),
+                                        ]
+                                        .into_iter()
+                                        .fold(
+                                            menu,
+                                            |menu, (label, value)| {
+                                                let panel = panel.clone();
+                                                menu.item(
+                                                    PopupMenuItem::new(label)
+                                                        .checked(filter == value)
+                                                        .on_click(move |_, _, cx| {
+                                                            panel
+                                                                .update(cx, |this, cx| {
+                                                                    this.notes_filter = value;
+                                                                    cx.notify();
+                                                                })
+                                                                .ok();
+                                                        }),
+                                                )
+                                            },
+                                        );
+                                        let panel = panel.clone();
+                                        menu.separator().item(
+                                            PopupMenuItem::new("Only mine")
+                                                .checked(mine)
+                                                .disabled(!can_filter_mine)
+                                                .on_click(move |_, _, cx| {
+                                                    panel
+                                                        .update(cx, |this, cx| {
+                                                            this.notes_mine = !this.notes_mine;
+                                                            cx.notify();
+                                                        })
+                                                        .ok();
+                                                }),
+                                        )
+                                    },
+                                ),
+                        )
+                    })
+                    .when(open && total > 0 && !compact, |header| {
+                        header
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .p(px(2.))
+                                    .rounded(px(5.))
+                                    .bg(theme.muted)
+                                    .text_xs()
+                                    .child(segment("All", NotesFilter::All))
+                                    .child(segment("On image", NotesFilter::Image))
+                                    .child(segment("On fields", NotesFilter::Fields)),
+                            )
+                            .child(
+                                Button::new("notes-mine")
+                                    .label("Mine")
+                                    .xsmall()
+                                    .outline()
+                                    .selected(mine)
+                                    .disabled(!can_filter_mine)
+                                    .tooltip(match !can_filter_mine {
+                                        true => "Set your name in Settings to filter your notes",
+                                        false => "Only notes you signed",
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.notes_mine = !this.notes_mine;
+                                        cx.notify();
+                                    })),
+                            )
+                    }),
             )
             .when(open, |section| {
                 section.child(
-                    div()
+                    v_flex()
+                        .id("details-notes-list")
+                        .relative()
                         .flex_1()
                         .min_h_0()
-                        .overflow_y_scrollbar()
-                        .px_3()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.notes_scroll)
+                        .vertical_scrollbar(&self.notes_scroll)
+                        .px_2()
                         .pb_2()
-                        .child(
-                            v_flex()
-                                .gap_2()
-                                .children(groups.into_iter().map(|(title, notes)| {
-                                    v_flex()
-                                        .gap_1()
-                                        // Only worth saying whose note this is when the selection
-                                        // holds more than one item to confuse it with.
-                                        .when(several, |group| {
-                                            group.child(
-                                                div().text_xs().truncate().child(title.clone()),
-                                            )
-                                        })
-                                        .children(notes.into_iter().map(|(text, meta)| {
-                                            v_flex()
-                                                .gap_0p5()
-                                                .p_1p5()
-                                                .rounded(cx.theme().radius)
-                                                .border_1()
-                                                .border_color(cx.theme().border)
-                                                .bg(cx.theme().muted.opacity(0.4))
-                                                .child(div().text_xs().child(text))
-                                                .children(meta.map(|meta| {
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(cx.theme().muted_foreground)
-                                                        .child(meta)
-                                                }))
-                                        }))
-                                }))
-                                .when(total == 0, |list| {
-                                    list.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child("No notes on this selection."),
-                                    )
-                                }),
-                        ),
+                        .gap_1p5()
+                        .on_action(cx.listener(|this, _: &Escape, window, cx| {
+                            if this.note_edit.take().is_some() {
+                                window.focus(&this.focus_handle, cx);
+                                cx.notify();
+                            } else {
+                                cx.propagate();
+                            }
+                        }))
+                        .children(entries)
+                        .when(shown == 0, |list| {
+                            list.child(div().text_xs().text_color(theme.muted_foreground).child(
+                                match total {
+                                    0 => "No notes on this selection.",
+                                    _ => "No notes match these filters.",
+                                },
+                            ))
+                        }),
                 )
             })
             .into_any_element()
+    }
+
+    /// Open note `id`'s words for rewording in its card; Ctrl+Enter saves, Escape drops it.
+    fn edit_note(
+        &mut self,
+        id: diagnostics::NoteId,
+        message: &SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = cx.new(|cx| TextareaState::new(window, cx));
+        text.update(cx, |text, cx| {
+            text.set_value(message.clone(), window, cx);
+            text.focus(window, cx);
+        });
+        cx.subscribe_in(
+            &text,
+            window,
+            move |this, text, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter {
+                    secondary: true, ..
+                } = event
+                {
+                    let message = text.read(cx).value();
+                    let kind = diagnostics::Diagnostics::note(id, cx)
+                        .and_then(|note| note.note.as_ref()?.kind);
+                    this.note_edit = None;
+                    if !message.trim().is_empty() {
+                        diagnostics::Diagnostics::edit_note(
+                            id,
+                            message.trim().to_string().into(),
+                            kind,
+                            Origin::Details,
+                            cx,
+                        );
+                    }
+                    window.focus(&this.focus_handle, cx);
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+        self.note_edit = Some((id, text));
+        cx.notify();
+    }
+
+    /// The pixel size of `path` as it is on disk now, read once per file.
+    fn header(&self, path: &Path) -> Option<(u32, u32)> {
+        *self
+            .headers
+            .borrow_mut()
+            .entry(path.to_path_buf())
+            .or_insert_with(|| preview::dimensions(path))
     }
 
     /// The History sub-panel: what has happened to the front item, newest first — each field's old
@@ -573,6 +1261,13 @@ impl DetailsPanel {
         let unsaved: &[settings::history::Entry] = state
             .as_ref()
             .map_or(&[], |state| state.read(cx).delegate().unsaved_history());
+        let numbers = crate::viewer::marks(row_id, cx);
+        let file = state.as_ref().and_then(|state| {
+            let delegate = state.read(cx).delegate();
+            delegate
+                .row_image(delegate.row_of(row_id)?)
+                .map(Path::to_path_buf)
+        });
         let theme = cx.theme();
         let (muted, border, background, radius) = (
             theme.muted_foreground,
@@ -581,12 +1276,14 @@ impl DetailsPanel {
             theme.radius,
         );
 
-        // One line per change to this item: `(entry id if saved, what, meta, value to restore)`.
+        // One line per change to this item: `(entry id if saved, what, meta, value to restore,
+        // the crops of a region it is about)`.
         type Line = (
             Option<EntryId>,
             String,
             String,
-            Option<(String, SharedString)>,
+            Option<Change>,
+            Option<AnyElement>,
         );
         let quote = |text: &str| match text.is_empty() {
             true => "(empty)".to_string(),
@@ -612,24 +1309,35 @@ impl DetailsPanel {
                             after,
                         } if *row == row_id => (
                             format!("{column}: {} → {}", quote(before), quote(after)),
-                            Some((column.clone(), SharedString::from(before.clone()))),
+                            Some(change.clone()),
                         ),
                         Change::Note {
                             row: Some(row),
                             column,
                             before,
                             after,
-                        } if *row == row_id => {
-                            let verb = match (before, after) {
-                                (None, _) => "added",
-                                (_, None) => "removed",
-                                _ => "edited",
-                            };
-                            let on = column
-                                .as_deref()
-                                .map_or(String::new(), |c| format!(" on {c}"));
-                            (format!("Note{on} {verb}"), None)
-                        }
+                            id: note,
+                            ..
+                        } if *row == row_id => match super::history::annotation(change) {
+                            Some(what) => {
+                                let number = numbers
+                                    .iter()
+                                    .find(|m| Some(m.id) == *note)
+                                    .map_or(String::new(), |m| format!(" #{}", m.number));
+                                (format!("{what}{number}"), Some(change.clone()))
+                            }
+                            None => {
+                                let verb = match (before, after) {
+                                    (None, _) => "added",
+                                    (_, None) => "removed",
+                                    _ => "edited",
+                                };
+                                let on = column
+                                    .as_deref()
+                                    .map_or(String::new(), |c| format!(" on {c}"));
+                                (format!("Note{on} {verb}"), None)
+                            }
+                        },
                         Change::RowAdded { row, .. } if *row == row_id => {
                             ("Item added".into(), None)
                         }
@@ -639,7 +1347,40 @@ impl DetailsPanel {
                         _ => return None,
                     };
                     let restore = restore.filter(|_| id.is_some() && !dimmed);
-                    Some((id, what, meta.clone(), restore))
+                    let body =
+                        super::history::note_crops(change, file.as_deref(), cx).map(|crops| {
+                            let Change::Note { before, after, .. } = change else {
+                                return crops;
+                            };
+                            v_flex()
+                                .w_full()
+                                .min_w_0()
+                                .gap_1()
+                                .child(crops)
+                                .child(v_flex().w_full().min_w_0().gap_0p5().text_xs().map(
+                                    |text| {
+                                        match (before, after) {
+                                            (Some(before), Some(after)) if before == after => text
+                                                .child(
+                                                    div()
+                                                        .line_clamp(2)
+                                                        .text_color(muted)
+                                                        .child(after.clone()),
+                                                ),
+                                            _ => text
+                                                .children(before.clone().map(|before| {
+                                                    div()
+                                                        .line_through()
+                                                        .text_color(muted)
+                                                        .child(before)
+                                                }))
+                                                .children(after.clone()),
+                                        }
+                                    },
+                                ))
+                                .into_any_element()
+                        });
+                    Some((id, what, meta.clone(), restore, body))
                 })
                 .collect::<Vec<Line>>()
         };
@@ -692,6 +1433,8 @@ impl DetailsPanel {
             .debug_selector(|| "details-history-panel".into())
             .size_full()
             .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
             .border_t_1()
             .border_color(border)
             .child(
@@ -740,59 +1483,92 @@ impl DetailsPanel {
             .when(open, |section| {
                 section.child(
                     div()
+                        .id("details-history-list")
+                        .relative()
                         .flex_1()
                         .min_h_0()
-                        .overflow_y_scrollbar()
+                        .min_w_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.history_scroll)
+                        .vertical_scrollbar(&self.history_scroll)
                         .px_3()
                         .pb_2()
                         .child(
                             v_flex()
                                 .gap_1()
                                 .children(lines.into_iter().enumerate().map(
-                                    |(ix, (id, what, meta, restore))| {
-                                        h_flex()
+                                    |(ix, (id, what, meta, restore, crops))| {
+                                        v_flex()
+                                            .w_full()
+                                            .min_w_0()
+                                            .flex_none()
                                             .gap_1()
-                                            .items_start()
                                             .p_1p5()
                                             .rounded(radius)
                                             .border_1()
                                             .border_color(border)
                                             .child(
-                                                v_flex()
-                                                    .flex_1()
+                                                h_flex()
                                                     .min_w_0()
-                                                    .gap_0p5()
-                                                    .child(div().text_xs().child(what))
+                                                    .items_start()
+                                                    .gap_1()
                                                     .child(
                                                         div()
+                                                            .flex_1()
+                                                            .min_w_0()
                                                             .text_xs()
-                                                            .text_color(muted)
-                                                            .child(meta),
+                                                            .child(what),
+                                                    )
+                                                    .when_some(
+                                                        id.zip(restore),
+                                                        |line, (id, change)| {
+                                                            line.child(
+                                                                Button::new((
+                                                                    "details-history-restore",
+                                                                    ix,
+                                                                ))
+                                                                .flex_none()
+                                                                .icon(IconName::Undo2)
+                                                                .ghost()
+                                                                .xsmall()
+                                                                .tooltip(match change {
+                                                                    Change::Note { .. } => {
+                                                                        "Restore this annotation"
+                                                                    }
+                                                                    _ => "Restore this value",
+                                                                })
+                                                                .on_click(move |_, _, cx| {
+                                                                    match &change {
+                                                                        Change::Cell {
+                                                                            column,
+                                                                            before,
+                                                                            ..
+                                                                        } => table::restore_value(
+                                                                            row_id,
+                                                                            column,
+                                                                            before.clone().into(),
+                                                                            id,
+                                                                            cx,
+                                                                        ),
+                                                                        note => {
+                                                                            table::restore_note(
+                                                                                note, id, cx,
+                                                                            )
+                                                                        }
+                                                                    }
+                                                                }),
+                                                            )
+                                                        },
                                                     ),
                                             )
-                                            .when_some(
-                                                id.zip(restore),
-                                                |line, (id, (column, before))| {
-                                                    line.child(
-                                                        Button::new((
-                                                            "details-history-restore",
-                                                            ix,
-                                                        ))
-                                                        .icon(IconName::Undo2)
-                                                        .ghost()
-                                                        .xsmall()
-                                                        .tooltip("Restore this value")
-                                                        .on_click(move |_, _, cx| {
-                                                            table::restore_value(
-                                                                row_id,
-                                                                &column,
-                                                                before.clone(),
-                                                                id,
-                                                                cx,
-                                                            )
-                                                        }),
-                                                    )
-                                                },
+                                            .children(crops)
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .min_w_0()
+                                                    .text_xs()
+                                                    .text_color(muted)
+                                                    .child(meta),
                                             )
                                     },
                                 ))
@@ -988,6 +1764,7 @@ impl Panel for DetailsPanel {
 /// stack during type-checking instead of just hitting a slow compile.
 fn render_image_frame(
     image_path: Option<PathBuf>,
+    row: Option<settings::project::RowId>,
     caption: Option<String>,
     transport: Option<AnyElement>,
     cx: &App,
@@ -1049,6 +1826,7 @@ fn render_image_frame(
                                     .on_click(move |_, window, cx| {
                                         crate::open_viewer(
                                             path.clone(),
+                                            row,
                                             crate::ViewerScope::Workspace,
                                             window,
                                             cx,
@@ -1229,8 +2007,10 @@ impl Render for DetailsPanel {
         let picked = self.picked(cx);
         let front = stack_front(&picked, self.stack);
         let count = picked.len();
+        let mut front_id = None;
         let selection = self.state.as_ref().and_then(|w| w.upgrade()).map(|s| {
             let delegate = s.read(cx).delegate();
+            front_id = front.and_then(|row| delegate.row_id(row));
             let image = front.and_then(|row| delegate.row_image(row).map(Path::to_path_buf));
             let lost = front.filter(|_| count == 1).and_then(|row| {
                 table::file_links::missing_file(delegate, row, cx).map(|(_, name)| (row, name))
@@ -1317,7 +2097,7 @@ impl Render for DetailsPanel {
 
         // Built before the field rows below, which borrow `cx` for as long as they stay a lazy
         // iterator — this needs `&mut cx` and cannot wait for them.
-        let notes = (count > 0).then(|| self.notes_panel(&picked, cx));
+        let notes = (count > 0).then(|| self.notes_panel(&picked, window, cx));
         let history = (count == 1).then(|| self.history_panel(cx));
         let notes_floor = section_footprint(notes.is_some(), self.notes_open);
         let history_floor = section_footprint(history.is_some(), self.history_open);
@@ -1681,6 +2461,7 @@ impl Render for DetailsPanel {
                                 .map(|pane| match count > 1 {
                                     false => pane.child(render_image_frame(
                                         image_path,
+                                        front_id,
                                         self.caption.clone(),
                                         transport,
                                         cx,
@@ -1727,6 +2508,7 @@ impl Render for DetailsPanel {
                                                     .bottom(px(10.))
                                                     .child(render_image_frame(
                                                         image_path,
+                                                        front_id,
                                                         self.caption.clone(),
                                                         transport,
                                                         cx,
@@ -1828,7 +2610,7 @@ mod tests {
     impl Render for ImageFrameProbe {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let caption = self.0.as_deref().and_then(preview::describe);
-            render_image_frame(self.0.clone(), caption, None, cx)
+            render_image_frame(self.0.clone(), None, caption, None, cx)
         }
     }
 

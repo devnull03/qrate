@@ -1,12 +1,14 @@
 pub mod launcher_bar;
 mod update_notice;
 
+use std::rc::Rc;
+
 use gpui::*;
 use gpui_component::{
     ActiveTheme,
     dock::{DockArea, DockPlacement},
     h_flex,
-    menu::AppMenuBar,
+    menu::{AppMenuBar, PopupMenu, PopupMenuItem},
 };
 use plugin_api::{Bar, Side};
 
@@ -39,6 +41,56 @@ impl Render for FeedbackButton {
 /// are registered on the left by default. Right: generic open/close buttons for each dock.
 pub fn build_title_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> TitleBarRegistry {
     let mut registry = TitleBarRegistry::default();
+    let menu_dock = dock.clone();
+    registry.overflow_menu = Some(Rc::new(move |menu, window, cx, focus| {
+        let menus = gpui_component::GlobalState::global(cx).app_menus().to_vec();
+        let menu = menus.into_iter().fold(menu, |menu, app_menu| {
+            let focus = focus.clone();
+            let submenu = PopupMenu::build(window, cx, move |menu, window, cx| {
+                append_menu_items(menu, app_menu.items, window, cx, focus)
+            });
+            menu.item(PopupMenuItem::submenu(app_menu.name, submenu).disabled(app_menu.disabled))
+        });
+        let menu = PluginBar::overflow_menu(Bar::Title, menu, window, cx);
+        let dock = menu_dock.clone();
+        let dock_focus = focus.clone();
+        let menu = menu
+            .separator()
+            .item(PopupMenuItem::new("Feedback").on_click(|_, _, cx| {
+                cx.open_url(&crate::logging::feedback_url(cx, None));
+            }))
+            .submenu("Panels", window, cx, move |menu, _, cx| {
+                let menu = match &dock_focus {
+                    Some(focus) => menu.action_context(focus.clone()),
+                    None => menu,
+                };
+                [
+                    (
+                        "Left dock",
+                        DockPlacement::Left,
+                        Box::new(ToggleLeftDock) as Box<dyn Action>,
+                    ),
+                    (
+                        "Bottom dock",
+                        DockPlacement::Bottom,
+                        Box::new(ToggleBottomDock),
+                    ),
+                    (
+                        "Right dock",
+                        DockPlacement::Right,
+                        Box::new(ToggleRightDock),
+                    ),
+                ]
+                .into_iter()
+                .fold(menu, |menu, (label, placement, action)| {
+                    let open = dock
+                        .upgrade()
+                        .is_some_and(|dock| dock.read(cx).is_dock_open(placement));
+                    menu.menu_with_check(label, open, action)
+                })
+            });
+        update_notice::overflow_menu(menu, cx)
+    }));
 
     // The library's menu bar, not a row of independent dropdowns: it holds the "a menu is open"
     // state that makes hovering a sibling switch to it, and arrow keys walk between them.
@@ -88,4 +140,38 @@ pub fn build_title_bar_registry(cx: &mut App, dock: WeakEntity<DockArea>) -> Tit
     }
 
     registry
+}
+
+/// Convert the same owned menus AppMenuBar reads, preserving action, check, and disabled state.
+fn append_menu_items(
+    mut menu: PopupMenu,
+    items: Vec<OwnedMenuItem>,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+    focus: Option<FocusHandle>,
+) -> PopupMenu {
+    if let Some(focus) = &focus {
+        menu = menu.action_context(focus.clone());
+    }
+    for item in items {
+        menu = match item {
+            OwnedMenuItem::Action {
+                name,
+                action,
+                checked,
+                disabled,
+                ..
+            } => menu.menu_with_check_and_disabled(name, checked, action.boxed_clone(), disabled),
+            OwnedMenuItem::Separator => menu.separator(),
+            OwnedMenuItem::Submenu(submenu) => {
+                let focus = focus.clone();
+                let child = PopupMenu::build(window, cx, move |menu, window, cx| {
+                    append_menu_items(menu, submenu.items, window, cx, focus)
+                });
+                menu.item(PopupMenuItem::submenu(submenu.name, child).disabled(submenu.disabled))
+            }
+            OwnedMenuItem::SystemMenu(_) => menu,
+        };
+    }
+    menu.scrollable(true)
 }

@@ -2391,7 +2391,7 @@ mod tests {
                     source: Source::Note,
                     message: "original".into(),
                     group: None,
-                    filed: None,
+                    note: None,
                 }],
                 cx,
             );

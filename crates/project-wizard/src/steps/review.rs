@@ -357,7 +357,11 @@ impl ProjectWizard {
                     let notes: Vec<_> = preview
                         .notes
                         .iter()
-                        .map(|n| project::StoredNote {
+                        .enumerate()
+                        .map(|(i, n)| project::StoredNote {
+                            id: i as project::NoteId + 1,
+                            region: None,
+                            kind: None,
                             dataset: diagnostics::DATASET_MAIN.into(),
                             row: Some(n.row),
                             // Creation inserts rows in source order, starting at SQLite id 1.

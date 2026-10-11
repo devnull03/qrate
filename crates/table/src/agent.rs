@@ -836,7 +836,7 @@ fn stage_findings(
             message: finding.message.into(),
             group: None,
             // A computed finding carries no filing stamp — it is recomputed, not observed once.
-            filed: None,
+            note: None,
         });
 
         if let Some(replacement) = finding.replacement {

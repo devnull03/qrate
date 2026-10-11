@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<style>
+body{margin:0;background:#eceae6;font-family:system-ui,sans-serif}
+a{color:#1a73e8}a:hover{color:#1967d2}
+.dv-turn{padding:40px 44px 32px;border-bottom:1px solid rgba(0,0,0,.08);scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 6px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 15px/1.2 system-ui,sans-serif;color:#1a1a1a}
+.dv-tdesc{font:13px/1.5 system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:900px;margin:0 0 20px;text-wrap:pretty}
+.dv-opts{display:flex;flex-wrap:wrap;gap:36px;align-items:flex-start}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 12px/1.4 system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:880px;text-wrap:pretty}
+.dv-pair{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
+.dv-th{font:500 10.5px ui-monospace,Menlo,monospace;color:rgba(0,0,0,.45);margin:0 0 6px}
+.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}
+.dv-new{font:600 10px ui-monospace,Menlo,monospace;padding:1px 5px;border-radius:3px;background:#d7e6fb;color:#174ea6}
+.dv-chk{font:600 10px ui-monospace,Menlo,monospace;padding:1px 5px;border-radius:3px;background:#fde7c2;color:#7a4b00}
+.dv-list{font:13px/1.55 system-ui,sans-serif;color:rgba(0,0,0,.65);max-width:900px;margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.qf{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;font-size:14px;line-height:20px;color:var(--fg);background:var(--bg);box-shadow:0 1px 3px rgba(0,0,0,.08),0 12px 32px rgba(0,0,0,.10)}
+.ql{--bg:#ffffff;--fg:#202124;--bd:#dadce0;--mu:#5f6368;--mubg:#f1f3f4;--pri:#1a73e8;--prifg:#fff;--pop:#ffffff;--tb:#f9fbfd;--act:#e8f0fe;--warn:#f9ab00;--link:#1a73e8;--dst:#d93025;--sh:0 6px 20px rgba(32,33,36,.18);--shl:0 10px 32px rgba(32,33,36,.28)}
+.qd{--bg:#2f2f2f;--fg:#bbbbbb;--bd:#212121;--mu:#8a8a8a;--mubg:#404040;--pri:#3c78d8;--prifg:#fff;--pop:#292929;--tb:#292929;--act:#3c78d833;--warn:#f1c232;--link:#6d9eeb;--dst:#e06666;--sh:0 8px 24px rgba(0,0,0,.5);--shl:0 12px 36px rgba(0,0,0,.6)}
+.sd{--stage:linear-gradient(rgba(0,0,0,.85),rgba(0,0,0,.85)),var(--bg);--sfg:#e8e8e8;--smu:#a3a3a3}
+.ph{background:repeating-linear-gradient(135deg,#dedede 0 8px,#d2d2d2 8px 9px);box-shadow:0 2px 14px rgba(0,0,0,.35)}
+.pinon{background:color-mix(in srgb,var(--pri) 14%,transparent);color:var(--pri)}
+.dis{opacity:.4}
+.kon{background:color-mix(in srgb,var(--pri) 14%,transparent);color:var(--pri);border-color:color-mix(in srgb,var(--pri) 50%,transparent)!important}
+.koff{color:var(--mu)}
+.sgon{background:var(--bg);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.sgoff{color:var(--mu)}
+</style>
+</helmet>
+
+<section class="dv-turn" id="intro" style="background:#f6f5f2">
+<div class="dv-thd"><span class="dv-tname" style="font-size:20px">qrate — Image annotations</span></div>
+<p class="dv-tdesc">A region note is an ordinary note with a page and a box stored in image coordinates (0–1 on the upright image). It uses the note card, the note editor and History, so it follows zoom, pan, rotation and page turns without extra state. <span class="dv-new">NEW</span> marks new UI, <span class="dv-chk">TO CHECK</span> marks copy or behaviour I guessed. Tweaks switch the panel themes and the viewer's pill theme; the stage stays black 85% either way.</p>
+<ul class="dv-list">
+<li><b>Keys:</b> bare keys only while the viewer holds focus, like R and W today. A annotate, N show or hide regions, [ and ] step through this page's regions, Delete removes the selected one (Select tool), Esc cancels a drawing or the composer. A, N, [ and ] are unused by the viewer now.</li>
+<li><b>Region style:</b> 1.5px dark outer and 1.5px light inner stroke, a 16px badge tucked into the top-left corner, 18px numbered dots for pins. Selection uses the theme primary on the badge and adds handles; nothing else gets the accent.</li>
+<li><b>Overlap:</b> larger regions draw underneath smaller ones and hover picks the smallest under the pointer. A badge that would cover another slides right along its top edge; badges that still collide merge into one pill ("5 6 7"). Hovering or selecting one region drops the others to 40%.</li>
+<li><b>Missing file:</b> the regions stay on the item. The viewer draws their outlines on a dashed frame of the last-known size, and cards swap the crop for a mini-map showing where the region sits. <span class="dv-chk">TO CHECK</span> this assumes crops are cut from the file when drawn, not cached; if they are cached, cards can keep the real crop.</li>
+<li><b>Hover card:</b> one card for every note, on the image and in the grid (<a href="#t6">6</a>). It shows the whole note, the author's name and when it was filed. There are no avatars. It replaces today's plain text tooltip on cells that carry a note.</li>
+<li><b>Grid:</b> a row with region notes uses the existing note marker.</li>
+</ul>
+</section>
+
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Viewer, annotate mode</span></div>
+<p class="dv-tdesc">Shown over the whole workspace at 880 × 560. The same layer works in the centre panel and the pop-out window because regions are children of the image box. Annotate (A) and Show annotations (N) sit first in the top pill; the tool pill appears on the left only in annotate mode and has room for Polygon below Pin.</p>
+<div class="dv-opts">
+<sc-for list="{{ vframes }}" as="f" hint-placeholder-count="4">
+<div class="dv-opt" id="{{ f.id }}">
+<div class="dv-olabel"><a class="dv-oid" href="#{{ f.id }}">{{ f.id }}</a><span><b style="color:#1a1a1a;font-weight:600">{{ f.name }}.</b> {{ f.label }} <sc-if value="{{ f.chk }}" hint-placeholder-val="{{ false }}"><span class="dv-chk">TO CHECK</span></sc-if></span></div>
+<div class="qf {{ vt }} sd" style="{{ f.stageStyle }}">
+
+  <sc-if value="{{ f.strip }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;left:0;top:0;bottom:0;width:128px;background:color-mix(in srgb,var(--bg) 80%,transparent);display:flex;flex-direction:column;overflow:hidden">
+      <sc-for list="{{ stripPages }}" as="p" hint-placeholder-count="4">
+        <div style="height:168px;flex:none;padding:8px;box-sizing:border-box;display:flex;flex-direction:column;align-items:center;gap:4px">
+          <div style="{{ p.thumb }}">
+            <div style="position:absolute;left:14%;right:14%;top:12%;display:flex;flex-direction:column;gap:6px"><span style="height:3px;width:60%;background:#d4d4d4"></span><span style="height:3px;background:#d4d4d4"></span><span style="height:3px;background:#d4d4d4"></span><span style="height:3px;width:90%;background:#d4d4d4"></span><span style="height:3px;background:#d4d4d4"></span><span style="height:3px;width:70%;background:#d4d4d4"></span></div>
+            <sc-if value="{{ p.has }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:4px;right:4px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:rgba(17,17,17,.9);color:#fff;font:600 10px/16px system-ui,sans-serif;text-align:center;box-shadow:0 0 0 1px #fff">{{ p.count }}</span></sc-if>
+          </div>
+          <span style="{{ p.lab }}">{{ p.i }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+
+  <div class="{{ f.imgCls }}" style="{{ f.imgStyle }}">
+    <sc-if value="{{ f.isPdf }}" hint-placeholder-val="{{ false }}">
+      <sc-for list="{{ pageLines }}" as="ln" hint-placeholder-count="20"><div style="{{ ln }}"></div></sc-for>
+    </sc-if>
+    <div style="{{ f.labStyle }}">{{ f.imgLab }}</div>
+    <sc-for list="{{ f.regViews }}" as="r" hint-placeholder-count="0">
+      <div style="{{ r.box }}">{{ r.pinTxt }}
+        <sc-if value="{{ r.badge }}" hint-placeholder-val="{{ false }}"><span style="{{ r.badgeStyle }}">{{ r.badgeTxt }}</span></sc-if>
+        <sc-if value="{{ r.handles }}" hint-placeholder-val="{{ false }}">
+          <span style="position:absolute;width:8px;height:8px;box-sizing:border-box;background:#fff;border:1.5px solid #111;left:-4.5px;top:-4.5px"></span>
+          <span style="position:absolute;width:8px;height:8px;box-sizing:border-box;background:#fff;border:1.5px solid #111;left:calc(50% - 4px);top:-4.5px"></span>
+          <span style="position:absolute;width:8px;height:8px;box-sizing:border-box;background:#fff;border:1.5px solid #111;right:-4.5px;top:-4.5px"></span>
+          <span style="position:absolute;width:8px;height:8px;box-sizing:border-box;background:#fff;border:1.5px solid #111;right:-4.5px;top:calc(50% - 4px)"></span>
+          <span style="position:absolute;width:8px;height:8px;box-sizing:border-box;background:#fff;border:1.5px solid #111;right:-4.5px;bottom:-4.5px"></span>
+          <span style="position:absolute;width:8px;height:8px;box-sizing:border-box;background:#fff;border:1.5px solid #111;left:calc(50% - 4px);bottom:-4.5px"></span>
+          <span style="position:absolute;width:8px;height:8px;box-sizing:border-box;background:#fff;border:1.5px solid #111;left:-4.5px;bottom:-4.5px"></span>
+          <span style="position:absolute;width:8px;height:8px;box-sizing:border-box;background:#fff;border:1.5px solid #111;left:-4.5px;top:calc(50% - 4px)"></span>
+        </sc-if>
+      </div>
+    </sc-for>
+    <sc-if value="{{ f.drawing }}" hint-placeholder-val="{{ false }}"><div style="{{ f.drawStyle }}"></div></sc-if>
+  </div>
+
+  <sc-if value="{{ f.isMissing }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;padding:16px 20px;max-width:340px;border-radius:8px;background:color-mix(in srgb,var(--bg) 80%,transparent);color:var(--fg)">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path><path d="m14.5 12.5-5 5"></path><path d="m9.5 12.5 5 5"></path></svg>
+        <div style="font-size:14px">File not found</div>
+        <div style="font:12px ui-monospace,Consolas,monospace;color:var(--mu);word-break:break-all">D:\Aderman\scans\ADR_0012.tif</div>
+        <div style="font-size:13px;color:var(--mu);text-wrap:pretty">4 annotations are kept with this item. They line up again once the file is found.</div>
+        <span style="display:inline-flex;align-items:center;height:28px;padding:0 10px;margin-top:4px;border-radius:4px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);font-size:13px">Locate file…</span>
+      </div>
+    </div>
+  </sc-if>
+
+  <div style="{{ f.namePos }}">
+    <div style="display:flex;flex-direction:column;padding:4px 8px;border-radius:4px;background:color-mix(in srgb,var(--bg) 80%,transparent);color:var(--fg);font-size:13px;line-height:18px">
+      <span>{{ f.file }}</span><span style="font-size:12px;line-height:16px;color:var(--mu)">{{ f.cap }}</span>
+    </div>
+  </div>
+
+  <sc-if value="{{ f.annot }}" hint-placeholder-val="{{ false }}">
+    <div style="{{ f.toolPos }}">
+      <div style="display:flex;flex-direction:column;gap:2px;padding:4px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--shl)">
+        <span class="{{ f.tSel }}" style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"></path></svg></span>
+        <span class="{{ f.tRect }}" style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="14" x="3" y="5" rx="1"></rect></svg></span>
+        <span class="{{ f.tPin }}" style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"></path><circle cx="12" cy="10" r="3"></circle></svg></span>
+      </div>
+    </div>
+  </sc-if>
+
+  <div style="position:absolute;right:16px;top:16px;display:flex;gap:8px;align-items:flex-start">
+    <div style="display:flex;align-items:center;gap:2px;padding:4px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--shl)">
+      <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"></path></svg></span>
+      <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:2px;padding:4px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--shl);font-size:13px">
+      <sc-if value="{{ f.isPdf }}" hint-placeholder-val="{{ false }}"><span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg></span></sc-if>
+      <span class="{{ f.annCls }}" style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px;position:relative"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"></path></svg>
+        <sc-if value="{{ f.annTip }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:36px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:12px;line-height:16px;padding:4px 8px;border-radius:4px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);box-shadow:var(--sh);z-index:5">Annotate (A)</span></sc-if>
+      </span>
+      <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px;position:relative">
+        <sc-if value="{{ f.show }}" hint-placeholder-val="{{ true }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"></path><circle cx="12" cy="12" r="3"></circle></svg></sc-if>
+        <sc-if value="{{ f.hidden }}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"></path><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"></path><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"></path><path d="m2 2 20 20"></path></svg></sc-if>
+        <sc-if value="{{ f.eyeTip }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:36px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:12px;line-height:16px;padding:4px 8px;border-radius:4px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);box-shadow:var(--sh);z-index:5">Show annotations (N)</span></sc-if>
+      </span>
+      <span style="width:1px;height:16px;background:var(--bd);margin:0 2px"></span>
+      <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg></span>
+      <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"></path></svg></span>
+      <span style="min-width:44px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-variant-numeric:tabular-nums">{{ f.readout }}</span>
+      <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></span>
+      <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></span>
+    </div>
+  </div>
+
+  <sc-if value="{{ f.isPdf }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;left:128px;right:0;bottom:16px;display:flex;justify-content:center">
+      <div style="display:flex;align-items:center;gap:2px;padding:4px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--shl);font-size:13px;white-space:nowrap">
+        <span class="pinon" style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path></svg></span>
+        <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg></span>
+        <span style="width:52px;height:24px;box-sizing:border-box;border:1px solid var(--bd);border-radius:4px;display:flex;align-items:center;justify-content:center">3</span>
+        <span style="color:var(--mu);padding:0 4px">/ 12</span>
+        <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg></span>
+        <span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12H3"></path><path d="m18 9 3 3-3 3"></path><path d="m6 9-3 3 3 3"></path></svg></span>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ f.hint }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;left:0;right:0;bottom:20px;display:flex;justify-content:center;pointer-events:none">
+      <span style="padding:5px 12px;border-radius:6px;background:color-mix(in srgb,var(--bg) 80%,transparent);color:var(--fg);font-size:13px;line-height:18px">{{ f.hintTxt }}</span>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ f.changed }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;left:0;right:0;top:68px;display:flex;justify-content:center">
+      <div style="display:flex;align-items:center;gap:8px;max-width:520px;padding:6px 12px;border-radius:6px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);box-shadow:var(--sh);font-size:13px;line-height:18px">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>
+        <span>This image changed since it was annotated. Regions may not line up.</span>
+        <span style="color:var(--mu);font-size:12px;white-space:nowrap">4000 × 3000 → 3000 × 3000</span>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ f.tip }}" hint-placeholder-val="{{ false }}">
+    <div style="{{ f.tipStyle }}">
+      <span style="text-wrap:pretty">{{ f.tipTxt }}</span>
+      <span style="font-size:12px;line-height:16px;color:var(--mu)">{{ f.tipMeta }}</span>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ f.comp }}" hint-placeholder-val="{{ false }}">
+    <div style="{{ f.compStyle }}">
+      <div style="display:flex;flex-direction:column;background:var(--pop);color:var(--fg);border:1px solid var(--pri);border-radius:6px;box-shadow:var(--sh);font-size:13px;line-height:18px;overflow:hidden">
+        <div style="padding:3px 8px;background:var(--mubg);color:var(--mu);font-size:12px">{{ f.compStrip }}</div>
+        <div style="padding:6px 8px;min-height:54px;text-wrap:pretty">{{ f.compTxt }}<span style="display:inline-block;width:1px;height:15px;background:var(--fg);vertical-align:-3px;margin-left:1px"></span></div>
+        <div style="display:flex;gap:4px;padding:0 8px 8px">
+          <span class="koff" style="height:20px;display:inline-flex;align-items:center;padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px">Note</span>
+          <span class="kon" style="height:20px;display:inline-flex;align-items:center;padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px">Transcription</span>
+          <span class="koff" style="height:20px;display:inline-flex;align-items:center;padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px">Question</span>
+        </div>
+        <sc-if value="{{ f.unsigned }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;flex-direction:column;gap:6px;padding:8px;border-top:1px solid var(--bd)">
+            <span style="font-size:12px;color:var(--mu)">Sign your notes as…</span>
+            <div style="height:28px;box-sizing:border-box;display:flex;align-items:center;padding:0 8px;border:1px solid var(--pri);border-radius:4px;box-shadow:0 0 0 2px color-mix(in srgb,var(--pri) 20%,transparent)"><span style="display:inline-block;width:1px;height:15px;background:var(--fg)"></span><span style="color:var(--mu);margin-left:2px">Your name</span></div>
+            <span style="font-size:12px;color:var(--link)">Skip, leave unsigned</span>
+          </div>
+        </sc-if>
+        <div style="display:flex;align-items:center;gap:6px;padding:6px 8px;border-top:1px solid var(--bd)">
+          <span style="flex:1;font-size:12px;color:var(--mu);white-space:nowrap">Ctrl+Enter to save</span>
+          <span style="height:24px;display:inline-flex;align-items:center;padding:0 8px;border-radius:4px;border:1px solid var(--bd);background:var(--bg);font-size:12px">Cancel</span>
+          <span style="height:24px;display:inline-flex;align-items:center;padding:0 10px;border-radius:4px;background:var(--pri);color:var(--prifg);font-size:12px">Save</span>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ f.del }}" hint-placeholder-val="{{ false }}">
+    <div style="{{ f.delStyle }}">
+      <div style="display:flex;flex-direction:column;gap:6px;padding:10px 10px 8px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);border-radius:6px;box-shadow:var(--sh);font-size:13px;line-height:18px">
+        <span>Delete annotation #2 by Ravi Kapoor?</span>
+        <span style="font-size:12px;line-height:16px;color:var(--mu)">History keeps a copy you can restore.</span>
+        <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:2px">
+          <span style="height:24px;display:inline-flex;align-items:center;padding:0 8px;border-radius:4px;border:1px solid var(--bd);background:var(--bg);font-size:12px">Cancel</span>
+          <span style="height:24px;display:inline-flex;align-items:center;padding:0 10px;border-radius:4px;background:var(--dst);color:#fff;font-size:12px">Delete</span>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ f.cross }}" hint-placeholder-val="{{ false }}">
+    <div style="{{ f.crossStyle }}"><svg width="21" height="21" viewBox="0 0 21 21" fill="none" stroke-linecap="round"><path d="M10.5 1.5v6M10.5 13.5v6M1.5 10.5h6M13.5 10.5h6" stroke="#000" stroke-width="3"></path><path d="M10.5 1.5v6M10.5 13.5v6M1.5 10.5h6M13.5 10.5h6" stroke="#fff" stroke-width="1.25"></path></svg></div>
+  </sc-if>
+</div>
+</div>
+</sc-for>
+</div>
+</section>
+
+<section class="dv-turn" id="t2">
+<div class="dv-thd"><a class="dv-tid" href="#t2">2</a><span class="dv-tname">Details panel, Notes section</span></div>
+<p class="dv-tdesc">The section keeps its header and body; cards gain a 48px crop on the left when they point at a region. Hovering a card lights its region in the viewer (the hover fill from <a href="#1a">1a</a>, without the tooltip). Clicking opens the viewer, or turns to the page, and zooms to the region as in <a href="#1k">1k</a>.</p>
+<div class="dv-opts">
+<sc-for list="{{ nframes }}" as="n" hint-placeholder-count="4">
+<div class="dv-opt" id="{{ n.id }}">
+<div class="dv-olabel"><a class="dv-oid" href="#{{ n.id }}">{{ n.id }}</a><span><b style="color:#1a1a1a;font-weight:600">{{ n.name }}.</b> {{ n.label }} <sc-if value="{{ n.chk }}" hint-placeholder-val="{{ false }}"><span class="dv-chk">TO CHECK</span></sc-if></span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:340px;border:1px solid var(--bd);border-radius:8px;display:flex;flex-direction:column;font-size:13px;line-height:18px;padding-bottom:4px">
+  <div style="height:30px;flex:none;display:flex;align-items:center;gap:6px;padding:0 8px;background:var(--tb);border-bottom:1px solid var(--bd);border-radius:8px 8px 0 0">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="m6 9 6 6 6-6"></path></svg>
+    <span>Notes</span><span style="color:var(--mu);font-size:12px">{{ n.count }}</span>
+    <span style="flex:1"></span>
+    <div style="display:flex;padding:2px;border-radius:5px;background:var(--mubg);font-size:12px;line-height:16px">
+      <span class="{{ n.sA }}" style="padding:2px 6px;border-radius:3px">All</span><span class="{{ n.sI }}" style="padding:2px 6px;border-radius:3px;white-space:nowrap">On image</span><span class="{{ n.sF }}" style="padding:2px 6px;border-radius:3px;white-space:nowrap">On fields</span>
+    </div>
+    <span class="{{ n.mine }}" style="height:22px;box-sizing:border-box;display:inline-flex;align-items:center;padding:0 7px;border-radius:4px;border:1px solid var(--bd);font-size:12px">Mine</span>
+  </div>
+  <sc-for list="{{ n.groups }}" as="g" hint-placeholder-count="2">
+    <div style="display:flex;flex-direction:column">
+      <div style="display:flex;gap:6px;padding:8px 12px 6px;font-size:12px;line-height:16px;color:var(--mu);min-width:0"><span style="color:var(--fg);font-weight:600;flex:none">{{ g.id }}</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ g.title }}</span></div>
+      <sc-if value="{{ g.missing }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;align-items:center;gap:8px;margin:0 8px 6px;padding:5px 6px 5px 8px;border-radius:4px;background:color-mix(in srgb,var(--warn) 12%,transparent)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>
+          <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px">File not found: ADR_0012.tif</span>
+          <span style="display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:4px;background:var(--bg);border:1px solid var(--bd);font-size:12px;white-space:nowrap">Locate file…</span>
+        </div>
+      </sc-if>
+      <sc-for list="{{ g.cards }}" as="c" hint-placeholder-count="3">
+        <div style="{{ c.cardStyle }}">
+          <sc-if value="{{ c.thumbOk }}" hint-placeholder-val="{{ false }}">
+            <div class="ph" style="{{ c.thumbStyle }}"><sc-if value="{{ c.pin }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;left:50%;top:50%;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;background:#161616;border:1.5px solid #fff;box-sizing:border-box"></span></sc-if></div>
+          </sc-if>
+          <sc-if value="{{ c.thumbMiss }}" hint-placeholder-val="{{ false }}">
+            <div style="width:48px;height:48px;flex:none;box-sizing:border-box;border-radius:4px;border:1px dashed var(--bd);background:var(--mubg);display:flex;align-items:center;justify-content:center">
+              <div style="position:relative;width:34px;height:26px;box-sizing:border-box;border:1px solid color-mix(in srgb,var(--mu) 60%,transparent);border-radius:1px"><span style="{{ c.mini }}"></span></div>
+            </div>
+          </sc-if>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px">
+            <span style="display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;text-wrap:pretty">{{ c.text }}</span>
+            <span style="font-size:12px;line-height:16px;color:var(--mu);position:relative">{{ c.pre }}{{ c.date }}<sc-if value="{{ c.edited }}" hint-placeholder-val="{{ false }}"> <span style="text-decoration:underline dotted;text-underline-offset:2px">edited</span></sc-if>{{ c.post }}
+              <sc-if value="{{ c.edTip }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;left:40px;top:20px;white-space:nowrap;font-size:12px;line-height:16px;padding:4px 8px;border-radius:4px;background:var(--pop);color:var(--fg);border:1px solid var(--bd);box-shadow:var(--sh);z-index:3">Edited 2026-10-01 16:05 by Ravi Kapoor</span></sc-if>
+            </span>
+            <sc-if value="{{ c.chg }}" hint-placeholder-val="{{ false }}">
+              <span style="align-self:flex-start;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;background:color-mix(in srgb,var(--warn) 12%,transparent);font-size:12px;margin-top:2px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>Image changed since annotated</span>
+            </sc-if>
+          </div>
+          <sc-if value="{{ c.hover }}" hint-placeholder-val="{{ false }}">
+            <div style="position:absolute;top:5px;right:5px;display:flex;gap:1px;padding:1px;border-radius:4px;background:var(--pop);border:1px solid var(--bd);box-shadow:var(--sh)">
+              <span style="width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:3px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path></svg></span>
+              <span style="width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:3px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l4 2"></path></svg></span>
+              <span style="width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:3px;color:var(--dst)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></span>
+            </div>
+          </sc-if>
+        </div>
+      </sc-for>
+    </div>
+  </sc-for>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-for>
+</div>
+</section>
+
+<section class="dv-turn" id="t3">
+<div class="dv-thd"><a class="dv-tid" href="#t3">3</a><span class="dv-tname">History panel</span></div>
+<p class="dv-tdesc">Five new entry types in the existing append-only log. Each entry has its source, author and time; Restore appears on hover and works as it does for field changes. Moved shows before and after crops side by side.</p>
+<div class="dv-opts">
+<div class="dv-opt" id="3a">
+<div class="dv-olabel"><a class="dv-oid" href="#3a">3a</a><span><b style="color:#1a1a1a;font-weight:600">Annotation entries.</b> The moved entry is hovered. Deleted keeps the crop and the text, struck through, so Restore has something to point at.</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:340px;border:1px solid var(--bd);border-radius:8px;display:flex;flex-direction:column;font-size:13px;line-height:18px">
+  <div style="height:30px;flex:none;display:flex;align-items:center;gap:6px;padding:0 8px;background:var(--tb);border-bottom:1px solid var(--bd);border-radius:8px 8px 0 0"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg><span>History</span></div>
+  <div style="padding:8px 12px 4px;font-size:12px;line-height:16px;color:var(--mu)">Today · 2026-10-02</div>
+  <sc-for list="{{ hist }}" as="h" hint-placeholder-count="5">
+    <div style="{{ h.rowStyle }}">
+      <div style="display:flex;align-items:center;gap:6px;min-height:22px"><span style="flex:1;min-width:0">{{ h.title }} <span style="color:var(--mu)">#{{ h.n }}</span></span>
+        <sc-if value="{{ h.hover }}" hint-placeholder-val="{{ false }}"><span style="height:22px;display:inline-flex;align-items:center;gap:4px;padding:0 8px;border-radius:4px;border:1px solid var(--bd);background:var(--bg);font-size:12px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>Restore</span></sc-if>
+        <span style="font-size:12px;color:var(--mu)">{{ h.time }}</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:flex-start">
+        <div style="display:flex;align-items:center;gap:4px;flex:none">
+          <div class="ph" style="{{ h.t1 }}"></div>
+          <sc-if value="{{ h.two }}" hint-placeholder-val="{{ false }}">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--mu)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg>
+            <div class="ph" style="{{ h.t2 }}"></div>
+          </sc-if>
+        </div>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+          <sc-if value="{{ h.before }}" hint-placeholder-val="{{ false }}"><span style="color:var(--mu);text-decoration:line-through;text-wrap:pretty">{{ h.before }}</span></sc-if>
+          <sc-if value="{{ h.after }}" hint-placeholder-val="{{ false }}"><span style="text-wrap:pretty">{{ h.after }}</span></sc-if>
+          <sc-if value="{{ h.same }}" hint-placeholder-val="{{ false }}"><span style="color:var(--mu);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">{{ h.same }}</span></sc-if>
+        </div>
+      </div>
+      <span style="font-size:12px;line-height:16px;color:var(--mu)">{{ h.meta }}</span>
+    </div>
+  </sc-for>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</section>
+
+<section class="dv-turn" id="t4">
+<div class="dv-thd"><a class="dv-tid" href="#t4">4</a><span class="dv-tname">Composer and the authorship moment</span></div>
+<p class="dv-tdesc">The note editor's card at 280px wide, with the strip, a text area, the optional kind chips and Save / Cancel. The name field appears inline the first time an unsigned user saves; whatever they choose, the composer never asks again.</p>
+<div class="dv-opts">
+<sc-for list="{{ comps }}" as="k" hint-placeholder-count="2">
+<div class="dv-opt" id="{{ k.id }}">
+<div class="dv-olabel"><a class="dv-oid" href="#{{ k.id }}">{{ k.id }}</a><span><b style="color:#1a1a1a;font-weight:600">{{ k.name }}.</b> {{ k.label }}</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="{{ t.cls }}" style="width:320px;padding:20px;box-sizing:border-box;border-radius:8px;background:#1b1b1b;font-family:'Segoe UI Variable Text','Segoe UI',system-ui,sans-serif">
+  <div style="display:flex;flex-direction:column;background:var(--pop);color:var(--fg);border:1px solid var(--pri);border-radius:6px;box-shadow:var(--sh);font-size:13px;line-height:18px;overflow:hidden">
+    <div style="padding:3px 8px;background:var(--mubg);color:var(--mu);font-size:12px">Note on row 12 · page 3 · region</div>
+    <div style="padding:6px 8px;min-height:54px;text-wrap:pretty">Received stamp, Victoria P.O., 21 Sep 1906<span style="display:inline-block;width:1px;height:15px;background:var(--fg);vertical-align:-3px;margin-left:1px"></span></div>
+    <div style="display:flex;gap:4px;padding:0 8px 8px">
+      <span class="koff" style="height:20px;display:inline-flex;align-items:center;padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px">Note</span>
+      <span class="kon" style="height:20px;display:inline-flex;align-items:center;padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px">Transcription</span>
+      <span class="koff" style="height:20px;display:inline-flex;align-items:center;padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px">Question</span>
+    </div>
+    <sc-if value="{{ k.unsigned }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex;flex-direction:column;gap:6px;padding:8px;border-top:1px solid var(--bd)">
+        <span style="font-size:12px;color:var(--mu)">Sign your notes as…</span>
+        <div style="height:28px;box-sizing:border-box;display:flex;align-items:center;padding:0 8px;border:1px solid var(--pri);border-radius:4px;box-shadow:0 0 0 2px color-mix(in srgb,var(--pri) 20%,transparent)"><span style="display:inline-block;width:1px;height:15px;background:var(--fg)"></span><span style="color:var(--mu);margin-left:2px">Your name</span></div>
+        <span style="font-size:12px;color:var(--link)">Skip, leave unsigned</span>
+      </div>
+    </sc-if>
+    <div style="display:flex;align-items:center;gap:6px;padding:6px 8px;border-top:1px solid var(--bd)">
+      <span style="flex:1;font-size:12px;color:var(--mu);white-space:nowrap">Ctrl+Enter to save</span>
+      <span style="height:24px;display:inline-flex;align-items:center;padding:0 8px;border-radius:4px;border:1px solid var(--bd);background:var(--bg);font-size:12px">Cancel</span>
+      <span style="height:24px;display:inline-flex;align-items:center;padding:0 10px;border-radius:4px;background:var(--pri);color:var(--prifg);font-size:12px">Save</span>
+    </div>
+  </div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-for>
+</div>
+</section>
+
+<section class="dv-turn" id="t5">
+<div class="dv-thd"><a class="dv-tid" href="#t5">5</a><span class="dv-tname">Gallery cards</span></div>
+<p class="dv-tdesc">A count badge in the thumbnail's bottom-left corner, in the same dark style as the region badges. It stays when the file is missing, since the annotations do.</p>
+<div class="dv-opts">
+<div class="dv-opt" id="5a">
+<div class="dv-olabel"><a class="dv-oid" href="#5a">5a</a><span><b style="color:#1a1a1a;font-weight:600">Annotation count.</b> With annotations, without, and with a missing file. <span class="dv-chk">TO CHECK</span> card anatomy is simplified; the badge needs to clear whatever already sits in that corner.</span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="display:flex;gap:12px;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:13px;line-height:18px">
+  <sc-for list="{{ gallery }}" as="g" hint-placeholder-count="3">
+    <div style="width:168px;display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:6px;overflow:hidden">
+      <div style="height:126px;position:relative;background:var(--mubg);display:flex;align-items:center;justify-content:center">
+        <sc-if value="{{ g.ok }}" hint-placeholder-val="{{ true }}"><div class="ph" style="position:absolute;inset:0;box-shadow:none"></div></sc-if>
+        <sc-if value="{{ g.missing }}" hint-placeholder-val="{{ false }}"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path><path d="m14.5 12.5-5 5"></path><path d="m9.5 12.5 5 5"></path></svg></sc-if>
+        <sc-if value="{{ g.has }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;left:6px;bottom:6px;display:inline-flex;align-items:center;gap:3px;height:18px;padding:0 6px 0 5px;border-radius:4px;background:rgba(17,17,17,.88);color:#fff;font:600 11px/18px system-ui,sans-serif"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"></path></svg>{{ g.count }}</span></sc-if>
+      </div>
+      <div style="display:flex;flex-direction:column;padding:6px 8px"><span style="font-size:12px;color:var(--mu)">{{ g.id }}</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ g.title }}</span></div>
+    </div>
+  </sc-for>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</section>
+
+
+<section class="dv-turn" id="t6">
+<div class="dv-thd"><a class="dv-tid" href="#t6">6</a><span class="dv-tname">Note hover card, shared with table notes</span><span class="dv-new">NEW</span></div>
+<p class="dv-tdesc">The same card the viewer shows on a region (<a href="#1a">1a</a>), now on any cell, row or column with a note. It opens after the existing 600ms hover delay and sits under the cell, kept inside the table. The full note, then the author's name and the time it was filed; an edited note adds "edited" after the time.</p>
+<div class="dv-opts">
+<sc-for list="{{ tcases }}" as="k" hint-placeholder-count="2">
+<div class="dv-opt" id="{{ k.id }}">
+<div class="dv-olabel"><a class="dv-oid" href="#{{ k.id }}">{{ k.id }}</a><span><b style="color:#1a1a1a;font-weight:600">{{ k.name }}.</b> {{ k.label }} <sc-if value="{{ k.chk }}" hint-placeholder-val="{{ false }}"><span class="dv-chk">TO CHECK</span></sc-if></span></div>
+<div class="dv-pair">
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="2">
+<div>
+<div class="dv-th">{{ t.name }}</div>
+<div class="qf {{ t.cls }}" style="width:520px;height:260px;position:relative;border:1px solid var(--bd);border-radius:8px;overflow:hidden;font-size:13px;line-height:18px">
+  <div style="display:grid;grid-template-columns:40px 96px 1fr 132px;height:28px;background:var(--tb);border-bottom:1px solid var(--bd);color:var(--mu)">
+    <span style="border-right:1px solid var(--bd)"></span><span style="padding:5px 8px;border-right:1px solid var(--bd)">Identifier</span><span style="padding:5px 8px;border-right:1px solid var(--bd)">{{ k.col }}</span><span style="padding:5px 8px">Date</span>
+  </div>
+  <sc-for list="{{ k.rows }}" as="r" hint-placeholder-count="4">
+    <div style="display:grid;grid-template-columns:40px 96px 1fr 132px;height:28px;border-bottom:1px solid var(--bd)">
+      <span style="padding:5px 8px;color:var(--mu);text-align:right;border-right:1px solid var(--bd);background:var(--tb)">{{ r.n }}</span>
+      <span style="padding:5px 8px;border-right:1px solid var(--bd);white-space:nowrap;overflow:hidden">{{ r.id }}</span>
+      <span style="{{ r.cellStyle }}">{{ r.v }}<sc-if value="{{ r.note }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:0;right:0;width:0;height:0;border-top:7px solid var(--pri);border-left:7px solid transparent"></span></sc-if><sc-if value="{{ r.err }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;left:8px;right:30%;bottom:4px;border-bottom:2px dotted var(--dst)"></span></sc-if></span>
+      <span style="padding:5px 8px;white-space:nowrap;overflow:hidden">{{ r.d }}</span>
+    </div>
+  </sc-for>
+  <div style="position:absolute;left:144px;top:90px;width:280px;display:flex;flex-direction:column;gap:4px;padding:8px 10px;box-sizing:border-box;background:var(--pop);color:var(--fg);border:1px solid var(--bd);border-radius:6px;box-shadow:var(--sh);z-index:3">
+    <span style="text-wrap:pretty">{{ k.text }}</span>
+    <span style="font-size:12px;line-height:16px;color:var(--mu)">{{ k.meta }}</span>
+    <sc-if value="{{ k.extra }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px;padding-top:6px;border-top:1px solid var(--bd);font-size:12px;line-height:16px">
+        <span style="color:var(--mu)">Free-text summary, one paragraph.</span>
+        <span style="display:flex;gap:6px;align-items:flex-start"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--dst)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;margin-top:1px"><circle cx="12" cy="12" r="10"></circle><path d="m15 9-6 6"></path><path d="m9 9 6 6"></path></svg>Contains a double space.</span>
+      </div>
+    </sc-if>
+  </div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-for>
+</div>
+</section></x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;themes&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Light + Dark&quot;,&quot;Light only&quot;,&quot;Dark only&quot;],&quot;default&quot;:&quot;Light + Dark&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;viewerTheme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Dark&quot;,&quot;Light&quot;],&quot;default&quot;:&quot;Dark&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const L = { cls: 'ql', name: 'Qrate Light' }, D = { cls: 'qd', name: 'Qrate Dark' };
+    const tm = this.props.themes ?? 'Light + Dark';
+    const themes = tm === 'Light only' ? [L] : tm === 'Dark only' ? [D] : [L, D];
+    const vt = (this.props.viewerTheme ?? 'Dark') === 'Light' ? 'ql' : 'qd';
+
+    const BASE = [
+      { n: 1, x: .30, y: .20, w: .13, h: .20, kind: 'Note', a: 'AM', text: 'Edith Aderman, aged about 9. Identified by Ruth Aderman, 1998.' },
+      { n: 2, x: .70, y: .70, w: .20, h: .17, kind: 'Transcription', a: 'RK', text: 'Studio stamp: \u201cSkene Lowe, Victoria B.C.\u201d' },
+      { n: 3, pin: true, x: .08, y: .90, kind: 'Note', a: '\u2014', text: 'Tear along the lower edge, about 3 cm. Do not unmount.' },
+      { n: 4, x: .50, y: .06, w: .26, h: .08, kind: 'Question', a: 'RK', text: 'Signature reads \u201cJ. Aderman\u201d, or is it \u201cI.\u201d?' },
+    ];
+    Object.assign(BASE[0], { by: 'Anna Moreau', at: '2026-10-02 14:20' });
+    Object.assign(BASE[1], { by: 'Ravi Kapoor', at: '2026-09-30 10:12', edited: true });
+    Object.assign(BASE[2], { by: null, at: '2026-10-02 09:05' });
+    Object.assign(BASE[3], { by: 'Ravi Kapoor', at: '2026-10-01 16:05' });
+    const NEW = { n: null, x: .58, y: .34, w: .17, h: .22 };
+    const OVER = [
+      { n: 1, x: .05, y: .14, w: .90, h: .60, a: 'AM', text: 'Back row, left to right: John, Walter, Edith, Margaret and three of the sawmill crew.' },
+      { n: 2, x: .11, y: .22, w: .12, h: .18 }, { n: 3, x: .26, y: .20, w: .12, h: .19, by: 'Ravi Kapoor', at: '2026-09-28 11:40', text: 'Walter Aderman, about 14. He wears the same jacket in ADR-0021, which dates this to the summer of 1915.' },
+      { n: 4, x: .41, y: .21, w: .12, h: .18 }, { n: 5, x: .565, y: .24, w: .07, h: .10, cluster: '5 6 7' },
+      { n: 6, x: .60, y: .28, w: .07, h: .10, noBadge: true }, { n: 7, x: .645, y: .25, w: .07, h: .10, noBadge: true },
+      { n: 8, x: .75, y: .22, w: .12, h: .18 }, { n: 9, pin: true, x: .50, y: .84 },
+    ];
+    const PDFR = [
+      { n: 1, x: .58, y: .05, w: .32, h: .11 }, { n: 2, x: .10, y: .80, w: .42, h: .09 }, { n: 3, pin: true, x: .80, y: .47 },
+    ];
+    const rot = (r) => r.pin ? Object.assign({}, r, { x: 1 - r.y, y: r.x }) : Object.assign({}, r, { x: 1 - r.y - r.h, y: r.x, w: r.h, h: r.w });
+
+    const def = { w: 880, h: 560, kind: 'photo', ratio: 4 / 3, srcW: 4000, file: 'ADR_0012.tif', cap: 'TIFF \u00b7 24.1 MB', annot: false, show: true, tool: 'rect', regs: BASE, imgLab: 'scan \u00b7 ADR_0012.tif' };
+    const list = [
+      { id: '1a', name: 'Annotate off, hover', label: 'Regions show whenever Show annotations is on. Hovering lightens the fill and opens the note hover card: the whole note, the author\u2019s name and when it was filed. It flips above the region near the bottom edge. The same card is used for table notes (6a). The Annotate button shows its tooltip.', hover: 1, tipOn: 1, annTip: true },
+      { id: '1b', name: 'Empty', label: 'Annotate on, Rectangle tool, nothing yet. The hint sits where the page pill would be and goes away after the first region.', annot: true, regs: [], hint: 'Drag to mark a region, click to drop a pin', cross: { x: .56, y: .46 }, chk: true },
+      { id: '1c', name: 'Drawing', label: 'Crosshair cursor, a dashed live outline and a 30% dim outside it, clipped to the image.', annot: true, drawing: { x: NEW.x, y: NEW.y, w: .14, h: .18 }, cross: 'draw' },
+      { id: '1d', name: 'Composing', label: 'On release the composer opens beside the region (right if it fits, else left) and stays inside the viewer. Esc throws the region away.', annot: true, composing: true },
+      { id: '1e', name: 'Composing, first save unsigned', label: 'No name set yet, so the composer adds one field. Save signs this note and every later one; Skip saves unsigned.', annot: true, composing: true, unsigned: true },
+      { id: '1f', name: 'Selected', label: 'Select tool: click a region for 8 handles; drag inside to move. The badge turns primary and its card scrolls into view in Notes (<2a>).', annot: true, tool: 'select', sel: 2 },
+      { id: '1g', name: 'Delete confirmation', label: 'Delete with a region selected. The popover names the author and sits where the composer would.', annot: true, tool: 'select', sel: 2, del: true },
+      { id: '1h', name: 'Many overlapping regions', label: 'A group photo with 9 annotations. #5\u20137 are too close for three badges, so they share one pill; outlines stay. Hovering #3 drops the rest to 40%.', regs: OVER, hover: 3, tipOn: 3, dimOthers: true, file: 'ADR_0019.tif', imgLab: 'group photo \u00b7 ADR_0019.tif' },
+      { id: '1i', name: 'Overlays hidden', label: 'N hides every outline, badge and pin but stays in annotate mode, so you can still draw. The eye shows its off state; the hint confirms once.', annot: true, show: false, hint: '4 annotations hidden. Press N to show them.', eyeTip: true },
+      { id: '1j', name: 'Rotated 90\u00b0', label: 'R turns the image; regions turn with it because they live in image coordinates. Badges stay upright and move to each region\u2019s new top-left corner.', rot: true, ratio: 3 / 4, srcW: 3000 },
+      { id: '1k', name: 'Stepping with ]', label: '[ and ] go to the previous or next region on this page and zoom to fit it with a margin, the way W fits width. The tooltip stays up while stepped to.', zoomTo: 2, tipOn: 2, hint: '2 of 4 on this page \u00b7 [ previous \u00b7 ] next' },
+      { id: '1l', name: 'PDF with page strip', label: 'Thumbnails get a count badge for pages with annotations (1 and 3 here). Regions belong to their page and appear only on it.', kind: 'pdf', ratio: 8.5 / 11, srcW: 1275, file: 'ADR_0057.pdf', cap: 'PDF \u00b7 3.2 MB \u00b7 12 pages', regs: PDFR, imgLab: '' },
+      { id: '1m', name: 'Image changed since annotated', label: 'The file\u2019s pixel size differs from the one stored with the regions. A quiet chip says so; regions draw where their coordinates say. Fixing is a manual move or resize.', changed: true, ratio: 1, srcW: 3000, chk: true },
+      { id: '1n', name: 'Opened with the file missing', label: 'The row has 4 annotations but the file and its crops are gone. The stage draws a dashed frame at the stored size with the regions on it, so you can still see what was marked and where. Annotate is disabled; N still works.', kind: 'missing', cap: 'File not found', imgLab: '' },
+    ];
+
+    const view = (r, f) => {
+      const sel = f.sel === r.n, hov = f.hover === r.n, dim = f.dimOthers && f.hover != null && !hov;
+      const miss = f.kind === 'missing';
+      if (r.pin) return {
+        box: { position: 'absolute', left: r.x * 100 + '%', top: r.y * 100 + '%', width: '18px', height: '18px', margin: '-9px 0 0 -9px', borderRadius: '50%', boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', font: '600 10px/1 system-ui,sans-serif', color: '#fff', background: miss ? 'transparent' : sel ? 'var(--pri)' : '#161616', border: miss ? '1.5px dashed rgba(255,255,255,.5)' : '1.5px solid #fff', boxShadow: miss ? 'none' : '0 0 0 1px rgba(0,0,0,.55)', opacity: dim ? .4 : 1 },
+        pinTxt: String(r.n), badge: false, handles: false,
+      };
+      return {
+        box: { position: 'absolute', left: r.x * 100 + '%', top: r.y * 100 + '%', width: r.w * 100 + '%', height: r.h * 100 + '%', boxSizing: 'border-box', borderRadius: '1px', border: miss ? '1.5px dashed rgba(255,255,255,.4)' : '1.5px solid rgba(0,0,0,.7)', boxShadow: miss ? 'none' : 'inset 0 0 0 1.5px rgba(255,255,255,.92)', background: hov ? 'rgba(255,255,255,.18)' : 'transparent', opacity: dim ? .4 : 1 },
+        pinTxt: '', badge: r.n != null && !r.noBadge, badgeTxt: r.cluster || String(r.n), handles: sel,
+        badgeStyle: { position: 'absolute', left: '-1.5px', top: '-1.5px', minWidth: '16px', height: '16px', padding: '0 4px', boxSizing: 'border-box', borderRadius: '0 0 4px 0', textAlign: 'center', whiteSpace: 'nowrap', font: '600 10px/16px system-ui,sans-serif', wordSpacing: '2px', color: '#fff', background: miss ? 'rgba(255,255,255,.2)' : sel ? 'var(--pri)' : 'rgba(17,17,17,.9)' },
+      };
+    };
+
+    const vframes = list.map((o) => {
+      const f = Object.assign({}, def, o);
+      if (f.rot) f.regs = f.regs.map(rot);
+      const pdf = f.kind === 'pdf', strip = pdf ? 128 : 0, padB = pdf ? 48 : 0;
+      const aw = f.w - 64 - strip, ah = f.h - 64 - padB;
+      let mw = aw, mh = mw / f.ratio; if (mh > ah) { mh = ah; mw = mh * f.ratio; }
+      const rz = f.zoomTo ? f.regs.find((r) => r.n === f.zoomTo) : null;
+      const s = rz ? Math.min(aw * .5 / (rz.w * mw), ah * .5 / (rz.h * mh)) : 1;
+      const iw = mw * s, ih = mh * s, cx = 32 + strip + aw / 2, cy = 32 + ah / 2;
+      const Lx = rz ? cx - (rz.x + rz.w / 2) * iw : cx - iw / 2, Ty = rz ? cy - (rz.y + rz.h / 2) * ih : cy - ih / 2;
+      const px = (r) => ({ l: Lx + r.x * iw, t: Ty + r.y * ih, r: Lx + (r.x + (r.w || 0)) * iw, b: Ty + (r.y + (r.h || 0)) * ih });
+      const place = (rp, w, h) => {
+        let x = rp.r + 12; if (x + w > f.w - 12) x = rp.l - 12 - w; x = Math.max(12, x);
+        const y = Math.min(Math.max(rp.t, 12), f.h - h - 12);
+        return { position: 'absolute', left: Math.round(x) + 'px', top: Math.round(y) + 'px', width: w + 'px', zIndex: 4 };
+      };
+      let regs = f.show ? f.regs.map((r) => view(r, f)) : [];
+      if (f.composing) regs = regs.concat([view(NEW, f)]);
+      const imgStyle = { position: 'absolute', left: Lx + 'px', top: Ty + 'px', width: iw + 'px', height: ih + 'px', overflow: 'hidden', boxSizing: 'border-box' };
+      if (pdf) Object.assign(imgStyle, { background: '#fafafa', boxShadow: '0 2px 14px rgba(0,0,0,.35)', padding: '9% 10%', display: 'flex', flexDirection: 'column', gap: '9px' });
+      if (f.kind === 'missing') Object.assign(imgStyle, { border: '1px dashed rgba(255,255,255,.22)', background: 'rgba(255,255,255,.03)', borderRadius: '2px' });
+      const d0 = f.drawing, c0 = f.cross;
+      const out = Object.assign(f, {
+        stageStyle: { width: f.w + 'px', height: f.h + 'px', position: 'relative', overflow: 'hidden', borderRadius: '8px', background: 'var(--stage)', color: 'var(--sfg)', fontSize: '13px', lineHeight: '18px' },
+        strip: pdf, isPdf: pdf, isMissing: f.kind === 'missing', regViews: regs, imgStyle,
+        imgCls: f.kind === 'photo' ? 'ph' : '',
+        labStyle: { position: 'absolute', inset: 0, display: f.imgLab ? 'flex' : 'none', alignItems: 'center', justifyContent: 'center', font: '12px ui-monospace,Consolas,monospace', color: '#666', transform: f.rot ? 'rotate(90deg)' : 'none', pointerEvents: 'none' },
+        namePos: { position: 'absolute', left: 16 + strip + 'px', top: '16px', maxWidth: '40%' },
+        toolPos: { position: 'absolute', left: 16 + strip + 'px', top: '50%', transform: 'translateY(-50%)' },
+        tSel: f.tool === 'select' ? 'pinon' : '', tRect: f.tool === 'rect' ? 'pinon' : '', tPin: f.tool === 'pin' ? 'pinon' : '',
+        annCls: f.kind === 'missing' ? 'dis' : f.annot ? 'pinon' : '', hidden: !f.show,
+        readout: Math.round(iw / f.srcW * 100 * (pdf ? 1 : 1)) + '%',
+        hint: !!f.hint, hintTxt: f.hint || '', drawing: !!f.drawing, comp: !!f.composing, del: !!f.del, cross: !!f.cross,
+        compStrip: 'Note on row 12 \u00b7 region', compTxt: 'Sawmill crew\u2019s wagon. The lettering on the side reads \u201cAderman & Sons\u201d.',
+      });
+      if (d0) { const d = d0; out.drawStyle = { position: 'absolute', left: d.x * 100 + '%', top: d.y * 100 + '%', width: d.w * 100 + '%', height: d.h * 100 + '%', boxSizing: 'border-box', border: '1.5px dashed #fff', boxShadow: '0 0 0 1px rgba(0,0,0,.6), 0 0 0 9999px rgba(0,0,0,.3)' }; }
+      if (c0) { const c = c0 === 'draw' ? { x: d0.x + d0.w, y: d0.y + d0.h } : c0; out.crossStyle = { position: 'absolute', left: Lx + c.x * iw - 10.5 + 'px', top: Ty + c.y * ih - 10.5 + 'px', zIndex: 5, pointerEvents: 'none' }; }
+      if (f.tipOn) {
+        const r = f.regs.find((q) => q.n === f.tipOn), rp = px(r);
+        out.tip = true; out.tipTxt = r.text; out.tipMeta = (r.by || 'Unsigned') + ' \u00b7 ' + r.at + (r.edited ? ' \u00b7 edited' : '');
+        let ty = r.pin ? rp.t + 14 : rp.b + 8; if (ty + 110 > f.h - 12) ty = rp.t - 118;
+        out.tipStyle = { position: 'absolute', left: Math.round(Math.min(Math.max(rp.l, 12), f.w - 292)) + 'px', top: Math.round(ty) + 'px', width: '280px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px', padding: '8px 10px', background: 'var(--pop)', color: 'var(--fg)', border: '1px solid var(--bd)', borderRadius: '6px', boxShadow: 'var(--sh)', fontSize: '13px', lineHeight: '18px', zIndex: 3 };
+      } else out.tip = false;
+      if (f.composing) out.compStyle = place(px(NEW), 280, f.unsigned ? 262 : 180);
+      if (f.del) out.delStyle = place(px(f.regs.find((q) => q.n === f.sel)), 252, 100);
+      out.label = f.label.replace('<2a>', '2a');
+      return out;
+    });
+
+    const stripPages = [1, 2, 3, 4].map((i) => {
+      const cur = i === 3, count = { 1: 1, 3: 3 }[i];
+      return { i, has: !!count, count, thumb: { position: 'relative', width: '99px', height: '128px', flex: 'none', boxSizing: 'border-box', background: '#fafafa', borderRadius: '4px', border: '2px solid ' + (cur ? 'var(--pri)' : 'transparent') },
+        lab: { fontSize: '12px', lineHeight: '16px', color: cur ? 'var(--fg)' : 'var(--mu)' } };
+    });
+    const widths = [60, 0, 96, 92, 98, 88, 94, 70, 0, 97, 91, 95, 89, 60, 0, 93, 96, 90, 98, 74];
+    const pageLines = widths.map((w) => ({ height: w ? '6px' : '4px', width: w + '%', borderRadius: '1px', background: '#d4d4d4', flex: 'none' }));
+
+    const thumb = (k) => ({ width: '48px', height: '48px', flex: 'none', borderRadius: '4px', boxShadow: 'none', position: 'relative', backgroundPosition: k * 3 + 'px ' + k * 5 + 'px' });
+    const mini = (r) => r.pin
+      ? { position: 'absolute', left: r.x * 100 + '%', top: r.y * 100 + '%', width: '4px', height: '4px', margin: '-2px 0 0 -2px', borderRadius: '50%', background: 'var(--mu)' }
+      : { position: 'absolute', left: r.x * 100 + '%', top: r.y * 100 + '%', width: r.w * 100 + '%', height: r.h * 100 + '%', boxSizing: 'border-box', border: '1px solid var(--mu)', background: 'color-mix(in srgb,var(--mu) 25%,transparent)' };
+    const card = (o) => {
+      const reg = o.reg;
+      const pre = o.field ? o.field + ' \u00b7 ' : '#' + reg.n + ' \u00b7 ' + (o.page ? 'page ' + o.page + ' \u00b7 ' : '') + o.kind + ' \u00b7 ';
+      return {
+        text: o.text, pre, date: o.date, post: ' \u00b7 ' + (o.a || 'Unsigned'), edited: !!o.edited, edTip: !!o.edTip, chg: !!o.chg, hover: !!o.hover,
+        thumbOk: !o.field && !o.miss, thumbMiss: !o.field && !!o.miss, pin: !!(reg && reg.pin), thumbStyle: thumb(reg ? reg.n : 0), mini: reg ? mini(reg) : {},
+        cardStyle: { position: 'relative', display: 'flex', gap: '8px', padding: '8px', margin: '0 8px 6px', borderRadius: '6px', border: '1px solid ' + (o.sel ? 'var(--pri)' : 'var(--bd)'), background: o.sel ? 'var(--act)' : o.hover ? 'color-mix(in srgb,var(--mubg) 55%,var(--bg))' : 'var(--bg)' },
+      };
+    };
+    const g12 = (opt = {}) => ({ id: 'ADR-0012', title: 'Aderman family at Beacon Hill Park', missing: !!opt.miss, cards: [
+      card({ reg: BASE[0], kind: 'Note', date: '2026-10-02', a: 'AM', text: BASE[0].text, miss: opt.miss }),
+      card({ reg: BASE[1], kind: 'Transcription', date: '2026-09-30', a: 'RK', text: BASE[1].text, edited: true, edTip: opt.edTip, sel: opt.sel, miss: opt.miss }),
+      card({ reg: BASE[2], kind: 'Note', date: '2026-10-02', a: null, text: BASE[2].text, miss: opt.miss }),
+      card({ reg: BASE[3], kind: 'Question', date: '2026-10-01', a: 'RK', text: BASE[3].text, hover: opt.hover, miss: opt.miss }),
+      card({ field: 'Photographer', date: '2026-08-14', a: 'AM', text: 'Probably Skene Lowe; see the studio stamp (#2).' }),
+    ] });
+    const g57 = (opt = {}) => ({ id: 'ADR-0057', title: 'Letter to Margaret Aderman', cards: [
+      card({ reg: PDFR[0], page: 3, kind: 'Transcription', date: '2026-10-02', a: 'AM', text: 'Received stamp, Victoria P.O., 21 Sep 1906', chg: opt.chg }),
+      card({ reg: PDFR[2], page: 3, kind: 'Question', date: '2026-10-02', a: 'RK', text: 'Ink blot covers two words. Check the transcription in ADR-0120.', chg: opt.chg }),
+    ].concat(opt.noField ? [] : [card({ field: 'Date', date: '2026-08-14', a: 'RK', text: 'Date taken from the postmark, not the letter.' })]) });
+    const seg = (a) => ({ sA: a === 'all' ? 'sgon' : 'sgoff', sI: a === 'img' ? 'sgon' : 'sgoff', sF: a === 'fld' ? 'sgon' : 'sgoff' });
+    const nframes = [
+      Object.assign({ id: '2a', name: 'Two items selected', label: 'Grouped by item. #2 was just clicked in the viewer, so it is selected and scrolled into view. #3 was saved unsigned. Field notes keep today\u2019s layout.', count: '8', mine: 'koff', groups: [g12({ sel: true }), g57()] }, seg('all')),
+      Object.assign({ id: '2b', name: 'Hover', label: 'Hovering #4 shows Edit, Show history and Delete, and lights #4 in the viewer. Hovering \u201cedited\u201d on #2 gives the full time and the editor. Shown together here.', count: '8', mine: 'koff', groups: [g12({ hover: true, edTip: true })] }, seg('all')),
+      Object.assign({ id: '2c', name: 'On image, Mine', label: 'Filters combine: only region notes signed by the current user (AM). Unsigned notes never count as Mine.', count: '2 of 8', mine: 'kon', chk: true, groups: [
+        { id: 'ADR-0012', title: 'Aderman family at Beacon Hill Park', cards: [card({ reg: BASE[0], kind: 'Note', date: '2026-10-02', a: 'AM', text: BASE[0].text })] },
+        { id: 'ADR-0057', title: 'Letter to Margaret Aderman', cards: [card({ reg: PDFR[0], page: 3, kind: 'Transcription', date: '2026-10-02', a: 'AM', text: 'Received stamp, Victoria P.O., 21 Sep 1906' })] },
+      ] }, seg('img')),
+      Object.assign({ id: '2d', name: 'File missing, image changed', label: 'ADR-0012\u2019s file moved: the group gets the usual warning strip and each card a mini-map of where its region sits. ADR-0057 was re-exported at a new size: each region card gets a quiet chip.', count: '8', mine: 'koff', groups: [g12({ miss: true }), g57({ chg: true, noField: true })] }, seg('all')),
+    ];
+
+    const ht = (k, sz) => ({ width: sz + 'px', height: sz + 'px', flex: 'none', borderRadius: '4px', boxShadow: 'none', backgroundPosition: k * 3 + 'px ' + k * 5 + 'px' });
+    const hist = [
+      { title: 'Annotation added', n: 5, time: '14:32', t1: ht(5, 40), after: 'Sawmill crew\u2019s wagon. The lettering on the side reads \u201cAderman & Sons\u201d.', meta: 'Row 12 \u00b7 Viewer \u00b7 Anna Moreau' },
+      { title: 'Annotation moved', n: 2, time: '14:10', t1: ht(2, 40), t2: ht(7, 40), two: true, hover: true, same: BASE[1].text, meta: 'Row 12 \u00b7 Pop-out \u00b7 Ravi Kapoor' },
+      { title: 'Annotation resized', n: 4, time: '13:58', t1: ht(4, 40), same: BASE[3].text, meta: 'Row 12 \u00b7 Viewer \u00b7 Ravi Kapoor' },
+      { title: 'Annotation edited', n: 2, time: '11:20', t1: ht(2, 40), before: 'Studio stamp, illegible', after: BASE[1].text, meta: 'Row 12 \u00b7 Details \u00b7 Ravi Kapoor' },
+      { title: 'Annotation deleted', n: 6, time: '09:41', t1: ht(6, 40), before: 'Second figure from the left?', meta: 'Row 12 \u00b7 Viewer \u00b7 Anna Moreau' },
+    ].map((h, i, a) => Object.assign({ two: false, hover: false, before: '', after: '', same: '' }, h, {
+      rowStyle: { display: 'flex', flexDirection: 'column', gap: '6px', padding: '8px 12px', borderTop: i ? '1px solid var(--bd)' : 'none', background: h.hover ? 'color-mix(in srgb,var(--mubg) 55%,var(--bg))' : 'transparent', borderRadius: i === a.length - 1 ? '0 0 8px 8px' : '0' },
+    }));
+
+    const trow = (n, id, v, d, o = {}) => ({ n, id, v, d, note: !!o.note, err: !!o.err,
+      cellStyle: { position: 'relative', padding: '5px 8px', borderRight: '1px solid var(--bd)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', background: o.note ? 'var(--act)' : 'transparent' } });
+    const tcases = [
+      { id: '6a', name: 'Cell note', label: 'Hovering a cell with a note. The corner marker is unchanged.', col: 'Photographer',
+        text: 'Probably Skene Lowe; see the studio stamp (#2 on the image). Their negatives are at the City of Victoria Archives, accession 98-014.', meta: 'Anna Moreau \u00b7 2026-08-14 11:02 \u00b7 edited', extra: false,
+        rows: [trow(11, 'ADR-0011', 'Aderman, John', '1914'), trow(12, 'ADR-0012', 'Skene Lowe', 'ca. 1915', { note: true }), trow(13, 'ADR-0013', 'Aderman, John', 'ca. 1915'), trow(14, 'ADR-0014', '', '1916'), trow(15, 'ADR-0015', 'Aderman, Walter', '1917'), trow(16, 'ADR-0016', 'Aderman, Walter', '1917'), trow(17, 'ADR-0017', '', '1918')] },
+      { id: '6b', name: 'Note with a column description and a finding', label: 'What the old tooltip showed (the column\u2019s description and any validator findings) moves under a divider, so the note always comes first.', col: 'Description', chk: true,
+        text: 'Check \u201cBeacon Hill\u201d against the 1915 city directory before export.', meta: 'Unsigned \u00b7 2026-10-02 09:30', extra: true,
+        rows: [trow(11, 'ADR-0011', 'Sawmill crew at the Saanich yard', '1914'), trow(12, 'ADR-0012', 'Six family members  at Beacon Hill', 'ca. 1915', { note: true, err: true }), trow(13, 'ADR-0013', 'Picnic blanket, close view', 'ca. 1915'), trow(14, 'ADR-0014', 'Edith on the porch', '1916'), trow(15, 'ADR-0015', 'Mill opening', '1917'), trow(16, 'ADR-0016', 'Mill opening, crowd', '1917'), trow(17, 'ADR-0017', 'Wedding party', '1918')] },
+    ];
+    return {
+      tcases,
+      themes, vt, vframes, stripPages, pageLines, nframes, hist,
+      comps: [
+        { id: '4a', name: 'Composer', label: 'Strip, text, kind chips (optional, one at a time), Ctrl+Enter or Save. On a PDF the strip adds the page.', unsigned: false },
+        { id: '4b', name: 'Sign your notes as\u2026', label: 'First save without a name. One inline field, empty, focused; Skip saves the note unsigned.', unsigned: true },
+      ],
+      gallery: [
+        { id: 'ADR-0012', title: 'Aderman family at Beacon Hill Park', count: 4, has: true, ok: true, missing: false },
+        { id: 'ADR-0013', title: 'Picnic blanket, close view', count: 0, has: false, ok: true, missing: false },
+        { id: 'ADR-0131', title: 'Sawmill crew', count: 2, has: true, ok: false, missing: true },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>
