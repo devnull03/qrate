@@ -229,8 +229,8 @@ pub fn drag(rect: Rect, grip: Grip, delta: (f32, f32)) -> Rect {
     }
     let (u, v) = grip.anchor();
     let edge = |near: f32, far: f32, along: f32, d: f32| match along {
-        0. => ((near + d).clamp(0., far - SMALLEST), far),
-        1. => (near, (far + d).clamp(near + SMALLEST, 1.)),
+        0. => ((near + d).clamp(0., (far - SMALLEST).max(0.)), far),
+        1. => (near, (far + d).clamp((near + SMALLEST).min(1.), 1.)),
         _ => (near, far),
     };
     let (l, r) = edge(l, r, u, delta.0);
@@ -354,5 +354,18 @@ mod tests {
             rect,
             "N only moves the top"
         );
+    }
+
+    #[test]
+    fn tiny_regions_at_page_edges_can_be_resized() {
+        for rect in [[0., 0., 0.001, 0.002], [0.999, 0.998, 1., 1.]] {
+            for grip in Grip::HANDLES {
+                for delta in [(-1., -1.), (0., 0.), (1., 1.)] {
+                    let [l, t, r, b] = drag(rect, grip, delta);
+                    assert!(0. <= l && l < r && r <= 1.);
+                    assert!(0. <= t && t < b && b <= 1.);
+                }
+            }
+        }
     }
 }

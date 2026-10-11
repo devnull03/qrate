@@ -53,6 +53,8 @@ pub(crate) struct Col {
 pub(crate) enum Step {
     /// Every cell touched, as `(row, col, before, after)`.
     Cells(Vec<(usize, usize, SharedString, SharedString)>),
+    /// Authored notes affected by a row deletion, replayed by the table's caller.
+    Notes(Vec<Change>),
     RowsAdded {
         at: usize,
         rows: Vec<Row>,
@@ -97,6 +99,7 @@ impl Step {
     fn is_empty(&self) -> bool {
         match self {
             Step::Cells(cells) => cells.is_empty(),
+            Step::Notes(notes) => notes.is_empty(),
             Step::RowsAdded { rows, cells, .. } => rows.is_empty() && cells.is_empty(),
             Step::RowsRemoved { rows, .. } => rows.is_empty(),
             Step::Renamed { before, after, .. } => before == after,
@@ -138,6 +141,13 @@ impl History {
     /// The step just recorded, for a command built from two edits that must undo as one.
     pub(crate) fn last_mut(&mut self) -> Option<&mut Step> {
         self.done.last_mut()
+    }
+
+    pub(crate) fn replayed_mut(&mut self, forward: bool) -> Option<&mut Step> {
+        match forward {
+            true => self.done.last_mut(),
+            false => self.undone.last_mut(),
+        }
     }
 
     /// The last step, to be replayed backwards. `None` when there is nothing left to undo.

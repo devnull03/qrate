@@ -90,6 +90,6 @@ None of these commands deletes history. The changes that a restore reverses stay
 
 ## Clear the history
 
-Open the panel's menu and choose **Clear History…**. qrate asks you to confirm. After you
-clear the history, you cannot restore the project to any point before that moment. Clearing
-the history does not change your data.
+Open the panel's menu and choose **Clear History…**. qrate asks you to confirm, then saves your
+current edits before clearing the history. You cannot restore the project to any point before
+that moment. Clearing the history does not change your data.

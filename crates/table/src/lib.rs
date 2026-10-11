@@ -24,6 +24,9 @@ mod relink;
 mod row_index;
 mod visual;
 
+#[cfg(test)]
+mod tests;
+
 pub use agent::{AGENT_SOURCE, respond_to_agent, respond_to_agent_async};
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 pub use editor::editor_box;
@@ -434,7 +437,21 @@ pub fn history_step(redo: bool, cx: &mut App) {
         true => Origin::Redo,
         false => Origin::Undo,
     };
-    settle(&state, &changes, origin, cx);
+    let dropped = settle(&state, &changes, origin, cx);
+    let removed: Vec<_> = changes
+        .iter()
+        .filter_map(|change| match change {
+            Change::RowRemoved { row, .. } => Some(*row),
+            _ => None,
+        })
+        .collect();
+    if !removed.is_empty() {
+        state.update(cx, |state, _| {
+            state
+                .delegate_mut()
+                .track_row_notes(&removed, dropped, redo);
+        });
+    }
 }
 
 /// Everything that follows the grid changing under the user rather than one cell at a time — an
@@ -445,7 +462,7 @@ fn settle(
     changes: &[Change],
     origin: Origin,
     cx: &mut App,
-) {
+) -> Vec<Change> {
     state.update(cx, |state, cx| {
         // A row put back by a restore carries no photo, and an undone filename names another.
         let rows = changed_rows(state.delegate(), changes);
@@ -455,13 +472,38 @@ fn settle(
         cx.emit(delegate::TableChanged);
         cx.notify();
     });
-    if history::moves_rows(changes) {
+    let dropped = if history::moves_rows(changes) {
         let row_ids = state.read(cx).delegate().row_ids().to_vec();
-        diagnostics::Diagnostics::align_note_rows(diagnostics::DATASET_MAIN, &row_ids, origin, cx);
-    }
+        diagnostics::Diagnostics::align_note_rows(
+            diagnostics::DATASET_MAIN,
+            &row_ids,
+            origin.clone(),
+            cx,
+        )
+    } else {
+        Vec::new()
+    };
     for change in changes {
-        if let Change::ColumnRenamed { before, after } = change {
-            follow_rename(before, &after.clone().into(), cx);
+        match change {
+            Change::ColumnRenamed { before, after } => {
+                follow_rename(before, &after.clone().into(), cx);
+            }
+            Change::Note {
+                row, column, after, ..
+            } => {
+                let position = row.and_then(|id| state.read(cx).delegate().row_of(id));
+                if row.is_some() && position.is_none() && after.is_some() {
+                    continue;
+                }
+                let location = diagnostics::Location {
+                    dataset: diagnostics::DATASET_MAIN.into(),
+                    row: position,
+                    row_id: *row,
+                    column: column.clone().map(Into::into),
+                };
+                diagnostics::Diagnostics::apply_note(location, change, origin.clone(), cx);
+            }
+            _ => {}
         }
     }
     TablePanel::persist_columns(state, cx);
@@ -469,6 +511,7 @@ fn settle(
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
     revalidate_now(cx);
     autosave(cx);
+    dropped
 }
 
 /// Re-key what is stored under a column's name — its notes, its settings, its `__columns` row —
@@ -558,6 +601,45 @@ pub fn restore_value(
     if let Some((row, col)) = target {
         write_cell(row, col, text, Origin::Restore(from), cx);
     }
+}
+
+/// Restore a note at its row's live position and follow column renames since its history entry.
+pub fn restore_note(change: &Change, from: EntryId, cx: &mut App) {
+    let Change::Note { row, column, .. } = change else {
+        return;
+    };
+    let Some((file, state)) = save_target(cx) else {
+        return;
+    };
+    let delegate = state.read(cx).delegate();
+    let position = row.and_then(|id| delegate.row_of(id));
+    if row.is_some() && position.is_none() {
+        return;
+    }
+    let mut column = column.clone();
+    if column.is_some() {
+        let entries = match delegate.history_since(&file, from) {
+            Ok(entries) => entries,
+            Err(err) => {
+                log::error!("couldn't resolve the restored note's column: {err}");
+                return;
+            }
+        };
+        for change in entries.iter().flat_map(|entry| &entry.changes) {
+            if let Change::ColumnRenamed { before, after } = change
+                && column.as_deref() == Some(before.as_str())
+            {
+                column = Some(after.clone());
+            }
+        }
+        if column
+            .as_deref()
+            .is_some_and(|column| delegate.data_col(column).is_none())
+        {
+            return;
+        }
+    }
+    diagnostics::Diagnostics::restore_note(change, position, column.map(Into::into), from, cx);
 }
 
 /// A change to the grid's shape rather than its contents. One enum rather than five entry points
@@ -743,12 +825,26 @@ pub fn structural(op: Structural, cx: &mut App) {
         Structural::InsertRow { .. } | Structural::DuplicateRow { .. } | Structural::DeleteRows(_)
     ) {
         let row_ids = state.read(cx).delegate().row_ids().to_vec();
-        diagnostics::Diagnostics::align_note_rows(
+        let dropped = diagnostics::Diagnostics::align_note_rows(
             diagnostics::DATASET_MAIN,
             &row_ids,
             Origin::Structure,
             cx,
         );
+        if !dropped.is_empty() {
+            let removed: Vec<_> = dropped
+                .iter()
+                .filter_map(|change| match change {
+                    Change::Note { row, .. } => *row,
+                    _ => None,
+                })
+                .collect();
+            state.update(cx, |state, _| {
+                state
+                    .delegate_mut()
+                    .track_row_notes(&removed, dropped, true);
+            });
+        }
     }
     if matches!(
         op,
@@ -934,6 +1030,19 @@ pub fn save_now(cx: &mut App) -> Result<(), String> {
     let written = write_snapshot(&file, &snapshot);
     saved(&state, &file, edits, written, cx)?;
     log::debug!("saved {rows} rows in {:?}", started.elapsed());
+    Ok(())
+}
+
+/// Flush pending edits before clearing the log, so queued saves cannot put old entries back.
+pub fn clear_history(cx: &mut App) -> Result<(), String> {
+    save_now(cx)?;
+    if let Some(file) = cx
+        .try_global::<settings::project::CurrentProject>()
+        .map(|project| project.file.clone())
+    {
+        settings::history::clear(&file)
+            .map_err(|err| format!("Couldn't clear the project history: {err}"))?;
+    }
     Ok(())
 }
 

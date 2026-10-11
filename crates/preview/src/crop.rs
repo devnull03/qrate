@@ -13,8 +13,8 @@ const EDGE: u32 = 112;
 const AROUND_PIN: f32 = 0.15;
 const SCALE: f32 = 10_000.;
 
-/// File, page, the area in ten-thousandths of the upright page, and the decoder generation.
-type Key = (PathBuf, usize, [u16; 4], u64);
+/// File, page, area, decoder generation, and file identity.
+type Key = (PathBuf, usize, [u16; 4], u64, Option<String>);
 
 pub struct Crop;
 
@@ -23,7 +23,7 @@ impl Asset for Crop {
     type Output = Option<Arc<RenderImage>>;
 
     fn load(
-        (path, page, area, _): Self::Source,
+        (path, page, area, _, _): Self::Source,
         cx: &mut App,
     ) -> impl Future<Output = Self::Output> + Send + 'static {
         let executor = cx.background_executor().clone();
@@ -67,7 +67,13 @@ fn cut(path: &Path, page: usize, [x, y, w, h]: [u16; 4]) -> Option<Arc<RenderIma
 /// over, when the file can't be read and was not cut earlier this session.
 pub fn crop(path: &Path, page: usize, area: [u16; 4]) -> ImageSource {
     let generation = crate::extension(path).map_or(0, |extension| crate::generation(&extension));
-    let key = (path.to_path_buf(), page, area, generation);
+    let key = (
+        path.to_path_buf(),
+        page,
+        area,
+        generation,
+        crate::cache::key(path, crate::PANE, page),
+    );
     ImageSource::Custom(Arc::new(move |window: &mut Window, cx: &mut App| {
         let loaded = window.use_asset::<Crop>(&key, cx)?;
         Some(loaded.ok_or_else(|| {
@@ -78,7 +84,64 @@ pub fn crop(path: &Path, page: usize, area: [u16; 4]) -> ImageSource {
 
 #[cfg(test)]
 mod tests {
-    use crate::crop::cut;
+    use std::path::PathBuf;
+
+    use gpui::{Context, ImageSource, Render, Styled as _, TestAppContext, Window, img, px};
+
+    use crate::crop::{crop, cut};
+
+    struct CropProbe(PathBuf);
+
+    impl Render for CropProbe {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut Context<Self>,
+        ) -> impl gpui::IntoElement {
+            img(crop(&self.0, 0, [0, 0, 10_000, 10_000]))
+                .w(px(112.))
+                .h(px(112.))
+        }
+    }
+
+    #[gpui::test]
+    fn crops_refresh_when_a_missing_file_appears_or_a_source_is_replaced(cx: &mut TestAppContext) {
+        let path =
+            std::env::temp_dir().join(format!("qrate-crop-refresh-{}.png", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let (_, cx) = cx.add_window_view(|_, _| CropProbe(path.clone()));
+        cx.run_until_parked();
+        let load = |cx: &mut gpui::VisualTestContext| {
+            let ImageSource::Custom(load) = crop(&path, 0, [0, 0, 10_000, 10_000]) else {
+                panic!("a crop uses its asset loader");
+            };
+            cx.update(|window, cx| load(window, cx))
+                .expect("the crop finished loading")
+        };
+        assert!(load(cx).is_err());
+
+        for (seconds, rgba, bgra) in [
+            (1, [255, 0, 0, 255], [0, 0, 255, 255]),
+            (2, [0, 0, 255, 255], [255, 0, 0, 255]),
+        ] {
+            image::RgbaImage::from_pixel(20, 20, image::Rgba(rgba))
+                .save(&path)
+                .unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+                .unwrap();
+            cx.update(|_, cx| crate::forget(&path, cx));
+            cx.run_until_parked();
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            let image = load(cx).unwrap();
+            assert_eq!(&image.as_bytes(0).unwrap()[..4], &bgra);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 
     /// A region is cut from where it sits on the page, and a pin from a square around it.
     #[test]

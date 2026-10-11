@@ -581,11 +581,16 @@ impl Diagnostics {
     }
 
     /// Put a note back the way `change` found it, as a restore of entry `from`: its words, kind and
-    /// region, or gone if it did not exist yet. `row` is where its item sits now.
-    pub fn restore_note(change: &Change, row: Option<usize>, from: EntryId, cx: &mut App) {
+    /// region, or gone if it did not exist yet. `row` and `column` are its current address.
+    pub fn restore_note(
+        change: &Change,
+        row: Option<usize>,
+        column: Option<SharedString>,
+        from: EntryId,
+        cx: &mut App,
+    ) {
         let Change::Note {
             row: row_id,
-            column,
             before,
             id: Some(id),
             region_before,
@@ -599,7 +604,7 @@ impl Diagnostics {
             dataset: DATASET_MAIN.into(),
             row,
             row_id: *row_id,
-            column: column.as_deref().map(|c| SharedString::from(c.to_string())),
+            column,
         };
         let body = before.as_ref().map(|message| Body {
             message: message.clone().into(),
@@ -773,7 +778,7 @@ impl Diagnostics {
         row_ids: &[settings::project::RowId],
         origin: Origin,
         cx: &mut App,
-    ) {
+    ) -> Vec<Change> {
         let author = settings::history::author(cx);
         let positions: HashMap<_, _> = row_ids
             .iter()
@@ -813,11 +818,12 @@ impl Diagnostics {
         if changed {
             let logged = match dropped.is_empty() {
                 true => Vec::new(),
-                false => vec![Entry::new(origin, dropped, author)],
+                false => vec![Entry::new(origin, dropped.clone(), author)],
             };
             this.reindex();
             this.persist(&logged);
         }
+        dropped
     }
 
     /// Follow a column rename, which re-keys every note addressed to the old name.
@@ -1639,6 +1645,7 @@ mod tests {
             Diagnostics::restore_note(
                 &change(Some("stamp"), Some(stamp), Some("stamp"), Some(moved)),
                 Some(0),
+                None,
                 1,
                 cx,
             );
@@ -1649,6 +1656,7 @@ mod tests {
             Diagnostics::restore_note(
                 &change(Some("stamp"), Some(stamp), None, None),
                 Some(0),
+                None,
                 2,
                 cx,
             );

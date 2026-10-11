@@ -467,7 +467,7 @@ impl HistoryPanel {
         let answer = window.prompt(
             PromptLevel::Critical,
             "Clear this project's history?",
-            Some("Every recorded change is forgotten and nothing before now can be restored. The data itself is not changed."),
+            Some("Current edits are saved first. Every recorded change is forgotten and nothing before now can be restored. The data itself is not changed."),
             &["Clear History", "Cancel"],
             cx,
         );
@@ -476,10 +476,9 @@ impl HistoryPanel {
                 return;
             }
             cx.update(|cx| {
-                if let Some(file) = cx.try_global::<CurrentProject>().map(|p| p.file.clone())
-                    && let Err(err) = settings::history::clear(&file)
-                {
+                if let Err(err) = table::clear_history(cx) {
                     log::error!("couldn't clear the project history: {err}");
+                    return;
                 }
                 panel.update(cx, |this, cx| this.reload(true, cx)).ok();
             });
@@ -1017,11 +1016,7 @@ impl HistoryPanel {
                             _ => None,
                         };
                         let note = match listed.entry.changes.as_slice() {
-                            [
-                                change @ Change::Note {
-                                    row, id: Some(_), ..
-                                },
-                            ] => Some((change.clone(), *row)),
+                            [change @ Change::Note { id: Some(_), .. }] => Some(change.clone()),
                             _ => None,
                         };
                         let (restore, name, unname) =
@@ -1043,21 +1038,13 @@ impl HistoryPanel {
                                 },
                             ))
                         })
-                        .when_some(note, |menu, (change, row)| {
+                        .when_some(note, |menu, change| {
                             let label = match annotation(&change) {
                                 Some(_) => "Restore This Annotation",
                                 None => "Restore This Note",
                             };
                             menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
-                                let at = row.and_then(|row| {
-                                    cx.try_global::<TableStateHandle>()?
-                                        .0
-                                        .upgrade()?
-                                        .read(cx)
-                                        .delegate()
-                                        .row_of(row)
-                                });
-                                diagnostics::Diagnostics::restore_note(&change, at, id, cx);
+                                table::restore_note(&change, id, cx);
                             }))
                         })
                         .separator()
