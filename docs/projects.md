@@ -47,11 +47,12 @@ blank-project wizard with the files folder selected, a suggested name from the f
 the default Title and File columns. Review the name and save location, then continue through
 the wizard to create the project. Files stay in their existing folder.
 
-On Windows, the installer adds the folder action to Explorer's right-click menu (under
-**Show more options** on Windows 11), including the background menu inside a folder. On macOS,
+On Windows, the installers and Microsoft Store package add the folder action to Explorer's
+right-click menu, including the background menu inside a folder. The Store package supports
+the Windows 11 context menu; the other installers use **Show more options**. On macOS,
 choose **Services ▸ Open with qrate** in Finder. On Linux, launch the installed app once to
 register it, then choose qrate from your file manager's **Open With** menu; its location varies
-by desktop. The Windows Store package registers `.qrate` files but does not add the folder menu.
+by desktop.
 
 ## Open a project
 
