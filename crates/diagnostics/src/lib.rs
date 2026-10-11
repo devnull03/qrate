@@ -301,6 +301,11 @@ pub struct Diagnostics {
     /// a key carrying the column name would allocate a `SharedString` on every lookup and give
     /// the cost straight back.
     by_row: HashMap<Option<usize>, Vec<usize>>,
+    /// The `items` index of each authored note, by its id.
+    by_note: HashMap<NoteId, usize>,
+    /// `items` indices of the notes on regions of each `dataset_main` row's file, by the row's
+    /// stable id — what the viewer asks for on every pointer move.
+    regions: HashMap<settings::project::RowId, Vec<usize>>,
     /// Which project's stored notes are loaded. `CurrentProject` is mutated by every
     /// project-scoped setting write, so its observer fires far more often than the project
     /// actually changes.
@@ -401,11 +406,23 @@ impl Diagnostics {
 
     fn reindex(&mut self) {
         self.by_row.clear();
+        self.by_note.clear();
+        self.regions.clear();
         for (ix, diagnostic) in self.items.iter().enumerate() {
             self.by_row
                 .entry(diagnostic.location.row)
                 .or_default()
                 .push(ix);
+            let Some(note) = diagnostic.note.as_ref() else {
+                continue;
+            };
+            self.by_note.insert(note.id, ix);
+            if let Some(row_id) = diagnostic.location.row_id
+                && note.region.is_some()
+                && diagnostic.location.dataset == DATASET_MAIN
+            {
+                self.regions.entry(row_id).or_default().push(ix);
+            }
         }
     }
 
@@ -520,9 +537,22 @@ impl Diagnostics {
 
     /// One note, by the id history and the note card address it by.
     pub fn note(id: NoteId, cx: &App) -> Option<&Diagnostic> {
-        Self::all(cx)
-            .iter()
-            .find(|d| d.note.as_ref().is_some_and(|n| n.id == id))
+        let this = cx.try_global::<Self>()?;
+        this.by_note.get(&id).map(|&ix| &this.items[ix])
+    }
+
+    /// The notes on regions of one item's file, by the item's stable id.
+    pub fn regions_in_row(
+        row_id: settings::project::RowId,
+        cx: &App,
+    ) -> impl Iterator<Item = &Diagnostic> {
+        cx.try_global::<Self>().into_iter().flat_map(move |this| {
+            this.regions
+                .get(&row_id)
+                .map_or([].as_slice(), Vec::as_slice)
+                .iter()
+                .map(move |&ix| &this.items[ix])
+        })
     }
 
     fn next_note_id(&self) -> NoteId {

@@ -77,9 +77,7 @@ pub(crate) struct Mark {
 }
 
 pub(crate) fn marks(row: RowId, cx: &App) -> Vec<Mark> {
-    let mut notes: Vec<(NoteId, Region)> = Diagnostics::all(cx)
-        .iter()
-        .filter(|d| d.location.dataset == DATASET_MAIN && d.location.row_id == Some(row))
+    let mut notes: Vec<(NoteId, Region)> = Diagnostics::regions_in_row(row, cx)
         .filter_map(|d| {
             let note = d.note.as_ref()?;
             Some((note.id, note.region?))
