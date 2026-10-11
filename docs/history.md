@@ -85,7 +85,7 @@ Right-click a saved change for these commands:
   note on a cell or row, the command is **Restore This Note**.
 
 The **History** section of the Details panel has a restore button on each saved change to a
-cell or an annotation.
+cell, a note, or an annotation.
 
 None of these commands deletes history. The changes that a restore reverses stay in the list.
 

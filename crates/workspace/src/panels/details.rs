@@ -1346,7 +1346,9 @@ impl DetailsPanel {
                                 let on = column
                                     .as_deref()
                                     .map_or(String::new(), |c| format!(" on {c}"));
-                                (format!("Note{on} {verb}"), None)
+                                let restore =
+                                    (note.is_some() && before.is_some()).then(|| change.clone());
+                                (format!("Note{on} {verb}"), restore)
                             }
                         },
                         Change::RowAdded { row, .. } if *row == row_id => {
@@ -1542,12 +1544,22 @@ impl DetailsPanel {
                                                                 .icon(IconName::Undo2)
                                                                 .ghost()
                                                                 .xsmall()
-                                                                .tooltip(match change {
-                                                                    Change::Note { .. } => {
-                                                                        "Restore this annotation"
-                                                                    }
-                                                                    _ => "Restore this value",
-                                                                })
+                                                                .tooltip(
+                                                                    match (
+                                                                        &change,
+                                                                        super::history::annotation(
+                                                                            &change,
+                                                                        ),
+                                                                    ) {
+                                                                        (_, Some(_)) => {
+                                                                            "Restore this annotation"
+                                                                        }
+                                                                        (Change::Note { .. }, _) => {
+                                                                            "Restore this note"
+                                                                        }
+                                                                        _ => "Restore this value",
+                                                                    },
+                                                                )
                                                                 .on_click(move |_, _, cx| {
                                                                     match &change {
                                                                         Change::Cell {
