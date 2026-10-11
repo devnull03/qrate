@@ -147,6 +147,9 @@ pub(super) struct Composer {
     sign: Option<Entity<InputState>>,
 }
 
+/// The least of the page a zoom to a region takes in.
+const PIN_EXTENT: f32 = 0.15;
+
 fn state(cx: &App) -> (bool, Tool, bool) {
     cx.try_global::<Annotating>()
         .map_or((false, Tool::default(), false), |a| {
@@ -579,7 +582,8 @@ impl Viewer {
         cx.notify();
     }
 
-    /// Centre `region` and zoom until it spans half the frame, the way W fits the width.
+    /// Centre `region` and zoom until it spans half the frame, the way W fits the width. A pin
+    /// zooms as though it marked [`PIN_EXTENT`] of the page.
     pub(super) fn zoom_to(&mut self, region: &Region) {
         let Some((image, fit)) = self.fit() else {
             return;
@@ -587,8 +591,8 @@ impl Viewer {
         let [l, t, r, b] = regions::shown(region, self.shown);
         let (width, height) = (image.width * fit, image.height * fit);
         let frame = self.frame.get().size;
-        let zoom = (f32::from(frame.width) * 0.5 / (width * (r - l)))
-            .min(f32::from(frame.height) * 0.5 / (height * (b - t)))
+        let zoom = (f32::from(frame.width) * 0.5 / (width * (r - l).max(PIN_EXTENT)))
+            .min(f32::from(frame.height) * 0.5 / (height * (b - t).max(PIN_EXTENT)))
             .clamp(1., 8.);
         self.zoom = zoom;
         self.offset = point(
@@ -1407,6 +1411,12 @@ mod tests {
                 );
                 viewer.step_mark(-1, cx);
                 assert_eq!(viewer.stepped, first);
+                viewer.zoom_to(&Region {
+                    w: 0,
+                    h: 0,
+                    ..corner
+                });
+                assert!(viewer.zoom < 4., "a pin does not zoom to the limit");
                 viewer.step_mark(1, cx);
                 assert_ne!(viewer.stepped, first);
                 assert!(
