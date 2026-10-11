@@ -919,7 +919,7 @@ impl DetailsPanel {
                                                 this.edit_note(id, &message, window, cx);
                                             })),
                                         )
-                                        .child(
+                                        .children((picked.len() == 1).then(|| {
                                             Button::new(ElementId::NamedInteger(
                                                 "note-history".into(),
                                                 id as u64,
@@ -927,12 +927,14 @@ impl DetailsPanel {
                                             .icon(Icon::empty().path("icons/history.svg"))
                                             .ghost()
                                             .xsmall()
-                                            .tooltip("Show history")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.history_open = true;
-                                                cx.notify();
-                                            })),
-                                        )
+                                            .tooltip("Show this item's history")
+                                            .on_click(
+                                                cx.listener(|this, _, _, cx| {
+                                                    this.history_open = true;
+                                                    cx.notify();
+                                                }),
+                                            )
+                                        }))
                                         .child(
                                             Button::new(ElementId::NamedInteger(
                                                 "note-delete".into(),
