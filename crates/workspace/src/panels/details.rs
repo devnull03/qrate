@@ -919,14 +919,32 @@ impl DetailsPanel {
                                             .ghost()
                                             .xsmall()
                                             .tooltip("Delete")
-                                            .on_click(move |_, _, cx| {
-                                                diagnostics::Diagnostics::edit_note(
-                                                    id,
-                                                    SharedString::default(),
-                                                    kind,
-                                                    Origin::Details,
+                                            .on_click(move |_, window, cx| {
+                                                let answer = window.prompt(
+                                                    PromptLevel::Warning,
+                                                    match region {
+                                                        Some(_) => "Delete this annotation?",
+                                                        None => "Delete this note?",
+                                                    },
+                                                    Some("History keeps a copy you can restore."),
+                                                    &["Delete", "Cancel"],
                                                     cx,
                                                 );
+                                                cx.spawn(async move |cx| {
+                                                    if answer.await != Ok(0) {
+                                                        return;
+                                                    }
+                                                    cx.update(|cx| {
+                                                        diagnostics::Diagnostics::edit_note(
+                                                            id,
+                                                            SharedString::default(),
+                                                            kind,
+                                                            Origin::Details,
+                                                            cx,
+                                                        )
+                                                    });
+                                                })
+                                                .detach();
                                             }),
                                         ),
                                 )

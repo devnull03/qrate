@@ -191,7 +191,7 @@ button. You cannot add annotations until the file is found.
 The **Notes** section of the Details panel lists the selected items' notes, with a small crop
 of the part each annotation marks. Point at a card to light its annotation in the viewer, and
 click it to zoom the viewer to it. Hover a card to edit, delete, or show the history of its
-note. The buttons above the list show **All** notes, only those **On image**, or only those
+note. Deleting asks first. The buttons above the list show **All** notes, only those **On image**, or only those
 **On fields**, and **Mine** shows only the notes you signed. In the gallery, a badge in the
 bottom-left corner of a tile counts its annotations.
 
