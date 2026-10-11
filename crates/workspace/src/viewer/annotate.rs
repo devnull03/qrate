@@ -65,6 +65,9 @@ pub(crate) fn reveal(id: NoteId, in_pop_out: bool, window: &mut Window, cx: &mut
         };
         crate::viewer::open_viewer(file, Some(row_id), Scope::Workspace, window, cx);
     }
+    if hidden(cx) {
+        cx.default_global::<Annotating>().hidden = false;
+    }
     cx.set_global(Reveal(Some(id)));
 }
 
@@ -312,6 +315,9 @@ impl Viewer {
                 to: at,
             });
             return grabbed.is_some();
+        }
+        if hidden {
+            cx.default_global::<Annotating>().hidden = false;
         }
         self.draw = Some(Draw { from: at, to: at });
         cx.notify();
