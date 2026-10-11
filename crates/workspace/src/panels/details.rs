@@ -68,6 +68,9 @@ const EDITOR_MAX_WINDOW_SHARE: f32 = 0.4;
 /// text is a click away in the editor.
 const VALUE_LINE_CLAMP: usize = 4;
 
+/// A file's version on disk, and the pixel size it had at that version.
+type Header = (Option<String>, Option<(u32, u32)>);
+
 /// Which notes the Notes section lists.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NotesFilter {
@@ -178,7 +181,7 @@ pub struct DetailsPanel {
     /// Set when the viewer picks a region, so its card is scrolled into view on the next paint.
     follow_pick: Cell<bool>,
     /// Each file's pixel size, read again only when the file on disk is a different one.
-    headers: RefCell<HashMap<PathBuf, (Option<String>, Option<(u32, u32)>)>>,
+    headers: RefCell<HashMap<PathBuf, Header>>,
     /// Repaints when a note changes, and follows the region the viewer picks.
     _notes_subs: [Subscription; 2],
 }
