@@ -1097,7 +1097,7 @@ impl Render for Viewer {
                     }
                     "z" if reading && ev.keystroke.modifiers.secondary() => this.undo_mark(cx),
                     "n" if reading && this.row.is_some() => this.toggle_hidden(cx),
-                    "a" if reading => this.toggle_annotate(cx),
+                    "a" if reading => this.toggle_annotate(window, cx),
                     "[" if reading => this.step_mark(-1, cx),
                     "]" if reading => this.step_mark(1, cx),
                     "delete" | "backspace" if reading => this.ask_delete(cx),

@@ -252,13 +252,11 @@ impl Viewer {
         self.row.is_some() && !self.missing && state(cx).0
     }
 
-    pub(super) fn toggle_annotate(&mut self, cx: &mut Context<Self>) {
-        if self.row.is_none() || self.missing {
+    pub(super) fn toggle_annotate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.row.is_none() || self.missing || self.exit_annotate(window, cx) {
             return;
         }
-        let annotating = cx.default_global::<Annotating>();
-        annotating.on = !annotating.on;
-        self.draw = None;
+        cx.default_global::<Annotating>().on = true;
         cx.notify();
     }
 
@@ -623,7 +621,7 @@ pub(super) fn buttons(this: &Viewer, cx: &mut Context<Viewer>) -> AnyElement {
                 .selected(on && this.row.is_some() && !this.missing)
                 .disabled(this.row.is_none() || this.missing)
                 .tooltip("Annotate (A)")
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_annotate(cx))),
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_annotate(window, cx))),
         )
         .child(
             Button::new("toggle-annotations")
