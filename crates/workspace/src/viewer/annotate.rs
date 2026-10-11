@@ -789,8 +789,8 @@ pub(super) fn layer(this: &Viewer, marks: &[Mark], cx: &mut Context<Viewer>) -> 
                     .occlude()
                     .on_action(cx.listener(
                         |this, _: &gpui_component::input::Escape, window, cx| {
-                            if !this.exit_annotate(window, cx) {
-                                this.cancel(window, cx);
+                            if !this.cancel(window, cx) {
+                                this.exit_annotate(window, cx);
                             }
                         },
                     ))

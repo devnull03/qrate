@@ -171,7 +171,8 @@ never changed.
   file. History keeps every step either way.
 - Hold the middle mouse button and drag to pan while annotating. Release it to return to the
   annotation tool.
-- **Esc** exits annotate mode and cancels any unfinished note or drag.
+- **Esc** cancels an unfinished note or drag, or drops the selection. Press it again to exit
+  annotate mode.
 
 Annotations are numbered in the order they were made. Point at one to read its note. Press
 **N**, or the eye button, to hide them all and see the file underneath. **[** and **]** step to

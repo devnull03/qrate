@@ -73,7 +73,7 @@ These work in the fullscreen viewer and in the pop-out window.
 | **Delete** | Delete the selected annotation (asks first) |
 | **Ctrl+Z** | Take back the last annotation you added, moved, or resized since the file was opened |
 | **Ctrl+Enter** | Save the note being written |
-| **Esc** | Exit annotate mode and cancel unfinished work; otherwise dismiss the selection or find panel, then close the fullscreen viewer or return to Details in the pop-out window |
+| **Esc** | Cancel an unfinished note or drag, or drop the selected annotation; then exit annotate mode, dismiss the find panel, and close the fullscreen viewer or return to Details in the pop-out window |
 
 See [The grid](grid.md) for what each command does, and [Projects](projects.md#saving) for
 how saving works.

@@ -1019,7 +1019,7 @@ impl Render for Viewer {
             // The find panel is the inner layer, so Escape dismisses it before the viewer.
             // The pop-out has no overlay to close: its window is what the viewer is.
             .on_action(cx.listener(|this, _: &CloseViewerLayer, window, cx| {
-                if this.exit_annotate(window, cx) || this.cancel(window, cx) {
+                if this.cancel(window, cx) || this.exit_annotate(window, cx) {
                 } else if this.find_open {
                     this.close_find(window, cx);
                 } else if this.scope != Scope::PopOut {
