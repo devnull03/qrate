@@ -102,4 +102,3 @@ I've redesigned the annotation hover card; the page didn't finish loading for my
 - **Table notes (new section 6):**
   - **6a:** the same card when hovering a cell that has a note. It opens after the grid's existing 600ms delay, and the corner marker on the cell is unchanged.
   - **6b:** a cell that also has a column description and a validator error. Today's tooltip shows those two; in the new card they move under a divider below the note. This is marked TO CHECK.
-

@@ -101,4 +101,3 @@ _[tool: ready_for_verification]_
 I fixed the one layout problem the check found: in 9c (keyboard focus), the third close-up ran past the card's right edge. The card is now 860px wide and its row can wrap.
 
 The other layout warnings are intentional. The Getting started cards and tips sit on top of the grid, and the last table rows are cut off by the edge of the window, as they would be in the app.
-

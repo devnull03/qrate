@@ -61,4 +61,3 @@ These are my guesses, tagged TO CHECK on the page:
 - The wording of the "component not installed" banner and its Install… button are placeholders.
 
 There's no frame at 4K size. The note on 2m says the sidebar keeps its width there and the file area takes the rest.
-
