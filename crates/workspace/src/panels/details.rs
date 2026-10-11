@@ -766,7 +766,9 @@ impl DetailsPanel {
                                 .bg(theme.muted.opacity(0.55)),
                             (false, false) => card.border_color(theme.border).bg(theme.background),
                         })
-                        .when(region.is_some(), |card| card.cursor_pointer())
+                        .when(region.is_some() && editing.is_none(), |card| {
+                            card.cursor_pointer()
+                        })
                         .on_hover(cx.listener(move |this, hover: &bool, _, cx| {
                             let now = match hover {
                                 true => id,
@@ -779,12 +781,15 @@ impl DetailsPanel {
                                 cx.notify();
                             }
                         }))
-                        .when_some(id.filter(|_| region.is_some()), |card, id| {
-                            card.on_click(move |_, window, cx| {
-                                cx.set_global(crate::viewer::Picked(Some(id)));
-                                crate::viewer::reveal(id, in_pop_out, window, cx);
-                            })
-                        })
+                        .when_some(
+                            id.filter(|_| region.is_some() && editing.is_none()),
+                            |card, id| {
+                                card.on_click(move |_, window, cx| {
+                                    cx.set_global(crate::viewer::Picked(Some(id)));
+                                    crate::viewer::reveal(id, in_pop_out, window, cx);
+                                })
+                            },
+                        )
                         .children(thumb)
                         .child(
                             v_flex()
