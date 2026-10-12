@@ -1,4 +1,8 @@
-use std::{cell::RefCell, ffi::CStr, sync::OnceLock};
+use std::{
+    cell::RefCell,
+    ffi::{CStr, c_void},
+    sync::OnceLock,
+};
 
 use cocoa::{
     base::{id, nil},
@@ -28,7 +32,7 @@ pub(crate) fn register(sender: async_channel::Sender<String>) {
             .expect("qrate's folder service class is registered once");
         provider.add_method(
             sel!(openWithQrate:userData:error:),
-            open_folder as extern "C" fn(&Object, Sel, id, id, *mut id),
+            open_folder as extern "C" fn(&Object, Sel, id, id, *mut c_void),
         );
         let object: id = msg_send![provider.register(), new];
         let app: id = msg_send![class!(NSApplication), sharedApplication];
@@ -37,7 +41,7 @@ pub(crate) fn register(sender: async_channel::Sender<String>) {
     }
 }
 
-extern "C" fn open_folder(_: &Object, _: Sel, pasteboard: id, _: id, error: *mut id) {
+extern "C" fn open_folder(_: &Object, _: Sel, pasteboard: id, _: id, error: *mut c_void) {
     unsafe {
         let classes: id = msg_send![class!(NSArray), arrayWithObject: class!(NSURL)];
         let urls: id = msg_send![pasteboard, readObjectsForClasses: classes options: nil];
@@ -64,7 +68,7 @@ extern "C" fn open_folder(_: &Object, _: Sel, pasteboard: id, _: id, error: *mut
         if !error.is_null() {
             let message =
                 NSString::alloc(nil).init_str("Choose a folder to start a qrate project.");
-            *error = msg_send![message, autorelease];
+            *error.cast::<id>() = msg_send![message, autorelease];
         }
     }
 }
