@@ -563,7 +563,7 @@ pub fn address(
             source: Source::Validator(validator.clone()),
             message: finding.message,
             group: finding.group,
-            filed: None,
+            note: None,
         })
         .collect()
 }

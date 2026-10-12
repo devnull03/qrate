@@ -44,6 +44,9 @@ pkgs.mkShell {
   LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeDeps;
 
   shellHook = ''
+    # Link against the shell's libc and embed its matching runtime path.
+    export NIX_CFLAGS_LINK="-L${pkgs.glibc}/lib $NIX_CFLAGS_LINK"
+    export NIX_LDFLAGS="-L${pkgs.glibc}/lib $NIX_LDFLAGS"
     echo "qrate dev shell — cargo $(cargo --version | cut -d' ' -f2)"
     echo "PDF and video preview need ./scripts/fetch-binaries.sh"
   '';

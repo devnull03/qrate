@@ -56,7 +56,7 @@ pub fn quad(
 }
 
 /// The page image's own rectangle: its size, and where its top-left corner sits.
-fn drawn(
+pub(super) fn drawn(
     area: Bounds<Pixels>,
     zoom: f32,
     offset: Point<Pixels>,

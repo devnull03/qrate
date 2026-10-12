@@ -404,7 +404,7 @@ mod tests {
                 source: Source::Validator(source.into()),
                 message: "not a known term".into(),
                 group: None,
-                filed: None,
+                note: None,
             }],
             cx,
         );
@@ -516,7 +516,7 @@ mod tests {
                     source: Source::Validator("LCSH".into()),
                     message: "not a known term".into(),
                     group: None,
-                    filed: None,
+                    note: None,
                 },
                 Diagnostic {
                     location: location("Subject"),
@@ -524,7 +524,7 @@ mod tests {
                     source: Source::Validator("LCSH".into()),
                     message: "also deprecated".into(),
                     group: None,
-                    filed: None,
+                    note: None,
                 },
             ];
             Diagnostics::set(

@@ -1,7 +1,8 @@
 //! Our own icons in front of `gpui_component_assets`, which is otherwise the only asset source.
 //! The bundled icon set has no filled panel glyphs (the title bar's "this dock is open" state) and
 //! no picture glyph (visual search), and none of the pop-out viewer's window, pin or missing-file
-//! glyphs, nor the viewer's fit-to-width glyph, so those SVGs are ours, copied from Lucide.
+//! glyphs, nor the viewer's fit-to-width or annotation glyphs, so those SVGs are ours, copied from
+//! Lucide.
 
 use std::borrow::Cow;
 
@@ -9,7 +10,7 @@ use gpui::{AssetSource, Result, SharedString};
 
 pub struct Assets;
 
-const OWN: [(&str, &str); 10] = [
+const OWN: [(&str, &str); 16] = [
     (
         "icons/history.svg",
         include_str!("../../../assets/icons/history.svg"),
@@ -49,6 +50,30 @@ const OWN: [(&str, &str); 10] = [
     (
         "icons/move-horizontal.svg",
         include_str!("../../../assets/icons/move-horizontal.svg"),
+    ),
+    (
+        "icons/square-pen.svg",
+        include_str!("../../../assets/icons/square-pen.svg"),
+    ),
+    (
+        "icons/mouse-pointer-2.svg",
+        include_str!("../../../assets/icons/mouse-pointer-2.svg"),
+    ),
+    (
+        "icons/rectangle.svg",
+        include_str!("../../../assets/icons/rectangle.svg"),
+    ),
+    (
+        "icons/map-pin.svg",
+        include_str!("../../../assets/icons/map-pin.svg"),
+    ),
+    (
+        "icons/message-square.svg",
+        include_str!("../../../assets/icons/message-square.svg"),
+    ),
+    (
+        "icons/pencil.svg",
+        include_str!("../../../assets/icons/pencil.svg"),
     ),
 ];
 

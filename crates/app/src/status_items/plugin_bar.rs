@@ -33,6 +33,43 @@ impl PluginBar {
             _sub: cx.observe_global::<BarContributions>(|_, cx| cx.notify()),
         }
     }
+
+    /// Menu equivalents of the bar contributions, using the same command dispatcher.
+    pub fn overflow_menu(
+        bar: Bar,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let items = [Side::Left, Side::Right]
+            .into_iter()
+            .flat_map(|side| BarContributions::at(bar, side, cx))
+            .collect::<Vec<_>>();
+        if items.is_empty() {
+            return menu;
+        }
+        menu.submenu("Plugin controls", window, cx, move |menu, window, cx| {
+            items.iter().cloned().fold(menu, |menu, (plugin, item)| {
+                let mut actions = Vec::new();
+                for action in [item.left, item.right].into_iter().flatten() {
+                    match action {
+                        BarAction::Command(command) => actions.push((item.text.clone(), command)),
+                        BarAction::Menu(commands) => actions.extend(commands),
+                    }
+                }
+                // One command may be exposed by both mouse buttons.
+                let mut seen = std::collections::HashSet::new();
+                actions.retain(|(_, command)| seen.insert(command.clone()));
+                if actions.is_empty() {
+                    menu.label(item.text)
+                } else {
+                    menu.submenu(item.text, window, cx, move |menu, _, _| {
+                        entries(plugin.clone(), actions.clone(), menu)
+                    })
+                }
+            })
+        })
+    }
 }
 
 /// Run one of a plugin's commands against whatever the table has selected. The command answers on

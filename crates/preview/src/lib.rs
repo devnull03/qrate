@@ -11,11 +11,13 @@
 
 mod audio;
 pub mod cache;
+mod crop;
 mod embedded;
 mod media;
 mod native;
 mod pdf;
 pub mod playback;
+pub use crop::crop;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};

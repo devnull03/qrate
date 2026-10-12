@@ -20,7 +20,7 @@ use gpui::App;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
-use crate::project::RowId;
+use crate::project::{NoteId, NoteKind, Region, RowId};
 
 pub type EntryId = i64;
 
@@ -44,6 +44,8 @@ pub enum Origin {
     Redo,
     /// Put back by restoring the project, or a single value, to this entry.
     Restore(EntryId),
+    /// A note's region drawn, moved, or resized on the image.
+    Drawn,
 }
 
 impl Origin {
@@ -62,6 +64,7 @@ impl Origin {
             Origin::Undo => "Undo".into(),
             Origin::Redo => "Redo".into(),
             Origin::Restore(id) => format!("Restored to #{id}"),
+            Origin::Drawn => "Drawn on the image".into(),
         }
     }
 }
@@ -111,6 +114,17 @@ pub enum Change {
         column: Option<String>,
         before: Option<String>,
         after: Option<String>,
+        /// Which note, where a location holds several. `None` in entries from before notes had ids.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<NoteId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region_before: Option<Region>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region_after: Option<Region>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind_before: Option<NoteKind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind_after: Option<NoteKind>,
     },
 }
 
@@ -179,11 +193,21 @@ impl Change {
                 column,
                 before,
                 after,
+                id,
+                region_before,
+                region_after,
+                kind_before,
+                kind_after,
             } => Change::Note {
                 row,
                 column,
                 before: after,
                 after: before,
+                id,
+                region_before: region_after,
+                region_after: region_before,
+                kind_before: kind_after,
+                kind_after: kind_before,
             },
         }
     }
@@ -481,6 +505,45 @@ pub fn renames(path: &Path) -> Result<Vec<(String, String)>> {
     .collect()
 }
 
+/// When each note was last reworded and by whom: its newest logged change of text or kind, as local
+/// `YYYY-MM-DD HH:MM`. A move is not a rewording.
+pub fn note_edits(path: &Path) -> Result<HashMap<NoteId, (String, Option<String>)>> {
+    let conn = crate::project::open_ro(path)?;
+    if !qrate_export::table_exists(&conn, "__history_changes")? {
+        return Ok(HashMap::new());
+    }
+    let today = Local::now().date_naive();
+    let mut stmt = conn.prepare(
+        "SELECT h.at, h.author, c.change FROM __history_changes c JOIN __history h ON h.id = c.entry_id
+         WHERE c.change LIKE '{\"Note\"%' ORDER BY c.entry_id, c.seq",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut edits = HashMap::new();
+    for row in rows {
+        let (at, author, change) = row?;
+        if let Ok(Change::Note {
+            id: Some(id),
+            before: Some(before),
+            after: Some(after),
+            kind_before,
+            kind_after,
+            ..
+        }) = serde_json::from_str(&change)
+            && (before != after || kind_before != kind_after)
+        {
+            let (day, time, _) = parts(at, today);
+            edits.insert(id, (format!("{day} {time}"), author));
+        }
+    }
+    Ok(edits)
+}
+
 /// How many entries a project keeps. Unset — or anything that isn't a positive number — keeps
 /// every one, which is the default: this log is an audit trail, so nothing goes unless asked.
 pub const HISTORY_LIMIT_KEY: &str = "history_limit";
@@ -557,8 +620,8 @@ pub fn clear(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Change, Entry, EntryId, Origin, clear, entries_after, former_names, local_times, page,
-        prune, renames, set_label,
+        Change, Entry, EntryId, Origin, clear, entries_after, former_names, local_times,
+        note_edits, page, prune, renames, set_label,
     };
     use crate::project::{ProjectSpec, create_project_file, save_dataset, write_notes};
 
@@ -622,6 +685,18 @@ mod tests {
                 column: None,
                 before: Some("faded".into()),
                 after: None,
+                id: Some(7),
+                region_before: Some(crate::project::Region {
+                    page: 2,
+                    x: 1200,
+                    y: 500,
+                    w: 2500,
+                    h: 0,
+                    of: Some((4000, 3000)),
+                }),
+                region_after: None,
+                kind_before: Some(crate::project::NoteKind::Question),
+                kind_after: None,
             }],
             None,
         );
@@ -636,6 +711,77 @@ mod tests {
             vec![typed, fixed, note]
         );
         assert_eq!(entries_after(&path, 2).unwrap().len(), 1);
+    }
+
+    /// A note counts as edited when its words or kind changed, not when its region moved or when it
+    /// was first filed, and the newest edit is the one it reports.
+    #[test]
+    fn a_note_is_edited_by_its_newest_rewording() {
+        let path = project("note-edits.qrate");
+        let note = |id, before: Option<&str>, after: Option<&str>| Change::Note {
+            row: Some(1),
+            column: None,
+            before: before.map(Into::into),
+            after: after.map(Into::into),
+            id: Some(id),
+            region_before: None,
+            region_after: None,
+            kind_before: None,
+            kind_after: None,
+        };
+        let entry = |at, author: &str, change| Entry {
+            at,
+            ..Entry::new(Origin::Typed, vec![change], Some(author.into()))
+        };
+        let entries = [
+            entry(1_000, "am", note(1, None, Some("faded"))),
+            entry(
+                2_000,
+                "rk",
+                note(1, Some("faded"), Some("faded, in pencil")),
+            ),
+            entry(
+                3_000,
+                "am",
+                note(1, Some("faded, in pencil"), Some("faded, in pencil")),
+            ),
+            entry(4_000, "am", note(2, None, Some("stamp"))),
+        ];
+        write_notes(&path, "note", &[], &entries).unwrap();
+
+        let edits = note_edits(&path).unwrap();
+        assert_eq!(edits.len(), 1, "filing a note is not editing it");
+        let (when, author) = &edits[&1];
+        assert_eq!(
+            author.as_deref(),
+            Some("rk"),
+            "the move after it is not a rewording"
+        );
+        assert_eq!(
+            when,
+            &format!(
+                "{} {}",
+                local_times(&[2_000])[0].0,
+                local_times(&[2_000])[0].1
+            )
+        );
+    }
+
+    /// A note change logged before notes had ids or regions still reads, as a change to the one
+    /// note at its location — a year-old log is the point of keeping one.
+    #[test]
+    fn a_note_change_from_before_ids_still_reads() {
+        let old = r#"{"Note":{"row":3,"column":"Title","before":null,"after":"verso"}}"#;
+        let Change::Note {
+            id,
+            region_after,
+            kind_after,
+            ..
+        } = serde_json::from_str(old).unwrap()
+        else {
+            panic!("not a note change");
+        };
+        assert_eq!((id, region_after, kind_after), (None, None, None));
     }
 
     /// The panel pages newest first, a name sticks to its entry until it is taken away, and

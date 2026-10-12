@@ -6,11 +6,15 @@ use gpui::*;
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::combobox::{Combobox, ComboboxEvent, ComboboxState};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent};
-use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_component::searchable_list::{SearchableListDelegate, SearchableListItem};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, IndexPath, Selectable as _, Sizable as _, h_flex, v_flex,
+};
+use window_wrapper::{
+    panel_headers::{PanelHeaderRegistry, PanelHeaders},
+    responsive_header::{HeaderMenu, HeaderStage},
 };
 
 use crate::{
@@ -387,6 +391,7 @@ pub struct ProblemsPanel {
 
 impl ProblemsPanel {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+        PanelHeaderRegistry::register::<Self>("ProblemsPanel", cx);
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             active: false,
@@ -510,44 +515,195 @@ impl BasePanel for ProblemsPanel {
     }
 }
 
-impl Panel for ProblemsPanel {
+impl ProblemsPanel {
+    fn header_menu(
+        &mut self,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        include_filters: bool,
+    ) -> PopupMenu {
+        let panel = cx.entity().downgrade();
+        let menu = menu.when(include_filters, |menu| {
+            let filters = PopupMenu::build(window, cx, |menu, _, _| {
+                Filter::ALL
+                    .into_iter()
+                    .zip(self.counts)
+                    .fold(menu, |menu, (filter, count)| {
+                        let panel = panel.clone();
+                        menu.item(
+                            PopupMenuItem::new(format!("{} ({count})", filter.label()))
+                                .checked(self.filter == filter)
+                                .on_click(move |_, _, cx| {
+                                    panel
+                                        .update(cx, |this, cx| {
+                                            this.filter = filter;
+                                            this.refresh(cx);
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                }),
+                        )
+                    })
+            });
+            menu.item(PopupMenuItem::submenu("Show", filters))
+        });
+        let menu = menu.when(
+            self.filter != Filter::Notes && self.sources.len() > 1,
+            |menu| {
+                let sources = PopupMenu::build(window, cx, |menu, _, _| {
+                    self.sources.iter().fold(menu, |menu, source| {
+                        let panel = panel.clone();
+                        let source = source.clone();
+                        menu.item(
+                            PopupMenuItem::new(source.clone())
+                                .checked(!self.excluded_sources.contains(&source))
+                                .on_click(move |_, _, cx| {
+                                    panel
+                                        .update(cx, |this, cx| {
+                                            if !this.excluded_sources.remove(&source) {
+                                                this.excluded_sources.insert(source.clone());
+                                            }
+                                            this.refresh(cx);
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                }),
+                        )
+                    })
+                });
+                menu.item(PopupMenuItem::submenu("Sources", sources))
+            },
+        );
+        menu.when(
+            self.filter != Filter::Notes && (self.ignored_count > 0 || self.show_ignored),
+            |menu| {
+                menu.item(
+                    PopupMenuItem::new(format!("Show ignored ({})", self.ignored_count))
+                        .checked(self.show_ignored)
+                        .on_click(move |_, _, cx| {
+                            panel
+                                .update(cx, |this, cx| {
+                                    this.show_ignored = !this.show_ignored;
+                                    this.refresh(cx);
+                                    cx.notify();
+                                })
+                                .ok();
+                        }),
+                )
+            },
+        )
+    }
+
     // The filter tabs sit in the title (the bar's stretching slot, so they stay left) and the
     // source picker in the suffix, so the list starts right under the title bar.
-    fn title(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex().items_center().gap_3().child("Problems").child(
-            TabBar::new("problems-filter")
-                .segmented()
-                .xsmall()
-                .selected_index(
-                    Filter::ALL
-                        .iter()
-                        .position(|f| *f == self.filter)
-                        .unwrap_or(0),
-                )
-                .children(Filter::ALL.iter().zip(self.counts).map(|(f, n)| {
-                    // The same icon and colour the rows of that severity carry.
-                    let icon = match f {
-                        Filter::All => Icon::new(IconName::Menu),
-                        Filter::Errors => Icon::new(IconName::CircleX)
-                            .text_color(severity_color(Severity::Error, cx)),
-                        Filter::Warnings => Icon::new(IconName::TriangleAlert)
-                            .text_color(severity_color(Severity::Warning, cx)),
-                        Filter::Notes => Icon::new(IconName::Info),
-                    };
-                    Tab::new().aria_label(f.label()).child(
-                        h_flex()
-                            .items_center()
-                            .gap_1()
-                            .child(icon.xsmall())
-                            .child(format!("{} ({n})", f.label())),
+    fn header_tabs(&mut self, names: bool, cx: &mut Context<Self>) -> AnyElement {
+        h_flex()
+            .items_center()
+            .gap_3()
+            .child("Problems")
+            .child(
+                TabBar::new("problems-filter")
+                    .segmented()
+                    .xsmall()
+                    .selected_index(
+                        Filter::ALL
+                            .iter()
+                            .position(|f| *f == self.filter)
+                            .unwrap_or(0),
                     )
-                }))
-                .on_click(cx.listener(|this, ix: &usize, _w, cx| {
-                    this.filter = Filter::ALL[*ix];
-                    this.refresh(cx);
-                    cx.notify();
-                })),
-        )
+                    .children(Filter::ALL.iter().zip(self.counts).map(|(f, n)| {
+                        // The same icon and colour the rows of that severity carry.
+                        let icon = match f {
+                            Filter::All => Icon::new(IconName::Menu),
+                            Filter::Errors => Icon::new(IconName::CircleX)
+                                .text_color(severity_color(Severity::Error, cx)),
+                            Filter::Warnings => Icon::new(IconName::TriangleAlert)
+                                .text_color(severity_color(Severity::Warning, cx)),
+                            Filter::Notes => Icon::new(IconName::Info),
+                        };
+                        let label = f.label();
+                        Tab::new().aria_label(label).child(
+                            div()
+                                .id(label)
+                                .when(!names, |content| {
+                                    content.tooltip(move |window, cx| {
+                                        gpui_component::tooltip::Tooltip::new(label)
+                                            .build(window, cx)
+                                    })
+                                })
+                                .child(h_flex().items_center().gap_1().child(icon.xsmall()).child(
+                                    if names {
+                                        format!("{label} ({n})")
+                                    } else {
+                                        n.to_string()
+                                    },
+                                )),
+                        )
+                    }))
+                    .on_click(cx.listener(|this, ix: &usize, _w, cx| {
+                        this.filter = Filter::ALL[*ix];
+                        this.refresh(cx);
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+}
+
+impl PanelHeaders for ProblemsPanel {
+    fn header_stages(
+        &mut self,
+        defaults: Vec<HeaderStage>,
+        common_menu: HeaderMenu,
+        cx: &mut Context<Self>,
+    ) -> Vec<HeaderStage> {
+        let panel = cx.entity().downgrade();
+        let secondary_menu: HeaderMenu = Rc::new(move |menu, window, cx, focus| {
+            let menu = match panel.upgrade() {
+                Some(panel) => {
+                    panel.update(cx, |panel, cx| panel.header_menu(menu, window, cx, false))
+                }
+                None => menu,
+            };
+            common_menu(menu, window, cx, focus)
+        });
+        let mut stages = vec![defaults[0].clone()];
+        // First move the secondary controls into the menu, then remove the tab names.
+        for names in [true, false] {
+            let panel = cx.entity().downgrade();
+            stages.push(
+                HeaderStage::new(move |_, cx| match panel.upgrade() {
+                    Some(panel) => panel.update(cx, |panel, cx| {
+                        panel.header_tabs(names, cx).into_any_element()
+                    }),
+                    None => div().into_any_element(),
+                })
+                .with_menu(secondary_menu.clone()),
+            );
+        }
+        stages.push(
+            defaults
+                .last()
+                .expect("default header has a compact stage")
+                .clone(),
+        );
+        stages
+    }
+}
+
+impl Panel for ProblemsPanel {
+    fn dropdown_menu(
+        &mut self,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        self.header_menu(menu, window, cx, true)
+    }
+
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.header_tabs(true, cx)
     }
 
     fn title_suffix(
@@ -988,7 +1144,7 @@ mod tests {
                     summary: "misspelled: recieve".into(),
                     subject: Some("recieve".into()),
                 }),
-                filed: None,
+                note: None,
             })
             .collect()
     }
@@ -1245,7 +1401,7 @@ mod tests {
                     source: Source::Note,
                     message: "m".into(),
                     group: None,
-                    filed: None,
+                    note: None,
                 })
                 .collect(),
                 cx,
@@ -1263,7 +1419,7 @@ mod tests {
                 source: Source::Validator("test".into()),
                 message: "computed".into(),
                 group: None,
-                filed: None,
+                note: None,
             };
             assert!(Filter::All.admits(&computed));
             assert!(!Filter::Notes.admits(&computed));
@@ -1316,7 +1472,7 @@ mod tests {
                             source: Source::Validator(source.into()),
                             message: "m".into(),
                             group: None,
-                            filed: None,
+                            note: None,
                         })
                         .collect(),
                     cx,
@@ -1331,7 +1487,7 @@ mod tests {
                     source: Source::Note,
                     message: "user note".into(),
                     group: None,
-                    filed: None,
+                    note: None,
                 }],
                 cx,
             );

@@ -6,7 +6,7 @@
 use std::path::Path;
 
 pub use settings::project::{
-    ProjectColumn, ProjectSpec, RowId, RowStructure, SourceKind, StoredNote, write_notes,
+    NoteId, ProjectColumn, ProjectSpec, RowId, RowStructure, SourceKind, StoredNote, write_notes,
     write_row_structure,
 };
 

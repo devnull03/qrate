@@ -1,5 +1,3 @@
-use std::sync::OnceLock;
-
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     Context, FontWeight, InteractiveElement as _, IntoElement, SharedString, div, prelude::*, px,
@@ -17,8 +15,6 @@ use crate::delegate::QrateTableDelegate;
 use crate::note::{self, Target};
 
 pub(crate) const COL_IX: usize = 0;
-
-const WIDTH: f32 = 128.;
 
 #[derive(Clone)]
 struct RowDrag(usize);
@@ -38,18 +34,19 @@ impl gpui::Render for RowDragPreview {
     }
 }
 
-pub(crate) fn column() -> Column {
-    static COLUMN: OnceLock<Column> = OnceLock::new();
-    COLUMN
-        .get_or_init(|| {
-            Column::new("__row_ix", "")
-                .fixed_left()
-                .resizable(false)
-                .movable(false)
-                .selectable(false)
-                .width(px(WIDTH))
-        })
-        .clone()
+pub(crate) fn column(rows: usize, hierarchical: bool, font_size: gpui::Pixels) -> Column {
+    let digits = rows.max(1).ilog10() + 1;
+    let width = if hierarchical {
+        px(128.)
+    } else {
+        (font_size * (digits as f32 * 0.6 + 1.5)).max(px(36.))
+    };
+    Column::new("__row_ix", "")
+        .fixed_left()
+        .resizable(false)
+        .movable(false)
+        .selectable(false)
+        .width(width)
 }
 
 pub(crate) fn render_td(
@@ -66,7 +63,7 @@ pub(crate) fn render_td(
     };
     let location = delegate.location(Some(row_ix), None);
     let worst = Diagnostics::worst_at(&location.dataset, Some(row_ix), None, cx);
-    let tip = note::tooltip_text(delegate, &location, cx);
+    let tip = note::tip(delegate, &location, cx);
     let depth = delegate.row_depth(view_ix);
     let children = delegate.row_child_count(row_ix);
     let expanded = delegate.row_expanded(row_ix);
@@ -152,11 +149,9 @@ pub(crate) fn render_td(
         })
         .child(SharedString::from((row_ix + 1).to_string()))
         .when_some(worst, |d, severity| d.child(note::marker(severity, cx)))
-        .when_some(tip, |d, text| {
-            d.tooltip(move |window, cx| {
-                gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
-            })
-            .tooltip_show_delay(note::HOVER_DELAY)
+        .when_some(tip, |d, tip| {
+            d.tooltip(move |window, cx| note::tip_view(Some(&tip), None, window, cx))
+                .tooltip_show_delay(note::HOVER_DELAY)
         })
         .context_menu(move |menu, window, cx| note::menu(Target::Row(row_ix), menu, window, cx))
         .when_some(

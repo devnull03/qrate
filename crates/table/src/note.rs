@@ -9,16 +9,17 @@ use std::path::PathBuf;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, Entity, Focusable as _, InteractiveElement as _,
-    IntoElement, ParentElement as _, Path, SharedString, Styled as _, Window, canvas, deferred,
-    div, point, px,
+    AnyElement, AnyView, App, AppContext as _, ClipboardItem, Context, Entity, Focusable as _,
+    InteractiveElement as _, IntoElement, ParentElement as _, Path, SharedString, Styled as _,
+    Window, canvas, deferred, div, point, px,
 };
 use gpui_component::input::Textarea;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::table::TableState;
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme as _, Icon, IconName, h_flex};
 
-use diagnostics::{Diagnostics, Location, Severity, Source, severity_color};
+use diagnostics::{Diagnostics, Location, NoteId, Severity, Source, severity_color};
 use plugin_api::{
     ColumnMapContributions, CommandContext, MenuContributions, MenuTarget, PluginHooks,
 };
@@ -121,30 +122,108 @@ pub(crate) fn squiggle(severity: Severity, cx: &App) -> impl IntoElement {
     .h(px(SQUIGGLE_H + SQUIGGLE_T))
 }
 
-/// The column description followed by every diagnostic at a location — the cell/header tooltip.
-pub(crate) fn tooltip_text(
-    delegate: &QrateTableDelegate,
-    location: &Location,
-    cx: &App,
-) -> Option<SharedString> {
+/// What hovering a cell, a row number or a header shows.
+#[derive(Clone)]
+pub(crate) enum Tip {
+    /// The note card for the note filed here, with the column's description and every other
+    /// finding here under it.
+    Note {
+        id: NoteId,
+        description: Option<SharedString>,
+        findings: Vec<(Severity, SharedString)>,
+    },
+    /// The column's description followed by every finding, where no note is filed.
+    Text(SharedString),
+}
+
+/// The tip for `location`, if there is anything to say. A note on the data comes first; a row
+/// whose only notes are on its file shows the first of those.
+pub(crate) fn tip(delegate: &QrateTableDelegate, location: &Location, cx: &App) -> Option<Tip> {
     let description = location
         .column
         .as_deref()
         .and_then(|name| delegate.column_description(name));
-    let diagnostics = Diagnostics::at(
-        &location.dataset,
-        location.row,
-        location.column.as_deref(),
-        cx,
-    )
-    .map(|diagnostic| diagnostic.message.as_ref())
-    .collect::<Vec<_>>()
-    .join("\n");
-    match (description, diagnostics.is_empty()) {
-        (Some(description), false) => Some(format!("{description}\n\n{diagnostics}").into()),
-        (Some(description), true) => Some(description.to_string().into()),
-        (None, false) => Some(diagnostics.into()),
-        (None, true) => None,
+    let here = || {
+        Diagnostics::at(
+            &location.dataset,
+            location.row,
+            location.column.as_deref(),
+            cx,
+        )
+    };
+    let shown = here()
+        .filter_map(|d| d.note.as_ref())
+        .min_by_key(|n| n.region.is_some())
+        .map(|n| n.id);
+    match shown {
+        Some(id) => Some(Tip::Note {
+            id,
+            description,
+            findings: here()
+                .filter(|d| d.note.as_ref().is_none_or(|n| n.id != id))
+                .map(|d| (d.severity, d.message.clone()))
+                .collect(),
+        }),
+        None => {
+            let findings = here()
+                .map(|d| d.message.as_ref())
+                .collect::<Vec<_>>()
+                .join("\n");
+            match (description, findings.is_empty()) {
+                (Some(description), false) => Some(format!("{description}\n\n{findings}").into()),
+                (Some(description), true) => Some(description),
+                (None, false) => Some(findings.into()),
+                (None, true) => None,
+            }
+            .map(Tip::Text)
+        }
+    }
+}
+
+/// `tip` as the tooltip view. `shown` is the cell's own text when the cell cut it short, which
+/// leads a text tip and joins the description on a note card.
+pub(crate) fn tip_view(
+    tip: Option<&Tip>,
+    shown: Option<SharedString>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyView {
+    match (tip.cloned(), shown) {
+        (
+            Some(Tip::Note {
+                id,
+                description,
+                findings,
+            }),
+            shown,
+        ) => {
+            let description = match (shown, description) {
+                (Some(shown), Some(description)) => {
+                    Some(format!("{shown}\n\n{description}").into())
+                }
+                (shown, description) => shown.or(description),
+            };
+            Tooltip::element(move |_, cx| match Diagnostics::note(id, cx) {
+                Some(note) => diagnostics::note_card::note_card(
+                    note,
+                    description.clone(),
+                    findings.clone(),
+                    cx,
+                ),
+                None => div().into_any_element(),
+            })
+            .p_0()
+            .border_0()
+            .shadow_none()
+            .bg(gpui::transparent_black())
+            .build(window, cx)
+        }
+        (Some(Tip::Text(text)), Some(shown)) => {
+            Tooltip::new(SharedString::from(format!("{shown}\n\n{text}"))).build(window, cx)
+        }
+        (Some(Tip::Text(text)), None) => Tooltip::new(text).build(window, cx),
+        (None, Some(shown)) => Tooltip::new(shown).build(window, cx),
+        (None, None) => cx.new(|_| gpui::EmptyView).into(),
     }
 }
 
@@ -944,7 +1023,7 @@ mod tests {
                 source: Source::Note,
                 message: "look at this".into(),
                 group: None,
-                filed: None,
+                note: None,
             };
             // A cell note, a whole-row note, and a whole-column note — one per marker site.
             Diagnostics::set(
@@ -969,7 +1048,7 @@ mod tests {
                     source: v.clone(),
                     message: "bad".into(),
                     group: None,
-                    filed: None,
+                    note: None,
                 }],
                 cx,
             );
@@ -998,6 +1077,16 @@ mod tests {
                 cx.try_global::<crate::TableViewportBounds>().is_some(),
                 "the table never painted, so nothing here was exercised"
             );
+
+            // The note leads its cell's card, and the error on the same cell goes under it.
+            let delegate = state.read(cx).delegate();
+            match crate::note::tip(delegate, &at(Some(0), Some("Title")), cx) {
+                Some(crate::note::Tip::Note { findings, .. }) => {
+                    assert_eq!(findings, vec![(Severity::Error, "bad".into())]);
+                }
+                _ => panic!("a cell with a note shows the note card"),
+            }
+            assert!(crate::note::tip(delegate, &at(Some(1), Some("Title")), cx).is_none());
         });
         cx.run_until_parked();
     }

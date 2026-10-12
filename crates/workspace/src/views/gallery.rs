@@ -3,7 +3,7 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable as _, menu::ContextMenuExt as _, table::TableState,
 };
-use preview::{can_preview, thumb};
+use preview::thumb;
 use table::QrateTableDelegate;
 
 pub(super) const COLS_MIN: f32 = 2.;
@@ -84,6 +84,7 @@ fn card(
         return div().w(px(card_w)).into_any_element();
     };
     let path = delegate.row_image(source).map(std::path::Path::to_path_buf);
+    let row_id = delegate.row_id(source);
     let caption = delegate
         .row_fields(source)
         .into_iter()
@@ -92,10 +93,16 @@ fn card(
         .unwrap_or_default();
     let selected = delegate.is_row_selected(source);
     let pages = path.as_deref().and_then(preview::known_pages).unwrap_or(1);
-    let notes =
-        diagnostics::Diagnostics::notes_in_row(diagnostics::DATASET_MAIN, source, cx).count();
+    let (regions, notes) =
+        diagnostics::Diagnostics::notes_in_row(diagnostics::DATASET_MAIN, source, cx).fold(
+            (0, 0),
+            |(regions, notes), note| match note.note.as_ref().is_some_and(|n| n.region.is_some()) {
+                true => (regions + 1, notes),
+                false => (regions, notes + 1),
+            },
+        );
 
-    let viewable = path.clone().filter(|path| can_preview(path));
+    let viewable = crate::viewer::shown_file(delegate, source, cx);
 
     let radius = cx.theme().radius;
     let badge = move |icon: IconName, count: usize| {
@@ -151,6 +158,31 @@ fn card(
                 .when(pages > 1, |frame| {
                     frame.child(badge(IconName::Copy, pages).top_1())
                 })
+                .when(regions > 0, |frame| {
+                    frame.child(
+                        div()
+                            .absolute()
+                            .left_1()
+                            .bottom_1()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .h(px(16.))
+                            .px_1()
+                            .rounded(px(4.))
+                            .bg(black().opacity(0.9))
+                            .text_size(px(10.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(white())
+                            .child(
+                                Icon::empty()
+                                    .path("icons/message-square.svg")
+                                    .xsmall()
+                                    .text_color(white()),
+                            )
+                            .child(regions.to_string()),
+                    )
+                })
                 .when(notes > 0, |frame| {
                     frame.child(badge(IconName::Menu, notes).bottom_1())
                 }),
@@ -205,7 +237,13 @@ fn card(
                     return;
                 }
                 if let Some(path) = viewable.clone() {
-                    crate::viewer::open_viewer(path, crate::ViewerScope::Centre, window, cx);
+                    crate::viewer::open_viewer(
+                        path,
+                        row_id,
+                        crate::ViewerScope::Centre,
+                        window,
+                        cx,
+                    );
                 }
             }
         })
