@@ -1,0 +1,4 @@
+LIBRARY qrate-shell
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE

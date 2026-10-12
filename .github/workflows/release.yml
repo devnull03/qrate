@@ -412,6 +412,7 @@ jobs:
           printf '{\n  "schema": 1,\n  "kind": "linux-tar",\n  "packaged_version": "%s"\n}\n' \
             "$ver" > "$stage/qrate-install.json"
           cp assets/icons/app-icon.png "$stage/qrate.png"
+          cp assets/linux/qrate-mime.xml "$stage/qrate-mime.xml"
           # PDFium ships in the tarball beside the binary, where the preview tier looks for it.
           # ffmpeg does not: it is one `apt install` away and every distro packages it, so we
           # would be shipping ~50 MB to duplicate something already on most machines.
@@ -420,7 +421,8 @@ jobs:
           ./scripts/fetch-agent-runtime.sh "$stage" linux-x64
           printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=qrate' \
             'Exec=qrate %u' 'Icon=qrate' 'Terminal=false' \
-            'Categories=Office;Database;' 'MimeType=x-scheme-handler/qrate;' \
+            'Categories=Office;Database;' \
+            'MimeType=application/x-qrate-project;inode/directory;x-scheme-handler/qrate;' \
             > "$stage/qrate.desktop"
           # Base: the same folder without PDFium and Pi, which qrate installs on first use.
           base="qrate-$ver-base-x86_64-linux"

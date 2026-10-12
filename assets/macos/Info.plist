@@ -31,6 +31,67 @@
             </array>
         </dict>
     </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>qrate project</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>CFBundleTypeIconFile</key>
+            <string>AppIcon</string>
+            <key>LSItemContentTypes</key>
+            <array><string>io.github.devnull03.qrate.project</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Folder of collection files</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array><string>public.folder</string></array>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>io.github.devnull03.qrate.project</string>
+            <key>UTTypeDescription</key>
+            <string>qrate project</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.data</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>qrate</string></array>
+                <key>public.mime-type</key>
+                <string>application/x-qrate-project</string>
+            </dict>
+        </dict>
+    </array>
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict><key>default</key><string>Open with qrate</string></dict>
+            <key>NSMessage</key>
+            <string>openWithQrate</string>
+            <key>NSPortName</key>
+            <string>qrate</string>
+            <key>NSSendFileTypes</key>
+            <array><string>public.folder</string></array>
+            <key>NSRequiredContext</key>
+            <dict>
+                <key>NSApplicationIdentifier</key>
+                <string>com.apple.finder</string>
+            </dict>
+        </dict>
+    </array>
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
     <key>NSHighResolutionCapable</key>

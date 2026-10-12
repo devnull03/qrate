@@ -91,6 +91,9 @@
         </RegistryKey>
       </Component>
       <Component Id="QrateProjectType" Guid="*">
+        <RegistryKey Root="HKLM" Key="Software\Classes\.qrate\OpenWithProgids">
+          <RegistryValue Name="qrate.Project" Type="string" Value="" />
+        </RegistryKey>
         <RegistryKey Root="HKLM" Key="Software\Classes\qrate.Project">
           <RegistryValue Type="string" Value="qrate project" KeyPath="yes" />
           <RegistryKey Key="DefaultIcon">
@@ -98,6 +101,36 @@
           </RegistryKey>
           <RegistryKey Key="shell\open\command">
             <RegistryValue Type="string" Value="&quot;[#QrateExe]&quot; &quot;%1&quot;" />
+          </RegistryKey>
+        </RegistryKey>
+      </Component>
+
+      <Component Id="QrateOpenWith" Guid="*">
+        <RegistryKey Root="HKLM" Key="Software\Classes\Applications\qrate.exe" ForceDeleteOnUninstall="yes">
+          <RegistryValue Name="FriendlyAppName" Type="string" Value="qrate" KeyPath="yes" />
+          <RegistryKey Key="SupportedTypes">
+            <RegistryValue Name=".qrate" Type="string" Value="" />
+          </RegistryKey>
+          <RegistryKey Key="shell\open\command">
+            <RegistryValue Type="string" Value="&quot;[#QrateExe]&quot; &quot;%1&quot;" />
+          </RegistryKey>
+        </RegistryKey>
+      </Component>
+      <Component Id="QrateFolderMenu" Guid="*">
+        <RegistryKey Root="HKLM" Key="Software\Classes\Directory\shell\qrate" ForceDeleteOnUninstall="yes">
+          <RegistryValue Type="string" Value="Open with qrate" KeyPath="yes" />
+          <RegistryValue Name="Icon" Type="string" Value="[#QrateExe],0" />
+          <RegistryKey Key="command">
+            <RegistryValue Type="string" Value="&quot;[#QrateExe]&quot; &quot;%1&quot;" />
+          </RegistryKey>
+        </RegistryKey>
+      </Component>
+      <Component Id="QrateFolderBackgroundMenu" Guid="*">
+        <RegistryKey Root="HKLM" Key="Software\Classes\Directory\Background\shell\qrate" ForceDeleteOnUninstall="yes">
+          <RegistryValue Type="string" Value="Open with qrate" KeyPath="yes" />
+          <RegistryValue Name="Icon" Type="string" Value="[#QrateExe],0" />
+          <RegistryKey Key="command">
+            <RegistryValue Type="string" Value="&quot;[#QrateExe]&quot; &quot;%V&quot;" />
           </RegistryKey>
         </RegistryKey>
       </Component>

@@ -49,6 +49,7 @@ if (-not $makeAppx) { Fail 'Windows SDK MakeAppx.exe was not found' }
 try {
   New-Item -ItemType Directory -Path (Join-Path $stage 'Assets') -Force | Out-Null
   Copy-Item -LiteralPath $SourceExe -Destination (Join-Path $stage 'qrate.exe')
+  & (Join-Path $PSScriptRoot 'build-store-shell.ps1') -OutputPath (Join-Path $stage 'qrate-shell.dll')
   $marker = [ordered]@{
     schema = 1
     kind = 'windows-store'
@@ -105,6 +106,9 @@ try {
 
   & $makeAppx unpack /p $resolvedOutput /d $unpacked /o
   if ($LASTEXITCODE -ne 0) { Fail "MakeAppx unpack failed with exit code $LASTEXITCODE" }
+  if (-not (Test-Path -LiteralPath (Join-Path $unpacked 'qrate-shell.dll') -PathType Leaf)) {
+    Fail 'the package is missing the Explorer folder command DLL'
+  }
   $unpackedMarker = Get-Content -LiteralPath (Join-Path $unpacked 'qrate-install.json') -Raw | ConvertFrom-Json
   if ($unpackedMarker.kind -ne 'windows-store' -or $unpackedMarker.flavor -ne 'base' -or $unpackedMarker.packaged_version -ne $QrateVersion) {
     Fail 'the package install marker does not declare this Store base build'
