@@ -5,13 +5,23 @@ use cocoa::{
     foundation::NSString,
 };
 use objc::{
-    class,
+    Encode, Encoding, class,
     declare::ClassDecl,
     msg_send,
     rc::StrongPtr,
     runtime::{Object, Sel},
     sel, sel_impl,
 };
+
+#[repr(transparent)]
+struct ErrorOut(*mut id);
+
+// NSString ** uses ^@; the transparent wrapper preserves its pointer layout.
+unsafe impl Encode for ErrorOut {
+    fn encode() -> Encoding {
+        unsafe { Encoding::from_str("^@") }
+    }
+}
 
 static REQUESTS: OnceLock<async_channel::Sender<String>> = OnceLock::new();
 thread_local! {
@@ -28,7 +38,7 @@ pub(crate) fn register(sender: async_channel::Sender<String>) {
             .expect("qrate's folder service class is registered once");
         provider.add_method(
             sel!(openWithQrate:userData:error:),
-            open_folder as extern "C" fn(&Object, Sel, id, id, *mut id),
+            open_folder as extern "C" fn(&Object, Sel, id, id, ErrorOut),
         );
         let object: id = msg_send![provider.register(), new];
         let app: id = msg_send![class!(NSApplication), sharedApplication];
@@ -37,7 +47,8 @@ pub(crate) fn register(sender: async_channel::Sender<String>) {
     }
 }
 
-extern "C" fn open_folder(_: &Object, _: Sel, pasteboard: id, _: id, error: *mut id) {
+extern "C" fn open_folder(_: &Object, _: Sel, pasteboard: id, _: id, error: ErrorOut) {
+    let error = error.0;
     unsafe {
         let classes: id = msg_send![class!(NSArray), arrayWithObject: class!(NSURL)];
         let urls: id = msg_send![pasteboard, readObjectsForClasses: classes options: nil];
