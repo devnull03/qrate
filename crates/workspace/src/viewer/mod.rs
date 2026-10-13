@@ -11,7 +11,7 @@
 //! [`highlight`] turns a hit's position on the page into a position on the screen.
 
 mod annotate;
-pub(crate) use annotate::{Lit, Picked, marks, reveal};
+pub(crate) use annotate::{Lit, Picked, Reveal, marks, reveal};
 pub(crate) mod find;
 mod highlight;
 mod regions;

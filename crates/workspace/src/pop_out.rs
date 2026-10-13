@@ -186,6 +186,28 @@ impl PopOut {
                 }
             }),
             cx.observe_global::<settings::dirty::Dirty>(|_, cx| cx.notify()),
+            cx.observe_global_in::<viewer::Reveal>(window, |this, window, cx| {
+                let Some(row_id) = cx
+                    .try_global::<viewer::Reveal>()
+                    .filter(|reveal| reveal.in_pop_out)
+                    .and_then(|reveal| reveal.note)
+                    .and_then(|id| diagnostics::Diagnostics::note(id, cx)?.location.row_id)
+                else {
+                    return;
+                };
+                let stack = this.table().and_then(|state| {
+                    let row = state.read(cx).delegate().row_of(row_id)?;
+                    this.rows.iter().position(|&selected| selected == row)
+                });
+                let Some(stack) = stack else {
+                    return;
+                };
+                this.stack = stack;
+                this.sync(window, cx);
+                if let Some(viewer) = &this.viewer {
+                    viewer.update(cx, |viewer, cx| viewer.follow_reveal(cx));
+                }
+            }),
             // The stage offers to install what a PDF or a video needs; once it lands, draw it.
             cx.observe_global_in::<components::Components>(window, |this, window, cx| {
                 let installed = this.viewer.as_ref().is_some_and(|viewer| {
@@ -1227,6 +1249,70 @@ mod tests {
         // A new selection starts at its first item rather than wherever the last one was left.
         select(&state, &[1, 2], cx);
         pop_out.read_with(cx, |pop_out, _| assert_eq!(pop_out.front(), Some(1)));
+    }
+
+    #[gpui::test]
+    fn a_note_reveal_switches_the_stack_without_changing_its_selection(cx: &mut TestAppContext) {
+        let (pop_out, state, cx) = window_over_a_table(cx);
+        state.update(cx, |state, _| {
+            state.delegate_mut().set_image_paths(vec![
+                Some("/nonexistent/qrate-pop-out-first.png".into()),
+                None,
+                Some("/nonexistent/qrate-pop-out-last.png".into()),
+            ]);
+        });
+        select(&state, &[0, 2], cx);
+        let (first, last) = cx.update(|_, cx| {
+            let file = |row, row_id, cx: &mut gpui::App| {
+                diagnostics::Diagnostics::file_note(
+                    diagnostics::Location {
+                        dataset: diagnostics::DATASET_MAIN.into(),
+                        row: Some(row),
+                        row_id: Some(row_id),
+                        column: None,
+                    },
+                    Some(diagnostics::Region {
+                        page: 0,
+                        x: 2500,
+                        y: 2500,
+                        w: 2500,
+                        h: 2500,
+                        of: Some((400, 300)),
+                    }),
+                    None,
+                    "stamp".into(),
+                    settings::history::Origin::Drawn,
+                    cx,
+                )
+                .unwrap()
+            };
+            (file(0, 11, cx), file(2, 13, cx))
+        });
+        cx.update(|window, cx| crate::viewer::reveal(last, true, window, cx));
+        cx.run_until_parked();
+        pop_out.read_with(cx, |pop_out, cx| {
+            assert_eq!(pop_out.front(), Some(2));
+            assert_eq!(pop_out.viewer.as_ref().unwrap().read(cx).row, Some(13));
+            assert_eq!(pop_out.rows, [0, 2]);
+            assert_eq!(pop_out.details.read(cx).picked(cx), [0, 2]);
+        });
+
+        pop_out.update_in(cx, |pop_out, window, cx| pop_out.toggle_pin(window, cx));
+        select(&state, &[1], cx);
+        cx.update(|window, cx| crate::viewer::reveal(first, true, window, cx));
+        cx.run_until_parked();
+        pop_out.read_with(cx, |pop_out, cx| {
+            assert_eq!(pop_out.front(), Some(0));
+            assert_eq!(pop_out.viewer.as_ref().unwrap().read(cx).row, Some(11));
+            assert_eq!(pop_out.pinned.as_deref(), Some(&[11, 13][..]));
+        });
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.delegate().selected_source_rows(), [1]);
+        });
+
+        cx.update(|window, cx| crate::viewer::reveal(last, false, window, cx));
+        cx.run_until_parked();
+        pop_out.read_with(cx, |pop_out, _| assert_eq!(pop_out.front(), Some(0)));
     }
 
     struct Blank;

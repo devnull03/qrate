@@ -87,8 +87,7 @@ pub fn at(page: Bounds<Pixels>, position: Point<Pixels>) -> (f32, f32) {
     )
 }
 
-/// The region under `position`: a pin before any box, then the smallest box, so a detail marked
-/// inside a larger region stays reachable.
+/// The region under `position`: a pin before the smallest box, including old zero-area regions.
 pub fn hit<T: Copy>(boxes: &[(T, Bounds<Pixels>)], position: Point<Pixels>) -> Option<T> {
     let pin = boxes.iter().find(|(_, b)| {
         b.size.width == px(0.)
@@ -99,7 +98,17 @@ pub fn hit<T: Copy>(boxes: &[(T, Bounds<Pixels>)], position: Point<Pixels>) -> O
     pin.or_else(|| {
         boxes
             .iter()
-            .filter(|(_, b)| b.size.width > px(0.) && b.contains(&position))
+            .filter(|(_, b)| {
+                if b.size.width > px(0.) && b.size.height > px(0.) {
+                    return b.contains(&position);
+                }
+                let nearest = point(
+                    position.x.clamp(b.origin.x, b.origin.x + b.size.width),
+                    position.y.clamp(b.origin.y, b.origin.y + b.size.height),
+                );
+                f32::from((nearest - position).x).hypot(f32::from((nearest - position).y))
+                    <= PIN_RADIUS
+            })
             .min_by(|(_, a), (_, b)| {
                 let area = |b: &Bounds<Pixels>| f32::from(b.size.width) * f32::from(b.size.height);
                 area(a).total_cmp(&area(b))
@@ -203,7 +212,7 @@ impl Grip {
 
     /// The handle of `rect` under `position`, if any. Pins have none: they only move.
     pub fn under(rect: Bounds<Pixels>, position: Point<Pixels>) -> Option<Grip> {
-        if rect.size.width == px(0.) {
+        if rect.size.width == px(0.) && rect.size.height == px(0.) {
             return None;
         }
         Grip::HANDLES.into_iter().find(|grip| {
@@ -315,6 +324,18 @@ mod tests {
         assert_eq!(hit(&boxes, point(px(62.), px(58.))), Some(3));
         assert_eq!(hit(&boxes, point(px(200.), px(150.))), Some(1));
         assert_eq!(hit(&boxes, point(px(320.), px(150.))), None);
+    }
+
+    #[test]
+    fn old_zero_area_regions_can_be_selected_and_resized() {
+        for rect in [square(50., 50., 0., 100.), square(50., 50., 100., 0.)] {
+            let centre = rect.origin + point(rect.size.width / 2., rect.size.height / 2.);
+            assert_eq!(hit(&[(1, rect)], centre + point(px(3.), px(3.))), Some(1));
+            assert_eq!(hit(&[(1, rect)], centre + point(px(20.), px(20.))), None);
+            assert!(Grip::under(rect, centre).is_some());
+            let pin = square(f32::from(centre.x), f32::from(centre.y), 0., 0.);
+            assert_eq!(hit(&[(1, rect), (2, pin)], centre), Some(2));
+        }
     }
 
     /// A badge that would cover another slides along its own top edge; with no edge left it joins

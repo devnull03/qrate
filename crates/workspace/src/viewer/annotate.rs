@@ -39,7 +39,10 @@ impl Global for Lit {}
 
 /// The region a Notes card was clicked for, which the viewer showing its row turns to and zooms on.
 #[derive(Default)]
-pub(crate) struct Reveal(pub Option<NoteId>);
+pub(crate) struct Reveal {
+    pub note: Option<NoteId>,
+    pub in_pop_out: bool,
+}
 
 impl Global for Reveal {}
 
@@ -68,7 +71,10 @@ pub(crate) fn reveal(id: NoteId, in_pop_out: bool, window: &mut Window, cx: &mut
     if hidden(cx) {
         cx.default_global::<Annotating>().hidden = false;
     }
-    cx.set_global(Reveal(Some(id)));
+    cx.set_global(Reveal {
+        note: Some(id),
+        in_pop_out,
+    });
 }
 
 /// One of the row's region notes, numbered in the order they were filed.
@@ -367,7 +373,7 @@ impl Viewer {
         };
         let page = self.page_box();
         let far = (to.0 - from.0).abs() * f32::from(page.size.width) > 4.
-            || (to.1 - from.1).abs() * f32::from(page.size.height) > 4.;
+            && (to.1 - from.1).abs() * f32::from(page.size.height) > 4.;
         let rect = match (state(cx).1, far) {
             (Tool::Rect, true) => regions::span(from, to),
             _ => [to.0, to.1, to.0, to.1],
@@ -548,8 +554,12 @@ impl Viewer {
     }
 
     /// Turn to the region the Notes panel asked for, zooming once the page is laid out.
-    pub(super) fn follow_reveal(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = cx.try_global::<Reveal>().and_then(|reveal| reveal.0) else {
+    pub(crate) fn follow_reveal(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = cx
+            .try_global::<Reveal>()
+            .filter(|reveal| reveal.in_pop_out == (self.scope == Scope::PopOut))
+            .and_then(|reveal| reveal.note)
+        else {
             return;
         };
         let Some(mark) = self.row_marks(cx).into_iter().find(|m| m.id == id) else {
@@ -725,7 +735,7 @@ pub(super) fn layer(this: &Viewer, marks: &[Mark], cx: &mut Context<Viewer>) -> 
             ))
         })
         .map(|(note, (_, _, b))| {
-            let pin = b.size.width == px(0.);
+            let pin = b.size.width == px(0.) && b.size.height == px(0.);
             let below = match pin {
                 true => b.origin.y + px(14.),
                 false => b.origin.y + b.size.height + px(8.),
@@ -1175,8 +1185,8 @@ mod tests {
     use gpui::TestAppContext;
     use settings::history::Origin;
 
-    use crate::viewer::Scope;
     use crate::viewer::annotate::{Annotating, Tool, marks, unasked};
+    use crate::viewer::{Scope, regions};
 
     /// A row's regions are numbered in the order they were filed, and nothing else on the row —
     /// its plain notes, another row's regions — takes a number.
@@ -1210,6 +1220,47 @@ mod tests {
                 .map(|m| (Some(m.id), m.number))
                 .collect();
             assert_eq!(numbered, vec![(first, 1), (second, 2)]);
+        });
+    }
+
+    #[gpui::test]
+    fn straight_drags_create_selectable_pins(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            gpui_component::init(cx);
+            cx.default_global::<Annotating>().on = true;
+            let viewer = crate::viewer::build(
+                "/nonexistent/qrate-straight-drag.png".into(),
+                Some(7),
+                Scope::Workspace,
+                window,
+                cx,
+            );
+            viewer.update(cx, |viewer, cx| {
+                viewer.frame.set(gpui::Bounds {
+                    origin: gpui::Point::default(),
+                    size: gpui::size(gpui::px(400.), gpui::px(400.)),
+                });
+                viewer.pixels = Some((400, 400));
+                for turns in 0..4 {
+                    viewer.shown = turns;
+                    for (x, y) in [(100., 200.), (200., 100.), (102., 200.)] {
+                        let end = gpui::point(gpui::px(x), gpui::px(y));
+                        assert!(viewer.press(gpui::point(gpui::px(100.), gpui::px(100.)), cx));
+                        viewer.drag_to(end, cx);
+                        viewer.release(window, cx);
+                        let region = viewer
+                            .composer
+                            .take()
+                            .expect("a drag opens the note")
+                            .region;
+                        assert_eq!((region.w, region.h), (0, 0));
+                        let bounds =
+                            regions::on_screen(viewer.page_box(), regions::shown(&region, turns));
+                        assert_eq!(regions::hit(&[(1, bounds)], end), Some(1));
+                    }
+                }
+            });
         });
     }
 
