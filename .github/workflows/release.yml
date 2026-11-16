@@ -3,9 +3,13 @@ name: Release
 # Releases are tag-driven: push a tag like `v1.2.3` to build Windows, macOS and
 # Linux artifacts and publish them to a DRAFT GitHub release. Merging to `main` alone
 # does nothing here — only a `v*` tag triggers a release.
+#
+# Running it by hand on a branch builds the version in that branch's Cargo.toml into a draft whose
+# tag is created at that commit only when the draft is published.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -42,9 +46,10 @@ jobs:
       - name: Derive and verify version
         id: v
         run: |
-          tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
           cargo_version="$(grep -E '^version = ' Cargo.toml | head -1 | sed -E 's/version = "([^"]+)"/\1/')"
+          tag="v$cargo_version"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tag="${GITHUB_REF_NAME}"; fi
+          version="${tag#v}"
           echo "tag=$tag         (version=$version)"
           echo "Cargo.toml workspace version=$cargo_version"
           if [ "$version" != "$cargo_version" ]; then
@@ -601,6 +606,7 @@ jobs:
           draft: true
           prerelease: ${{ contains(needs.version.outputs.version, '-') }}
           tag_name: ${{ needs.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: ${{ needs.version.outputs.tag }}
           fail_on_unmatched_files: true
           files: |
