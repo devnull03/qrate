@@ -1,8 +1,8 @@
 //! The agent contract between a running qrate app and a review agent, reached through `qrate agent`.
 //!
 //! Reads are progressive: a cheap overview, a bounded declarative query, and optional scratch
-//! programs and thumbnails. The only state-changing request publishes draft findings; it never
-//! changes a table cell.
+//! programs and thumbnails. The state-changing requests only stage drafts — findings, or a whole
+//! column rewrite — that the archivist applies; none of them changes a table cell.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,6 +30,14 @@ pub enum Request {
     StageFindings {
         revision: TableRevision,
         findings: Vec<Finding>,
+    },
+    /// One column's new values as `(source row, value)`, staged as a single draft.
+    StageColumnRewrite {
+        revision: TableRevision,
+        column: String,
+        values: Vec<(usize, String)>,
+        /// Shown once beside the draft, such as where the values came from.
+        note: Option<String>,
     },
 }
 
@@ -160,6 +168,22 @@ impl Request {
             {
                 Err(RequestError::FindingMessageTooLong)
             }
+            Self::StageColumnRewrite { values, note, .. } => {
+                if values.len() > MAX_REWRITE_ROWS {
+                    return Err(RequestError::TooManyRewriteRows);
+                }
+                if values.iter().any(|(_, v)| v.len() > MAX_REWRITE_VALUE) {
+                    return Err(RequestError::RewriteValueTooLarge);
+                }
+                if note.as_ref().is_some_and(|n| n.len() > MAX_MESSAGE_LEN) {
+                    return Err(RequestError::RewriteNoteTooLong);
+                }
+                let mut rows = std::collections::HashSet::with_capacity(values.len());
+                if !values.iter().all(|(row, _)| rows.insert(*row)) {
+                    return Err(RequestError::DuplicateRewriteRow);
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -204,6 +228,8 @@ pub const MAX_PROGRAM_BYTES: usize = 64 * 1024;
 pub const MAX_THUMBNAILS: usize = 4;
 pub const MAX_FINDINGS: usize = 200;
 pub const MAX_MESSAGE_LEN: usize = 512;
+pub const MAX_REWRITE_ROWS: usize = 50_000;
+pub const MAX_REWRITE_VALUE: usize = 64 * 1024;
 pub const MAX_RESULT_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -218,10 +244,23 @@ pub struct Response {
 pub enum ResultSet {
     Overview(Overview),
     Query(QueryResult),
-    ProgramSaved { version: u64, hash: String },
+    ProgramSaved {
+        version: u64,
+        hash: String,
+    },
     ProgramRun(ProgramOutput),
-    Thumbnails { items: Vec<Thumbnail> },
-    Staged { accepted: usize, stale: Vec<usize> },
+    Thumbnails {
+        items: Vec<Thumbnail>,
+    },
+    Staged {
+        accepted: usize,
+        stale: Vec<usize>,
+    },
+    /// `unchanged` lists the source rows that already hold the value asked for.
+    StagedRewrite {
+        accepted: usize,
+        unchanged: Vec<usize>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -339,6 +378,13 @@ pub enum RequestError {
     TooManyFindings,
     EmptyFindingMessage,
     FindingMessageTooLong,
+    StaleRevision,
+    UnknownColumn,
+    TooManyRewriteRows,
+    RewriteValueTooLarge,
+    RewriteNoteTooLong,
+    DuplicateRewriteRow,
+    RewriteRowOutOfRange,
 }
 
 #[cfg(test)]
@@ -383,6 +429,40 @@ mod tests {
             }
             .validate(),
             Err(RequestError::ConflictingQueryOperations)
+        );
+    }
+
+    #[test]
+    fn a_column_rewrite_is_bounded_and_names_each_row_once() {
+        let rewrite = |values: Vec<(usize, String)>| Request::StageColumnRewrite {
+            revision: TableRevision(1),
+            column: "Identifier".into(),
+            values,
+            note: None,
+        };
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "method": "stage_column_rewrite",
+            "params": {"revision": 1, "column": "Identifier", "values": [[0, "a"], [1, "b"]]}
+        }))
+        .unwrap();
+        assert_eq!(request, rewrite(vec![(0, "a".into()), (1, "b".into())]));
+        assert_eq!(request.validate(), Ok(()));
+        assert_eq!(
+            rewrite(vec![(4, "a".into()), (4, "b".into())]).validate(),
+            Err(RequestError::DuplicateRewriteRow)
+        );
+        assert_eq!(
+            rewrite(
+                (0..=MAX_REWRITE_ROWS)
+                    .map(|row| (row, String::new()))
+                    .collect()
+            )
+            .validate(),
+            Err(RequestError::TooManyRewriteRows)
+        );
+        assert_eq!(
+            rewrite(vec![(0, "x".repeat(MAX_REWRITE_VALUE + 1))]).validate(),
+            Err(RequestError::RewriteValueTooLarge)
         );
     }
 

@@ -34,7 +34,8 @@ const FORMAT_HELP: &str = "Defaults to `human` on a terminal and `json` in a pip
 
 const AGENT_AFTER_HELP: &str = "\
 Every command but `overview` reads one JSON object on stdin and prints one JSON object on stdout.
-No command changes a cell: `stage-findings` publishes drafts that only the archivist can apply.
+No command changes a cell: `stage-findings` and `stage-column-rewrite` publish drafts that only
+the archivist can apply.
 
 Examples:
   qrate agent overview --agent codex
@@ -175,6 +176,13 @@ enum AgentCommand {
     /// stdin: {"revision": <from overview>, "findings": [{"row", "column", "severity",
     /// "message", "expected", "replacement"?}]}. The batch replaces this agent's earlier drafts.
     StageFindings,
+    /// Stage new values for one whole column as a single draft. Never changes a cell.
+    ///
+    /// stdin: {"revision": <from overview>, "column": <name>, "values": [[<source row>,
+    /// <new value>], ...], "note"?: <where the values came from>}. Up to 50,000 rows, each named
+    /// once. It replaces this agent's earlier rewrite of the same column; the archivist previews,
+    /// applies or discards it from the Problems menu.
+    StageColumnRewrite,
 }
 
 impl AgentCommand {
@@ -186,6 +194,7 @@ impl AgentCommand {
             Self::ProgramRun => "program_run",
             Self::Thumbnails => "thumbnails",
             Self::StageFindings => "stage_findings",
+            Self::StageColumnRewrite => "stage_column_rewrite",
         }
     }
 }
@@ -723,6 +732,23 @@ mod tests {
         assert!(Cli::try_parse_from(["qrate", "agent", "program-run"]).is_ok());
         assert!(Cli::try_parse_from(["qrate", "agent"]).is_err());
         assert!(Cli::try_parse_from(["qrate", "agent", "stage_findings"]).is_err());
+        assert!(matches!(
+            Cli::try_parse_from(["qrate", "agent", "stage-column-rewrite"])
+                .unwrap()
+                .command,
+            Some(Command::Agent {
+                command: AgentCommand::StageColumnRewrite,
+                ..
+            })
+        ));
+        assert_eq!(
+            agent_request(
+                AgentCommand::StageColumnRewrite,
+                &mut r#"{"revision":3,"column":"Identifier","values":[[0,"a"]]}"#.as_bytes()
+            )
+            .unwrap(),
+            r#"{"method":"stage_column_rewrite","params":{"revision":3,"column":"Identifier","values":[[0,"a"]]}}"#
+        );
     }
 
     #[test]

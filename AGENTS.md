@@ -31,6 +31,7 @@ The bundled assistant loads its extension and `SYSTEM.md` with all skills disabl
 - `program-run` (`{"revision": …, "args": …}`): run the saved function once against an immutable snapshot at an exact revision.
 - `thumbnails` (`{"items": […]}`): return at most four qrate-generated 512-pixel PNG derivatives by source row/page.
 - `stage-findings` (`{"revision": …, "findings": […]}`): publish a complete advisory draft batch.
+- `stage-column-rewrite` (`{"revision": …, "column": …, "values": [[row, value], …], "note": …}`): stage new values for one whole column as a single draft.
 
 ```sh
 echo '{"source":{"kind":"selected_rows"},"select":["Title"],"limit":10}' | qrate agent query --agent codex
@@ -39,6 +40,8 @@ echo '{"source":{"kind":"selected_rows"},"select":["Title"],"limit":10}' | qrate
 Queries default to 20 and allow at most 50 records. Collection results send one `fields` array and positional `items`, plus `returned`, `remaining`, `truncated`, and `next_cursor`. Ask for the smallest useful field set, and follow a cursor only when more evidence could change the answer.
 
 Programs have no network, filesystem, process, clock, randomness, plugin storage, UI, raw qrate objects, or staging access. Their only linked-file methods are qrate-resolved bounded UTF-8 reads and PDF text search. Original paths and bytes are never returned.
+
+Use `stage-column-rewrite` for a bulk edit of one column, never hundreds of findings. It takes up to 50,000 `[source row, whole new value]` pairs, each row once and each value at most 64 KB, at the exact current `revision`; a stale revision, an unknown column, or a row out of range is refused. Rows already holding the value come back in `unchanged`. It shows as one Problems entry, "Rewrite <column>: N rows (<note>)", which the archivist previews, applies as one undo step, or discards. Staging the same column again replaces your earlier rewrite; empty `values` retracts it.
 
 Every staged finding needs the exact response `revision`, source `row`, `column`, severity, one-sentence message, and exact current whole-cell `expected`. `replacement` is optional and must be the whole proposed value. A stale cell is rejected. Never report that staging corrected data.
 

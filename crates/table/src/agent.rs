@@ -12,7 +12,7 @@ use ai::agent::{
 use base64::Engine as _;
 use diagnostics::fixes::{GroupFix, SourceActions};
 use diagnostics::{DATASET_MAIN, FixProviders, Location, Source};
-use gpui::{App, Global, SharedString, Task};
+use gpui::{App, Global, ParentElement as _, SharedString, Task};
 use gpui_component::WindowExt as _;
 use gpui_component::notification::Notification;
 use settings::history::Origin;
@@ -61,6 +61,12 @@ pub fn respond_to_agent(
         Request::StageFindings { revision, findings } => {
             return stage_findings(agent, revision, findings, cx);
         }
+        Request::StageColumnRewrite {
+            revision,
+            column,
+            values,
+            note,
+        } => return stage_column_rewrite(agent, revision, column, values, note, cx),
         Request::ProgramSave { source } => return save_program(source, cx),
         _ => {}
     }
@@ -157,7 +163,9 @@ pub fn respond_to_agent(
             }
             ResultSet::Thumbnails { items: thumbnails }
         }
-        Request::ProgramSave { .. } | Request::StageFindings { .. } => unreachable!(),
+        Request::ProgramSave { .. }
+        | Request::StageFindings { .. }
+        | Request::StageColumnRewrite { .. } => unreachable!(),
     };
 
     Ok(Response { revision, result })
@@ -788,10 +796,30 @@ struct StagedFix {
     replacement: SharedString,
 }
 
-/// One agent's staged replacements, by `(row, column)`.
+/// One column's staged new values, as `(source row, text when staged, new text)`.
+struct Rewrite {
+    note: Option<String>,
+    rows: Vec<(usize, SharedString, SharedString)>,
+}
+
+impl Rewrite {
+    fn title(&self, column: &str) -> String {
+        let note = self.note.as_ref().map(|note| format!(" ({note})"));
+        format!(
+            "Rewrite {column}: {} rows{}",
+            self.rows.len(),
+            note.unwrap_or_default()
+        )
+    }
+}
+
+/// Everything one agent has staged: its findings, their replacements by `(row, column)`, and its
+/// column rewrites by column.
 #[derive(Default)]
 struct Batch {
+    findings: Vec<diagnostics::Diagnostic>,
     by_cell: HashMap<(usize, SharedString), Vec<StagedFix>>,
+    rewrites: BTreeMap<SharedString, Rewrite>,
 }
 
 /// Every agent's batch, by its diagnostics source.
@@ -873,17 +901,14 @@ fn stage_findings(
     }
 
     let accepted = published.len();
-    diagnostics::Diagnostics::set(
-        &Source::Validator(source.clone()),
-        DATASET_MAIN,
-        published,
-        cx,
-    );
-    cx.default_global::<StagedFixes>()
+    let batch = cx
+        .default_global::<StagedFixes>()
         .0
-        .insert(source.clone(), Batch { by_cell: fixes });
-    FixProviders::register(&source, offer_staged, cx);
-    SourceActions::register(&source, staged_actions, cx);
+        .entry(source.clone())
+        .or_default();
+    batch.findings = published;
+    batch.by_cell = fixes;
+    publish(&source, cx);
     log::info!(
         "{agent} staged {accepted} finding(s) against revision {}, dropping {} judged against \
          text the table has moved past (current revision {})",
@@ -937,9 +962,10 @@ fn staged_actions(source: &str, cx: &App) -> Vec<GroupFix> {
     };
     let agent = agent_name(source);
     let fixes = batch.by_cell.len();
+    let source = SharedString::from(source.to_owned());
     let mut actions = Vec::new();
     if fixes > 0 {
-        let source = SharedString::from(source.to_owned());
+        let source = source.clone();
         actions.push(GroupFix::action(
             format!("Apply all {fixes} fixes from {agent}"),
             move |cx| {
@@ -948,10 +974,30 @@ fn staged_actions(source: &str, cx: &App) -> Vec<GroupFix> {
             },
         ));
     }
-    let source = SharedString::from(source.to_owned());
-    actions.push(GroupFix::action("Discard all", move |cx| {
-        discard_staged(&source, cx)
-    }));
+    if !batch.findings.is_empty() {
+        let source = source.clone();
+        actions.push(GroupFix::action("Discard all", move |cx| {
+            discard_staged(&source, cx)
+        }));
+    }
+    for (column, rewrite) in &batch.rewrites {
+        let title = rewrite.title(column);
+        let at = (source.clone(), column.clone());
+        actions.push(GroupFix::action(format!("Preview: {title}"), {
+            let at = at.clone();
+            move |cx| preview_rewrite(&at.0, &at.1, cx)
+        }));
+        actions.push(GroupFix::action(format!("Apply: {title}"), {
+            let at = at.clone();
+            move |cx| {
+                let (applied, stale) = apply_rewrite(&at.0, &at.1, cx);
+                tell(format!("{applied} applied, {stale} skipped as stale"), cx);
+            }
+        }));
+        actions.push(GroupFix::action(format!("Discard: {title}"), move |cx| {
+            discard_rewrite(&at.0, &at.1, cx)
+        }));
+    }
     actions
 }
 
@@ -994,15 +1040,201 @@ fn apply_staged(source: &SharedString, cx: &mut App) -> (usize, usize) {
     (applied, stale)
 }
 
-/// Drop one agent's batch and its findings without touching a cell.
+/// Drop one agent's findings and their fixes without touching a cell.
 fn discard_staged(source: &SharedString, cx: &mut App) {
-    cx.default_global::<StagedFixes>().0.remove(source);
-    diagnostics::Diagnostics::set(
-        &Source::Validator(source.clone()),
-        DATASET_MAIN,
-        Vec::new(),
-        cx,
+    if let Some(batch) = cx.default_global::<StagedFixes>().0.get_mut(source) {
+        batch.findings.clear();
+        batch.by_cell.clear();
+    }
+    publish(source, cx);
+}
+
+/// Show what one agent has staged: its findings, and one entry per column rewrite.
+fn publish(source: &SharedString, cx: &mut App) {
+    let staged = cx.default_global::<StagedFixes>();
+    if staged
+        .0
+        .get(source)
+        .is_some_and(|batch| batch.findings.is_empty() && batch.rewrites.is_empty())
+    {
+        staged.0.remove(source);
+    }
+    let items = staged.0.get(source).map_or_else(Vec::new, |batch| {
+        let rewrites = batch
+            .rewrites
+            .iter()
+            .map(|(column, rewrite)| diagnostics::Diagnostic {
+                location: Location {
+                    dataset: DATASET_MAIN.into(),
+                    row: None,
+                    row_id: None,
+                    column: Some(column.clone()),
+                },
+                severity: diagnostics::Severity::Note,
+                source: Source::Validator(source.clone()),
+                message: rewrite.title(column).into(),
+                group: None,
+                filed: None,
+            });
+        batch.findings.iter().cloned().chain(rewrites).collect()
+    });
+    diagnostics::Diagnostics::set(&Source::Validator(source.clone()), DATASET_MAIN, items, cx);
+    FixProviders::register(source, offer_staged, cx);
+    SourceActions::register(source, staged_actions, cx);
+}
+
+/// Stage one column's new values as a single draft, replacing this agent's earlier rewrite of the
+/// same column. An empty `values` retracts it. No cell is touched.
+fn stage_column_rewrite(
+    agent: &str,
+    revision: TableRevision,
+    column: String,
+    values: Vec<(usize, String)>,
+    note: Option<String>,
+    cx: &mut App,
+) -> Result<Response, RequestError> {
+    let state = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+        .ok_or(RequestError::TableUnavailable)?;
+    let delegate = state.read(cx).delegate();
+    let current = TableRevision(delegate.values_generation());
+    // A rewrite quotes no cell text, so the revision is its only proof of what the agent read.
+    if revision != current {
+        return Err(RequestError::StaleRevision);
+    }
+    let col = delegate
+        .data_col(&column)
+        .ok_or(RequestError::UnknownColumn)?;
+    let mut rows = Vec::with_capacity(values.len());
+    let mut unchanged = Vec::new();
+    for (row, value) in values {
+        let before = delegate
+            .cell(row, col)
+            .ok_or(RequestError::RewriteRowOutOfRange)?;
+        if *before == value {
+            unchanged.push(row);
+        } else {
+            rows.push((row, before.clone(), SharedString::from(value)));
+        }
+    }
+
+    let accepted = rows.len();
+    let source = agent_source(agent);
+    let batch = cx
+        .default_global::<StagedFixes>()
+        .0
+        .entry(source.clone())
+        .or_default();
+    if rows.is_empty() {
+        batch.rewrites.remove(column.as_str());
+    } else {
+        batch
+            .rewrites
+            .insert(column.clone().into(), Rewrite { note, rows });
+    }
+    publish(&source, cx);
+    log::info!(
+        "{agent} staged a rewrite of {accepted} cell(s) in {column} at revision {}, {} already \
+         holding the value",
+        current.0,
+        unchanged.len()
     );
+
+    Ok(Response {
+        revision: current,
+        result: ResultSet::StagedRewrite {
+            accepted,
+            unchanged,
+        },
+    })
+}
+
+/// Write a staged rewrite's rows that still read what they read when staged, as one undo step, and
+/// retire it. Returns how many were written and how many were skipped as stale.
+fn apply_rewrite(source: &SharedString, column: &SharedString, cx: &mut App) -> (usize, usize) {
+    let Some(rewrite) = cx
+        .default_global::<StagedFixes>()
+        .0
+        .get_mut(source)
+        .and_then(|batch| batch.rewrites.remove(column))
+    else {
+        return (0, 0);
+    };
+    publish(source, cx);
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+    else {
+        return (0, 0);
+    };
+    let delegate = state.read(cx).delegate();
+    let cells: Vec<_> = delegate
+        .data_col(column)
+        .into_iter()
+        .flat_map(|col| {
+            rewrite
+                .rows
+                .iter()
+                .filter(move |(row, before, _)| delegate.cell(*row, col) == Some(before))
+                .map(move |(row, _, after)| (*row, col, after.clone()))
+        })
+        .collect();
+    let (applied, stale) = (cells.len(), rewrite.rows.len() - cells.len());
+    let agent = agent_name(source).to_owned();
+    let origin = Origin::Agent {
+        agent: agent.clone(),
+        fix: format!("rewrite {column}"),
+    };
+    crate::write_cells(cells, origin, cx);
+    log::info!(
+        "{agent}: rewrite of {column} applied to {applied} cell(s), {stale} skipped as stale"
+    );
+    (applied, stale)
+}
+
+/// Drop a staged rewrite without touching a cell.
+fn discard_rewrite(source: &SharedString, column: &SharedString, cx: &mut App) {
+    if let Some(batch) = cx.default_global::<StagedFixes>().0.get_mut(source) {
+        batch.rewrites.remove(column);
+    }
+    publish(source, cx);
+}
+
+/// How many of a rewrite's rows the preview lists.
+const PREVIEW_ROWS: usize = 50;
+
+/// Show the first rows of a staged rewrite as before → after, over whichever window is active.
+fn preview_rewrite(source: &SharedString, column: &SharedString, cx: &mut App) {
+    let Some(rewrite) = cx
+        .try_global::<StagedFixes>()
+        .and_then(|staged| staged.0.get(source)?.rewrites.get(column))
+    else {
+        return;
+    };
+    let title = SharedString::from(rewrite.title(column));
+    let mut lines: Vec<SharedString> = rewrite
+        .rows
+        .iter()
+        .take(PREVIEW_ROWS)
+        .map(|(row, before, after)| format!("Row {}: {before} → {after}", row + 1).into())
+        .collect();
+    if rewrite.rows.len() > PREVIEW_ROWS {
+        lines.push(format!("… and {} more", rewrite.rows.len() - PREVIEW_ROWS).into());
+    }
+    let Some(window) = cx.active_window() else {
+        return;
+    };
+    window
+        .update(cx, |_, window, cx| {
+            window.open_dialog(cx, move |dialog, _, _| {
+                let lines = lines.clone();
+                dialog
+                    .title(title.clone())
+                    .content(move |content, _, _| content.children(lines.clone()))
+            })
+        })
+        .ok();
 }
 
 /// Say what a bulk action did, over whichever window is active.
@@ -1029,7 +1261,7 @@ mod tests {
 
     use gpui::SharedString;
 
-    use crate::agent::{agent_source, apply_staged, staged_actions};
+    use crate::agent::{agent_source, apply_rewrite, apply_staged, staged_actions};
     use crate::{TablePanel, TableStateHandle};
 
     fn respond_to_agent(
@@ -1425,9 +1657,13 @@ mod tests {
                     )
                 })
                 .collect();
-            cx.default_global::<super::StagedFixes>()
-                .0
-                .insert(agent_source("pi"), super::Batch { by_cell });
+            cx.default_global::<super::StagedFixes>().0.insert(
+                agent_source("pi"),
+                super::Batch {
+                    by_cell,
+                    ..Default::default()
+                },
+            );
             assert_eq!(apply_staged(&agent_source("pi"), cx), (500, 0));
             assert_eq!(cell(0, cx), "new 0");
             assert_eq!(cell(499, cx), "new 499");
@@ -1569,6 +1805,148 @@ mod tests {
             assert_eq!(cell(0, cx), "Harvest");
             assert_eq!(cell(1, cx), "Wharf, 1958", "a hidden row is still written");
             assert_eq!(cell(2, cx), "Cannery, 1949");
+        });
+    }
+    fn rewrite(column: &str, values: &[(usize, &str)], cx: &mut gpui::App) -> Request {
+        let revision = respond_to_agent(Request::Overview, cx).unwrap().revision;
+        serde_json::from_value(serde_json::json!({
+            "method": "stage_column_rewrite",
+            "params": {
+                "revision": revision,
+                "column": column,
+                "values": values,
+                "note": "ids from mapping.csv",
+            }
+        }))
+        .unwrap()
+    }
+
+    /// From the wire shape to the grid: a rewrite is one Problems entry however many rows it
+    /// names, changes nothing until applied, and then lands as one undo step.
+    #[gpui::test]
+    fn a_column_rewrite_round_trips_from_json_to_one_undoable_apply(cx: &mut TestAppContext) {
+        open(cx);
+
+        cx.update(|cx| {
+            let request = rewrite("Title", &[(0, "H-1"), (1, "Wharf"), (2, "C-3")], cx);
+            assert_eq!(
+                respond_to_agent(request, cx).unwrap().result,
+                ResultSet::StagedRewrite {
+                    accepted: 2,
+                    unchanged: vec![1]
+                }
+            );
+            assert_eq!(agent_findings(cx), 1, "one entry, not one per row");
+            assert_eq!(cell(0, cx), "Harvest", "staging writes nothing");
+            let labels: Vec<SharedString> = staged_actions(&agent_source("pi"), cx)
+                .into_iter()
+                .map(|action| action.label)
+                .collect();
+            assert_eq!(
+                labels,
+                [
+                    "Preview: Rewrite Title: 2 rows (ids from mapping.csv)",
+                    "Apply: Rewrite Title: 2 rows (ids from mapping.csv)",
+                    "Discard: Rewrite Title: 2 rows (ids from mapping.csv)",
+                ]
+            );
+
+            crate::write_cells(
+                vec![(2, 0, "Cannery, retitled by hand".into())],
+                settings::history::Origin::Typed,
+                cx,
+            );
+            assert_eq!(
+                apply_rewrite(&agent_source("pi"), &"Title".into(), cx),
+                (1, 1)
+            );
+            assert_eq!(cell(0, cx), "H-1");
+            assert_eq!(cell(2, cx), "Cannery, retitled by hand");
+            assert_eq!(agent_findings(cx), 0);
+
+            crate::history_step(false, cx);
+            assert_eq!(cell(0, cx), "Harvest");
+        });
+    }
+
+    #[gpui::test]
+    fn a_rewrite_the_table_cannot_place_is_refused(cx: &mut TestAppContext) {
+        open(cx);
+
+        cx.update(|cx| {
+            let request = rewrite("Identifier", &[(0, "H-1")], cx);
+            assert_eq!(
+                respond_to_agent(request, cx),
+                Err(RequestError::UnknownColumn)
+            );
+            let request = rewrite("Title", &[(3, "H-1")], cx);
+            assert_eq!(
+                respond_to_agent(request, cx),
+                Err(RequestError::RewriteRowOutOfRange)
+            );
+            let request = rewrite("Title", &[(1, "a"), (1, "b")], cx);
+            assert_eq!(
+                respond_to_agent(request, cx),
+                Err(RequestError::DuplicateRewriteRow)
+            );
+            let Request::StageColumnRewrite {
+                column,
+                values,
+                note,
+                ..
+            } = rewrite("Title", &[(0, "H-1")], cx)
+            else {
+                panic!("not a rewrite");
+            };
+            assert_eq!(
+                respond_to_agent(
+                    Request::StageColumnRewrite {
+                        revision: TableRevision(u64::MAX),
+                        column,
+                        values,
+                        note,
+                    },
+                    cx,
+                ),
+                Err(RequestError::StaleRevision)
+            );
+            assert_eq!(agent_findings(cx), 0);
+        });
+    }
+
+    /// Staging the same column again is a correction, not a second rewrite; another column and
+    /// the agent's findings are left alone.
+    #[gpui::test]
+    fn re_staging_replaces_the_rewrite_for_the_same_agent_and_column(cx: &mut TestAppContext) {
+        open(cx);
+
+        cx.update(|cx| {
+            stage(vec![finding(1, "Title", "Wharf", "Wharf, 1958")], cx);
+            for (column, values) in [
+                ("Title", vec![(0, "H-1"), (2, "C-3")]),
+                ("Medium", vec![(1, "Tape")]),
+                ("Title", vec![(0, "H-001")]),
+            ] {
+                let request = rewrite(column, &values, cx);
+                respond_to_agent(request, cx).unwrap();
+            }
+            assert_eq!(agent_findings(cx), 3, "a finding and two rewrites");
+
+            assert_eq!(
+                apply_rewrite(&agent_source("pi"), &"Title".into(), cx),
+                (1, 0)
+            );
+            assert_eq!(cell(0, cx), "H-001");
+            assert_eq!(
+                cell(2, cx),
+                "Cannery",
+                "the replaced rewrite's row is untouched"
+            );
+            assert_eq!(agent_findings(cx), 2);
+
+            let request = rewrite("Medium", &[], cx);
+            respond_to_agent(request, cx).unwrap();
+            assert_eq!(agent_findings(cx), 1, "an empty rewrite retracts it");
         });
     }
 }

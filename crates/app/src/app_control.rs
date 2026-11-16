@@ -20,8 +20,8 @@ use workspace::{AgentCall, AgentEntry};
 
 const PROTOCOL: u8 = 1;
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
-/// Enough for a full batch of staged findings, each carrying the cell text it was judged against.
-const MAX_BODY: usize = 256 * 1024;
+/// Enough for a staged rewrite of a whole column of long values.
+const MAX_BODY: usize = 8 * 1024 * 1024;
 const MAX_AGENT_NAME: usize = 48;
 const MAX_LINE: u64 = 8 * 1024;
 const MAX_HEADERS: usize = 64;
@@ -342,6 +342,17 @@ fn summarize(request: &ai::agent::Request) -> (SharedString, SharedString) {
         ai::agent::Request::StageFindings { revision, findings } => {
             format!("{} finding(s) at revision {}", findings.len(), revision.0).into()
         }
+        ai::agent::Request::StageColumnRewrite {
+            revision,
+            column,
+            values,
+            ..
+        } => format!(
+            "{} value(s) for {column} at revision {}",
+            values.len(),
+            revision.0
+        )
+        .into(),
         ai::agent::Request::ProgramSave { source } => {
             format!("{} source byte(s)", source.len()).into()
         }
@@ -377,6 +388,10 @@ fn describe(result: &ai::agent::ResultSet) -> SharedString {
         ai::agent::ResultSet::Staged { accepted, stale } => {
             format!("{accepted} staged, {} stale", stale.len()).into()
         }
+        ai::agent::ResultSet::StagedRewrite {
+            accepted,
+            unchanged,
+        } => format!("{accepted} staged, {} unchanged", unchanged.len()).into(),
     }
 }
 
