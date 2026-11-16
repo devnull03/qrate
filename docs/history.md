@@ -16,7 +16,8 @@ The newest change is at the top. The panel groups changes by day, under **Today*
   panel**, **Spelling fix**, **Fix:** and the name of the fix, **Rows and columns**,
   **Spreadsheet import**, **Undo**, **Redo**, or **Restored to #** and a change number.
 - **Who** made it. qrate uses the name in **Application ▸ Identity ▸ Author name**. See
-  [Projects](projects.md).
+  [Projects](projects.md). A fix that an agent proposed and you accepted reads as your name
+  **using** the agent's, for example "Arnav using pi".
 - **When** it was made.
 
 Undo and Redo entries are dimmed. They are part of the record, but they only reverse other

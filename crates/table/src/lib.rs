@@ -24,7 +24,7 @@ mod relink;
 mod row_index;
 mod visual;
 
-pub use agent::{AGENT_SOURCE, respond_to_agent, respond_to_agent_async};
+pub use agent::{AGENT_SOURCE, agent_source, respond_to_agent, respond_to_agent_async};
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 pub use editor::editor_box;
 /// The grid's right-click menu, so a gallery card can raise the same one a row does rather than

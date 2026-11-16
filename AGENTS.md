@@ -16,7 +16,7 @@ Run `qrate agent <command>`. The parameters are one JSON object on stdin, and th
 | `2` | Usage error, such as stdin that is not a JSON object, or a terminal where stdin should be | stderr |
 | `3` | qrate is not running or cannot be reached | stderr |
 
-No command changes a cell. `stage-findings` only replaces this agent's draft findings in the Problems panel. It can also offer whole-cell replacements under a finding in that cell's Problems menu. Only the archivist applies them.
+No command changes a cell. `stage-findings` only replaces this agent's draft findings in the Problems panel. It can also offer whole-cell replacements under a finding in that cell's Problems menu. Only the archivist applies them: one at a time, or all of one agent's at once with **Apply all N fixes from <agent>** in the same menu, which is a single undo step and skips any cell edited since staging. **Discard all** drops the batch. Drafts are kept per `--agent` name, so staging again replaces only your own, and the History panel credits an accepted fix as "<author> using <agent>".
 Agent findings stay ungrouped atomic diagnostics. Findings the archivist ignored are absent from `overview` counts and `diagnostics` queries, exactly as they are hidden in the Problems panel.
 
 qrate's Pi comes from a full install's `agent` folder or, when that is absent, from the optional component qrate installs on demand into `components/agent/<version>` in the same application-data directory. Without either, the Agent panel offers to install it (Settings ▸ Components does too) and starts Pi once it lands, with no restart.

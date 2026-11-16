@@ -69,6 +69,10 @@ The `stage-findings` command is the only one that changes what you see. The log 
 - **Staged** findings go to the Problems panel, beside your own validators' findings. A
   finding that proposes a new value also offers it under that finding in the cell's
   right-click **Problems** menu.
+- **Apply all N fixes from** an agent, in that same menu, accepts every value that agent
+  proposed in one step. One undo reverses all of them. A cell you edited after the agent
+  staged its findings is skipped, and qrate tells you how many were. **Discard all** removes
+  the agent's findings without changing anything.
 - **Stale** findings are dropped. A finding is stale when the cell no longer holds the
   text the agent read. This stops a correction to text nobody reviewed.
 

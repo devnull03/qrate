@@ -29,6 +29,8 @@ pub struct Fix {
     pub label: SharedString,
     /// The cell's whole new text, not a fragment, so applying one is a plain write.
     pub replacement: SharedString,
+    /// The agent that drafted this, so the history credits it beside whoever accepted it.
+    pub agent: Option<SharedString>,
 }
 
 /// What a producer is asked when a menu opens: where the finding is, and what the cell says now.
@@ -260,7 +262,14 @@ pub fn finding_menu(
             cx,
         );
         for found in offered {
-            let origin = Origin::Fix(found.label.to_string());
+            let label = found.label.to_string();
+            let origin = match found.agent {
+                Some(agent) => Origin::Agent {
+                    agent: agent.to_string(),
+                    fix: label,
+                },
+                None => Origin::Fix(label),
+            };
             menu = fix(menu, found.label, found.replacement, origin);
         }
     }
@@ -414,6 +423,7 @@ mod tests {
         vec![Fix {
             label: format!("Use “{text}s”").into(),
             replacement: format!("{text}s").into(),
+            agent: None,
         }]
     }
 

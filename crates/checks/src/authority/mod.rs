@@ -723,6 +723,7 @@ fn offer(location: &Location, text: &str, subject: Option<&str>, cx: &App) -> Ve
                 // The whole cell, with just the rejected value swapped, so a multi-valued
                 // cell keeps the values that were fine.
                 replacement: text.replace(&value, suggestion).into(),
+                agent: None,
             })
         })
         .collect()

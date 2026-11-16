@@ -279,7 +279,7 @@ async fn answer_agent(
             Ok(request) => {
                 (method, detail) = summarize(&request);
                 match cx
-                    .update(|cx| table::respond_to_agent_async(request, cx))
+                    .update(|cx| table::respond_to_agent_async(request, &agent, cx))
                     .await
                 {
                     Ok(response) => (

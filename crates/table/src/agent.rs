@@ -10,15 +10,30 @@ use ai::agent::{
     Response, ResultSet, Severity, TableRevision,
 };
 use base64::Engine as _;
+use diagnostics::fixes::{GroupFix, SourceActions};
 use diagnostics::{DATASET_MAIN, FixProviders, Location, Source};
 use gpui::{App, Global, SharedString, Task};
+use gpui_component::WindowExt as _;
+use gpui_component::notification::Notification;
+use settings::history::Origin;
 use sha2::{Digest as _, Sha256};
 
 use crate::{QrateTableDelegate, TableStateHandle};
 
-/// The diagnostics source every staged finding is filed under. One name for the whole agent, so a
-/// re-run replaces its own drafts wholesale instead of stacking a second copy beside them.
+/// Prefix of the diagnostics source an agent's staged drafts are filed under; see [`agent_source`].
 pub const AGENT_SOURCE: &str = "agent";
+
+/// The name an agent gave itself, back out of its [`agent_source`].
+fn agent_name(source: &str) -> &str {
+    source
+        .strip_prefix(AGENT_SOURCE)
+        .map_or(source, |name| name.trim_start_matches(':'))
+}
+
+/// The source for one named agent, so its re-run replaces its own drafts and nobody else's.
+pub fn agent_source(agent: &str) -> SharedString {
+    format!("{AGENT_SOURCE}:{agent}").into()
+}
 
 #[derive(Default)]
 struct AgentProgram {
@@ -35,12 +50,16 @@ static PROGRAM_RUNS: AtomicU64 = AtomicU64::new(1);
 /// unsaved cell edits and the current table generation. Nothing here writes a cell: the one
 /// non-read, [`Request::StageFindings`], publishes advisory diagnostics that are recomputed rather
 /// than persisted, and offers corrections the archivist still has to click.
-pub fn respond_to_agent(request: Request, cx: &mut App) -> Result<Response, RequestError> {
+pub fn respond_to_agent(
+    request: Request,
+    agent: &str,
+    cx: &mut App,
+) -> Result<Response, RequestError> {
     request.validate()?;
 
     match request {
         Request::StageFindings { revision, findings } => {
-            return stage_findings(revision, findings, cx);
+            return stage_findings(agent, revision, findings, cx);
         }
         Request::ProgramSave { source } => return save_program(source, cx),
         _ => {}
@@ -147,6 +166,7 @@ pub fn respond_to_agent(request: Request, cx: &mut App) -> Result<Response, Requ
 /// Capture live GPUI-owned state now, then do bounded analysis away from the UI thread.
 pub fn respond_to_agent_async(
     request: Request,
+    agent: &str,
     cx: &mut App,
 ) -> Task<Result<Response, RequestError>> {
     if let Err(error) = request.validate() {
@@ -342,7 +362,7 @@ pub fn respond_to_agent_async(
                 })
             })
         }
-        other => Task::ready(respond_to_agent(other, cx)),
+        other => Task::ready(respond_to_agent(other, agent, cx)),
     }
 }
 
@@ -768,24 +788,25 @@ struct StagedFix {
     replacement: SharedString,
 }
 
-/// Every replacement the agent staged, by `(row, column)`.
-///
-/// A global rather than a field on anything, because [`FixProviders`] registers a plain `fn`
-/// pointer and the offer has no handle to reach back through. Never persisted, and replaced
-/// wholesale on the next batch — the same replace-by-source rule the diagnostics follow.
+/// One agent's staged replacements, by `(row, column)`.
 #[derive(Default)]
-struct StagedFixes {
-    /// The table the whole batch was judged against, retained per the contract. Read by the apply
-    /// path, which must refuse a batch whose table has moved on under it.
-    #[allow(dead_code)]
-    revision: u64,
+struct Batch {
     by_cell: HashMap<(usize, SharedString), Vec<StagedFix>>,
 }
+
+/// Every agent's batch, by its diagnostics source.
+///
+/// A global rather than a field on anything, because [`FixProviders`] registers a plain `fn`
+/// pointer and the offer has no handle to reach back through. Never persisted, and an agent's
+/// batch is replaced wholesale by its next one — the replace-by-source rule diagnostics follow.
+#[derive(Default)]
+struct StagedFixes(HashMap<SharedString, Batch>);
 impl Global for StagedFixes {}
 
 /// Publish a batch of drafts: findings into the Problems panel, replacements into the Fixes menu.
 /// No cell is touched, and a draft the table has moved past is dropped rather than shown.
 fn stage_findings(
+    agent: &str,
     revision: TableRevision,
     findings: Vec<Finding>,
     cx: &mut App,
@@ -795,6 +816,7 @@ fn stage_findings(
         .and_then(|handle| handle.0.upgrade())
         .ok_or(RequestError::TableUnavailable)?;
 
+    let source = agent_source(agent);
     let mut published = Vec::new();
     let mut fixes: HashMap<(usize, SharedString), Vec<StagedFix>> = HashMap::new();
     let mut stale = Vec::new();
@@ -832,7 +854,7 @@ fn stage_findings(
                 Severity::Warning => diagnostics::Severity::Warning,
                 Severity::Note => diagnostics::Severity::Note,
             },
-            source: Source::Validator(AGENT_SOURCE.into()),
+            source: Source::Validator(source.clone()),
             message: finding.message.into(),
             group: None,
             // A computed finding carries no filing stamp — it is recomputed, not observed once.
@@ -852,19 +874,19 @@ fn stage_findings(
 
     let accepted = published.len();
     diagnostics::Diagnostics::set(
-        &Source::Validator(AGENT_SOURCE.into()),
+        &Source::Validator(source.clone()),
         DATASET_MAIN,
         published,
         cx,
     );
-    cx.set_global(StagedFixes {
-        revision: revision.0,
-        by_cell: fixes,
-    });
-    FixProviders::register(AGENT_SOURCE, offer_staged, cx);
+    cx.default_global::<StagedFixes>()
+        .0
+        .insert(source.clone(), Batch { by_cell: fixes });
+    FixProviders::register(&source, offer_staged, cx);
+    SourceActions::register(&source, staged_actions, cx);
     log::info!(
-        "agent staged {accepted} finding(s) against revision {}, dropping {} judged against text \
-         the table has moved past (current revision {})",
+        "{agent} staged {accepted} finding(s) against revision {}, dropping {} judged against \
+         text the table has moved past (current revision {})",
         revision.0,
         stale.len(),
         current.0
@@ -887,19 +909,112 @@ fn offer_staged(
     let (Some(row), Some(column)) = (location.row, location.column.clone()) else {
         return Vec::new();
     };
+    let cell = (row, column);
     cx.try_global::<StagedFixes>()
-        .and_then(|staged| staged.by_cell.get(&(row, column)))
-        .map(|staged| {
-            staged
+        .into_iter()
+        .flat_map(|staged| &staged.0)
+        .filter_map(|(source, batch)| Some((agent_name(source), batch.by_cell.get(&cell)?)))
+        .flat_map(|(agent, fixes)| {
+            fixes
                 .iter()
                 .filter(|fix| fix.expected == text)
-                .map(|fix| diagnostics::Fix {
+                .map(move |fix| diagnostics::Fix {
                     label: format!("Use “{}”", fix.replacement).into(),
                     replacement: fix.replacement.clone(),
+                    agent: Some(agent.to_owned().into()),
                 })
-                .collect()
         })
-        .unwrap_or_default()
+        .collect()
+}
+
+/// Whole-batch actions on any of one agent's findings: apply every staged fix, or drop the batch.
+fn staged_actions(source: &str, cx: &App) -> Vec<GroupFix> {
+    let Some(batch) = cx
+        .try_global::<StagedFixes>()
+        .and_then(|staged| staged.0.get(source))
+    else {
+        return Vec::new();
+    };
+    let agent = agent_name(source);
+    let fixes = batch.by_cell.len();
+    let mut actions = Vec::new();
+    if fixes > 0 {
+        let source = SharedString::from(source.to_owned());
+        actions.push(GroupFix::action(
+            format!("Apply all {fixes} fixes from {agent}"),
+            move |cx| {
+                let (applied, stale) = apply_staged(&source, cx);
+                tell(format!("{applied} applied, {stale} skipped as stale"), cx);
+            },
+        ));
+    }
+    let source = SharedString::from(source.to_owned());
+    actions.push(GroupFix::action("Discard all", move |cx| {
+        discard_staged(&source, cx)
+    }));
+    actions
+}
+
+/// Write every staged fix whose cell still reads what the agent judged, as one undo step, and
+/// retire the batch. Returns how many were written and how many were skipped as stale.
+fn apply_staged(source: &SharedString, cx: &mut App) -> (usize, usize) {
+    let Some(batch) = cx
+        .try_global::<StagedFixes>()
+        .and_then(|staged| staged.0.get(source))
+    else {
+        return (0, 0);
+    };
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+    else {
+        return (0, 0);
+    };
+    let delegate = state.read(cx).delegate();
+    let mut cells: Vec<_> = batch
+        .by_cell
+        .iter()
+        .filter_map(|((row, column), fixes)| {
+            let col = delegate.data_col(column)?;
+            let text = delegate.cell(*row, col)?;
+            let fix = fixes.iter().find(|fix| fix.expected == *text)?;
+            Some((*row, col, fix.replacement.clone()))
+        })
+        .collect();
+    cells.sort_unstable_by_key(|(row, col, _)| (*row, *col));
+    let (applied, stale) = (cells.len(), batch.by_cell.len() - cells.len());
+    let agent = agent_name(source).to_owned();
+    discard_staged(source, cx);
+    let origin = Origin::Agent {
+        agent: agent.clone(),
+        fix: format!("apply all {applied}"),
+    };
+    crate::write_cells(cells, origin, cx);
+    log::info!("{agent}: {applied} staged fix(es) applied, {stale} skipped as stale");
+    (applied, stale)
+}
+
+/// Drop one agent's batch and its findings without touching a cell.
+fn discard_staged(source: &SharedString, cx: &mut App) {
+    cx.default_global::<StagedFixes>().0.remove(source);
+    diagnostics::Diagnostics::set(
+        &Source::Validator(source.clone()),
+        DATASET_MAIN,
+        Vec::new(),
+        cx,
+    );
+}
+
+/// Say what a bulk action did, over whichever window is active.
+fn tell(message: String, cx: &mut App) {
+    let Some(window) = cx.active_window() else {
+        return;
+    };
+    window
+        .update(cx, |_, window, cx| {
+            window.push_notification(Notification::new().message(message), cx)
+        })
+        .ok();
 }
 
 #[cfg(test)]
@@ -912,7 +1027,35 @@ mod tests {
     use diagnostics::{DATASET_MAIN, Location};
     use gpui::TestAppContext;
 
-    use crate::{AGENT_SOURCE, TablePanel, TableStateHandle, respond_to_agent};
+    use gpui::SharedString;
+
+    use crate::agent::{agent_source, apply_staged, staged_actions};
+    use crate::{TablePanel, TableStateHandle};
+
+    fn respond_to_agent(
+        request: Request,
+        cx: &mut gpui::App,
+    ) -> Result<ai::agent::Response, RequestError> {
+        crate::respond_to_agent(request, "pi", cx)
+    }
+
+    fn cell(row: usize, cx: &mut gpui::App) -> serde_json::Value {
+        let ResultSet::Query(page) = respond_to_agent(
+            Request::Query(Query {
+                source: QuerySource::Rows { rows: vec![row] },
+                select: vec!["Title".into()],
+                limit: 1,
+                ..Query::default()
+            }),
+            cx,
+        )
+        .unwrap()
+        .result
+        else {
+            panic!("rows answered with another result set");
+        };
+        page.items[0].last().cloned().unwrap()
+    }
 
     fn project() -> settings::project::CurrentProject {
         settings::project::CurrentProject {
@@ -1126,7 +1269,7 @@ mod tests {
             let published: Vec<_> =
                 diagnostics::Diagnostics::at(DATASET_MAIN, Some(0), Some("Title"), cx).collect();
             assert_eq!(published.len(), 1);
-            assert_eq!(published[0].source.label(), AGENT_SOURCE);
+            assert_eq!(published[0].source.key(), agent_source("pi"));
             assert_eq!(published[0].severity, diagnostics::Severity::Warning);
 
             let location = Location {
@@ -1192,7 +1335,7 @@ mod tests {
         let agent_findings = |cx: &gpui::App| {
             diagnostics::Diagnostics::all(cx)
                 .iter()
-                .filter(|d| d.source.label() == AGENT_SOURCE)
+                .filter(|d| d.source.key() == agent_source("pi"))
                 .count()
         };
 
@@ -1211,6 +1354,221 @@ mod tests {
 
             stage(Vec::new(), cx);
             assert_eq!(agent_findings(cx), 0, "an empty batch retracts everything");
+        });
+    }
+    fn stage(findings: Vec<Finding>, cx: &mut gpui::App) {
+        respond_to_agent(
+            Request::StageFindings {
+                revision: TableRevision(0),
+                findings,
+            },
+            cx,
+        )
+        .unwrap();
+    }
+
+    fn agent_findings(cx: &gpui::App) -> usize {
+        diagnostics::Diagnostics::all(cx)
+            .iter()
+            .filter(|d| d.source.key() == agent_source("pi"))
+            .count()
+    }
+
+    fn many_rows(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            let mut project = project();
+            project.data.rows = (0..500)
+                .map(|row| vec![format!("old {row}"), "Film".into()])
+                .collect();
+            project.data.row_ids = (1..=500).collect();
+            cx.set_global(project);
+        });
+        cx.add_window_view(TablePanel::new);
+    }
+
+    /// The whole point of the batch action: one click, one undo step, however many cells.
+    #[gpui::test]
+    fn five_hundred_fixes_apply_as_one_step_and_one_undo_restores_them(cx: &mut TestAppContext) {
+        many_rows(cx);
+
+        cx.update(|cx| {
+            for chunk in 0..3 {
+                let rows = (chunk * 200..500.min((chunk + 1) * 200)).collect::<Vec<_>>();
+                let findings = rows
+                    .iter()
+                    .map(|&row| finding(row, "Title", &format!("old {row}"), &format!("new {row}")))
+                    .collect();
+                respond_to_agent_as(&format!("pi-{chunk}"), findings, cx);
+            }
+            let labels: Vec<SharedString> = staged_actions(&agent_source("pi-0"), cx)
+                .into_iter()
+                .map(|action| action.label)
+                .collect();
+            assert_eq!(labels, ["Apply all 200 fixes from pi-0", "Discard all"]);
+        });
+        // One agent's batch is capped at 200 findings, so 500 in one step is one agent's batch
+        // built directly: three agents would be three steps.
+        cx.update(|cx| {
+            for chunk in 0..3 {
+                super::discard_staged(&agent_source(&format!("pi-{chunk}")), cx);
+            }
+            let by_cell = (0..500)
+                .map(|row| {
+                    (
+                        (row, SharedString::from("Title")),
+                        vec![super::StagedFix {
+                            expected: format!("old {row}").into(),
+                            replacement: format!("new {row}").into(),
+                        }],
+                    )
+                })
+                .collect();
+            cx.default_global::<super::StagedFixes>()
+                .0
+                .insert(agent_source("pi"), super::Batch { by_cell });
+            assert_eq!(apply_staged(&agent_source("pi"), cx), (500, 0));
+            assert_eq!(cell(0, cx), "new 0");
+            assert_eq!(cell(499, cx), "new 499");
+
+            crate::history_step(false, cx);
+            assert_eq!(cell(0, cx), "old 0");
+            assert_eq!(cell(250, cx), "old 250");
+            assert_eq!(cell(499, cx), "old 499");
+            crate::history_step(false, cx);
+            assert_eq!(cell(0, cx), "old 0", "the batch was one step, not several");
+
+            crate::history_step(true, cx);
+            assert_eq!(cell(499, cx), "new 499", "redo restores the whole batch");
+        });
+    }
+
+    fn respond_to_agent_as(agent: &str, findings: Vec<Finding>, cx: &mut gpui::App) {
+        crate::respond_to_agent(
+            Request::StageFindings {
+                revision: TableRevision(0),
+                findings,
+            },
+            agent,
+            cx,
+        )
+        .unwrap();
+    }
+
+    /// A cell the archivist edited after staging is a cell nobody reviewed: it keeps its text, and
+    /// the count says so. Applying also retires the batch and its findings.
+    #[gpui::test]
+    fn a_stale_cell_is_skipped_and_counted(cx: &mut TestAppContext) {
+        open(cx);
+
+        cx.update(|cx| {
+            stage(
+                vec![
+                    finding(0, "Title", "Harvest", "Harvest, 1962"),
+                    finding(1, "Title", "Wharf", "Wharf, 1958"),
+                ],
+                cx,
+            );
+            crate::write_cells(
+                vec![(1, 0, "Wharf, retitled by hand".into())],
+                settings::history::Origin::Typed,
+                cx,
+            );
+
+            assert_eq!(apply_staged(&agent_source("pi"), cx), (1, 1));
+            assert_eq!(cell(0, cx), "Harvest, 1962");
+            let state = cx
+                .try_global::<TableStateHandle>()
+                .and_then(|handle| handle.0.upgrade())
+                .unwrap();
+            let origin = &state
+                .read(cx)
+                .delegate()
+                .unsaved_history()
+                .last()
+                .unwrap()
+                .origin;
+            assert_eq!(
+                settings::history::credit(Some("rk"), origin).as_deref(),
+                Some("rk using pi"),
+                "the history names the agent beside whoever accepted its fixes"
+            );
+            assert_eq!(cell(1, cx), "Wharf, retitled by hand");
+            assert_eq!(agent_findings(cx), 0);
+            assert!(staged_actions(&agent_source("pi"), cx).is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn discarding_leaves_the_cells_untouched(cx: &mut TestAppContext) {
+        open(cx);
+
+        cx.update(|cx| {
+            stage(vec![finding(0, "Title", "Harvest", "Harvest, 1962")], cx);
+            let discard = staged_actions(&agent_source("pi"), cx)
+                .into_iter()
+                .find(|action| action.label == "Discard all")
+                .expect("a staged batch can be discarded");
+            discard.apply(cx);
+
+            assert_eq!(cell(0, cx), "Harvest");
+            assert_eq!(agent_findings(cx), 0);
+            assert_eq!(apply_staged(&agent_source("pi"), cx), (0, 0));
+        });
+    }
+
+    /// One agent re-staging must not retract what another agent staged.
+    #[gpui::test]
+    fn agents_keep_separate_batches(cx: &mut TestAppContext) {
+        open(cx);
+
+        cx.update(|cx| {
+            stage(vec![finding(0, "Title", "Harvest", "Harvest, 1962")], cx);
+            respond_to_agent_as(
+                "other",
+                vec![finding(1, "Title", "Wharf", "Wharf, 1958")],
+                cx,
+            );
+            respond_to_agent_as("other", Vec::new(), cx);
+
+            assert_eq!(agent_findings(cx), 1);
+            assert_eq!(apply_staged(&agent_source("pi"), cx), (1, 0));
+        });
+    }
+
+    /// A staged row is a source row, so a filter or a sort that reorders the view must not
+    /// redirect the write.
+    #[gpui::test]
+    fn applying_under_a_filter_writes_the_source_rows(cx: &mut TestAppContext) {
+        open(cx);
+
+        let state = cx.update(|cx| {
+            cx.try_global::<TableStateHandle>()
+                .and_then(|handle| handle.0.upgrade())
+                .expect("the panel publishes its state handle")
+        });
+        cx.update(|cx| {
+            stage(
+                vec![
+                    finding(1, "Title", "Wharf", "Wharf, 1958"),
+                    finding(2, "Title", "Cannery", "Cannery, 1949"),
+                ],
+                cx,
+            );
+            // Keep only "Film" — source rows 0 and 2, so view row 1 is source row 2.
+            state.update(cx, |state, cx| {
+                state.delegate_mut().set_column_kept(1, &["Film".into()]);
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            assert_eq!(apply_staged(&agent_source("pi"), cx), (2, 0));
+            assert_eq!(cell(0, cx), "Harvest");
+            assert_eq!(cell(1, cx), "Wharf, 1958", "a hidden row is still written");
+            assert_eq!(cell(2, cx), "Cannery, 1949");
         });
     }
 }
