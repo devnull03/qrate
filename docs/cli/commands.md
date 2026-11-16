@@ -133,6 +133,8 @@ qrate agent program-save < program.json
 qrate agent program-run < run.json
 qrate agent thumbnails < thumbnails.json
 qrate agent stage-findings < findings.json
+qrate agent stage-column-rewrite < rewrite.json
+qrate agent stage-renames < renames.json
 ```
 
 These commands let an AI agent, or a script, read the open project. Each command but
@@ -148,6 +150,43 @@ allowed to do.
 | `program-run` | `{"revision": ..., "args": ...}` | Runs the saved program one time on a copy of the data |
 | `thumbnails` | `{"items": [{"row": ..., "page": ...}]}` | Up to four small PNG pictures of linked files |
 | `stage-findings` | `{"revision": ..., "findings": [...]}` | Puts draft findings in the Problems panel |
+| `stage-column-rewrite` | `{"revision": ..., "column": "...", "values": [[row, "value"], ...], "note": "..."}` | Stages new values for one column as one draft. `unchanged` lists the rows that already hold the value. |
+| `stage-renames` | `{"revision": ..., "renames": [{"row": ..., "from": "...", "to": "..."}]}` | Stages renames of linked files as one draft |
+
+The three `stage-` commands change nothing. Each one puts a draft in the Problems panel, and
+you apply or discard it there.
+
+### Stage a column rewrite
+
+`stage-column-rewrite` is for a change to many cells in one column, such as new identifiers
+from a list. It takes up to 50,000 pairs of a row number and the whole new value. Each row
+can appear one time. The `revision` must be the one from the last `overview`.
+
+```sh
+qrate agent overview --agent me          # read "revision", for example 12
+echo '{"revision":12,"column":"Digital ID","values":[[0,"AD-001"],[1,"AD-002"]],"note":"ids from mapping.csv"}' \
+  | qrate agent stage-column-rewrite --agent me
+```
+
+qrate answers `{"revision":12,"result":"staged_rewrite","accepted":2,"unchanged":[]}`. The
+Problems panel now shows one entry, **Rewrite Digital ID: 2 rows (ids from mapping.csv)**.
+Right-click it to preview, apply, or discard. If you stage the same column again, the new
+rewrite replaces the old one.
+
+### Stage file renames
+
+`stage-renames` is for the files that rows link to. Each rename gives the row and two paths.
+The paths are relative to the folder that holds the `.qrate` file, and they must stay in
+that folder.
+
+```sh
+echo '{"revision":12,"renames":[{"row":0,"from":"photos/1.jpg","to":"photos/AD-001.jpg"}]}' \
+  | qrate agent stage-renames --agent me
+```
+
+qrate refuses the whole list if one rename is wrong: a path that leaves the project folder,
+a `from` that is not the file its row links, two renames with the same name, or a `to` that
+already exists. Two files can swap names in one list.
 
 | Option | Meaning |
 |---|---|

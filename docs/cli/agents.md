@@ -4,8 +4,8 @@ An AI agent that you run on your own computer can read the project that is open 
 It does this with the `qrate agent` commands. It can read rows, read the problems that qrate
 found, and put its own findings in the Problems panel for you to review.
 
-An agent cannot change a cell. A finding from an agent is a draft. It changes your data only
-when you click it.
+An agent cannot change a cell or rename a file. Everything an agent sends is a draft. It
+changes your data only when you click it.
 
 ## Before you start
 
@@ -68,6 +68,13 @@ A review has the same steps for every agent.
 3. **Stage findings.** The agent sends its findings with `qrate agent stage-findings`. They
    appear in the Problems panel, beside the findings from qrate's own checks.
 
+An agent can also stage two kinds of bulk change. Each one is a single entry in the Problems
+panel, however many rows it covers:
+
+- **A column rewrite**, with `qrate agent stage-column-rewrite`: new values for many cells in
+  one column.
+- **File renames**, with `qrate agent stage-renames`: new names for files that rows link to.
+
 Try the first two steps yourself:
 
 ```sh
@@ -78,9 +85,34 @@ echo '{"source":{"kind":"selected_rows"},"select":["Title"],"limit":10}' | qrate
 Every call appears in the **Log** tab of the Agent panel, with the name you gave after
 `--agent`.
 
+## A bulk edit from start to finish
+
+You have a file, `mapping.csv`, with old and new identifiers, and you want every identifier
+in the project changed and every scan renamed to match.
+
+1. **Ask the agent.** For example: "Use mapping.csv to replace every Digital ID, and rename
+   the photos to match."
+2. **The agent reads.** It runs `qrate agent overview` for the columns and the `revision`. It
+   reads the mapping file. To pair old values with rows it uses `qrate agent query`, or, for
+   a large project, a small program with `qrate agent program-save` and
+   `qrate agent program-run`. A program's answer is small, so the agent asks for the pairs a
+   few hundred at a time.
+3. **The agent stages.** It sends all the pairs in one `qrate agent stage-column-rewrite`
+   call, and the file names in one `qrate agent stage-renames` call.
+4. **You review.** The Problems panel shows two entries, such as **Rewrite Digital ID: 2,000
+   rows (ids from mapping.csv)** and **Rename 2,000 files**. Right-click an entry and choose
+   **Preview** to see the first 50 changes.
+5. **You apply.** Choose **Apply** on each entry. Each one is a single step. qrate tells you
+   how many it applied and how many it skipped because the cell or file changed after the
+   agent read it.
+6. **You can undo.** Press undo two times. The first undo puts the file names back on disk.
+   The second puts the identifiers back.
+
 ## What an agent cannot do
 
 - It cannot change, add, or delete a cell, a row, or a column.
+- It cannot rename, move, or delete a file. It cannot apply its own drafts, and there is no
+  setting that lets it.
 - It cannot save the project.
 - It cannot read your files directly. It gets small pictures that qrate makes, and bounded
   text from linked documents.

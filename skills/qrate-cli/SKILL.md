@@ -41,6 +41,21 @@ app and prints nothing to a terminal.
 
 Do not add `--wait` unless you mean to block until the archivist quits qrate.
 
+## A bulk edit, end to end
+
+"Replace every identifier using mapping.csv, and rename the files to match":
+
+1. `qrate agent overview` — keep `revision`, find the identifier column and the Filename column.
+2. Read `mapping.csv` yourself. Pair its old values with source rows through `qrate agent query`
+   (50 rows a call), or save a Luau program with `program-save` and page through `program-run`
+   with `args` such as `{"offset": 0, "limit": 300}`; a run returns at most 16 KB.
+3. `qrate agent stage-column-rewrite` once, with every `[row, new value]` pair and a `note`
+   naming the mapping file.
+4. `qrate agent stage-renames` once, at the same `revision`, with paths relative to the folder
+   holding the project file.
+5. Tell the archivist there are two drafts to preview and apply in the Problems panel. Stop
+   there: you cannot apply them, and a refusal (exit `1`) names what to fix.
+
 ## Exit codes
 
 | Exit | Meaning |
@@ -56,6 +71,11 @@ Do not add `--wait` unless you mean to block until the archivist quits qrate.
   and switches. Never do that to a project the archivist has open unless they asked for it.
 - **Do not read the `.qrate` file to answer a question about the open project.** It is a SQLite
   file, and it can lack edits that are on screen and not saved yet. Ask the running app.
-- **No command changes a cell.** Do not say that one did.
+- **No command changes a cell or a file.** Do not say that one did. `qrate agent
+  stage-findings`, `stage-column-rewrite` and `stage-renames` only publish drafts; the archivist
+  applies them from the Problems panel.
+- **Bulk edits are staged whole.** New values for many cells of one column go in one
+  `qrate agent stage-column-rewrite` call, never cell by cell. Renaming linked files goes through
+  `qrate agent stage-renames`; never `mv`, `ren`, or `Move-Item` a project's files.
 - **Name yourself.** On every `qrate agent` call, pass `--agent <your runtime>` or set
   `QRATE_AGENT`. The archivist reads that name in the Agent panel.

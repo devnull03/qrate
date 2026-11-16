@@ -73,6 +73,11 @@ The `stage-findings` command is the only one that changes what you see. The log 
   proposed in one step. One undo reverses all of them. A cell you edited after the agent
   staged its findings is skipped, and qrate tells you how many were. **Discard all** removes
   the agent's findings without changing anything.
+- A **column rewrite** or a batch of **file renames** from an agent shows as one entry, such
+  as **Rewrite Digital ID: 2,000 rows** or **Rename 2,000 files**. Its menu has **Preview**,
+  **Apply**, and **Discard**. Applying is one step, and one undo reverses it, on disk too
+  for renames. Restoring an older state from the History panel puts names back in cells but
+  does not rename files.
 - **Stale** findings are dropped. A finding is stale when the cell no longer holds the
   text the agent read. This stops a correction to text nobody reviewed.
 
