@@ -1365,14 +1365,8 @@ fn stage_renames(
     let sources: HashSet<&Path> = staged.iter().map(|rename| rename.from.as_path()).collect();
     let mut targets = HashSet::new();
     for rename in &staged {
-        let display = || {
-            rename
-                .to
-                .strip_prefix(&root)
-                .unwrap_or(&rename.to)
-                .display()
-                .to_string()
-        };
+        let display =
+            || file_ingest::normalized_path(rename.to.strip_prefix(&root).unwrap_or(&rename.to));
         if !targets.insert(rename.to.as_path()) || sources.len() != staged.len() {
             return Err(RequestError::RenameTargetCollision(display()));
         }
