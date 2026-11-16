@@ -4,8 +4,11 @@
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
   xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap uap3 uap10 rescap">
+  IgnorableNamespaces="uap uap3 uap10 desktop4 desktop5 com rescap">
   <Identity Name="qrate-package-identity" Publisher="CN=qrate-package-publisher" Version="1.0.0.0" ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>qrate</DisplayName>
@@ -29,6 +32,23 @@
         Square44x44Logo="Assets\Square44x44Logo.png"
         BackgroundColor="#ffffff" />
       <Extensions>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="qrate folder command">
+              <com:Class Id="78B41856-4B52-45C6-9F05-04DF924611EA" Path="qrate-shell.dll" ThreadingModel="STA" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type="Directory">
+              <desktop5:Verb Id="OpenFolderWithQrate" Clsid="78B41856-4B52-45C6-9F05-04DF924611EA" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type="Directory\Background">
+              <desktop5:Verb Id="OpenFolderBackgroundWithQrate" Clsid="78B41856-4B52-45C6-9F05-04DF924611EA" />
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
         <uap:Extension Category="windows.fileTypeAssociation">
           <uap3:FileTypeAssociation Name="qrateproject" Parameters="&quot;%1&quot;" MultiSelectModel="Single">
             <uap:SupportedFileTypes>

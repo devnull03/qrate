@@ -50,11 +50,9 @@ pub struct ReviewerCapabilities {
 /// What the agent panel asks of a model: does this row describe this image, and where doesn't it.
 ///
 /// `row_data` is the row as JSON — column name to value — so a provider needs no notion of grids.
+// async_trait adds #[must_use] to methods returning futures that are already must-use.
+#[allow(clippy::double_must_use)]
 #[async_trait]
-#[allow(
-    clippy::double_must_use,
-    reason = "async-trait 0.1.89 adds it; the release that stops needs syn 3"
-)]
 pub trait DataReviewer: Send + Sync {
     async fn initialize(&self) -> Result<()>;
     async fn validate_row(

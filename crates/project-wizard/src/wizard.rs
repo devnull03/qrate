@@ -675,7 +675,7 @@ pub fn open_project_wizard(entry_kind: EntryKind, cx: &mut App) {
     open_project_wizard_seeded(entry_kind, None, Vec::new(), cx);
 }
 
-pub(crate) fn open_project_wizard_seeded(
+pub fn open_project_wizard_seeded(
     entry_kind: EntryKind,
     spreadsheet: Option<String>,
     paths: Vec<std::path::PathBuf>,
@@ -697,6 +697,16 @@ pub(crate) fn open_project_wizard_seeded(
                 wizard.set_local_path(path, cx);
             }
             if !paths.is_empty() {
+                if entry_kind == EntryKind::Blank
+                    && let [path] = paths.as_slice()
+                    && path.is_dir()
+                    && let Some(name) = path.file_name().and_then(|name| name.to_str())
+                {
+                    wizard.name_input.update(cx, |input, cx| {
+                        input.set_value(name, window, cx);
+                    });
+                    wizard.validate_name(cx);
+                }
                 wizard.set_import_paths(paths, cx);
             }
             wizard

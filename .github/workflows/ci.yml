@@ -33,6 +33,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Build Store Explorer command
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-store-shell.ps1 -OutputPath "$env:RUNNER_TEMP/qrate-shell.dll"
+
       # These archives have their own top-level `pi` directory, and the macOS package must merge
       # two executables plus both sets of native helpers. A syntax check cannot catch a plausible
       # but wrong path here, so exercise the same downloads and assembly the release uses.
