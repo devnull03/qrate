@@ -129,7 +129,12 @@ VIAddVersionKey "ProductVersion"  "${VERSION}"
 Function .onInit
   ${GetParameters} $R0
   ${GetOptions} $R0 "/RESTART=" $UpdateRestart
+  ; MULTIUSER_INIT replaces $INSTDIR with the mode's default, which would discard a /D= folder.
+  StrCpy $R1 $INSTDIR
   !insertmacro MULTIUSER_INIT
+  ${If} $R1 != ""
+    StrCpy $INSTDIR $R1
+  ${EndIf}
 FunctionEnd
 
 Function un.onInit
