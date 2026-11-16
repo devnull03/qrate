@@ -353,6 +353,9 @@ fn summarize(request: &ai::agent::Request) -> (SharedString, SharedString) {
             revision.0
         )
         .into(),
+        ai::agent::Request::StageRenames { revision, renames } => {
+            format!("{} rename(s) at revision {}", renames.len(), revision.0).into()
+        }
         ai::agent::Request::ProgramSave { source } => {
             format!("{} source byte(s)", source.len()).into()
         }
@@ -392,6 +395,9 @@ fn describe(result: &ai::agent::ResultSet) -> SharedString {
             accepted,
             unchanged,
         } => format!("{accepted} staged, {} unchanged", unchanged.len()).into(),
+        ai::agent::ResultSet::StagedRenames { accepted } => {
+            format!("{accepted} rename(s) staged").into()
+        }
     }
 }
 

@@ -1,12 +1,13 @@
 //! Live-table adapter for the external-agent contract: the reads, and the one draft-only write.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ai::agent::{
     Column, Count, DiagnosticSummary, FilterOp, Finding, MAX_RESULT_BYTES, Overview, ProgramAudit,
-    ProgramOutput, ProjectSummary, Query, QueryResult, QuerySource, Request, RequestError,
+    ProgramOutput, ProjectSummary, Query, QueryResult, QuerySource, Rename, Request, RequestError,
     Response, ResultSet, Severity, TableRevision,
 };
 use base64::Engine as _;
@@ -15,6 +16,7 @@ use diagnostics::{DATASET_MAIN, FixProviders, Location, Source};
 use gpui::{App, Global, ParentElement as _, SharedString, Task};
 use gpui_component::WindowExt as _;
 use gpui_component::notification::Notification;
+use settings::columns::ColumnType;
 use settings::history::Origin;
 use sha2::{Digest as _, Sha256};
 
@@ -67,6 +69,9 @@ pub fn respond_to_agent(
             values,
             note,
         } => return stage_column_rewrite(agent, revision, column, values, note, cx),
+        Request::StageRenames { revision, renames } => {
+            return stage_renames(agent, revision, renames, cx);
+        }
         Request::ProgramSave { source } => return save_program(source, cx),
         _ => {}
     }
@@ -165,7 +170,8 @@ pub fn respond_to_agent(
         }
         Request::ProgramSave { .. }
         | Request::StageFindings { .. }
-        | Request::StageColumnRewrite { .. } => unreachable!(),
+        | Request::StageColumnRewrite { .. }
+        | Request::StageRenames { .. } => unreachable!(),
     };
 
     Ok(Response { revision, result })
@@ -820,6 +826,20 @@ struct Batch {
     findings: Vec<diagnostics::Diagnostic>,
     by_cell: HashMap<(usize, SharedString), Vec<StagedFix>>,
     rewrites: BTreeMap<SharedString, Rewrite>,
+    renames: Vec<StagedRename>,
+}
+
+/// One staged file rename, by row identity so rows added or removed since do not redirect it.
+struct StagedRename {
+    row: settings::project::RowId,
+    /// The column whose cell names the file, when one does.
+    column: Option<SharedString>,
+    from: PathBuf,
+    to: PathBuf,
+}
+
+fn renames_title(count: usize) -> String {
+    format!("Rename {count} files")
 }
 
 /// Every agent's batch, by its diagnostics source.
@@ -998,6 +1018,29 @@ fn staged_actions(source: &str, cx: &App) -> Vec<GroupFix> {
             discard_rewrite(&at.0, &at.1, cx)
         }));
     }
+    if !batch.renames.is_empty() {
+        let title = renames_title(batch.renames.len());
+        actions.push(GroupFix::action(format!("Preview: {title}"), {
+            let source = source.clone();
+            move |cx| preview_renames(&source, cx)
+        }));
+        actions.push(GroupFix::action(format!("Apply: {title}"), {
+            let source = source.clone();
+            move |cx| {
+                let message = match apply_renames(&source, cx) {
+                    Ok((applied, stale)) => format!("{applied} renamed, {stale} skipped as stale"),
+                    Err(why) => format!("No file was renamed: {why}"),
+                };
+                tell(message, cx);
+            }
+        }));
+        actions.push(GroupFix::action(format!("Discard: {title}"), move |cx| {
+            if let Some(batch) = cx.default_global::<StagedFixes>().0.get_mut(&source) {
+                batch.renames.clear();
+            }
+            publish(&source, cx);
+        }));
+    }
     actions
 }
 
@@ -1052,11 +1095,9 @@ fn discard_staged(source: &SharedString, cx: &mut App) {
 /// Show what one agent has staged: its findings, and one entry per column rewrite.
 fn publish(source: &SharedString, cx: &mut App) {
     let staged = cx.default_global::<StagedFixes>();
-    if staged
-        .0
-        .get(source)
-        .is_some_and(|batch| batch.findings.is_empty() && batch.rewrites.is_empty())
-    {
+    if staged.0.get(source).is_some_and(|batch| {
+        batch.findings.is_empty() && batch.rewrites.is_empty() && batch.renames.is_empty()
+    }) {
         staged.0.remove(source);
     }
     let items = staged.0.get(source).map_or_else(Vec::new, |batch| {
@@ -1076,7 +1117,26 @@ fn publish(source: &SharedString, cx: &mut App) {
                 group: None,
                 filed: None,
             });
-        batch.findings.iter().cloned().chain(rewrites).collect()
+        let renames = (!batch.renames.is_empty()).then(|| diagnostics::Diagnostic {
+            location: Location {
+                dataset: DATASET_MAIN.into(),
+                row: None,
+                row_id: None,
+                column: None,
+            },
+            severity: diagnostics::Severity::Note,
+            source: Source::Validator(source.clone()),
+            message: renames_title(batch.renames.len()).into(),
+            group: None,
+            filed: None,
+        });
+        batch
+            .findings
+            .iter()
+            .cloned()
+            .chain(rewrites)
+            .chain(renames)
+            .collect()
     });
     diagnostics::Diagnostics::set(&Source::Validator(source.clone()), DATASET_MAIN, items, cx);
     FixProviders::register(source, offer_staged, cx);
@@ -1237,8 +1297,242 @@ fn preview_rewrite(source: &SharedString, column: &SharedString, cx: &mut App) {
         .ok();
 }
 
+/// The folder holding the project file, which every staged path is relative to.
+fn project_dir(cx: &App) -> Result<PathBuf, RequestError> {
+    cx.try_global::<settings::project::CurrentProject>()
+        .and_then(|project| project.file.parent().map(Path::to_path_buf))
+        .ok_or(RequestError::ProjectUnavailable)
+}
+
+/// Whether `cell` is a name the files folder would resolve to a file called `name`.
+fn names(cell: &str, name: &Path) -> bool {
+    let keys = settings::filenames::keys(&name.file_name().unwrap_or_default().to_string_lossy());
+    settings::filenames::lookup_keys(cell)
+        .iter()
+        .any(|key| keys.contains(key))
+}
+
+/// Stage renames of files the rows link to, replacing this agent's earlier renames. An empty batch
+/// retracts them. Every rename must be sound or the whole batch is refused, and no file is touched.
+fn stage_renames(
+    agent: &str,
+    revision: TableRevision,
+    renames: Vec<Rename>,
+    cx: &mut App,
+) -> Result<Response, RequestError> {
+    let root = project_dir(cx)?;
+    let state = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+        .ok_or(RequestError::TableUnavailable)?;
+    let delegate = state.read(cx).delegate();
+    let current = TableRevision(delegate.values_generation());
+    if revision != current {
+        return Err(RequestError::StaleRevision);
+    }
+
+    let mut staged = Vec::with_capacity(renames.len());
+    for rename in renames {
+        let inside = |path: &str| {
+            file_ingest::rename::inside(&root, path)
+                .ok_or_else(|| RequestError::RenameOutsideProject(path.to_owned()))
+        };
+        let (from, to) = (inside(&rename.from)?, inside(&rename.to)?);
+        let linked = delegate
+            .row_image(rename.row)
+            .and_then(|image| image.canonicalize().ok());
+        let (Some(row), true) = (
+            delegate.row_id(rename.row),
+            from.is_file() && linked.is_some() && linked == from.canonicalize().ok(),
+        ) else {
+            return Err(RequestError::RenameSourceMismatch(rename.from));
+        };
+        if from == to {
+            continue;
+        }
+        let fields = delegate.row_fields(rename.row);
+        let column = (0..fields.len())
+            .filter(|col| names(&fields[*col].1, &from))
+            .max_by_key(|col| delegate.column_type(*col) == ColumnType::Filename)
+            .map(|col| fields[col].0.clone());
+        staged.push(StagedRename {
+            row,
+            column,
+            from,
+            to,
+        });
+    }
+    let sources: HashSet<&Path> = staged.iter().map(|rename| rename.from.as_path()).collect();
+    let mut targets = HashSet::new();
+    for rename in &staged {
+        let display = || {
+            rename
+                .to
+                .strip_prefix(&root)
+                .unwrap_or(&rename.to)
+                .display()
+                .to_string()
+        };
+        if !targets.insert(rename.to.as_path()) || sources.len() != staged.len() {
+            return Err(RequestError::RenameTargetCollision(display()));
+        }
+        if rename.to.exists() && !sources.contains(rename.to.as_path()) {
+            return Err(RequestError::RenameTargetExists(display()));
+        }
+    }
+
+    let accepted = staged.len();
+    let source = agent_source(agent);
+    cx.default_global::<StagedFixes>()
+        .0
+        .entry(source.clone())
+        .or_default()
+        .renames = staged;
+    publish(&source, cx);
+    log::info!(
+        "{agent} staged {accepted} file rename(s) at revision {}",
+        current.0
+    );
+    Ok(Response {
+        revision: current,
+        result: ResultSet::StagedRenames { accepted },
+    })
+}
+
+/// Rename the staged files on disk — all of them or none — then make the rows follow, as one undo
+/// step. A rename whose file is gone or whose row links another file by now is skipped as stale.
+/// Returns how many were renamed and how many were skipped.
+fn apply_renames(source: &SharedString, cx: &mut App) -> Result<(usize, usize), String> {
+    let staged = cx
+        .default_global::<StagedFixes>()
+        .0
+        .get_mut(source)
+        .map(|batch| std::mem::take(&mut batch.renames))
+        .unwrap_or_default();
+    publish(source, cx);
+    let state = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+        .ok_or("no project is open")?;
+    let delegate = state.read(cx).delegate();
+
+    // A row whose name cell was rewritten first resolves to no file yet; that is not stale.
+    let live: Vec<(usize, &StagedRename)> = staged
+        .iter()
+        .filter_map(|rename| Some((delegate.row_of(rename.row)?, rename)))
+        .filter(|(row, rename)| {
+            rename.from.is_file()
+                && delegate.row_image(*row).is_none_or(|image| {
+                    image.canonicalize().ok() == rename.from.canonicalize().ok()
+                })
+        })
+        .collect();
+    let stale = staged.len() - live.len();
+    let sources: HashSet<&Path> = live.iter().map(|(_, r)| r.from.as_path()).collect();
+    if let Some((_, taken)) = live
+        .iter()
+        .find(|(_, r)| r.to.exists() && !sources.contains(r.to.as_path()))
+    {
+        return Err(format!("{} already exists", taken.to.display()));
+    }
+
+    let files: Vec<(PathBuf, PathBuf)> = live
+        .iter()
+        .map(|(_, rename)| (rename.from.clone(), rename.to.clone()))
+        .collect();
+    let cells: Vec<(usize, usize, SharedString)> = live
+        .iter()
+        .filter_map(|(row, rename)| {
+            let col = delegate.data_col(rename.column.as_ref()?)?;
+            let text = delegate.cell(*row, col)?;
+            if names(text, &rename.to) {
+                return None;
+            }
+            let stem = |path: &Path| path.file_stem().map(|s| s.to_string_lossy().into_owned());
+            let name = |path: &Path| path.file_name().map(|s| s.to_string_lossy().into_owned());
+            // A cell that held the bare stem keeps holding one; anything else gets the file name.
+            let after =
+                match stem(&rename.from).is_some_and(|was| was.eq_ignore_ascii_case(text.trim())) {
+                    true => stem(&rename.to)?,
+                    false => name(&rename.to)?,
+                };
+            Some((*row, col, after.into()))
+        })
+        .collect();
+    let rows: Vec<(usize, PathBuf)> = live
+        .iter()
+        .map(|(row, rename)| (*row, rename.to.clone()))
+        .collect();
+
+    for (_, to) in &files {
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "the folder {} could not be created: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+    file_ingest::rename::apply(&files, &mut |from, to| std::fs::rename(from, to)).map_err(
+        |failed| {
+            log::error!("staged renames from {source} were not applied: {failed}");
+            failed.to_string()
+        },
+    )?;
+    let applied = files.len();
+    let agent = agent_name(source).to_owned();
+    let origin = Origin::Agent {
+        agent: agent.clone(),
+        fix: format!("rename {applied} files"),
+    };
+    crate::write_renames(cells, rows, files, origin, cx);
+    log::info!("{agent}: {applied} file(s) renamed, {stale} skipped as stale");
+    Ok((applied, stale))
+}
+
+/// Show the first staged renames as from → to, over whichever window is active.
+fn preview_renames(source: &SharedString, cx: &mut App) {
+    let Some(renames) = cx
+        .try_global::<StagedFixes>()
+        .and_then(|staged| staged.0.get(source))
+        .map(|batch| &batch.renames)
+    else {
+        return;
+    };
+    let root = project_dir(cx).unwrap_or_default();
+    let shown = |path: &Path| {
+        path.strip_prefix(&root)
+            .unwrap_or(path)
+            .display()
+            .to_string()
+    };
+    let title = SharedString::from(renames_title(renames.len()));
+    let mut lines: Vec<SharedString> = renames
+        .iter()
+        .take(PREVIEW_ROWS)
+        .map(|rename| format!("{} → {}", shown(&rename.from), shown(&rename.to)).into())
+        .collect();
+    if renames.len() > PREVIEW_ROWS {
+        lines.push(format!("… and {} more", renames.len() - PREVIEW_ROWS).into());
+    }
+    let Some(window) = cx.active_window() else {
+        return;
+    };
+    window
+        .update(cx, |_, window, cx| {
+            window.open_dialog(cx, move |dialog, _, _| {
+                let lines = lines.clone();
+                dialog
+                    .title(title.clone())
+                    .content(move |content, _, _| content.children(lines.clone()))
+            })
+        })
+        .ok();
+}
+
 /// Say what a bulk action did, over whichever window is active.
-fn tell(message: String, cx: &mut App) {
+pub(crate) fn tell(message: String, cx: &mut App) {
     let Some(window) = cx.active_window() else {
         return;
     };
@@ -1261,7 +1555,7 @@ mod tests {
 
     use gpui::SharedString;
 
-    use crate::agent::{agent_source, apply_rewrite, apply_staged, staged_actions};
+    use crate::agent::{agent_source, apply_renames, apply_rewrite, apply_staged, staged_actions};
     use crate::{TablePanel, TableStateHandle};
 
     fn respond_to_agent(
@@ -1947,6 +2241,279 @@ mod tests {
             let request = rewrite("Medium", &[], cx);
             respond_to_agent(request, cx).unwrap();
             assert_eq!(agent_findings(cx), 1, "an empty rewrite retracts it");
+        });
+    }
+    /// A project on disk: `<dir>/p.qrate`, with rows 0..3 naming `<dir>/photos/{1,2,3}.jpg` by
+    /// their stems in a Filename column, each file holding its own first name.
+    fn open_files(case: &str, cx: &mut TestAppContext) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("qrate-agent-renames").join(case);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("photos")).unwrap();
+        for name in ["1", "2", "3"] {
+            std::fs::write(dir.join(format!("photos/{name}.jpg")), name).unwrap();
+        }
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            let mut project = project();
+            project.file = dir.join("p.qrate");
+            project.data.columns = vec![settings::project::ProjectColumn {
+                name: "File".into(),
+                data_type: "Filename".into(),
+                notes: String::new(),
+            }];
+            project.data.headers = vec!["File".into(), "Title".into()];
+            project.data.rows = vec![
+                vec!["1".into(), "Harvest".into()],
+                vec!["2".into(), "Wharf".into()],
+                vec!["3".into(), "Cannery".into()],
+            ];
+            cx.set_global(project);
+            settings::project::CurrentProject::set_text(
+                settings::project::FILES_FOLDER_KEY,
+                dir.join("photos").to_string_lossy().into_owned().into(),
+                cx,
+            );
+        });
+        cx.add_window_view(TablePanel::new);
+        cx.run_until_parked();
+        dir
+    }
+
+    fn renames(pairs: &[(usize, &str, &str)], cx: &mut gpui::App) -> Request {
+        Request::StageRenames {
+            revision: respond_to_agent(Request::Overview, cx).unwrap().revision,
+            renames: pairs
+                .iter()
+                .map(|(row, from, to)| ai::agent::Rename {
+                    row: *row,
+                    from: (*from).into(),
+                    to: (*to).into(),
+                })
+                .collect(),
+        }
+    }
+
+    /// `(File cell, linked file's name)` for a row, straight from the delegate.
+    fn linked(row: usize, cx: &gpui::App) -> (String, Option<String>) {
+        let state = cx
+            .try_global::<TableStateHandle>()
+            .and_then(|handle| handle.0.upgrade())
+            .unwrap();
+        let delegate = state.read(cx).delegate();
+        (
+            delegate.cell(row, 0).unwrap().to_string(),
+            delegate
+                .row_image(row)
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned()),
+        )
+    }
+
+    fn on_disk(dir: &std::path::Path, name: &str) -> String {
+        std::fs::read_to_string(dir.join("photos").join(name)).unwrap_or_default()
+    }
+
+    /// Staging renames nothing; applying renames the file and the cell naming it together, and
+    /// undo and redo carry the disk with the grid.
+    #[gpui::test]
+    fn a_staged_rename_moves_the_file_and_its_row_and_undoes(cx: &mut TestAppContext) {
+        let dir = open_files("simple", cx);
+        cx.update(|cx| {
+            assert_eq!(linked(0, cx), ("1".into(), Some("1.jpg".into())));
+            let request = renames(&[(0, "photos/1.jpg", "photos/AD-001.jpg")], cx);
+            assert_eq!(
+                respond_to_agent(request, cx).unwrap().result,
+                ResultSet::StagedRenames { accepted: 1 }
+            );
+            assert_eq!(on_disk(&dir, "1.jpg"), "1", "staging renames nothing");
+            assert_eq!(agent_findings(cx), 1);
+            let labels: Vec<SharedString> = staged_actions(&agent_source("pi"), cx)
+                .into_iter()
+                .map(|action| action.label)
+                .collect();
+            assert_eq!(
+                labels,
+                [
+                    "Preview: Rename 1 files",
+                    "Apply: Rename 1 files",
+                    "Discard: Rename 1 files"
+                ]
+            );
+
+            assert_eq!(apply_renames(&agent_source("pi"), cx), Ok((1, 0)));
+            assert_eq!(on_disk(&dir, "AD-001.jpg"), "1");
+            assert!(!dir.join("photos/1.jpg").exists());
+            assert_eq!(agent_findings(cx), 0);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(
+                linked(0, cx),
+                ("AD-001".into(), Some("AD-001.jpg".into())),
+                "the row follows its file"
+            );
+            crate::history_step(false, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(on_disk(&dir, "1.jpg"), "1", "undo renames the file back");
+            assert!(!dir.join("photos/AD-001.jpg").exists());
+            assert_eq!(linked(0, cx), ("1".into(), Some("1.jpg".into())));
+            crate::history_step(true, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(on_disk(&dir, "AD-001.jpg"), "1");
+            assert_eq!(linked(0, cx), ("AD-001".into(), Some("AD-001.jpg".into())));
+        });
+    }
+
+    #[gpui::test]
+    fn two_files_can_swap_names(cx: &mut TestAppContext) {
+        let dir = open_files("swap", cx);
+        cx.update(|cx| {
+            let request = renames(
+                &[
+                    (0, "photos/1.jpg", "photos/2.jpg"),
+                    (1, "photos/2.jpg", "photos/1.jpg"),
+                ],
+                cx,
+            );
+            respond_to_agent(request, cx).unwrap();
+            assert_eq!(apply_renames(&agent_source("pi"), cx), Ok((2, 0)));
+            assert_eq!(on_disk(&dir, "1.jpg"), "2");
+            assert_eq!(on_disk(&dir, "2.jpg"), "1");
+            assert_eq!(std::fs::read_dir(dir.join("photos")).unwrap().count(), 3);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(linked(0, cx), ("2".into(), Some("2.jpg".into())));
+            assert_eq!(linked(1, cx), ("1".into(), Some("1.jpg".into())));
+            crate::history_step(false, cx);
+            assert_eq!(on_disk(&dir, "1.jpg"), "1");
+            assert_eq!(on_disk(&dir, "2.jpg"), "2");
+        });
+    }
+
+    #[gpui::test]
+    fn unsound_renames_are_refused_whole(cx: &mut TestAppContext) {
+        let dir = open_files("refused", cx);
+        cx.update(|cx| {
+            let refused = |pairs: &[(usize, &str, &str)], cx: &mut gpui::App| {
+                let request = renames(pairs, cx);
+                respond_to_agent(request, cx).unwrap_err()
+            };
+            assert_eq!(
+                refused(
+                    &[
+                        (0, "photos/1.jpg", "photos/a.jpg"),
+                        (1, "photos/2.jpg", "photos/a.jpg")
+                    ],
+                    cx
+                ),
+                RequestError::RenameTargetCollision("photos/a.jpg".into())
+            );
+            assert_eq!(
+                refused(&[(0, "photos/1.jpg", "photos/3.jpg")], cx),
+                RequestError::RenameTargetExists("photos/3.jpg".into())
+            );
+            assert_eq!(
+                refused(&[(0, "photos/1.jpg", "../1.jpg")], cx),
+                RequestError::RenameOutsideProject("../1.jpg".into())
+            );
+            let outside = std::env::temp_dir().join("elsewhere.jpg");
+            assert!(matches!(
+                refused(&[(0, "photos/1.jpg", outside.to_str().unwrap())], cx),
+                RequestError::RenameOutsideProject(_)
+            ));
+            assert_eq!(
+                refused(&[(1, "photos/1.jpg", "photos/a.jpg")], cx),
+                RequestError::RenameSourceMismatch("photos/1.jpg".into()),
+                "row 1 links 2.jpg"
+            );
+            assert_eq!(
+                refused(&[(0, "photos/missing.jpg", "photos/a.jpg")], cx),
+                RequestError::RenameSourceMismatch("photos/missing.jpg".into())
+            );
+            assert_eq!(agent_findings(cx), 0);
+            assert_eq!(on_disk(&dir, "1.jpg"), "1");
+        });
+    }
+
+    /// The walkthrough the feature exists for: an identifier rewrite and the matching file
+    /// renames, staged together, applied one after the other, and put back by two undos.
+    #[gpui::test]
+    fn a_rewrite_and_its_renames_apply_and_two_undos_restore_everything(cx: &mut TestAppContext) {
+        let dir = open_files("walkthrough", cx);
+        let ids = ["AD-001", "AD-002", "AD-003"];
+        cx.update(|cx| {
+            let values: Vec<(usize, &str)> = ids.iter().copied().enumerate().collect();
+            let request = rewrite("File", &values, cx);
+            respond_to_agent(request, cx).unwrap();
+            let pairs: Vec<(usize, String, String)> = (0..3)
+                .map(|row| {
+                    (
+                        row,
+                        format!("photos/{}.jpg", row + 1),
+                        format!("photos/{}.jpg", ids[row]),
+                    )
+                })
+                .collect();
+            let pairs: Vec<(usize, &str, &str)> = pairs
+                .iter()
+                .map(|(row, from, to)| (*row, from.as_str(), to.as_str()))
+                .collect();
+            let request = renames(&pairs, cx);
+            respond_to_agent(request, cx).unwrap();
+            assert_eq!(agent_findings(cx), 2, "one entry each");
+
+            assert_eq!(
+                apply_rewrite(&agent_source("pi"), &"File".into(), cx),
+                (3, 0)
+            );
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(linked(0, cx), ("AD-001".into(), None), "not renamed yet");
+            assert_eq!(apply_renames(&agent_source("pi"), cx), Ok((3, 0)));
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            for (row, id) in ids.iter().enumerate() {
+                assert_eq!(linked(row, cx), ((*id).into(), Some(format!("{id}.jpg"))));
+                assert_eq!(on_disk(&dir, &format!("{id}.jpg")), (row + 1).to_string());
+            }
+            crate::history_step(false, cx);
+            crate::history_step(false, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            for row in 0..3 {
+                let name = (row + 1).to_string();
+                assert_eq!(linked(row, cx), (name.clone(), Some(format!("{name}.jpg"))));
+                assert_eq!(on_disk(&dir, &format!("{name}.jpg")), name);
+            }
+            assert_eq!(std::fs::read_dir(dir.join("photos")).unwrap().count(), 3);
+        });
+    }
+
+    /// A file that moved after staging is left out, and the rest still go through.
+    #[gpui::test]
+    fn a_rename_whose_file_is_gone_is_skipped_as_stale(cx: &mut TestAppContext) {
+        let dir = open_files("stale", cx);
+        cx.update(|cx| {
+            let request = renames(
+                &[
+                    (0, "photos/1.jpg", "photos/a.jpg"),
+                    (1, "photos/2.jpg", "photos/b.jpg"),
+                ],
+                cx,
+            );
+            respond_to_agent(request, cx).unwrap();
+            std::fs::remove_file(dir.join("photos/2.jpg")).unwrap();
+            assert_eq!(apply_renames(&agent_source("pi"), cx), Ok((1, 1)));
+            assert_eq!(on_disk(&dir, "a.jpg"), "1");
         });
     }
 }

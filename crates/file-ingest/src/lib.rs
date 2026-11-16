@@ -4,6 +4,7 @@
 //! mutate a project, so the wizard, table, and future folder watcher can share one traversal.
 
 pub mod duplicates;
+pub mod rename;
 
 use std::fs;
 use std::path::{Path, PathBuf};

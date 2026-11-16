@@ -34,8 +34,8 @@ const FORMAT_HELP: &str = "Defaults to `human` on a terminal and `json` in a pip
 
 const AGENT_AFTER_HELP: &str = "\
 Every command but `overview` reads one JSON object on stdin and prints one JSON object on stdout.
-No command changes a cell: `stage-findings` and `stage-column-rewrite` publish drafts that only
-the archivist can apply.
+No command changes a cell or a file: `stage-findings`, `stage-column-rewrite` and `stage-renames`
+publish drafts that only the archivist can apply.
 
 Examples:
   qrate agent overview --agent codex
@@ -183,6 +183,13 @@ enum AgentCommand {
     /// once. It replaces this agent's earlier rewrite of the same column; the archivist previews,
     /// applies or discards it from the Problems menu.
     StageColumnRewrite,
+    /// Stage renames of files the rows link to, as a single draft. Never renames a file.
+    ///
+    /// stdin: {"revision": <from overview>, "renames": [{"row": <source row>, "from": <path>,
+    /// "to": <path>}]}. Paths are relative to the folder holding the project file and must stay
+    /// inside it. The batch replaces this agent's earlier renames; the archivist applies it from
+    /// the Problems menu as one undoable step.
+    StageRenames,
 }
 
 impl AgentCommand {
@@ -195,6 +202,7 @@ impl AgentCommand {
             Self::Thumbnails => "thumbnails",
             Self::StageFindings => "stage_findings",
             Self::StageColumnRewrite => "stage_column_rewrite",
+            Self::StageRenames => "stage_renames",
         }
     }
 }
@@ -741,6 +749,8 @@ mod tests {
                 ..
             })
         ));
+        assert_eq!(AgentCommand::StageRenames.method(), "stage_renames");
+        assert!(Cli::try_parse_from(["qrate", "agent", "stage-renames"]).is_ok());
         assert_eq!(
             agent_request(
                 AgentCommand::StageColumnRewrite,

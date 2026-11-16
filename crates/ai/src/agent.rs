@@ -1,8 +1,8 @@
 //! The agent contract between a running qrate app and a review agent, reached through `qrate agent`.
 //!
 //! Reads are progressive: a cheap overview, a bounded declarative query, and optional scratch
-//! programs and thumbnails. The state-changing requests only stage drafts — findings, or a whole
-//! column rewrite — that the archivist applies; none of them changes a table cell.
+//! programs and thumbnails. The state-changing requests only stage drafts — findings, a whole
+//! column rewrite, file renames — that the archivist applies; none changes a cell or a file.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -39,6 +39,20 @@ pub enum Request {
         /// Shown once beside the draft, such as where the values came from.
         note: Option<String>,
     },
+    /// Renames of files rows link to, staged as a single draft.
+    StageRenames {
+        revision: TableRevision,
+        renames: Vec<Rename>,
+    },
+}
+
+/// One file to rename. Both paths are relative to the folder holding the project file.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct Rename {
+    /// The source row that links `from`.
+    pub row: usize,
+    pub from: String,
+    pub to: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -184,6 +198,9 @@ impl Request {
                 }
                 Ok(())
             }
+            Self::StageRenames { renames, .. } if renames.len() > MAX_RENAMES => {
+                Err(RequestError::TooManyRenames)
+            }
             _ => Ok(()),
         }
     }
@@ -230,6 +247,7 @@ pub const MAX_FINDINGS: usize = 200;
 pub const MAX_MESSAGE_LEN: usize = 512;
 pub const MAX_REWRITE_ROWS: usize = 50_000;
 pub const MAX_REWRITE_VALUE: usize = 64 * 1024;
+pub const MAX_RENAMES: usize = 50_000;
 pub const MAX_RESULT_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -260,6 +278,9 @@ pub enum ResultSet {
     StagedRewrite {
         accepted: usize,
         unchanged: Vec<usize>,
+    },
+    StagedRenames {
+        accepted: usize,
     },
 }
 
@@ -385,6 +406,15 @@ pub enum RequestError {
     RewriteNoteTooLong,
     DuplicateRewriteRow,
     RewriteRowOutOfRange,
+    TooManyRenames,
+    /// A path that is absolute or leaves the project folder.
+    RenameOutsideProject(String),
+    /// A `from` that is not a file, or not the file its row links.
+    RenameSourceMismatch(String),
+    /// A `to` or a `from` named by two renames.
+    RenameTargetCollision(String),
+    /// A `to` that already exists and is not itself being renamed away.
+    RenameTargetExists(String),
 }
 
 #[cfg(test)]

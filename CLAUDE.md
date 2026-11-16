@@ -84,7 +84,7 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | `cli` | the public `qrate` command; launches the private desktop binary and controls open projects without linking GPUI |
 | `project-wizard` | new/open project flow, recent projects, the launcher |
 | `data-exchange` | spreadsheet and Google Sheets imports, desktop Google Sheets integration, preview |
-| `file-ingest` | filesystem inventory and duplicate resolution for folder-backed projects and live imports. Only lists paths and decides duplicates; never maps columns or touches a project |
+| `file-ingest` | filesystem inventory and duplicate resolution for folder-backed projects and live imports. Only lists paths and decides duplicates; never maps columns or touches a project. `rename` is the one place it writes: an all-or-nothing batch rename, given paths by `table` |
 | `updater` | signed update manifests, install provenance, and the `qrate-update-helper` binary that applies an update after qrate exits |
 | `qrate-export` | shared project reader and CSV/Excel/JSON-LD/CSL-JSON/ZIP writers; optional browser WASM API |
 | `diagnostics` | the validator, spelling checks, fixes, and the problems panel |
