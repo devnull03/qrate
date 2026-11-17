@@ -113,6 +113,20 @@ fn logged_by_gpui(target: &str) -> bool {
     target.starts_with("gpui") || target.is_empty()
 }
 
+/// Whether a debug line comes from the graphics or network stack rather than from qrate. Those
+/// crates log every shader and connection at debug, which buried a whole pasted log tail.
+fn is_dependency_chatter(record: &Record) -> bool {
+    const CHATTY: [&str; 9] = [
+        "naga", "wgpu", "hyper", "reqwest", "rustls", "h2", "tokio", "mio", "want",
+    ];
+    record.level() >= Level::Debug
+        && CHATTY.iter().any(|name| {
+            record.target().strip_prefix(name).is_some_and(|rest| {
+                rest.is_empty() || rest.starts_with("::") || rest.starts_with('_')
+            })
+        })
+}
+
 fn is_accessibility_focus_noise(record: &Record, message: &str) -> bool {
     logged_by_gpui(record.target())
         && (message.starts_with("a11y: focused element")
@@ -146,7 +160,7 @@ impl Log for QuietGpuiNoise {
     /// arguments are rendered once however many sinks and filters read it. The file is buffered,
     /// so a warning or an error flushes it: those are the lines a crash report cannot lose.
     fn log(&self, record: &Record) {
-        if !self.0.enabled(record.metadata()) {
+        if !self.0.enabled(record.metadata()) || is_dependency_chatter(record) {
             return;
         }
         let formatted;
@@ -187,18 +201,7 @@ impl Log for QuietGpuiNoise {
 /// `log_lines` is how much of the tail to embed: a couple of hundred for the clipboard, far fewer
 /// for the issue URL, which GitHub truncates somewhere past 8 KB.
 pub fn debug_info(cx: &App, log_lines: usize) -> String {
-    let info = os_info::get();
-    let mut out = String::new();
-
-    let _ = writeln!(out, "qrate {} ({})", version(), env!("QRATE_GIT_SHA"));
-    let _ = writeln!(
-        out,
-        "OS: {} {} [{}]",
-        // The edition is the marketing name ("Windows 11 Home"); the type alone is just "Windows".
-        info.edition().unwrap_or(&info.os_type().to_string()),
-        info.version(),
-        info.bitness()
-    );
+    let mut out = build_info();
 
     // Built here and not at startup: a `System` walks the machine, and nothing before this line
     // needs it. `RefreshKind::nothing()` keeps that walk off the process table.
@@ -252,6 +255,24 @@ pub fn debug_info(cx: &App, log_lines: usize) -> String {
     let _ = writeln!(out, "{}", log_tail(log_lines));
 
     redact(&out)
+}
+
+/// Which qrate this is and what it runs on: the part of [`debug_info`] that holds nothing about the
+/// person's work, for Help ▸ Copy Debug Info ▸ Build Info Only.
+pub fn build_info() -> String {
+    let info = os_info::get();
+    let mut out = String::new();
+    let _ = writeln!(out, "qrate {} ({})", version(), env!("QRATE_GIT_SHA"));
+    let _ = writeln!(
+        out,
+        "OS: {} {} [{}] {}",
+        // The edition is the marketing name ("Windows 11 Home"); the type alone is just "Windows".
+        info.edition().unwrap_or(&info.os_type().to_string()),
+        info.version(),
+        info.bitness(),
+        std::env::consts::ARCH
+    );
+    out
 }
 
 fn gib(bytes: u64) -> String {
@@ -356,6 +377,21 @@ pub fn reveal_target() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn third_party_debug_lines_stay_out_of_the_log() {
+        let record = |level, target| {
+            super::is_dependency_chatter(
+                &log::Record::builder().level(level).target(target).build(),
+            )
+        };
+        assert!(record(log::Level::Debug, "naga::back::spv"));
+        assert!(record(log::Level::Debug, "wgpu_core::device"));
+        assert!(record(log::Level::Trace, "hyper_util::client"));
+        assert!(!record(log::Level::Warn, "wgpu_hal::vulkan"));
+        assert!(!record(log::Level::Debug, "table::agent"));
+        assert!(!record(log::Level::Debug, "h2o"));
+    }
+
     #[test]
     fn redacts_the_home_directory() {
         let home = dirs::home_dir().unwrap().display().to_string();

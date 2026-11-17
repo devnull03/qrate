@@ -46,9 +46,9 @@ use crate::app_settings::build_pages;
 use crate::{
     actions::{NewProject, ToggleBottomDock, ToggleLeftDock, ToggleProblemsPanel, ToggleRightDock},
     app_menus::{
-        CopyDebugInfo, LoadColumnConfig, OpenAbout, OpenColumnSettings, OpenLogsFolder,
-        OpenPluginsFolder, OpenProjects, OpenSettings, Quit, ReloadPlugins, ReportBug,
-        ReportUxIssue, RequestFeature,
+        CopyBuildInfo, CopyDebugInfo, LoadColumnConfig, OpenAbout, OpenColumnSettings,
+        OpenLogsFolder, OpenPluginsFolder, OpenProjects, OpenSettings, Quit, ReloadPlugins,
+        ReportBug, ReportUxIssue, RequestFeature,
     },
     status_items::build_status_bar_registry,
     title_items::build_title_bar_registry,
@@ -720,6 +720,9 @@ fn main() {
 
         cx.on_action(|_: &CopyDebugInfo, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(logging::debug_info(cx, 200)));
+        });
+        cx.on_action(|_: &CopyBuildInfo, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(logging::build_info()));
         });
         cx.on_action(|_: &ReportBug, cx| {
             cx.open_url(&logging::feedback_url(cx, Some(logging::FeedbackKind::Bug)));
