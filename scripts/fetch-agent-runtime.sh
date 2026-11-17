@@ -4,8 +4,8 @@ set -euo pipefail
 destination="${1:?usage: fetch-agent-runtime.sh <destination> <linux-x64|darwin-universal|darwin-x64|darwin-arm64>}"
 platform="${2:?usage: fetch-agent-runtime.sh <destination> <linux-x64|darwin-universal|darwin-x64|darwin-arm64>}"
 pi_version=0.84.2
-extension_version=0.4.0
-extension_sha=47438278f06bba880db0f51369a5a114fd54d241ac16ab7e39c503493c16d247
+extension_version=0.5.0
+extension_sha=d3037f82d23a7e4ac6900ee0d9c7a83065e4031b6eeffeb0d56886cdc2adbb1e
 runtime="$(cd "$(dirname "$destination")" && pwd)/$(basename "$destination")/agent"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

@@ -14,7 +14,7 @@ install sets the `AgentRuntime` global and a removal clears it without a restart
 
 The qrate-specific package lives in the public
 [`devnull03/qrate-pi-extension`](https://github.com/devnull03/qrate-pi-extension) repository. qrate
-pins its v0.4.0 tag and checksum in the runtime-fetch scripts. The agent component is versioned
+pins its v0.5.0 tag and checksum in the runtime-fetch scripts. The agent component is versioned
 from that pin, so a new extension release reaches qrate only when the pin moves. The package
 supplies the system prompt, live-review skill, typed qrate tools, and permission gates. Keep those
 concerns there so they can be tested against Pi without rebuilding the desktop app.
