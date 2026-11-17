@@ -3338,7 +3338,7 @@ mod tests {
             let saved = settings::history::entries_after(&file, 0).unwrap();
             assert_eq!(
                 saved.last().unwrap().origin,
-                Origin::Agent {
+                settings::history::Origin::Agent {
                     agent: "pi".into(),
                     fix: label.into(),
                 },
