@@ -754,6 +754,7 @@ fn main() {
 
         // Keyboard shortcuts (Layer 1). See `actions.rs` to add more.
         cx.bind_keys(actions::key_bindings());
+        cx.bind_keys(workspace::agent_terminal_key_bindings());
         actions::register_global_handlers(cx);
 
         cx.on_action(|action: &OpenBrowser, cx| {

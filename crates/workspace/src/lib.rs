@@ -20,7 +20,7 @@ pub use panel_registry::{BarSide, PANELS, PROBLEMS_META, PanelMeta, PanelRegistr
 /// `record` is how `app_control` files an agent call for the Agent panel to show.
 pub use panels::{
     AGENT_FONT_KEY, AGENT_FONT_SIZE_KEY, AGENT_FONT_SIZES, AgentCall, AgentEntry, DETAILS_META,
-    record as record_agent_call,
+    agent_terminal_key_bindings, record as record_agent_call,
 };
 pub use views::{ShowView, VIEW_MODE_KEY, VIEWS_CONTEXT, ViewMode, show_view};
 
