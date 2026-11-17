@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use gpui::{App, SharedString};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use workspace::{AgentCall, AgentEntry};
 
@@ -40,6 +40,8 @@ fn endpoint_path() -> Option<PathBuf> {
 enum Call {
     Status,
     ProjectInfo,
+    Exports,
+    Export { body: Vec<u8> },
     Agent { agent: SharedString, body: Vec<u8> },
 }
 
@@ -94,13 +96,25 @@ pub fn init(cx: &mut App) {
     }
     cx.spawn(async move |cx| {
         let mut seen = HashSet::new();
-        while let Ok(job) = inbox.recv().await {
-            let answer = match job.call {
+        while let Ok(Job { call, reply }) = inbox.recv().await {
+            let answer = match call {
                 Call::Status => cx.update(|cx| ("200 OK", status(cx))),
                 Call::ProjectInfo => cx.update(project_info),
+                Call::Exports => cx.update(|cx| ("200 OK", exports(cx))),
+                // A ZIP can copy gigabytes: it answers from its own task, not from this queue.
+                Call::Export { body } => match cx.update(|cx| start_export(&body, cx)) {
+                    Err(answer) => answer,
+                    Ok(task) => {
+                        cx.spawn(async move |_| {
+                            let _ = reply.send(finish_export(task.await)).await;
+                        })
+                        .detach();
+                        continue;
+                    }
+                },
                 Call::Agent { agent, body } => answer_agent(agent, &body, &mut seen, cx).await,
             };
-            let _ = job.reply.send(answer).await;
+            let _ = reply.send(answer).await;
         }
     })
     .detach();
@@ -171,6 +185,8 @@ fn serve(mut stream: TcpStream, token: &str, jobs: &async_channel::Sender<Job>) 
             let call = match (request.method.as_str(), request.path.as_str()) {
                 ("GET", "/v1/status") => Some(Call::Status),
                 ("GET", "/v1/project/info") => Some(Call::ProjectInfo),
+                ("GET", "/v1/exports") => Some(Call::Exports),
+                ("POST", "/v1/export") => Some(Call::Export { body: request.body }),
                 ("POST", "/v1/agent") => Some(Call::Agent {
                     agent: request
                         .agent
@@ -246,6 +262,60 @@ fn project_info(cx: &mut App) -> (&'static str, Value) {
         "200 OK",
         json!({ "app_control_protocol": PROTOCOL, "project": info }),
     )
+}
+
+fn exports(cx: &mut App) -> Value {
+    let exports: Vec<_> = crate::export::targets(cx)
+        .into_iter()
+        .map(|(id, label)| json!({ "id": id, "label": label }))
+        .collect();
+    json!({ "exports": exports })
+}
+
+#[derive(Deserialize)]
+struct ExportRequest {
+    export: String,
+    path: PathBuf,
+}
+
+fn start_export(
+    body: &[u8],
+    cx: &mut App,
+) -> Result<gpui::Task<anyhow::Result<()>>, (&'static str, Value)> {
+    let request: ExportRequest = serde_json::from_slice(body).map_err(|error| {
+        (
+            "400 Bad Request",
+            json!({ "error": "malformed_request", "detail": error.to_string() }),
+        )
+    })?;
+    if !request.path.is_absolute() {
+        return Err(("400 Bad Request", json!({ "error": "relative_path" })));
+    }
+    log::info!(
+        "app control exporting {} to {}",
+        request.export,
+        request.path.display()
+    );
+    crate::export::to_path(&request.export, request.path, cx).map_err(|code| {
+        let status = match code {
+            "no_active_project" => "409 Conflict",
+            _ => "400 Bad Request",
+        };
+        (status, json!({ "error": code }))
+    })
+}
+
+fn finish_export(result: anyhow::Result<()>) -> (&'static str, Value) {
+    match result {
+        Ok(()) => ("200 OK", json!({})),
+        Err(error) => {
+            log::error!("command-line export failed: {error:#}");
+            (
+                "500 Internal Server Error",
+                json!({ "error": "export_failed", "detail": format!("{error:#}") }),
+            )
+        }
+    }
 }
 
 async fn answer_agent(

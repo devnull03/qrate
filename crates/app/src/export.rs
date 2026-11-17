@@ -25,7 +25,7 @@ use gpui_component::{Sizable as _, WindowExt as _, h_flex};
 use qrate_export::export::{self, ArchiveFile, CSL_FIELDS, CslMapping, ExportComponent};
 use qrate_export::{ProjectNote, SheetNote};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use settings::columns::ColumnType;
 use settings::project::CurrentProject;
 
@@ -104,7 +104,7 @@ struct ZipFiles {
     declared: Vec<String>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum ExportFormat {
     Csv,
     Xlsx,
@@ -152,6 +152,65 @@ pub fn is_google(format: ExportFormat) -> bool {
     )
 }
 
+/// A menu format's id on the command line: its variant name, lowercased (`csv`, `jsonld`, …).
+fn format_id(format: ExportFormat) -> String {
+    serde_json::to_value(format)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_ascii_lowercase))
+        .unwrap_or_default()
+}
+
+/// Every export that writes a file, as `(id, label)`: the File ▸ Export formats, then each loaded
+/// plugin's as `<plugin>/<export>`. This list is what `qrate export` offers, so a format reaches
+/// the CLI by being added to [`EXPORT_FORMATS`] and [`write_export`], and nowhere else.
+pub fn targets(cx: &App) -> Vec<(String, SharedString)> {
+    EXPORT_FORMATS
+        .iter()
+        .filter(|(_, _, extension)| extension.is_some())
+        .map(|(format, label, _)| (format_id(*format), label.trim_end_matches('…').into()))
+        .chain(
+            plugin_host::export_specs(cx)
+                .into_iter()
+                .map(|(plugin, spec)| (format!("{plugin}/{}", spec.id), spec.label)),
+        )
+        .collect()
+}
+
+/// Start the export `id` (from [`targets`]) to `path`, with no dialog: the same snapshot and
+/// writers as the menu. The CSL mapping is the one the picker would open on. `Err` is the refusal
+/// code when nothing could start.
+pub fn to_path(
+    id: &str,
+    path: PathBuf,
+    cx: &App,
+) -> Result<gpui::Task<anyhow::Result<()>>, &'static str> {
+    if cx.try_global::<CurrentProject>().is_none() {
+        return Err("no_active_project");
+    }
+    if let Some((plugin, export)) = id.split_once('/') {
+        let action = PluginExport {
+            plugin: plugin.into(),
+            export: export.into(),
+        };
+        let job = plugin_job(&action, cx).ok_or("unknown_export")?;
+        return Ok(cx.background_spawn(async move { write_plugin(&job, &path) }));
+    }
+    let format = EXPORT_FORMATS
+        .iter()
+        .find(|(format, _, extension)| extension.is_some() && format_id(*format) == id)
+        .map(|(format, _, _)| *format)
+        .ok_or("unknown_export")?;
+    let (file, _, grid) = export_grid(format, cx).ok_or("no_active_project")?;
+    let mapping = match format {
+        ExportFormat::Csl => csl_mapping(&file, &grid.headers, cx),
+        _ => CslMapping::new(),
+    };
+    let progress = Arc::new(Progress::default());
+    Ok(cx.background_spawn(
+        async move { write_to(format, &file, &path, &grid, &mapping, &progress) },
+    ))
+}
+
 /// The open project's grid as the writers want it, with in-session edits — the same snapshot
 /// `table::save_now` persists. `None` with no project or no live table.
 fn grid(cx: &App) -> Option<(Vec<String>, Vec<Vec<String>>)> {
@@ -162,32 +221,26 @@ fn grid(cx: &App) -> Option<(Vec<String>, Vec<Vec<String>>)> {
     Some((headers, rows))
 }
 
-/// Ask a plugin for JSON from a fixed live-table snapshot, then let the host save it.
-///
-/// Lua receives no path or file handle. Canceling the save dialog discards the snapshot before the
-/// plugin runs, and dropping qrate cancels the host task.
-pub fn run_plugin(action: &PluginExport, cx: &mut App) {
-    let (Some(project), Some((headers, rows)), Some(plugin)) = (
-        cx.try_global::<CurrentProject>(),
-        grid(cx),
-        plugin_host::exporter(&action.plugin, cx),
-    ) else {
-        log::warn!("plugin export was asked for with no project or plugin available");
-        return;
-    };
-    let Some(spec) = plugin
+struct PluginJob {
+    plugin: Arc<plugin_host::LuaPlugin>,
+    spec: plugin_api::ExportSpec,
+    snapshot: plugin_api::ExportSnapshot,
+    project_file: PathBuf,
+}
+
+/// The plugin and a fixed live-table snapshot for it. `None` with no project, or when the plugin
+/// is not loaded or declares no such export.
+fn plugin_job(action: &PluginExport, cx: &App) -> Option<PluginJob> {
+    let (project, (headers, rows), plugin) = (
+        cx.try_global::<CurrentProject>()?,
+        grid(cx)?,
+        plugin_host::exporter(&action.plugin, cx)?,
+    );
+    let spec = plugin
         .exports()
         .iter()
         .find(|spec| spec.id.as_ref() == action.export)
-        .cloned()
-    else {
-        log::warn!(
-            "{} has no declared export {:?}",
-            action.plugin,
-            action.export
-        );
-        return;
-    };
+        .cloned()?;
     let columns = headers
         .iter()
         .map(|name| {
@@ -217,45 +270,66 @@ pub fn run_plugin(action: &PluginExport, cx: &mut App) {
             .map(|row| row.into_iter().map(SharedString::from).collect())
             .collect(),
     };
-    let project_file = project.file.clone();
-    let directory = export_folder(&project_file, cx);
-    let receiver = cx.prompt_for_new_path(&directory, Some(spec.suggested_name.as_ref()));
-    let export_id = action.export.clone();
+    Some(PluginJob {
+        plugin,
+        spec,
+        snapshot,
+        project_file: project.file.clone(),
+    })
+}
+
+/// Lua receives no path or file handle: the plugin returns JSON and the host writes it. Runs on
+/// the background executor.
+fn write_plugin(job: &PluginJob, path: &Path) -> anyhow::Result<()> {
+    let value = job
+        .plugin
+        .export(&job.spec.id, &job.snapshot)
+        .map_err(anyhow::Error::msg)?;
+    let mut bytes = serde_json::to_vec_pretty(&value)?;
+    bytes.push(b'\n');
+    anyhow::ensure!(
+        bytes.len() <= MAX_PLUGIN_EXPORT_BYTES,
+        "plugin export exceeds the {} MiB output limit",
+        MAX_PLUGIN_EXPORT_BYTES / 1024 / 1024
+    );
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("export path has no parent"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(&bytes)?;
+    temporary.as_file_mut().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+/// Ask a plugin for JSON from a fixed live-table snapshot, then let the host save it.
+///
+/// Canceling the save dialog discards the snapshot before the plugin runs, and dropping qrate
+/// cancels the host task.
+pub fn run_plugin(action: &PluginExport, cx: &mut App) {
+    let Some(job) = plugin_job(action, cx) else {
+        log::warn!(
+            "plugin export {}/{} was asked for with no project, plugin, or export to run",
+            action.plugin,
+            action.export
+        );
+        return;
+    };
+    let directory = export_folder(&job.project_file, cx);
+    let receiver = cx.prompt_for_new_path(&directory, Some(job.spec.suggested_name.as_ref()));
     let window = cx.active_window();
 
     cx.spawn(async move |cx| {
         let Ok(Ok(Some(path))) = receiver.await else {
             return;
         };
-        cx.update(|cx| remember_export_folder(&project_file, &path, cx));
+        cx.update(|cx| remember_export_folder(&job.project_file, &path, cx));
         let name = path.file_name().map_or_else(
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
         );
         let result = cx
-            .background_spawn(async move {
-                let value = plugin
-                    .export(&export_id, &snapshot)
-                    .map_err(anyhow::Error::msg)?;
-                let mut bytes = serde_json::to_vec_pretty(&value)?;
-                bytes.push(b'\n');
-                anyhow::ensure!(
-                    bytes.len() <= MAX_PLUGIN_EXPORT_BYTES,
-                    "plugin export exceeds the {} MiB output limit",
-                    MAX_PLUGIN_EXPORT_BYTES / 1024 / 1024
-                );
-                let parent = path
-                    .parent()
-                    .ok_or_else(|| anyhow::anyhow!("export path has no parent"))?;
-                let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-                temporary.write_all(&bytes)?;
-                temporary.as_file_mut().sync_all()?;
-                temporary
-                    .persist(&path)
-                    .map_err(|error| error.error)
-                    .map(|_| ())?;
-                Ok::<(), anyhow::Error>(())
-            })
+            .background_spawn(async move { write_plugin(&job, &path) })
             .await;
         let note = match result {
             Ok(()) => Notification::success(format!("Exported to {name}")),
@@ -269,37 +343,16 @@ pub fn run_plugin(action: &PluginExport, cx: &mut App) {
     .detach();
 }
 
-pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
-    if is_google(format) && !settings::google_enabled(cx) {
-        log::info!("Google Sheets export requested while the integration is disabled");
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .title("Enable Google Sheets")
-                .content(|content, _, _| {
-                    content.child(
-                        "Google Sheets is disabled. Enable it now to sign in and continue this export.",
-                    )
-                })
-                .button_props(DialogButtonProps::default().ok_text("Enable and continue"))
-                .on_ok(move |_: &ClickEvent, window, cx| {
-                    log::info!("Google Sheets enabled from the Export menu");
-                    settings::AppSettings::set_bool(settings::GOOGLE_SYNC_KEY, true, cx);
-                    crate::app_menus::install(cx);
-                    run(format, window, cx);
-                    true
-                })
-        });
-        return;
-    }
+/// The open project's grid with the hierarchy columns filled in, as every writer takes it. `None`
+/// with no project open.
+fn export_grid(format: ExportFormat, cx: &App) -> Option<(PathBuf, String, ExportGrid)> {
     let (Some(project), Some(state)) = (
         cx.try_global::<CurrentProject>(),
         cx.try_global::<table::TableStateHandle>()
             .and_then(|handle| handle.0.upgrade()),
     ) else {
-        log::warn!("export was asked for with no project open");
-        return;
+        return None;
     };
-    let (file, title) = (project.file.clone(), project.display_name());
     let (headers, row_ids, mut rows, structure) = {
         let delegate = state.read(cx).delegate();
         let (headers, row_ids, rows) = delegate.dataset_snapshot();
@@ -360,12 +413,45 @@ pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
         files,
         csv: csv_options(cx),
     };
+    Some((project.file.clone(), project.display_name(), grid))
+}
+
+pub fn run(format: ExportFormat, window: &mut Window, cx: &mut App) {
+    if is_google(format) && !settings::google_enabled(cx) {
+        log::info!("Google Sheets export requested while the integration is disabled");
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title("Enable Google Sheets")
+                .content(|content, _, _| {
+                    content.child(
+                        "Google Sheets is disabled. Enable it now to sign in and continue this export.",
+                    )
+                })
+                .button_props(DialogButtonProps::default().ok_text("Enable and continue"))
+                .on_ok(move |_: &ClickEvent, window, cx| {
+                    log::info!("Google Sheets enabled from the Export menu");
+                    settings::AppSettings::set_bool(settings::GOOGLE_SYNC_KEY, true, cx);
+                    crate::app_menus::install(cx);
+                    run(format, window, cx);
+                    true
+                })
+        });
+        return;
+    }
+    let Some((file, title, grid)) = export_grid(format, cx) else {
+        log::warn!("export was asked for with no project open");
+        return;
+    };
     // A project that already knows its spreadsheet refills that one; otherwise "Sync" asks
     // Google's chooser, which is also what grants qrate access to the file.
-    let linked = project
-        .data
-        .values
-        .get(settings::project::GOOGLE_SHEET_ID_KEY)
+    let linked = cx
+        .try_global::<CurrentProject>()
+        .and_then(|project| {
+            project
+                .data
+                .values
+                .get(settings::project::GOOGLE_SHEET_ID_KEY)
+        })
         .map(|v| v.text().to_string())
         .filter(|id| !id.is_empty());
 
@@ -530,26 +616,7 @@ fn save_as(
         let task = cx.background_spawn({
             let (path, progress) = (path.clone(), progress.clone());
             async move {
-                let result = (|| -> anyhow::Result<()> {
-                    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-                    let temporary = tempfile::Builder::new()
-                        .prefix(".qrate-export-")
-                        .tempfile_in(parent)?
-                        .into_temp_path();
-                    write_export(
-                        format,
-                        &project_file,
-                        &temporary,
-                        &grid,
-                        &mapping,
-                        &progress,
-                    )?;
-                    if progress.cancel.load(Ordering::Relaxed) {
-                        anyhow::bail!(CANCELLED);
-                    }
-                    temporary.persist(&path)?;
-                    Ok(())
-                })();
+                let result = write_to(format, &project_file, &path, &grid, &mapping, &progress);
                 progress.done.store(true, Ordering::Release);
                 result
             }
@@ -604,6 +671,29 @@ fn save_as(
     .detach();
 }
 
+/// Write beside `path` and rename over it, so a failed or cancelled export never leaves half a file
+/// where the user asked for one. Runs on the background executor.
+fn write_to(
+    format: ExportFormat,
+    project_file: &Path,
+    path: &Path,
+    grid: &ExportGrid,
+    mapping: &CslMapping,
+    progress: &Arc<Progress>,
+) -> anyhow::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let temporary = tempfile::Builder::new()
+        .prefix(".qrate-export-")
+        .tempfile_in(parent)?
+        .into_temp_path();
+    write_export(format, project_file, &temporary, grid, mapping, progress)?;
+    if progress.cancel.load(Ordering::Relaxed) {
+        anyhow::bail!(CANCELLED);
+    }
+    temporary.persist(path)?;
+    Ok(())
+}
+
 /// Write `grid` to `path` in `format`. Runs on the background executor.
 fn write_export(
     format: ExportFormat,
@@ -654,16 +744,8 @@ fn write_export(
     Ok(())
 }
 
-/// Which column feeds which CSL field. Opens on the saved answer, or on what the declared column
-/// types imply — and always opens, so a guess is something the user sees rather than inherits.
-fn ask_csl_mapping(
-    project_file: PathBuf,
-    title: String,
-    headers: Vec<String>,
-    rows: Vec<Vec<String>>,
-    window: &mut Window,
-    cx: &mut App,
-) {
+/// The project's saved CSL mapping, or what its declared column types imply.
+fn csl_mapping(project_file: &Path, headers: &[String], cx: &App) -> CslMapping {
     let declared: Vec<(String, String)> = cx
         .try_global::<CurrentProject>()
         .map(|project| {
@@ -682,15 +764,26 @@ fn ask_csl_mapping(
                 .collect()
         })
         .unwrap_or_default();
-    let saved = settings::project::read_setting(&project_file, CSL_MAPPING_KEY)
+    settings::project::read_setting(project_file, CSL_MAPPING_KEY)
         .ok()
         .flatten()
-        .and_then(|raw| serde_json::from_str::<CslMapping>(&raw).ok());
+        .and_then(|raw| serde_json::from_str::<CslMapping>(&raw).ok())
+        .unwrap_or_else(|| export::derive_csl_mapping(&declared))
+}
+
+/// Which column feeds which CSL field. Opens on [`csl_mapping`] — and always opens, so a guess is
+/// something the user sees rather than inherits.
+fn ask_csl_mapping(
+    project_file: PathBuf,
+    title: String,
+    headers: Vec<String>,
+    rows: Vec<Vec<String>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     // Shared with the dialog's buttons: the content builder re-runs on every frame, so the picked
     // mapping cannot live inside it.
-    let picked = Rc::new(RefCell::new(
-        saved.unwrap_or_else(|| export::derive_csl_mapping(&declared)),
-    ));
+    let picked = Rc::new(RefCell::new(csl_mapping(&project_file, &headers, cx)));
 
     let (for_content, for_ok) = (picked.clone(), picked.clone());
     let columns: Vec<SharedString> = headers.iter().map(SharedString::from).collect();

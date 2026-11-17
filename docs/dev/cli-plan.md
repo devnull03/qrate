@@ -3,7 +3,8 @@
 Status: implementation in progress. The packaged `qrate` launcher, `open`, `--wait`, `version`,
 help, project-path forwarding, `qrate://` forwarding, and the read-only app-control foundation exist.
 Implemented app commands are `status`, `path`, and `launch`. `qrate project info` reads the active
-desktop project. `qrate agent` replaces the loopback agent bridge for live review. `completion` and
+desktop project. `qrate export` writes it in any format the Export menu offers, plugin exports
+included; the list comes from the app, so the CLI has no format table of its own. `qrate agent` replaces the loopback agent bridge for live review. `completion` and
 `man` are generated from the parser. `quit`, other project-data commands, and direct-file commands
 remain proposed.
 
