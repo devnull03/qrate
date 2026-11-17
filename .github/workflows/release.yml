@@ -5,11 +5,20 @@ name: Release
 # does nothing here — only a `v*` tag triggers a release.
 #
 # Running it by hand on a branch builds the version in that branch's Cargo.toml into a draft whose
-# tag is created at that commit only when the draft is published.
+# tag is created at that commit only when the draft is published, or at once with `publish`.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the release instead of leaving a draft
+        type: boolean
+        default: false
+      summary:
+        description: Hand-written notes shown above the download instructions
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -603,7 +612,7 @@ jobs:
       - name: Publish draft release
         uses: softprops/action-gh-release@v3
         with:
-          draft: true
+          draft: ${{ !inputs.publish }}
           prerelease: ${{ contains(needs.version.outputs.version, '-') }}
           tag_name: ${{ needs.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
@@ -621,6 +630,8 @@ jobs:
             dist/components.json
           body: |
             ## qrate ${{ needs.version.outputs.tag }}
+
+            ${{ inputs.summary }}
 
             ### Downloads
             Choose a download for your platform at https://qrate.dvnl.work/docs/install. Start with
