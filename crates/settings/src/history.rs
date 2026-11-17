@@ -62,7 +62,14 @@ impl Origin {
             Origin::Details => "Details panel".into(),
             Origin::Spelling => "Spelling fix".into(),
             Origin::Fix(fix) => format!("Fix: {fix}"),
-            Origin::Agent { fix, .. } => fix.clone(),
+            // Entries saved by 0.7.0-beta.1 start in lower case ("rewrite Digital ID").
+            Origin::Agent { fix, .. } => {
+                let mut chars = fix.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_uppercase().chain(chars).collect())
+                    .unwrap_or_default()
+            }
             Origin::Structure => "Rows and columns".into(),
             Origin::Import => "Spreadsheet import".into(),
             Origin::Undo => "Undo".into(),

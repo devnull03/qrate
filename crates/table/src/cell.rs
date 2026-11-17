@@ -116,6 +116,7 @@ pub(crate) fn render_cell(
                 diff.child(
                     div()
                         .min_w_0()
+                        .max_w(gpui::relative(0.5))
                         .truncate()
                         .line_through()
                         .text_color(removed)
@@ -124,7 +125,8 @@ pub(crate) fn render_cell(
             })
             .child(
                 div()
-                    .flex_shrink_0()
+                    .min_w_0()
+                    .truncate()
                     .text_color(added)
                     .child(change.after.clone()),
             )

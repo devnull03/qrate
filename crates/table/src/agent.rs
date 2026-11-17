@@ -2113,24 +2113,21 @@ fn ask_to_delete(
     let (title, reason) = (SharedString::from(title), SharedString::from(reason));
     let agent_label = SharedString::from(format!("Reason given by {agent}:"));
     in_active_window(cx, move |window, cx| {
-        window.open_dialog(cx, move |dialog, _, _| {
-            let (lines, reason, agent_label) = (lines.clone(), reason.clone(), agent_label.clone());
-            dialog
+        window.open_alert_dialog(cx, move |alert, _, cx| {
+            let muted = cx.theme().muted_foreground;
+            alert
                 .title(title.clone())
-                .overlay_closable(false)
-                .content(move |content, _, cx| {
-                    let muted = cx.theme().muted_foreground;
-                    content
+                .description(
+                    v_flex()
                         .gap_2()
                         .child(div().text_sm().text_color(muted).child(agent_label.clone()))
                         .child(div().child(reason.clone()))
                         .children(
                             lines
-                                .clone()
-                                .into_iter()
-                                .map(move |line| div().text_sm().text_color(muted).child(line)),
-                        )
-                })
+                                .iter()
+                                .map(|line| div().text_sm().text_color(muted).child(line.clone())),
+                        ),
+                )
                 .button_props(
                     DialogButtonProps::default()
                         .ok_text("Delete")
@@ -2146,6 +2143,7 @@ fn ask_to_delete(
                     answer_pending_delete(false, cx);
                     true
                 })
+                // Also runs after either button; the first answer is the one that counts.
                 .on_close(|_, _, cx| answer_pending_delete(false, cx))
         })
     });
