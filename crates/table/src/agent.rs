@@ -13,7 +13,7 @@ use ai::agent::{
 use base64::Engine as _;
 use diagnostics::fixes::{GroupFix, SourceActions};
 use diagnostics::{DATASET_MAIN, FixProviders, Location, Source};
-use gpui::{App, Global, ParentElement as _, SharedString, Task};
+use gpui::{App, Global, ParentElement as _, SharedString, Task, Window};
 use gpui_component::WindowExt as _;
 use gpui_component::notification::Notification;
 use settings::columns::ColumnType;
@@ -1282,19 +1282,7 @@ fn preview_rewrite(source: &SharedString, column: &SharedString, cx: &mut App) {
     if rewrite.rows.len() > PREVIEW_ROWS {
         lines.push(format!("… and {} more", rewrite.rows.len() - PREVIEW_ROWS).into());
     }
-    let Some(window) = cx.active_window() else {
-        return;
-    };
-    window
-        .update(cx, |_, window, cx| {
-            window.open_dialog(cx, move |dialog, _, _| {
-                let lines = lines.clone();
-                dialog
-                    .title(title.clone())
-                    .content(move |content, _, _| content.children(lines.clone()))
-            })
-        })
-        .ok();
+    show_lines(title, lines, cx);
 }
 
 /// The folder holding the project file, which every staged path is relative to.
@@ -1510,31 +1498,39 @@ fn preview_renames(source: &SharedString, cx: &mut App) {
     if renames.len() > PREVIEW_ROWS {
         lines.push(format!("… and {} more", renames.len() - PREVIEW_ROWS).into());
     }
-    let Some(window) = cx.active_window() else {
-        return;
-    };
-    window
-        .update(cx, |_, window, cx| {
-            window.open_dialog(cx, move |dialog, _, _| {
-                let lines = lines.clone();
-                dialog
-                    .title(title.clone())
-                    .content(move |content, _, _| content.children(lines.clone()))
-            })
+    show_lines(title, lines, cx);
+}
+
+/// Run `show` in the active window after the current update, since a menu click is one already.
+fn in_active_window(cx: &mut App, show: impl FnOnce(&mut Window, &mut App) + 'static) {
+    cx.defer(move |cx| {
+        let shown = cx
+            .active_window()
+            .map(|window| window.update(cx, |_, window, cx| show(window, cx)));
+        if !matches!(shown, Some(Ok(()))) {
+            log::warn!(
+                "an agent draft's preview or result could not be shown: no window is active"
+            );
+        }
+    });
+}
+
+fn show_lines(title: SharedString, lines: Vec<SharedString>, cx: &mut App) {
+    in_active_window(cx, move |window, cx| {
+        window.open_dialog(cx, move |dialog, _, _| {
+            let lines = lines.clone();
+            dialog
+                .title(title.clone())
+                .content(move |content, _, _| content.children(lines.clone()))
         })
-        .ok();
+    });
 }
 
 /// Say what a bulk action did, over whichever window is active.
 pub(crate) fn tell(message: String, cx: &mut App) {
-    let Some(window) = cx.active_window() else {
-        return;
-    };
-    window
-        .update(cx, |_, window, cx| {
-            window.push_notification(Notification::new().message(message), cx)
-        })
-        .ok();
+    in_active_window(cx, move |window, cx| {
+        window.push_notification(Notification::new().message(message), cx)
+    });
 }
 
 #[cfg(test)]
@@ -2509,5 +2505,52 @@ mod tests {
             assert_eq!(apply_renames(&agent_source("pi"), cx), Ok((1, 1)));
             assert_eq!(on_disk(&dir, "a.jpg"), "1");
         });
+    }
+
+    /// A menu item runs inside its window's own update, which cannot open a dialog or a
+    /// notification in that window directly; the preview and the result have to wait for it.
+    #[gpui::test]
+    fn a_preview_and_a_result_opened_from_a_menu_click_appear(cx: &mut TestAppContext) {
+        use gpui::AppContext as _;
+        use gpui_component::{Root, WindowExt as _};
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(project());
+        });
+        let window = cx.add_window(|window, cx| {
+            let table = cx.new(|cx| TablePanel::new(window, cx));
+            window.activate_window();
+            Root::new(table, window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let request = rewrite("Title", &[(0, "H-1")], cx);
+            respond_to_agent(request, cx).unwrap();
+        });
+        let click = |label: &'static str, cx: &mut TestAppContext| {
+            cx.update_window(window.into(), |_, _, cx| {
+                staged_actions(&agent_source("pi"), cx)
+                    .into_iter()
+                    .find(|action| action.label.starts_with(label))
+                    .expect("the staged rewrite offers this action")
+                    .apply(cx)
+            })
+            .unwrap();
+            cx.run_until_parked();
+        };
+
+        let window: gpui::AnyWindowHandle = window.into();
+        click("Preview", cx);
+        cx.update_window(window, |_, window, cx| {
+            assert!(window.has_active_dialog(cx), "the preview opened");
+            window.close_all_dialogs(cx);
+        })
+        .unwrap();
+        click("Apply", cx);
+        cx.update_window(window, |_, window, cx| {
+            assert_eq!(window.notifications(cx).len(), 1, "the result was shown");
+        })
+        .unwrap();
     }
 }
