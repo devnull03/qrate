@@ -185,9 +185,18 @@ pub(crate) fn autosave(cx: &mut App) {
     let Some((file, state)) = save_target(cx) else {
         return;
     };
+    let columns = cx
+        .global::<settings::project::CurrentProject>()
+        .data
+        .columns
+        .clone();
     // Finalize the action (including its agent credit) before taking the save snapshot.
     cx.defer(move |cx| {
-        let snapshot = state.read(cx).delegate().save_snapshot();
+        let columns = cx
+            .try_global::<settings::project::CurrentProject>()
+            .filter(|project| project.file == file)
+            .map_or_else(|| columns, |project| project.data.columns.clone());
+        let snapshot = state.read(cx).delegate().save_snapshot(columns);
         let edits = snapshot.edits;
         cx.spawn(async move |cx| {
             let written = cx
@@ -238,6 +247,7 @@ fn write_snapshot(file: &std::path::Path, snapshot: &delegate::SaveSnapshot) -> 
         &snapshot.rows,
         Some(&snapshot.structure),
         &snapshot.history[skip..],
+        Some(&snapshot.columns),
     )
     .map_err(|err| format!("{err:#}"))?;
     ledger
@@ -440,6 +450,53 @@ pub(crate) fn write_renames(
     autosave(cx);
 }
 
+/// Edit a live column declaration with its History, undo step, validation and atomic save.
+pub fn describe_column(
+    column: &str,
+    data_type: Option<&str>,
+    notes: Option<&str>,
+    origin: Origin,
+    cx: &mut App,
+) -> bool {
+    if !cx.has_global::<settings::project::CurrentProject>() {
+        return false;
+    }
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+    else {
+        return false;
+    };
+    if state.read(cx).delegate().data_col(column).is_none() {
+        return false;
+    }
+    let immediate = matches!(&origin, Origin::Agent { .. });
+    let changes = settings::project::CurrentProject::describe_columns(column, data_type, notes, cx);
+    if changes.is_empty() {
+        return true;
+    }
+    state.update(cx, |state, cx| {
+        state.delegate_mut().record_descriptions(changes, origin);
+        cx.emit(TableChanged);
+        cx.notify();
+    });
+    settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+    if !immediate
+        && let Some(panel) = cx
+            .try_global::<TablePanelHandle>()
+            .and_then(|handle| handle.0.upgrade())
+    {
+        panel.update(cx, |panel, cx| {
+            panel.schedule_revalidate(cx);
+            panel.schedule_autosave(cx);
+        });
+    } else {
+        revalidate_now(cx);
+        autosave(cx);
+    }
+    true
+}
+
 /// The rows a batch of edits renames a file in, when it touches a column the project declares as
 /// holding a filename — the only edits that can change which file a row previews.
 pub(crate) fn file_rows(
@@ -533,8 +590,12 @@ fn settle(
     }
     for change in changes {
         if let Change::ColumnDescribed { column, after, .. } = change {
-            settings::project::CurrentProject::set_column_type(column, &after.data_type, cx);
-            settings::project::CurrentProject::set_column_notes(column, &after.notes, cx);
+            let _ = settings::project::CurrentProject::describe_columns(
+                column,
+                Some(&after.data_type),
+                Some(&after.notes),
+                cx,
+            );
         }
     }
     TablePanel::persist_columns(state, cx);
@@ -1036,7 +1097,12 @@ pub fn save_now(cx: &mut App) -> Result<(), String> {
         return Err("Couldn't save your changes: the project's table is unavailable.".into());
     };
     let started = std::time::Instant::now();
-    let snapshot = state.read(cx).delegate().save_snapshot();
+    let columns = cx
+        .global::<settings::project::CurrentProject>()
+        .data
+        .columns
+        .clone();
+    let snapshot = state.read(cx).delegate().save_snapshot(columns);
     let (rows, edits) = (snapshot.rows.len(), snapshot.edits);
     let written = write_snapshot(&file, &snapshot);
     saved(&state, &file, edits, written, cx)?;

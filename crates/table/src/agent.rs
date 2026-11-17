@@ -1941,51 +1941,15 @@ fn edit_table(
                 ),
                 None => None,
             };
-            let descriptions =
-                |cx: &App| -> BTreeMap<String, settings::history::ColumnDescription> {
-                    cx.global::<settings::project::CurrentProject>()
-                        .data
-                        .columns
-                        .iter()
-                        .map(|column| {
-                            (
-                                column.name.clone(),
-                                settings::history::ColumnDescription {
-                                    data_type: column.data_type.clone(),
-                                    notes: column.notes.clone(),
-                                },
-                            )
-                        })
-                        .collect()
-                };
-            let before = descriptions(cx);
-            if let Some(kind) = kind {
-                settings::project::CurrentProject::set_column_type(&name, kind.as_str(), cx);
+            if !crate::describe_column(
+                &name,
+                kind.map(|kind| kind.as_str()),
+                description.as_deref().map(str::trim),
+                origin.clone(),
+                cx,
+            ) {
+                return Err(RequestError::UnknownColumn);
             }
-            if let Some(description) = &description {
-                settings::project::CurrentProject::set_column_notes(&name, description.trim(), cx);
-            }
-            let changes = descriptions(cx)
-                .into_iter()
-                .filter_map(|(column, after)| {
-                    let before = before.get(&column).cloned().unwrap_or_default();
-                    (before != after).then_some(settings::history::Change::ColumnDescribed {
-                        column,
-                        before,
-                        after,
-                    })
-                })
-                .collect();
-            state.update(cx, |state, cx| {
-                state
-                    .delegate_mut()
-                    .record_descriptions(changes, origin.clone());
-                cx.emit(crate::TableChanged);
-                cx.notify();
-            });
-            settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
-            crate::autosave(cx);
-            crate::revalidate_now(cx);
             (format!("Describe column {name}"), Vec::new())
         }
         TableEdit::MoveRow {
@@ -3327,6 +3291,9 @@ mod tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(settings::AppSettings::default());
+            cx.set_global(settings::project::ProjectPersistence {
+                writer: Some(settings::project::ProjectSettingsWriter::start()),
+            });
             cx.set_global(project);
         });
         cx.add_window_view(TablePanel::new);
@@ -3388,10 +3355,81 @@ mod tests {
                 },
                 "the saved entry must keep its agent, not just the pending entry"
             );
+            let data = settings::project::load_project_file(&file).unwrap();
+            for change in &saved.last().unwrap().changes {
+                if let settings::history::Change::ColumnDescribed { column, after, .. } = change {
+                    let stored = data
+                        .columns
+                        .iter()
+                        .find(|entry| entry.name == *column)
+                        .unwrap();
+                    assert_eq!(
+                        (&stored.data_type, &stored.notes),
+                        (&after.data_type, &after.notes),
+                        "metadata and its History must commit together, without waiting for the settings debounce"
+                    );
+                }
+            }
         }
         assert!(
             saves.get() >= 8,
             "History hears when pending entries reach disk"
+        );
+        cx.update(|cx| {
+            cx.global_mut::<settings::AppSettings>().values.insert(
+                settings::AUTOSAVE_KEY.into(),
+                settings::Val::Text("off".into()),
+            );
+            assert!(crate::describe_column(
+                "Caption",
+                None,
+                Some("Manual description"),
+                settings::history::Origin::Structure,
+                cx
+            ));
+        });
+        cx.run_until_parked();
+        let before_save = settings::project::load_project_file(&file).unwrap();
+        assert_eq!(
+            before_save
+                .columns
+                .iter()
+                .find(|column| column.name == "Caption")
+                .unwrap()
+                .notes,
+            "Updated description",
+            "manual metadata respects autosave off"
+        );
+        cx.update(|cx| crate::save_now(cx).unwrap());
+
+        assert_eq!(
+            settings::history::entries_after(&file, 0)
+                .unwrap()
+                .last()
+                .unwrap()
+                .origin,
+            settings::history::Origin::Structure
+        );
+        let data = settings::project::load_project_file(&file).unwrap();
+        assert_eq!(
+            data.columns
+                .iter()
+                .find(|column| column.name == "Caption")
+                .unwrap()
+                .notes,
+            "Manual description"
+        );
+        cx.update(|cx| crate::history_step(false, cx));
+        cx.update(|cx| crate::save_now(cx).unwrap());
+        cx.run_until_parked();
+        let data = settings::project::load_project_file(&file).unwrap();
+        assert_eq!(
+            data.columns
+                .iter()
+                .find(|column| column.name == "Caption")
+                .unwrap()
+                .notes,
+            "Updated description"
         );
     }
 

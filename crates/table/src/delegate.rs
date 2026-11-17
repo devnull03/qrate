@@ -59,6 +59,7 @@ pub(crate) struct SaveSnapshot {
     pub row_ids: Vec<RowId>,
     pub rows: Vec<Vec<SharedString>>,
     pub structure: Structure,
+    pub columns: Vec<settings::project::ProjectColumn>,
     pub history: Vec<Entry>,
     /// The log position `history[0]` holds, counted from when the dataset was loaded.
     pub first: u64,
@@ -727,13 +728,17 @@ impl QrateTableDelegate {
 
     /// What a save writes: the grid, its row identities, its hierarchy, and the log entries not yet
     /// on disk.
-    pub(crate) fn save_snapshot(&self) -> SaveSnapshot {
+    pub(crate) fn save_snapshot(
+        &self,
+        columns: Vec<settings::project::ProjectColumn>,
+    ) -> SaveSnapshot {
         let (headers, rows) = self.grid();
         SaveSnapshot {
             headers,
             row_ids: self.row_ids.clone(),
             rows,
             structure: self.hierarchy.rows(),
+            columns,
             history: self.unsaved.clone(),
             first: self.saved_history,
             edits: self.edits,

@@ -1942,7 +1942,13 @@ fn descriptions_group(project: &CurrentProject, headers: &[ColumnItem], cx: &App
                             cx.default_global::<Pickers>()
                                 .description_rows
                                 .insert((file, setter_name.to_string()));
-                            CurrentProject::set_column_notes(&setter_name, &notes, cx);
+                            table::describe_column(
+                                &setter_name,
+                                None,
+                                Some(&notes),
+                                settings::history::Origin::Structure,
+                                cx,
+                            );
                         }
                     },
                 ),
@@ -2041,7 +2047,13 @@ fn data_types_group(headers: Vec<ColumnItem>, cx: &App) -> SettingGroup {
                         Rc::new(move |changes: &[(&ColumnItem, bool)], cx: &mut App| {
                             for (column, want) in changes {
                                 let ty = if *want { ty } else { columns::ColumnType::Text };
-                                CurrentProject::set_column_type(&column.name, ty.as_str(), cx);
+                                table::describe_column(
+                                    &column.name,
+                                    Some(ty.as_str()),
+                                    None,
+                                    settings::history::Origin::Structure,
+                                    cx,
+                                );
                             }
                         }),
                     ),

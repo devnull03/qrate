@@ -126,6 +126,10 @@ Notion is where a task is born. Never create a Notion task from a GitHub issue �
 the Notion `Linear Link` property — that property and the Linear issues behind it are leftovers.
 Sub-task nesting and `Blocked by`/`Blocking` live in Notion.
 
+## Audited table edits
+
+Live changes to rows, columns, cell values and column declarations go through the `table` crate's audited entry points, with an explicit `Origin`. Use `table::describe_column` for live type/description edits, including Settings and configuration imports; `CurrentProject::describe_columns` only updates the cache and returns changes marked `must_use`. Table snapshots commit column declarations with their History in the same SQLite transaction. Keep raw row/cell setters private, keep `Step` handling exhaustive, and test saved entries as well as the in-memory log.
+
 ## Code Style — no bloat
 
 A 2026-07-17 whole-repo audit removed exactly this kind of code; don't reintroduce it:

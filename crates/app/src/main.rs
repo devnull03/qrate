@@ -299,7 +299,15 @@ impl Render for App {
             }))
             // Here for the same reason: the dialog opens in this window.
             .on_action(cx.listener(|_, _: &LoadColumnConfig, window, cx| {
-                project_wizard::open_column_config_dialog(window, cx)
+                project_wizard::open_column_config_dialog(window, cx, |name, kind, notes, cx| {
+                    table::describe_column(
+                        name,
+                        Some(kind),
+                        notes,
+                        settings::history::Origin::Structure,
+                        cx,
+                    );
+                })
             }))
             .on_action(
                 cx.listener(|_, action: &export::PluginExport, _, cx| {
