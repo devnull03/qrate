@@ -3229,6 +3229,83 @@ mod tests {
             .map(|who| format!("{} · {who}", origin.label()))
     }
 
+    #[gpui::test]
+    fn autosave_keeps_agent_credit_and_notifies_history(cx: &mut TestAppContext) {
+        let file = std::env::temp_dir().join("qrate-agent-saved-credit.qrate");
+        let _ = std::fs::remove_file(&file);
+        let mut project = project();
+        project.file = file.clone();
+        settings::project::create_project_file(
+            &file,
+            &settings::project::ProjectSpec {
+                name: &project.data.name,
+                source: "CSV",
+                columns: &project.data.columns,
+                headers: &project.data.headers,
+                rows: &project.data.rows,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(project);
+        });
+        cx.add_window_view(TablePanel::new);
+        cx.run_until_parked();
+        let saves = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen = saves.clone();
+        let _subscription = cx.update(|cx| {
+            let state = cx.global::<TableStateHandle>().0.upgrade().unwrap();
+            cx.subscribe(&state, move |state, _: &crate::TableChanged, cx| {
+                if state.read(cx).delegate().unsaved_history().is_empty() {
+                    seen.set(seen.get() + 1);
+                }
+            })
+        });
+        for (operation, label) in [
+            (
+                serde_json::json!({"op":"rename_column","column":"Title","name":"Caption"}),
+                "Rename column Title to Caption",
+            ),
+            (
+                serde_json::json!({"op":"add_column","name":"Year"}),
+                "Add column Year",
+            ),
+            (
+                serde_json::json!({"op":"move_column","column":"Year","after":"Medium"}),
+                "Move column Year",
+            ),
+            (
+                serde_json::json!({"op":"add_rows","rows":[{"Caption":"New"}]}),
+                "Add a row",
+            ),
+            (
+                serde_json::json!({"op":"duplicate_row","row":0}),
+                "Duplicate row 1",
+            ),
+        ] {
+            cx.update(|cx| {
+                edit(operation, cx).unwrap();
+            });
+            cx.run_until_parked();
+            let saved = settings::history::entries_after(&file, 0).unwrap();
+            assert_eq!(
+                saved.last().unwrap().origin,
+                Origin::Agent {
+                    agent: "pi".into(),
+                    fix: label.into(),
+                },
+                "the saved entry must keep its agent, not just the pending entry"
+            );
+        }
+        assert!(
+            saves.get() >= 5,
+            "History hears when pending entries reach disk"
+        );
+    }
+
     /// An agent may change the table's shape directly; each change is one undo step credited to it.
     #[gpui::test]
     fn an_agent_changes_the_tables_shape_at_once(cx: &mut TestAppContext) {

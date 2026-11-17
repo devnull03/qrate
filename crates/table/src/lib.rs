@@ -182,23 +182,26 @@ pub(crate) fn autosave(cx: &mut App) {
     let Some((file, state)) = save_target(cx) else {
         return;
     };
-    let snapshot = state.read(cx).delegate().save_snapshot();
-    let edits = snapshot.edits;
-    cx.spawn(async move |cx| {
-        let written = cx
-            .background_executor()
-            .spawn({
-                let file = file.clone();
-                async move { write_snapshot(&file, &snapshot) }
-            })
-            .await;
-        cx.update(|cx| {
-            if let Err(message) = saved(&state, &file, edits, written, cx) {
-                complain(message, cx);
-            }
-        });
-    })
-    .detach();
+    // Finalize the action (including its agent credit) before taking the save snapshot.
+    cx.defer(move |cx| {
+        let snapshot = state.read(cx).delegate().save_snapshot();
+        let edits = snapshot.edits;
+        cx.spawn(async move |cx| {
+            let written = cx
+                .background_executor()
+                .spawn({
+                    let file = file.clone();
+                    async move { write_snapshot(&file, &snapshot) }
+                })
+                .await;
+            cx.update(|cx| {
+                if let Err(message) = saved(&state, &file, edits, written, cx) {
+                    complain(message, cx);
+                }
+            });
+        })
+        .detach();
+    });
 }
 
 /// The open project's file and live table, which is what a save needs.
@@ -254,10 +257,16 @@ fn saved(
     written: Result<(), String>,
     cx: &mut App,
 ) -> Result<(), String> {
-    let settled = state.update(cx, |state, _| {
+    let settled = state.update(cx, |state, cx| {
         let delegate = state.delegate_mut();
+        let pending = delegate.unsaved_history().len();
         delegate.history_written();
-        delegate.edits() == edits
+        let settled = delegate.edits() == edits;
+        if pending != delegate.unsaved_history().len() {
+            cx.emit(delegate::TableChanged);
+            cx.notify();
+        }
+        settled
     });
     if let Err(err) = written {
         let message = format!("Couldn't save {}: {err}", file.display());
