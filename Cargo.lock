@@ -127,6 +127,7 @@ dependencies = [
  "components",
  "gpui-pre",
  "log",
+ "serde_json",
  "settings",
  "windows 0.62.2",
 ]
