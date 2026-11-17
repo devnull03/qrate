@@ -24,7 +24,9 @@ mod relink;
 mod row_index;
 mod visual;
 
-pub use agent::{AGENT_SOURCE, agent_source, respond_to_agent, respond_to_agent_async};
+pub use agent::{
+    AGENT_SOURCE, agent_source, render_staged_bar, respond_to_agent, respond_to_agent_async,
+};
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 pub use editor::editor_box;
 /// The grid's right-click menu, so a gallery card can raise the same one a row does rather than
@@ -644,6 +646,15 @@ pub enum Structural {
         col: usize,
         name: SharedString,
     },
+    MoveColumn {
+        from: usize,
+        to: usize,
+    },
+    /// A column added already named, as an agent asks for one.
+    AddNamedColumn {
+        at: usize,
+        name: SharedString,
+    },
 }
 
 pub enum Arrangement {
@@ -670,17 +681,18 @@ pub enum RowPlacement {
     After,
 }
 
-pub fn arrange(op: Arrangement, cx: &mut App) {
+/// Rearrange the hierarchy. Returns whether the table accepted the change.
+pub fn arrange(op: Arrangement, cx: &mut App) -> bool {
     let Some(state) = cx
         .try_global::<TableStateHandle>()
         .and_then(|handle| handle.0.upgrade())
     else {
-        return;
+        return false;
     };
     if let Arrangement::DeleteSubtree(row) = op {
         let rows = state.read(cx).delegate().subtree_sources(row);
         structural(Structural::DeleteRows(rows), cx);
-        return;
+        return true;
     }
     let result = state.update(cx, |state, cx| {
         let result = match op {
@@ -706,10 +718,11 @@ pub fn arrange(op: Arrangement, cx: &mut App) {
     });
     if let Err(error) = result {
         log::warn!("Could not change archival hierarchy: {error:?}");
-        return;
+        return false;
     }
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
     autosave(cx);
+    true
 }
 
 pub(crate) fn persist_expanded(rows: &[settings::project::RowId], cx: &mut App) {
@@ -785,6 +798,14 @@ pub fn structural(op: Structural, cx: &mut App) {
                 true
             }
             Structural::RenameColumn { col, name } => delegate.rename_column(*col, name.clone()),
+            Structural::MoveColumn { from, to } => {
+                delegate.move_column_to(*from, *to);
+                true
+            }
+            Structural::AddNamedColumn { at, name } => {
+                delegate.insert_named_column(*at, name.clone());
+                true
+            }
         };
         if applied {
             // The library caches a `Column` per index, so a changed column set needs this.
@@ -813,7 +834,10 @@ pub fn structural(op: Structural, cx: &mut App) {
     }
     if matches!(
         op,
-        Structural::InsertColumn { .. } | Structural::DeleteColumn { .. }
+        Structural::InsertColumn { .. }
+            | Structural::DeleteColumn { .. }
+            | Structural::MoveColumn { .. }
+            | Structural::AddNamedColumn { .. }
     ) || renamed.is_some()
     {
         sync_project_columns(&state, renamed.as_ref(), cx);

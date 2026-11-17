@@ -1272,6 +1272,22 @@ impl QrateTableDelegate {
     }
 
     /// The log entries made since the last save, oldest first.
+    /// Credit every change logged since `since` to `origin`, such as the agent that asked for it.
+    pub(crate) fn credit_since(&mut self, since: usize, origin: &Origin) {
+        for entry in self.unsaved.iter_mut().skip(since) {
+            entry.origin = origin.clone();
+        }
+    }
+
+    /// Move a data column to `to`, as one undo step.
+    pub(crate) fn move_column_to(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.columns.len() || to >= self.columns.len() {
+            return;
+        }
+        self.shift_column(from, to);
+        self.record(Step::ColumnMoved { from, to }, Origin::Structure);
+    }
+
     pub fn unsaved_history(&self) -> &[Entry] {
         &self.unsaved
     }
@@ -2036,6 +2052,12 @@ impl QrateTableDelegate {
     /// Add a blank column at `at`, named for the user to rename. Returns its name.
     pub(crate) fn insert_column(&mut self, at: usize) -> SharedString {
         let name = self.fresh_column_name();
+        self.insert_named_column(at, name.clone());
+        name
+    }
+
+    /// Add a blank column called `name` at `at`, as one undo step.
+    pub(crate) fn insert_named_column(&mut self, at: usize, name: SharedString) {
         let col = Col {
             column: new_column(name.clone()),
             cells: vec![SharedString::default(); self.rows.len()],
@@ -2044,7 +2066,6 @@ impl QrateTableDelegate {
         };
         self.splice_column(at, &col);
         self.record(Step::ColumnAdded { at, col }, Origin::Structure);
-        name
     }
 
     /// Delete a column and every row's cell in it, as one undo step.

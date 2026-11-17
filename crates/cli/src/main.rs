@@ -4,6 +4,7 @@ use std::{
     net::TcpStream,
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, ExitStatus, Stdio},
+    time::Duration,
 };
 
 use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
@@ -13,6 +14,8 @@ use serde_json::{Value, json};
 const REFUSED: i32 = 1;
 const USAGE: i32 = 2;
 const UNAVAILABLE: i32 = 3;
+/// How long a question about the app, not about the project's data, may take.
+const QUICK: Duration = Duration::from_secs(30);
 
 const AFTER_HELP: &str = "\
 Exit codes:
@@ -34,8 +37,9 @@ const FORMAT_HELP: &str = "Defaults to `human` on a terminal and `json` in a pip
 
 const AGENT_AFTER_HELP: &str = "\
 Every command but `overview` reads one JSON object on stdin and prints one JSON object on stdout.
-No command changes a cell or a file: `stage-findings`, `stage-column-rewrite` and `stage-renames`
-publish drafts that only the archivist can apply.
+Cell values and file names are only staged: `stage-findings`, `stage-column-rewrite` and
+`stage-renames` publish drafts that only the archivist can apply. `edit` changes the table's shape
+at once, as one undo step; `delete` always waits for the archivist to confirm it in qrate.
 
 Examples:
   qrate agent overview --agent codex
@@ -190,6 +194,23 @@ enum AgentCommand {
     /// inside it. The batch replaces this agent's earlier renames; the archivist applies it from
     /// the Problems menu as one undoable step.
     StageRenames,
+    /// Change the table's shape at once, as one undo step the archivist sees credited to you.
+    ///
+    /// stdin: {"revision": <from overview>, "op": <operation>, ...}. Operations:
+    /// add_rows {"rows": [{<column>: <value>}]} (up to 1,000), add_column {"name", "after"?},
+    /// rename_column {"column", "name"}, move_column {"column", "after"?},
+    /// describe_column {"column", "data_type"?, "description"?},
+    /// move_row {"row", "target", "placement": "before" | "after" | "child"}, indent_row {"row"},
+    /// outdent_row {"row"}, duplicate_row {"row"}, filter {"column", "keep"?}. Cell values of
+    /// existing rows are not edited here: stage them with stage-column-rewrite.
+    Edit,
+    /// Ask the archivist to delete rows or a column. Waits until they answer in qrate.
+    ///
+    /// stdin: {"revision": <from overview>, "rows": [<source row>], "reason": <why>} or
+    /// {"revision", "column": <name>, "reason"}. qrate shows the archivist a dialog with your
+    /// reason; this prints `deleted` once they confirm, and exits 1 with `delete_declined` or
+    /// `delete_timed_out` (after 10 minutes) otherwise.
+    Delete,
 }
 
 impl AgentCommand {
@@ -203,6 +224,8 @@ impl AgentCommand {
             Self::StageFindings => "stage_findings",
             Self::StageColumnRewrite => "stage_column_rewrite",
             Self::StageRenames => "stage_renames",
+            Self::Edit => "edit",
+            Self::Delete => "delete",
         }
     }
 }
@@ -345,7 +368,7 @@ struct AppControlDescriptor {
 }
 
 fn project_info(json: bool) -> Result<Option<ExitStatus>, Failure> {
-    let body = match app_request("GET", "/v1/project/info", None, None)? {
+    let body = match app_request("GET", "/v1/project/info", None, None, QUICK)? {
         (409, _) if !json => {
             return Err(Failure::Other(
                 "no project is active; run `qrate <PROJECT.qrate>`".into(),
@@ -378,7 +401,7 @@ fn project_report(project: &Value, json: bool) -> String {
 }
 
 fn app_status(json: bool) -> Result<Option<ExitStatus>, Failure> {
-    let project = match app_request("GET", "/v1/status", None, None) {
+    let project = match app_request("GET", "/v1/status", None, None, QUICK) {
         Err(Failure::Unavailable(_)) => None,
         response => {
             let status: Value = serde_json::from_str(&accept(response?)?)
@@ -410,11 +433,17 @@ fn agent_call(
     stdin: &mut impl Read,
 ) -> Result<Option<ExitStatus>, Failure> {
     let request = agent_request(command, stdin)?;
+    // A delete waits for the archivist's answer, which qrate gives up on after ten minutes.
+    let wait = match command {
+        AgentCommand::Delete => Duration::from_secs(11 * 60),
+        _ => QUICK,
+    };
     let body = accept(app_request(
         "POST",
         "/v1/agent",
         agent.as_deref(),
         Some(&request),
+        wait,
     )?)?;
     print(&body);
     Ok(None)
@@ -455,6 +484,7 @@ fn app_request(
     route: &str,
     agent: Option<&str>,
     body: Option<&str>,
+    wait: Duration,
 ) -> Result<(u16, String), Failure> {
     let not_running = || Failure::Unavailable("qrate is not running".into());
     let path = dirs::data_local_dir()
@@ -475,7 +505,7 @@ fn app_request(
         .filter(|address| address.starts_with("127.0.0.1:"))
         .ok_or_else(|| Failure::Other("invalid app-control endpoint".into()))?;
     let mut stream = TcpStream::connect(address).map_err(|_| not_running())?;
-    let timeout = Some(std::time::Duration::from_secs(30));
+    let timeout = Some(wait);
     let _ = stream
         .set_read_timeout(timeout)
         .and_then(|()| stream.set_write_timeout(timeout));
@@ -750,6 +780,10 @@ mod tests {
             })
         ));
         assert_eq!(AgentCommand::StageRenames.method(), "stage_renames");
+        assert_eq!(AgentCommand::Edit.method(), "edit");
+        assert_eq!(AgentCommand::Delete.method(), "delete");
+        assert!(Cli::try_parse_from(["qrate", "agent", "edit"]).is_ok());
+        assert!(Cli::try_parse_from(["qrate", "agent", "delete", "--agent", "pi"]).is_ok());
         assert!(Cli::try_parse_from(["qrate", "agent", "stage-renames"]).is_ok());
         assert_eq!(
             agent_request(

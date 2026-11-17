@@ -4,11 +4,13 @@
 //! Loopback TCP behind a per-launch token published in `app-control.json`. Sockets are read and
 //! written on their own threads; the main thread only answers, because only it may read GPUI state.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read as _, Write as _};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -93,12 +95,22 @@ pub fn init(cx: &mut App) {
         return;
     }
     cx.spawn(async move |cx| {
-        let mut seen = HashSet::new();
+        let seen = Rc::new(RefCell::new(HashSet::new()));
         while let Ok(job) = inbox.recv().await {
             let answer = match job.call {
                 Call::Status => cx.update(|cx| ("200 OK", status(cx))),
                 Call::ProjectInfo => cx.update(project_info),
-                Call::Agent { agent, body } => answer_agent(agent, &body, &mut seen, cx).await,
+                // Each agent call answers on its own, so a delete waiting for the archivist does
+                // not hold up every other call behind it.
+                Call::Agent { agent, body } => {
+                    let seen = seen.clone();
+                    cx.spawn(async move |cx| {
+                        let answer = answer_agent(agent, &body, &seen, cx).await;
+                        let _ = job.reply.send(answer).await;
+                    })
+                    .detach();
+                    continue;
+                }
             };
             let _ = job.reply.send(answer).await;
         }
@@ -251,7 +263,7 @@ fn project_info(cx: &mut App) -> (&'static str, Value) {
 async fn answer_agent(
     agent: SharedString,
     body: &[u8],
-    seen: &mut HashSet<SharedString>,
+    seen: &RefCell<HashSet<SharedString>>,
     cx: &mut gpui::AsyncApp,
 ) -> (&'static str, Value) {
     let started = Instant::now();
@@ -296,6 +308,7 @@ async fn answer_agent(
             }
         };
     cx.update(|cx| {
+        let mut seen = seen.borrow_mut();
         if seen.len() < MAX_AGENT_NAMES && seen.insert(agent.clone()) {
             workspace::record_agent_call(
                 AgentCall {
@@ -353,6 +366,22 @@ fn summarize(request: &ai::agent::Request) -> (SharedString, SharedString) {
             revision.0
         )
         .into(),
+        ai::agent::Request::Edit { revision, edit } => {
+            let op = serde_json::to_value(edit)
+                .ok()
+                .and_then(|value| value["op"].as_str().map(str::to_owned))
+                .unwrap_or_else(|| "?".into());
+            format!("{op} at revision {}", revision.0).into()
+        }
+        ai::agent::Request::Delete {
+            revision,
+            rows,
+            column,
+            ..
+        } => match column {
+            Some(column) => format!("column {column} at revision {}", revision.0).into(),
+            None => format!("{} row(s) at revision {}", rows.len(), revision.0).into(),
+        },
         ai::agent::Request::StageRenames { revision, renames } => {
             format!("{} rename(s) at revision {}", renames.len(), revision.0).into()
         }
@@ -395,6 +424,10 @@ fn describe(result: &ai::agent::ResultSet) -> SharedString {
             accepted,
             unchanged,
         } => format!("{accepted} staged, {} unchanged", unchanged.len()).into(),
+        ai::agent::ResultSet::Edited { detail, .. } => detail.clone().into(),
+        ai::agent::ResultSet::Deleted { count } => {
+            format!("{count} deleted, confirmed in the app").into()
+        }
         ai::agent::ResultSet::StagedRenames { accepted } => {
             format!("{accepted} rename(s) staged").into()
         }

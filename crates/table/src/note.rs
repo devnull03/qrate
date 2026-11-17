@@ -266,17 +266,15 @@ fn structural_items(
             )
             .item(
                 PopupMenuItem::new(rows_label("Group", rows)).on_click(move |_, _, cx| {
-                    crate::arrange(crate::Arrangement::Group(group.clone()), cx)
+                    crate::arrange(crate::Arrangement::Group(group.clone()), cx);
                 }),
             )
-            .item(
-                PopupMenuItem::new("Indent row")
-                    .on_click(move |_, _, cx| crate::arrange(crate::Arrangement::Indent(dup), cx)),
-            )
-            .item(
-                PopupMenuItem::new("Outdent row")
-                    .on_click(move |_, _, cx| crate::arrange(crate::Arrangement::Outdent(dup), cx)),
-            )
+            .item(PopupMenuItem::new("Indent row").on_click(move |_, _, cx| {
+                crate::arrange(crate::Arrangement::Indent(dup), cx);
+            }))
+            .item(PopupMenuItem::new("Outdent row").on_click(move |_, _, cx| {
+                crate::arrange(crate::Arrangement::Outdent(dup), cx);
+            }))
             .item(
                 // A leaf has nothing to promote or carry with it, so it gets the one plain
                 // command the two arrangement-aware ones would only dress up.
@@ -290,7 +288,9 @@ fn structural_items(
             )
             .when(parents, |menu| {
                 menu.item(PopupMenuItem::new("Delete row and descendants").on_click(
-                    move |_, _, cx| crate::arrange(crate::Arrangement::DeleteSubtree(dup), cx),
+                    move |_, _, cx| {
+                        crate::arrange(crate::Arrangement::DeleteSubtree(dup), cx);
+                    },
                 ))
             })
             .separator()

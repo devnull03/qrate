@@ -36,7 +36,7 @@ pub enum Origin {
     Spelling,
     /// A fix from the Fixes menu or the Problems panel, named by what offered it.
     Fix(String),
-    /// A fix an agent drafted and the archivist accepted, named the same way.
+    /// A change an agent made or drafted, named for the History panel ("Add 3 rows").
     Agent {
         agent: String,
         fix: String,
@@ -61,7 +61,8 @@ impl Origin {
             Origin::ReplaceAll => "Replace".into(),
             Origin::Details => "Details panel".into(),
             Origin::Spelling => "Spelling fix".into(),
-            Origin::Fix(fix) | Origin::Agent { fix, .. } => format!("Fix: {fix}"),
+            Origin::Fix(fix) => format!("Fix: {fix}"),
+            Origin::Agent { fix, .. } => fix.clone(),
             Origin::Structure => "Rows and columns".into(),
             Origin::Import => "Spreadsheet import".into(),
             Origin::Undo => "Undo".into(),

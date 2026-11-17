@@ -8,14 +8,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ai::agent::{
     Column, Count, DiagnosticSummary, FilterOp, Finding, MAX_RESULT_BYTES, Overview, ProgramAudit,
     ProgramOutput, ProjectSummary, Query, QueryResult, QuerySource, Rename, Request, RequestError,
-    Response, ResultSet, Severity, TableRevision,
+    Response, ResultSet, RowPlacement, Severity, TableEdit, TableRevision,
 };
 use base64::Engine as _;
 use diagnostics::fixes::{GroupFix, SourceActions};
 use diagnostics::{DATASET_MAIN, FixProviders, Location, Source};
-use gpui::{App, Global, ParentElement as _, SharedString, Task, Window};
-use gpui_component::WindowExt as _;
+use gpui::{
+    AnyElement, App, Empty, Global, IntoElement as _, ParentElement as _, SharedString,
+    Styled as _, Task, Window, div,
+};
+use gpui_component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_component::dialog::DialogButtonProps;
 use gpui_component::notification::Notification;
+use gpui_component::{
+    ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
+};
 use settings::columns::ColumnType;
 use settings::history::Origin;
 use sha2::{Digest as _, Sha256};
@@ -72,6 +79,9 @@ pub fn respond_to_agent(
         Request::StageRenames { revision, renames } => {
             return stage_renames(agent, revision, renames, cx);
         }
+        Request::Edit { revision, edit } => return edit_table(agent, revision, edit, cx),
+        // A delete has to wait for the archivist, which only the asynchronous path can do.
+        Request::Delete { .. } => return Err(RequestError::NoWindow),
         Request::ProgramSave { source } => return save_program(source, cx),
         _ => {}
     }
@@ -171,7 +181,9 @@ pub fn respond_to_agent(
         Request::ProgramSave { .. }
         | Request::StageFindings { .. }
         | Request::StageColumnRewrite { .. }
-        | Request::StageRenames { .. } => unreachable!(),
+        | Request::StageRenames { .. }
+        | Request::Edit { .. }
+        | Request::Delete { .. } => unreachable!(),
     };
 
     Ok(Response { revision, result })
@@ -376,6 +388,12 @@ pub fn respond_to_agent_async(
                 })
             })
         }
+        Request::Delete {
+            revision,
+            rows,
+            column,
+            reason,
+        } => ask_to_delete(agent, revision, rows, column, reason, cx),
         other => Task::ready(respond_to_agent(other, agent, cx)),
     }
 }
@@ -802,10 +820,10 @@ struct StagedFix {
     replacement: SharedString,
 }
 
-/// One column's staged new values, as `(source row, text when staged, new text)`.
+/// One column's staged new values: source row → (text when staged, new text).
 struct Rewrite {
     note: Option<String>,
-    rows: Vec<(usize, SharedString, SharedString)>,
+    rows: BTreeMap<usize, (SharedString, SharedString)>,
 }
 
 impl Rewrite {
@@ -1003,10 +1021,6 @@ fn staged_actions(source: &str, cx: &App) -> Vec<GroupFix> {
     for (column, rewrite) in &batch.rewrites {
         let title = rewrite.title(column);
         let at = (source.clone(), column.clone());
-        actions.push(GroupFix::action(format!("Preview: {title}"), {
-            let at = at.clone();
-            move |cx| preview_rewrite(&at.0, &at.1, cx)
-        }));
         actions.push(GroupFix::action(format!("Apply: {title}"), {
             let at = at.clone();
             move |cx| {
@@ -1020,10 +1034,6 @@ fn staged_actions(source: &str, cx: &App) -> Vec<GroupFix> {
     }
     if !batch.renames.is_empty() {
         let title = renames_title(batch.renames.len());
-        actions.push(GroupFix::action(format!("Preview: {title}"), {
-            let source = source.clone();
-            move |cx| preview_renames(&source, cx)
-        }));
         actions.push(GroupFix::action(format!("Apply: {title}"), {
             let source = source.clone();
             move |cx| {
@@ -1076,7 +1086,7 @@ fn apply_staged(source: &SharedString, cx: &mut App) -> (usize, usize) {
     discard_staged(source, cx);
     let origin = Origin::Agent {
         agent: agent.clone(),
-        fix: format!("apply all {applied}"),
+        fix: format!("Apply {applied} staged fixes"),
     };
     crate::write_cells(cells, origin, cx);
     log::info!("{agent}: {applied} staged fix(es) applied, {stale} skipped as stale");
@@ -1141,6 +1151,8 @@ fn publish(source: &SharedString, cx: &mut App) {
     diagnostics::Diagnostics::set(&Source::Validator(source.clone()), DATASET_MAIN, items, cx);
     FixProviders::register(source, offer_staged, cx);
     SourceActions::register(source, staged_actions, cx);
+    // The grid marks staged cells and the views show the staged bar; both have to redraw.
+    cx.refresh_windows();
 }
 
 /// Stage one column's new values as a single draft, replacing this agent's earlier rewrite of the
@@ -1166,7 +1178,7 @@ fn stage_column_rewrite(
     let col = delegate
         .data_col(&column)
         .ok_or(RequestError::UnknownColumn)?;
-    let mut rows = Vec::with_capacity(values.len());
+    let mut rows = BTreeMap::new();
     let mut unchanged = Vec::new();
     for (row, value) in values {
         let before = delegate
@@ -1175,7 +1187,7 @@ fn stage_column_rewrite(
         if *before == value {
             unchanged.push(row);
         } else {
-            rows.push((row, before.clone(), SharedString::from(value)));
+            rows.insert(row, (before.clone(), SharedString::from(value)));
         }
     }
 
@@ -1236,15 +1248,15 @@ fn apply_rewrite(source: &SharedString, column: &SharedString, cx: &mut App) -> 
             rewrite
                 .rows
                 .iter()
-                .filter(move |(row, before, _)| delegate.cell(*row, col) == Some(before))
-                .map(move |(row, _, after)| (*row, col, after.clone()))
+                .filter(move |(row, (before, _))| delegate.cell(**row, col) == Some(before))
+                .map(move |(row, (_, after))| (*row, col, after.clone()))
         })
         .collect();
     let (applied, stale) = (cells.len(), rewrite.rows.len() - cells.len());
     let agent = agent_name(source).to_owned();
     let origin = Origin::Agent {
         agent: agent.clone(),
-        fix: format!("rewrite {column}"),
+        fix: format!("Rewrite {column}"),
     };
     crate::write_cells(cells, origin, cx);
     log::info!(
@@ -1259,30 +1271,6 @@ fn discard_rewrite(source: &SharedString, column: &SharedString, cx: &mut App) {
         batch.rewrites.remove(column);
     }
     publish(source, cx);
-}
-
-/// How many of a rewrite's rows the preview lists.
-const PREVIEW_ROWS: usize = 50;
-
-/// Show the first rows of a staged rewrite as before → after, over whichever window is active.
-fn preview_rewrite(source: &SharedString, column: &SharedString, cx: &mut App) {
-    let Some(rewrite) = cx
-        .try_global::<StagedFixes>()
-        .and_then(|staged| staged.0.get(source)?.rewrites.get(column))
-    else {
-        return;
-    };
-    let title = SharedString::from(rewrite.title(column));
-    let mut lines: Vec<SharedString> = rewrite
-        .rows
-        .iter()
-        .take(PREVIEW_ROWS)
-        .map(|(row, before, after)| format!("Row {}: {before} → {after}", row + 1).into())
-        .collect();
-    if rewrite.rows.len() > PREVIEW_ROWS {
-        lines.push(format!("… and {} more", rewrite.rows.len() - PREVIEW_ROWS).into());
-    }
-    show_lines(title, lines, cx);
 }
 
 /// The folder holding the project file, which every staged path is relative to.
@@ -1385,11 +1373,40 @@ fn stage_renames(
 /// step. A rename whose file is gone or whose row links another file by now is skipped as stale.
 /// Returns how many were renamed and how many were skipped.
 fn apply_renames(source: &SharedString, cx: &mut App) -> Result<(usize, usize), String> {
-    let staged = cx
+    apply_some_renames(source, None, cx)
+}
+
+/// What a cell naming `from` should say once the file is `to`, or `None` when it already does.
+/// A cell that held the bare stem keeps holding one; anything else gets the file name.
+fn renamed_text(text: &str, from: &Path, to: &Path) -> Option<String> {
+    if names(text, to) {
+        return None;
+    }
+    let stem = |path: &Path| path.file_stem().map(|s| s.to_string_lossy().into_owned());
+    let name = |path: &Path| path.file_name().map(|s| s.to_string_lossy().into_owned());
+    match stem(from).is_some_and(|was| was.eq_ignore_ascii_case(text.trim())) {
+        true => stem(to),
+        false => name(to),
+    }
+}
+
+/// Rename the staged files, or only the one for `only`'s row; the rest stay staged.
+fn apply_some_renames(
+    source: &SharedString,
+    only: Option<settings::project::RowId>,
+    cx: &mut App,
+) -> Result<(usize, usize), String> {
+    let staged: Vec<StagedRename> = cx
         .default_global::<StagedFixes>()
         .0
         .get_mut(source)
-        .map(|batch| std::mem::take(&mut batch.renames))
+        .map(|batch| {
+            let (taken, kept) = std::mem::take(&mut batch.renames)
+                .into_iter()
+                .partition(|rename| only.is_none_or(|row| rename.row == row));
+            batch.renames = kept;
+            taken
+        })
         .unwrap_or_default();
     publish(source, cx);
     let state = cx
@@ -1426,18 +1443,7 @@ fn apply_renames(source: &SharedString, cx: &mut App) -> Result<(usize, usize), 
         .iter()
         .filter_map(|(row, rename)| {
             let col = delegate.data_col(rename.column.as_ref()?)?;
-            let text = delegate.cell(*row, col)?;
-            if names(text, &rename.to) {
-                return None;
-            }
-            let stem = |path: &Path| path.file_stem().map(|s| s.to_string_lossy().into_owned());
-            let name = |path: &Path| path.file_name().map(|s| s.to_string_lossy().into_owned());
-            // A cell that held the bare stem keeps holding one; anything else gets the file name.
-            let after =
-                match stem(&rename.from).is_some_and(|was| was.eq_ignore_ascii_case(text.trim())) {
-                    true => stem(&rename.to)?,
-                    false => name(&rename.to)?,
-                };
+            let after = renamed_text(delegate.cell(*row, col)?, &rename.from, &rename.to)?;
             Some((*row, col, after.into()))
         })
         .collect();
@@ -1466,39 +1472,14 @@ fn apply_renames(source: &SharedString, cx: &mut App) -> Result<(usize, usize), 
     let agent = agent_name(source).to_owned();
     let origin = Origin::Agent {
         agent: agent.clone(),
-        fix: format!("rename {applied} files"),
+        fix: match applied {
+            1 => "Rename a file".to_owned(),
+            n => format!("Rename {n} files"),
+        },
     };
     crate::write_renames(cells, rows, files, origin, cx);
     log::info!("{agent}: {applied} file(s) renamed, {stale} skipped as stale");
     Ok((applied, stale))
-}
-
-/// Show the first staged renames as from → to, over whichever window is active.
-fn preview_renames(source: &SharedString, cx: &mut App) {
-    let Some(renames) = cx
-        .try_global::<StagedFixes>()
-        .and_then(|staged| staged.0.get(source))
-        .map(|batch| &batch.renames)
-    else {
-        return;
-    };
-    let root = project_dir(cx).unwrap_or_default();
-    let shown = |path: &Path| {
-        path.strip_prefix(&root)
-            .unwrap_or(path)
-            .display()
-            .to_string()
-    };
-    let title = SharedString::from(renames_title(renames.len()));
-    let mut lines: Vec<SharedString> = renames
-        .iter()
-        .take(PREVIEW_ROWS)
-        .map(|rename| format!("{} → {}", shown(&rename.from), shown(&rename.to)).into())
-        .collect();
-    if renames.len() > PREVIEW_ROWS {
-        lines.push(format!("… and {} more", renames.len() - PREVIEW_ROWS).into());
-    }
-    show_lines(title, lines, cx);
 }
 
 /// Run `show` in the active window after the current update, since a menu click is one already.
@@ -1515,15 +1496,716 @@ fn in_active_window(cx: &mut App, show: impl FnOnce(&mut Window, &mut App) + 'st
     });
 }
 
-fn show_lines(title: SharedString, lines: Vec<SharedString>, cx: &mut App) {
+/// A staged value the grid shows on its cell until it is applied or rejected.
+pub(crate) struct CellChange {
+    pub(crate) before: SharedString,
+    pub(crate) after: SharedString,
+    pub(crate) agent: SharedString,
+}
+
+enum StagedKind {
+    Fix,
+    Rewrite,
+    Rename(settings::project::RowId),
+}
+
+fn find_change(
+    delegate: &QrateTableDelegate,
+    row: usize,
+    col: usize,
+    cx: &App,
+) -> Option<(SharedString, StagedKind, CellChange)> {
+    let staged = cx
+        .try_global::<StagedFixes>()
+        .filter(|staged| !staged.0.is_empty())?;
+    let text = delegate.cell(row, col)?.clone();
+    let column = delegate.column_name(col);
+    let row_id = delegate.row_id(row);
+    staged.0.iter().find_map(|(source, batch)| {
+        let change = |after: SharedString| CellChange {
+            before: text.clone(),
+            after,
+            agent: agent_name(source).to_owned().into(),
+        };
+        if let Some(fix) = batch
+            .by_cell
+            .get(&(row, column.clone()))
+            .and_then(|fixes| fixes.iter().find(|fix| fix.expected == text))
+        {
+            return Some((
+                source.clone(),
+                StagedKind::Fix,
+                change(fix.replacement.clone()),
+            ));
+        }
+        if let Some((before, after)) = batch.rewrites.get(&column).and_then(|r| r.rows.get(&row))
+            && *before == text
+        {
+            return Some((source.clone(), StagedKind::Rewrite, change(after.clone())));
+        }
+        batch
+            .renames
+            .iter()
+            .find(|rename| Some(rename.row) == row_id && rename.column.as_ref() == Some(&column))
+            .and_then(|rename| {
+                let after = renamed_text(&text, &rename.from, &rename.to)?;
+                Some((
+                    source.clone(),
+                    StagedKind::Rename(rename.row),
+                    change(after.into()),
+                ))
+            })
+    })
+}
+
+/// The change an agent staged on this cell, if one still applies to what it says now.
+pub(crate) fn staged_change(
+    delegate: &QrateTableDelegate,
+    row: usize,
+    col: usize,
+    cx: &App,
+) -> Option<CellChange> {
+    find_change(delegate, row, col, cx).map(|(_, _, change)| change)
+}
+
+/// Apply or reject the one change staged on a cell; the agent's other changes stay staged.
+pub(crate) fn settle_cell_change(row: usize, col: usize, apply: bool, cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+    else {
+        return;
+    };
+    let delegate = state.read(cx).delegate();
+    let column = delegate.column_name(col);
+    let Some((source, kind, change)) = find_change(delegate, row, col, cx) else {
+        return;
+    };
+    if let StagedKind::Rename(row_id) = kind {
+        if !apply {
+            if let Some(batch) = cx.default_global::<StagedFixes>().0.get_mut(&source) {
+                batch.renames.retain(|rename| rename.row != row_id);
+            }
+            publish(&source, cx);
+        } else if let Err(why) = apply_some_renames(&source, Some(row_id), cx) {
+            tell(format!("The file was not renamed: {why}"), cx);
+        }
+        return;
+    }
+    if let Some(batch) = cx.default_global::<StagedFixes>().0.get_mut(&source) {
+        match kind {
+            StagedKind::Fix => {
+                batch.by_cell.remove(&(row, column.clone()));
+                batch.findings.retain(|finding| {
+                    finding.location.row != Some(row)
+                        || finding.location.column.as_ref() != Some(&column)
+                });
+            }
+            StagedKind::Rewrite => {
+                if let Some(rewrite) = batch.rewrites.get_mut(&column) {
+                    rewrite.rows.remove(&row);
+                    if rewrite.rows.is_empty() {
+                        batch.rewrites.remove(&column);
+                    }
+                }
+            }
+            StagedKind::Rename(_) => {}
+        }
+    }
+    publish(&source, cx);
+    if apply {
+        let origin = Origin::Agent {
+            agent: change.agent.to_string(),
+            fix: format!("Apply a change to {column}"),
+        };
+        crate::write_cells(vec![(row, col, change.after)], origin, cx);
+    }
+}
+
+/// How many changes one agent has staged on cells and files.
+fn staged_count(batch: &Batch) -> usize {
+    batch.by_cell.len()
+        + batch
+            .rewrites
+            .values()
+            .map(|rewrite| rewrite.rows.len())
+            .sum::<usize>()
+        + batch.renames.len()
+}
+
+/// Apply everything one agent staged: its cell values as one undo step, then its file renames as
+/// another. Cells and files changed since the agent looked are skipped.
+pub(crate) fn apply_all(source: &SharedString, cx: &mut App) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+    else {
+        return;
+    };
+    let Some(batch) = cx.default_global::<StagedFixes>().0.get_mut(source) else {
+        return;
+    };
+    let fixes = std::mem::take(&mut batch.by_cell);
+    let rewrites = std::mem::take(&mut batch.rewrites);
+    batch.findings.clear();
+    let has_renames = !batch.renames.is_empty();
+    publish(source, cx);
+
+    let delegate = state.read(cx).delegate();
+    let total = fixes.len() + rewrites.values().map(|r| r.rows.len()).sum::<usize>();
+    let mut cells: BTreeMap<(usize, usize), SharedString> = BTreeMap::new();
+    for ((row, column), fixes) in &fixes {
+        if let Some(col) = delegate.data_col(column)
+            && let Some(text) = delegate.cell(*row, col)
+            && let Some(fix) = fixes.iter().find(|fix| fix.expected == *text)
+        {
+            cells.insert((*row, col), fix.replacement.clone());
+        }
+    }
+    for (column, rewrite) in &rewrites {
+        let Some(col) = delegate.data_col(column) else {
+            continue;
+        };
+        for (row, (before, after)) in &rewrite.rows {
+            if delegate.cell(*row, col) == Some(before) {
+                cells.insert((*row, col), after.clone());
+            }
+        }
+    }
+    let (applied, stale) = (cells.len(), total - cells.len());
+    let agent = agent_name(source).to_owned();
+    if applied > 0 {
+        let origin = Origin::Agent {
+            agent: agent.clone(),
+            fix: format!("Apply {applied} staged changes"),
+        };
+        let cells = cells
+            .into_iter()
+            .map(|((row, col), text)| (row, col, text))
+            .collect();
+        crate::write_cells(cells, origin, cx);
+    }
+    let mut message = format!("{applied} applied, {stale} skipped as stale");
+    if has_renames {
+        message = match apply_renames(source, cx) {
+            Ok((renamed, stale)) => {
+                format!("{message}; {renamed} files renamed, {stale} skipped as stale")
+            }
+            Err(why) => format!("{message}; no file was renamed: {why}"),
+        };
+    }
+    log::info!("{agent}: {message}");
+    tell(message, cx);
+}
+
+/// Drop everything one agent staged, touching no cell or file.
+pub(crate) fn discard_all(source: &SharedString, cx: &mut App) {
+    if let Some(batch) = cx.default_global::<StagedFixes>().0.get_mut(source) {
+        *batch = Batch::default();
+    }
+    publish(source, cx);
+}
+
+/// The strip above the grid while an agent has changes staged: what they are, and the two
+/// whole-batch answers. Each change is also marked on its own cell.
+pub fn render_staged_bar(cx: &mut App) -> AnyElement {
+    let batches: Vec<(SharedString, usize)> = cx
+        .try_global::<StagedFixes>()
+        .map(|staged| {
+            let mut batches: Vec<_> = staged
+                .0
+                .iter()
+                .map(|(source, batch)| (source.clone(), staged_count(batch)))
+                .filter(|(_, count)| *count > 0)
+                .collect();
+            batches.sort();
+            batches
+        })
+        .unwrap_or_default();
+    if batches.is_empty() {
+        return Empty.into_any_element();
+    }
+    let (warning, border) = (cx.theme().warning, cx.theme().border);
+    v_flex()
+        .flex_none()
+        .children(batches.into_iter().map(|(source, count)| {
+            let agent = agent_name(&source).to_owned();
+            let changes = match count {
+                1 => "1 change".to_owned(),
+                n => format!("{n} changes"),
+            };
+            let (apply, discard) = (source.clone(), source.clone());
+            h_flex()
+                .gap_2()
+                .items_center()
+                .px_2()
+                .py_1p5()
+                .border_b_1()
+                .border_color(border)
+                .bg(warning.opacity(0.12))
+                .child(Icon::new(IconName::Inbox).small().text_color(warning))
+                .child(div().flex_1().min_w_0().text_sm().truncate().child(format!(
+                    "{agent} staged {changes}, marked in the table. Right-click a marked \
+                             cell to apply or reject just that one."
+                )))
+                .child(
+                    Button::new(SharedString::from(format!("staged-apply-{source}")))
+                        .small()
+                        .label("Apply all")
+                        .on_click(move |_, _, cx| apply_all(&apply, cx)),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("staged-discard-{source}")))
+                        .ghost()
+                        .small()
+                        .label("Discard")
+                        .on_click(move |_, _, cx| discard_all(&discard, cx)),
+                )
+        }))
+        .into_any_element()
+}
+
+/// Make one change to the table's shape at once, as one undo step credited to the agent.
+fn edit_table(
+    agent: &str,
+    revision: TableRevision,
+    edit: TableEdit,
+    cx: &mut App,
+) -> Result<Response, RequestError> {
+    let state = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+        .ok_or(RequestError::TableUnavailable)?;
+    // Rows are named by index, so an edit read against an older table could land on another row.
+    if revision != TableRevision(state.read(cx).delegate().values_generation()) {
+        return Err(RequestError::StaleRevision);
+    }
+    let since = state.read(cx).delegate().unsaved_history().len();
+    let column = |name: &str, cx: &App| {
+        state
+            .read(cx)
+            .delegate()
+            .data_col(name)
+            .ok_or(RequestError::UnknownColumn)
+    };
+    let row = |row: usize, cx: &App| {
+        (row < state.read(cx).delegate().row_count())
+            .then_some(row)
+            .ok_or(RequestError::RowOutOfRange)
+    };
+    let new_name = |name: &str, cx: &App| {
+        let name = name.trim();
+        if name.is_empty() || state.read(cx).delegate().data_col(name).is_some() {
+            return Err(RequestError::ColumnNameTaken(name.to_owned()));
+        }
+        Ok(SharedString::from(name.to_owned()))
+    };
+    let refused = |what: &str| RequestError::EditRefused(what.to_owned());
+
+    let (detail, rows): (String, Vec<usize>) = match edit {
+        TableEdit::AddRows { rows } => {
+            let delegate = state.read(cx).delegate();
+            let width = delegate.column_count();
+            let mut values = Vec::with_capacity(rows.len());
+            for fields in &rows {
+                let mut cells = vec![SharedString::default(); width];
+                for (name, value) in fields {
+                    cells[column(name, cx)?] = value.clone().into();
+                }
+                values.push(cells);
+            }
+            let at = delegate.row_count();
+            let added = state.update(cx, |state, cx| {
+                let added = state.delegate_mut().append_spreadsheet_rows(values);
+                let rows: Vec<usize> = (at..at + added).collect();
+                crate::photos::refresh(state, Some(&rows), cx);
+                state.refresh(cx);
+                cx.emit(crate::TableChanged);
+                cx.notify();
+                added
+            });
+            let row_ids = state.read(cx).delegate().row_ids().to_vec();
+            diagnostics::Diagnostics::align_note_rows(
+                DATASET_MAIN,
+                &row_ids,
+                Origin::Structure,
+                cx,
+            );
+            settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+            crate::revalidate_now(cx);
+            crate::autosave(cx);
+            let detail = match added {
+                1 => "Add a row".to_owned(),
+                n => format!("Add {n} rows"),
+            };
+            (detail, (at..at + added).collect())
+        }
+        TableEdit::AddColumn { name, after } => {
+            let name = new_name(&name, cx)?;
+            let at = match after {
+                Some(after) => column(&after, cx)? + 1,
+                None => 0,
+            };
+            crate::structural(
+                crate::Structural::AddNamedColumn {
+                    at,
+                    name: name.clone(),
+                },
+                cx,
+            );
+            (format!("Add column {name}"), Vec::new())
+        }
+        TableEdit::RenameColumn { column: from, name } => {
+            let col = column(&from, cx)?;
+            let name = new_name(&name, cx)?;
+            crate::structural(
+                crate::Structural::RenameColumn {
+                    col,
+                    name: name.clone(),
+                },
+                cx,
+            );
+            (format!("Rename column {from} to {name}"), Vec::new())
+        }
+        TableEdit::MoveColumn {
+            column: name,
+            after,
+        } => {
+            let from = column(&name, cx)?;
+            let to = match after {
+                Some(after) => {
+                    let after = column(&after, cx)?;
+                    if after < from { after + 1 } else { after }
+                }
+                None => 0,
+            };
+            crate::structural(crate::Structural::MoveColumn { from, to }, cx);
+            (format!("Move column {name}"), Vec::new())
+        }
+        TableEdit::DescribeColumn {
+            column: name,
+            data_type,
+            description,
+        } => {
+            column(&name, cx)?;
+            let kind = match data_type {
+                Some(data_type) => Some(
+                    settings::columns::ColumnType::ALL
+                        .into_iter()
+                        .find(|kind| kind.as_str().eq_ignore_ascii_case(data_type.trim()))
+                        .ok_or(RequestError::UnknownDataType(data_type))?,
+                ),
+                None => None,
+            };
+            if let Some(kind) = kind {
+                settings::project::CurrentProject::set_column_type(&name, kind.as_str(), cx);
+            }
+            if let Some(description) = &description {
+                settings::project::CurrentProject::set_column_notes(&name, description.trim(), cx);
+            }
+            crate::revalidate_now(cx);
+            (format!("Describe column {name}"), Vec::new())
+        }
+        TableEdit::MoveRow {
+            row: moved,
+            target,
+            placement,
+        } => {
+            let (moved, target) = (row(moved, cx)?, row(target, cx)?);
+            let placement = match placement {
+                RowPlacement::Before => crate::RowPlacement::Before,
+                RowPlacement::After => crate::RowPlacement::After,
+                RowPlacement::Child => crate::RowPlacement::Child,
+            };
+            let op = crate::Arrangement::Move {
+                row: moved,
+                target,
+                placement,
+            };
+            if !crate::arrange(op, cx) {
+                return Err(refused("the row cannot go there"));
+            }
+            (format!("Move row {}", moved + 1), Vec::new())
+        }
+        TableEdit::IndentRow { row: indented } => {
+            let indented = row(indented, cx)?;
+            if !crate::arrange(crate::Arrangement::Indent(indented), cx) {
+                return Err(refused("the row has no row above it at its level"));
+            }
+            (format!("Indent row {}", indented + 1), Vec::new())
+        }
+        TableEdit::OutdentRow { row: outdented } => {
+            let outdented = row(outdented, cx)?;
+            if !crate::arrange(crate::Arrangement::Outdent(outdented), cx) {
+                return Err(refused("the row is already at the top level"));
+            }
+            (format!("Outdent row {}", outdented + 1), Vec::new())
+        }
+        TableEdit::DuplicateRow { row: copied } => {
+            let copied = row(copied, cx)?;
+            crate::structural(crate::Structural::DuplicateRow { row: copied }, cx);
+            (format!("Duplicate row {}", copied + 1), vec![copied + 1])
+        }
+        TableEdit::Filter { column: name, keep } => {
+            let col = column(&name, cx)?;
+            state.update(cx, |state, cx| {
+                let delegate = state.delegate_mut();
+                match &keep {
+                    Some(keep) => {
+                        let keep: Vec<SharedString> =
+                            keep.iter().map(|value| value.clone().into()).collect();
+                        delegate.set_column_filter_enabled(col, true);
+                        delegate.set_column_kept(col, &keep);
+                    }
+                    None => delegate.clear_column_filter(col),
+                }
+                state.refresh(cx);
+                cx.emit(crate::TableChanged);
+                cx.notify();
+            });
+            let detail = match keep {
+                Some(_) => format!("Filter {name}"),
+                None => format!("Clear the filter on {name}"),
+            };
+            (detail, Vec::new())
+        }
+    };
+
+    let origin = Origin::Agent {
+        agent: agent.to_owned(),
+        fix: detail.clone(),
+    };
+    state.update(cx, |state, _| {
+        state.delegate_mut().credit_since(since, &origin)
+    });
+    log::info!("{agent}: {detail}");
+    Ok(Response {
+        revision: TableRevision(state.read(cx).delegate().values_generation()),
+        result: ResultSet::Edited { detail, rows },
+    })
+}
+
+/// How long a delete waits for the archivist before it is refused.
+const DELETE_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DeleteAnswer {
+    Delete,
+    Keep,
+    TimedOut,
+}
+
+/// The one delete waiting for the archivist, and where their answer goes.
+struct PendingDelete(async_channel::Sender<DeleteAnswer>);
+impl Global for PendingDelete {}
+
+/// Answer the delete waiting for the archivist, as the dialog's buttons do.
+pub(crate) fn answer_pending_delete(delete: bool, cx: &mut App) {
+    if let Some(pending) = cx.try_global::<PendingDelete>() {
+        let answer = match delete {
+            true => DeleteAnswer::Delete,
+            false => DeleteAnswer::Keep,
+        };
+        let _ = pending.0.try_send(answer);
+    }
+}
+
+enum DeleteTarget {
+    Rows(Vec<settings::project::RowId>),
+    Column(SharedString),
+}
+
+/// Ask the archivist, in the app, whether to delete what the agent named, showing its reason; the
+/// answer comes back once they choose, or after [`DELETE_WAIT`] as a refusal.
+fn ask_to_delete(
+    agent: &str,
+    revision: TableRevision,
+    rows: Vec<usize>,
+    column: Option<String>,
+    reason: String,
+    cx: &mut App,
+) -> Task<Result<Response, RequestError>> {
+    let prepared = (|| {
+        let state = cx
+            .try_global::<TableStateHandle>()
+            .and_then(|handle| handle.0.upgrade())
+            .ok_or(RequestError::TableUnavailable)?;
+        let delegate = state.read(cx).delegate();
+        if revision != TableRevision(delegate.values_generation()) {
+            return Err(RequestError::StaleRevision);
+        }
+        if cx.has_global::<PendingDelete>() {
+            return Err(RequestError::DeletePending);
+        }
+        if cx.active_window().is_none() {
+            return Err(RequestError::NoWindow);
+        }
+        Ok(match column {
+            Some(name) => {
+                let col = delegate
+                    .data_col(&name)
+                    .ok_or(RequestError::UnknownColumn)?;
+                let filled = (0..delegate.row_count())
+                    .filter(|row| {
+                        delegate
+                            .cell(*row, col)
+                            .is_some_and(|text| !text.is_empty())
+                    })
+                    .count();
+                (
+                    format!("{agent} wants to delete the column “{name}”"),
+                    vec![SharedString::from(format!(
+                        "It has {filled} filled cell(s) out of {}.",
+                        delegate.row_count()
+                    ))],
+                    DeleteTarget::Column(name.into()),
+                )
+            }
+            None => {
+                let mut rows = rows;
+                rows.sort_unstable();
+                rows.dedup();
+                if rows.iter().any(|row| *row >= delegate.row_count()) {
+                    return Err(RequestError::RowOutOfRange);
+                }
+                let lines = rows
+                    .iter()
+                    .take(10)
+                    .map(|row| {
+                        let first = delegate
+                            .row_fields(*row)
+                            .into_iter()
+                            .map(|(_, text)| text)
+                            .find(|text| !text.trim().is_empty())
+                            .unwrap_or_default();
+                        SharedString::from(format!("Row {}: {first}", row + 1))
+                    })
+                    .chain(
+                        (rows.len() > 10).then(|| format!("… and {} more", rows.len() - 10).into()),
+                    )
+                    .collect();
+                let ids = rows
+                    .iter()
+                    .filter_map(|row| delegate.row_id(*row))
+                    .collect();
+                let title = match rows.len() {
+                    1 => format!("{agent} wants to delete row {}", rows[0] + 1),
+                    n => format!("{agent} wants to delete {n} rows"),
+                };
+                (title, lines, DeleteTarget::Rows(ids))
+            }
+        })
+    })();
+    let (title, lines, target) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => return Task::ready(Err(error)),
+    };
+
+    let (answer, answers) = async_channel::bounded(3);
+    cx.set_global(PendingDelete(answer.clone()));
+    let timer = cx.background_executor().timer(DELETE_WAIT);
+    cx.background_executor()
+        .spawn(async move {
+            timer.await;
+            let _ = answer.try_send(DeleteAnswer::TimedOut);
+        })
+        .detach();
+    let (title, reason) = (SharedString::from(title), SharedString::from(reason));
+    let agent_label = SharedString::from(format!("Reason given by {agent}:"));
     in_active_window(cx, move |window, cx| {
         window.open_dialog(cx, move |dialog, _, _| {
-            let lines = lines.clone();
+            let (lines, reason, agent_label) = (lines.clone(), reason.clone(), agent_label.clone());
             dialog
                 .title(title.clone())
-                .content(move |content, _, _| content.children(lines.clone()))
+                .overlay_closable(false)
+                .content(move |content, _, cx| {
+                    let muted = cx.theme().muted_foreground;
+                    content
+                        .gap_2()
+                        .child(div().text_sm().text_color(muted).child(agent_label.clone()))
+                        .child(div().child(reason.clone()))
+                        .children(
+                            lines
+                                .clone()
+                                .into_iter()
+                                .map(move |line| div().text_sm().text_color(muted).child(line)),
+                        )
+                })
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Delete")
+                        .ok_variant(ButtonVariant::Danger)
+                        .show_cancel(true)
+                        .cancel_text("Keep"),
+                )
+                .on_ok(|_, _, cx| {
+                    answer_pending_delete(true, cx);
+                    true
+                })
+                .on_cancel(|_, _, cx| {
+                    answer_pending_delete(false, cx);
+                    true
+                })
+                .on_close(|_, _, cx| answer_pending_delete(false, cx))
         })
     });
+
+    let agent = agent.to_owned();
+    cx.spawn(async move |cx| {
+        let answer = answers.recv().await.unwrap_or(DeleteAnswer::Keep);
+        cx.update(|cx| {
+            cx.remove_global::<PendingDelete>();
+            match answer {
+                DeleteAnswer::Keep => return Err(RequestError::DeleteDeclined),
+                DeleteAnswer::TimedOut => {
+                    in_active_window(cx, |window, cx| window.close_all_dialogs(cx));
+                    return Err(RequestError::DeleteTimedOut);
+                }
+                DeleteAnswer::Delete => {}
+            }
+            let state = cx
+                .try_global::<TableStateHandle>()
+                .and_then(|handle| handle.0.upgrade())
+                .ok_or(RequestError::TableUnavailable)?;
+            let since = state.read(cx).delegate().unsaved_history().len();
+            let (count, detail) = match target {
+                DeleteTarget::Column(name) => {
+                    let col = state
+                        .read(cx)
+                        .delegate()
+                        .data_col(&name)
+                        .ok_or(RequestError::UnknownColumn)?;
+                    crate::structural(crate::Structural::DeleteColumn { col }, cx);
+                    (1, format!("Delete column {name}"))
+                }
+                DeleteTarget::Rows(ids) => {
+                    let rows: Vec<usize> = ids
+                        .iter()
+                        .filter_map(|id| state.read(cx).delegate().row_of(*id))
+                        .collect();
+                    let count = rows.len();
+                    crate::structural(crate::Structural::DeleteRows(rows), cx);
+                    let detail = match count {
+                        1 => "Delete a row".to_owned(),
+                        n => format!("Delete {n} rows"),
+                    };
+                    (count, detail)
+                }
+            };
+            let origin = Origin::Agent {
+                agent: agent.clone(),
+                fix: detail.clone(),
+            };
+            state.update(cx, |state, _| {
+                state.delegate_mut().credit_since(since, &origin)
+            });
+            log::info!("{agent}: {detail}, confirmed by the archivist");
+            Ok(Response {
+                revision: TableRevision(state.read(cx).delegate().values_generation()),
+                result: ResultSet::Deleted { count },
+            })
+        })
+    })
 }
 
 /// Say what a bulk action did, over whichever window is active.
@@ -1541,7 +2223,7 @@ mod tests {
         TableRevision,
     };
     use diagnostics::{DATASET_MAIN, Location};
-    use gpui::TestAppContext;
+    use gpui::{AppContext as _, TestAppContext};
 
     use gpui::SharedString;
 
@@ -2129,7 +2811,6 @@ mod tests {
             assert_eq!(
                 labels,
                 [
-                    "Preview: Rewrite Title: 2 rows (ids from mapping.csv)",
                     "Apply: Rewrite Title: 2 rows (ids from mapping.csv)",
                     "Discard: Rewrite Title: 2 rows (ids from mapping.csv)",
                 ]
@@ -2322,14 +3003,7 @@ mod tests {
                 .into_iter()
                 .map(|action| action.label)
                 .collect();
-            assert_eq!(
-                labels,
-                [
-                    "Preview: Rename 1 files",
-                    "Apply: Rename 1 files",
-                    "Discard: Rename 1 files"
-                ]
-            );
+            assert_eq!(labels, ["Apply: Rename 1 files", "Discard: Rename 1 files"]);
 
             assert_eq!(apply_renames(&agent_source("pi"), cx), Ok((1, 0)));
             assert_eq!(on_disk(&dir, "AD-001.jpg"), "1");
@@ -2507,12 +3181,8 @@ mod tests {
         });
     }
 
-    /// A menu item runs inside its window's own update, which cannot open a dialog or a
-    /// notification in that window directly; the preview and the result have to wait for it.
-    #[gpui::test]
-    fn a_preview_and_a_result_opened_from_a_menu_click_appear(cx: &mut TestAppContext) {
-        use gpui::AppContext as _;
-        use gpui_component::{Root, WindowExt as _};
+    /// The table in a window that can show dialogs and notifications, made the active one.
+    fn open_in_window(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(settings::AppSettings::default());
@@ -2521,34 +3191,263 @@ mod tests {
         let window = cx.add_window(|window, cx| {
             let table = cx.new(|cx| TablePanel::new(window, cx));
             window.activate_window();
-            Root::new(table, window, cx)
+            gpui_component::Root::new(table, window, cx)
         });
         cx.run_until_parked();
-        cx.update(|cx| {
-            let request = rewrite("Title", &[(0, "H-1")], cx);
-            respond_to_agent(request, cx).unwrap();
-        });
-        let click = |label: &'static str, cx: &mut TestAppContext| {
-            cx.update_window(window.into(), |_, _, cx| {
-                staged_actions(&agent_source("pi"), cx)
-                    .into_iter()
-                    .find(|action| action.label.starts_with(label))
-                    .expect("the staged rewrite offers this action")
-                    .apply(cx)
-            })
-            .unwrap();
-            cx.run_until_parked();
-        };
+        window.into()
+    }
 
-        let window: gpui::AnyWindowHandle = window.into();
-        click("Preview", cx);
+    fn revision(cx: &mut gpui::App) -> TableRevision {
+        respond_to_agent(Request::Overview, cx).unwrap().revision
+    }
+
+    fn edit(op: serde_json::Value, cx: &mut gpui::App) -> Result<ResultSet, RequestError> {
+        let mut params = op;
+        params["revision"] = serde_json::json!(revision(cx).0);
+        let request: Request =
+            serde_json::from_value(serde_json::json!({"method": "edit", "params": params}))
+                .unwrap();
+        respond_to_agent(request, cx).map(|response| response.result)
+    }
+
+    fn headers(cx: &gpui::App) -> Vec<String> {
+        let state = cx
+            .try_global::<TableStateHandle>()
+            .and_then(|handle| handle.0.upgrade())
+            .unwrap();
+        let delegate = state.read(cx).delegate();
+        (0..delegate.column_count())
+            .map(|col| delegate.column_name(col).to_string())
+            .collect()
+    }
+
+    fn last_change(cx: &gpui::App) -> Option<String> {
+        let state = cx
+            .try_global::<TableStateHandle>()
+            .and_then(|handle| handle.0.upgrade())
+            .unwrap();
+        let origin = &state.read(cx).delegate().unsaved_history().last()?.origin;
+        settings::history::credit(Some("rk"), origin)
+            .map(|who| format!("{} · {who}", origin.label()))
+    }
+
+    /// An agent may change the table's shape directly; each change is one undo step credited to it.
+    #[gpui::test]
+    fn an_agent_changes_the_tables_shape_at_once(cx: &mut TestAppContext) {
+        open(cx);
+        cx.update(|cx| {
+            let added = edit(
+                serde_json::json!({"op": "add_rows", "rows": [{"Title": "Pier"}, {"Medium": "Tape"}]}),
+                cx,
+            )
+            .unwrap();
+            assert_eq!(
+                added,
+                ResultSet::Edited {
+                    detail: "Add 2 rows".into(),
+                    rows: vec![3, 4]
+                }
+            );
+            assert_eq!(cell(3, cx), "Pier");
+            assert_eq!(last_change(cx).as_deref(), Some("Add 2 rows · rk using pi"));
+            crate::history_step(false, cx);
+            assert_eq!(
+                respond_to_agent(Request::Overview, cx).unwrap().result,
+                respond_to_agent(Request::Overview, cx).unwrap().result
+            );
+            assert!(
+                matches!(
+                    respond_to_agent(Request::Overview, cx).unwrap().result,
+                    ResultSet::Overview(Overview { project: ProjectSummary { row_count: 3, .. }, .. })
+                ),
+                "one undo removes both added rows"
+            );
+
+            edit(serde_json::json!({"op": "add_column", "name": "Year", "after": "Title"}), cx).unwrap();
+            assert_eq!(headers(cx), ["Title", "Year", "Medium"]);
+            assert_eq!(
+                edit(serde_json::json!({"op": "add_column", "name": "Medium"}), cx),
+                Err(RequestError::ColumnNameTaken("Medium".into()))
+            );
+            edit(serde_json::json!({"op": "rename_column", "column": "Year", "name": "Date"}), cx).unwrap();
+            edit(serde_json::json!({"op": "move_column", "column": "Date", "after": "Medium"}), cx).unwrap();
+            assert_eq!(headers(cx), ["Title", "Medium", "Date"]);
+            assert_eq!(last_change(cx).as_deref(), Some("Move column Date · rk using pi"));
+            crate::history_step(false, cx);
+            assert_eq!(headers(cx), ["Title", "Date", "Medium"], "one undo per change");
+
+            edit(
+                serde_json::json!({"op": "describe_column", "column": "Date", "data_type": "date", "description": "Year made"}),
+                cx,
+            )
+            .unwrap();
+            let declared = cx
+                .global::<settings::project::CurrentProject>()
+                .data
+                .columns
+                .iter()
+                .find(|column| column.name == "Date")
+                .map(|column| (column.data_type.clone(), column.notes.clone()));
+            assert_eq!(declared, Some(("Date".into(), "Year made".into())));
+            assert_eq!(
+                edit(serde_json::json!({"op": "describe_column", "column": "Date", "data_type": "colour"}), cx),
+                Err(RequestError::UnknownDataType("colour".into()))
+            );
+
+            assert!(matches!(
+                edit(serde_json::json!({"op": "outdent_row", "row": 0}), cx),
+                Err(RequestError::EditRefused(_))
+            ));
+            edit(serde_json::json!({"op": "indent_row", "row": 1}), cx).unwrap();
+            edit(serde_json::json!({"op": "duplicate_row", "row": 2}), cx).unwrap();
+            assert_eq!(cell(3, cx), "Cannery");
+            assert_eq!(
+                edit(serde_json::json!({"op": "duplicate_row", "row": 9}), cx),
+                Err(RequestError::RowOutOfRange)
+            );
+            edit(serde_json::json!({"op": "filter", "column": "Medium", "keep": ["Video"]}), cx).unwrap();
+            let state = cx
+                .try_global::<TableStateHandle>()
+                .and_then(|handle| handle.0.upgrade())
+                .unwrap();
+            let visible = state.read(cx).delegate().visible().to_vec();
+            assert!(visible.contains(&1), "the Video row shows");
+            assert!(!visible.contains(&2) && !visible.contains(&3), "the Film rows are hidden");
+            edit(serde_json::json!({"op": "filter", "column": "Medium"}), cx).unwrap();
+            let medium = state.read(cx).delegate().data_col("Medium").unwrap();
+            assert!(!state.read(cx).delegate().column_has_filter(medium), "the filter is cleared");
+            assert_eq!(
+                respond_to_agent(
+                    Request::Edit {
+                        revision: TableRevision(u64::MAX),
+                        edit: ai::agent::TableEdit::IndentRow { row: 1 },
+                    },
+                    cx
+                ),
+                Err(RequestError::StaleRevision)
+            );
+        });
+    }
+
+    fn delete(rows: Vec<usize>, column: Option<&str>, cx: &mut gpui::App) -> Request {
+        Request::Delete {
+            revision: revision(cx),
+            rows,
+            column: column.map(Into::into),
+            reason: "they duplicate row 0".into(),
+        }
+    }
+
+    /// Deleting always asks the archivist, with the agent's reason, and only their answer decides.
+    #[gpui::test]
+    async fn a_delete_waits_for_the_archivist(cx: &mut TestAppContext) {
+        use gpui_component::WindowExt as _;
+        let window = open_in_window(cx);
+        let asked = cx.update(|cx| {
+            let request = delete(vec![1, 2], None, cx);
+            crate::respond_to_agent_async(request, "pi", cx)
+        });
+        cx.run_until_parked();
         cx.update_window(window, |_, window, cx| {
-            assert!(window.has_active_dialog(cx), "the preview opened");
-            window.close_all_dialogs(cx);
+            assert!(window.has_active_dialog(cx), "the archivist is asked");
         })
         .unwrap();
-        click("Apply", cx);
+        cx.update(|cx| {
+            let second = delete(vec![0], None, cx);
+            assert!(matches!(
+                crate::respond_to_agent_async(second, "pi", cx),
+                task if task.is_ready()
+            ));
+            assert_eq!(cell(1, cx), "Wharf", "nothing is deleted before the answer");
+            crate::agent::answer_pending_delete(true, cx);
+        });
+        assert_eq!(asked.await.unwrap().result, ResultSet::Deleted { count: 2 });
+        cx.update(|cx| {
+            assert_eq!(headers(cx).len(), 2);
+            assert!(matches!(
+                respond_to_agent(Request::Overview, cx).unwrap().result,
+                ResultSet::Overview(Overview {
+                    project: ProjectSummary { row_count: 1, .. },
+                    ..
+                })
+            ));
+            assert_eq!(
+                last_change(cx).as_deref(),
+                Some("Delete 2 rows · rk using pi")
+            );
+            crate::history_step(false, cx);
+            assert_eq!(cell(2, cx), "Cannery", "one undo brings both rows back");
+        });
+
+        let kept = cx.update(|cx| {
+            let request = delete(Vec::new(), Some("Medium"), cx);
+            crate::respond_to_agent_async(request, "pi", cx)
+        });
+        cx.run_until_parked();
+        cx.update(|cx| crate::agent::answer_pending_delete(false, cx));
+        assert_eq!(kept.await, Err(RequestError::DeleteDeclined));
+        cx.update(|cx| assert_eq!(headers(cx), ["Title", "Medium"]));
+    }
+
+    /// A second delete while one is waiting is refused at once rather than queued behind it.
+    #[gpui::test]
+    async fn only_one_delete_waits_at_a_time(cx: &mut TestAppContext) {
+        open_in_window(cx);
+        let first = cx.update(|cx| {
+            let request = delete(vec![0], None, cx);
+            crate::respond_to_agent_async(request, "pi", cx)
+        });
+        cx.run_until_parked();
+        let second = cx.update(|cx| {
+            let request = delete(vec![1], None, cx);
+            crate::respond_to_agent_async(request, "pi", cx)
+        });
+        assert_eq!(second.await, Err(RequestError::DeletePending));
+        cx.update(|cx| crate::agent::answer_pending_delete(false, cx));
+        assert_eq!(first.await, Err(RequestError::DeleteDeclined));
+    }
+
+    /// Staged values show on their own cells and can be settled one at a time, or all at once.
+    #[gpui::test]
+    fn staged_changes_show_on_their_cells_and_settle_one_by_one(cx: &mut TestAppContext) {
+        let window = open_in_window(cx);
+        cx.update(|cx| {
+            let request = rewrite("Title", &[(0, "H-1"), (2, "C-3")], cx);
+            respond_to_agent(request, cx).unwrap();
+            let state = cx
+                .try_global::<TableStateHandle>()
+                .and_then(|handle| handle.0.upgrade())
+                .unwrap();
+            let shown = |row: usize, cx: &gpui::App| {
+                crate::agent::staged_change(state.read(cx).delegate(), row, 0, cx)
+                    .map(|change| (change.before.to_string(), change.after.to_string()))
+            };
+            assert_eq!(shown(0, cx), Some(("Harvest".into(), "H-1".into())));
+            assert_eq!(shown(1, cx), None);
+
+            crate::agent::settle_cell_change(0, 0, true, cx);
+            assert_eq!(cell(0, cx), "H-1");
+            assert_eq!(shown(0, cx), None);
+            assert_eq!(
+                shown(2, cx),
+                Some(("Cannery".into(), "C-3".into())),
+                "the rest stay staged"
+            );
+            crate::agent::settle_cell_change(2, 0, false, cx);
+            assert_eq!(cell(2, cx), "Cannery", "a rejected change writes nothing");
+            assert_eq!(agent_findings(cx), 0, "nothing is left staged");
+
+            stage(vec![finding(1, "Title", "Wharf", "Wharf, 1958")], cx);
+            let request = rewrite("Medium", &[(0, "Nitrate")], cx);
+            respond_to_agent(request, cx).unwrap();
+            crate::agent::apply_all(&agent_source("pi"), cx);
+            assert_eq!(cell(1, cx), "Wharf, 1958");
+            crate::history_step(false, cx);
+            assert_eq!(cell(1, cx), "Wharf", "applying everything is one undo step");
+        });
+        cx.run_until_parked();
         cx.update_window(window, |_, window, cx| {
+            use gpui_component::WindowExt as _;
             assert_eq!(window.notifications(cx).len(), 1, "the result was shown");
         })
         .unwrap();

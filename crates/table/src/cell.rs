@@ -11,7 +11,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, StyledText, TextOverflow, Window, canvas, div,
     fill, outline, point, px, size,
 };
-use gpui_component::menu::ContextMenuExt as _;
+use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, table::TableState};
 
 use diagnostics::{Diagnostics, Source};
@@ -76,6 +76,29 @@ pub(crate) fn render_cell(
     let marked = worst_from(true);
     let flagged = worst_from(false);
     let tip = note::tooltip_text(delegate, &location, cx);
+    // An agent's staged change shows on its cell as a diff until it is applied or rejected.
+    let change = crate::agent::staged_change(delegate, row_ix, col_ix, cx);
+    let (added, removed, staged_bg, staged_border) = (
+        cx.theme().success,
+        cx.theme().danger,
+        cx.theme().warning.opacity(0.14),
+        cx.theme().warning,
+    );
+    let staged_by = change.as_ref().map(|change| change.agent.clone());
+    let staged = change.is_some();
+    let tip = match &change {
+        Some(change) => Some(SharedString::from(match tip {
+            Some(tip) => format!(
+                "{} proposes “{}” in place of “{}”.\n\n{tip}",
+                change.agent, change.after, change.before
+            ),
+            None => format!(
+                "{} proposes “{}” in place of “{}”.",
+                change.agent, change.after, change.before
+            ),
+        })),
+        None => tip,
+    };
     let note_editor = note::editor(delegate, Some(row_ix), Some(col_ix), cx);
 
     let mode = delegate.text_mode(col_ix);
@@ -84,6 +107,29 @@ pub(crate) fn render_cell(
     let cut_short = mode != TextMode::Overflow;
     let shown = StyledText::new(text.clone());
     let layout = shown.layout().clone();
+    let shown = match &change {
+        None => shown.into_any_element(),
+        Some(change) => h_flex()
+            .min_w_0()
+            .gap_1()
+            .when(!change.before.is_empty(), |diff| {
+                diff.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .line_through()
+                        .text_color(removed)
+                        .child(change.before.clone()),
+                )
+            })
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(added)
+                    .child(change.after.clone()),
+            )
+            .into_any_element(),
+    };
     let body = div()
         .flex_1()
         .min_w_0()
@@ -192,6 +238,22 @@ pub(crate) fn render_cell(
             }),
         )
         .context_menu(move |menu, window, cx| {
+            let menu = match &staged_by {
+                Some(agent) => menu
+                    .item(
+                        PopupMenuItem::new(SharedString::from(format!("Apply {agent}'s change")))
+                            .on_click(move |_, _, cx| {
+                                crate::agent::settle_cell_change(row_ix, col_ix, true, cx)
+                            }),
+                    )
+                    .item(
+                        PopupMenuItem::new("Reject change").on_click(move |_, _, cx| {
+                            crate::agent::settle_cell_change(row_ix, col_ix, false, cx)
+                        }),
+                    )
+                    .separator(),
+                None => menu,
+            };
             note::menu(
                 Target::Cell {
                     row: row_ix,
@@ -207,7 +269,7 @@ pub(crate) fn render_cell(
         // cell's padding instead of around the cell. The range fill matches what the library draws
         // on the selected cell, so a shift-click rectangle reads as one selection rather than as
         // one selected cell next to some shaded ones.
-        .when(editing || ranged, |cell| {
+        .when(editing || ranged || staged, |cell| {
             cell.child(
                 canvas(
                     move |bounds, window, cx| {
@@ -226,6 +288,10 @@ pub(crate) fn render_cell(
                         bounds
                     },
                     move |_, bounds, window, _| {
+                        if staged {
+                            window.paint_quad(fill(bounds, staged_bg));
+                            window.paint_quad(outline(bounds, staged_border, BorderStyle::Solid));
+                        }
                         if ranged {
                             window.paint_quad(fill(bounds, range_bg));
                             window.paint_quad(outline(bounds, range_border, BorderStyle::Solid));
