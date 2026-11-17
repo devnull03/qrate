@@ -468,7 +468,12 @@ impl Panel for AgentPanel {
                         }))
                         .context_menu(move |menu, _window, _cx| {
                             let (stop, restart) = (panel.clone(), panel.clone());
-                            menu.item(PopupMenuItem::new("Stop").on_click(move |_, _, cx| {
+                            menu.item(PopupMenuItem::new("Revoke file access").on_click(
+                                |_, _, cx| {
+                                    table::revoke_agent_file_access(cx);
+                                },
+                            ))
+                            .item(PopupMenuItem::new("Stop").on_click(move |_, _, cx| {
                                 stop.update(cx, |this, cx| {
                                     this.terminal.stop();
                                     cx.notify();

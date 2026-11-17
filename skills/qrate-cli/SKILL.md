@@ -82,3 +82,9 @@ Do not add `--wait` unless you mean to block until the archivist quits qrate.
   `qrate agent stage-renames`; never `mv`, `ren`, or `Move-Item` a project's files.
 - **Name yourself.** On every `qrate agent` call, pass `--agent <your runtime>` or set
   `QRATE_AGENT`. The archivist reads that name in the Agent panel.
+
+## Read approved files and attach them
+
+For files outside the project and configured files folder, use `request-access` with the exact file or folder and a reason; wait for the archivist's decision. `check-access` never prompts. Approvals last until qrate closes or they are revoked, and canonical paths limit their scope. Do not retry a denied request without a new user instruction. Use `forget-access` to revoke your grants.
+
+For "make rows from these files", prefer `import-files` to constructing rows yourself: obtain read access, read a fresh overview, then pass the revision and paths. This uses qrate's attachment, hierarchy, and duplicate handling, links originals in place, skips existing components, and is one credited undo step. Recursive discovery is opt-in. Re-read the overview after importing. A read grant does not authorize writing files or executing shell commands.

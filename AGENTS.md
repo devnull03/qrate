@@ -56,3 +56,12 @@ Use `stage-renames` to rename files a project links; never `mv`, `ren` or `Move-
 Every staged finding needs the exact response `revision`, source `row`, `column`, severity, one-sentence message, and exact current whole-cell `expected`. `replacement` is optional and must be the whole proposed value. A stale cell is rejected. Never report that staging corrected data.
 
 The contract is `crates/ai/src/agent.rs`. The public command is `crates/cli/src/main.rs`, the private transport is `crates/app/src/app_control.rs`, the live adapter is `crates/table/src/agent.rs`, the private runner is `crates/plugin-host/src/agent_program.rs`, and the audit panel is `crates/workspace/src/panels/agent.rs`. Keep this file synchronized when those surfaces change.
+
+### Approved local files
+
+- `request-access` (`{"path": "file or folder", "reason": "why"}`): request read-only access in qrate's own confirmation dialog. A file grant covers one file; a directory grant includes descendants. Relative inputs are resolved against the project folder. Canonical paths enforce the boundary, including symlinks. Grants are scoped to the agent label and current project and last until qrate closes or the archivist revokes them.
+- `check-access` (`{"path": "..."}`): check existing access without prompting. The project folder and configured files folder are already readable. Refuses with `file_access_required` when a new approval is needed. Never bypass a declined request or repeat it without a new instruction from the archivist.
+- `forget-access` (`{}`): revoke this agent's explicit grants for the current project. The Agent panel's session menu also offers **Revoke file access** for all agents.
+- `import-files` (`{"revision": ..., "paths": ["..."], "recursive": false}`): attach approved paths through qrate's file-ingest and duplicate-resolution flow. It links originals in place, skips existing components, adds at most 1,000 components as one credited undo step, and returns `imported_files` with `added`, `skipped`, new source `rows`, and bounded `warnings`. Re-checks the revision and grant generation after discovery; a changed project, revision, or revoked grant refuses the import. It never copies, moves, or updates existing files or cell values.
+
+Pi's built-in read/ls/find/grep tools check grants with qrate on every call. A read grant never approves writes or shell commands. Agent labels remain labels, not authenticated identities. Scratch Luau programs retain their original confinement.

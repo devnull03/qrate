@@ -147,3 +147,11 @@ The request and response types are in
 [`AGENTS.md`](https://github.com/devnull03/qrate/blob/main/AGENTS.md) describes each command,
 its limits, and its exit codes. A program that cannot run a command, such as a client that
 only speaks MCP, is not supported yet.
+
+## Files elsewhere on your machine
+
+When you ask an agent to work from local files, it can request read-only access to the named file or folder. qrate shows you the path and the agent's reason. Choose **Allow read access** or **Deny**. A folder approval includes its descendants; approving one file does not include its siblings. Access lasts until qrate closes. Right-click the Agent panel's new-session button and choose **Revoke file access** to revoke all explicit grants, or ask the agent to forget its grants.
+
+Pi checks these permissions each time it uses its built-in reading tools. Approving reads does not approve shell commands or writing files. The project folder and the project's configured files folder remain readable.
+
+To make rows from approved files, the agent uses `import-files`, the same discovery, duplicate handling, and attachment mechanism qrate uses for file imports. It links originals where they are, skips files already represented, and records one History entry credited to the agent. One undo removes the import. Folder imports can preserve hierarchy when recursive discovery is requested.

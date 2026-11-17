@@ -392,6 +392,12 @@ fn summarize(request: &ai::agent::Request) -> (SharedString, SharedString) {
             format!("at revision {}", revision.0).into()
         }
         ai::agent::Request::Thumbnails { items } => format!("{} thumbnail(s)", items.len()).into(),
+        ai::agent::Request::RequestAccess { path, .. } => format!("read access to {path}").into(),
+        ai::agent::Request::CheckAccess { path } => format!("check read access to {path}").into(),
+        ai::agent::Request::ForgetAccess {} => "revoke read access".into(),
+        ai::agent::Request::ImportFiles {
+            paths, revision, ..
+        } => format!("{} path(s) at revision {}", paths.len(), revision.0).into(),
         ai::agent::Request::Overview => SharedString::default(),
     };
     (method, detail)
@@ -427,6 +433,18 @@ fn describe(result: &ai::agent::ResultSet) -> SharedString {
         ai::agent::ResultSet::Edited { detail, .. } => detail.clone().into(),
         ai::agent::ResultSet::Deleted { count } => {
             format!("{count} deleted, confirmed in the app").into()
+        }
+        ai::agent::ResultSet::FileAccess { directory, .. } => if *directory {
+            "folder read access"
+        } else {
+            "file read access"
+        }
+        .into(),
+        ai::agent::ResultSet::FileAccessRevoked { count } => {
+            format!("{count} read grant(s) revoked").into()
+        }
+        ai::agent::ResultSet::ImportedFiles { added, skipped, .. } => {
+            format!("{added} added, {skipped} existing components skipped").into()
         }
         ai::agent::ResultSet::StagedRenames { accepted } => {
             format!("{accepted} rename(s) staged").into()

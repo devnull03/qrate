@@ -81,7 +81,11 @@ pub fn respond_to_agent(
         }
         Request::Edit { revision, edit } => return edit_table(agent, revision, edit, cx),
         // A delete has to wait for the archivist, which only the asynchronous path can do.
-        Request::Delete { .. } => return Err(RequestError::NoWindow),
+        Request::Delete { .. }
+        | Request::RequestAccess { .. }
+        | Request::CheckAccess { .. }
+        | Request::ForgetAccess {}
+        | Request::ImportFiles { .. } => return Err(RequestError::NoWindow),
         Request::ProgramSave { source } => return save_program(source, cx),
         _ => {}
     }
@@ -183,7 +187,11 @@ pub fn respond_to_agent(
         | Request::StageColumnRewrite { .. }
         | Request::StageRenames { .. }
         | Request::Edit { .. }
-        | Request::Delete { .. } => unreachable!(),
+        | Request::Delete { .. }
+        | Request::RequestAccess { .. }
+        | Request::CheckAccess { .. }
+        | Request::ForgetAccess {}
+        | Request::ImportFiles { .. } => unreachable!(),
     };
 
     Ok(Response { revision, result })
@@ -199,6 +207,17 @@ pub fn respond_to_agent_async(
         return Task::ready(Err(error));
     }
     match request {
+        Request::RequestAccess { path, reason } => {
+            crate::agent_files::request_access(agent, path, reason, cx)
+        }
+        Request::CheckAccess { path } => crate::agent_files::check_access(agent, path, cx),
+        Request::ForgetAccess {} => Task::ready(crate::agent_files::forget_access(agent, cx)),
+        Request::ImportFiles {
+            revision,
+            paths,
+            recursive,
+        } => crate::agent_files::import_files(agent, revision, paths, recursive, cx),
+
         Request::ProgramSave { source } => {
             let Some(state) = cx
                 .try_global::<TableStateHandle>()

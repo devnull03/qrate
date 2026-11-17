@@ -211,6 +211,14 @@ enum AgentCommand {
     /// reason; this prints `deleted` once they confirm, and exits 1 with `delete_declined` or
     /// `delete_timed_out` (after 10 minutes) otherwise.
     Delete,
+    /// Ask qrate to approve read-only access. stdin: {"path": <file or folder>, "reason": <why>}.
+    RequestAccess,
+    /// Check read access without prompting. stdin: {"path": <file or folder>}.
+    CheckAccess,
+    /// Revoke this agent's read grants in the current project. stdin: {}.
+    ForgetAccess,
+    /// Attach approved paths as rows, skipping duplicates. stdin: {"revision", "paths": [...], "recursive": false}.
+    ImportFiles,
 }
 
 impl AgentCommand {
@@ -226,6 +234,10 @@ impl AgentCommand {
             Self::StageRenames => "stage_renames",
             Self::Edit => "edit",
             Self::Delete => "delete",
+            Self::RequestAccess => "request_access",
+            Self::CheckAccess => "check_access",
+            Self::ForgetAccess => "forget_access",
+            Self::ImportFiles => "import_files",
         }
     }
 }
@@ -435,7 +447,9 @@ fn agent_call(
     let request = agent_request(command, stdin)?;
     // A delete waits for the archivist's answer, which qrate gives up on after ten minutes.
     let wait = match command {
-        AgentCommand::Delete => Duration::from_secs(11 * 60),
+        AgentCommand::Delete | AgentCommand::RequestAccess | AgentCommand::ImportFiles => {
+            Duration::from_secs(11 * 60)
+        }
         _ => QUICK,
     };
     let body = accept(app_request(

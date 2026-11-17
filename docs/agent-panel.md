@@ -105,3 +105,5 @@ report as a readable line.
 The list reads top to bottom, oldest first, and follows new entries as they arrive. It
 holds the most recent 200 entries. It is in memory only, never written to your project,
 and gone when you quit.
+
+When Pi needs a file or folder outside the project, qrate can ask for read-only access, displaying the full path and Pi's reason. Approvals last until qrate closes. **Revoke file access** in the new-session button's right-click menu revokes all explicit grants immediately. Pi checks the host for each built-in read. This does not grant write or shell access. Approved files can be attached as rows through qrate's importer; existing components are skipped, originals stay in place, and the import is one History entry and undo step credited to the agent.

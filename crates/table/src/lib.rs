@@ -8,6 +8,9 @@
 //! Details panel, `app`'s status-bar items) reach the shared state through `TableStateHandle`.
 
 mod agent;
+mod agent_files;
+pub use agent_files::revoke_agent_file_access;
+
 mod cell;
 mod delegate;
 mod editing;

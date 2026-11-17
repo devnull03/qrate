@@ -256,3 +256,13 @@ qrate --version
 
 `qrate version` prints the version number only, which is easier for a script to read.
 `qrate --version` prints `qrate` and the version number.
+
+### Agent file access and attachments
+
+`qrate agent request-access --agent NAME` reads `{"path":"/path/to/folder","reason":"Read scans to create linked rows"}` on stdin. qrate asks the archivist to allow or deny read-only access to that file or folder. Relative paths are resolved against the project folder. A folder grant covers descendants, and a file grant covers only that file. qrate resolves canonical paths so a symlink cannot expand a grant. Grants belong to the named agent and current project, last until qrate closes, and can be revoked through **Revoke file access** in the Agent panel's session menu (right-click the new-session button).
+
+`qrate agent check-access` reads `{"path":"/path/to/file"}` and checks existing access without showing a prompt. The project folder and configured files folder remain readable. `qrate agent forget-access` reads `{}` and revokes this agent's explicit grants in the current project. These commands return `file_access` or `file_access_revoked`; a refusal includes `file_access_required`, `file_access_denied`, `file_access_pending`, or `file_access_timed_out`. Approval requests expire after ten minutes. The agent name is a display label, not authentication.
+
+`qrate agent import-files` reads `{"revision":12,"paths":["/approved/scans"],"recursive":true}`. Use the revision from the latest overview. Read access must already be granted. qrate uses its existing file importer to create linked rows and folder hierarchy, fills declared Title/Filename columns, and skips existing components. Originals are linked in place. It never copies or moves them or changes an existing row's values. One import adds at most 1,000 components, is one undo step, and is credited to the agent in History. `recursive` defaults to `false`. The `imported_files` response includes `added`, `skipped`, new source `rows`, and up to 20 path warnings. A revision change while planning refuses the import; read a new overview before retrying.
+
+Pi's built-in read, ls, find, and grep tools check qrate's grants on every call. Read grants do not authorize writing files or shell commands, which keep their separate approval prompts. The confined Luau program sandbox is unchanged.

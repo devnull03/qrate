@@ -54,6 +54,24 @@ pub enum Request {
         #[serde(flatten)]
         edit: TableEdit,
     },
+    /// Ask the archivist for read-only access to one file or directory until qrate closes.
+    RequestAccess {
+        path: String,
+        reason: String,
+    },
+    /// Check an existing read grant without asking or expanding its scope.
+    CheckAccess {
+        path: String,
+    },
+    /// Revoke this agent's read grants for the current project.
+    ForgetAccess {},
+    /// Attach approved files and folders as new rows, skipping existing components.
+    ImportFiles {
+        revision: TableRevision,
+        paths: Vec<String>,
+        #[serde(default)]
+        recursive: bool,
+    },
     /// Delete rows or one column. qrate asks the archivist first, showing `reason`, and answers
     /// only once they have chosen.
     Delete {
@@ -234,6 +252,27 @@ pub struct Finding {
 impl Request {
     pub fn validate(&self) -> Result<(), RequestError> {
         match self {
+            Self::RequestAccess { path, reason }
+                if path.trim().is_empty()
+                    || path.len() > 4096
+                    || reason.trim().is_empty()
+                    || reason.len() > MAX_MESSAGE_LEN =>
+            {
+                Err(RequestError::InvalidFileAccess)
+            }
+            Self::CheckAccess { path } if path.trim().is_empty() || path.len() > 4096 => {
+                Err(RequestError::InvalidFileAccess)
+            }
+            Self::ImportFiles { paths, .. }
+                if paths.is_empty()
+                    || paths.len() > MAX_NEW_ROWS
+                    || paths
+                        .iter()
+                        .any(|path| path.trim().is_empty() || path.len() > 4096) =>
+            {
+                Err(RequestError::InvalidFileAccess)
+            }
+
             Self::Query(query) => query.validate(),
             Self::ProgramSave { source } if source.trim().is_empty() => {
                 Err(RequestError::EmptyProgram)
@@ -379,6 +418,19 @@ pub enum ResultSet {
     Edited {
         detail: String,
         rows: Vec<usize>,
+    },
+    FileAccess {
+        path: String,
+        directory: bool,
+    },
+    FileAccessRevoked {
+        count: usize,
+    },
+    ImportedFiles {
+        added: usize,
+        skipped: usize,
+        rows: Vec<usize>,
+        warnings: Vec<String>,
     },
     Deleted {
         count: usize,
@@ -533,6 +585,13 @@ pub enum RequestError {
     DeleteTimedOut,
     /// No qrate window is open to ask the archivist in.
     NoWindow,
+    InvalidFileAccess,
+    FileAccessRequired(String),
+    FileAccessDenied,
+    FileAccessPending,
+    FileAccessTimedOut,
+    FileAccessFailed(String),
+    FileImportFailed(String),
 }
 
 #[cfg(test)]
