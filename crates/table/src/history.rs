@@ -103,7 +103,7 @@ pub(crate) enum Step {
 
 impl Step {
     /// Whether this step changed nothing and should not consume an undo.
-    fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         match self {
             Step::Cells(cells) => cells.is_empty(),
             Step::ColumnDescriptions(changes) => changes.is_empty(),

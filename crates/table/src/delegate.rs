@@ -989,8 +989,15 @@ impl QrateTableDelegate {
 
     /// Push a step that has just been applied onto the undo stack, and log it.
     fn record(&mut self, step: Step, origin: Origin) {
-        self.edits += 1;
+        if step.is_empty() {
+            return;
+        }
         let changes = self.changes(&step);
+        assert!(
+            !changes.is_empty(),
+            "an edit must describe its History changes"
+        );
+        self.edits += 1;
         self.log(origin, changes);
         self.history.push(step, self.undo_cap);
     }
@@ -1335,10 +1342,10 @@ impl QrateTableDelegate {
         }
     }
 
-    pub(crate) fn record_descriptions(&mut self, changes: Vec<Change>) {
+    pub(crate) fn record_descriptions(&mut self, changes: Vec<Change>, origin: Origin) {
         if !changes.is_empty() {
             self.values_generation += 1;
-            self.record(Step::ColumnDescriptions(changes), Origin::Structure);
+            self.record(Step::ColumnDescriptions(changes), origin);
         }
     }
 
@@ -1358,7 +1365,12 @@ impl QrateTableDelegate {
         self.values_generation += 1;
     }
 
-    pub(crate) fn filter_from_agent(&mut self, col: usize, keep: Option<&[SharedString]>) {
+    pub(crate) fn filter_from_agent(
+        &mut self,
+        col: usize,
+        keep: Option<&[SharedString]>,
+        origin: Origin,
+    ) {
         let before = self.filter_snapshot(col);
         match keep {
             Some(keep) => {
@@ -1370,7 +1382,7 @@ impl QrateTableDelegate {
         let after = self.filter_snapshot(col);
         if before != after {
             self.values_generation += 1;
-            self.record(Step::Filter { col, before, after }, Origin::Structure);
+            self.record(Step::Filter { col, before, after }, origin);
         }
     }
 
@@ -1806,6 +1818,7 @@ impl QrateTableDelegate {
         file_col: Option<usize>,
         destination_parent: Option<usize>,
         files_root: Option<&Path>,
+        origin: Origin,
     ) -> usize {
         use file_ingest::duplicates::{Parent, Resolution};
 
@@ -1937,14 +1950,18 @@ impl QrateTableDelegate {
                 before_structure,
                 after_structure,
             },
-            Origin::Structure,
+            origin,
         );
         added
     }
 
     /// Append spreadsheet values as one undoable step, preserving the project's existing columns.
     /// The new rows join the end of the roots, which is what reconciling the hierarchy does.
-    pub(crate) fn append_spreadsheet_rows(&mut self, values: Vec<Vec<SharedString>>) -> usize {
+    pub(crate) fn append_spreadsheet_rows(
+        &mut self,
+        values: Vec<Vec<SharedString>>,
+        origin: Origin,
+    ) -> usize {
         if values.is_empty() {
             return 0;
         }
@@ -1971,7 +1988,7 @@ impl QrateTableDelegate {
                 before_structure,
                 after_structure,
             },
-            Origin::Import,
+            origin,
         );
         added
     }
@@ -3215,7 +3232,14 @@ mod app_tests {
                     file_ingest::duplicates::DuplicatePolicy::Skip,
                 );
                 assert_eq!(
-                    delegate.append_components(&resolved, Some(1), Some(0), None, Some(root)),
+                    delegate.append_components(
+                        &resolved,
+                        Some(1),
+                        Some(0),
+                        None,
+                        Some(root),
+                        Origin::Import
+                    ),
                     2
                 );
                 assert_eq!(delegate.row_count(), 6);
@@ -3277,14 +3301,28 @@ mod app_tests {
 
                 let delegate = state.delegate_mut();
                 let resolved = resolve(&delegate.existing_components(Some(0), Some(root)), first);
-                delegate.append_components(&resolved, Some(1), Some(0), None, Some(root));
+                delegate.append_components(
+                    &resolved,
+                    Some(1),
+                    Some(0),
+                    None,
+                    Some(root),
+                    Origin::Import,
+                );
                 assert_eq!(delegate.row_count(), 6);
 
                 let resolved = resolve(&delegate.existing_components(Some(0), Some(root)), second);
                 assert_eq!(resolved.duplicates(), 2);
                 // Only the new photograph arrives, and it joins the series already in the table.
                 assert_eq!(
-                    delegate.append_components(&resolved, Some(1), Some(0), None, Some(root)),
+                    delegate.append_components(
+                        &resolved,
+                        Some(1),
+                        Some(0),
+                        None,
+                        Some(root),
+                        Origin::Import
+                    ),
                     1
                 );
                 assert_eq!(delegate.row_count(), 7);
@@ -3714,10 +3752,13 @@ mod app_tests {
             state.update(cx, |state, _| {
                 let delegate = state.delegate_mut();
                 assert_eq!(
-                    delegate.append_spreadsheet_rows(vec![
-                        vec!["Photograph".into(), "five".into()],
-                        vec!["Film".into(), "six".into()],
-                    ]),
+                    delegate.append_spreadsheet_rows(
+                        vec![
+                            vec!["Photograph".into(), "five".into()],
+                            vec!["Film".into(), "six".into()],
+                        ],
+                        Origin::Import
+                    ),
                     2
                 );
                 assert_eq!(delegate.cell(4, 1).map(|cell| cell.as_ref()), Some("five"));

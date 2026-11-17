@@ -697,7 +697,7 @@ pub enum RowPlacement {
 }
 
 /// Rearrange the hierarchy. Returns whether the table accepted the change.
-pub fn arrange(op: Arrangement, cx: &mut App) -> bool {
+pub fn arrange(op: Arrangement, origin: Origin, cx: &mut App) -> bool {
     let Some(state) = cx
         .try_global::<TableStateHandle>()
         .and_then(|handle| handle.0.upgrade())
@@ -706,9 +706,10 @@ pub fn arrange(op: Arrangement, cx: &mut App) -> bool {
     };
     if let Arrangement::DeleteSubtree(row) = op {
         let rows = state.read(cx).delegate().subtree_sources(row);
-        structural(Structural::DeleteRows(rows), cx);
+        structural(Structural::DeleteRows(rows), origin, cx);
         return true;
     }
+    let since = state.read(cx).delegate().unsaved_history().len();
     let result = state.update(cx, |state, cx| {
         let result = match op {
             Arrangement::Indent(row) => state.delegate_mut().indent_row(row),
@@ -725,6 +726,7 @@ pub fn arrange(op: Arrangement, cx: &mut App) -> bool {
             Arrangement::DeleteSubtree(_) => unreachable!(),
         };
         if result.is_ok() {
+            state.delegate_mut().credit_since(since, &origin);
             state.refresh(cx);
             cx.emit(delegate::TableChanged);
             cx.notify();
@@ -772,7 +774,7 @@ fn sync_project_columns(
 ///
 /// Validation runs *now*, not on `TablePanel`'s debounce: after a row shift the open diagnostics
 /// don't merely lag, they point at the wrong rows.
-pub fn structural(op: Structural, cx: &mut App) {
+pub fn structural(op: Structural, origin: Origin, cx: &mut App) {
     let Some(state) = cx
         .try_global::<TableStateHandle>()
         .and_then(|h| h.0.upgrade())
@@ -789,6 +791,7 @@ pub fn structural(op: Structural, cx: &mut App) {
         _ => None,
     };
 
+    let since = state.read(cx).delegate().unsaved_history().len();
     let applied = state.update(cx, |state, cx| {
         let delegate = state.delegate_mut();
         let applied = match &op {
@@ -823,6 +826,7 @@ pub fn structural(op: Structural, cx: &mut App) {
             }
         };
         if applied {
+            delegate.credit_since(since, &origin);
             // The library caches a `Column` per index, so a changed column set needs this.
             state.refresh(cx);
             cx.emit(delegate::TableChanged);
@@ -843,7 +847,7 @@ pub fn structural(op: Structural, cx: &mut App) {
         diagnostics::Diagnostics::align_note_rows(
             diagnostics::DATASET_MAIN,
             &row_ids,
-            Origin::Structure,
+            origin.clone(),
             cx,
         );
     }

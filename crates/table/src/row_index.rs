@@ -102,6 +102,7 @@ pub(crate) fn render_td(
                                         target: row_ix,
                                         placement,
                                     },
+                                    settings::history::Origin::Structure,
                                     cx,
                                 );
                             });

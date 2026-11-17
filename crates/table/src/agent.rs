@@ -1780,7 +1780,6 @@ fn edit_table(
     if revision != TableRevision(state.read(cx).delegate().values_generation()) {
         return Err(RequestError::StaleRevision);
     }
-    let since = state.read(cx).delegate().unsaved_history().len();
     let column = |name: &str, cx: &App| {
         state
             .read(cx)
@@ -1802,6 +1801,29 @@ fn edit_table(
     };
     let refused = |what: &str| RequestError::EditRefused(what.to_owned());
 
+    let origin = Origin::Agent {
+        agent: agent.to_owned(),
+        fix: match &edit {
+            TableEdit::AddRows { rows } => match rows.len() {
+                1 => "Add a row".into(),
+                n => format!("Add {n} rows"),
+            },
+            TableEdit::AddColumn { name, .. } => format!("Add column {}", name.trim()),
+            TableEdit::RenameColumn { column, name } => {
+                format!("Rename column {column} to {}", name.trim())
+            }
+            TableEdit::MoveColumn { column, .. } => format!("Move column {column}"),
+            TableEdit::DescribeColumn { column, .. } => format!("Describe column {column}"),
+            TableEdit::MoveRow { row, .. } => format!("Move row {}", row + 1),
+            TableEdit::IndentRow { row } => format!("Indent row {}", row + 1),
+            TableEdit::OutdentRow { row } => format!("Outdent row {}", row + 1),
+            TableEdit::DuplicateRow { row } => format!("Duplicate row {}", row + 1),
+            TableEdit::Filter { column, keep } => match keep {
+                Some(_) => format!("Filter {column}"),
+                None => format!("Clear the filter on {column}"),
+            },
+        },
+    };
     let (detail, rows): (String, Vec<usize>) = match edit {
         TableEdit::AddRows { rows } => {
             let delegate = state.read(cx).delegate();
@@ -1816,7 +1838,9 @@ fn edit_table(
             }
             let at = delegate.row_count();
             let added = state.update(cx, |state, cx| {
-                let added = state.delegate_mut().append_spreadsheet_rows(values);
+                let added = state
+                    .delegate_mut()
+                    .append_spreadsheet_rows(values, origin.clone());
                 let rows: Vec<usize> = (at..at + added).collect();
                 crate::photos::refresh(state, Some(&rows), cx);
                 state.refresh(cx);
@@ -1825,12 +1849,7 @@ fn edit_table(
                 added
             });
             let row_ids = state.read(cx).delegate().row_ids().to_vec();
-            diagnostics::Diagnostics::align_note_rows(
-                DATASET_MAIN,
-                &row_ids,
-                Origin::Structure,
-                cx,
-            );
+            diagnostics::Diagnostics::align_note_rows(DATASET_MAIN, &row_ids, origin.clone(), cx);
             settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
             crate::revalidate_now(cx);
             crate::autosave(cx);
@@ -1851,6 +1870,7 @@ fn edit_table(
                     at,
                     name: name.clone(),
                 },
+                origin.clone(),
                 cx,
             );
             (format!("Add column {name}"), Vec::new())
@@ -1863,6 +1883,7 @@ fn edit_table(
                     col,
                     name: name.clone(),
                 },
+                origin.clone(),
                 cx,
             );
             (format!("Rename column {from} to {name}"), Vec::new())
@@ -1879,7 +1900,11 @@ fn edit_table(
                 }
                 None => 0,
             };
-            crate::structural(crate::Structural::MoveColumn { from, to }, cx);
+            crate::structural(
+                crate::Structural::MoveColumn { from, to },
+                origin.clone(),
+                cx,
+            );
             (format!("Move column {name}"), Vec::new())
         }
         TableEdit::DescribeColumn {
@@ -1933,7 +1958,9 @@ fn edit_table(
                 })
                 .collect();
             state.update(cx, |state, cx| {
-                state.delegate_mut().record_descriptions(changes);
+                state
+                    .delegate_mut()
+                    .record_descriptions(changes, origin.clone());
                 cx.emit(crate::TableChanged);
                 cx.notify();
             });
@@ -1958,28 +1985,32 @@ fn edit_table(
                 target,
                 placement,
             };
-            if !crate::arrange(op, cx) {
+            if !crate::arrange(op, origin.clone(), cx) {
                 return Err(refused("the row cannot go there"));
             }
             (format!("Move row {}", moved + 1), Vec::new())
         }
         TableEdit::IndentRow { row: indented } => {
             let indented = row(indented, cx)?;
-            if !crate::arrange(crate::Arrangement::Indent(indented), cx) {
+            if !crate::arrange(crate::Arrangement::Indent(indented), origin.clone(), cx) {
                 return Err(refused("the row has no row above it at its level"));
             }
             (format!("Indent row {}", indented + 1), Vec::new())
         }
         TableEdit::OutdentRow { row: outdented } => {
             let outdented = row(outdented, cx)?;
-            if !crate::arrange(crate::Arrangement::Outdent(outdented), cx) {
+            if !crate::arrange(crate::Arrangement::Outdent(outdented), origin.clone(), cx) {
                 return Err(refused("the row is already at the top level"));
             }
             (format!("Outdent row {}", outdented + 1), Vec::new())
         }
         TableEdit::DuplicateRow { row: copied } => {
             let copied = row(copied, cx)?;
-            crate::structural(crate::Structural::DuplicateRow { row: copied }, cx);
+            crate::structural(
+                crate::Structural::DuplicateRow { row: copied },
+                origin.clone(),
+                cx,
+            );
             (format!("Duplicate row {}", copied + 1), vec![copied + 1])
         }
         TableEdit::Filter { column: name, keep } => {
@@ -1989,7 +2020,7 @@ fn edit_table(
                 let keep: Option<Vec<SharedString>> = keep
                     .as_ref()
                     .map(|values| values.iter().cloned().map(Into::into).collect());
-                delegate.filter_from_agent(col, keep.as_deref());
+                delegate.filter_from_agent(col, keep.as_deref(), origin.clone());
                 state.refresh(cx);
                 cx.emit(crate::TableChanged);
                 cx.notify();
@@ -2004,13 +2035,6 @@ fn edit_table(
         }
     };
 
-    let origin = Origin::Agent {
-        agent: agent.to_owned(),
-        fix: detail.clone(),
-    };
-    state.update(cx, |state, _| {
-        state.delegate_mut().credit_since(since, &origin)
-    });
     log::info!("{agent}: {detail}");
     Ok(Response {
         revision: TableRevision(state.read(cx).delegate().values_generation()),
@@ -2198,7 +2222,6 @@ fn ask_to_delete(
                 .try_global::<TableStateHandle>()
                 .and_then(|handle| handle.0.upgrade())
                 .ok_or(RequestError::TableUnavailable)?;
-            let since = state.read(cx).delegate().unsaved_history().len();
             let (count, detail) = match target {
                 DeleteTarget::Column(name) => {
                     let col = state
@@ -2206,8 +2229,13 @@ fn ask_to_delete(
                         .delegate()
                         .data_col(&name)
                         .ok_or(RequestError::UnknownColumn)?;
-                    crate::structural(crate::Structural::DeleteColumn { col }, cx);
-                    (1, format!("Delete column {name}"))
+                    let detail = format!("Delete column {name}");
+                    let origin = Origin::Agent {
+                        agent: agent.clone(),
+                        fix: detail.clone(),
+                    };
+                    crate::structural(crate::Structural::DeleteColumn { col }, origin, cx);
+                    (1, detail)
                 }
                 DeleteTarget::Rows(ids) => {
                     let rows: Vec<usize> = ids
@@ -2215,21 +2243,18 @@ fn ask_to_delete(
                         .filter_map(|id| state.read(cx).delegate().row_of(*id))
                         .collect();
                     let count = rows.len();
-                    crate::structural(crate::Structural::DeleteRows(rows), cx);
                     let detail = match count {
                         1 => "Delete a row".to_owned(),
                         n => format!("Delete {n} rows"),
                     };
+                    let origin = Origin::Agent {
+                        agent: agent.clone(),
+                        fix: detail.clone(),
+                    };
+                    crate::structural(crate::Structural::DeleteRows(rows), origin, cx);
                     (count, detail)
                 }
             };
-            let origin = Origin::Agent {
-                agent: agent.clone(),
-                fix: detail.clone(),
-            };
-            state.update(cx, |state, _| {
-                state.delegate_mut().credit_since(since, &origin)
-            });
             log::info!("{agent}: {detail}, confirmed by the archivist");
             Ok(Response {
                 revision: TableRevision(state.read(cx).delegate().values_generation()),

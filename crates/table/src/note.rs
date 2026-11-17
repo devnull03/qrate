@@ -251,29 +251,53 @@ fn structural_items(
             );
             menu.item(
                 PopupMenuItem::new("Insert row above").on_click(move |_, _, cx| {
-                    crate::structural(Structural::InsertRow { at: above }, cx)
+                    crate::structural(
+                        Structural::InsertRow { at: above },
+                        settings::history::Origin::Structure,
+                        cx,
+                    )
                 }),
             )
             .item(
                 PopupMenuItem::new("Insert row below").on_click(move |_, _, cx| {
-                    crate::structural(Structural::InsertRow { at: below + 1 }, cx)
+                    crate::structural(
+                        Structural::InsertRow { at: below + 1 },
+                        settings::history::Origin::Structure,
+                        cx,
+                    )
                 }),
             )
             .item(
                 PopupMenuItem::new("Duplicate row").on_click(move |_, _, cx| {
-                    crate::structural(Structural::DuplicateRow { row: dup }, cx)
+                    crate::structural(
+                        Structural::DuplicateRow { row: dup },
+                        settings::history::Origin::Structure,
+                        cx,
+                    )
                 }),
             )
             .item(
                 PopupMenuItem::new(rows_label("Group", rows)).on_click(move |_, _, cx| {
-                    crate::arrange(crate::Arrangement::Group(group.clone()), cx);
+                    crate::arrange(
+                        crate::Arrangement::Group(group.clone()),
+                        settings::history::Origin::Structure,
+                        cx,
+                    );
                 }),
             )
             .item(PopupMenuItem::new("Indent row").on_click(move |_, _, cx| {
-                crate::arrange(crate::Arrangement::Indent(dup), cx);
+                crate::arrange(
+                    crate::Arrangement::Indent(dup),
+                    settings::history::Origin::Structure,
+                    cx,
+                );
             }))
             .item(PopupMenuItem::new("Outdent row").on_click(move |_, _, cx| {
-                crate::arrange(crate::Arrangement::Outdent(dup), cx);
+                crate::arrange(
+                    crate::Arrangement::Outdent(dup),
+                    settings::history::Origin::Structure,
+                    cx,
+                );
             }))
             .item(
                 // A leaf has nothing to promote or carry with it, so it gets the one plain
@@ -283,13 +307,21 @@ fn structural_items(
                     false => rows_label("Delete", rows),
                 })
                 .on_click(move |_, _, cx| {
-                    crate::structural(Structural::DeleteRows(delete.clone()), cx)
+                    crate::structural(
+                        Structural::DeleteRows(delete.clone()),
+                        settings::history::Origin::Structure,
+                        cx,
+                    )
                 }),
             )
             .when(parents, |menu| {
                 menu.item(PopupMenuItem::new("Delete row and descendants").on_click(
                     move |_, _, cx| {
-                        crate::arrange(crate::Arrangement::DeleteSubtree(dup), cx);
+                        crate::arrange(
+                            crate::Arrangement::DeleteSubtree(dup),
+                            settings::history::Origin::Structure,
+                            cx,
+                        );
                     },
                 ))
             })
@@ -310,17 +342,29 @@ fn structural_items(
             .when(rows.is_some(), PopupMenu::separator)
             .item(
                 PopupMenuItem::new("Insert column left").on_click(move |_, _, cx| {
-                    crate::structural(Structural::InsertColumn { at: col }, cx)
+                    crate::structural(
+                        Structural::InsertColumn { at: col },
+                        settings::history::Origin::Structure,
+                        cx,
+                    )
                 }),
             )
             .item(
                 PopupMenuItem::new("Insert column right").on_click(move |_, _, cx| {
-                    crate::structural(Structural::InsertColumn { at: col + 1 }, cx)
+                    crate::structural(
+                        Structural::InsertColumn { at: col + 1 },
+                        settings::history::Origin::Structure,
+                        cx,
+                    )
                 }),
             )
             .item(
                 PopupMenuItem::new("Delete column").on_click(move |_, _, cx| {
-                    crate::structural(Structural::DeleteColumn { col }, cx)
+                    crate::structural(
+                        Structural::DeleteColumn { col },
+                        settings::history::Origin::Structure,
+                        cx,
+                    )
                 }),
             ),
         None => menu,
