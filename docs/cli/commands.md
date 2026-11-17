@@ -135,6 +135,8 @@ qrate agent thumbnails < thumbnails.json
 qrate agent stage-findings < findings.json
 qrate agent stage-column-rewrite < rewrite.json
 qrate agent stage-renames < renames.json
+qrate agent edit < edit.json
+qrate agent delete < delete.json
 ```
 
 These commands let an AI agent, or a script, read the open project. Each command but
@@ -152,9 +154,11 @@ allowed to do.
 | `stage-findings` | `{"revision": ..., "findings": [...]}` | Puts draft findings in the Problems panel |
 | `stage-column-rewrite` | `{"revision": ..., "column": "...", "values": [[row, "value"], ...], "note": "..."}` | Stages new values for one column as one draft. `unchanged` lists the rows that already hold the value. |
 | `stage-renames` | `{"revision": ..., "renames": [{"row": ..., "from": "...", "to": "..."}]}` | Stages renames of linked files as one draft |
+| `edit` | `{"revision": ..., "op": "...", ...}` | Changes the table's shape at once: adds rows or a column, renames, moves or describes a column, moves, indents, outdents or duplicates a row, or filters |
+| `delete` | `{"revision": ..., "rows": [...], "reason": "..."}` or `"column": "..."` | Asks you to delete, with the agent's reason, and waits for your answer |
 
-The three `stage-` commands change nothing. Each one puts a draft in the Problems panel, and
-you apply or discard it there.
+The three `stage-` commands change nothing. Each one puts a draft in the Problems panel and
+marks the changed cells in the table, and you apply or discard it there.
 
 ### Stage a column rewrite
 
@@ -187,6 +191,33 @@ echo '{"revision":12,"renames":[{"row":0,"from":"photos/1.jpg","to":"photos/AD-0
 qrate refuses the whole list if one rename is wrong: a path that leaves the project folder,
 a `from` that is not the file its row links, two renames with the same name, or a `to` that
 already exists. Two files can swap names in one list.
+
+### Edit the table
+
+`edit` changes the shape of the table at once. Each change is one step: one undo reverses
+it, and the History panel names the agent. Name the change with `op`:
+
+```sh
+echo '{"revision":12,"op":"add_rows","rows":[{"Digital ID":"AD-005","Photographer":"Ralph M. Aderman"}]}' \
+  | qrate agent edit --agent me
+echo '{"revision":13,"op":"add_column","name":"Year","after":"Photographer"}' | qrate agent edit --agent me
+```
+
+The other operations are `rename_column`, `move_column`, `describe_column` (a data type, a
+description, or both), `move_row`, `indent_row`, `outdent_row`, `duplicate_row` and `filter`.
+`edit` does not change the value of a cell that already exists. For that, stage a rewrite.
+
+### Ask to delete
+
+`delete` never deletes by itself. qrate shows you a dialog with the agent's reason and what it
+wants to delete, and the command waits until you choose **Delete** or **Keep**:
+
+```sh
+echo '{"revision":14,"rows":[3,7],"reason":"Rows 3 and 7 repeat row 2"}' | qrate agent delete --agent me
+```
+
+If you choose **Keep**, the command exits with `1` and prints `delete_declined`. After ten
+minutes with no answer it gives up with `delete_timed_out`.
 
 | Option | Meaning |
 |---|---|

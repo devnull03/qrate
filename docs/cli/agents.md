@@ -4,8 +4,10 @@ An AI agent that you run on your own computer can read the project that is open 
 It does this with the `qrate agent` commands. It can read rows, read the problems that qrate
 found, and put its own findings in the Problems panel for you to review.
 
-An agent cannot change a cell or rename a file. Everything an agent sends is a draft. It
-changes your data only when you click it.
+An agent cannot change a value that is already in a cell, and it cannot rename a file. It
+sends those as drafts, and they change your data only when you apply them. An agent can
+change the shape of the table, such as adding rows or columns, and each such change is one
+step that you can undo. An agent cannot delete anything: it can only ask, and you decide.
 
 ## Before you start
 
@@ -99,18 +101,28 @@ in the project changed and every scan renamed to match.
    few hundred at a time.
 3. **The agent stages.** It sends all the pairs in one `qrate agent stage-column-rewrite`
    call, and the file names in one `qrate agent stage-renames` call.
-4. **You review.** The Problems panel shows two entries, such as **Rewrite Digital ID: 2,000
-   rows (ids from mapping.csv)** and **Rename 2,000 files**. Right-click an entry and choose
-   **Preview** to see the first 50 changes.
-5. **You apply.** Choose **Apply** on each entry. Each one is a single step. qrate tells you
-   how many it applied and how many it skipped because the cell or file changed after the
-   agent read it.
+4. **You review.** Each changed cell is marked in the table: the old value is struck
+   through in red and the new value is in green, on a cell with a yellow border. A bar above
+   the table says how many changes the agent staged. Right-click a marked cell to apply or
+   reject only that change.
+5. **You apply.** Choose **Apply all** in the bar. The new values are one step and the file
+   renames are another. qrate tells you how many it applied and how many it skipped because
+   the cell or file changed after the agent read it.
 6. **You can undo.** Press undo two times. The first undo puts the file names back on disk.
    The second puts the identifiers back.
 
+## What an agent can change directly
+
+An agent can add rows and columns, rename, move and describe a column, move, indent, outdent
+and duplicate a row, and filter the table, with `qrate agent edit`. Each change is one step.
+One undo reverses it, and the History panel shows who made it, for example "Add 3 rows ·
+your name using pi".
+
 ## What an agent cannot do
 
-- It cannot change, add, or delete a cell, a row, or a column.
+- It cannot change a value that is already in a cell, except as a draft that you apply.
+- It cannot delete a row or a column. It can ask, with a reason, and qrate shows you a dialog.
+  Nothing is deleted unless you choose **Delete**.
 - It cannot rename, move, or delete a file. It cannot apply its own drafts, and there is no
   setting that lets it.
 - It cannot save the project.

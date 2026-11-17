@@ -71,9 +71,12 @@ Do not add `--wait` unless you mean to block until the archivist quits qrate.
   and switches. Never do that to a project the archivist has open unless they asked for it.
 - **Do not read the `.qrate` file to answer a question about the open project.** It is a SQLite
   file, and it can lack edits that are on screen and not saved yet. Ask the running app.
-- **No command changes a cell or a file.** Do not say that one did. `qrate agent
-  stage-findings`, `stage-column-rewrite` and `stage-renames` only publish drafts; the archivist
-  applies them from the Problems panel.
+- **No command changes an existing cell's value or a file.** Do not say that one did. `qrate
+  agent stage-findings`, `stage-column-rewrite` and `stage-renames` only publish drafts; qrate
+  marks them in the table and the archivist applies them.
+- **Shape edits are yours, deletes are not.** `qrate agent edit` adds rows and columns and
+  renames, moves, describes, arranges and filters, each as one undo step; say what you changed.
+  `qrate agent delete` only asks the archivist, with your reason, and waits for their answer.
 - **Bulk edits are staged whole.** New values for many cells of one column go in one
   `qrate agent stage-column-rewrite` call, never cell by cell. Renaming linked files goes through
   `qrate agent stage-renames`; never `mv`, `ren`, or `Move-Item` a project's files.
