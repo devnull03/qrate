@@ -24,7 +24,7 @@ mod relink;
 mod row_index;
 mod visual;
 
-pub use agent::{AGENT_SOURCE, respond_to_agent, respond_to_agent_async};
+pub use agent::{AGENT_SOURCE, agent_source, respond_to_agent, respond_to_agent_async};
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 pub use editor::editor_box;
 /// The grid's right-click menu, so a gallery card can raise the same one a row does rather than
@@ -384,6 +384,48 @@ pub fn write_cells(cells: Vec<(usize, usize, SharedString)>, origin: Origin, cx:
     autosave(cx);
 }
 
+/// Follow files already renamed on disk, as one undo step: `cells` rename them in the grid, and
+/// `rows` are the rows now linking each new path.
+pub(crate) fn write_renames(
+    cells: Vec<(usize, usize, SharedString)>,
+    rows: Vec<(usize, std::path::PathBuf)>,
+    files: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    origin: Origin,
+    cx: &mut App,
+) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+    let folder = cx
+        .try_global::<settings::project::CurrentProject>()
+        .and_then(|project| project.data.values.get(settings::project::FILES_FOLDER_KEY))
+        .map(|folder| std::path::PathBuf::from(folder.text().to_string()))
+        .unwrap_or_default();
+    let links = rows
+        .iter()
+        .map(|(row, path)| (*row, relink::link_text(&folder, path)))
+        .collect();
+    photos::forget(cx);
+    state.update(cx, |state, cx| {
+        let delegate = state.delegate_mut();
+        delegate.follow_renames(cells, links, files, origin);
+        delegate.set_row_images(
+            rows.into_iter()
+                .map(|(row, path)| (row, Some(path)))
+                .collect(),
+        );
+        photos::refresh(state, None, cx);
+        cx.emit(delegate::TableChanged);
+        cx.notify();
+    });
+    settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+    revalidate_now(cx);
+    autosave(cx);
+}
+
 /// The rows a batch of edits renames a file in, when it touches a column the project declares as
 /// holding a filename — the only edits that can change which file a row previews.
 pub(crate) fn file_rows(
@@ -423,6 +465,17 @@ pub fn history_step(redo: bool, cx: &mut App) {
     else {
         return;
     };
+    let renames = state.read(cx).delegate().pending_renames(redo);
+    if !renames.is_empty() {
+        if let Err(failed) =
+            file_ingest::rename::apply(&renames, &mut |from, to| std::fs::rename(from, to))
+        {
+            log::error!("the step was not replayed because its files could not follow: {failed}");
+            agent::tell(format!("Nothing was changed: {failed}"), cx);
+            return;
+        }
+        photos::forget(cx);
+    }
     let changes = state.update(cx, |state, _| match redo {
         true => state.delegate_mut().redo(),
         false => state.delegate_mut().undo(),

@@ -36,6 +36,11 @@ pub enum Origin {
     Spelling,
     /// A fix from the Fixes menu or the Problems panel, named by what offered it.
     Fix(String),
+    /// A fix an agent drafted and the archivist accepted, named the same way.
+    Agent {
+        agent: String,
+        fix: String,
+    },
     /// Rows or columns added, removed, renamed, or moved.
     Structure,
     /// Rows appended from a local spreadsheet.
@@ -56,13 +61,22 @@ impl Origin {
             Origin::ReplaceAll => "Replace".into(),
             Origin::Details => "Details panel".into(),
             Origin::Spelling => "Spelling fix".into(),
-            Origin::Fix(fix) => format!("Fix: {fix}"),
+            Origin::Fix(fix) | Origin::Agent { fix, .. } => format!("Fix: {fix}"),
             Origin::Structure => "Rows and columns".into(),
             Origin::Import => "Spreadsheet import".into(),
             Origin::Undo => "Undo".into(),
             Origin::Redo => "Redo".into(),
             Origin::Restore(id) => format!("Restored to #{id}"),
         }
+    }
+}
+
+/// Who a change is credited to: the archivist who accepted it, and the agent that drafted it.
+pub fn credit(author: Option<&str>, origin: &Origin) -> Option<String> {
+    match (author, origin) {
+        (Some(author), Origin::Agent { agent, .. }) => Some(format!("{author} using {agent}")),
+        (None, Origin::Agent { agent, .. }) => Some(format!("using {agent}")),
+        (author, _) => author.map(str::to_owned),
     }
 }
 
@@ -601,7 +615,10 @@ mod tests {
 
         let typed = Entry::new(Origin::Typed, vec![edit("one", "One")], Some("rk".into()));
         let fixed = Entry::new(
-            Origin::Fix("Use “One.”".into()),
+            Origin::Agent {
+                agent: "pi".into(),
+                fix: "Use “One.”".into(),
+            },
             vec![edit("One", "One.")],
             None,
         );

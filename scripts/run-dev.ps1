@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
-$app = Join-Path $root "target\debug\app.exe"
+$app = Join-Path $root "target\debug\qrate.exe"
 $protocolKey = "HKCU\Software\Classes\qrate"
 $protocolBackup = Join-Path ([System.IO.Path]::GetTempPath()) "qrate-protocol-$([guid]::NewGuid()).reg"
 $hadProtocolHandler = Test-Path "HKCU:\Software\Classes\qrate"
@@ -20,7 +20,7 @@ try {
     }
     $env:QRATE_PLUGIN_CATALOG_PUBLIC_KEY = $publicKey.Trim()
 
-    cargo build -p app
+    cargo build -p app -p qrate-cli
     if ($LASTEXITCODE -ne 0) {
         throw "qrate development build failed."
     }

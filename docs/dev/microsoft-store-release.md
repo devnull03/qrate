@@ -54,8 +54,10 @@ Publish the updated site privacy policy before entering its URL in the first Sto
 ## Package behavior
 
 The Store package declares `windows-store` and `base` in `qrate-install.json`. It contains only the
-app, the marker and manifest images. PDFium, ffmpeg and the agent runtime remain optional components
-installed after the user chooses them, using the same component manifest as the other installers.
+app, `qrate-cli.exe`, the marker and manifest images. PDFium, ffmpeg and the agent runtime remain
+optional components installed after the user chooses them, using the same component manifest as the
+other installers. The CLI is in the package because the agent runtime's Pi reads the project through
+it. It has no `AppExecutionAlias` yet, so a Store install does not put `qrate` on `PATH`.
 The full-trust manifest allows qrate's native PDF loader, child processes and agent runtime to work;
 the Store install directory itself remains read-only, so qrate's updater is disabled for this kind.
 The package manifest targets Windows 10 version 2004 (build 19041) or later for its `uap10`

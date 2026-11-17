@@ -102,7 +102,10 @@ impl Filter {
             Filter::Cells => any(|c| matches!(c, Change::Cell { .. })),
             Filter::Structure => any(|c| !matches!(c, Change::Cell { .. } | Change::Note { .. })),
             Filter::Notes => any(|c| matches!(c, Change::Note { .. })),
-            Filter::Fixes => matches!(entry.origin, Origin::Fix(_) | Origin::Spelling),
+            Filter::Fixes => matches!(
+                entry.origin,
+                Origin::Fix(_) | Origin::Agent { .. } | Origin::Spelling
+            ),
         }
     }
 }
@@ -814,11 +817,15 @@ impl HistoryPanel {
                 })
         };
         let meta = |entry: &Entry, when: String| {
-            [Some(entry.origin.label()), entry.author.clone(), Some(when)]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join(" · ")
+            [
+                Some(entry.origin.label()),
+                settings::history::credit(entry.author.as_deref(), &entry.origin),
+                Some(when),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ")
         };
 
         match row {

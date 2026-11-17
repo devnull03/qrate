@@ -2,7 +2,7 @@
 
 mod about;
 mod actions;
-mod agent_bridge;
+mod app_control;
 mod app_menus;
 mod app_settings;
 mod assets;
@@ -485,7 +485,7 @@ fn flush_all_state(cx: &mut gpui::App) {
             settings::dirty::clear(domain, cx);
         }
     }
-    agent_bridge::shutdown();
+    app_control::shutdown();
 }
 
 /// Runs `then` once unsaved cell edits are saved or knowingly dropped, asking on `window` if there
@@ -589,18 +589,14 @@ fn main() {
     // First, so failures in GPUI platform construction and startup still reach the log file.
     logging::init();
     log::info!("site origin: {}", site::url("/"));
-    let onboarding_preview =
-        cfg!(debug_assertions) && std::env::args().any(|argument| argument == "--onboarding");
-    let initial_target = std::env::args_os()
-        .skip(1)
-        .find_map(|argument| open_target::OpenTarget::parse(&argument));
-    let initial_link = match &initial_target {
-        Some(open_target::OpenTarget::Plugin(link)) => Some(link.as_str()),
-        _ => None,
-    };
-    if initial_link.is_some() {
-        log::info!("received plugin install link at startup");
-    }
+    let launch_args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let onboarding_preview = cfg!(debug_assertions)
+        && launch_args
+            .iter()
+            .any(|argument| argument == "--onboarding");
+    let initial_target = launch_args
+        .iter()
+        .find_map(|argument| open_target::OpenTarget::parse(argument));
     let initial_request = match &initial_target {
         Some(open_target::OpenTarget::Plugin(link)) => Some(link.clone()),
         Some(open_target::OpenTarget::Project(path) | open_target::OpenTarget::Folder(path)) => {
@@ -696,10 +692,10 @@ fn main() {
             cx,
         );
         checks::init(cx);
-        agent_bridge::init(cx);
+        app_control::init(cx);
         agent_runtime::init(cx);
         log::debug!(
-            "startup: validators and bridges registered at {:?}",
+            "startup: validators and app control registered at {:?}",
             started.elapsed()
         );
 
@@ -776,9 +772,12 @@ fn main() {
         });
 
         cx.spawn(async move |cx| {
-            while let Ok(link) = url_receiver.recv().await {
-                if let Some(target) = open_target::OpenTarget::parse(link.as_ref()) {
-                    cx.update(|cx| open_os_target(target, cx));
+            while let Ok(request) = url_receiver.recv().await {
+                match open_target::OpenTarget::parse(request.as_ref()) {
+                    Some(target) => cx.update(|cx| open_os_target(target, cx)),
+                    // A second launch with nothing to open asks for the launcher.
+                    None if request.is_empty() => cx.update(project_wizard::open_launcher_window),
+                    None => log::warn!("ignored an open request qrate cannot open"),
                 }
             }
         })
@@ -828,6 +827,18 @@ fn open_os_target(target: open_target::OpenTarget, cx: &mut gpui::App) {
                     })
                     .ok();
             } else {
+                // No window to ask in, so switching projects persists the open one first.
+                if settings::dirty::Dirty::has(settings::dirty::PROJECT_DATA, cx)
+                    && let Err(error) = table::save_now(cx)
+                {
+                    let message = format!(
+                        "Couldn't save the current project before opening {}: {error}",
+                        path.display()
+                    );
+                    log::error!("{message}");
+                    project_wizard::open_launcher_with_error(message.into(), cx);
+                    return;
+                }
                 open_project_target(path, cx);
             }
         }

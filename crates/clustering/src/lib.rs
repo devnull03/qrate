@@ -179,6 +179,7 @@ pub fn variant_fixes(location: &Location, text: &str, subject: Option<&str>, cx:
         .map(|(_, replacement)| Fix {
             label: format!("Use “{replacement}”").into(),
             replacement: replacement.clone(),
+            agent: None,
         })
         .collect()
 }

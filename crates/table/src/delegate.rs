@@ -941,6 +941,52 @@ impl QrateTableDelegate {
         );
     }
 
+    /// Follow files already renamed on disk: write the cells that name them, repoint each
+    /// `source_path` in `links` as `(row, link)`, and record it all as one undo step.
+    pub(crate) fn follow_renames(
+        &mut self,
+        cells: Cells,
+        links: Vec<(usize, String)>,
+        files: Vec<(PathBuf, PathBuf)>,
+        origin: Origin,
+    ) {
+        let before = self.hierarchy.rows();
+        for (row, link) in links {
+            if let Some(id) = self.row_id(row)
+                && self.hierarchy.source_file(id).is_some()
+            {
+                self.hierarchy.set_source_file(id, link);
+            }
+        }
+        let after = self.hierarchy.rows();
+        let mut edit = Vec::with_capacity(cells.len());
+        for (row, col, text) in cells {
+            if let Some(was) = self.cell(row, col).cloned().filter(|was| *was != text) {
+                self.set_cell(row, col, text.clone());
+                edit.push((row, col, was, text));
+            }
+        }
+        let cells = Step::Cells(edit);
+        self.edits += 1;
+        let changes = self.changes(&cells);
+        self.log(origin, changes);
+        self.history.push(
+            Step::Batch(vec![
+                cells,
+                Step::Hierarchy { before, after },
+                Step::Files(files),
+            ]),
+            self.undo_cap,
+        );
+    }
+
+    /// The disk renames the next undo or redo calls for, to be made before it is replayed.
+    pub(crate) fn pending_renames(&self, redo: bool) -> Vec<(PathBuf, PathBuf)> {
+        self.history
+            .next(redo)
+            .map_or_else(Vec::new, |step| step.renames(redo))
+    }
+
     /// Push a step that has just been applied onto the undo stack, and log it.
     fn record(&mut self, step: Step, origin: Origin) {
         self.edits += 1;
@@ -1031,7 +1077,7 @@ impl QrateTableDelegate {
                 to: *to,
             }],
             // A batch's steps are read one by one, each in its own state, as they are replayed.
-            Step::Batch(_) | Step::Hierarchy { .. } => Vec::new(),
+            Step::Batch(_) | Step::Hierarchy { .. } | Step::Files(_) => Vec::new(),
         }
     }
 
@@ -1345,6 +1391,7 @@ impl QrateTableDelegate {
             Step::Hierarchy { before, after } => {
                 reshaped.structure = Some(if forward { after } else { before }.clone());
             }
+            Step::Files(_) => {}
         }
         if forward {
             changes.extend(self.changes(step));
