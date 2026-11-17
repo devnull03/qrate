@@ -8,6 +8,9 @@
 //! Details panel, `app`'s status-bar items) reach the shared state through `TableStateHandle`.
 
 mod agent;
+mod agent_files;
+pub use agent_files::revoke_agent_file_access;
+
 mod cell;
 mod delegate;
 mod editing;
@@ -24,7 +27,9 @@ mod relink;
 mod row_index;
 mod visual;
 
-pub use agent::{AGENT_SOURCE, respond_to_agent, respond_to_agent_async};
+pub use agent::{
+    AGENT_SOURCE, agent_source, render_staged_bar, respond_to_agent, respond_to_agent_async,
+};
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 pub use editor::editor_box;
 /// The grid's right-click menu, so a gallery card can raise the same one a row does rather than
@@ -180,23 +185,35 @@ pub(crate) fn autosave(cx: &mut App) {
     let Some((file, state)) = save_target(cx) else {
         return;
     };
-    let snapshot = state.read(cx).delegate().save_snapshot();
-    let edits = snapshot.edits;
-    cx.spawn(async move |cx| {
-        let written = cx
-            .background_executor()
-            .spawn({
-                let file = file.clone();
-                async move { write_snapshot(&file, &snapshot) }
-            })
-            .await;
-        cx.update(|cx| {
-            if let Err(message) = saved(&state, &file, edits, written, cx) {
-                complain(message, cx);
-            }
-        });
-    })
-    .detach();
+    let columns = cx
+        .global::<settings::project::CurrentProject>()
+        .data
+        .columns
+        .clone();
+    // Finalize the action (including its agent credit) before taking the save snapshot.
+    cx.defer(move |cx| {
+        let columns = cx
+            .try_global::<settings::project::CurrentProject>()
+            .filter(|project| project.file == file)
+            .map_or_else(|| columns, |project| project.data.columns.clone());
+        let snapshot = state.read(cx).delegate().save_snapshot(columns);
+        let edits = snapshot.edits;
+        cx.spawn(async move |cx| {
+            let written = cx
+                .background_executor()
+                .spawn({
+                    let file = file.clone();
+                    async move { write_snapshot(&file, &snapshot) }
+                })
+                .await;
+            cx.update(|cx| {
+                if let Err(message) = saved(&state, &file, edits, written, cx) {
+                    complain(message, cx);
+                }
+            });
+        })
+        .detach();
+    });
 }
 
 /// The open project's file and live table, which is what a save needs.
@@ -230,6 +247,7 @@ fn write_snapshot(file: &std::path::Path, snapshot: &delegate::SaveSnapshot) -> 
         &snapshot.rows,
         Some(&snapshot.structure),
         &snapshot.history[skip..],
+        Some(&snapshot.columns),
     )
     .map_err(|err| format!("{err:#}"))?;
     ledger
@@ -252,10 +270,16 @@ fn saved(
     written: Result<(), String>,
     cx: &mut App,
 ) -> Result<(), String> {
-    let settled = state.update(cx, |state, _| {
+    let settled = state.update(cx, |state, cx| {
         let delegate = state.delegate_mut();
+        let pending = delegate.unsaved_history().len();
         delegate.history_written();
-        delegate.edits() == edits
+        let settled = delegate.edits() == edits;
+        if pending != delegate.unsaved_history().len() {
+            cx.emit(delegate::TableChanged);
+            cx.notify();
+        }
+        settled
     });
     if let Err(err) = written {
         let message = format!("Couldn't save {}: {err}", file.display());
@@ -384,6 +408,95 @@ pub fn write_cells(cells: Vec<(usize, usize, SharedString)>, origin: Origin, cx:
     autosave(cx);
 }
 
+/// Follow files already renamed on disk, as one undo step: `cells` rename them in the grid, and
+/// `rows` are the rows now linking each new path.
+pub(crate) fn write_renames(
+    cells: Vec<(usize, usize, SharedString)>,
+    rows: Vec<(usize, std::path::PathBuf)>,
+    files: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    origin: Origin,
+    cx: &mut App,
+) {
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+    let folder = cx
+        .try_global::<settings::project::CurrentProject>()
+        .and_then(|project| project.data.values.get(settings::project::FILES_FOLDER_KEY))
+        .map(|folder| std::path::PathBuf::from(folder.text().to_string()))
+        .unwrap_or_default();
+    let links = rows
+        .iter()
+        .map(|(row, path)| (*row, relink::link_text(&folder, path)))
+        .collect();
+    photos::forget(cx);
+    state.update(cx, |state, cx| {
+        let delegate = state.delegate_mut();
+        delegate.follow_renames(cells, links, files, origin);
+        delegate.set_row_images(
+            rows.into_iter()
+                .map(|(row, path)| (row, Some(path)))
+                .collect(),
+        );
+        photos::refresh(state, None, cx);
+        cx.emit(delegate::TableChanged);
+        cx.notify();
+    });
+    settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+    revalidate_now(cx);
+    autosave(cx);
+}
+
+/// Edit a live column declaration with its History, undo step, validation and atomic save.
+pub fn describe_column(
+    column: &str,
+    data_type: Option<&str>,
+    notes: Option<&str>,
+    origin: Origin,
+    cx: &mut App,
+) -> bool {
+    if !cx.has_global::<settings::project::CurrentProject>() {
+        return false;
+    }
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+    else {
+        return false;
+    };
+    if state.read(cx).delegate().data_col(column).is_none() {
+        return false;
+    }
+    let immediate = matches!(&origin, Origin::Agent { .. });
+    let changes = settings::project::CurrentProject::describe_columns(column, data_type, notes, cx);
+    if changes.is_empty() {
+        return true;
+    }
+    state.update(cx, |state, cx| {
+        state.delegate_mut().record_descriptions(changes, origin);
+        cx.emit(TableChanged);
+        cx.notify();
+    });
+    settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+    if !immediate
+        && let Some(panel) = cx
+            .try_global::<TablePanelHandle>()
+            .and_then(|handle| handle.0.upgrade())
+    {
+        panel.update(cx, |panel, cx| {
+            panel.schedule_revalidate(cx);
+            panel.schedule_autosave(cx);
+        });
+    } else {
+        revalidate_now(cx);
+        autosave(cx);
+    }
+    true
+}
+
 /// The rows a batch of edits renames a file in, when it touches a column the project declares as
 /// holding a filename — the only edits that can change which file a row previews.
 pub(crate) fn file_rows(
@@ -423,6 +536,17 @@ pub fn history_step(redo: bool, cx: &mut App) {
     else {
         return;
     };
+    let renames = state.read(cx).delegate().pending_renames(redo);
+    if !renames.is_empty() {
+        if let Err(failed) =
+            file_ingest::rename::apply(&renames, &mut |from, to| std::fs::rename(from, to))
+        {
+            log::error!("the step was not replayed because its files could not follow: {failed}");
+            agent::tell(format!("Nothing was changed: {failed}"), cx);
+            return;
+        }
+        photos::forget(cx);
+    }
     let changes = state.update(cx, |state, _| match redo {
         true => state.delegate_mut().redo(),
         false => state.delegate_mut().undo(),
@@ -462,6 +586,16 @@ fn settle(
     for change in changes {
         if let Change::ColumnRenamed { before, after } = change {
             follow_rename(before, &after.clone().into(), cx);
+        }
+    }
+    for change in changes {
+        if let Change::ColumnDescribed { column, after, .. } = change {
+            let _ = settings::project::CurrentProject::describe_columns(
+                column,
+                Some(&after.data_type),
+                Some(&after.notes),
+                cx,
+            );
         }
     }
     TablePanel::persist_columns(state, cx);
@@ -591,6 +725,15 @@ pub enum Structural {
         col: usize,
         name: SharedString,
     },
+    MoveColumn {
+        from: usize,
+        to: usize,
+    },
+    /// A column added already named, as an agent asks for one.
+    AddNamedColumn {
+        at: usize,
+        name: SharedString,
+    },
 }
 
 pub enum Arrangement {
@@ -617,18 +760,20 @@ pub enum RowPlacement {
     After,
 }
 
-pub fn arrange(op: Arrangement, cx: &mut App) {
+/// Rearrange the hierarchy. Returns whether the table accepted the change.
+pub fn arrange(op: Arrangement, origin: Origin, cx: &mut App) -> bool {
     let Some(state) = cx
         .try_global::<TableStateHandle>()
         .and_then(|handle| handle.0.upgrade())
     else {
-        return;
+        return false;
     };
     if let Arrangement::DeleteSubtree(row) = op {
         let rows = state.read(cx).delegate().subtree_sources(row);
-        structural(Structural::DeleteRows(rows), cx);
-        return;
+        structural(Structural::DeleteRows(rows), origin, cx);
+        return true;
     }
+    let since = state.read(cx).delegate().unsaved_history().len();
     let result = state.update(cx, |state, cx| {
         let result = match op {
             Arrangement::Indent(row) => state.delegate_mut().indent_row(row),
@@ -645,6 +790,7 @@ pub fn arrange(op: Arrangement, cx: &mut App) {
             Arrangement::DeleteSubtree(_) => unreachable!(),
         };
         if result.is_ok() {
+            state.delegate_mut().credit_since(since, &origin);
             state.refresh(cx);
             cx.emit(delegate::TableChanged);
             cx.notify();
@@ -653,10 +799,11 @@ pub fn arrange(op: Arrangement, cx: &mut App) {
     });
     if let Err(error) = result {
         log::warn!("Could not change archival hierarchy: {error:?}");
-        return;
+        return false;
     }
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
     autosave(cx);
+    true
 }
 
 pub(crate) fn persist_expanded(rows: &[settings::project::RowId], cx: &mut App) {
@@ -691,7 +838,7 @@ fn sync_project_columns(
 ///
 /// Validation runs *now*, not on `TablePanel`'s debounce: after a row shift the open diagnostics
 /// don't merely lag, they point at the wrong rows.
-pub fn structural(op: Structural, cx: &mut App) {
+pub fn structural(op: Structural, origin: Origin, cx: &mut App) {
     let Some(state) = cx
         .try_global::<TableStateHandle>()
         .and_then(|h| h.0.upgrade())
@@ -708,6 +855,7 @@ pub fn structural(op: Structural, cx: &mut App) {
         _ => None,
     };
 
+    let since = state.read(cx).delegate().unsaved_history().len();
     let applied = state.update(cx, |state, cx| {
         let delegate = state.delegate_mut();
         let applied = match &op {
@@ -732,8 +880,17 @@ pub fn structural(op: Structural, cx: &mut App) {
                 true
             }
             Structural::RenameColumn { col, name } => delegate.rename_column(*col, name.clone()),
+            Structural::MoveColumn { from, to } => {
+                delegate.move_column_to(*from, *to);
+                true
+            }
+            Structural::AddNamedColumn { at, name } => {
+                delegate.insert_named_column(*at, name.clone());
+                true
+            }
         };
         if applied {
+            delegate.credit_since(since, &origin);
             // The library caches a `Column` per index, so a changed column set needs this.
             state.refresh(cx);
             cx.emit(delegate::TableChanged);
@@ -754,13 +911,16 @@ pub fn structural(op: Structural, cx: &mut App) {
         diagnostics::Diagnostics::align_note_rows(
             diagnostics::DATASET_MAIN,
             &row_ids,
-            Origin::Structure,
+            origin.clone(),
             cx,
         );
     }
     if matches!(
         op,
-        Structural::InsertColumn { .. } | Structural::DeleteColumn { .. }
+        Structural::InsertColumn { .. }
+            | Structural::DeleteColumn { .. }
+            | Structural::MoveColumn { .. }
+            | Structural::AddNamedColumn { .. }
     ) || renamed.is_some()
     {
         sync_project_columns(&state, renamed.as_ref(), cx);
@@ -937,7 +1097,12 @@ pub fn save_now(cx: &mut App) -> Result<(), String> {
         return Err("Couldn't save your changes: the project's table is unavailable.".into());
     };
     let started = std::time::Instant::now();
-    let snapshot = state.read(cx).delegate().save_snapshot();
+    let columns = cx
+        .global::<settings::project::CurrentProject>()
+        .data
+        .columns
+        .clone();
+    let snapshot = state.read(cx).delegate().save_snapshot(columns);
     let (rows, edits) = (snapshot.rows.len(), snapshot.edits);
     let written = write_snapshot(&file, &snapshot);
     saved(&state, &file, edits, written, cx)?;

@@ -460,6 +460,7 @@ impl Render for ViewsPanel {
                 self.table
                     .update(cx, |table, cx| table.render_files_banner(cx)),
             )
+            .child(table::render_staged_bar(cx))
             .child(
                 self.table
                     .update(cx, |table, cx| table.render_search_bar(cx)),

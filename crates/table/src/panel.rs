@@ -300,7 +300,11 @@ impl TablePanel {
                         this.schedule_autosave(cx);
                     }
                     editing::Committed::Rename(col, name) => {
-                        crate::structural(crate::Structural::RenameColumn { col, name }, cx);
+                        crate::structural(
+                            crate::Structural::RenameColumn { col, name },
+                            settings::history::Origin::Structure,
+                            cx,
+                        );
                     }
                 }
                 this.forget_suggestions(cx);
@@ -617,7 +621,7 @@ impl TablePanel {
     /// spell checking on its own, so a sheet with a few of them drops a frame on every committed
     /// edit, paste and undo. Nothing needs squiggles to appear in the same frame as the character
     /// that caused them; every editor makes them a moment late.
-    fn schedule_revalidate(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn schedule_revalidate(&mut self, cx: &mut Context<Self>) {
         self._revalidate_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(REVALIDATE_DEBOUNCE).await;
             this.update(cx, |_this, cx| crate::revalidate_now(cx)).ok();
@@ -845,6 +849,7 @@ impl TablePanel {
                                 file_col,
                                 None,
                                 files_root.as_deref(),
+                                settings::history::Origin::Import,
                             );
                             log::info!(
                                 "imported {added} dropped component(s) as {}, reusing {} already in the project",
@@ -1021,7 +1026,9 @@ impl TablePanel {
                             .collect();
                         this.state.update(cx, |state, cx| {
                             let at = state.delegate().row_count();
-                            let added = state.delegate_mut().append_spreadsheet_rows(values);
+                            let added = state
+                                .delegate_mut()
+                                .append_spreadsheet_rows(values, settings::history::Origin::Import);
                             let rows: Vec<usize> = (at..at + added).collect();
                             photos::refresh(state, Some(&rows), cx);
                             state.refresh(cx);
@@ -1051,7 +1058,7 @@ impl TablePanel {
     /// React to a committed cell edit per the Autosave setting: write immediately, buffer behind a
     /// short debounce (the default), or leave it for Ctrl+S / quit. The default and any unset/
     /// unrecognized value both mean "timed".
-    fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
         crate::stamp_pending_author(cx);
         match settings::effective_text(settings::AUTOSAVE_KEY, cx).as_ref() {
             "off" => {}
@@ -1389,7 +1396,7 @@ impl TablePanel {
             log::debug!("no selection — the structural menu command had nothing to act on");
             return;
         };
-        crate::structural(pick(&rows, col), cx);
+        crate::structural(pick(&rows, col), settings::history::Origin::Structure, cx);
     }
 
     fn rename_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1893,7 +1900,7 @@ pub fn register_global_actions(cx: &mut App) {
     }
     fn arrange(this: &mut TablePanel, op: fn(usize) -> crate::Arrangement, cx: &mut App) {
         if let Some((rows, _)) = this.structural_target(cx) {
-            crate::arrange(op(rows[0]), cx);
+            crate::arrange(op(rows[0]), settings::history::Origin::Structure, cx);
         }
     }
 

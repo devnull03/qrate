@@ -12,20 +12,14 @@ pub fn start(request: Option<&str>, sender: async_channel::Sender<String>) -> bo
         log::warn!("could not initialize OS open-request handoff");
         return true;
     };
+    // One desktop per user: a second would overwrite the first's app-control.json. With no target,
+    // the empty handoff asks the running one to show its launcher.
     if !instance.is_single() {
-        if let Some(request) = request {
-            log::info!("handing an open request to the running qrate instance");
-            return match send(request) {
-                Ok(()) => false,
-                Err(error) => {
-                    log::error!(
-                        "could not hand an open request to the running qrate process: {error}"
-                    );
-                    true
-                }
-            };
+        log::info!("handing an open request to the running qrate instance");
+        if let Err(error) = send(request.unwrap_or_default()) {
+            log::error!("could not hand an open request to the running qrate process: {error}");
         }
-        return true;
+        return false;
     }
 
     let Some(inbox) = inbox() else {

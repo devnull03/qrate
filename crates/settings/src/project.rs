@@ -88,6 +88,7 @@ pub const IGNORED_NEW_FILES_KEY: &str = "ignored_new_files";
 /// access to it; storing an id the user typed would name a file the token cannot reach.
 pub const GOOGLE_SHEET_ID_KEY: &str = "google_sheet_id";
 
+#[derive(Clone)]
 pub struct ProjectColumn {
     pub name: String,
     pub data_type: String,
@@ -189,70 +190,78 @@ impl CurrentProject {
         }
         project.data.headers = headers;
     }
-    /// Declares a column's type, updating the cache validators read and queueing the `__columns`
-    /// write — the column that held a single-holder type before gives it up in the same batch.
-    pub fn set_column_type(name: &str, data_type: &str, cx: &mut gpui::App) {
-        let kind = crate::columns::ColumnType::from_declared(data_type);
-        let single_holder = matches!(
-            kind,
-            crate::columns::ColumnType::Title | crate::columns::ColumnType::Filename
-        );
-        let (file, cleared) = {
-            let p = cx.global_mut::<Self>();
-            let mut cleared = Vec::new();
-            if single_holder {
-                for column in &mut p.data.columns {
+    /// Update the live declaration; the caller must record and save the returned changes.
+    #[must_use = "Live column edits must record these changes in History"]
+    pub fn describe_columns(
+        name: &str,
+        data_type: Option<&str>,
+        notes: Option<&str>,
+        cx: &mut gpui::App,
+    ) -> Vec<crate::history::Change> {
+        use crate::history::{Change, ColumnDescription};
+        if data_type.is_none() && notes.is_none() {
+            return Vec::new();
+        }
+        let columns = &mut cx.global_mut::<Self>().data.columns;
+        let snapshot =
+            |columns: &[ProjectColumn]| -> std::collections::BTreeMap<String, ColumnDescription> {
+                columns
+                    .iter()
+                    .map(|column| {
+                        (
+                            column.name.clone(),
+                            ColumnDescription {
+                                data_type: column.data_type.clone(),
+                                notes: column.notes.clone(),
+                            },
+                        )
+                    })
+                    .collect()
+            };
+        let before = snapshot(columns);
+        if let Some(data_type) = data_type {
+            let kind = crate::columns::ColumnType::from_declared(data_type);
+            if matches!(
+                kind,
+                crate::columns::ColumnType::Title | crate::columns::ColumnType::Filename
+            ) {
+                for column in columns.iter_mut() {
                     if column.name != name
                         && crate::columns::ColumnType::from_declared(&column.data_type) == kind
                     {
-                        column.data_type = crate::columns::ColumnType::Text.as_str().to_string();
-                        cleared.push(column.name.clone());
+                        column.data_type = crate::columns::ColumnType::Text.as_str().into();
                     }
                 }
             }
-            match p.data.columns.iter_mut().find(|c| c.name == name) {
-                Some(column) => column.data_type = data_type.to_string(),
-                None => p.data.columns.push(ProjectColumn {
-                    name: name.to_string(),
-                    data_type: data_type.to_string(),
-                    notes: String::new(),
-                }),
-            }
-            (p.file.clone(), cleared)
-        };
-        for cleared in cleared {
-            let key = format!("{COLUMN_TYPE_WRITE_PREFIX}{cleared}");
-            let text = crate::columns::ColumnType::Text.as_str().to_string();
-            queue(&file, &key, Some(text), cx);
         }
-        let key = format!("{COLUMN_TYPE_WRITE_PREFIX}{name}");
-        queue(&file, &key, Some(data_type.to_string()), cx);
-        crate::dirty::mark(crate::dirty::COLUMN_SETTINGS, cx);
-    }
-
-    /// Updates a column description in memory immediately and queues the durable `__columns`
-    /// write, so typing does not force SQLite to fsync each keystroke.
-    pub fn set_column_notes(name: &str, notes: &str, cx: &mut gpui::App) {
-        let file = {
-            let project = cx.global_mut::<Self>();
-            match project
-                .data
-                .columns
-                .iter_mut()
-                .find(|column| column.name == name)
-            {
-                Some(column) => column.notes = notes.to_string(),
-                None => project.data.columns.push(ProjectColumn {
-                    name: name.to_string(),
-                    data_type: crate::columns::ColumnType::Text.as_str().to_string(),
-                    notes: notes.to_string(),
-                }),
-            }
-            project.file.clone()
-        };
-        let key = format!("{COLUMN_NOTES_WRITE_PREFIX}{name}");
-        queue_write(&file, &key, notes, cx);
-        crate::dirty::mark(crate::dirty::COLUMN_SETTINGS, cx);
+        if !columns.iter().any(|column| column.name == name) {
+            columns.push(ProjectColumn {
+                name: name.into(),
+                data_type: crate::columns::ColumnType::Text.as_str().into(),
+                notes: String::new(),
+            });
+        }
+        let column = columns
+            .iter_mut()
+            .find(|column| column.name == name)
+            .unwrap();
+        if let Some(data_type) = data_type {
+            column.data_type = data_type.into();
+        }
+        if let Some(notes) = notes {
+            column.notes = notes.into();
+        }
+        snapshot(columns)
+            .into_iter()
+            .filter_map(|(column, after)| {
+                let before = before.get(&column).cloned().unwrap_or_default();
+                (before != after).then_some(Change::ColumnDescribed {
+                    column,
+                    before,
+                    after,
+                })
+            })
+            .collect()
     }
 }
 
@@ -1007,7 +1016,15 @@ pub fn save_dataset(
     if headers.is_empty() {
         return Ok(());
     }
-    rewrite_dataset(open_rw(path)?, headers, row_ids, rows, structure, history)
+    rewrite_dataset(
+        open_rw(path)?,
+        headers,
+        row_ids,
+        rows,
+        structure,
+        history,
+        None,
+    )
 }
 
 /// [`save_dataset`] that writes only what `history` says changed: the rows it names are updated
@@ -1024,6 +1041,7 @@ pub fn save_changes<S: AsRef<str>>(
     rows: &[Vec<S>],
     structure: Option<&[RowStructure]>,
     history: &[crate::history::Entry],
+    columns: Option<&[ProjectColumn]>,
 ) -> Result<()> {
     use crate::history::Change;
 
@@ -1048,7 +1066,7 @@ pub fn save_changes<S: AsRef<str>>(
         });
     let names = dataset_column_names(headers);
     if reshaped || stored_columns(&conn)?.as_ref() != Some(&names) {
-        return rewrite_dataset(conn, headers, row_ids, rows, structure, history);
+        return rewrite_dataset(conn, headers, row_ids, rows, structure, history, columns);
     }
     let touched: HashSet<RowId> = history
         .iter()
@@ -1121,6 +1139,9 @@ pub fn save_changes<S: AsRef<str>>(
         tx.pragma_update(None, "user_version", QRATE_SCHEMA_VERSION)
             .context("Set user_version")?;
     }
+    if let Some(columns) = columns {
+        write_columns(&tx, columns)?;
+    }
     crate::history::append(&tx, history)?;
     tx.commit().context("Commit dataset update")
 }
@@ -1133,6 +1154,7 @@ fn rewrite_dataset<S: AsRef<str>>(
     rows: &[Vec<S>],
     structure: Option<&[RowStructure]>,
     history: &[crate::history::Entry],
+    columns: Option<&[ProjectColumn]>,
 ) -> Result<()> {
     let structure = planned_structure(&conn, structure, row_ids)?;
     let tx = conn.transaction().context("Begin dataset rewrite")?;
@@ -1146,8 +1168,29 @@ fn rewrite_dataset<S: AsRef<str>>(
         tx.pragma_update(None, "user_version", QRATE_SCHEMA_VERSION)
             .context("Set user_version")?;
     }
+    if let Some(columns) = columns {
+        write_columns(&tx, columns)?;
+    }
     crate::history::append(&tx, history)?;
     tx.commit().context("Commit dataset rewrite")
+}
+
+fn write_columns(conn: &Connection, columns: &[ProjectColumn]) -> Result<()> {
+    let wanted: HashSet<&str> = columns.iter().map(|column| column.name.as_str()).collect();
+    let stored: Vec<String> = conn
+        .prepare("SELECT name FROM __columns")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for name in stored.iter().filter(|name| !wanted.contains(name.as_str())) {
+        conn.execute("DELETE FROM __columns WHERE name = ?1", params![name])?;
+    }
+    let mut insert = conn.prepare("INSERT INTO __columns(name, data_type, notes) VALUES (?1, ?2, ?3)
+        ON CONFLICT(name) DO UPDATE SET data_type = excluded.data_type, notes = excluded.notes
+        WHERE __columns.data_type IS NOT excluded.data_type OR __columns.notes IS NOT excluded.notes")?;
+    for column in columns {
+        insert.execute(params![column.name, column.data_type, column.notes])?;
+    }
+    Ok(())
 }
 
 /// The hierarchy a save writes, normalized to the rows being saved, or `None` when there is none
@@ -1667,7 +1710,7 @@ mod tests {
             changes,
             None,
         )];
-        save_changes(&incremental, &headers, row_ids, &rows, None, &log).unwrap();
+        save_changes(&incremental, &headers, row_ids, &rows, None, &log, None).unwrap();
         save_dataset(&rewritten, &headers, row_ids, &rows, None, &log).unwrap();
 
         let (a, b) = (

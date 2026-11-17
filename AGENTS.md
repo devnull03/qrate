@@ -1,36 +1,67 @@
 # Agent instructions
 
 - **Changing qrate code?** Read [CLAUDE.md](CLAUDE.md).
-- **Reviewing the project open in qrate?** Use bridge protocol 2 below. The saved `.qrate` file can omit unsaved on-screen edits.
+- **Reviewing the project open in qrate?** Use the `qrate agent` commands below. The saved `.qrate` file can omit unsaved on-screen edits.
 
-## Live qrate bridge
+## Reading a running qrate
 
-qrate publishes `agent-bridge.json` in the platform application-data directory. It contains `url`, a per-launch `token`, and `bridge_protocol: 2`. If it is missing, qrate is not running or Settings ▸ Agent is off. Reject any other protocol version.
+First confirm the right project is on screen: `qrate app status` and `qrate project info` print JSON in a pipe (`{"running": …, "project": …}`), and `qrate <PROJECT.qrate>` opens one. `qrate help <command>` documents every option; [`skills/qrate-cli`](skills/qrate-cli/SKILL.md) covers finding and driving the command.
 
-POST one JSON request to `url` with `Authorization: Bearer <token>`, `Content-Type: application/json`, and `X-Agent: codex`. The agent name is a visible label, not authority. Re-read the endpoint after `forbidden` because the token changes each launch.
+Run `qrate agent <command>`. The parameters are one JSON object on stdin, and the answer is JSON on stdout. Name yourself with `--agent codex` or `QRATE_AGENT=codex`. The name only labels your calls in qrate's Agent panel; it proves nothing about who you are.
 
-The bridge never changes a cell. `stage_findings` only replaces that agent's draft findings in the Problems panel and optionally offers whole-cell replacements under that finding in the cell's Problems menu.
-Bridge findings remain ungrouped atomic diagnostics. Built-in diagnostic groups do not change protocol 2 query or staging formats.
-Findings the archivist ignored are absent from `overview` counts and `diagnostics` queries, exactly as they are hidden in the Problems panel.
+| Exit | Meaning | Where to look |
+|---|---|---|
+| `0` | Answered | stdout: the response |
+| `1` | Refused, for example a stale revision, bad parameters, or agent access switched off in Settings ▸ Agent | stdout: `{"error": …}` |
+| `2` | Usage error, such as stdin that is not a JSON object, or a terminal where stdin should be | stderr |
+| `3` | qrate is not running or cannot be reached | stderr |
 
-qrate's Pi comes from a full install's `agent` folder or, when that is absent, from the optional component qrate installs on demand into `components/agent/<version>` in the same application-data directory. Without either, the Agent panel offers to install it (Settings ▸ Components does too) and starts Pi once it lands, with no restart; the bridge and protocol are the same either way.
-qrate's bundled Pi runs as a contained child process. Stop, Restart, panel teardown, and app exit terminate its process tree; do not rely on an older Pi process surviving a restart.
-The bundled assistant loads its protocol 2 extension and `SYSTEM.md` with all skills disabled. The `skills/` folder in this repo packages the same instructions for an agent running outside qrate — `qrate-live-review` there is for an external Pi or any other runtime, not the built-in session.
+No command changes an existing cell's value or a file: those are staged, and applying one is the archivist's action, never a request; there is no auto-apply and no trusted agent. qrate marks each staged change on its cell (old value struck through, new value beside it, on a yellow-outlined cell) with a bar above the table to apply or discard them all; right-clicking a marked cell applies or rejects that one. `edit` changes the table's shape at once instead, as one undo step credited to you. `delete` never deletes on your say: it shows the archivist your reason and waits for them to confirm. `stage-findings` only replaces this agent's draft findings in the Problems panel. It can also offer whole-cell replacements under a finding in that cell's Problems menu. Only the archivist applies them: one at a time, or all of one agent's at once with **Apply all N fixes from <agent>** in the same menu, which is a single undo step and skips any cell edited since staging. **Discard all** drops the batch. Drafts are kept per `--agent` name, so staging again replaces only your own, and the History panel credits an accepted fix as "<author> using <agent>".
+Agent credit is retained when the action autosaves, and History refreshes when pending entries reach disk.
+Internally, shared structural, arrangement, column-description and import entry points require an explicit History origin before mutation; the recorder rejects non-empty steps without change records. Table snapshots include column declarations, so their types/descriptions and History commit in one SQLite transaction.
+Agent findings stay ungrouped atomic diagnostics. Findings the archivist ignored are absent from `overview` counts and `diagnostics` queries, exactly as they are hidden in the Problems panel.
 
-### Protocol 2 methods
+qrate's Pi comes from a full install's `agent` folder or, when that is absent, from the optional component qrate installs on demand into `components/agent/<version>` in the same application-data directory. Without either, the Agent panel offers to install it (Settings ▸ Components does too) and starts Pi once it lands, with no restart.
+qrate's bundled Pi runs as a contained child process with `QRATE_CLI` (this CLI) and `QRATE_AGENT=pi` set. Stop, Restart, panel teardown, and app exit terminate its process tree; do not rely on an older Pi process surviving a restart.
+The bundled assistant loads its extension and `SYSTEM.md` with all skills disabled. The `skills/` folder in this repo packages the same instructions for an agent running outside qrate.
 
-- `overview`: compact project, column, selection, diagnostic-count, and revision information.
-- `overview` column `data_type` values include `Title` for the primary human-readable row name.
-- `query`: bounded live rows or diagnostics. Sources are `all_rows`, `selected_rows`, `rows`, `search`, and filtered `diagnostics`. Operations include `select`, `where`, `distinct`, `group_by`, `order_by`, `limit`, and revision-bound `cursor`.
-- `program_save`: validate and activate a confined Luau function without running it.
-- `program_run`: run the saved function once against an immutable snapshot at an exact revision.
-- `thumbnails`: return at most four qrate-generated 512-pixel PNG derivatives by source row/page.
-- `stage_findings`: publish a complete advisory draft batch.
+### Commands
 
-Queries default to 20 and allow at most 50 records. Collection results send one `fields` array and positional `items`, plus `returned`, `remaining`, `truncated`, and `next_cursor`. Ask for the smallest useful field set and follow a cursor only when more evidence could change the answer.
+- `overview` (no stdin): compact project, column, selection, diagnostic-count, and revision information. Column `data_type` values include `Title` for the primary human-readable row name.
+- `query`: bounded live rows or diagnostics. `source.kind` is `all_rows`, `selected_rows`, `rows`, `search`, or `diagnostics`. Operations are `select`, `where`, `distinct`, `group_by`, `order_by`, `limit`, and a revision-bound `cursor`.
+- `program-save` (`{"source": …}`): validate and activate a confined Luau function without running it.
+- `program-run` (`{"revision": …, "args": …}`): run the saved function once against an immutable snapshot at an exact revision.
+- `thumbnails` (`{"items": […]}`): return at most four qrate-generated 512-pixel PNG derivatives by source row/page.
+- `stage-findings` (`{"revision": …, "findings": […]}`): publish a complete advisory draft batch.
+- `stage-column-rewrite` (`{"revision": …, "column": …, "values": [[row, value], …], "note": …}`): stage new values for one whole column as a single draft.
+- `stage-renames` (`{"revision": …, "renames": [{"row": …, "from": …, "to": …}]}`): stage renames of files the rows link to as a single draft.
+- `edit` (`{"revision": …, "op": …, …}`): change the table's shape at once. Operations: `add_rows` (`rows`: up to 1,000 objects of column → value), `add_column` (`name`, `after`?), `rename_column` (`column`, `name`), `move_column` (`column`, `after`? — first when absent), `describe_column` (`column`, `data_type`?, `description`?), `move_row` (`row`, `target`, `placement`: `before`/`after`/`child`), `indent_row`, `outdent_row`, `duplicate_row` (`row`), `filter` (`column`, `keep`? — clears when absent). Returns `{"result": "edited", "detail": …, "rows": […]}`.
+- `delete` (`{"revision": …, "rows": […], "reason": …}` or `{"revision": …, "column": …, "reason": …}`): ask the archivist to delete. Waits until they answer; `{"result": "deleted", "count": …}` or a refusal `delete_declined`, `delete_timed_out` (10 minutes), `delete_pending` (another delete is waiting), or `no_window`.
+
+```sh
+echo '{"source":{"kind":"selected_rows"},"select":["Title"],"limit":10}' | qrate agent query --agent codex
+```
+
+Queries default to 20 and allow at most 50 records. Collection results send one `fields` array and positional `items`, plus `returned`, `remaining`, `truncated`, and `next_cursor`. Ask for the smallest useful field set, and follow a cursor only when more evidence could change the answer.
 
 Programs have no network, filesystem, process, clock, randomness, plugin storage, UI, raw qrate objects, or staging access. Their only linked-file methods are qrate-resolved bounded UTF-8 reads and PDF text search. Original paths and bytes are never returned.
 
-Every staged finding needs the exact response `revision`, source `row`, `column`, severity, one-sentence message, and exact current whole-cell `expected`; `replacement` is optional and must be the whole proposed value. A stale cell is rejected. Never report that staging corrected data.
+Use `stage-column-rewrite` for a bulk edit of one column, never hundreds of findings. It takes up to 50,000 `[source row, whole new value]` pairs, each row once and each value at most 64 KB, at the exact current `revision`; a stale revision, an unknown column, or a row out of range is refused. Rows already holding the value come back in `unchanged`. It shows as one Problems entry, "Rewrite <column>: N rows (<note>)", which the archivist previews, applies as one undo step, or discards. Staging the same column again replaces your earlier rewrite; empty `values` retracts it.
 
-The contract is `crates/ai/src/agent.rs`, transport is `crates/app/src/agent_bridge.rs`, live adapter is `crates/table/src/agent.rs`, private runner is `crates/plugin-host/src/agent_program.rs`, and the audit panel is `crates/workspace/src/panels/agent.rs`. Keep this file synchronized when those surfaces change.
+Use `edit` for the table's shape, never for values: adding rows can fill their cells, but changing an existing cell is always a staged draft. Every edit is refused at a stale `revision`; refusals name `unknown_column`, `row_out_of_range`, `column_name_taken`, `unknown_data_type`, or `edit_refused` (such as outdenting a top-level row). Each edit is one undo step, and History shows it as "<archivist> using <agent>".
+This includes row arrangements, column type/description changes (including reassigned Title/Filename types), and filters. Deleting is the archivist's decision: give a specific reason, and if they decline, do not ask again.
+
+Use `stage-renames` to rename files a project links; never `mv`, `ren` or `Move-Item` them yourself, because qrate cannot follow or undo that. Each rename names the source `row` that links the file and `from`/`to` paths relative to the folder holding the `.qrate` file. The whole batch is refused if any path is absolute or leaves that folder (`rename_outside_project`), `from` is not the file its row links (`rename_source_mismatch`), two renames share a `from` or `to` (`rename_target_collision`), or `to` exists and is not itself being renamed away (`rename_target_exists`); a swap or a chain inside one batch is fine. It shows as one Problems entry, "Rename N files". Applying renames every file or none, updates the cell that names each file, and is one undo step that renames the files back. Staging again replaces your earlier renames; an empty list retracts them. To change identifiers and file names together, stage the rewrite and the renames at the same `revision`.
+
+Every staged finding needs the exact response `revision`, source `row`, `column`, severity, one-sentence message, and exact current whole-cell `expected`. `replacement` is optional and must be the whole proposed value. A stale cell is rejected. Never report that staging corrected data.
+
+The contract is `crates/ai/src/agent.rs`. The public command is `crates/cli/src/main.rs`, the private transport is `crates/app/src/app_control.rs`, the live adapter is `crates/table/src/agent.rs`, the private runner is `crates/plugin-host/src/agent_program.rs`, and the audit panel is `crates/workspace/src/panels/agent.rs`. Keep this file synchronized when those surfaces change.
+
+### Approved local files
+
+- `request-access` (`{"path": "file or folder", "reason": "why"}`): request read-only access in qrate's own confirmation dialog. A file grant covers one file; a directory grant includes descendants. Relative inputs are resolved against the project folder. Canonical paths enforce the boundary, including symlinks. Grants are scoped to the agent label and current project and last until qrate closes or the archivist revokes them.
+- `check-access` (`{"path": "..."}`): check existing access without prompting. The project folder and configured files folder are already readable. Refuses with `file_access_required` when a new approval is needed. Never bypass a declined request or repeat it without a new instruction from the archivist.
+- `forget-access` (`{}`): revoke this agent's explicit grants for the current project. The Agent panel's session menu also offers **Revoke file access** for all agents.
+- `import-files` (`{"revision": ..., "paths": ["..."], "recursive": false}`): attach approved paths through qrate's file-ingest and duplicate-resolution flow. It links originals in place, skips existing components, adds at most 1,000 components as one credited undo step, and returns `imported_files` with `added`, `skipped`, new source `rows`, and bounded `warnings`. Re-checks the revision and grant generation after discovery; a changed project, revision, or revoked grant refuses the import. It never copies, moves, or updates existing files or cell values.
+
+Pi's built-in read/ls/find/grep tools check grants with qrate on every call. A read grant never approves writes or shell commands. Agent labels remain labels, not authenticated identities. Scratch Luau programs retain their original confinement.

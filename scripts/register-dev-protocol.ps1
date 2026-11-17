@@ -16,10 +16,10 @@ if ($Unregister) {
 
 if (-not $Executable) {
     $root = Split-Path $PSScriptRoot -Parent
-    $Executable = Join-Path $root "target\debug\app.exe"
+    $Executable = Join-Path $root "target\debug\qrate.exe"
 }
 if (-not (Test-Path $Executable -PathType Leaf)) {
-    throw "qrate executable not found at '$Executable'. Run 'cargo build -p app' first."
+    throw "qrate executable not found at '$Executable'. Run 'cargo build -p app -p qrate-cli' first."
 }
 $Executable = (Resolve-Path $Executable).Path
 

@@ -31,6 +31,7 @@ actions!(
         ReloadPlugins,
         Quit,
         CopyDebugInfo,
+        CopyBuildInfo,
         ReportBug,
         RequestFeature,
         ReportUxIssue,
@@ -301,7 +302,14 @@ fn app_menus(cx: &gpui::App) -> Vec<Menu> {
                 MenuItem::Separator,
                 // Unit actions, not `OpenBrowser { url }`: this runs once at startup, while the
                 // debug info those items carry changes with every project opened and plugin loaded.
-                MenuItem::action("Copy Debug Info", CopyDebugInfo),
+                MenuItem::submenu(Menu {
+                    name: "Copy Debug Info".into(),
+                    disabled: false,
+                    items: vec![
+                        MenuItem::action("Full Report", CopyDebugInfo),
+                        MenuItem::action("Build Info Only", CopyBuildInfo),
+                    ],
+                }),
                 MenuItem::submenu(Menu {
                     name: "Send Feedback".into(),
                     disabled: false,

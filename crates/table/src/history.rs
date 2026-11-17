@@ -84,26 +84,51 @@ pub(crate) enum Step {
         from: usize,
         to: usize,
     },
+    ColumnDescriptions(Vec<Change>),
+    Filter {
+        col: usize,
+        before: settings::history::ColumnFilter,
+        after: settings::history::ColumnFilter,
+    },
     /// Several steps taken as one, in the order they were made — a restore.
     Batch(Vec<Step>),
     Hierarchy {
         before: Structure,
         after: Structure,
     },
+    /// Files renamed on disk, as `(from, to)`. Replaying it changes nothing in the grid: whoever
+    /// replays the step renames the files first, see [`Step::renames`].
+    Files(Vec<(PathBuf, PathBuf)>),
 }
 
 impl Step {
     /// Whether this step changed nothing and should not consume an undo.
-    fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         match self {
             Step::Cells(cells) => cells.is_empty(),
+            Step::ColumnDescriptions(changes) => changes.is_empty(),
+            Step::Filter { before, after, .. } => before == after,
             Step::RowsAdded { rows, cells, .. } => rows.is_empty() && cells.is_empty(),
             Step::RowsRemoved { rows, .. } => rows.is_empty(),
             Step::Renamed { before, after, .. } => before == after,
             Step::ColumnMoved { from, to } => from == to,
             Step::Batch(steps) => steps.iter().all(Step::is_empty),
             Step::Hierarchy { before, after } => before == after,
+            Step::Files(files) => files.is_empty(),
             _ => false,
+        }
+    }
+
+    /// The disk renames replaying this step calls for, as `(from, to)` in the replay's direction.
+    pub(crate) fn renames(&self, forward: bool) -> Vec<(PathBuf, PathBuf)> {
+        match self {
+            Step::Files(files) if forward => files.clone(),
+            Step::Files(files) => files
+                .iter()
+                .map(|(from, to)| (to.clone(), from.clone()))
+                .collect(),
+            Step::Batch(steps) => steps.iter().flat_map(|s| s.renames(forward)).collect(),
+            _ => Vec::new(),
         }
     }
 }
@@ -138,6 +163,14 @@ impl History {
     /// The step just recorded, for a command built from two edits that must undo as one.
     pub(crate) fn last_mut(&mut self) -> Option<&mut Step> {
         self.done.last_mut()
+    }
+
+    /// The step [`undo`](Self::undo) or [`redo`](Self::redo) would replay next.
+    pub(crate) fn next(&self, redo: bool) -> Option<&Step> {
+        match redo {
+            true => self.undone.last(),
+            false => self.done.last(),
+        }
     }
 
     /// The last step, to be replayed backwards. `None` when there is nothing left to undo.

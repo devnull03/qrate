@@ -1,4 +1,4 @@
-//! One-shot, read-only Luau programs for the agent bridge.
+//! One-shot, read-only Luau programs for `qrate agent program-run`.
 //!
 //! This deliberately does not load through the user plugin registry. Each call gets a fresh VM,
 //! an immutable snapshot userdata, no ambient I/O, and fixed resource/output budgets.

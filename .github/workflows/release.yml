@@ -3,9 +3,22 @@ name: Release
 # Releases are tag-driven: push a tag like `v1.2.3` to build Windows, macOS and
 # Linux artifacts and publish them to a DRAFT GitHub release. Merging to `main` alone
 # does nothing here — only a `v*` tag triggers a release.
+#
+# Running it by hand on a branch builds the version in that branch's Cargo.toml into a draft whose
+# tag is created at that commit only when the draft is published, or at once with `publish`.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the release instead of leaving a draft
+        type: boolean
+        default: false
+      summary:
+        description: Hand-written notes shown above the download instructions
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -42,9 +55,10 @@ jobs:
       - name: Derive and verify version
         id: v
         run: |
-          tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
           cargo_version="$(grep -E '^version = ' Cargo.toml | head -1 | sed -E 's/version = "([^"]+)"/\1/')"
+          tag="v$cargo_version"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tag="${GITHUB_REF_NAME}"; fi
+          version="${tag#v}"
           echo "tag=$tag         (version=$version)"
           echo "Cargo.toml workspace version=$cargo_version"
           if [ "$version" != "$cargo_version" ]; then
@@ -82,7 +96,7 @@ jobs:
 
       - name: Build
         run: |
-          cargo build --release -p app --target ${{ matrix.target }}
+          cargo build --release -p app -p qrate-cli --target ${{ matrix.target }}
           cargo build --release -p updater --bin qrate-update-helper --target ${{ matrix.target }}
 
       - name: Upload arch binary
@@ -90,7 +104,8 @@ jobs:
         with:
           name: macos-bin-${{ matrix.target }}
           path: |
-            target/${{ matrix.target }}/release/app
+            target/${{ matrix.target }}/release/qrate
+            target/${{ matrix.target }}/release/qrate-cli
             target/${{ matrix.target }}/release/qrate-update-helper
           if-no-files-found: error
 
@@ -135,10 +150,15 @@ jobs:
       - name: Merge into universal binary
         run: |
           lipo -create \
-            macos-bins/macos-bin-x86_64-apple-darwin/app \
-            macos-bins/macos-bin-aarch64-apple-darwin/app \
+            macos-bins/macos-bin-x86_64-apple-darwin/qrate \
+            macos-bins/macos-bin-aarch64-apple-darwin/qrate \
             -output universal-app
           lipo -info universal-app
+          lipo -create \
+            macos-bins/macos-bin-x86_64-apple-darwin/qrate-cli \
+            macos-bins/macos-bin-aarch64-apple-darwin/qrate-cli \
+            -output qrate-cli
+          lipo -info qrate-cli
           lipo -create \
             macos-bins/macos-bin-x86_64-apple-darwin/qrate-update-helper \
             macos-bins/macos-bin-aarch64-apple-darwin/qrate-update-helper \
@@ -210,7 +230,7 @@ jobs:
 
       - name: Build
         run: |
-          cargo build --release -p app
+          cargo build --release -p app -p qrate-cli
           cargo build --release -p updater --bin qrate-update-helper
 
       - name: Install NSIS
@@ -219,7 +239,7 @@ jobs:
       # The MSI is the enterprise-deployable counterpart to the NSIS installer — see
       # scripts/installer.wxs for why GPO/SCCM/Intune push installs need one. windows-latest ships
       # the .NET SDK, so the WiX CLI installs as a dotnet global tool; no matrix leg for this, since
-      # both installers package the one binary already built above and a second leg would just
+      # both installers package the same binaries already built above and a second leg would just
       # recompile it for nothing.
       #
       # Pinned to 5.0.2: v6 introduced FireGiant's Open Source Maintenance Fee and v7 enforces it by
@@ -267,11 +287,15 @@ jobs:
         run: |
           $ver = "${{ needs.version.outputs.version }}"
           $vi = "${{ needs.version.outputs.vi_version }}"
-          Copy-Item target/release/app.exe dist/portable/qrate.exe
+          Copy-Item target/release/qrate.exe dist/portable/qrate.exe
+          Copy-Item target/release/qrate-cli.exe dist/portable/qrate-cli.exe
           Copy-Item target/release/qrate-update-helper.exe dist/portable/qrate-update-helper.exe
+          # PATH gets only bin\, so `qrate` in a terminal is the CLI and never the GUI qrate.exe.
+          New-Item -ItemType Directory -Force dist/portable/bin | Out-Null
+          Copy-Item target/release/qrate-cli.exe dist/portable/bin/qrate.exe
           @{ schema = 1; kind = "windows-portable"; packaged_version = $ver } |
             ConvertTo-Json | Set-Content -Encoding utf8 dist/portable/qrate-install.json
-          # Zip the staging folder's *contents*, so the sidecars sit beside qrate.exe on extract —
+          # Zip the staging folder's *contents*, so the sidecars sit beside GUI qrate.exe on extract —
           # which is exactly where the preview tiers look for them.
           Compress-Archive -Path dist/portable/* `
             -DestinationPath "dist/qrate-$ver-x86_64.zip" -Force
@@ -326,7 +350,7 @@ jobs:
         run: |
           $ver = "${{ needs.version.outputs.version }}"
           ./scripts/package-store-msix.ps1 `
-            -SourceExe target/release/app.exe `
+            -SourceExe target/release/qrate.exe `
             -OutputPath "dist/qrate-$ver-x64.msix" `
             -QrateVersion $ver `
             -IdentityName $env:QRATE_STORE_IDENTITY_NAME `
@@ -345,6 +369,28 @@ jobs:
             ! grep -q "$part" base.txt || { echo "::error::the base installer carries $part"; exit 1; }
           done
           rm full.txt base.txt
+
+      - name: Check NSIS install, upgrade and uninstall leave PATH exact
+        shell: pwsh
+        run: |
+          $setup = "$PWD\dist\qrate-${{ needs.version.outputs.version }}-setup.exe"
+          $dir = Join-Path $env:RUNNER_TEMP "qrate-install"
+          $bin = "$dir\bin"
+          $unrelated = "C:\qrate-path-sentinel"
+          $key = "HKCU:\Environment"
+          function Entries { @((Get-Item $key).GetValue('Path', '', 'DoNotExpandEnvironmentNames') -split ';' | Where-Object { $_ }) }
+          New-ItemProperty $key Path -Value ((@(Entries) + $unrelated) -join ';') -PropertyType ExpandString -Force | Out-Null
+          foreach ($round in "install", "upgrade") {
+            Start-Process $setup -ArgumentList "/S", "/D=$dir" -Wait
+            $hits = @(Entries | Where-Object { $_ -eq $bin }).Count
+            if ($hits -ne 1) { throw "$round left $hits PATH entries for $bin" }
+            & "$bin\qrate.exe" version
+            if ($LASTEXITCODE -ne 0) { throw "bin\qrate.exe failed after $round" }
+          }
+          # _? runs the uninstaller in place and synchronously instead of from a temp copy.
+          Start-Process "$dir\Uninstall.exe" -ArgumentList "/S", "_?=$dir" -Wait
+          if (Entries | Where-Object { $_ -eq $bin }) { throw "uninstall left $bin on PATH" }
+          if (-not (Entries | Where-Object { $_ -eq $unrelated })) { throw "uninstall removed an unrelated PATH entry" }
 
       - name: Report what shipped
         shell: bash
@@ -397,7 +443,7 @@ jobs:
 
       - name: Build
         run: |
-          cargo build --release -p app
+          cargo build --release -p app -p qrate-cli
           cargo build --release -p updater --bin qrate-update-helper
 
       - name: Package tarball
@@ -405,8 +451,13 @@ jobs:
           chmod +x scripts/fetch-binaries.sh
           ver="${{ needs.version.outputs.version }}"
           stage="qrate-$ver-x86_64-linux"
-          mkdir -p "$stage"
-          cp target/release/app "$stage/qrate"
+          # The updater swaps this whole directory, so every program stays at its top level.
+          mkdir -p "$stage/bin"
+          cp target/release/qrate "$stage/qrate"
+          cp target/release/qrate-cli "$stage/qrate-cli"
+          ln -s ../qrate-cli "$stage/bin/qrate"
+          # man looks in share/man beside a bin directory on PATH, so these need no MANPATH.
+          "$stage/qrate-cli" man "$stage/share/man/man1"
           cp target/release/qrate-update-helper "$stage/qrate-update-helper"
           chmod +x "$stage/qrate-update-helper"
           printf '{\n  "schema": 1,\n  "kind": "linux-tar",\n  "packaged_version": "%s"\n}\n' \
@@ -438,6 +489,10 @@ jobs:
               { echo "::error::the full tarball is missing $part"; exit 1; }
             ! tar -tzf "dist/$base.tar.gz" | grep -q "^$base/$part" ||
               { echo "::error::the base tarball carries $part"; exit 1; }
+          done
+          for part in qrate-cli bin/qrate share/man/man1/qrate.1; do
+            tar -tzf "dist/$base.tar.gz" | grep -qx "$base/$part" ||
+              { echo "::error::the tarballs are missing $part"; exit 1; }
           done
           rm -rf "$base"
 
@@ -557,9 +612,10 @@ jobs:
       - name: Publish draft release
         uses: softprops/action-gh-release@v3
         with:
-          draft: true
+          draft: ${{ !inputs.publish }}
           prerelease: ${{ contains(needs.version.outputs.version, '-') }}
           tag_name: ${{ needs.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: ${{ needs.version.outputs.tag }}
           fail_on_unmatched_files: true
           files: |
@@ -574,6 +630,8 @@ jobs:
             dist/components.json
           body: |
             ## qrate ${{ needs.version.outputs.tag }}
+
+            ${{ inputs.summary }}
 
             ### Downloads
             Choose a download for your platform at https://qrate.dvnl.work/docs/install. Start with
@@ -594,6 +652,28 @@ jobs:
             An installed qrate updates to the same kind of download it came from. Verify your
             download against `SHA256SUMS.txt`. The `component-*` files and `components.json` are
             the parts qrate downloads by itself; you do not need to download them.
+
+            ### Command line
+            Each package includes the `qrate` command: open a project, check which one is open,
+            and let an AI agent read it. `qrate help` lists the commands, and the
+            [command-line guide](https://qrate.dvnl.work/docs/cli) covers them, shell completion
+            and the manual pages.
+
+            On Windows, installers add the package's separate `bin` directory to `PATH`; its
+            `qrate.exe` is the CLI, while shortcuts and URL associations launch the GUI
+            `qrate.exe`. The portable ZIP does not change `PATH`; add its `bin` directory
+            yourself. The Microsoft Store package does not put `qrate` on `PATH`.
+
+            On macOS, the CLI is `/Applications/qrate.app/Contents/MacOS/qrate-cli`. To expose it
+            without an administrator account:
+            ```
+            mkdir -p "$HOME/.local/bin"
+            ln -sf /Applications/qrate.app/Contents/MacOS/qrate-cli "$HOME/.local/bin/qrate"
+            ```
+            Add `$HOME/.local/bin` to your shell's `PATH` if needed.
+
+            On Linux, the archive's `bin/qrate` is a relative symlink to the CLI. Add the extracted
+            `bin` directory to `PATH`, or symlink `$HOME/.local/bin/qrate` to it.
 
             ### Enterprise (Windows)
             `*-x86_64.msi` installs per-machine and is built for Group Policy Software

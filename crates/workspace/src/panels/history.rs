@@ -102,7 +102,10 @@ impl Filter {
             Filter::Cells => any(|c| matches!(c, Change::Cell { .. })),
             Filter::Structure => any(|c| !matches!(c, Change::Cell { .. } | Change::Note { .. })),
             Filter::Notes => any(|c| matches!(c, Change::Note { .. })),
-            Filter::Fixes => matches!(entry.origin, Origin::Fix(_) | Origin::Spelling),
+            Filter::Fixes => matches!(
+                entry.origin,
+                Origin::Fix(_) | Origin::Agent { .. } | Origin::Spelling
+            ),
         }
     }
 }
@@ -520,7 +523,9 @@ fn narrowed<'a>(entry: &'a Entry, cell: Option<&(RowId, Vec<String>)>) -> Option
             Change::Note { row: r, column, .. } => {
                 *r == Some(*row) && column.as_deref().is_none_or(named)
             }
-            Change::RowAdded { row: r, .. } | Change::RowRemoved { row: r, .. } => r == row,
+            Change::RowAdded { row: r, .. }
+            | Change::RowRemoved { row: r, .. }
+            | Change::RowArranged { row: r, .. } => r == row,
             _ => false,
         })
         .cloned()
@@ -602,6 +607,11 @@ fn describe(entry: &Entry, rows: &HashMap<RowId, usize>) -> String {
             format!("Renamed column {} to {}", quote(before), quote(after))
         }
         [Change::ColumnMoved { column, .. }] => format!("Moved column {}", quote(column)),
+        [Change::ColumnDescribed { column, .. }] => {
+            format!("Changed type or description of {}", quote(column))
+        }
+        [Change::ColumnFiltered { column, .. }] => format!("Changed filter on {}", quote(column)),
+        [Change::RowArranged { row: id, .. }] => format!("Rearranged {}", row(id)),
         [
             Change::Note {
                 row: id,
@@ -814,11 +824,15 @@ impl HistoryPanel {
                 })
         };
         let meta = |entry: &Entry, when: String| {
-            [Some(entry.origin.label()), entry.author.clone(), Some(when)]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join(" · ")
+            [
+                Some(entry.origin.label()),
+                settings::history::credit(entry.author.as_deref(), &entry.origin),
+                Some(when),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ")
         };
 
         match row {

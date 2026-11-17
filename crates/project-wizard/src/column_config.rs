@@ -17,6 +17,8 @@ use settings::project::CurrentProject;
 use crate::data::{self, ColumnConfigEntry, ColumnConfigPreview};
 use crate::steps::files::{MsgKind, inline_message};
 
+type ApplyColumn = dyn Fn(&str, &str, Option<&str>, &mut App);
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum LoadConfigTab {
     File,
@@ -318,7 +320,11 @@ pub(crate) fn apply_entry(
 
 /// Load a column config onto the open project: every column the config names takes its type,
 /// description and checks. Columns it doesn't name are left exactly as they are.
-pub fn open_column_config_dialog(window: &mut Window, cx: &mut App) {
+pub fn open_column_config_dialog(
+    window: &mut Window,
+    cx: &mut App,
+    apply_column: impl Fn(&str, &str, Option<&str>, &mut App) + 'static,
+) {
     let Some(headers) = cx
         .try_global::<CurrentProject>()
         .map(|project| project.data.headers.clone())
@@ -326,8 +332,10 @@ pub fn open_column_config_dialog(window: &mut Window, cx: &mut App) {
         return;
     };
     let loader = cx.new(|cx| ColumnConfigLoader::new(headers, window, cx));
+    let apply_column = std::rc::Rc::new(apply_column);
     window.open_dialog(cx, move |dialog, _, _| {
         let apply_from = loader.clone();
+        let apply_column = apply_column.clone();
         dialog
             .title("Load column config")
             .child(loader.clone())
@@ -340,13 +348,13 @@ pub fn open_column_config_dialog(window: &mut Window, cx: &mut App) {
                 let Some(config) = apply_from.read(cx).preview.clone() else {
                     return false;
                 };
-                apply(&config, cx);
+                apply(&config, apply_column.as_ref(), cx);
                 true
             })
     });
 }
 
-fn apply(config: &ColumnConfigPreview, cx: &mut App) {
+fn apply(config: &ColumnConfigPreview, apply_column: &ApplyColumn, cx: &mut App) {
     let headers = cx.global::<CurrentProject>().data.headers.clone();
     let maps = ColumnMapContributions::all(cx);
     let mut applied = 0;
@@ -354,10 +362,12 @@ fn apply(config: &ColumnConfigPreview, cx: &mut App) {
         let Some(entry) = entry_for(config, header) else {
             continue;
         };
-        CurrentProject::set_column_type(header, &entry.data_type, cx);
-        if !entry.description.is_empty() {
-            CurrentProject::set_column_notes(header, &entry.description, cx);
-        }
+        apply_column(
+            header,
+            &entry.data_type,
+            (!entry.description.is_empty()).then_some(entry.description.as_str()),
+            cx,
+        );
         settings::columns::update(header, |settings| apply_entry(entry, &maps, settings), cx);
         applied += 1;
     }
