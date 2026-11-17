@@ -88,6 +88,35 @@ pub fn credit(author: Option<&str>, origin: &Origin) -> Option<String> {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColumnDescription {
+    pub data_type: String,
+    pub notes: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColumnFilter {
+    pub enabled: bool,
+    pub excluded: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RowPosition {
+    pub parent: Option<RowId>,
+    pub level: String,
+    pub order: i64,
+}
+
+impl From<&crate::project::RowStructure> for RowPosition {
+    fn from(row: &crate::project::RowStructure) -> Self {
+        Self {
+            parent: row.parent_id,
+            level: row.level_key.clone(),
+            order: row.sibling_order,
+        }
+    }
+}
+
 /// One recorded change. Every variant is reversible from what it carries alone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Change {
@@ -125,6 +154,21 @@ pub enum Change {
         column: String,
         from: usize,
         to: usize,
+    },
+    RowArranged {
+        row: RowId,
+        before: RowPosition,
+        after: RowPosition,
+    },
+    ColumnDescribed {
+        column: String,
+        before: ColumnDescription,
+        after: ColumnDescription,
+    },
+    ColumnFiltered {
+        column: String,
+        before: ColumnFilter,
+        after: ColumnFilter,
     },
     /// `None` on either side is no note there. A row-less or column-less note widens to the whole
     /// column or row, as it does in `__notes`.
@@ -196,6 +240,29 @@ impl Change {
                 from: to,
                 to: from,
             },
+            Change::RowArranged { row, before, after } => Change::RowArranged {
+                row,
+                before: after,
+                after: before,
+            },
+            Change::ColumnDescribed {
+                column,
+                before,
+                after,
+            } => Change::ColumnDescribed {
+                column,
+                before: after,
+                after: before,
+            },
+            Change::ColumnFiltered {
+                column,
+                before,
+                after,
+            } => Change::ColumnFiltered {
+                column,
+                before: after,
+                after: before,
+            },
             Change::Note {
                 row,
                 column,
@@ -215,10 +282,14 @@ impl Change {
     pub fn key(&self) -> (Option<RowId>, Option<&str>) {
         match self {
             Change::Cell { row, column, .. } => (Some(*row), Some(column)),
-            Change::RowAdded { row, .. } | Change::RowRemoved { row, .. } => (Some(*row), None),
+            Change::RowAdded { row, .. }
+            | Change::RowRemoved { row, .. }
+            | Change::RowArranged { row, .. } => (Some(*row), None),
             Change::ColumnAdded { column, .. }
             | Change::ColumnRemoved { column, .. }
             | Change::ColumnMoved { column, .. }
+            | Change::ColumnDescribed { column, .. }
+            | Change::ColumnFiltered { column, .. }
             | Change::ColumnRenamed { after: column, .. } => (None, Some(column)),
             Change::Note { row, column, .. } => (*row, column.as_deref()),
         }

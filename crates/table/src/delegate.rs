@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use diagnostics::{DATASET_MAIN, Location};
 use settings::columns::{ColumnType, TextMode};
-use settings::history::{Change, Entry, EntryId, Origin};
+use settings::history::{Change, ColumnFilter, Entry, EntryId, Origin, RowPosition};
 use settings::project::RowId;
 
 use crate::history::{Cells, Col, History, Row, Step, Structure};
@@ -1076,8 +1076,31 @@ impl QrateTableDelegate {
                 from: *from,
                 to: *to,
             }],
-            // A batch's steps are read one by one, each in its own state, as they are replayed.
-            Step::Batch(_) | Step::Hierarchy { .. } | Step::Files(_) => Vec::new(),
+            Step::Hierarchy { before, after } => {
+                let before: HashMap<_, _> = before
+                    .iter()
+                    .map(|row| (row.row_id, RowPosition::from(row)))
+                    .collect();
+                after
+                    .iter()
+                    .filter_map(|row| {
+                        let previous = before.get(&row.row_id)?;
+                        let current = RowPosition::from(row);
+                        (*previous != current).then(|| Change::RowArranged {
+                            row: row.row_id,
+                            before: previous.clone(),
+                            after: current,
+                        })
+                    })
+                    .collect()
+            }
+            Step::ColumnDescriptions(changes) => changes.clone(),
+            Step::Filter { col, before, after } => vec![Change::ColumnFiltered {
+                column: self.column_name(*col).to_string(),
+                before: before.clone(),
+                after: after.clone(),
+            }],
+            Step::Batch(_) | Step::Files(_) => Vec::new(),
         }
     }
 
@@ -1096,6 +1119,7 @@ impl QrateTableDelegate {
 
     fn replay_logged(&mut self, step: &Step, forward: bool, origin: Origin) -> Vec<Change> {
         self.edits += 1;
+        self.values_generation += 1;
         let mut changes = Vec::new();
         let mut reshaped = Reshaped::default();
         self.replay(step, forward, &mut changes, &mut reshaped);
@@ -1114,7 +1138,12 @@ impl QrateTableDelegate {
         let mut positions = None;
         let mut steps = Vec::new();
         let mut applied = Vec::new();
+        let mut arranged = HashMap::new();
         for change in changes {
+            if let Change::RowArranged { row, after, .. } = change {
+                arranged.insert(*row, after);
+                continue;
+            }
             match self.apply_change(change, &mut positions) {
                 Some(step) => {
                     applied.extend(self.changes(&step));
@@ -1146,6 +1175,27 @@ impl QrateTableDelegate {
                     *after_structure = after.clone();
                 }
             }
+        }
+        if !arranged.is_empty() {
+            // Restore all parents together: partial reparenting can temporarily form a cycle.
+            let before = self.hierarchy.rows();
+            let mut rows = before.to_vec();
+            for row in &mut rows {
+                if let Some(position) = arranged.get(&row.row_id) {
+                    row.parent_id = position.parent;
+                    row.level_key = position.level.clone();
+                    row.sibling_order = position.order;
+                }
+            }
+            self.hierarchy
+                .replace_rows(&self.row_ids, &rows, &self.default_level);
+            self.recompute_visible();
+            let step = Step::Hierarchy {
+                before,
+                after: self.hierarchy.rows(),
+            };
+            applied.extend(self.changes(&step));
+            steps.push(step);
         }
         self.log(Origin::Restore(to), applied.clone());
         self.history.push(Step::Batch(steps), self.undo_cap);
@@ -1267,7 +1317,60 @@ impl QrateTableDelegate {
                 self.shift_column(from, to);
                 Some(Step::ColumnMoved { from, to })
             }
-            Change::Note { .. } => None,
+            Change::ColumnDescribed { column, .. } => {
+                self.data_col(column)?;
+                Some(Step::ColumnDescriptions(vec![change.clone()]))
+            }
+            Change::ColumnFiltered { column, after, .. } => {
+                let col = self.data_col(column)?;
+                let before = self.filter_snapshot(col);
+                self.restore_filter(col, after);
+                Some(Step::Filter {
+                    col,
+                    before,
+                    after: after.clone(),
+                })
+            }
+            Change::RowArranged { .. } | Change::Note { .. } => None,
+        }
+    }
+
+    pub(crate) fn record_descriptions(&mut self, changes: Vec<Change>) {
+        if !changes.is_empty() {
+            self.values_generation += 1;
+            self.record(Step::ColumnDescriptions(changes), Origin::Structure);
+        }
+    }
+
+    fn filter_snapshot(&self, col: usize) -> ColumnFilter {
+        let mut excluded: Vec<_> = self.filters[col].iter().map(ToString::to_string).collect();
+        excluded.sort();
+        ColumnFilter {
+            enabled: self.filters_enabled[col],
+            excluded,
+        }
+    }
+
+    fn restore_filter(&mut self, col: usize, state: &ColumnFilter) {
+        self.filters_enabled[col] = state.enabled;
+        self.filters[col] = state.excluded.iter().cloned().map(Into::into).collect();
+        self.recompute_visible();
+        self.values_generation += 1;
+    }
+
+    pub(crate) fn filter_from_agent(&mut self, col: usize, keep: Option<&[SharedString]>) {
+        let before = self.filter_snapshot(col);
+        match keep {
+            Some(keep) => {
+                self.set_column_filter_enabled(col, true);
+                self.set_column_kept(col, keep);
+            }
+            None => self.clear_column_filter(col),
+        }
+        let after = self.filter_snapshot(col);
+        if before != after {
+            self.values_generation += 1;
+            self.record(Step::Filter { col, before, after }, Origin::Structure);
         }
     }
 
@@ -1406,6 +1509,10 @@ impl QrateTableDelegate {
             },
             Step::Hierarchy { before, after } => {
                 reshaped.structure = Some(if forward { after } else { before }.clone());
+            }
+            Step::ColumnDescriptions(_) => {}
+            Step::Filter { col, before, after } => {
+                self.restore_filter(*col, if forward { after } else { before })
             }
             Step::Files(_) => {}
         }
@@ -2033,6 +2140,7 @@ impl QrateTableDelegate {
         edit(&mut self.hierarchy)?;
         let after = self.hierarchy.rows();
         self.record(Step::Hierarchy { before, after }, Origin::Structure);
+        self.values_generation += 1;
         self.recompute_visible();
         Ok(())
     }
@@ -2124,6 +2232,7 @@ impl QrateTableDelegate {
         if let Some(column) = self.columns.get_mut(col) {
             column.key = name.clone();
             column.name = name;
+            self.values_generation += 1;
         }
     }
 

@@ -1897,12 +1897,48 @@ fn edit_table(
                 ),
                 None => None,
             };
+            let descriptions =
+                |cx: &App| -> BTreeMap<String, settings::history::ColumnDescription> {
+                    cx.global::<settings::project::CurrentProject>()
+                        .data
+                        .columns
+                        .iter()
+                        .map(|column| {
+                            (
+                                column.name.clone(),
+                                settings::history::ColumnDescription {
+                                    data_type: column.data_type.clone(),
+                                    notes: column.notes.clone(),
+                                },
+                            )
+                        })
+                        .collect()
+                };
+            let before = descriptions(cx);
             if let Some(kind) = kind {
                 settings::project::CurrentProject::set_column_type(&name, kind.as_str(), cx);
             }
             if let Some(description) = &description {
                 settings::project::CurrentProject::set_column_notes(&name, description.trim(), cx);
             }
+            let changes = descriptions(cx)
+                .into_iter()
+                .filter_map(|(column, after)| {
+                    let before = before.get(&column).cloned().unwrap_or_default();
+                    (before != after).then_some(settings::history::Change::ColumnDescribed {
+                        column,
+                        before,
+                        after,
+                    })
+                })
+                .collect();
+            state.update(cx, |state, cx| {
+                state.delegate_mut().record_descriptions(changes);
+                cx.emit(crate::TableChanged);
+                cx.notify();
+            });
+            settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+            crate::autosave(cx);
             crate::revalidate_now(cx);
             (format!("Describe column {name}"), Vec::new())
         }
@@ -1950,19 +1986,16 @@ fn edit_table(
             let col = column(&name, cx)?;
             state.update(cx, |state, cx| {
                 let delegate = state.delegate_mut();
-                match &keep {
-                    Some(keep) => {
-                        let keep: Vec<SharedString> =
-                            keep.iter().map(|value| value.clone().into()).collect();
-                        delegate.set_column_filter_enabled(col, true);
-                        delegate.set_column_kept(col, &keep);
-                    }
-                    None => delegate.clear_column_filter(col),
-                }
+                let keep: Option<Vec<SharedString>> = keep
+                    .as_ref()
+                    .map(|values| values.iter().cloned().map(Into::into).collect());
+                delegate.filter_from_agent(col, keep.as_deref());
                 state.refresh(cx);
                 cx.emit(crate::TableChanged);
                 cx.notify();
             });
+            settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+            crate::autosave(cx);
             let detail = match keep {
                 Some(_) => format!("Filter {name}"),
                 None => format!("Clear the filter on {name}"),
@@ -3285,6 +3318,18 @@ mod tests {
                 serde_json::json!({"op":"duplicate_row","row":0}),
                 "Duplicate row 1",
             ),
+            (
+                serde_json::json!({"op":"indent_row","row":1}),
+                "Indent row 2",
+            ),
+            (
+                serde_json::json!({"op":"describe_column","column":"Caption","description":"Updated description"}),
+                "Describe column Caption",
+            ),
+            (
+                serde_json::json!({"op":"filter","column":"Year","keep":[""]}),
+                "Filter Year",
+            ),
         ] {
             cx.update(|cx| {
                 edit(operation, cx).unwrap();
@@ -3301,9 +3346,47 @@ mod tests {
             );
         }
         assert!(
-            saves.get() >= 5,
+            saves.get() >= 8,
             "History hears when pending entries reach disk"
         );
+    }
+
+    #[gpui::test]
+    fn agent_arrangement_descriptions_and_filters_have_reversible_history(cx: &mut TestAppContext) {
+        open(cx);
+        cx.update(|cx| {
+            let state = cx.global::<TableStateHandle>().0.upgrade().unwrap();
+            let original = state.read(cx).delegate().row_structure();
+            let revision_before = revision(cx);
+            edit(serde_json::json!({"op":"indent_row","row":1}), cx).unwrap();
+            assert_ne!(revision(cx), revision_before);
+            assert_eq!(last_change(cx).as_deref(), Some("Indent row 2 · rk using pi"));
+            let entry = state.read(cx).delegate().unsaved_history().last().unwrap();
+            assert!(entry.changes.iter().any(|change| matches!(change, settings::history::Change::RowArranged { row: 2, .. })));
+            crate::history_step(false, cx);
+            assert_eq!(state.read(cx).delegate().row_structure(), original);
+            crate::history_step(true, cx);
+            assert_ne!(state.read(cx).delegate().row_structure(), original);
+            crate::history_step(false, cx);
+
+            edit(serde_json::json!({"op":"describe_column","column":"Title","data_type":"Date","description":"Date captured"}), cx).unwrap();
+            assert_eq!(last_change(cx).as_deref(), Some("Describe column Title · rk using pi"));
+            crate::history_step(false, cx);
+            let restored = cx.global::<settings::project::CurrentProject>().data.columns.iter().find(|column| column.name == "Title").unwrap();
+            assert_eq!((&*restored.data_type, &*restored.notes), ("Title", "The primary display title"));
+            crate::history_step(true, cx);
+            let restored = cx.global::<settings::project::CurrentProject>().data.columns.iter().find(|column| column.name == "Title").unwrap();
+            assert_eq!((&*restored.data_type, &*restored.notes), ("Date", "Date captured"));
+
+            let visible = state.read(cx).delegate().visible().to_vec();
+            edit(serde_json::json!({"op":"filter","column":"Medium","keep":["Video"]}), cx).unwrap();
+            assert_eq!(last_change(cx).as_deref(), Some("Filter Medium · rk using pi"));
+            assert_ne!(state.read(cx).delegate().visible(), visible);
+            crate::history_step(false, cx);
+            assert_eq!(state.read(cx).delegate().visible(), visible);
+            crate::history_step(true, cx);
+            assert_ne!(state.read(cx).delegate().visible(), visible);
+        });
     }
 
     /// An agent may change the table's shape directly; each change is one undo step credited to it.

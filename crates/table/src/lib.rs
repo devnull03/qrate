@@ -528,6 +528,12 @@ fn settle(
             follow_rename(before, &after.clone().into(), cx);
         }
     }
+    for change in changes {
+        if let Change::ColumnDescribed { column, after, .. } = change {
+            settings::project::CurrentProject::set_column_type(column, &after.data_type, cx);
+            settings::project::CurrentProject::set_column_notes(column, &after.notes, cx);
+        }
+    }
     TablePanel::persist_columns(state, cx);
     sync_project_columns(state, None, cx);
     settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);

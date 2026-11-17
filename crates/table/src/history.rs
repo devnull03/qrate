@@ -84,6 +84,12 @@ pub(crate) enum Step {
         from: usize,
         to: usize,
     },
+    ColumnDescriptions(Vec<Change>),
+    Filter {
+        col: usize,
+        before: settings::history::ColumnFilter,
+        after: settings::history::ColumnFilter,
+    },
     /// Several steps taken as one, in the order they were made — a restore.
     Batch(Vec<Step>),
     Hierarchy {
@@ -100,6 +106,8 @@ impl Step {
     fn is_empty(&self) -> bool {
         match self {
             Step::Cells(cells) => cells.is_empty(),
+            Step::ColumnDescriptions(changes) => changes.is_empty(),
+            Step::Filter { before, after, .. } => before == after,
             Step::RowsAdded { rows, cells, .. } => rows.is_empty() && cells.is_empty(),
             Step::RowsRemoved { rows, .. } => rows.is_empty(),
             Step::Renamed { before, after, .. } => before == after,
