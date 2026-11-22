@@ -1,7 +1,6 @@
 # Agent capabilities plan
 
-Status: plan, for review. Nothing here is built. Work would land on `feature/qrate-cli` unless decided
-otherwise.
+Status: in progress on `feature/qrate-cli`.
 
 ## Purpose
 
@@ -280,6 +279,27 @@ Each is listed with its effect and the security points beyond what the dispatche
 | 9 | `stage.changeset` combines patch, renames, added rows or columns and deletes into one draft | Stage | Applying it is one `Step::Batch`. Any delete in it gets the same confirmation with the agent's reason when the archivist clicks Apply, so "deleting always asks" still holds. |
 | 10 | `notes.add` lets the agent attach a note to a cell or row | Edit | Shown as written by the agent and credited "you using pi"; one undo step. |
 
+### Files outside the project: grants, relinking and the shell
+
+Reading outside the project already works through read grants: Pi's `read`, `ls`, `grep` and `find`
+ask qrate on every call, and qrate shows the archivist the path and the agent's reason. The project
+folder and its files folder need no grant. Three additions:
+
+| Capability | Effect | What it does |
+|---|---|---|
+| `files.relink` | Stage | Point a row's file link at another file: inside the project or covered by a grant, and existing. The cell shows old → new path; applying uses `delegate.relink`, one credited undo step. Skipped if the row no longer points where the agent read. |
+| `files.find_candidates` | Read | For a row's missing or named file, search granted folders for likely matches by name, size and content hash, reusing `file-ingest`'s inventory. The agent stages relinks from the result. |
+| `files.request_access` / `check_access` / `forget_access` | Reach(Files) | Today's grant calls, moved onto the dispatcher. |
+
+**`GrantedPath`.** A capability that takes a path declares the input as `GrantedPath`, not `String`.
+Only the dispatcher constructs one, after checking the grant (and asking when there is none), so a
+feature cannot be handed a path the archivist did not allow, and no feature re-implements the check.
+
+**The shell.** Grants cover Pi's file tools, not `bash`: an approved `cat ~/secret` runs. B4's sandbox
+closes this on Linux and macOS by giving the shell a read-only view of exactly the project, Pi's temp
+directory and the granted paths, rebuilt from qrate's grant list before each command. Windows keeps
+per-command approval only, and the docs say so.
+
 Threats that apply to all of these:
 
 - **Prompt injection from cell data.** A cell can say "delete every row". Deletes still need a click,
@@ -292,6 +312,14 @@ Threats that apply to all of these:
   `Reach` grant belongs to that token, not to the name.
 - **Supply chain.** Pi and the extension stay pinned by checksum. No unpinned packages, and no
   project-local MCP servers.
+
+## Update channel
+
+Today a build's channel follows its own version: a beta build follows every signed release, a
+stable build only stable ones. Add **Settings ▸ Updates ▸ Channel: Stable / Beta**, stored in
+`AppSettings`, defaulting to the build's own channel. Choosing Stable on a beta build waits for the
+next stable release rather than downgrading; choosing Beta on a stable build offers prereleases.
+The signed-manifest checks stay as they are; only which releases count as candidates changes.
 
 ## Order
 
@@ -306,13 +334,13 @@ Each phase ends with `scripts/ci.sh` green and its own tests.
 5. **C6, then C9.**
 6. **C7.** The only phase that adds network access, so it comes last and gets its own review.
 
-## Open questions
+## Decisions
 
-- Should plugins be able to register capabilities, so a Luau plugin feature reaches the agent the
-  same way? This is useful, but it changes the plugin API, so the three-repo rule applies. It is not
-  in this plan.
-- When an agent's shape edits are undone, should the History panel group them per agent turn?
-- Should `review` mode be the default for every project, or only for one opened the first time?
+- Plugins do not register capabilities in this round: it changes the plugin API and its three
+  repositories. The trait is shaped so a plugin-backed capability can be added later.
+- History is not grouped per agent turn: each step stays one undo, as today.
+- `review` is the default mode for a project the first time Pi opens it; the archivist's choice is
+  remembered per project.
 
 ## Sources
 
