@@ -196,6 +196,99 @@ pub struct Rename {
     pub to: String,
 }
 
+/// Several columns of several rows, staged as one draft. A column it touches replaces this agent's
+/// earlier draft for that column.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct StagePatch {
+    pub revision: TableRevision,
+    /// Each source row at most once; 50,000 cells in all.
+    pub rows: Vec<PatchRow>,
+    /// Shown beside the draft, such as where the values came from.
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct PatchRow {
+    pub row: usize,
+    /// Column name → new whole-cell value.
+    pub set: BTreeMap<String, String>,
+    /// Column name → the whole-cell value you read. A row whose cells no longer match is skipped
+    /// as stale rather than staged.
+    #[serde(default)]
+    pub expect: BTreeMap<String, String>,
+}
+
+impl StagePatch {
+    pub fn validate(&self) -> Result<(), RequestError> {
+        let cells: usize = self.rows.iter().map(|row| row.set.len()).sum();
+        if cells > MAX_REWRITE_ROWS {
+            return Err(RequestError::TooManyRewriteRows);
+        }
+        if self
+            .rows
+            .iter()
+            .flat_map(|row| row.set.values())
+            .any(|value| value.len() > MAX_REWRITE_VALUE)
+        {
+            return Err(RequestError::RewriteValueTooLarge);
+        }
+        if self
+            .note
+            .as_ref()
+            .is_some_and(|n| n.len() > MAX_MESSAGE_LEN)
+        {
+            return Err(RequestError::RewriteNoteTooLong);
+        }
+        let mut rows = std::collections::HashSet::with_capacity(self.rows.len());
+        if !self.rows.iter().all(|row| rows.insert(row.row)) {
+            return Err(RequestError::DuplicateRewriteRow);
+        }
+        Ok(())
+    }
+}
+
+/// Groups of values in one column that look like variants of each other.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ValueVariants {
+    pub column: String,
+    /// Groups to return, 1 to 100. Defaults to 20.
+    #[serde(default = "default_query_limit")]
+    pub limit: usize,
+}
+
+/// A page of the project's History, newest first.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct HistoryQuery {
+    /// Entries to return, 1 to 50. Defaults to 20.
+    #[serde(default = "default_query_limit")]
+    pub limit: usize,
+    /// `next_before` from the previous page.
+    pub before: Option<u64>,
+    /// Only changes to this source row.
+    pub row: Option<usize>,
+}
+
+/// Notes on cells and rows.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct NotesQuery {
+    /// Only notes on these source rows.
+    #[serde(default)]
+    pub rows: Vec<usize>,
+}
+
+/// Attach a note to a cell, or to a whole row when `column` is absent. Replaces your own earlier
+/// note there; an empty `text` removes it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct AddNote {
+    pub revision: TableRevision,
+    pub row: usize,
+    pub column: Option<String>,
+    /// At most 2,000 bytes.
+    pub text: String,
+}
+
+pub const MAX_NOTE_LEN: usize = 2_000;
+
 // ---------------------------------------------------------------------------------------------
 // Shape edits
 
@@ -590,6 +683,104 @@ pub struct StagedRewrite {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct StagedPatch {
+    /// Cells staged.
+    pub accepted: usize,
+    /// Cells that already hold the value asked for.
+    pub unchanged: usize,
+    /// Source rows skipped because their `expect` no longer matches.
+    pub stale: Vec<usize>,
+    /// The columns the draft touches.
+    pub columns: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct VariantGroups {
+    pub groups: Vec<VariantGroup>,
+    /// More groups exist than `limit` allowed.
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct VariantGroup {
+    /// The most used spelling in the group: a suggestion, not a verdict.
+    pub suggested: String,
+    /// Each spelling and how many cells hold it.
+    pub values: Vec<Count>,
+    /// Why the values were grouped, such as "case" or "accents".
+    pub reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct HistoryPage {
+    pub entries: Vec<HistoryItem>,
+    /// Pass as `before` for the next page; absent on the last page.
+    pub next_before: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct HistoryItem {
+    /// `0` for a change not saved yet.
+    pub id: u64,
+    /// `YYYY-MM-DD HH:MM`, local time.
+    pub at: String,
+    /// What made the change, such as "Typed" or an agent's label.
+    pub origin: String,
+    /// Who: the archivist, or "archivist using agent".
+    pub credit: Option<String>,
+    /// One line per change, such as `Title row 4: "Harvest" → "Harvest Festival"`.
+    pub changes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct NotesPage {
+    pub notes: Vec<NoteItem>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct NoteItem {
+    pub row: Option<usize>,
+    pub column: Option<String>,
+    pub text: String,
+    pub author: Option<String>,
+    pub date: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct StagedRelinks {
+    pub accepted: usize,
+    /// Rows already linking the file asked for.
+    pub unchanged: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct Candidates {
+    pub items: Vec<CandidateSet>,
+    /// Files looked at across the folders.
+    pub scanned: usize,
+    /// The scan stopped at its limit before seeing every file.
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct CandidateSet {
+    pub row: usize,
+    pub column: String,
+    /// The link the cell holds now.
+    pub value: String,
+    /// Whether the linked file can be found.
+    pub missing: bool,
+    pub candidates: Vec<Candidate>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct Candidate {
+    pub path: String,
+    /// `same_name` or `same_stem`.
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct StagedRenames {
     pub accepted: usize,
 }
@@ -712,6 +903,10 @@ pub enum RequestError {
     FileAccessTimedOut,
     FileAccessFailed(String),
     FileImportFailed(String),
+    NoteTooLong,
+    /// The path is not a file.
+    NotAFile(String),
+    TooManyFolders,
 }
 
 impl std::fmt::Display for RequestError {

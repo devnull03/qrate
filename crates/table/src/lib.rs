@@ -408,6 +408,31 @@ pub fn write_cells(cells: Vec<(usize, usize, SharedString)>, origin: Origin, cx:
     autosave(cx);
 }
 
+/// Repoint rows at files, as one undo step: each `(row, col, link)` writes the file cell and the
+/// row's file together, as relinking does.
+pub(crate) fn write_links(links: Vec<(usize, usize, SharedString)>, origin: Origin, cx: &mut App) {
+    if links.is_empty() {
+        return;
+    }
+    let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    else {
+        return;
+    };
+    let rows: Vec<usize> = links.iter().map(|(row, _, _)| *row).collect();
+    photos::forget(cx);
+    state.update(cx, |state, cx| {
+        state.delegate_mut().relink(links, origin);
+        photos::refresh(state, Some(&rows), cx);
+        cx.emit(delegate::TableChanged);
+        cx.notify();
+    });
+    settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+    revalidate_now(cx);
+    autosave(cx);
+}
+
 /// Follow files already renamed on disk, as one undo step: `cells` rename them in the grid, and
 /// `rows` are the rows now linking each new path.
 pub(crate) fn write_renames(

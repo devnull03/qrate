@@ -24,6 +24,18 @@ Effect: `reach_files`. Answer: `file_access`.
 |---|---|---|---|
 | `path` | string | yes |  |
 
+### `find_candidates`
+
+Search folders for files that could be what rows link to, by file name and then by name without extension, especially for missing files. Stage the ones you are sure of with stage_relinks.
+
+Effect: `reach_files`. Answer: `find_candidates`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `rows` | array | no | Source rows to look for, at most 100. Empty means every row whose file is missing. |
+| `folders` | array | yes | Folders to search, 1 to 8, each inside the project or covered by a read grant. |
+| `recursive` | boolean | no | Search subfolders too. Defaults to true. |
+
 ### `forget_access`
 
 Give up every read grant you hold for this project.
@@ -54,6 +66,18 @@ Effect: `reach_files`. Answer: `file_access`.
 |---|---|---|---|
 | `path` | string | yes |  |
 | `reason` | string | yes | Shown to the archivist. At most 512 bytes. |
+
+### `stage_relinks`
+
+Stage new file links for rows, such as for files that moved, as one draft. Each file must exist and be inside the project or covered by a read grant; applying repoints the rows as one undo step.
+
+Effect: `stage`. Answer: `staged_relinks`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `revision` | integer | yes | The table's revision. Read it from `overview`; a call that names rows or cells must pass the revision it read them at, and is refused as stale if the table changed since. |
+| `links` | array | yes | At most 50,000. |
+| `note` | string | no | Shown beside the draft. |
 
 ## media
 
@@ -123,6 +147,54 @@ Effect: `read`. Answer: `query`.
 | `limit` | integer | no | Records per page, 1 to 50. |
 | `cursor` | string | no | `next_cursor` from the previous page of the same query. |
 
+## review
+
+### `add_note`
+
+Attach a note to a cell or row, signed with your name, to explain a finding or ask the archivist something. Never overwrites a note someone else wrote.
+
+Effect: `edit`. Answer: `edited`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `revision` | integer | yes | The table's revision. Read it from `overview`; a call that names rows or cells must pass the revision it read them at, and is refused as stale if the table changed since. |
+| `row` | integer | yes |  |
+| `column` | string | no |  |
+| `text` | string | yes | At most 2,000 bytes. |
+
+### `history`
+
+Read the project's History, newest first: who changed what and how, including your own credited changes. Filter to one row to see how it came to be.
+
+Effect: `read`. Answer: `history`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `limit` | integer | no | Entries to return, 1 to 50. Defaults to 20. |
+| `before` | integer | no | `next_before` from the previous page. |
+| `row` | integer | no | Only changes to this source row. |
+
+### `notes`
+
+Read the notes on cells and rows, with who wrote them and when.
+
+Effect: `read`. Answer: `notes`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `rows` | array | no | Only notes on these source rows. |
+
+### `value_variants`
+
+Group a column's values that look like variant spellings of each other (case, accents, punctuation, word order, near misses), with how many cells hold each. Fix them with stage_patch or stage_column_rewrite.
+
+Effect: `read`. Answer: `value_variants`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `column` | string | yes |  |
+| `limit` | integer | no | Groups to return, 1 to 100. Defaults to 20. |
+
 ## stage
 
 ### `stage_column_rewrite`
@@ -148,6 +220,18 @@ Effect: `stage`. Answer: `staged`.
 |---|---|---|---|
 | `revision` | integer | yes | The table's revision. Read it from `overview`; a call that names rows or cells must pass the revision it read them at, and is refused as stale if the table changed since. |
 | `findings` | array | yes | The complete batch, at most 200. Replaces this agent's previous findings. |
+
+### `stage_patch`
+
+Stage new values for several columns of several rows as one draft, each row optionally guarded by the values you read. Use it for splitting, merging or normalising across columns.
+
+Effect: `stage`. Answer: `staged_patch`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `revision` | integer | yes | The table's revision. Read it from `overview`; a call that names rows or cells must pass the revision it read them at, and is refused as stale if the table changed since. |
+| `rows` | array | yes | Each source row at most once; 50,000 cells in all. |
+| `note` | string | no | Shown beside the draft, such as where the values came from. |
 
 ### `stage_renames`
 

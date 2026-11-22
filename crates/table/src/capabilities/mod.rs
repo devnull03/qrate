@@ -24,6 +24,8 @@ use gpui_component::{ActiveTheme as _, WindowExt as _, v_flex};
 use sha2::{Digest as _, Sha256};
 
 use crate::agent::{AgentProgram, PROGRAM_RUNS, in_active_window};
+
+mod review;
 use crate::{QrateTableDelegate, TableStateHandle};
 
 pub(crate) fn table(cx: &App) -> Result<Entity<TableState<QrateTableDelegate>>, RequestError> {
@@ -1362,6 +1364,7 @@ pub fn init(cx: &mut App) {
     capability::register::<CheckAccessCap>(cx);
     capability::register::<ForgetAccessCap>(cx);
     capability::register::<ImportFilesCap>(cx);
+    review::register(cx);
 }
 
 #[cfg(test)]

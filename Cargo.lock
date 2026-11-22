@@ -8715,6 +8715,7 @@ dependencies = [
  "preview",
  "qrate-export",
  "regex",
+ "schemars",
  "serde",
  "serde_json",
  "settings",

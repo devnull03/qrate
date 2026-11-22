@@ -13,6 +13,7 @@ gpui-component.workspace = true
 regex = "1"
 serde.workspace = true
 serde_json.workspace = true
+schemars.workspace = true
 ai = { path = "../ai" }
 capability = { path = "../capability" }
 async-channel = "2"
@@ -26,10 +27,10 @@ plugin-host = { path = "../plugin-host" }
 preview = { path = "../preview" }
 components = { path = "../components" }
 visual-search = { path = "../visual-search" }
+clustering = { path = "../clustering" }
 base64 = "0.22"
 sha2 = "0.10"
 
 [dev-dependencies]
 capability = { path = "../capability", features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }
-clustering = { path = "../clustering" }

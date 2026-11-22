@@ -430,16 +430,30 @@ struct StagedFix {
 struct Rewrite {
     note: Option<String>,
     rows: BTreeMap<usize, (SharedString, SharedString)>,
+    /// The column holds file links: applying repoints each row's file, not just its text.
+    relink: bool,
 }
 
 impl Rewrite {
     fn title(&self, column: &str) -> String {
         let note = self.note.as_ref().map(|note| format!(" ({note})"));
+        let verb = match self.relink {
+            true => "Relink",
+            false => "Rewrite",
+        };
         format!(
-            "Rewrite {column}: {} rows{}",
+            "{verb} {column}: {} rows{}",
             self.rows.len(),
             note.unwrap_or_default()
         )
+    }
+}
+
+/// Write `cells`, as file links when `relink`, as one undo step.
+fn write(cells: Vec<(usize, usize, SharedString)>, relink: bool, origin: Origin, cx: &mut App) {
+    match relink {
+        true => crate::write_links(cells, origin, cx),
+        false => crate::write_cells(cells, origin, cx),
     }
 }
 
@@ -799,9 +813,14 @@ pub(crate) fn stage_column_rewrite(
     if rows.is_empty() {
         batch.rewrites.remove(column.as_str());
     } else {
-        batch
-            .rewrites
-            .insert(column.clone().into(), Rewrite { note, rows });
+        batch.rewrites.insert(
+            column.clone().into(),
+            Rewrite {
+                note,
+                rows,
+                relink: false,
+            },
+        );
     }
     publish(&source, cx);
     log::info!(
@@ -812,6 +831,161 @@ pub(crate) fn stage_column_rewrite(
     );
 
     Ok(StagedRewrite {
+        accepted,
+        unchanged,
+    })
+}
+
+/// Stage several columns of several rows as one draft: one rewrite per column touched, each
+/// replacing this agent's earlier draft of that column. A row whose `expect` no longer matches is
+/// skipped as stale.
+pub(crate) fn stage_patch(
+    agent: &str,
+    patch: Vec<ai::agent::PatchRow>,
+    note: Option<String>,
+    cx: &mut App,
+) -> Result<ai::agent::StagedPatch, RequestError> {
+    let state = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+        .ok_or(RequestError::TableUnavailable)?;
+    let delegate = state.read(cx).delegate();
+    let mut columns: BTreeMap<SharedString, BTreeMap<usize, (SharedString, SharedString)>> =
+        BTreeMap::new();
+    let (mut unchanged, mut stale) = (0, Vec::new());
+    for row in patch {
+        let cell = |column: &str| {
+            let col = delegate
+                .data_col(column)
+                .ok_or(RequestError::UnknownColumn)?;
+            delegate
+                .cell(row.row, col)
+                .cloned()
+                .ok_or(RequestError::RewriteRowOutOfRange)
+        };
+        let mut matches = true;
+        for (column, expected) in &row.expect {
+            matches &= cell(column)? == expected.as_str();
+        }
+        if !matches {
+            stale.push(row.row);
+            continue;
+        }
+        for (column, value) in row.set {
+            let before = cell(&column)?;
+            if before == value.as_str() {
+                unchanged += 1;
+                continue;
+            }
+            columns
+                .entry(column.into())
+                .or_default()
+                .insert(row.row, (before, value.into()));
+        }
+    }
+    let accepted = columns.values().map(BTreeMap::len).sum();
+    let touched: Vec<String> = columns.keys().map(ToString::to_string).collect();
+    let source = agent_source(agent);
+    let batch = cx
+        .default_global::<StagedFixes>()
+        .0
+        .entry(source.clone())
+        .or_default();
+    for (column, rows) in columns {
+        batch.rewrites.insert(
+            column,
+            Rewrite {
+                note: note.clone(),
+                rows,
+                relink: false,
+            },
+        );
+    }
+    publish(&source, cx);
+    log::info!(
+        "{agent} staged a patch of {accepted} cell(s) in {} column(s), {unchanged} unchanged, {} \
+         row(s) stale",
+        touched.len(),
+        stale.len()
+    );
+    Ok(ai::agent::StagedPatch {
+        accepted,
+        unchanged,
+        stale,
+        columns: touched,
+    })
+}
+
+/// Stage file links as `(row, column, file)`: the cell will hold the link text qrate writes for
+/// that file, and applying repoints the row as relinking does. `column` defaults to the row's first
+/// file column.
+pub(crate) fn stage_relinks(
+    agent: &str,
+    links: Vec<(usize, Option<String>, PathBuf)>,
+    note: Option<String>,
+    cx: &mut App,
+) -> Result<ai::agent::StagedRelinks, RequestError> {
+    let state = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+        .ok_or(RequestError::TableUnavailable)?;
+    let folder = cx
+        .try_global::<settings::project::CurrentProject>()
+        .and_then(|project| project.data.values.get(settings::project::FILES_FOLDER_KEY))
+        .map(|value| PathBuf::from(value.text().as_ref()))
+        .filter(|folder| !folder.as_os_str().is_empty());
+    let delegate = state.read(cx).delegate();
+    let file_column =
+        (0..delegate.column_count()).find(|col| delegate.column_type(*col) == ColumnType::Filename);
+    let mut columns: BTreeMap<SharedString, BTreeMap<usize, (SharedString, SharedString)>> =
+        BTreeMap::new();
+    let mut unchanged = Vec::new();
+    for (row, column, file) in links {
+        if !file.is_file() {
+            return Err(RequestError::NotAFile(file.display().to_string()));
+        }
+        let col = match &column {
+            Some(name) => delegate.data_col(name).ok_or(RequestError::UnknownColumn)?,
+            None => file_column.ok_or(RequestError::UnknownColumn)?,
+        };
+        let before = delegate
+            .cell(row, col)
+            .cloned()
+            .ok_or(RequestError::RowOutOfRange)?;
+        let after: SharedString = match &folder {
+            Some(folder) => crate::relink::link_text(folder, &file),
+            None => file_ingest::normalized_path(&file),
+        }
+        .into();
+        if before == after {
+            unchanged.push(row);
+            continue;
+        }
+        columns
+            .entry(delegate.column_name(col).to_string().into())
+            .or_default()
+            .insert(row, (before, after));
+    }
+    let accepted = columns.values().map(BTreeMap::len).sum();
+    let source = agent_source(agent);
+    let batch = cx
+        .default_global::<StagedFixes>()
+        .0
+        .entry(source.clone())
+        .or_default();
+    for (column, rows) in columns {
+        batch.rewrites.insert(
+            column,
+            Rewrite {
+                note: note.clone(),
+                rows,
+                relink: true,
+            },
+        );
+    }
+    publish(&source, cx);
+    log::info!("{agent} staged {accepted} relink(s)");
+    Ok(ai::agent::StagedRelinks {
         accepted,
         unchanged,
     })
@@ -851,9 +1025,9 @@ fn apply_rewrite(source: &SharedString, column: &SharedString, cx: &mut App) -> 
     let agent = agent_name(source).to_owned();
     let origin = Origin::Agent {
         agent: agent.clone(),
-        fix: format!("Rewrite {column}"),
+        fix: rewrite.title(column),
     };
-    crate::write_cells(cells, origin, cx);
+    write(cells, rewrite.relink, origin, cx);
     log::info!(
         "{agent}: rewrite of {column} applied to {applied} cell(s), {stale} skipped as stale"
     );
@@ -1180,6 +1354,7 @@ pub(crate) fn settle_cell_change(row: usize, col: usize, apply: bool, cx: &mut A
         }
         return;
     }
+    let mut relink = false;
     if let Some(batch) = cx.default_global::<StagedFixes>().0.get_mut(&source) {
         match kind {
             StagedKind::Fix => {
@@ -1191,6 +1366,7 @@ pub(crate) fn settle_cell_change(row: usize, col: usize, apply: bool, cx: &mut A
             }
             StagedKind::Rewrite => {
                 if let Some(rewrite) = batch.rewrites.get_mut(&column) {
+                    relink = rewrite.relink;
                     rewrite.rows.remove(&row);
                     if rewrite.rows.is_empty() {
                         batch.rewrites.remove(&column);
@@ -1206,7 +1382,7 @@ pub(crate) fn settle_cell_change(row: usize, col: usize, apply: bool, cx: &mut A
             agent: change.agent.to_string(),
             fix: format!("Apply a change to {column}"),
         };
-        crate::write_cells(vec![(row, col, change.after)], origin, cx);
+        write(vec![(row, col, change.after)], relink, origin, cx);
     }
 }
 
@@ -1250,17 +1426,24 @@ pub(crate) fn apply_all(source: &SharedString, cx: &mut App) {
             cells.insert((*row, col), fix.replacement.clone());
         }
     }
+    let mut links = Vec::new();
     for (column, rewrite) in &rewrites {
         let Some(col) = delegate.data_col(column) else {
             continue;
         };
         for (row, (before, after)) in &rewrite.rows {
-            if delegate.cell(*row, col) == Some(before) {
-                cells.insert((*row, col), after.clone());
+            if delegate.cell(*row, col) != Some(before) {
+                continue;
+            }
+            match rewrite.relink {
+                true => links.push((*row, col, after.clone())),
+                false => {
+                    cells.insert((*row, col), after.clone());
+                }
             }
         }
     }
-    let (applied, stale) = (cells.len(), total - cells.len());
+    let (applied, stale) = (cells.len() + links.len(), total - cells.len() - links.len());
     let agent = agent_name(source).to_owned();
     if applied > 0 {
         let origin = Origin::Agent {
@@ -1271,7 +1454,8 @@ pub(crate) fn apply_all(source: &SharedString, cx: &mut App) {
             .into_iter()
             .map(|((row, col), text)| (row, col, text))
             .collect();
-        crate::write_cells(cells, origin, cx);
+        crate::write_cells(cells, origin.clone(), cx);
+        crate::write_links(links, origin, cx);
     }
     let mut message = format!("{applied} applied, {stale} skipped as stale");
     if has_renames {
@@ -2973,5 +3157,218 @@ mod tests {
             assert_eq!(window.notifications(cx).len(), 1, "the result was shown");
         })
         .unwrap();
+    }
+
+    /// A capability's answer as JSON, for the ones this module's `ResultSet` does not name.
+    fn raw(
+        name: &str,
+        params: serde_json::Value,
+        cx: &mut gpui::App,
+    ) -> Result<serde_json::Value, RequestError> {
+        register(cx);
+        let task =
+            capability::dispatch(name, params, capability::Caller::Agent("pi".into()), cx).task;
+        capability::now(task)
+            .unwrap_or_else(|_| panic!("{name} did not answer at once"))
+            .map(|answer| answer.value)
+    }
+
+    /// A patch stages several columns in one draft, skips a row whose guard no longer matches,
+    /// and applies as one undo step.
+    #[gpui::test]
+    fn a_patch_stages_several_columns_and_guards_each_row(cx: &mut TestAppContext) {
+        open(cx);
+        cx.update(|cx| {
+            let staged = raw(
+                "stage_patch",
+                serde_json::json!({
+                    "revision": revision(cx).0,
+                    "rows": [
+                        {"row": 0, "set": {"Title": "Harvest Festival", "Medium": "16mm film"},
+                         "expect": {"Title": "Harvest"}},
+                        {"row": 1, "set": {"Medium": "VHS"}, "expect": {"Title": "Not Wharf"}},
+                        {"row": 2, "set": {"Medium": "Film"}}
+                    ],
+                    "note": "from the shot list"
+                }),
+                cx,
+            )
+            .unwrap();
+            assert_eq!(staged["result"], "staged_patch");
+            assert_eq!(staged["accepted"], 2);
+            assert_eq!(staged["unchanged"], 1, "row 2 already says Film");
+            assert_eq!(staged["stale"], serde_json::json!([1]));
+            assert_eq!(cell(0, cx), "Harvest", "staging writes nothing");
+
+            crate::agent::apply_all(&agent_source("pi"), cx);
+            assert_eq!(cell(0, cx), "Harvest Festival");
+            crate::history_step(false, cx);
+            assert_eq!(
+                cell(0, cx),
+                "Harvest",
+                "one undo takes back the whole patch"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn variant_spellings_come_back_grouped_with_a_suggestion(cx: &mut TestAppContext) {
+        open(cx);
+        cx.update(|cx| {
+            raw(
+                "add_rows",
+                serde_json::json!({"revision": revision(cx).0, "rows": [{"Medium": "film"}]}),
+                cx,
+            )
+            .unwrap();
+            let groups = raw(
+                "value_variants",
+                serde_json::json!({"column": "Medium"}),
+                cx,
+            )
+            .unwrap();
+            assert_eq!(groups["groups"][0]["suggested"], "Film");
+            assert_eq!(groups["groups"][0]["values"][0]["count"], 2);
+            assert_eq!(groups["groups"][0]["values"][1]["value"], "film");
+            assert_eq!(
+                raw("value_variants", serde_json::json!({"column": "Nope"}), cx),
+                Err(RequestError::UnknownColumn)
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn history_shows_an_agents_credited_change(cx: &mut TestAppContext) {
+        open(cx);
+        cx.update(|cx| {
+            raw(
+                "add_column",
+                serde_json::json!({"revision": revision(cx).0, "name": "Date"}),
+                cx,
+            )
+            .unwrap();
+            let page = raw("history", serde_json::json!({}), cx).unwrap();
+            let newest = &page["entries"][0];
+            assert_eq!(newest["credit"], "using pi");
+            assert_eq!(newest["changes"][0], "added column Date");
+        });
+    }
+
+    /// An agent's note is signed, replaceable by that agent, and never written over the archivist's.
+    #[gpui::test]
+    fn an_agent_signs_its_notes_and_leaves_others_alone(cx: &mut TestAppContext) {
+        open(cx);
+        cx.update(|cx| {
+            let note = |text: &str, cx: &mut gpui::App| {
+                raw(
+                    "add_note",
+                    serde_json::json!({"revision": revision(cx).0, "row": 0, "column": "Title", "text": text}),
+                    cx,
+                )
+            };
+            note("Is this the 1974 festival?", cx).unwrap();
+            let notes = raw("notes", serde_json::json!({"rows": [0]}), cx).unwrap();
+            assert_eq!(notes["notes"][0]["text"], "pi: Is this the 1974 festival?");
+            note("Probably 1975.", cx).unwrap();
+            let notes = raw("notes", serde_json::json!({}), cx).unwrap();
+            assert_eq!(notes["notes"].as_array().unwrap().len(), 1, "replaced, not added");
+
+            let location = diagnostics::Location {
+                dataset: DATASET_MAIN.into(),
+                row: Some(1),
+                row_id: Some(2),
+                column: Some("Title".into()),
+            };
+            diagnostics::Diagnostics::set_note(
+                location,
+                "Check the reel label".into(),
+                settings::history::Origin::Typed,
+                cx,
+            );
+            let theirs = raw(
+                "add_note",
+                serde_json::json!({"revision": revision(cx).0, "row": 1, "column": "Title", "text": "x"}),
+                cx,
+            );
+            assert!(matches!(theirs, Err(RequestError::EditRefused(_))));
+        });
+    }
+
+    /// A relink points a row at a file that exists and is allowed, and applying repoints the row.
+    #[gpui::test]
+    fn a_staged_relink_repoints_the_row_once_applied(cx: &mut TestAppContext) {
+        let dir = open_files("relink", cx);
+        std::fs::create_dir_all(dir.join("photos/moved")).unwrap();
+        std::fs::write(dir.join("photos/moved/1-final.jpg"), "1").unwrap();
+        let outside = std::env::temp_dir().join("qrate-agent-relink-outside.jpg");
+        std::fs::write(&outside, "x").unwrap();
+        cx.update(|cx| {
+            assert_eq!(
+                raw(
+                    "stage_relinks",
+                    serde_json::json!({"revision": revision(cx).0, "links": [
+                        {"row": 0, "path": outside.to_string_lossy()}
+                    ]}),
+                    cx,
+                ),
+                Err(RequestError::FileAccessRequired(
+                    outside.to_string_lossy().into_owned()
+                )),
+                "a file outside the project needs a read grant"
+            );
+            let staged = raw(
+                "stage_relinks",
+                serde_json::json!({"revision": revision(cx).0, "links": [
+                    {"row": 0, "path": "photos/moved/1-final.jpg"}
+                ], "note": "moved by the digitisation vendor"}),
+                cx,
+            )
+            .unwrap();
+            assert_eq!(staged["accepted"], 1);
+            assert_eq!(linked(0, cx).0, "1", "staging links nothing");
+            crate::agent::apply_all(&agent_source("pi"), cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(
+                linked(0, cx),
+                ("moved/1-final.jpg".into(), Some("1-final.jpg".into()))
+            );
+            crate::history_step(false, cx);
+            assert_eq!(linked(0, cx).0, "1");
+        });
+    }
+
+    #[gpui::test]
+    async fn candidates_for_a_file_are_found_by_name_and_stem(cx: &mut TestAppContext) {
+        let dir = open_files("candidates", cx);
+        std::fs::create_dir_all(dir.join("photos/elsewhere/deeper")).unwrap();
+        std::fs::write(dir.join("photos/elsewhere/deeper/2.jpg"), "2").unwrap();
+        std::fs::write(dir.join("photos/elsewhere/2.tif"), "2").unwrap();
+        let task = cx.update(|cx| {
+            register(cx);
+            capability::dispatch(
+                "find_candidates",
+                serde_json::json!({"rows": [1], "folders": ["photos/elsewhere"]}),
+                capability::Caller::Agent("pi".into()),
+                cx,
+            )
+            .task
+        });
+        cx.run_until_parked();
+        let found = task.await.unwrap().value;
+        let candidates = found["items"][0]["candidates"].as_array().unwrap();
+        assert_eq!(found["items"][0]["value"], "2");
+        assert_eq!(found["items"][0]["missing"], false);
+        let paths: Vec<&str> = candidates
+            .iter()
+            .map(|c| c["path"].as_str().unwrap())
+            .collect();
+        assert!(paths.iter().any(|path| path.ends_with("deeper/2.jpg")));
+        assert!(paths.iter().any(|path| path.ends_with("elsewhere/2.tif")));
+        assert!(
+            candidates.iter().all(|c| c["reason"] == "same_name"),
+            "the link names no extension, so either file matches it by name"
+        );
     }
 }
