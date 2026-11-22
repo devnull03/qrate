@@ -153,6 +153,11 @@ pub trait Capability: 'static {
         None
     }
 
+    /// For [`Effect::Confirm`]: an A2UI surface the agent sent to show in the dialog.
+    fn surface(_input: &Self::Input) -> Option<Value> {
+        None
+    }
+
     /// For [`Effect::Confirm`]: a few lines naming what will change, such as row titles.
     fn details(_input: &Self::Input, _cx: &App) -> Vec<String> {
         Vec::new()
@@ -238,6 +243,9 @@ pub struct Confirmation {
     pub agent: SharedString,
     /// Whether the button deletes something.
     pub destructive: bool,
+    /// An A2UI `createSurface` message the agent sent to show alongside its reason, such as a table
+    /// of what will change. Drawn inside a frame marked as the agent's; the buttons stay qrate's.
+    pub surface: Option<Value>,
     pub title: String,
     pub reason: String,
     pub details: Vec<String>,
@@ -550,6 +558,7 @@ pub fn invoke<C: Capability>(
         Confirmation {
             agent: agent.clone(),
             destructive: C::DESTRUCTIVE,
+            surface: C::surface(&input),
             title: match &place {
                 Some(place) => format!("Look things up in {place}"),
                 None => call.label.clone(),

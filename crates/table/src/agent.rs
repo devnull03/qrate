@@ -1545,6 +1545,7 @@ pub(crate) fn apply_all(source: &SharedString, cx: &mut App) {
         capability::Confirmation {
             agent: agent_name(source).to_owned().into(),
             destructive: true,
+            surface: None,
             title: format!("Delete {} rows as part of its change set", rows.len()),
             reason: reason.clone(),
             details: Vec::new(),
@@ -3739,5 +3740,88 @@ mod tests {
         assert_eq!(changed["changed"], true);
         assert_eq!(changed["events"][0]["kind"], "draft_applied");
         assert_eq!(changed["events"][0]["agent"], "pi");
+    }
+
+    fn rows_surface() -> serde_json::Value {
+        serde_json::json!({
+            "version": "1.0",
+            "createSurface": {
+                "surfaceId": "rows",
+                "catalogId": a2ui_gpui_kit::BASIC_CATALOG_ID,
+                "components": [
+                    {"id": "root", "component": "Column", "children": ["a", "b"]},
+                    {"id": "a", "component": "Text", "text": "Row 2: Wharf"},
+                    {"id": "b", "component": "Text", "text": "Row 3: Cannery"}
+                ]
+            }
+        })
+    }
+
+    /// A delete can carry the agent's own table of rows, drawn in the dialog qrate owns; a surface
+    /// qrate cannot draw is refused before anyone is asked.
+    #[gpui::test]
+    async fn a_delete_shows_the_agents_surface_inside_qrates_dialog(cx: &mut TestAppContext) {
+        use gpui_component::WindowExt as _;
+        let window = open_in_window(cx);
+        let refused = cx.update(|cx| {
+            raw(
+                "delete",
+                serde_json::json!({"revision": revision(cx).0, "rows": [1], "reason": "duplicates",
+                    "surface": {"version": "1.0", "createSurface": {"surfaceId": "x", "catalogId": a2ui_gpui_kit::BASIC_CATALOG_ID,
+                        "components": [{"id": "root", "component": "Video", "url": "https://example.org/v"}]}}}),
+                cx,
+            )
+        });
+        assert!(
+            matches!(refused, Err(RequestError::MalformedParams(_))),
+            "{refused:?}"
+        );
+        let asked = cx.update(|cx| {
+            raw_later(
+                "delete",
+                serde_json::json!({"revision": revision(cx).0, "rows": [1, 2], "reason": "duplicates", "surface": rows_surface()}),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            assert!(window.has_active_dialog(cx))
+        })
+        .unwrap();
+        cx.update(|cx| crate::capabilities::answer_pending_confirm(false, cx));
+        assert_eq!(asked.await, Err(RequestError::Declined));
+    }
+
+    #[gpui::test]
+    async fn a_question_is_dismissed_without_an_answer(cx: &mut TestAppContext) {
+        use gpui_component::WindowExt as _;
+        let window = open_in_window(cx);
+        let asked = cx.update(|cx| {
+            raw_later(
+                "ask",
+                serde_json::json!({"question": "Which date is right?", "surface": rows_surface()}),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let second = cx.update(|cx| {
+            raw(
+                "ask",
+                serde_json::json!({"question": "Another?", "surface": rows_surface()}),
+                cx,
+            )
+        });
+        assert_eq!(
+            second,
+            Err(RequestError::ConfirmPending),
+            "one question at a time"
+        );
+        cx.update_window(window, |_, window, cx| {
+            assert!(window.has_active_dialog(cx));
+            window.close_all_dialogs(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(asked.await, Err(RequestError::Declined));
     }
 }

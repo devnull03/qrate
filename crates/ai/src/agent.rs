@@ -373,6 +373,9 @@ pub struct Delete {
     pub column: Option<String>,
     /// Shown to the archivist. At most 512 bytes.
     pub reason: String,
+    /// An A2UI v1.0 `createSurface` message shown under your reason, such as a table of the rows.
+    /// Drawn in a frame marked as yours; the Delete and Keep buttons stay qrate's.
+    pub surface: Option<Value>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1003,6 +1006,7 @@ mod tests {
             rows,
             column: column.map(Into::into),
             reason: "why".into(),
+            surface: None,
         };
         assert_eq!(delete(vec![1], None).validate(), Ok(()));
         assert_eq!(delete(vec![], Some("Notes")).validate(), Ok(()));
