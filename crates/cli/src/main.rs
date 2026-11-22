@@ -161,6 +161,9 @@ enum AgentCommand {
         /// The capability's name, as `capabilities` lists it.
         name: String,
     },
+    /// Follow the archivist: print one JSON line each time the table, the selection, or one of
+    /// your drafts changes, until interrupted. Takes no input.
+    Watch,
     /// Project, columns, selection, diagnostic counts and revision. Takes no input.
     ///
     /// Start here, and keep `revision`: `program-run` and `stage-findings` need that exact number.
@@ -235,6 +238,7 @@ impl AgentCommand {
         match self {
             Self::Capabilities => "capabilities",
             Self::Call { name } => name,
+            Self::Watch => "wait_for_change",
             Self::Overview => "overview",
             Self::Query => "query",
             Self::ProgramSave => "program_save",
@@ -316,7 +320,10 @@ fn main() {
         Some(Command::Agent { command, .. })
             if !matches!(
                 command,
-                AgentCommand::Overview | AgentCommand::Capabilities | AgentCommand::Call { .. }
+                AgentCommand::Overview
+                    | AgentCommand::Capabilities
+                    | AgentCommand::Call { .. }
+                    | AgentCommand::Watch
             ) && std::io::stdin().is_terminal() =>
         {
             Err(Failure::Usage(
@@ -324,6 +331,10 @@ fn main() {
                     .into(),
             ))
         }
+        Some(Command::Agent {
+            agent,
+            command: AgentCommand::Watch,
+        }) => watch(agent.or_else(|| std::env::var("QRATE_AGENT").ok())),
         Some(Command::Agent { agent, command }) => agent_call(
             command,
             agent.or_else(|| std::env::var("QRATE_AGENT").ok()),
@@ -449,6 +460,35 @@ fn status_report(project: Option<Value>, json: bool) -> String {
         (None, false) => "stopped".into(),
         (Some(project), false) => {
             format!("running\nproject: {}", project.as_str().unwrap_or("none"))
+        }
+    }
+}
+
+/// Call `wait_for_change` in a loop, each time with what the last answer showed, and print every
+/// answer that changed something.
+fn watch(agent: Option<String>) -> Result<Option<ExitStatus>, Failure> {
+    let (mut revision, mut selection, mut since) = (None::<Value>, None::<Value>, 0u64);
+    loop {
+        let request = serde_json::json!({
+            "method": "wait_for_change",
+            "params": {"revision": revision, "selection": selection, "since": since, "timeout_s": 20},
+        });
+        let body = accept(app_request(
+            "POST",
+            "/v1/agent",
+            agent.as_deref(),
+            Some(&request.to_string()),
+            Duration::from_secs(30),
+        )?)?;
+        let answer: Value = serde_json::from_str(&body)
+            .map_err(|error| Failure::Other(format!("qrate sent an unreadable answer: {error}")))?;
+        revision = answer.get("revision").cloned();
+        selection = answer.get("selection").cloned();
+        if let Some(last) = answer["events"].as_array().and_then(|events| events.last()) {
+            since = last["seq"].as_u64().unwrap_or(since);
+        }
+        if answer["changed"] == Value::Bool(true) {
+            print(&answer.to_string());
         }
     }
 }
