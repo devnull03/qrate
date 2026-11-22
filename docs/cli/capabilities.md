@@ -1,6 +1,6 @@
 # Capability reference
 
-<!-- Generated from qrate's capability catalog. Do not edit: run `QRATE_BLESS=1 cargo test -p table capability_reference` after changing a capability. -->
+<!-- Generated from qrate's capability catalog. Do not edit: run `QRATE_BLESS=1 cargo test -p app capability_reference` after changing a capability. -->
 
 Everything an agent can ask qrate to do. Call any of these with `qrate agent call <name>` and the parameters as JSON on stdin; `qrate agent capabilities` prints this list with full JSON Schemas. Every answer also carries `revision` and `result`.
 
@@ -81,6 +81,30 @@ Effect: `stage`. Answer: `staged_relinks`.
 
 ## media
 
+### `image`
+
+Read one row's linked file as a PNG of up to 2048 pixels, to read labels, captions or handwriting. Only files the project links; use thumbnails to skim.
+
+Effect: `read`. Answer: `image`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `row` | integer | yes |  |
+| `page` | integer | no | Page of a multi-page file, from 0. |
+| `max_edge` | integer | no | Longest side in pixels, 256 to 2048. Defaults to 1568. |
+
+### `similar`
+
+Rank rows by how much their images look like one row's image, or like a short description, using qrate's on-device visual search. Useful for spotting duplicates and series. Needs visual search turned on by the archivist.
+
+Effect: `read`. Answer: `similar`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `row` | integer | no | Find images like this row's. Give `row` or `text`. |
+| `text` | string | no | Find images matching this description, such as "a parade float". |
+| `limit` | integer | no | Rows to return, 1 to 50. Defaults to 20. |
+
 ### `thumbnails`
 
 Read small PNG previews of up to four rows' linked files, when the image itself is the evidence.
@@ -147,6 +171,19 @@ Effect: `read`. Answer: `query`.
 | `limit` | integer | no | Records per page, 1 to 50. |
 | `cursor` | string | no | `next_cursor` from the previous page of the same query. |
 
+### `wait_for_change`
+
+Wait up to 25 seconds for the archivist to edit the table, change the selection, or apply or discard your drafts, then say what changed. Call it in a loop to follow along; `qrate agent watch` does that for you.
+
+Effect: `read`. Answer: `wait_for_change`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `revision` | integer | no | The `revision` you last saw; a different one answers at once. |
+| `selection` | array | no | The `selection` you last saw; a different one answers at once. |
+| `since` | integer | no | The `seq` of the last event you saw. |
+| `timeout_s` | integer | no | How long to wait, 1 to 25 seconds. Defaults to 20. |
+
 ## review
 
 ### `add_note`
@@ -161,6 +198,48 @@ Effect: `edit`. Answer: `edited`.
 | `row` | integer | yes |  |
 | `column` | string | no |  |
 | `text` | string | yes | At most 2,000 bytes. |
+
+### `adopt_check`
+
+Ask the archivist to keep the program you saved (program_save) as one of the project's checks. It must return a list of {row, column, severity, message} when args.mode is "check", and it runs in the same read-only sandbox whenever the table changes.
+
+Effect: `confirm`. Answer: `adopt_check`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `revision` | integer | yes | The table's revision. Read it from `overview`; a call that names rows or cells must pass the revision it read them at, and is refused as stale if the table changed since. |
+| `name` | string | yes | Shown in the Problems panel, at most 64 characters. Adopting a name you used before replaces that check. |
+| `reason` | string | yes | Shown to the archivist: what the check looks for. At most 512 bytes. |
+
+### `authority_search`
+
+Look a term up in an authority file (LCSH, Wikidata or GeoNames) through qrate, to suggest a controlled heading. The archivist allows each authority once per session. Stage what you choose with stage_patch.
+
+Effect: `reach_network`. Answer: `authority_search`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `authority` | string | yes | `LCSH`, `Wikidata` or `GeoNames`. |
+| `term` | string | yes | At most 200 characters. |
+| `reason` | string | no | Shown to the archivist the first time you reach this authority. |
+
+### `checks`
+
+List the agent-written checks this project runs, with who wrote them.
+
+Effect: `read`. Answer: `checks`.
+
+No parameters.
+
+### `export_check`
+
+Dry-run an export (CSV, Excel, CSL-JSON for Zotero, or the ZIP with files) in memory and report what would fail or be lost. Writes nothing.
+
+Effect: `read`. Answer: `export_check`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `format` | string | yes |  |
 
 ### `history`
 
@@ -196,6 +275,22 @@ Effect: `read`. Answer: `value_variants`.
 | `limit` | integer | no | Groups to return, 1 to 100. Defaults to 20. |
 
 ## stage
+
+### `stage_changeset`
+
+Stage a whole migration as one draft: cell values (patch), file renames, relinks, new rows and deletions. The archivist reviews it in the table and applies it in one step, confirming any deletion with your reason; one undo takes it all back. A refused change set discards your staged drafts.
+
+Effect: `stage`. Answer: `stage_changeset`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `revision` | integer | yes | The table's revision. Read it from `overview`; a call that names rows or cells must pass the revision it read them at, and is refused as stale if the table changed since. |
+| `patch` | array | no |  |
+| `renames` | array | no |  |
+| `relinks` | array | no |  |
+| `add_rows` | array | no | New rows, each as column name → value. At most 1,000. |
+| `delete` | object | no | Rows to delete inside a change set, and why. |
+| `note` | string | no | Shown beside the draft. |
 
 ### `stage_column_rewrite`
 

@@ -466,11 +466,11 @@ pub fn search(path: &Path, needle: &str) -> Vec<Match> {
     pdf::search(path, needle).unwrap_or_default()
 }
 
-/// The same cached 512px preview the UI uses, encoded as PNG for a bounded agent attachment.
-/// The caller already resolved `path` through qrate's linked-files index; this function never
-/// exposes the path or original bytes.
-pub fn thumbnail_png(path: &Path, page: usize) -> Option<Vec<u8>> {
-    let pixels = thumbnail_pixels(path, CARD, page)?;
+/// A cached preview at most `max_edge` pixels on its long side, encoded as PNG for a bounded agent
+/// attachment. The caller already resolved `path` through qrate's linked-files index; this function
+/// never exposes the path or original bytes.
+pub fn png(path: &Path, page: usize, max_edge: u32) -> Option<Vec<u8>> {
+    let pixels = thumbnail_pixels(path, max_edge, page)?;
     let mut encoded = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(pixels)
         .write_to(&mut encoded, image::ImageFormat::Png)

@@ -135,6 +135,30 @@ test_capability!(Draft, "draft", Exposure::Agent, Effect::Stage);
 test_capability!(Change, "change", Exposure::Agent, Effect::Edit);
 test_capability!(Remove, "remove", Exposure::Agent, Effect::Confirm);
 test_capability!(Open, "open", Exposure::Agent, Effect::Reach(Reach::Files));
+struct Fetch;
+
+impl Capability for Fetch {
+    const NAME: &'static str = "fetch";
+    const SUMMARY: &'static str = "A test network capability.";
+    const GROUP: &'static str = "test";
+    const EXPOSURE: Exposure = Exposure::Agent;
+    const EFFECT: Effect = Effect::Reach(Reach::Network);
+    type Input = Input;
+    type Output = Output;
+
+    fn label(_: &Input, _: &App) -> String {
+        "fetch".into()
+    }
+
+    fn destination(_: &Input) -> Option<String> {
+        Some("Example (example.org)".into())
+    }
+
+    fn run(input: Input, _: &Invocation, _: &mut App) -> Task<Result<Output, RequestError>> {
+        ran("fetch", &input)
+    }
+}
+
 test_capability!(
     Private,
     "private",
@@ -185,6 +209,7 @@ fn setup(cx: &mut TestAppContext) -> Mock {
         register::<Open>(cx);
         register::<Private>(cx);
         register::<Typed>(cx);
+        register::<Fetch>(cx);
     });
     host
 }
@@ -375,6 +400,7 @@ async fn the_catalog_describes_every_capability(cx: &mut TestAppContext) {
             "capabilities",
             "change",
             "draft",
+            "fetch",
             "look",
             "open",
             "private",
@@ -394,5 +420,28 @@ async fn the_catalog_describes_every_capability(cx: &mut TestAppContext) {
     assert!(private.why.is_some());
     // An agent reads the same catalog through a call.
     let listed = call(cx, "capabilities", json!({}), pi()).await.unwrap();
-    assert_eq!(listed["capabilities"].as_array().unwrap().len(), 8);
+    assert_eq!(listed["capabilities"].as_array().unwrap().len(), 9);
+}
+
+#[gpui::test]
+async fn the_network_is_reached_only_once_the_archivist_allows_it(cx: &mut TestAppContext) {
+    let host = setup(cx);
+    assert_eq!(
+        call(cx, "fetch", json!({}), pi()).await,
+        Err(RequestError::Declined)
+    );
+    assert!(host.0.borrow().ran.is_empty());
+    host.0.borrow_mut().approve = true;
+    call(cx, "fetch", json!({}), pi()).await.unwrap();
+    call(cx, "fetch", json!({}), pi()).await.unwrap();
+    let state = host.0.borrow();
+    assert_eq!(
+        state.asked,
+        [
+            "pi: Look things up in Example (example.org) (to answer your request)",
+            "pi: Look things up in Example (example.org) (to answer your request)"
+        ],
+        "asked until allowed, then not again"
+    );
+    assert_eq!(state.ran, ["fetch", "fetch"]);
 }

@@ -158,6 +158,13 @@ pub trait Capability: 'static {
         Vec::new()
     }
 
+    /// For [`Effect::Reach`] with [`Reach::Network`]: where the call goes, named for the
+    /// archivist, such as "Library of Congress Subject Headings (id.loc.gov)". The first call to
+    /// each place asks them.
+    fn destination(_input: &Self::Input) -> Option<String> {
+        None
+    }
+
     /// Every [`GrantedPath`] in the input, so [`dispatch`] can check each one before `run`.
     fn paths(_input: &mut Self::Input) -> Vec<&mut GrantedPath> {
         Vec::new()
@@ -262,6 +269,11 @@ impl Global for HostHandle {}
 pub fn set_host(host: impl Host, cx: &mut App) {
     cx.set_global(HostHandle(Rc::new(host)));
 }
+
+/// The places on the network the archivist let each agent reach, until qrate closes.
+#[derive(Default)]
+struct NetworkGrants(std::collections::HashSet<(SharedString, String)>);
+impl Global for NetworkGrants {}
 
 /// Changes one agent may make per minute. Generous for a person-paced agent; it stops a runaway
 /// script, not real work.
@@ -481,6 +493,23 @@ pub fn invoke<C: Capability>(
             path.resolved = Some(host.resolve_path(agent.as_deref(), &path.raw, cx)?);
         }
         let reason = match (C::EFFECT, &agent) {
+            (Effect::Reach(Reach::Network), Some(agent)) => {
+                let place = C::destination(&input).ok_or(RequestError::MalformedParams(
+                    "no destination for a network call".into(),
+                ))?;
+                let granted = cx
+                    .try_global::<NetworkGrants>()
+                    .is_some_and(|grants| grants.0.contains(&(agent.clone(), place.clone())));
+                (!granted).then(|| {
+                    C::reason(&input)
+                        .map(str::trim)
+                        .filter(|reason| !reason.is_empty())
+                        .unwrap_or("to answer your request")
+                        .chars()
+                        .take(MAX_MESSAGE_LEN)
+                        .collect()
+                })
+            }
             (Effect::Confirm, Some(_)) => {
                 let reason = C::reason(&input).unwrap_or_default().trim().to_owned();
                 if reason.is_empty() {
@@ -494,7 +523,7 @@ pub fn invoke<C: Capability>(
             _ => None,
         };
         if let Some(agent) = &agent
-            && C::EFFECT.changes_project()
+            && (C::EFFECT.changes_project() || C::EFFECT == Effect::Reach(Reach::Network))
         {
             spend(agent, cx)?;
         }
@@ -513,11 +542,18 @@ pub fn invoke<C: Capability>(
         return run::<C>(input, call, host, cx);
     };
     let judged = C::revision(&input);
+    let place = match C::EFFECT {
+        Effect::Reach(Reach::Network) => C::destination(&input),
+        _ => None,
+    };
     let asked = host.confirm(
         Confirmation {
-            agent,
+            agent: agent.clone(),
             destructive: C::DESTRUCTIVE,
-            title: call.label.clone(),
+            title: match &place {
+                Some(place) => format!("Look things up in {place}"),
+                None => call.label.clone(),
+            },
             reason,
             details: C::details(&input, cx),
         },
@@ -532,6 +568,11 @@ pub fn invoke<C: Capability>(
     cx.spawn(async move |cx| {
         asked.await?;
         let task = cx.update(|cx| {
+            if let Some(place) = place {
+                cx.default_global::<NetworkGrants>()
+                    .0
+                    .insert((agent, place));
+            }
             // The table may have changed while the archivist read the dialog.
             if judged.is_some() && host.revision(cx) != judged {
                 return Task::ready(Err(RequestError::StaleRevision));
@@ -635,7 +676,7 @@ pub fn markdown(catalog: &[Descriptor]) -> String {
     let mut out = String::from(
         "# Capability reference\n\n\
          <!-- Generated from qrate's capability catalog. Do not edit: run \
-         `QRATE_BLESS=1 cargo test -p table capability_reference` after changing a capability. -->\n\n\
+         `QRATE_BLESS=1 cargo test -p app capability_reference` after changing a capability. -->\n\n\
          Everything an agent can ask qrate to do. Call any of these with \
          `qrate agent call <name>` and the parameters as JSON on stdin; `qrate agent capabilities` \
          prints this list with full JSON Schemas. Every answer also carries `revision` and \

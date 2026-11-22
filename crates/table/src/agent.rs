@@ -465,6 +465,22 @@ struct Batch {
     by_cell: HashMap<(usize, SharedString), Vec<StagedFix>>,
     rewrites: BTreeMap<SharedString, Rewrite>,
     renames: Vec<StagedRename>,
+    /// Rows a change set adds, as column name → value.
+    adds: Vec<BTreeMap<String, String>>,
+    /// Rows a change set deletes, and the agent's reason.
+    deletes: Option<(Vec<settings::project::RowId>, String)>,
+    /// Staged as one change set: applying it is one undo step.
+    atomic: bool,
+}
+
+impl Batch {
+    fn is_empty(&self) -> bool {
+        self.findings.is_empty()
+            && self.rewrites.is_empty()
+            && self.renames.is_empty()
+            && self.adds.is_empty()
+            && self.deletes.is_none()
+    }
 }
 
 /// One staged file rename, by row identity so rows added or removed since do not redirect it.
@@ -722,9 +738,7 @@ fn discard_staged(source: &SharedString, cx: &mut App) {
 /// Show what one agent has staged: its findings, and one entry per column rewrite.
 fn publish(source: &SharedString, cx: &mut App) {
     let staged = cx.default_global::<StagedFixes>();
-    if staged.0.get(source).is_some_and(|batch| {
-        batch.findings.is_empty() && batch.rewrites.is_empty() && batch.renames.is_empty()
-    }) {
+    if staged.0.get(source).is_some_and(Batch::is_empty) {
         staged.0.remove(source);
     }
     let items = staged.0.get(source).map_or_else(Vec::new, |batch| {
@@ -757,12 +771,33 @@ fn publish(source: &SharedString, cx: &mut App) {
             group: None,
             filed: None,
         });
+        let whole = |message: String| diagnostics::Diagnostic {
+            location: Location {
+                dataset: DATASET_MAIN.into(),
+                row: None,
+                row_id: None,
+                column: None,
+            },
+            severity: diagnostics::Severity::Note,
+            source: Source::Validator(source.clone()),
+            message: message.into(),
+            group: None,
+            filed: None,
+        };
+        let adds =
+            (!batch.adds.is_empty()).then(|| whole(format!("Add {} rows", batch.adds.len())));
+        let deletes = batch
+            .deletes
+            .as_ref()
+            .map(|(rows, reason)| whole(format!("Delete {} rows: {reason}", rows.len())));
         batch
             .findings
             .iter()
             .cloned()
             .chain(rewrites)
             .chain(renames)
+            .chain(adds)
+            .chain(deletes)
             .collect()
     });
     diagnostics::Diagnostics::set(&Source::Validator(source.clone()), DATASET_MAIN, items, cx);
@@ -1343,6 +1378,15 @@ pub(crate) fn settle_cell_change(row: usize, col: usize, apply: bool, cx: &mut A
     let Some((source, kind, change)) = find_change(delegate, row, col, cx) else {
         return;
     };
+    crate::capabilities::record(
+        match apply {
+            true => "change_applied",
+            false => "change_rejected",
+        },
+        agent_name(&source),
+        format!("{column} row {}", row + 1),
+        cx,
+    );
     if let StagedKind::Rename(row_id) = kind {
         if !apply {
             if let Some(batch) = cx.default_global::<StagedFixes>().0.get_mut(&source) {
@@ -1395,20 +1439,138 @@ fn staged_count(batch: &Batch) -> usize {
             .map(|rewrite| rewrite.rows.len())
             .sum::<usize>()
         + batch.renames.len()
+        + batch.adds.len()
+        + batch.deletes.as_ref().map_or(0, |(rows, _)| rows.len())
+}
+
+/// Append rows given as column name → value, as one undo step. Returns the new source rows.
+pub(crate) fn append_rows(
+    rows: &[BTreeMap<String, String>],
+    origin: Origin,
+    cx: &mut App,
+) -> Result<Vec<usize>, RequestError> {
+    let state = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+        .ok_or(RequestError::TableUnavailable)?;
+    let delegate = state.read(cx).delegate();
+    let width = delegate.column_count();
+    let mut values = Vec::with_capacity(rows.len());
+    for fields in rows {
+        let mut cells = vec![SharedString::default(); width];
+        for (name, value) in fields {
+            let col = delegate.data_col(name).ok_or(RequestError::UnknownColumn)?;
+            cells[col] = value.clone().into();
+        }
+        values.push(cells);
+    }
+    let at = delegate.row_count();
+    let added = state.update(cx, |state, cx| {
+        let added = state
+            .delegate_mut()
+            .append_spreadsheet_rows(values, origin.clone());
+        let rows: Vec<usize> = (at..at + added).collect();
+        crate::photos::refresh(state, Some(&rows), cx);
+        state.refresh(cx);
+        cx.emit(crate::TableChanged);
+        cx.notify();
+        added
+    });
+    let row_ids = state.read(cx).delegate().row_ids().to_vec();
+    diagnostics::Diagnostics::align_note_rows(DATASET_MAIN, &row_ids, origin, cx);
+    settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
+    crate::revalidate_now(cx);
+    crate::autosave(cx);
+    Ok((at..at + added).collect())
+}
+
+/// Stage rows to add and rows to delete as part of a change set; nothing changes until the
+/// archivist applies it.
+pub(crate) fn stage_rows(
+    agent: &str,
+    adds: Vec<BTreeMap<String, String>>,
+    deletes: Option<(Vec<usize>, String)>,
+    cx: &mut App,
+) -> Result<(), RequestError> {
+    let state = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|handle| handle.0.upgrade())
+        .ok_or(RequestError::TableUnavailable)?;
+    let delegate = state.read(cx).delegate();
+    for (name, _) in adds.iter().flatten() {
+        delegate.data_col(name).ok_or(RequestError::UnknownColumn)?;
+    }
+    let deletes = match deletes {
+        Some((rows, reason)) => Some((
+            rows.iter()
+                .map(|row| delegate.row_id(*row).ok_or(RequestError::RowOutOfRange))
+                .collect::<Result<Vec<_>, _>>()?,
+            reason,
+        )),
+        None => None,
+    };
+    let source = agent_source(agent);
+    let batch = cx
+        .default_global::<StagedFixes>()
+        .0
+        .entry(source.clone())
+        .or_default();
+    batch.adds = adds;
+    batch.deletes = deletes;
+    batch.atomic = true;
+    publish(&source, cx);
+    Ok(())
 }
 
 /// Apply everything one agent staged: its cell values as one undo step, then its file renames as
 /// another. Cells and files changed since the agent looked are skipped.
 pub(crate) fn apply_all(source: &SharedString, cx: &mut App) {
+    let Some(batch) = cx.default_global::<StagedFixes>().0.get_mut(source) else {
+        return;
+    };
+    let Some((rows, reason)) = batch.deletes.clone() else {
+        return apply_now(source, None, cx);
+    };
+    // Deleting always asks, even inside a change set the archivist chose to apply.
+    let asked = capability::Host::confirm(
+        &crate::capabilities::TableHost,
+        capability::Confirmation {
+            agent: agent_name(source).to_owned().into(),
+            destructive: true,
+            title: format!("Delete {} rows as part of its change set", rows.len()),
+            reason: reason.clone(),
+            details: Vec::new(),
+        },
+        cx,
+    );
+    let source = source.clone();
+    cx.spawn(async move |cx| {
+        let answer = asked.await;
+        cx.update(|cx| match answer {
+            Ok(()) => apply_now(&source, Some(rows), cx),
+            Err(_) => tell(
+                "Nothing was applied: the deletions were declined".into(),
+                cx,
+            ),
+        })
+    })
+    .detach();
+}
+
+fn apply_now(source: &SharedString, deletes: Option<Vec<settings::project::RowId>>, cx: &mut App) {
     let Some(state) = cx
         .try_global::<TableStateHandle>()
         .and_then(|handle| handle.0.upgrade())
     else {
         return;
     };
+    let mark = state.read(cx).delegate().undo_depth();
     let Some(batch) = cx.default_global::<StagedFixes>().0.get_mut(source) else {
         return;
     };
+    let (atomic, adds) = (batch.atomic, std::mem::take(&mut batch.adds));
+    batch.deletes = None;
+    batch.atomic = false;
     let fixes = std::mem::take(&mut batch.by_cell);
     let rewrites = std::mem::take(&mut batch.rewrites);
     batch.findings.clear();
@@ -1466,7 +1628,29 @@ pub(crate) fn apply_all(source: &SharedString, cx: &mut App) {
             Err(why) => format!("{message}; no file was renamed: {why}"),
         };
     }
+    let origin = Origin::Agent {
+        agent: agent.clone(),
+        fix: "Apply a change set".into(),
+    };
+    if !adds.is_empty() {
+        match append_rows(&adds, origin.clone(), cx) {
+            Ok(rows) => message = format!("{message}; {} rows added", rows.len()),
+            Err(why) => message = format!("{message}; no row was added: {why}"),
+        }
+    }
+    if let Some(ids) = deletes {
+        let rows: Vec<usize> = ids
+            .iter()
+            .filter_map(|id| state.read(cx).delegate().row_of(*id))
+            .collect();
+        message = format!("{message}; {} rows deleted", rows.len());
+        crate::structural(crate::Structural::DeleteRows(rows), origin, cx);
+    }
+    if atomic {
+        state.update(cx, |state, _| state.delegate_mut().squash_undo_since(mark));
+    }
     log::info!("{agent}: {message}");
+    crate::capabilities::record("draft_applied", &agent, message.clone(), cx);
     tell(message, cx);
 }
 
@@ -1476,6 +1660,7 @@ pub(crate) fn discard_all(source: &SharedString, cx: &mut App) {
         *batch = Batch::default();
     }
     publish(source, cx);
+    crate::capabilities::record("draft_discarded", agent_name(source), String::new(), cx);
 }
 
 /// The strip above the grid while an agent has changes staged: what they are, and the two
@@ -3370,5 +3555,181 @@ mod tests {
             candidates.iter().all(|c| c["reason"] == "same_name"),
             "the link names no extension, so either file matches it by name"
         );
+    }
+
+    /// A call that may answer later, as JSON.
+    fn raw_later(
+        name: &str,
+        params: serde_json::Value,
+        cx: &mut gpui::App,
+    ) -> gpui::Task<Result<serde_json::Value, RequestError>> {
+        register(cx);
+        let task =
+            capability::dispatch(name, params, capability::Caller::Agent("pi".into()), cx).task;
+        cx.background_executor()
+            .spawn(async move { task.await.map(|answer| answer.value) })
+    }
+
+    /// An adopted check asks first, then keeps publishing its findings as the table changes.
+    #[gpui::test]
+    async fn an_adopted_check_asks_then_runs_with_the_other_checks(cx: &mut TestAppContext) {
+        open_in_window(cx);
+        let asked = cx.update(|cx| {
+            raw(
+                "program_save",
+                serde_json::json!({"source": "return function(q, args)\n  local out = {}\n  for i = 0, q:row_count() - 1 do\n    if q:cell(i, 'Medium') == 'Film' then table.insert(out, {row = i, column = 'Medium', message = 'Which gauge?'}) end\n  end\n  return out\nend"}),
+                cx,
+            )
+            .unwrap();
+            raw_later(
+                "adopt_check",
+                serde_json::json!({"revision": revision(cx).0, "name": "gauge", "reason": "Film rows need a gauge"}),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        cx.update(|cx| crate::capabilities::answer_pending_confirm(true, cx));
+        let adopted = asked.await.unwrap();
+        assert_eq!(adopted["checks"][0]["name"], "gauge");
+        assert_eq!(adopted["checks"][0]["agent"], "pi");
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let found: Vec<_> = diagnostics::Diagnostics::all(cx)
+                .iter()
+                .filter(|d| d.source.label() == "check: gauge")
+                .map(|d| d.location.row)
+                .collect();
+            assert_eq!(
+                found,
+                [Some(0), Some(2)],
+                "the program ran and its findings were published"
+            );
+            assert_eq!(
+                raw("checks", serde_json::json!({}), cx).unwrap()["checks"][0]["name"],
+                "gauge"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn an_export_check_reports_what_would_be_lost(cx: &mut TestAppContext) {
+        open(cx);
+        let (csv, xlsx, csl) = cx.update(|cx| {
+            raw(
+                "add_rows",
+                serde_json::json!({"revision": revision(cx).0, "rows": [{"Title": "x".repeat(40_000)}, {"Medium": "Film"}]}),
+                cx,
+            )
+            .unwrap();
+            (
+                raw_later("export_check", serde_json::json!({"format": "csv"}), cx),
+                raw_later("export_check", serde_json::json!({"format": "xlsx"}), cx),
+                raw_later("export_check", serde_json::json!({"format": "csl_json"}), cx),
+            )
+        });
+        cx.run_until_parked();
+        let csv = csv.await.unwrap();
+        assert_eq!(csv["ok"], true);
+        assert!(csv["bytes"].as_u64().unwrap() > 40_000);
+        let xlsx = xlsx.await.unwrap();
+        assert_eq!(xlsx["ok"], false);
+        assert!(
+            xlsx["problems"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["row"] == 3 && p["severity"] == "fails"),
+            "the over-long cell is named: {xlsx}"
+        );
+        let csl = csl.await.unwrap();
+        assert!(
+            csl["problems"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["row"] == 4 && p["severity"] == "loses"),
+            "the untitled row loses its title in Zotero: {csl}"
+        );
+    }
+
+    /// A change set stages several kinds of change, asks before its deletion when applied, and
+    /// undoes in one step.
+    #[gpui::test]
+    async fn a_change_set_applies_as_one_step_after_its_deletion_is_confirmed(
+        cx: &mut TestAppContext,
+    ) {
+        open_in_window(cx);
+        cx.update(|cx| {
+            let staged = raw(
+                "stage_changeset",
+                serde_json::json!({
+                    "revision": revision(cx).0,
+                    "patch": [{"row": 0, "set": {"Title": "Harvest Festival"}}],
+                    "add_rows": [{"Title": "Dock", "Medium": "Film"}],
+                    "delete": {"rows": [2], "reason": "duplicate of row 1"},
+                    "note": "merge the cannery reels"
+                }),
+                cx,
+            )
+            .unwrap();
+            assert_eq!(staged["cells"], 1);
+            assert_eq!(staged["adds"], 1);
+            assert_eq!(staged["deletes"], 1);
+            assert_eq!(cell(2, cx), "Cannery", "nothing changes while staged");
+            crate::agent::apply_all(&agent_source("pi"), cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(
+                cell(0, cx),
+                "Harvest",
+                "the deletion has not been confirmed yet"
+            );
+            crate::capabilities::answer_pending_confirm(true, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(cell(0, cx), "Harvest Festival");
+            assert_eq!(headers(cx).len(), 2);
+            let titles: Vec<_> = (0..3).map(|row| cell(row, cx)).collect();
+            assert_eq!(titles, ["Harvest Festival", "Wharf", "Dock"]);
+            crate::history_step(false, cx);
+            let titles: Vec<_> = (0..3).map(|row| cell(row, cx)).collect();
+            assert_eq!(
+                titles,
+                ["Harvest", "Wharf", "Cannery"],
+                "one undo takes it all back"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn following_along_hears_about_a_draft_being_applied(cx: &mut TestAppContext) {
+        open(cx);
+        let (waiting, seen) = cx.update(|cx| {
+            let seen = revision(cx).0;
+            let waiting = raw_later(
+                "wait_for_change",
+                serde_json::json!({"revision": seen, "selection": [], "timeout_s": 5}),
+                cx,
+            );
+            (waiting, seen)
+        });
+        cx.update(|cx| {
+            raw(
+                "stage_column_rewrite",
+                serde_json::json!({"revision": seen, "column": "Medium", "values": [[1, "VHS"]]}),
+                cx,
+            )
+            .unwrap();
+            crate::agent::apply_all(&agent_source("pi"), cx);
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        let changed = waiting.await.unwrap();
+        assert_eq!(changed["changed"], true);
+        assert_eq!(changed["events"][0]["kind"], "draft_applied");
+        assert_eq!(changed["events"][0]["agent"], "pi");
     }
 }

@@ -436,6 +436,28 @@ fn read_request(reader: &mut impl BufRead) -> Result<RawRequest, &'static str> {
 mod tests {
     use std::io::Cursor;
 
+    /// `docs/cli/capabilities.md` is generated from every capability the app registers; this
+    /// fails when it is stale. Regenerate it with `QRATE_BLESS=1 cargo test -p app capability_reference`.
+    #[gpui::test]
+    fn capability_reference_matches_the_catalog(cx: &mut gpui::TestAppContext) {
+        let page = cx.update(|cx| {
+            capability::init(cx);
+            table::init_capabilities(cx);
+            capability::register::<checks::authority::search::AuthoritySearchCap>(cx);
+            capability::markdown(&capability::catalog(cx))
+        });
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/cli/capabilities.md");
+        if std::env::var_os("QRATE_BLESS").is_some() {
+            std::fs::write(&path, &page).unwrap();
+        }
+        let written = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            written == page,
+            "docs/cli/capabilities.md is stale: run QRATE_BLESS=1 cargo test -p app capability_reference"
+        );
+    }
+
     use super::{MAX_AGENT_NAME, MAX_BODY, MAX_HEADERS, MAX_LINE, read_request};
 
     fn request(headers: &str, body: &str) -> Cursor<Vec<u8>> {

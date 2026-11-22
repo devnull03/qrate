@@ -24,7 +24,11 @@ use gpui_component::{ActiveTheme as _, WindowExt as _, v_flex};
 use sha2::{Digest as _, Sha256};
 
 use crate::agent::{AgentProgram, PROGRAM_RUNS, in_active_window};
+pub(crate) use flow::record;
 
+mod checks;
+mod flow;
+mod media;
 mod review;
 use crate::{QrateTableDelegate, TableStateHandle};
 
@@ -81,7 +85,7 @@ fn plural(count: usize, one: &str, many: &str) -> String {
 // ---------------------------------------------------------------------------------------------
 // Host
 
-struct TableHost;
+pub(crate) struct TableHost;
 
 /// The one confirmation waiting for the archivist, and where their answer goes.
 struct PendingConfirm(async_channel::Sender<Answer>);
@@ -518,7 +522,7 @@ impl Capability for ThumbnailsCap {
         cx.background_executor().spawn(async move {
             let mut items = Vec::with_capacity(paths.len());
             for (item, path) in paths {
-                let bytes = preview::thumbnail_png(&path, item.page)
+                let bytes = preview::png(&path, item.page, preview::CARD)
                     .ok_or(RequestError::ThumbnailUnavailable)?;
                 items.push(ai::agent::Thumbnail {
                     row: item.row,
@@ -736,36 +740,7 @@ impl AddRowsCap {
     }
 
     fn apply(input: AddRows, call: &Invocation, cx: &mut App) -> Result<Vec<usize>, RequestError> {
-        let state = table(cx)?;
-        let origin = call.origin();
-        let delegate = state.read(cx).delegate();
-        let width = delegate.column_count();
-        let mut values = Vec::with_capacity(input.rows.len());
-        for fields in &input.rows {
-            let mut cells = vec![SharedString::default(); width];
-            for (name, value) in fields {
-                cells[column(name, cx)?] = value.clone().into();
-            }
-            values.push(cells);
-        }
-        let at = state.read(cx).delegate().row_count();
-        let added = state.update(cx, |state, cx| {
-            let added = state
-                .delegate_mut()
-                .append_spreadsheet_rows(values, origin.clone());
-            let rows: Vec<usize> = (at..at + added).collect();
-            crate::photos::refresh(state, Some(&rows), cx);
-            state.refresh(cx);
-            cx.emit(crate::TableChanged);
-            cx.notify();
-            added
-        });
-        let row_ids = state.read(cx).delegate().row_ids().to_vec();
-        diagnostics::Diagnostics::align_note_rows(diagnostics::DATASET_MAIN, &row_ids, origin, cx);
-        settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
-        crate::revalidate_now(cx);
-        crate::autosave(cx);
-        Ok((at..at + added).collect())
+        crate::agent::append_rows(&input.rows, call.origin(), cx)
     }
 }
 
@@ -1365,32 +1340,14 @@ pub fn init(cx: &mut App) {
     capability::register::<ForgetAccessCap>(cx);
     capability::register::<ImportFilesCap>(cx);
     review::register(cx);
+    checks::register(cx);
+    media::register(cx);
+    flow::register(cx);
 }
 
 #[cfg(test)]
 mod tests {
     use gpui::TestAppContext;
-
-    /// `docs/cli/capabilities.md` is generated from the catalog; this fails when it is stale.
-    /// Regenerate it with `QRATE_BLESS=1 cargo test -p table capability_reference`.
-    #[gpui::test]
-    fn capability_reference_matches_the_catalog(cx: &mut TestAppContext) {
-        let page = cx.update(|cx| {
-            capability::init(cx);
-            super::init(cx);
-            capability::markdown(&capability::catalog(cx))
-        });
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/cli/capabilities.md");
-        if std::env::var_os("QRATE_BLESS").is_some() {
-            std::fs::write(&path, &page).unwrap();
-        }
-        let written = std::fs::read_to_string(&path).unwrap_or_default();
-        assert!(
-            written == page,
-            "docs/cli/capabilities.md is stale: run QRATE_BLESS=1 cargo test -p table capability_reference"
-        );
-    }
 
     /// Each grid command and the capability that gives an agent the same feature, or `None` for a
     /// command that only moves the archivist's own view.

@@ -1186,11 +1186,14 @@ dependencies = [
 name = "checks"
 version = "0.7.0-beta.3"
 dependencies = [
+ "ai",
+ "capability",
  "diagnostics",
  "edtf",
  "gpui-pre",
  "log",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "settings",

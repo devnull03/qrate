@@ -904,6 +904,8 @@ pub enum RequestError {
     FileAccessFailed(String),
     FileImportFailed(String),
     NoteTooLong,
+    /// Visual search is off or still indexing; the archivist turns it on from the search bar.
+    VisualSearchOff,
     /// The path is not a file.
     NotAFile(String),
     TooManyFolders,
