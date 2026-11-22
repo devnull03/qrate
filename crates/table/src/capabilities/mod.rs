@@ -1392,6 +1392,73 @@ mod tests {
         );
     }
 
+    /// Each grid command and the capability that gives an agent the same feature, or `None` for a
+    /// command that only moves the archivist's own view.
+    const GRID_COMMANDS: &[(&str, Option<&str>)] = &[
+        ("qrate::Search", Some("query")),
+        ("qrate::Replace", Some("stage_column_rewrite")),
+        ("qrate::Undo", None),
+        ("qrate::Redo", None),
+        ("qrate::Cut", Some("stage_patch")),
+        ("qrate::Copy", None),
+        ("qrate::Paste", Some("stage_patch")),
+        ("qrate::Clear", Some("stage_patch")),
+        ("qrate::Deselect", None),
+        ("qrate::EditCell", Some("stage_patch")),
+        ("qrate::InsertNote", Some("add_note")),
+        ("qrate::UnfreezeColumns", None),
+        ("qrate::InsertRowAbove", Some("add_rows")),
+        ("qrate::InsertRowBelow", Some("add_rows")),
+        ("qrate::DuplicateRow", Some("duplicate_row")),
+        ("qrate::DeleteRow", Some("delete")),
+        ("qrate::InsertColumnLeft", Some("add_column")),
+        ("qrate::InsertColumnRight", Some("add_column")),
+        ("qrate::DeleteColumn", Some("delete")),
+        ("qrate::RenameColumn", Some("rename_column")),
+        ("qrate::ExpandAll", None),
+        ("qrate::CollapseAll", None),
+        ("qrate::IndentRow", Some("indent_row")),
+        ("qrate::OutdentRow", Some("outdent_row")),
+        ("qrate::DeleteSubtree", Some("delete")),
+        ("qrate::ImportFiles", Some("import_files")),
+        ("qrate::ImportSpreadsheet", Some("add_rows")),
+        ("qrate::RelinkMissingFiles", Some("stage_relinks")),
+    ];
+
+    /// A grid command added without deciding how agents reach the same feature fails here.
+    #[gpui::test]
+    fn every_grid_command_has_an_agent_counterpart_or_says_why_not(cx: &mut TestAppContext) {
+        let (actions, catalog) = cx.update(|cx| {
+            capability::init(cx);
+            super::init(cx);
+            let actions: Vec<String> = cx
+                .all_action_names()
+                .iter()
+                .filter(|name| name.starts_with("qrate::"))
+                .map(|name| name.to_string())
+                .collect();
+            (actions, capability::catalog(cx))
+        });
+        for action in &actions {
+            let Some((_, capability)) = GRID_COMMANDS.iter().find(|(name, _)| name == action)
+            else {
+                panic!("{action} is a grid command with no entry in GRID_COMMANDS");
+            };
+            if let Some(capability) = capability {
+                assert!(
+                    catalog
+                        .iter()
+                        .any(|descriptor| descriptor.name == *capability),
+                    "{action} names {capability}, which is not registered"
+                );
+            }
+        }
+        assert!(
+            actions.len() >= GRID_COMMANDS.len() - 2,
+            "the grid's commands were found"
+        );
+    }
+
     /// Every capability declares what an agent needs to call it well.
     #[gpui::test]
     fn every_capability_is_documented_and_answers_an_object(cx: &mut TestAppContext) {
