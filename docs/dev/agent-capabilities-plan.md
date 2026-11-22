@@ -313,6 +313,20 @@ Threats that apply to all of these:
 - **Supply chain.** Pi and the extension stay pinned by checksum. No unpinned packages, and no
   project-local MCP servers.
 
+## Agent-written interface (A2UI)
+
+Confirmation dialogs and questions can carry an interface the agent lays out, in a strict subset of
+Google's A2UI v1.0 (Text, Row, Column, Card, List, Divider, ChoicePicker, TextField, CheckBox,
+Button). `crates/a2ui-gpui-kit` renders it with gpui-kit widgets; it depends on no qrate crate, so it
+can be published on its own.
+
+- `delete` takes an optional `surface`, such as a table of the rows, shown under the agent's reason.
+- `ask` shows a surface in a dialog and answers with the clicked Button's action and bound values.
+- qrate owns the dialog, its title and its buttons; the surface sits in a frame labelled "From
+  <agent>" and cannot style or draw outside it. Images, video, links and remote catalogs are refused.
+- An action is information for the agent, never permission: any change still goes through its own
+  capability and effect.
+
 ## Update channel
 
 Today a build's channel follows its own version: a beta build follows every signed release, a
