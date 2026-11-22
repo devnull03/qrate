@@ -150,8 +150,17 @@ enum ProjectCommand {
     },
 }
 
-#[derive(Clone, Copy, Debug, Subcommand)]
+#[derive(Clone, Debug, Subcommand)]
 enum AgentCommand {
+    /// Every capability: its effect and the JSON Schemas of its parameters and answer. Takes no
+    /// input. Anything listed can be called with `qrate agent call <name>`.
+    Capabilities,
+    /// Call any capability by name with its parameters as JSON on stdin (`{}` when stdin is a
+    /// terminal). The named commands below are shorthands for these calls.
+    Call {
+        /// The capability's name, as `capabilities` lists it.
+        name: String,
+    },
     /// Project, columns, selection, diagnostic counts and revision. Takes no input.
     ///
     /// Start here, and keep `revision`: `program-run` and `stage-findings` need that exact number.
@@ -208,8 +217,8 @@ enum AgentCommand {
     ///
     /// stdin: {"revision": <from overview>, "rows": [<source row>], "reason": <why>} or
     /// {"revision", "column": <name>, "reason"}. qrate shows the archivist a dialog with your
-    /// reason; this prints `deleted` once they confirm, and exits 1 with `delete_declined` or
-    /// `delete_timed_out` (after 10 minutes) otherwise.
+    /// reason; this prints `deleted` once they confirm, and exits 1 with `declined` or
+    /// `confirm_timed_out` (after 10 minutes) otherwise.
     Delete,
     /// Ask qrate to approve read-only access. stdin: {"path": <file or folder>, "reason": <why>}.
     RequestAccess,
@@ -222,8 +231,10 @@ enum AgentCommand {
 }
 
 impl AgentCommand {
-    fn method(self) -> &'static str {
+    fn method(&self) -> &str {
         match self {
+            Self::Capabilities => "capabilities",
+            Self::Call { name } => name,
             Self::Overview => "overview",
             Self::Query => "query",
             Self::ProgramSave => "program_save",
@@ -303,7 +314,10 @@ fn main() {
             command: ProjectCommand::Info { format },
         }) => project_info(Format::json(format)),
         Some(Command::Agent { command, .. })
-            if !matches!(command, AgentCommand::Overview) && std::io::stdin().is_terminal() =>
+            if !matches!(
+                command,
+                AgentCommand::Overview | AgentCommand::Capabilities | AgentCommand::Call { .. }
+            ) && std::io::stdin().is_terminal() =>
         {
             Err(Failure::Usage(
                 "this command reads a JSON object on stdin; pipe one in, or see `qrate help agent`"
@@ -444,12 +458,13 @@ fn agent_call(
     agent: Option<String>,
     stdin: &mut impl Read,
 ) -> Result<Option<ExitStatus>, Failure> {
-    let request = agent_request(command, stdin)?;
-    // A delete waits for the archivist's answer, which qrate gives up on after ten minutes.
+    let request = agent_request(&command, stdin)?;
+    // These may wait for the archivist's answer, which qrate gives up on after ten minutes.
     let wait = match command {
-        AgentCommand::Delete | AgentCommand::RequestAccess | AgentCommand::ImportFiles => {
-            Duration::from_secs(11 * 60)
-        }
+        AgentCommand::Delete
+        | AgentCommand::RequestAccess
+        | AgentCommand::ImportFiles
+        | AgentCommand::Call { .. } => Duration::from_secs(11 * 60),
         _ => QUICK,
     };
     let body = accept(app_request(
@@ -463,9 +478,14 @@ fn agent_call(
     Ok(None)
 }
 
-fn agent_request(command: AgentCommand, stdin: &mut impl Read) -> Result<String, Failure> {
+fn agent_request(command: &AgentCommand, stdin: &mut impl Read) -> Result<String, Failure> {
     let mut request = serde_json::json!({ "method": command.method() });
-    if !matches!(command, AgentCommand::Overview) {
+    let reads = match command {
+        AgentCommand::Overview | AgentCommand::Capabilities => false,
+        AgentCommand::Call { .. } => !std::io::stdin().is_terminal(),
+        _ => true,
+    };
+    if reads {
         let mut input = String::new();
         stdin.read_to_string(&mut input).map_err(|error| {
             Failure::Usage(format!("cannot read parameters from stdin: {error}"))
@@ -796,12 +816,25 @@ mod tests {
         assert_eq!(AgentCommand::StageRenames.method(), "stage_renames");
         assert_eq!(AgentCommand::Edit.method(), "edit");
         assert_eq!(AgentCommand::Delete.method(), "delete");
+        assert!(matches!(
+            Cli::try_parse_from(["qrate", "agent", "call", "add_rows"])
+                .unwrap()
+                .command,
+            Some(Command::Agent {
+                command: AgentCommand::Call { ref name },
+                ..
+            }) if name == "add_rows"
+        ));
+        assert_eq!(
+            agent_request(&AgentCommand::Capabilities, &mut "ignored".as_bytes()).unwrap(),
+            r#"{"method":"capabilities"}"#
+        );
         assert!(Cli::try_parse_from(["qrate", "agent", "edit"]).is_ok());
         assert!(Cli::try_parse_from(["qrate", "agent", "delete", "--agent", "pi"]).is_ok());
         assert!(Cli::try_parse_from(["qrate", "agent", "stage-renames"]).is_ok());
         assert_eq!(
             agent_request(
-                AgentCommand::StageColumnRewrite,
+                &AgentCommand::StageColumnRewrite,
                 &mut r#"{"revision":3,"column":"Identifier","values":[[0,"a"]]}"#.as_bytes()
             )
             .unwrap(),
@@ -812,23 +845,23 @@ mod tests {
     #[test]
     fn frames_agent_requests_from_stdin() {
         assert_eq!(
-            agent_request(AgentCommand::Overview, &mut "ignored".as_bytes()).unwrap(),
+            agent_request(&AgentCommand::Overview, &mut "ignored".as_bytes()).unwrap(),
             r#"{"method":"overview"}"#
         );
         assert_eq!(
             agent_request(
-                AgentCommand::ProgramRun,
+                &AgentCommand::ProgramRun,
                 &mut r#"{"revision":3}"#.as_bytes()
             )
             .unwrap(),
             r#"{"method":"program_run","params":{"revision":3}}"#
         );
         assert!(matches!(
-            agent_request(AgentCommand::Query, &mut "[1]".as_bytes()),
+            agent_request(&AgentCommand::Query, &mut "[1]".as_bytes()),
             Err(Failure::Usage(_))
         ));
         assert!(matches!(
-            agent_request(AgentCommand::Query, &mut "".as_bytes()),
+            agent_request(&AgentCommand::Query, &mut "".as_bytes()),
             Err(Failure::Usage(_))
         ));
     }

@@ -3,29 +3,26 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 use ai::agent::{
-    Column, Count, DiagnosticSummary, FilterOp, Finding, MAX_RESULT_BYTES, Overview, ProgramAudit,
-    ProgramOutput, ProjectSummary, Query, QueryResult, QuerySource, Rename, Request, RequestError,
-    Response, ResultSet, RowPlacement, Severity, TableEdit, TableRevision,
+    Column, Count, DiagnosticSummary, FilterOp, Finding, MAX_RESULT_BYTES, Overview,
+    ProjectSummary, Query, QueryResult, QuerySource, Rename, RequestError, Severity, Staged,
+    StagedRenames, StagedRewrite, TableRevision,
 };
-use base64::Engine as _;
 use diagnostics::fixes::{GroupFix, SourceActions};
 use diagnostics::{DATASET_MAIN, FixProviders, Location, Source};
 use gpui::{
     AnyElement, App, Empty, Global, IntoElement as _, ParentElement as _, SharedString,
-    Styled as _, Task, Window, div,
+    Styled as _, Window, div,
 };
-use gpui_component::button::{Button, ButtonVariant, ButtonVariants as _};
-use gpui_component::dialog::DialogButtonProps;
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::notification::Notification;
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
 use settings::columns::ColumnType;
 use settings::history::Origin;
-use sha2::{Digest as _, Sha256};
 
 use crate::{QrateTableDelegate, TableStateHandle};
 
@@ -45,379 +42,15 @@ pub fn agent_source(agent: &str) -> SharedString {
 }
 
 #[derive(Default)]
-struct AgentProgram {
-    source: String,
-    version: u64,
-    hash: String,
+pub(crate) struct AgentProgram {
+    pub(crate) source: String,
+    pub(crate) version: u64,
+    pub(crate) hash: String,
 }
 impl Global for AgentProgram {}
-static PROGRAM_RUNS: AtomicU64 = AtomicU64::new(1);
+pub(crate) static PROGRAM_RUNS: AtomicU64 = AtomicU64::new(1);
 
-/// Answer one validated agent request from qrate's live table state.
-///
-/// This deliberately reads the delegate rather than the `.qrate` database, so responses include
-/// unsaved cell edits and the current table generation. Nothing here writes a cell: the one
-/// non-read, [`Request::StageFindings`], publishes advisory diagnostics that are recomputed rather
-/// than persisted, and offers corrections the archivist still has to click.
-pub fn respond_to_agent(
-    request: Request,
-    agent: &str,
-    cx: &mut App,
-) -> Result<Response, RequestError> {
-    request.validate()?;
-
-    match request {
-        Request::StageFindings { revision, findings } => {
-            return stage_findings(agent, revision, findings, cx);
-        }
-        Request::StageColumnRewrite {
-            revision,
-            column,
-            values,
-            note,
-        } => return stage_column_rewrite(agent, revision, column, values, note, cx),
-        Request::StageRenames { revision, renames } => {
-            return stage_renames(agent, revision, renames, cx);
-        }
-        Request::Edit { revision, edit } => return edit_table(agent, revision, edit, cx),
-        // A delete has to wait for the archivist, which only the asynchronous path can do.
-        Request::Delete { .. }
-        | Request::RequestAccess { .. }
-        | Request::CheckAccess { .. }
-        | Request::ForgetAccess {}
-        | Request::ImportFiles { .. } => return Err(RequestError::NoWindow),
-        Request::ProgramSave { source } => return save_program(source, cx),
-        _ => {}
-    }
-
-    let project = cx
-        .try_global::<settings::project::CurrentProject>()
-        .ok_or(RequestError::ProjectUnavailable)?;
-    let state = cx
-        .try_global::<TableStateHandle>()
-        .and_then(|handle| handle.0.upgrade())
-        .ok_or(RequestError::TableUnavailable)?;
-    let table = state.read(cx);
-    let delegate = table.delegate();
-    let revision = TableRevision(delegate.values_generation());
-
-    let result = match request {
-        Request::Overview => ResultSet::Overview(overview(project, delegate, cx)),
-        Request::Query(query) => ResultSet::Query(run_query(query, revision, delegate, cx)?),
-        Request::ProgramRun {
-            revision: judged,
-            args,
-        } => {
-            if judged != revision {
-                return Err(RequestError::StaleCursor);
-            }
-            let program = cx
-                .try_global::<AgentProgram>()
-                .ok_or(RequestError::ProgramUnavailable)?;
-            let (version, hash, source) = (
-                program.version,
-                program.hash.clone(),
-                program.source.clone(),
-            );
-            let snapshot = program_snapshot(revision, delegate, cx);
-            let output =
-                plugin_host::run_agent_program(&source, &args, snapshot).map_err(|error| {
-                    log::warn!("agent scratch program {hash} failed: {error}");
-                    if error.kind == "output_too_large" {
-                        RequestError::ProgramOutputTooLarge(error.detail)
-                    } else {
-                        RequestError::ProgramFailed(error.detail)
-                    }
-                })?;
-            let run_id = format!(
-                "{}-{}-{}",
-                &hash[..12],
-                revision.0,
-                PROGRAM_RUNS.fetch_add(1, Ordering::Relaxed)
-            );
-            let audit = ProgramAudit {
-                run_id,
-                revision,
-                version,
-                hash: hash.clone(),
-                elapsed_ms: output.elapsed_ms,
-                memory_limit_bytes: plugin_host::MEMORY_LIMIT,
-                deadline_ms: plugin_host::DEADLINE.as_millis() as u64,
-                output_limit_bytes: plugin_host::MAX_OUTPUT,
-                status: "success".into(),
-                output_bytes: output.output_bytes,
-            };
-            log::info!(
-                "agent program run {} revision {} version {} sha256 {} status success elapsed_ms {} output_bytes {}",
-                audit.run_id,
-                revision.0,
-                version,
-                hash,
-                audit.elapsed_ms,
-                audit.output_bytes
-            );
-            ResultSet::ProgramRun(ProgramOutput {
-                version,
-                hash,
-                value: output.value,
-                logs: output.logs,
-                elapsed_ms: output.elapsed_ms,
-                audit,
-            })
-        }
-        Request::Thumbnails { items } => {
-            let mut thumbnails = Vec::with_capacity(items.len());
-            for item in items {
-                let path = delegate
-                    .row_image(item.row)
-                    .ok_or(RequestError::ThumbnailUnavailable)?;
-                let bytes = preview::thumbnail_png(path, item.page)
-                    .ok_or(RequestError::ThumbnailUnavailable)?;
-                thumbnails.push(ai::agent::Thumbnail {
-                    row: item.row,
-                    page: item.page,
-                    media_type: "image/png".into(),
-                    data: base64::engine::general_purpose::STANDARD.encode(bytes),
-                });
-            }
-            ResultSet::Thumbnails { items: thumbnails }
-        }
-        Request::ProgramSave { .. }
-        | Request::StageFindings { .. }
-        | Request::StageColumnRewrite { .. }
-        | Request::StageRenames { .. }
-        | Request::Edit { .. }
-        | Request::Delete { .. }
-        | Request::RequestAccess { .. }
-        | Request::CheckAccess { .. }
-        | Request::ForgetAccess {}
-        | Request::ImportFiles { .. } => unreachable!(),
-    };
-
-    Ok(Response { revision, result })
-}
-
-/// Capture live GPUI-owned state now, then do bounded analysis away from the UI thread.
-pub fn respond_to_agent_async(
-    request: Request,
-    agent: &str,
-    cx: &mut App,
-) -> Task<Result<Response, RequestError>> {
-    if let Err(error) = request.validate() {
-        return Task::ready(Err(error));
-    }
-    match request {
-        Request::RequestAccess { path, reason } => {
-            crate::agent_files::request_access(agent, path, reason, cx)
-        }
-        Request::CheckAccess { path } => crate::agent_files::check_access(agent, path, cx),
-        Request::ForgetAccess {} => Task::ready(crate::agent_files::forget_access(agent, cx)),
-        Request::ImportFiles {
-            revision,
-            paths,
-            recursive,
-        } => crate::agent_files::import_files(agent, revision, paths, recursive, cx),
-
-        Request::ProgramSave { source } => {
-            let Some(state) = cx
-                .try_global::<TableStateHandle>()
-                .and_then(|handle| handle.0.upgrade())
-            else {
-                return Task::ready(Err(RequestError::TableUnavailable));
-            };
-            let revision = TableRevision(state.read(cx).delegate().values_generation());
-            let version = cx
-                .try_global::<AgentProgram>()
-                .map_or(1, |program| program.version + 1);
-            let background = cx.background_executor().spawn(async move {
-                plugin_host::validate_agent_program(&source)
-                    .map_err(|error| RequestError::ProgramCompileFailed(error.detail))?;
-                let hash = format!("{:x}", Sha256::digest(source.as_bytes()));
-                Ok::<_, RequestError>((source, hash))
-            });
-            cx.spawn(async move |cx| {
-                let (source, hash) = background.await?;
-                cx.update(|cx| {
-                    cx.set_global(AgentProgram {
-                        source,
-                        version,
-                        hash: hash.clone(),
-                    })
-                });
-                Ok(Response {
-                    revision,
-                    result: ResultSet::ProgramSaved { version, hash },
-                })
-            })
-        }
-        Request::Query(query) => {
-            let Some(project) = cx.try_global::<settings::project::CurrentProject>() else {
-                return Task::ready(Err(RequestError::ProjectUnavailable));
-            };
-            let Some(state) = cx
-                .try_global::<TableStateHandle>()
-                .and_then(|handle| handle.0.upgrade())
-            else {
-                return Task::ready(Err(RequestError::TableUnavailable));
-            };
-            let state = state.read(cx);
-            let delegate = state.delegate();
-            let revision = TableRevision(delegate.values_generation());
-            let diagnostic_source = matches!(query.source, QuerySource::Diagnostics { .. });
-            let schema = if diagnostic_source {
-                ["row", "column", "severity", "source", "message"]
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect()
-            } else {
-                std::iter::once("row".into())
-                    .chain(project.data.headers.iter().cloned())
-                    .collect()
-            };
-            let records = match &query.source {
-                QuerySource::Diagnostics {
-                    severities,
-                    sources,
-                } => diagnostic_records(cx, severities, sources),
-                source => row_records(delegate, source),
-            };
-            cx.background_executor().spawn(async move {
-                run_query_records(query, revision, records, schema, diagnostic_source).map(
-                    |result| Response {
-                        revision,
-                        result: ResultSet::Query(result),
-                    },
-                )
-            })
-        }
-        Request::ProgramRun {
-            revision: judged,
-            args,
-        } => {
-            let Some(state) = cx
-                .try_global::<TableStateHandle>()
-                .and_then(|handle| handle.0.upgrade())
-            else {
-                return Task::ready(Err(RequestError::TableUnavailable));
-            };
-            let state = state.read(cx);
-            let delegate = state.delegate();
-            let revision = TableRevision(delegate.values_generation());
-            if judged != revision {
-                return Task::ready(Err(RequestError::StaleCursor));
-            }
-            let Some(program) = cx.try_global::<AgentProgram>() else {
-                return Task::ready(Err(RequestError::ProgramUnavailable));
-            };
-            let (version, hash, source) = (
-                program.version,
-                program.hash.clone(),
-                program.source.clone(),
-            );
-            let snapshot = program_snapshot(revision, delegate, cx);
-            cx.background_executor().spawn(async move {
-                let run_id = format!(
-                    "{}-{}-{}",
-                    &hash[..12],
-                    revision.0,
-                    PROGRAM_RUNS.fetch_add(1, Ordering::Relaxed)
-                );
-                let output = match plugin_host::run_agent_program(&source, &args, snapshot) {
-                    Ok(output) => output,
-                    Err(error) => {
-                        log::warn!(
-                            "agent program run {} revision {} version {} sha256 {} status {} elapsed_ms {} output_bytes 0 memory_limit_bytes {} deadline_ms {} output_limit_bytes {}",
-                            run_id, revision.0, version, hash, error.kind, error.elapsed_ms,
-                            plugin_host::MEMORY_LIMIT, plugin_host::DEADLINE.as_millis(), plugin_host::MAX_OUTPUT
-                        );
-                        return Err(if error.kind == "output_too_large" {
-                            RequestError::ProgramOutputTooLarge(error.detail)
-                        } else {
-                            RequestError::ProgramFailed(error.detail)
-                        });
-                    }
-                };
-                let audit = ProgramAudit {
-                    run_id,
-                    revision,
-                    version,
-                    hash: hash.clone(),
-                    elapsed_ms: output.elapsed_ms,
-                    memory_limit_bytes: plugin_host::MEMORY_LIMIT,
-                    deadline_ms: plugin_host::DEADLINE.as_millis() as u64,
-                    output_limit_bytes: plugin_host::MAX_OUTPUT,
-                    status: "success".into(),
-                    output_bytes: output.output_bytes,
-                };
-                log::info!(
-                    "agent program run {} revision {} version {} sha256 {} status success elapsed_ms {} output_bytes {} memory_limit_bytes {} deadline_ms {} output_limit_bytes {}",
-                    audit.run_id, revision.0, version, hash, audit.elapsed_ms, audit.output_bytes,
-                    audit.memory_limit_bytes, audit.deadline_ms, audit.output_limit_bytes
-                );
-                Ok(Response {
-                    revision,
-                    result: ResultSet::ProgramRun(ProgramOutput {
-                        version,
-                        hash,
-                        value: output.value,
-                        logs: output.logs,
-                        elapsed_ms: output.elapsed_ms,
-                        audit,
-                    }),
-                })
-            })
-        }
-        Request::Thumbnails { items } => {
-            let Some(state) = cx
-                .try_global::<TableStateHandle>()
-                .and_then(|handle| handle.0.upgrade())
-            else {
-                return Task::ready(Err(RequestError::TableUnavailable));
-            };
-            let state = state.read(cx);
-            let delegate = state.delegate();
-            let revision = TableRevision(delegate.values_generation());
-            let paths: Result<Vec<_>, _> = items
-                .into_iter()
-                .map(|item| {
-                    delegate
-                        .row_image(item.row)
-                        .map(|path| (item, path.to_path_buf()))
-                        .ok_or(RequestError::ThumbnailUnavailable)
-                })
-                .collect();
-            let Ok(paths) = paths else {
-                return Task::ready(Err(RequestError::ThumbnailUnavailable));
-            };
-            cx.background_executor().spawn(async move {
-                let mut thumbnails = Vec::with_capacity(paths.len());
-                for (item, path) in paths {
-                    let bytes = preview::thumbnail_png(&path, item.page)
-                        .ok_or(RequestError::ThumbnailUnavailable)?;
-                    thumbnails.push(ai::agent::Thumbnail {
-                        row: item.row,
-                        page: item.page,
-                        media_type: "image/png".into(),
-                        data: base64::engine::general_purpose::STANDARD.encode(bytes),
-                    });
-                }
-                Ok(Response {
-                    revision,
-                    result: ResultSet::Thumbnails { items: thumbnails },
-                })
-            })
-        }
-        Request::Delete {
-            revision,
-            rows,
-            column,
-            reason,
-        } => ask_to_delete(agent, revision, rows, column, reason, cx),
-        other => Task::ready(respond_to_agent(other, agent, cx)),
-    }
-}
-
-fn program_snapshot(
+pub(crate) fn program_snapshot(
     revision: TableRevision,
     delegate: &QrateTableDelegate,
     cx: &App,
@@ -458,30 +91,7 @@ fn program_snapshot(
     }
 }
 
-fn save_program(source: String, cx: &mut App) -> Result<Response, RequestError> {
-    let state = cx
-        .try_global::<TableStateHandle>()
-        .and_then(|handle| handle.0.upgrade())
-        .ok_or(RequestError::TableUnavailable)?;
-    let revision = TableRevision(state.read(cx).delegate().values_generation());
-    plugin_host::validate_agent_program(&source).map_err(|error| {
-        log::warn!("agent scratch program was not activated: {error}");
-        RequestError::ProgramCompileFailed(error.detail)
-    })?;
-    let hash = format!("{:x}", Sha256::digest(source.as_bytes()));
-    let version = cx.try_global::<AgentProgram>().map_or(1, |p| p.version + 1);
-    cx.set_global(AgentProgram {
-        source,
-        version,
-        hash: hash.clone(),
-    });
-    Ok(Response {
-        revision,
-        result: ResultSet::ProgramSaved { version, hash },
-    })
-}
-
-fn overview(
+pub(crate) fn overview(
     project: &settings::project::CurrentProject,
     delegate: &QrateTableDelegate,
     cx: &App,
@@ -538,34 +148,7 @@ fn overview(
 
 type Record = HashMap<String, serde_json::Value>;
 
-fn run_query(
-    query: Query,
-    revision: TableRevision,
-    delegate: &QrateTableDelegate,
-    cx: &App,
-) -> Result<QueryResult, RequestError> {
-    let diagnostic_source = matches!(query.source, QuerySource::Diagnostics { .. });
-    let source_schema: Vec<String> = if diagnostic_source {
-        ["row", "column", "severity", "source", "message"]
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-    } else {
-        std::iter::once("row".into())
-            .chain(delegate.dataset_snapshot().0)
-            .collect()
-    };
-    let records = match &query.source {
-        QuerySource::Diagnostics {
-            severities,
-            sources,
-        } => diagnostic_records(cx, severities, sources),
-        source => row_records(delegate, source),
-    };
-    run_query_records(query, revision, records, source_schema, diagnostic_source)
-}
-
-fn run_query_records(
+pub(crate) fn run_query_records(
     query: Query,
     revision: TableRevision,
     mut records: Vec<Record>,
@@ -711,7 +294,7 @@ fn run_query_records(
     })
 }
 
-fn row_records(delegate: &QrateTableDelegate, source: &QuerySource) -> Vec<Record> {
+pub(crate) fn row_records(delegate: &QrateTableDelegate, source: &QuerySource) -> Vec<Record> {
     let rows: Vec<usize> = match source {
         QuerySource::AllRows | QuerySource::Search { .. } => (0..delegate.row_count()).collect(),
         QuerySource::SelectedRows => delegate.selected_source_rows(),
@@ -730,7 +313,11 @@ fn row_records(delegate: &QrateTableDelegate, source: &QuerySource) -> Vec<Recor
         .collect()
 }
 
-fn diagnostic_records(cx: &App, severities: &[Severity], sources: &[String]) -> Vec<Record> {
+pub(crate) fn diagnostic_records(
+    cx: &App,
+    severities: &[Severity],
+    sources: &[String],
+) -> Vec<Record> {
     diagnostics::Diagnostics::all(cx)
         .iter()
         .filter_map(|diagnostic| {
@@ -890,12 +477,12 @@ impl Global for StagedFixes {}
 
 /// Publish a batch of drafts: findings into the Problems panel, replacements into the Fixes menu.
 /// No cell is touched, and a draft the table has moved past is dropped rather than shown.
-fn stage_findings(
+pub(crate) fn stage_findings(
     agent: &str,
     revision: TableRevision,
     findings: Vec<Finding>,
     cx: &mut App,
-) -> Result<Response, RequestError> {
+) -> Result<Staged, RequestError> {
     let state = cx
         .try_global::<TableStateHandle>()
         .and_then(|handle| handle.0.upgrade())
@@ -974,10 +561,7 @@ fn stage_findings(
         current.0
     );
 
-    Ok(Response {
-        revision: current,
-        result: ResultSet::Staged { accepted, stale },
-    })
+    Ok(Staged { accepted, stale })
 }
 
 /// What the Fixes menu offers for a staged finding — but only while the cell still says what the
@@ -1176,24 +760,19 @@ fn publish(source: &SharedString, cx: &mut App) {
 
 /// Stage one column's new values as a single draft, replacing this agent's earlier rewrite of the
 /// same column. An empty `values` retracts it. No cell is touched.
-fn stage_column_rewrite(
+pub(crate) fn stage_column_rewrite(
     agent: &str,
-    revision: TableRevision,
     column: String,
     values: Vec<(usize, String)>,
     note: Option<String>,
     cx: &mut App,
-) -> Result<Response, RequestError> {
+) -> Result<StagedRewrite, RequestError> {
     let state = cx
         .try_global::<TableStateHandle>()
         .and_then(|handle| handle.0.upgrade())
         .ok_or(RequestError::TableUnavailable)?;
     let delegate = state.read(cx).delegate();
     let current = TableRevision(delegate.values_generation());
-    // A rewrite quotes no cell text, so the revision is its only proof of what the agent read.
-    if revision != current {
-        return Err(RequestError::StaleRevision);
-    }
     let col = delegate
         .data_col(&column)
         .ok_or(RequestError::UnknownColumn)?;
@@ -1232,12 +811,9 @@ fn stage_column_rewrite(
         unchanged.len()
     );
 
-    Ok(Response {
-        revision: current,
-        result: ResultSet::StagedRewrite {
-            accepted,
-            unchanged,
-        },
+    Ok(StagedRewrite {
+        accepted,
+        unchanged,
     })
 }
 
@@ -1309,12 +885,11 @@ fn names(cell: &str, name: &Path) -> bool {
 
 /// Stage renames of files the rows link to, replacing this agent's earlier renames. An empty batch
 /// retracts them. Every rename must be sound or the whole batch is refused, and no file is touched.
-fn stage_renames(
+pub(crate) fn stage_renames(
     agent: &str,
-    revision: TableRevision,
     renames: Vec<Rename>,
     cx: &mut App,
-) -> Result<Response, RequestError> {
+) -> Result<StagedRenames, RequestError> {
     let root = project_dir(cx)?;
     let state = cx
         .try_global::<TableStateHandle>()
@@ -1322,9 +897,6 @@ fn stage_renames(
         .ok_or(RequestError::TableUnavailable)?;
     let delegate = state.read(cx).delegate();
     let current = TableRevision(delegate.values_generation());
-    if revision != current {
-        return Err(RequestError::StaleRevision);
-    }
 
     let mut staged = Vec::with_capacity(renames.len());
     for rename in renames {
@@ -1382,10 +954,7 @@ fn stage_renames(
         "{agent} staged {accepted} file rename(s) at revision {}",
         current.0
     );
-    Ok(Response {
-        revision: current,
-        result: ResultSet::StagedRenames { accepted },
-    })
+    Ok(StagedRenames { accepted })
 }
 
 /// Rename the staged files on disk — all of them or none — then make the rows follow, as one undo
@@ -1502,7 +1071,7 @@ fn apply_some_renames(
 }
 
 /// Run `show` in the active window after the current update, since a menu click is one already.
-fn in_active_window(cx: &mut App, show: impl FnOnce(&mut Window, &mut App) + 'static) {
+pub(crate) fn in_active_window(cx: &mut App, show: impl FnOnce(&mut Window, &mut App) + 'static) {
     cx.defer(move |cx| {
         let shown = cx
             .active_window()
@@ -1785,468 +1354,6 @@ pub fn render_staged_bar(cx: &mut App) -> AnyElement {
 }
 
 /// Make one change to the table's shape at once, as one undo step credited to the agent.
-fn edit_table(
-    agent: &str,
-    revision: TableRevision,
-    edit: TableEdit,
-    cx: &mut App,
-) -> Result<Response, RequestError> {
-    let state = cx
-        .try_global::<TableStateHandle>()
-        .and_then(|handle| handle.0.upgrade())
-        .ok_or(RequestError::TableUnavailable)?;
-    // Rows are named by index, so an edit read against an older table could land on another row.
-    if revision != TableRevision(state.read(cx).delegate().values_generation()) {
-        return Err(RequestError::StaleRevision);
-    }
-    let column = |name: &str, cx: &App| {
-        state
-            .read(cx)
-            .delegate()
-            .data_col(name)
-            .ok_or(RequestError::UnknownColumn)
-    };
-    let row = |row: usize, cx: &App| {
-        (row < state.read(cx).delegate().row_count())
-            .then_some(row)
-            .ok_or(RequestError::RowOutOfRange)
-    };
-    let new_name = |name: &str, cx: &App| {
-        let name = name.trim();
-        if name.is_empty() || state.read(cx).delegate().data_col(name).is_some() {
-            return Err(RequestError::ColumnNameTaken(name.to_owned()));
-        }
-        Ok(SharedString::from(name.to_owned()))
-    };
-    let refused = |what: &str| RequestError::EditRefused(what.to_owned());
-
-    let origin = Origin::Agent {
-        agent: agent.to_owned(),
-        fix: match &edit {
-            TableEdit::AddRows { rows } => match rows.len() {
-                1 => "Add a row".into(),
-                n => format!("Add {n} rows"),
-            },
-            TableEdit::AddColumn { name, .. } => format!("Add column {}", name.trim()),
-            TableEdit::RenameColumn { column, name } => {
-                format!("Rename column {column} to {}", name.trim())
-            }
-            TableEdit::MoveColumn { column, .. } => format!("Move column {column}"),
-            TableEdit::DescribeColumn { column, .. } => format!("Describe column {column}"),
-            TableEdit::MoveRow { row, .. } => format!("Move row {}", row + 1),
-            TableEdit::IndentRow { row } => format!("Indent row {}", row + 1),
-            TableEdit::OutdentRow { row } => format!("Outdent row {}", row + 1),
-            TableEdit::DuplicateRow { row } => format!("Duplicate row {}", row + 1),
-            TableEdit::Filter { column, keep } => match keep {
-                Some(_) => format!("Filter {column}"),
-                None => format!("Clear the filter on {column}"),
-            },
-        },
-    };
-    let (detail, rows): (String, Vec<usize>) = match edit {
-        TableEdit::AddRows { rows } => {
-            let delegate = state.read(cx).delegate();
-            let width = delegate.column_count();
-            let mut values = Vec::with_capacity(rows.len());
-            for fields in &rows {
-                let mut cells = vec![SharedString::default(); width];
-                for (name, value) in fields {
-                    cells[column(name, cx)?] = value.clone().into();
-                }
-                values.push(cells);
-            }
-            let at = delegate.row_count();
-            let added = state.update(cx, |state, cx| {
-                let added = state
-                    .delegate_mut()
-                    .append_spreadsheet_rows(values, origin.clone());
-                let rows: Vec<usize> = (at..at + added).collect();
-                crate::photos::refresh(state, Some(&rows), cx);
-                state.refresh(cx);
-                cx.emit(crate::TableChanged);
-                cx.notify();
-                added
-            });
-            let row_ids = state.read(cx).delegate().row_ids().to_vec();
-            diagnostics::Diagnostics::align_note_rows(DATASET_MAIN, &row_ids, origin.clone(), cx);
-            settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
-            crate::revalidate_now(cx);
-            crate::autosave(cx);
-            let detail = match added {
-                1 => "Add a row".to_owned(),
-                n => format!("Add {n} rows"),
-            };
-            (detail, (at..at + added).collect())
-        }
-        TableEdit::AddColumn { name, after } => {
-            let name = new_name(&name, cx)?;
-            let at = match after {
-                Some(after) => column(&after, cx)? + 1,
-                None => 0,
-            };
-            crate::structural(
-                crate::Structural::AddNamedColumn {
-                    at,
-                    name: name.clone(),
-                },
-                origin.clone(),
-                cx,
-            );
-            (format!("Add column {name}"), Vec::new())
-        }
-        TableEdit::RenameColumn { column: from, name } => {
-            let col = column(&from, cx)?;
-            let name = new_name(&name, cx)?;
-            crate::structural(
-                crate::Structural::RenameColumn {
-                    col,
-                    name: name.clone(),
-                },
-                origin.clone(),
-                cx,
-            );
-            (format!("Rename column {from} to {name}"), Vec::new())
-        }
-        TableEdit::MoveColumn {
-            column: name,
-            after,
-        } => {
-            let from = column(&name, cx)?;
-            let to = match after {
-                Some(after) => {
-                    let after = column(&after, cx)?;
-                    if after < from { after + 1 } else { after }
-                }
-                None => 0,
-            };
-            crate::structural(
-                crate::Structural::MoveColumn { from, to },
-                origin.clone(),
-                cx,
-            );
-            (format!("Move column {name}"), Vec::new())
-        }
-        TableEdit::DescribeColumn {
-            column: name,
-            data_type,
-            description,
-        } => {
-            column(&name, cx)?;
-            let kind = match data_type {
-                Some(data_type) => Some(
-                    settings::columns::ColumnType::ALL
-                        .into_iter()
-                        .find(|kind| kind.as_str().eq_ignore_ascii_case(data_type.trim()))
-                        .ok_or(RequestError::UnknownDataType(data_type))?,
-                ),
-                None => None,
-            };
-            if !crate::describe_column(
-                &name,
-                kind.map(|kind| kind.as_str()),
-                description.as_deref().map(str::trim),
-                origin.clone(),
-                cx,
-            ) {
-                return Err(RequestError::UnknownColumn);
-            }
-            (format!("Describe column {name}"), Vec::new())
-        }
-        TableEdit::MoveRow {
-            row: moved,
-            target,
-            placement,
-        } => {
-            let (moved, target) = (row(moved, cx)?, row(target, cx)?);
-            let placement = match placement {
-                RowPlacement::Before => crate::RowPlacement::Before,
-                RowPlacement::After => crate::RowPlacement::After,
-                RowPlacement::Child => crate::RowPlacement::Child,
-            };
-            let op = crate::Arrangement::Move {
-                row: moved,
-                target,
-                placement,
-            };
-            if !crate::arrange(op, origin.clone(), cx) {
-                return Err(refused("the row cannot go there"));
-            }
-            (format!("Move row {}", moved + 1), Vec::new())
-        }
-        TableEdit::IndentRow { row: indented } => {
-            let indented = row(indented, cx)?;
-            if !crate::arrange(crate::Arrangement::Indent(indented), origin.clone(), cx) {
-                return Err(refused("the row has no row above it at its level"));
-            }
-            (format!("Indent row {}", indented + 1), Vec::new())
-        }
-        TableEdit::OutdentRow { row: outdented } => {
-            let outdented = row(outdented, cx)?;
-            if !crate::arrange(crate::Arrangement::Outdent(outdented), origin.clone(), cx) {
-                return Err(refused("the row is already at the top level"));
-            }
-            (format!("Outdent row {}", outdented + 1), Vec::new())
-        }
-        TableEdit::DuplicateRow { row: copied } => {
-            let copied = row(copied, cx)?;
-            crate::structural(
-                crate::Structural::DuplicateRow { row: copied },
-                origin.clone(),
-                cx,
-            );
-            (format!("Duplicate row {}", copied + 1), vec![copied + 1])
-        }
-        TableEdit::Filter { column: name, keep } => {
-            let col = column(&name, cx)?;
-            state.update(cx, |state, cx| {
-                let delegate = state.delegate_mut();
-                let keep: Option<Vec<SharedString>> = keep
-                    .as_ref()
-                    .map(|values| values.iter().cloned().map(Into::into).collect());
-                delegate.filter_from_agent(col, keep.as_deref(), origin.clone());
-                state.refresh(cx);
-                cx.emit(crate::TableChanged);
-                cx.notify();
-            });
-            settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
-            crate::autosave(cx);
-            let detail = match keep {
-                Some(_) => format!("Filter {name}"),
-                None => format!("Clear the filter on {name}"),
-            };
-            (detail, Vec::new())
-        }
-    };
-
-    log::info!("{agent}: {detail}");
-    Ok(Response {
-        revision: TableRevision(state.read(cx).delegate().values_generation()),
-        result: ResultSet::Edited { detail, rows },
-    })
-}
-
-/// How long a delete waits for the archivist before it is refused.
-const DELETE_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum DeleteAnswer {
-    Delete,
-    Keep,
-    TimedOut,
-}
-
-/// The one delete waiting for the archivist, and where their answer goes.
-struct PendingDelete(async_channel::Sender<DeleteAnswer>);
-impl Global for PendingDelete {}
-
-/// Answer the delete waiting for the archivist, as the dialog's buttons do.
-pub(crate) fn answer_pending_delete(delete: bool, cx: &mut App) {
-    if let Some(pending) = cx.try_global::<PendingDelete>() {
-        let answer = match delete {
-            true => DeleteAnswer::Delete,
-            false => DeleteAnswer::Keep,
-        };
-        let _ = pending.0.try_send(answer);
-    }
-}
-
-enum DeleteTarget {
-    Rows(Vec<settings::project::RowId>),
-    Column(SharedString),
-}
-
-/// Ask the archivist, in the app, whether to delete what the agent named, showing its reason; the
-/// answer comes back once they choose, or after [`DELETE_WAIT`] as a refusal.
-fn ask_to_delete(
-    agent: &str,
-    revision: TableRevision,
-    rows: Vec<usize>,
-    column: Option<String>,
-    reason: String,
-    cx: &mut App,
-) -> Task<Result<Response, RequestError>> {
-    let prepared = (|| {
-        let state = cx
-            .try_global::<TableStateHandle>()
-            .and_then(|handle| handle.0.upgrade())
-            .ok_or(RequestError::TableUnavailable)?;
-        let delegate = state.read(cx).delegate();
-        if revision != TableRevision(delegate.values_generation()) {
-            return Err(RequestError::StaleRevision);
-        }
-        if cx.has_global::<PendingDelete>() {
-            return Err(RequestError::DeletePending);
-        }
-        if cx.active_window().is_none() {
-            return Err(RequestError::NoWindow);
-        }
-        Ok(match column {
-            Some(name) => {
-                let col = delegate
-                    .data_col(&name)
-                    .ok_or(RequestError::UnknownColumn)?;
-                let filled = (0..delegate.row_count())
-                    .filter(|row| {
-                        delegate
-                            .cell(*row, col)
-                            .is_some_and(|text| !text.is_empty())
-                    })
-                    .count();
-                (
-                    format!("{agent} wants to delete the column “{name}”"),
-                    vec![SharedString::from(format!(
-                        "It has {filled} filled cell(s) out of {}.",
-                        delegate.row_count()
-                    ))],
-                    DeleteTarget::Column(name.into()),
-                )
-            }
-            None => {
-                let mut rows = rows;
-                rows.sort_unstable();
-                rows.dedup();
-                if rows.iter().any(|row| *row >= delegate.row_count()) {
-                    return Err(RequestError::RowOutOfRange);
-                }
-                let lines = rows
-                    .iter()
-                    .take(10)
-                    .map(|row| {
-                        let first = delegate
-                            .row_fields(*row)
-                            .into_iter()
-                            .map(|(_, text)| text)
-                            .find(|text| !text.trim().is_empty())
-                            .unwrap_or_default();
-                        SharedString::from(format!("Row {}: {first}", row + 1))
-                    })
-                    .chain(
-                        (rows.len() > 10).then(|| format!("… and {} more", rows.len() - 10).into()),
-                    )
-                    .collect();
-                let ids = rows
-                    .iter()
-                    .filter_map(|row| delegate.row_id(*row))
-                    .collect();
-                let title = match rows.len() {
-                    1 => format!("{agent} wants to delete row {}", rows[0] + 1),
-                    n => format!("{agent} wants to delete {n} rows"),
-                };
-                (title, lines, DeleteTarget::Rows(ids))
-            }
-        })
-    })();
-    let (title, lines, target) = match prepared {
-        Ok(prepared) => prepared,
-        Err(error) => return Task::ready(Err(error)),
-    };
-
-    let (answer, answers) = async_channel::bounded(3);
-    cx.set_global(PendingDelete(answer.clone()));
-    let timer = cx.background_executor().timer(DELETE_WAIT);
-    cx.background_executor()
-        .spawn(async move {
-            timer.await;
-            let _ = answer.try_send(DeleteAnswer::TimedOut);
-        })
-        .detach();
-    let (title, reason) = (SharedString::from(title), SharedString::from(reason));
-    let agent_label = SharedString::from(format!("Reason given by {agent}:"));
-    in_active_window(cx, move |window, cx| {
-        window.open_alert_dialog(cx, move |alert, _, cx| {
-            let muted = cx.theme().muted_foreground;
-            alert
-                .title(title.clone())
-                .description(
-                    v_flex()
-                        .gap_2()
-                        .child(div().text_sm().text_color(muted).child(agent_label.clone()))
-                        .child(div().child(reason.clone()))
-                        .children(
-                            lines
-                                .iter()
-                                .map(|line| div().text_sm().text_color(muted).child(line.clone())),
-                        ),
-                )
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Delete")
-                        .ok_variant(ButtonVariant::Danger)
-                        .show_cancel(true)
-                        .cancel_text("Keep"),
-                )
-                .on_ok(|_, _, cx| {
-                    answer_pending_delete(true, cx);
-                    true
-                })
-                .on_cancel(|_, _, cx| {
-                    answer_pending_delete(false, cx);
-                    true
-                })
-                // Also runs after either button; the first answer is the one that counts.
-                .on_close(|_, _, cx| answer_pending_delete(false, cx))
-        })
-    });
-
-    let agent = agent.to_owned();
-    cx.spawn(async move |cx| {
-        let answer = answers.recv().await.unwrap_or(DeleteAnswer::Keep);
-        cx.update(|cx| {
-            cx.remove_global::<PendingDelete>();
-            match answer {
-                DeleteAnswer::Keep => return Err(RequestError::DeleteDeclined),
-                DeleteAnswer::TimedOut => {
-                    in_active_window(cx, |window, cx| window.close_all_dialogs(cx));
-                    return Err(RequestError::DeleteTimedOut);
-                }
-                DeleteAnswer::Delete => {}
-            }
-            let state = cx
-                .try_global::<TableStateHandle>()
-                .and_then(|handle| handle.0.upgrade())
-                .ok_or(RequestError::TableUnavailable)?;
-            let (count, detail) = match target {
-                DeleteTarget::Column(name) => {
-                    let col = state
-                        .read(cx)
-                        .delegate()
-                        .data_col(&name)
-                        .ok_or(RequestError::UnknownColumn)?;
-                    let detail = format!("Delete column {name}");
-                    let origin = Origin::Agent {
-                        agent: agent.clone(),
-                        fix: detail.clone(),
-                    };
-                    crate::structural(crate::Structural::DeleteColumn { col }, origin, cx);
-                    (1, detail)
-                }
-                DeleteTarget::Rows(ids) => {
-                    let rows: Vec<usize> = ids
-                        .iter()
-                        .filter_map(|id| state.read(cx).delegate().row_of(*id))
-                        .collect();
-                    let count = rows.len();
-                    let detail = match count {
-                        1 => "Delete a row".to_owned(),
-                        n => format!("Delete {n} rows"),
-                    };
-                    let origin = Origin::Agent {
-                        agent: agent.clone(),
-                        fix: detail.clone(),
-                    };
-                    crate::structural(crate::Structural::DeleteRows(rows), origin, cx);
-                    (count, detail)
-                }
-            };
-            log::info!("{agent}: {detail}, confirmed by the archivist");
-            Ok(Response {
-                revision: TableRevision(state.read(cx).delegate().values_generation()),
-                result: ResultSet::Deleted { count },
-            })
-        })
-    })
-}
-
 /// Say what a bulk action did, over whichever window is active.
 pub(crate) fn tell(message: String, cx: &mut App) {
     in_active_window(cx, move |window, cx| {
@@ -2258,22 +1365,193 @@ pub(crate) fn tell(message: String, cx: &mut App) {
 mod tests {
     // Never `use super::*` here — see the note on `note.rs`'s test module.
     use ai::agent::{
-        Finding, Overview, ProjectSummary, Query, QuerySource, Request, RequestError, ResultSet,
-        TableRevision,
+        Finding, Overview, ProgramOutput, ProjectSummary, Query, QueryResult, QuerySource, Rename,
+        RequestError, RowPlacement, TableRevision, Thumbnail, ThumbnailRequest,
     };
     use diagnostics::{DATASET_MAIN, Location};
     use gpui::{AppContext as _, TestAppContext};
+    use serde::{Deserialize, Serialize};
 
     use gpui::SharedString;
 
     use crate::agent::{agent_source, apply_renames, apply_rewrite, apply_staged, staged_actions};
     use crate::{TablePanel, TableStateHandle};
 
-    fn respond_to_agent(
+    /// The requests as the CLI has always put them on the wire, so these tests also hold the CLI's
+    /// JSON to its word through the capability dispatcher.
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(tag = "method", content = "params", rename_all = "snake_case")]
+    enum Request {
+        Overview,
+        Query(Query),
+        ProgramSave {
+            source: String,
+        },
+        ProgramRun {
+            revision: TableRevision,
+            args: serde_json::Value,
+        },
+        Thumbnails {
+            items: Vec<ThumbnailRequest>,
+        },
+        StageFindings {
+            revision: TableRevision,
+            findings: Vec<Finding>,
+        },
+        StageColumnRewrite {
+            revision: TableRevision,
+            column: String,
+            values: Vec<(usize, String)>,
+            note: Option<String>,
+        },
+        StageRenames {
+            revision: TableRevision,
+            renames: Vec<Rename>,
+        },
+        Edit {
+            revision: TableRevision,
+            #[serde(flatten)]
+            edit: TableEdit,
+        },
+        Delete {
+            revision: TableRevision,
+            #[serde(default)]
+            rows: Vec<usize>,
+            column: Option<String>,
+            reason: String,
+        },
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(tag = "op", rename_all = "snake_case")]
+    enum TableEdit {
+        IndentRow {
+            row: usize,
+        },
+        MoveRow {
+            row: usize,
+            target: usize,
+            placement: RowPlacement,
+        },
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(tag = "result", rename_all = "snake_case")]
+    enum ResultSet {
+        Overview(Overview),
+        Query(QueryResult),
+        ProgramSaved {
+            version: u64,
+            hash: String,
+        },
+        ProgramRun(ProgramOutput),
+        Thumbnails {
+            items: Vec<Thumbnail>,
+        },
+        Staged {
+            accepted: usize,
+            stale: Vec<usize>,
+        },
+        StagedRewrite {
+            accepted: usize,
+            unchanged: Vec<usize>,
+        },
+        StagedRenames {
+            accepted: usize,
+        },
+        Edited {
+            detail: String,
+            rows: Vec<usize>,
+        },
+        Deleted {
+            count: usize,
+        },
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Response {
+        revision: TableRevision,
+        #[serde(flatten)]
+        result: ResultSet,
+    }
+
+    /// The method and parameters `app_control` would dispatch for `request`.
+    fn wire(request: &Request) -> (String, serde_json::Value) {
+        let wire = serde_json::to_value(request).unwrap();
+        let mut name = wire["method"].as_str().unwrap().to_owned();
+        let mut params = wire.get("params").cloned().unwrap_or_default();
+        if name == "edit" {
+            name = params
+                .as_object_mut()
+                .and_then(|params| params.remove("op"))
+                .and_then(|op| op.as_str().map(str::to_owned))
+                .unwrap();
+        }
+        (name, params)
+    }
+
+    struct Registered;
+    impl gpui::Global for Registered {}
+
+    fn register(cx: &mut gpui::App) {
+        if cx.has_global::<Registered>() {
+            return;
+        }
+        cx.set_global(Registered);
+        capability::init(cx);
+        crate::capabilities::init(cx);
+    }
+
+    fn respond_as(
+        agent: &str,
         request: Request,
         cx: &mut gpui::App,
-    ) -> Result<ai::agent::Response, RequestError> {
-        crate::respond_to_agent(request, "pi", cx)
+    ) -> Result<Response, RequestError> {
+        let (name, params) = wire(&request);
+        call(agent, &name, params, cx)
+    }
+
+    fn call(
+        agent: &str,
+        name: &str,
+        params: serde_json::Value,
+        cx: &mut gpui::App,
+    ) -> Result<Response, RequestError> {
+        register(cx);
+        let task = capability::dispatch(
+            name,
+            params,
+            capability::Caller::Agent(agent.to_owned().into()),
+            cx,
+        )
+        .task;
+        let answer =
+            capability::now(task).unwrap_or_else(|_| panic!("{name} did not answer at once"))?;
+        Ok(serde_json::from_value(answer.value).unwrap())
+    }
+
+    fn respond_to_agent(request: Request, cx: &mut gpui::App) -> Result<Response, RequestError> {
+        respond_as("pi", request, cx)
+    }
+
+    /// A call that waits on the archivist, answered once they have.
+    fn respond_later(
+        request: Request,
+        cx: &mut gpui::App,
+    ) -> gpui::Task<Result<Response, RequestError>> {
+        register(cx);
+        let (name, params) = wire(&request);
+        let task =
+            capability::dispatch(&name, params, capability::Caller::Agent("pi".into()), cx).task;
+        let answer = |answer: Result<capability::Answer, RequestError>| {
+            answer.map(|answer| serde_json::from_value(answer.value).unwrap())
+        };
+        match capability::now(task) {
+            Ok(done) => gpui::Task::ready(answer(done)),
+            Err(task) => cx
+                .background_executor()
+                .spawn(async move { answer(task.await) }),
+        }
     }
 
     fn cell(row: usize, cx: &mut gpui::App) -> serde_json::Value {
@@ -2318,6 +1596,7 @@ mod tests {
 
     fn open(cx: &mut TestAppContext) {
         cx.update(|cx| {
+            register(cx);
             gpui_component::init(cx);
             cx.set_global(settings::AppSettings::default());
             cx.set_global(project());
@@ -2686,12 +1965,12 @@ mod tests {
     }
 
     fn respond_to_agent_as(agent: &str, findings: Vec<Finding>, cx: &mut gpui::App) {
-        crate::respond_to_agent(
+        respond_as(
+            agent,
             Request::StageFindings {
                 revision: TableRevision(0),
                 findings,
             },
-            agent,
             cx,
         )
         .unwrap();
@@ -3223,6 +2502,7 @@ mod tests {
     /// The table in a window that can show dialogs and notifications, made the active one.
     fn open_in_window(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
         cx.update(|cx| {
+            register(cx);
             gpui_component::init(cx);
             cx.set_global(settings::AppSettings::default());
             cx.set_global(project());
@@ -3243,10 +2523,12 @@ mod tests {
     fn edit(op: serde_json::Value, cx: &mut gpui::App) -> Result<ResultSet, RequestError> {
         let mut params = op;
         params["revision"] = serde_json::json!(revision(cx).0);
-        let request: Request =
-            serde_json::from_value(serde_json::json!({"method": "edit", "params": params}))
-                .unwrap();
-        respond_to_agent(request, cx).map(|response| response.result)
+        let name = params
+            .as_object_mut()
+            .and_then(|params| params.remove("op"))
+            .and_then(|op| op.as_str().map(str::to_owned))
+            .unwrap();
+        call("pi", &name, params, cx).map(|response| response.result)
     }
 
     fn headers(cx: &gpui::App) -> Vec<String> {
@@ -3560,7 +2842,7 @@ mod tests {
                 respond_to_agent(
                     Request::Edit {
                         revision: TableRevision(u64::MAX),
-                        edit: ai::agent::TableEdit::IndentRow { row: 1 },
+                        edit: TableEdit::IndentRow { row: 1 },
                     },
                     cx
                 ),
@@ -3585,7 +2867,7 @@ mod tests {
         let window = open_in_window(cx);
         let asked = cx.update(|cx| {
             let request = delete(vec![1, 2], None, cx);
-            crate::respond_to_agent_async(request, "pi", cx)
+            respond_later(request, cx)
         });
         cx.run_until_parked();
         cx.update_window(window, |_, window, cx| {
@@ -3595,11 +2877,11 @@ mod tests {
         cx.update(|cx| {
             let second = delete(vec![0], None, cx);
             assert!(matches!(
-                crate::respond_to_agent_async(second, "pi", cx),
+                respond_later(second, cx),
                 task if task.is_ready()
             ));
             assert_eq!(cell(1, cx), "Wharf", "nothing is deleted before the answer");
-            crate::agent::answer_pending_delete(true, cx);
+            crate::capabilities::answer_pending_confirm(true, cx);
         });
         assert_eq!(asked.await.unwrap().result, ResultSet::Deleted { count: 2 });
         cx.update(|cx| {
@@ -3621,11 +2903,11 @@ mod tests {
 
         let kept = cx.update(|cx| {
             let request = delete(Vec::new(), Some("Medium"), cx);
-            crate::respond_to_agent_async(request, "pi", cx)
+            respond_later(request, cx)
         });
         cx.run_until_parked();
-        cx.update(|cx| crate::agent::answer_pending_delete(false, cx));
-        assert_eq!(kept.await, Err(RequestError::DeleteDeclined));
+        cx.update(|cx| crate::capabilities::answer_pending_confirm(false, cx));
+        assert_eq!(kept.await, Err(RequestError::Declined));
         cx.update(|cx| assert_eq!(headers(cx), ["Title", "Medium"]));
     }
 
@@ -3635,16 +2917,16 @@ mod tests {
         open_in_window(cx);
         let first = cx.update(|cx| {
             let request = delete(vec![0], None, cx);
-            crate::respond_to_agent_async(request, "pi", cx)
+            respond_later(request, cx)
         });
         cx.run_until_parked();
         let second = cx.update(|cx| {
             let request = delete(vec![1], None, cx);
-            crate::respond_to_agent_async(request, "pi", cx)
+            respond_later(request, cx)
         });
-        assert_eq!(second.await, Err(RequestError::DeletePending));
-        cx.update(|cx| crate::agent::answer_pending_delete(false, cx));
-        assert_eq!(first.await, Err(RequestError::DeleteDeclined));
+        assert_eq!(second.await, Err(RequestError::ConfirmPending));
+        cx.update(|cx| crate::capabilities::answer_pending_confirm(false, cx));
+        assert_eq!(first.await, Err(RequestError::Declined));
     }
 
     /// Staged values show on their own cells and can be settled one at a time, or all at once.

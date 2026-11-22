@@ -30,6 +30,7 @@ url = "2"
 # The agent request/response types; `app_control` answers them because only the
 # composition root links both the contract and the live table.
 ai = { path = "../ai" }
+capability = { path = "../capability" }
 agent-runtime = { path = "../agent-runtime" }
 components = { path = "../components" }
 # Where the Google refresh token lives; it never expires, so it doesn't go in the settings DB.

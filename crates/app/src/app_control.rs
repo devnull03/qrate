@@ -274,39 +274,35 @@ async fn answer_agent(
             .is_none_or(|value| value.bool())
     });
     let (mut method, mut detail) = (SharedString::from("—"), SharedString::default());
-    let (status, payload, outcome, refused) =
-        match serde_json::from_slice::<ai::agent::Request>(body) {
-            _ if !allowed => (
-                "403 Forbidden",
-                json!({ "error": "agent_access_off" }),
-                SharedString::from("agent access is off in Settings"),
-                true,
-            ),
-            Err(error) => (
-                "400 Bad Request",
-                json!({ "error": "malformed_request", "detail": error.to_string() }),
-                SharedString::from("malformed_request"),
-                true,
-            ),
-            Ok(request) => {
-                (method, detail) = summarize(&request);
-                match cx
-                    .update(|cx| table::respond_to_agent_async(request, &agent, cx))
-                    .await
-                {
-                    Ok(response) => (
-                        "200 OK",
-                        serde_json::to_value(&response).unwrap_or_else(|_| json!({})),
-                        describe(&response.result),
-                        false,
-                    ),
-                    Err(error) => {
-                        let outcome = wire_name(&error);
-                        ("400 Bad Request", json!({ "error": error }), outcome, true)
-                    }
+    let (status, payload, outcome, refused) = match serde_json::from_slice::<WireCall>(body) {
+        _ if !allowed => (
+            "403 Forbidden",
+            json!({ "error": "agent_access_off" }),
+            SharedString::from("agent access is off in Settings"),
+            true,
+        ),
+        Err(error) => (
+            "400 Bad Request",
+            json!({ "error": "malformed_request", "detail": error.to_string() }),
+            SharedString::from("malformed_request"),
+            true,
+        ),
+        Ok(call) => {
+            let (name, params) = call.resolve();
+            method = name.clone().into();
+            let dispatched = cx.update(|cx| {
+                capability::dispatch(&name, params, capability::Caller::Agent(agent.clone()), cx)
+            });
+            detail = dispatched.label.into();
+            match dispatched.task.await {
+                Ok(answer) => ("200 OK", answer.value, answer.outcome.into(), false),
+                Err(error) => {
+                    let outcome = wire_name(&error);
+                    ("400 Bad Request", json!({ "error": error }), outcome, true)
                 }
             }
-        };
+        }
+    };
     cx.update(|cx| {
         let mut seen = seen.borrow_mut();
         if seen.len() < MAX_AGENT_NAMES && seen.insert(agent.clone()) {
@@ -341,113 +337,27 @@ async fn answer_agent(
     (status, payload)
 }
 
-/// The method name and a one-line summary of what was asked for, read back out of the serialized
-/// request so the panel can never disagree with what went over the wire.
-fn summarize(request: &ai::agent::Request) -> (SharedString, SharedString) {
-    let method = serde_json::to_value(request)
-        .ok()
-        .and_then(|value| value["method"].as_str().map(SharedString::from))
-        .unwrap_or_else(|| "?".into());
-    let detail = match request {
-        ai::agent::Request::Query(query) => {
-            format!("{:?}, max {}", query.source, query.limit).into()
-        }
-        ai::agent::Request::StageFindings { revision, findings } => {
-            format!("{} finding(s) at revision {}", findings.len(), revision.0).into()
-        }
-        ai::agent::Request::StageColumnRewrite {
-            revision,
-            column,
-            values,
-            ..
-        } => format!(
-            "{} value(s) for {column} at revision {}",
-            values.len(),
-            revision.0
-        )
-        .into(),
-        ai::agent::Request::Edit { revision, edit } => {
-            let op = serde_json::to_value(edit)
-                .ok()
-                .and_then(|value| value["op"].as_str().map(str::to_owned))
-                .unwrap_or_else(|| "?".into());
-            format!("{op} at revision {}", revision.0).into()
-        }
-        ai::agent::Request::Delete {
-            revision,
-            rows,
-            column,
-            ..
-        } => match column {
-            Some(column) => format!("column {column} at revision {}", revision.0).into(),
-            None => format!("{} row(s) at revision {}", rows.len(), revision.0).into(),
-        },
-        ai::agent::Request::StageRenames { revision, renames } => {
-            format!("{} rename(s) at revision {}", renames.len(), revision.0).into()
-        }
-        ai::agent::Request::ProgramSave { source } => {
-            format!("{} source byte(s)", source.len()).into()
-        }
-        ai::agent::Request::ProgramRun { revision, .. } => {
-            format!("at revision {}", revision.0).into()
-        }
-        ai::agent::Request::Thumbnails { items } => format!("{} thumbnail(s)", items.len()).into(),
-        ai::agent::Request::RequestAccess { path, .. } => format!("read access to {path}").into(),
-        ai::agent::Request::CheckAccess { path } => format!("check read access to {path}").into(),
-        ai::agent::Request::ForgetAccess {} => "revoke read access".into(),
-        ai::agent::Request::ImportFiles {
-            paths, revision, ..
-        } => format!("{} path(s) at revision {}", paths.len(), revision.0).into(),
-        ai::agent::Request::Overview => SharedString::default(),
-    };
-    (method, detail)
+/// One agent call off the wire: a capability's name and its parameters.
+#[derive(serde::Deserialize)]
+struct WireCall {
+    method: String,
+    #[serde(default)]
+    params: Value,
 }
 
-/// The size of an answer, not its contents — archive data does not belong in a debugging list.
-fn describe(result: &ai::agent::ResultSet) -> SharedString {
-    match result {
-        ai::agent::ResultSet::Overview(overview) => format!(
-            "{} rows × {} columns",
-            overview.project.row_count, overview.project.column_count
-        )
-        .into(),
-        ai::agent::ResultSet::Query(page) => {
-            format!("{} returned, {} remaining", page.returned, page.remaining).into()
-        }
-        ai::agent::ResultSet::ProgramSaved { version, hash } => {
-            format!("program v{version} {hash}").into()
-        }
-        ai::agent::ResultSet::ProgramRun(output) => {
-            format!("program v{} in {} ms", output.version, output.elapsed_ms).into()
-        }
-        ai::agent::ResultSet::Thumbnails { items } => {
-            format!("{} thumbnail(s)", items.len()).into()
-        }
-        ai::agent::ResultSet::Staged { accepted, stale } => {
-            format!("{accepted} staged, {} stale", stale.len()).into()
-        }
-        ai::agent::ResultSet::StagedRewrite {
-            accepted,
-            unchanged,
-        } => format!("{accepted} staged, {} unchanged", unchanged.len()).into(),
-        ai::agent::ResultSet::Edited { detail, .. } => detail.clone().into(),
-        ai::agent::ResultSet::Deleted { count } => {
-            format!("{count} deleted, confirmed in the app").into()
-        }
-        ai::agent::ResultSet::FileAccess { directory, .. } => if *directory {
-            "folder read access"
-        } else {
-            "file read access"
-        }
-        .into(),
-        ai::agent::ResultSet::FileAccessRevoked { count } => {
-            format!("{count} read grant(s) revoked").into()
-        }
-        ai::agent::ResultSet::ImportedFiles { added, skipped, .. } => {
-            format!("{added} added, {skipped} existing components skipped").into()
-        }
-        ai::agent::ResultSet::StagedRenames { accepted } => {
-            format!("{accepted} rename(s) staged").into()
+impl WireCall {
+    /// The capability to call. `edit` with an `op` is the CLI's older spelling of the shape edits,
+    /// kept because the CLI's JSON is a public contract.
+    fn resolve(self) -> (String, Value) {
+        match (self.method.as_str(), &self.params) {
+            ("edit", Value::Object(params)) => {
+                let mut params = params.clone();
+                match params.remove("op") {
+                    Some(Value::String(op)) => (op, Value::Object(params)),
+                    _ => ("edit".into(), Value::Object(params)),
+                }
+            }
+            _ => (self.method, self.params),
         }
     }
 }

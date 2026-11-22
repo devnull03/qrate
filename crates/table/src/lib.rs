@@ -9,6 +9,7 @@
 
 mod agent;
 mod agent_files;
+mod capabilities;
 pub use agent_files::revoke_agent_file_access;
 
 mod cell;
@@ -27,9 +28,8 @@ mod relink;
 mod row_index;
 mod visual;
 
-pub use agent::{
-    AGENT_SOURCE, agent_source, render_staged_bar, respond_to_agent, respond_to_agent_async,
-};
+pub use agent::{AGENT_SOURCE, agent_source, render_staged_bar};
+pub use capabilities::init as init_capabilities;
 pub use delegate::{QrateTableDelegate, Selection, TableChanged};
 pub use editor::editor_box;
 /// The grid's right-click menu, so a gallery card can raise the same one a row does rather than

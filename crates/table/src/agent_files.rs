@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ai::agent::{RequestError, Response, ResultSet, TableRevision};
+use ai::agent::{FileAccess, FileAccessRevoked, ImportedFiles, RequestError, TableRevision};
 use gpui::{App, Global, ParentElement as _, Styled as _, Task, div};
 use gpui_component::{ActiveTheme as _, WindowExt as _, dialog::DialogButtonProps, v_flex};
 use settings::history::Origin;
@@ -122,13 +122,25 @@ fn unchanged(project: &Path, cx: &App) -> Result<(), RequestError> {
     }
 }
 
-fn response(grant: Grant, revision: TableRevision) -> Response {
-    Response {
-        revision,
-        result: ResultSet::FileAccess {
-            path: grant.path.to_string_lossy().into_owned(),
-            directory: grant.directory,
-        },
+fn response(grant: Grant) -> FileAccess {
+    FileAccess {
+        path: grant.path.to_string_lossy().into_owned(),
+        directory: grant.directory,
+    }
+}
+
+/// Resolve a path an agent named, refusing one outside the project that none of `agent`'s grants
+/// covers. The archivist's own paths are only resolved. Never asks.
+pub(crate) fn resolve_granted(
+    agent: Option<&str>,
+    raw: &str,
+    cx: &App,
+) -> Result<PathBuf, RequestError> {
+    let context = context(agent.unwrap_or_default(), cx)?;
+    let grant = Grant::resolve(&input_path(&context, raw))?;
+    match agent.is_none() || allowed(&context, &grant) {
+        true => Ok(grant.path),
+        false => Err(RequestError::FileAccessRequired(raw.to_owned())),
     }
 }
 
@@ -136,7 +148,7 @@ pub(super) fn check_access(
     agent: &str,
     path: String,
     cx: &mut App,
-) -> Task<Result<Response, RequestError>> {
+) -> Task<Result<FileAccess, RequestError>> {
     let context = match context(agent, cx) {
         Ok(context) => context,
         Err(error) => return Task::ready(Err(error)),
@@ -159,7 +171,7 @@ pub(super) fn check_access(
             {
                 return Err(RequestError::FileAccessDenied);
             }
-            Ok(response(grant, context.revision))
+            Ok(response(grant))
         })
     })
 }
@@ -182,7 +194,7 @@ pub(super) fn request_access(
     path: String,
     reason: String,
     cx: &mut App,
-) -> Task<Result<Response, RequestError>> {
+) -> Task<Result<FileAccess, RequestError>> {
     let context = match context(agent, cx) {
         Ok(context) => context,
         Err(error) => return Task::ready(Err(error)),
@@ -199,7 +211,7 @@ pub(super) fn request_access(
             return cx.update(|cx| {
                 unchanged(&context.project, cx)?;
                 if cx.try_global::<FileGrants>().map_or(0, |grants| grants.generation) != context.generation { return Err(RequestError::FileAccessDenied); }
-                Ok(response(grant, context.revision))
+                Ok(response(grant))
             });
         }
         let (answer, answers) = async_channel::bounded(1);
@@ -243,7 +255,7 @@ pub(super) fn request_access(
                     grants.generation += 1;
                     grants.paths.entry((context.project, agent.clone())).or_default().push(grant.clone());
                     log::info!("Read access granted to {agent}");
-                    Ok(response(grant, context.revision))
+                    Ok(response(grant))
                 }
                 Answer::Deny => Err(RequestError::FileAccessDenied),
                 Answer::TimedOut => { if let Some(window) = cx.active_window() { let _ = window.update(cx, |_, window, cx| window.close_all_dialogs(cx)); } Err(RequestError::FileAccessTimedOut) }
@@ -252,7 +264,7 @@ pub(super) fn request_access(
     })
 }
 
-pub(super) fn forget_access(agent: &str, cx: &mut App) -> Result<Response, RequestError> {
+pub(super) fn forget_access(agent: &str, cx: &mut App) -> Result<FileAccessRevoked, RequestError> {
     let context = context(agent, cx)?;
     let grants = cx.default_global::<FileGrants>();
     grants.generation += 1;
@@ -260,10 +272,7 @@ pub(super) fn forget_access(agent: &str, cx: &mut App) -> Result<Response, Reque
         .paths
         .remove(&(context.project, agent.to_owned()))
         .map_or(0, |grants| grants.len());
-    Ok(Response {
-        revision: context.revision,
-        result: ResultSet::FileAccessRevoked { count },
-    })
+    Ok(FileAccessRevoked { count })
 }
 
 /// Revoke explicit read grants for all agents; project files remain readable as before.
@@ -279,8 +288,9 @@ pub(super) fn import_files(
     revision: TableRevision,
     paths: Vec<String>,
     recursive: bool,
+    origin: Origin,
     cx: &mut App,
-) -> Task<Result<Response, RequestError>> {
+) -> Task<Result<ImportedFiles, RequestError>> {
     let context = match context(agent, cx) {
         Ok(context) => context,
         Err(error) => return Task::ready(Err(error)),
@@ -376,10 +386,6 @@ pub(super) fn import_files(
                 .take(20)
                 .map(|warning| format!("{warning:?}"))
                 .collect();
-            let origin = Origin::Agent {
-                agent: agent.clone(),
-                fix: "Import linked files".into(),
-            };
             let added = state.update(cx, |state, cx| {
                 let added = state.delegate_mut().append_components(
                     &resolved,
@@ -400,14 +406,12 @@ pub(super) fn import_files(
             settings::dirty::mark(settings::dirty::PROJECT_DATA, cx);
             crate::revalidate_now(cx);
             crate::autosave(cx);
-            Ok(Response {
-                revision: TableRevision(state.read(cx).delegate().values_generation()),
-                result: ResultSet::ImportedFiles {
-                    added,
-                    skipped,
-                    rows: (at..at + added).collect(),
-                    warnings,
-                },
+            log::info!("{agent}: imported {added} file(s), skipped {skipped}");
+            Ok(ImportedFiles {
+                added,
+                skipped,
+                rows: (at..at + added).collect(),
+                warnings,
             })
         })
     })
@@ -419,9 +423,16 @@ mod tests {
         FileGrants, Grant, check_access, import_files, request_access, revoke_agent_file_access,
     };
     use crate::{TablePanel, TableStateHandle};
-    use ai::agent::{RequestError, ResultSet, TableRevision};
+    use ai::agent::{FileAccess, ImportedFiles, RequestError, TableRevision};
     use gpui::{AppContext as _, TestAppContext};
     use settings::project::{CurrentProject, ProjectColumn, ProjectSpec};
+
+    fn agent_origin() -> settings::history::Origin {
+        settings::history::Origin::Agent {
+            agent: "pi".into(),
+            fix: "Import linked files".into(),
+        }
+    }
 
     struct DialogHost(gpui::Entity<TablePanel>);
     impl gpui::Render for DialogHost {
@@ -527,8 +538,8 @@ mod tests {
             visual.run_until_parked();
         }
         assert!(matches!(
-            request.await.unwrap().result,
-            ResultSet::FileAccess {
+            request.await.unwrap(),
+            FileAccess {
                 directory: true,
                 ..
             }
@@ -569,10 +580,12 @@ mod tests {
                     .into_owned()
             })
             .to_vec();
-        let imported = cx.update(|cx| import_files("pi", revision(cx), paths.clone(), false, cx));
+        let imported = cx.update(|cx| {
+            import_files("pi", revision(cx), paths.clone(), false, agent_origin(), cx)
+        });
         assert!(matches!(
-            imported.await.unwrap().result,
-            ResultSet::ImportedFiles {
+            imported.await.unwrap(),
+            ImportedFiles {
                 added: 2,
                 skipped: 0,
                 ..
@@ -587,10 +600,11 @@ mod tests {
             assert_eq!(state.read(cx).delegate().row_count(), 3);
             assert!(state.read(cx).delegate().row_structure().iter().filter(|row| row.source_path.is_some()).count() >= 2);
         });
-        let repeated = cx.update(|cx| import_files("pi", revision(cx), paths, false, cx));
+        let repeated =
+            cx.update(|cx| import_files("pi", revision(cx), paths, false, agent_origin(), cx));
         assert!(matches!(
-            repeated.await.unwrap().result,
-            ResultSet::ImportedFiles {
+            repeated.await.unwrap(),
+            ImportedFiles {
                 added: 0,
                 skipped: 2,
                 ..
@@ -611,8 +625,16 @@ mod tests {
     async fn an_import_refuses_revoked_access_and_a_stale_table(cx: &mut TestAppContext) {
         let (root, _) = open("stale-and-revoked", cx);
         let path = root.join("outside/one.txt").to_string_lossy().into_owned();
-        let denied =
-            cx.update(|cx| import_files("pi", revision(cx), vec![path.clone()], false, cx));
+        let denied = cx.update(|cx| {
+            import_files(
+                "pi",
+                revision(cx),
+                vec![path.clone()],
+                false,
+                agent_origin(),
+                cx,
+            )
+        });
         assert!(matches!(
             denied.await,
             Err(RequestError::FileAccessRequired(_))
@@ -625,7 +647,14 @@ mod tests {
             );
         });
         let revoked = cx.update(|cx| {
-            let task = import_files("pi", revision(cx), vec![path.clone()], false, cx);
+            let task = import_files(
+                "pi",
+                revision(cx),
+                vec![path.clone()],
+                false,
+                agent_origin(),
+                cx,
+            );
             revoke_agent_file_access(cx);
             task
         });
@@ -638,7 +667,7 @@ mod tests {
             );
         });
         let stale = cx.update(|cx| {
-            let task = import_files("pi", revision(cx), vec![path], false, cx);
+            let task = import_files("pi", revision(cx), vec![path], false, agent_origin(), cx);
             crate::structural(
                 crate::Structural::RenameColumn {
                     col: 0,

@@ -160,6 +160,8 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 /// `project-wizard` crate).
 pub fn register_global_handlers(cx: &mut App) {
     table::register_global_actions(cx);
+    capability::init(cx);
+    table::init_capabilities(cx);
     cx.on_action(|_: &Save, cx| {
         if let Err(error) = table::save_now(cx)
             && let Some(window) = cx.active_window()

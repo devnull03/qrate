@@ -161,6 +161,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -311,6 +312,7 @@ dependencies = [
  "ai",
  "anyhow",
  "async-channel",
+ "capability",
  "checks",
  "clustering",
  "cocoa 0.26.0",
@@ -1081,6 +1083,19 @@ dependencies = [
  "serde_json",
  "serde_plain",
  "tracing",
+]
+
+[[package]]
+name = "capability"
+version = "0.7.0-beta.3"
+dependencies = [
+ "ai",
+ "gpui-pre",
+ "log",
+ "schemars",
+ "serde",
+ "serde_json",
+ "settings",
 ]
 
 [[package]]
@@ -8684,6 +8699,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "base64",
+ "capability",
  "clustering",
  "components",
  "data-exchange",

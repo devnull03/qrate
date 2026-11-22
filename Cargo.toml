@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/agent-runtime",
   "crates/app",
+  "crates/capability",
   "crates/ai",
   "crates/checks",
   "crates/cli",

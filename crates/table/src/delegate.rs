@@ -1420,6 +1420,14 @@ impl QrateTableDelegate {
     }
 
     /// Forget the unsaved entries the ledger says have reached the file.
+    pub(crate) fn undo_depth(&self) -> usize {
+        self.history.depth()
+    }
+
+    pub(crate) fn squash_undo_since(&mut self, mark: usize) {
+        self.history.squash_since(mark);
+    }
+
     pub(crate) fn history_written(&mut self) {
         let written = self.ledger.written.load(Ordering::SeqCst);
         let count = (written.saturating_sub(self.saved_history) as usize).min(self.unsaved.len());

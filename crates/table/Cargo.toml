@@ -14,6 +14,7 @@ regex = "1"
 serde.workspace = true
 serde_json.workspace = true
 ai = { path = "../ai" }
+capability = { path = "../capability" }
 async-channel = "2"
 diagnostics = { path = "../diagnostics" }
 data-exchange = { path = "../data-exchange" }
@@ -29,5 +30,6 @@ base64 = "0.22"
 sha2 = "0.10"
 
 [dev-dependencies]
+capability = { path = "../capability", features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }
 clustering = { path = "../clustering" }
