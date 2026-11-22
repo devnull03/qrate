@@ -151,6 +151,18 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                         ),
                     )
                     .item(
+                        Setting::Dropdown {
+                            key: updater::UPDATE_CHANNEL_KEY,
+                            label: "Update channel",
+                            description: "Stable gets finished releases only. Beta also gets \
+                                          pre-releases to try new features early. Switching to \
+                                          Stable never installs an older version: it waits for \
+                                          the next stable release.",
+                            options: updater::UPDATE_CHANNELS,
+                        }
+                        .into_item(cx),
+                    )
+                    .item(
                         SettingItem::new(
                             "Download source",
                             SettingField::input(
