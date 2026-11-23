@@ -54,8 +54,8 @@ jobs:
             [[ " $archs " == *" arm64 "* ]]
             test -d "$destination/agent/native/darwin/prebuilds/darwin-x64"
             test -d "$destination/agent/native/darwin/prebuilds/darwin-arm64"
-            test -f "$destination/agent/node_modules/@mariozechner/clipboard/clipboard.darwin-x64.node"
-            test -f "$destination/agent/node_modules/@mariozechner/clipboard/clipboard.darwin-arm64.node"
+            test -f "$destination/agent/native/darwin/prebuilds/darwin-x64/darwin-platform.node"
+            test -f "$destination/agent/native/darwin/prebuilds/darwin-arm64/darwin-platform.node"
           else
             scripts/fetch-agent-runtime.sh "$destination" linux-x64
             file "$destination/agent/pi" | grep -q 'ELF 64-bit'
