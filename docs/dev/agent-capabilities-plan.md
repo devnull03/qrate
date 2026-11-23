@@ -315,6 +315,9 @@ Threats that apply to all of these:
 
 ## Agent-written interface (A2UI)
 
+This lives on its own branch, `feature/a2ui`, and ships in alpha builds; the agent capability work
+ships on beta without it.
+
 Confirmation dialogs and questions can carry an interface the agent lays out, in a strict subset of
 Google's A2UI v1.0 (Text, Row, Column, Card, List, Divider, ChoicePicker, TextField, CheckBox,
 Button). `crates/a2ui-gpui-kit` renders it with gpui-kit widgets; it depends on no qrate crate, so it
@@ -329,10 +332,11 @@ can be published on its own.
 
 ## Update channel
 
-Today a build's channel follows its own version: a beta build follows every signed release, a
-stable build only stable ones. Add **Settings ▸ Updates ▸ Channel: Stable / Beta**, stored in
+Three channels, by version: `x.y.z` is stable, `x.y.z-beta.n` beta, `x.y.z-alpha.n` alpha. Each takes
+its own releases and every steadier one. Experiments (A2UI first) ship in alpha builds; the agent
+capability work ships on beta. Add **Settings ▸ Updates ▸ Channel: Stable / Beta / Alpha**, stored in
 `AppSettings`, defaulting to the build's own channel. Choosing Stable on a beta build waits for the
-next stable release rather than downgrading; choosing Beta on a stable build offers prereleases.
+next stable release rather than downgrading; choosing Beta or Alpha on a stable build offers prereleases.
 The signed-manifest checks stay as they are; only which releases count as candidates changes.
 
 ## Order

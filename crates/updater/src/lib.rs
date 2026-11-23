@@ -54,15 +54,17 @@ pub struct UpdateManifest {
     pub artifacts: Vec<UpdateArtifact>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReleaseChannel {
+    /// Every signed release, including alpha builds with features still being tried out.
+    Alpha,
     Beta,
     Stable,
 }
 
-/// Settings key (user scope) for which releases to update to: `stable`, `beta`, or empty for the
-/// running build's own channel.
+/// Settings key (user scope) for which releases to update to: `stable`, `beta`, `alpha`, or empty
+/// for the running build's own channel.
 pub const UPDATE_CHANNEL_KEY: &str = "update_channel";
 
 /// What Settings offers for [`UPDATE_CHANNEL_KEY`].
@@ -70,6 +72,7 @@ pub const UPDATE_CHANNELS: &[(&str, &str)] = &[
     ("", "Same as this version"),
     ("stable", "Stable"),
     ("beta", "Beta"),
+    ("alpha", "Alpha"),
 ];
 
 impl ReleaseChannel {
@@ -78,24 +81,28 @@ impl ReleaseChannel {
         match setting {
             "stable" => Self::Stable,
             "beta" => Self::Beta,
+            "alpha" => Self::Alpha,
             _ => Self::for_version(current),
         }
     }
 
     pub fn for_version(version: &Version) -> Self {
-        if version.pre.is_empty() {
-            Self::Stable
-        } else {
-            Self::Beta
+        match version.pre.as_str() {
+            "" => Self::Stable,
+            pre if pre.starts_with("alpha") => Self::Alpha,
+            _ => Self::Beta,
         }
     }
 
+    /// A channel takes its own releases and every steadier one: alpha takes betas and stables,
+    /// beta takes stables.
     pub fn accepts(self, version: &Version) -> bool {
-        self == Self::Beta || version.pre.is_empty()
+        Self::for_version(version) >= self
     }
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::Alpha => "alpha",
             Self::Beta => "beta",
             Self::Stable => "stable",
         }
@@ -1013,6 +1020,37 @@ mod tests {
             select_update(&manifest("0.5.0"), &install, &beta, stable)
                 .unwrap()
                 .is_some()
+        );
+        // A beta build skips alphas; an alpha build takes betas too.
+        let beta = version("0.5.0-beta.1");
+        assert!(
+            select_update(
+                &manifest("0.5.0-alpha.3"),
+                &install,
+                &version("0.4.0-beta.1"),
+                ReleaseChannel::for_version(&version("0.4.0-beta.1"))
+            )
+            .is_err()
+        );
+        let alpha = version("0.5.0-alpha.1");
+        assert!(
+            select_update(
+                &manifest("0.5.0-beta.1"),
+                &install,
+                &alpha,
+                ReleaseChannel::for_version(&alpha)
+            )
+            .unwrap()
+            .is_some()
+        );
+        assert!(
+            select_update(
+                &manifest("0.5.0-alpha.2"),
+                &install,
+                &beta,
+                ReleaseChannel::chosen("alpha", &beta)
+            )
+            .is_ok()
         );
         // A stable release still reaches a prerelease build.
         assert!(

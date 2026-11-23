@@ -155,9 +155,10 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                             key: updater::UPDATE_CHANNEL_KEY,
                             label: "Update channel",
                             description: "Stable gets finished releases only. Beta also gets \
-                                          pre-releases to try new features early. Switching to \
-                                          Stable never installs an older version: it waits for \
-                                          the next stable release.",
+                                          pre-releases to try new features early, and Alpha gets \
+                                          experiments still being shaped. Switching to a steadier \
+                                          channel never installs an older version: it waits for \
+                                          that channel's next release.",
                             options: updater::UPDATE_CHANNELS,
                         }
                         .into_item(cx),
