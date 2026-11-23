@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/a2ui-gpui-kit",
   "crates/agent-runtime",
   "crates/app",
   "crates/capability",
