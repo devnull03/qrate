@@ -523,6 +523,11 @@ impl AgentTerminal {
             "--no-extensions".to_owned(),
             "--extension".to_owned(),
             runtime.extension.to_string_lossy().into_owned(),
+            // `--no-extensions` also drops Pi's built-ins; these two are wanted, MCP is not.
+            "--extension".to_owned(),
+            "builtin:codemode".to_owned(),
+            "--extension".to_owned(),
+            "builtin:tool-search".to_owned(),
             "--no-skills".to_owned(),
             "--no-context-files".to_owned(),
             "--no-approve".to_owned(),

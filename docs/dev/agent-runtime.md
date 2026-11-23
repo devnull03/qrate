@@ -1,6 +1,6 @@
 # Embedded Pi agent
 
-qrate embeds Pi 0.84.2 in the Agent panel. The terminal starts that pinned executable directly
+qrate embeds Pi 1.6.0 in the Agent panel. The terminal starts that pinned executable directly
 through a PTY; it does not expose PowerShell, cmd, bash, or another general-purpose shell.
 
 The Rust ownership boundary is `crates/agent-runtime`: it resolves the bundle, seeds the isolated

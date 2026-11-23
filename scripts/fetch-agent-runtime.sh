@@ -3,9 +3,9 @@ set -euo pipefail
 
 destination="${1:?usage: fetch-agent-runtime.sh <destination> <linux-x64|darwin-universal|darwin-x64|darwin-arm64>}"
 platform="${2:?usage: fetch-agent-runtime.sh <destination> <linux-x64|darwin-universal|darwin-x64|darwin-arm64>}"
-pi_version=0.84.2
-extension_version=0.6.0
-extension_sha=cd257e091e81894aee589bd0a46ee082c678d8cd60c779e144682829ec4c3136
+pi_version=1.6.0
+extension_version=0.7.0
+extension_sha=8e4493e7aaa41770321800d2abb706b6febe9ea213c0e242a88d321fa448ddb2
 runtime="$(cd "$(dirname "$destination")" && pwd)/$(basename "$destination")/agent"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -21,21 +21,21 @@ fetch_pi() {
 
 case "$platform" in
   linux-x64)
-    fetch_pi linux-x64 906fbe787fd225c4ac624fe7ebd5b1d55a60e0f5c7ef51795d231564f9ee1c13
+    fetch_pi linux-x64 ef77dbe4379b3bdeb425a1e1b862fa3c915c255000dfe4965c98eee96a5765d1
     cp -R "$tmp/linux-x64/pi/." "$runtime/"
     ;;
   # One architecture each, for the per-Mac agent component.
   darwin-x64)
-    fetch_pi darwin-x64 808cf02a93cd601d3ea05d47dc15c45074b120ac81decc8644cd3e40a35824e6
+    fetch_pi darwin-x64 5b69cd87c3b00e74cce2d1499df3b7a1ec73632f11abf64696d110f0f4dc4192
     cp -R "$tmp/darwin-x64/pi/." "$runtime/"
     ;;
   darwin-arm64)
-    fetch_pi darwin-arm64 c996e888b7f7dce44bcf24f69176ac646c44139d3916bd49a6b28e5a8c5e3a65
+    fetch_pi darwin-arm64 6429287b7ae98d726ec577815d14fd680e7c587e89ecc5153b4a145dc4adba33
     cp -R "$tmp/darwin-arm64/pi/." "$runtime/"
     ;;
   darwin-universal)
-    fetch_pi darwin-x64 808cf02a93cd601d3ea05d47dc15c45074b120ac81decc8644cd3e40a35824e6
-    fetch_pi darwin-arm64 c996e888b7f7dce44bcf24f69176ac646c44139d3916bd49a6b28e5a8c5e3a65
+    fetch_pi darwin-x64 5b69cd87c3b00e74cce2d1499df3b7a1ec73632f11abf64696d110f0f4dc4192
+    fetch_pi darwin-arm64 6429287b7ae98d726ec577815d14fd680e7c587e89ecc5153b4a145dc4adba33
     cp -R "$tmp/darwin-x64/pi/." "$runtime/"
     cp -R "$tmp/darwin-arm64/pi/." "$runtime/"
     lipo -create "$tmp/darwin-x64/pi/pi" "$tmp/darwin-arm64/pi/pi" -output "$runtime/pi"

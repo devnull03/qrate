@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use components::{ComponentId, Found};
 use gpui::{App, Global};
 
-const PI_VERSION: &str = "0.84.2";
+const PI_VERSION: &str = "1.6.0";
 
 /// The qrate-owned Pi installation. The terminal adds the currently open project at launch.
 #[derive(Clone, Debug)]
@@ -151,10 +151,18 @@ fn seed_settings(path: &Path) -> Result<(), String> {
         ]),
         Err(err) => return Err(err.to_string()),
     };
-    if settings.contains_key("theme") && path.exists() {
+    let before = settings.clone();
+    if !settings.contains_key("theme") || !path.exists() {
+        settings.insert("theme".to_owned(), QRATE_THEME.into());
+    }
+    // Codemode lets the model script many qrate calls in one turn; on unless the profile says
+    // otherwise.
+    settings
+        .entry("defaultTools")
+        .or_insert_with(|| serde_json::json!(["+codemode"]));
+    if settings == before && path.exists() {
         return Ok(());
     }
-    settings.insert("theme".to_owned(), QRATE_THEME.into());
     let text = serde_json::to_string_pretty(&settings).map_err(|err| err.to_string())?;
     fs::write(path, text + "\n").map_err(|err| err.to_string())
 }
@@ -303,13 +311,19 @@ mod tests {
         let seeded: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(seeded["theme"], "qrate");
+        assert_eq!(seeded["defaultTools"], serde_json::json!(["+codemode"]));
         assert_eq!(seeded["defaultProvider"], "openrouter");
 
-        std::fs::write(&path, r#"{"theme":"dark","defaultModel":"x"}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"theme":"dark","defaultModel":"x","defaultTools":[]}"#,
+        )
+        .unwrap();
         seed_settings(&path).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            r#"{"theme":"dark","defaultModel":"x"}"#
+            r#"{"theme":"dark","defaultModel":"x","defaultTools":[]}"#,
+            "a profile that chose its theme and tools is left alone"
         );
 
         std::fs::write(&path, r#"{"defaultModel":"x"}"#).unwrap();
@@ -318,6 +332,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(added["theme"], "qrate");
         assert_eq!(added["defaultModel"], "x");
+        assert_eq!(added["defaultTools"], serde_json::json!(["+codemode"]));
     }
 
     /// The theme takes qrate's colours for Pi's interface and keeps Pi's own code colours.
@@ -370,7 +385,7 @@ mod tests {
     #[test]
     fn a_full_install_wins_over_the_installed_component() {
         let exe = Path::new("/Applications/qrate.app/Contents/MacOS");
-        let installed = PathBuf::from("/data/components/agent/0.84.2-ext.0.2.1");
+        let installed = PathBuf::from("/data/components/agent/1.6.0-ext.0.7.0");
         assert_eq!(
             candidates(Some(exe), Some(installed.clone())),
             [
