@@ -219,7 +219,7 @@ jobs:
     # rust-lld ships with Rust and accepts the MSVC linker interface, avoiding the slower link.exe
     # without another installation step.
     env:
-      RUSTFLAGS: -C linker=rust-lld
+      RUSTFLAGS: -C linker=rust-lld -C target-feature=+crt-static
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -328,7 +328,7 @@ jobs:
           $hasPdfium = if (Test-Path dist/portable/pdfium.dll) { 1 } else { 0 }
           $hasFfmpeg = if (Test-Path dist/portable/ffmpeg.exe) { 1 } else { 0 }
           bash scripts/license-to-rtf.sh LICENSE.md dist/license.rtf
-          wix build scripts\installer.wxs -ext WixToolset.UI.wixext `
+          wix build scripts\installer.wxs -arch x64 -ext WixToolset.UI.wixext `
             -d "Version=$vi" `
             -d "LicenseRtf=$PWD\dist\license.rtf" `
             -d "SrcExe=$PWD\dist\portable\qrate.exe" `

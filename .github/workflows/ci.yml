@@ -108,7 +108,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          'RUSTFLAGS=-C linker=rust-lld' >> $env:GITHUB_ENV
+          'RUSTFLAGS=-C linker=rust-lld -C target-feature=+crt-static' >> $env:GITHUB_ENV
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2

@@ -6,6 +6,8 @@ jobs = 10
 [target.x86_64-pc-windows-msvc]
 # link.exe dominates test builds, since every test binary links gpui; rust-lld ships with rustup.
 linker = "rust-lld.exe"
+# Link the C runtime in, so qrate runs on a machine without the Visual C++ Redistributable.
+rustflags = ["-C", "target-feature=+crt-static"]
 
 [env]
 # Make Rust artifacts path-independent so zccache can reuse them across worktrees.
