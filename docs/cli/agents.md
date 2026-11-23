@@ -87,6 +87,18 @@ echo '{"source":{"kind":"selected_rows"},"select":["Title"],"limit":10}' | qrate
 Every call appears in the **Log** tab of the Agent panel, with the name you gave after
 `--agent`.
 
+## Everything an agent can do
+
+`qrate agent capabilities` lists everything an agent can ask qrate for, and the
+[capability reference](capabilities.md) is the same list as a page. Besides the reads and drafts
+above, an agent can stage changes across several columns at once (`stage_patch`), stage a whole
+migration as one change set (`stage_changeset`), group variant spellings in a column
+(`value_variants`), read History and notes, leave a signed note on a cell (`add_note`), find
+where moved files went and relink them (`find_candidates`, `stage_relinks`), dry-run an export
+(`export_check`), look closely at an image or find look-alikes (`image`, `similar`), look terms up
+in authority files (`authority_search`), and ask you to keep one of its programs as a check
+(`adopt_check`).
+
 ## A bulk edit from start to finish
 
 You have a file, `mapping.csv`, with old and new identifiers, and you want every identifier
@@ -114,7 +126,7 @@ in the project changed and every scan renamed to match.
 ## What an agent can change directly
 
 An agent can add rows and columns, rename, move and describe a column, move, indent, outdent
-and duplicate a row, and filter the table, with `qrate agent edit`. Each change is one step.
+and duplicate a row, filter the table, and leave a signed note on a cell. Each change is one step.
 One undo reverses it, and the History panel shows who made it, for example "Add 3 rows ·
 your name using pi".
 
@@ -123,17 +135,37 @@ your name using pi".
 - It cannot change a value that is already in a cell, except as a draft that you apply.
 - It cannot delete a row or a column. It can ask, with a reason, and qrate shows you a dialog.
   Nothing is deleted unless you choose **Delete**.
-- It cannot rename, move, or delete a file. It cannot apply its own drafts, and there is no
-  setting that lets it.
+- It cannot rename, move, or delete a file itself: renames and relinks are drafts you apply.
+  It cannot apply its own drafts, and there is no setting that lets it.
 - It cannot save the project.
-- It cannot read your files directly. It gets small pictures that qrate makes, and bounded
-  text from linked documents.
+- It cannot read files outside the project unless you allow each file or folder. For linked
+  files it gets pictures that qrate makes and bounded text from documents.
+- It cannot reach the network through qrate without your permission for each authority file.
 - It cannot stage a finding against text that it did not read. Each finding carries the
   exact text of the cell that the agent judged. If the cell has changed since, qrate drops
   the finding.
 
 A finding can propose a new value for a cell. The proposal is in that cell's **Problems**
 menu. Nothing changes until you click it.
+
+## The assistant's modes
+
+The assistant in the Agent panel works in one of three modes, chosen per project with
+`/qrate-mode` in the panel. A project starts in **review**.
+
+| Mode | The assistant may |
+|---|---|
+| review | read the project and stage drafts for you to apply |
+| edit | also change the table's shape, ask to delete, and read files you allow |
+| connected | also look things up in authority files over the network, once you allow each one |
+
+A step the mode does not allow is refused, even from inside a script the assistant writes. Type
+`/qrate-follow` to let the assistant know what you select and do in qrate; it hears about it
+with your next message and never starts working on its own.
+
+On Linux and macOS, shell commands you approve for the assistant run in a sandbox that sees the
+system, the project, a temporary folder and the files you allowed, read-only, with no network
+outside connected mode. Windows has no such sandbox, so there your approval is the only guard.
 
 ## Turn it off
 

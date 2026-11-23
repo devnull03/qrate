@@ -160,6 +160,28 @@ allowed to do.
 The three `stage-` commands change nothing. Each one puts a draft in the Problems panel and
 marks the changed cells in the table, and you apply or discard it there.
 
+### Every capability
+
+Everything an agent can ask qrate for is a capability, and the commands on this page are
+shorthands for the common ones. Two commands reach all of them:
+
+```sh
+qrate agent capabilities
+echo '{"column":"Subject"}' | qrate agent call value_variants --agent me
+```
+
+`capabilities` prints each one with what it does to your project (reads, stages a draft, edits,
+asks you first, or reaches files or the network) and the JSON it takes and returns. `call` runs any
+of them with its parameters on standard input; with no input it sends `{}`. The
+[capability reference](capabilities.md) lists them all.
+
+`watch` follows what you do in qrate and prints one line of JSON each time you edit the table,
+change the selection, or apply or discard an agent's drafts, until you stop it:
+
+```sh
+qrate agent watch --agent me
+```
+
 ### Stage a column rewrite
 
 `stage-column-rewrite` is for a change to many cells in one column, such as new identifiers
@@ -216,8 +238,8 @@ wants to delete, and the command waits until you choose **Delete** or **Keep**:
 echo '{"revision":14,"rows":[3,7],"reason":"Rows 3 and 7 repeat row 2"}' | qrate agent delete --agent me
 ```
 
-If you choose **Keep**, the command exits with `1` and prints `delete_declined`. After ten
-minutes with no answer it gives up with `delete_timed_out`.
+If you choose **Keep**, the command exits with `1` and prints `declined`. After ten minutes with
+no answer it gives up with `confirm_timed_out`.
 
 | Option | Meaning |
 |---|---|

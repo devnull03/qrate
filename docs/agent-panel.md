@@ -11,8 +11,9 @@ could already read your `.qrate` file directly, so the commands do not widen wha
 program can see. They do show unsaved edits, which the file does not.
 
 The **Agent** panel, in the right dock, has two tabs. **Terminal** runs qrate's bundled Pi agent.
-**Log** lists every agent command that reached qrate. An agent cannot change a cell. It can
-only read data and stage findings that you accept or ignore.
+**Log** lists every agent command that reached qrate. An agent cannot change a cell's value: it
+stages drafts that you apply or discard. It can change the table's shape, one undo step at a time,
+and deleting always waits for you.
 
 ## Start Pi
 
@@ -25,8 +26,16 @@ Pi in qrate's private Pi profile; qrate does not read or store it. Pi starts wit
 `openrouter/free` router. The terminal runs only Pi, not a general shell.
 
 Pi can use its ordinary coding tools when you explicitly ask for coding work. It asks before every
-shell command, write, or edit, and before reading outside the open project's directory. qrate's
-metadata tools remain read-only and can only stage proposed findings.
+shell command, write, or edit, and before reading outside the open project's directory. On Linux
+and macOS an approved shell command runs in a sandbox that sees only the system, the project, a
+temporary folder and the files you allowed.
+
+Pi's qrate tools come from qrate itself: everything `qrate agent capabilities` lists. What Pi may
+use depends on the project's mode, which you choose with `/qrate-mode`: **review** (read and stage
+drafts; where every project starts), **edit** (also change the table's shape, ask to delete and read
+files you allow) or **connected** (also look terms up in authority files, once you allow each one).
+`/qrate-follow` tells Pi what you select and do, with your next message. Pi can also script many
+qrate calls in one step (codemode); each call in a script is checked exactly like a direct one.
 
 ## How to read an entry
 

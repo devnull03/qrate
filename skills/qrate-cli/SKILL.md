@@ -41,6 +41,13 @@ app and prints nothing to a terminal.
 
 Do not add `--wait` unless you mean to block until the archivist quits qrate.
 
+## Every capability
+
+`qrate agent capabilities` lists everything qrate offers, each with its effect and the JSON Schema
+of its parameters; `qrate agent call <name>` calls any of them with the parameters on stdin. Read
+that list rather than guessing: prefer one `stage_patch` or `stage_changeset` over many small
+drafts, and pass the `revision` you read to anything that stages or edits.
+
 ## A bulk edit, end to end
 
 "Replace every identifier using mapping.csv, and rename the files to match":
