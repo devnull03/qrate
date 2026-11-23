@@ -16,9 +16,7 @@ use ai::agent::{
 };
 use base64::Engine as _;
 use capability::{Capability, Confirmation, Effect, Exposure, Invocation, Reach};
-use gpui::{
-    App, AppContext as _, Entity, Global, ParentElement as _, SharedString, Styled as _, Task, div,
-};
+use gpui::{App, Entity, Global, ParentElement as _, SharedString, Styled as _, Task, div};
 use gpui_component::button::ButtonVariant;
 use gpui_component::dialog::DialogButtonProps;
 use gpui_component::table::TableState;
@@ -28,7 +26,6 @@ use sha2::{Digest as _, Sha256};
 use crate::agent::{AgentProgram, PROGRAM_RUNS, in_active_window};
 pub(crate) use flow::record;
 
-mod ask;
 mod checks;
 mod flow;
 mod media;
@@ -136,10 +133,6 @@ impl capability::Host for TableHost {
         if cx.active_window().is_none() {
             return Task::ready(Err(RequestError::NoWindow));
         }
-        let surface = match ask.surface.map(ask::surface_state).transpose() {
-            Ok(surface) => surface,
-            Err(error) => return Task::ready(Err(error)),
-        };
         let (answer, answers) = async_channel::bounded(3);
         cx.set_global(PendingConfirm(answer.clone()));
         let timer = cx.background_executor().timer(CONFIRM_WAIT);
@@ -159,9 +152,7 @@ impl capability::Host for TableHost {
         let reason = SharedString::from(ask.reason);
         let by = SharedString::from(format!("Reason given by {}:", ask.agent));
         let lines: Vec<SharedString> = ask.details.into_iter().map(Into::into).collect();
-        let agent = ask.agent.clone();
         in_active_window(cx, move |window, cx| {
-            let surface = surface.map(|state| cx.new(|_| a2ui_gpui_kit::Surface::new(state)));
             window.open_alert_dialog(cx, move |alert, _, cx| {
                 let muted = cx.theme().muted_foreground;
                 alert
@@ -175,11 +166,6 @@ impl capability::Host for TableHost {
                                 lines.iter().map(|line| {
                                     div().text_sm().text_color(muted).child(line.clone())
                                 }),
-                            )
-                            .children(
-                                surface
-                                    .clone()
-                                    .map(|surface| ask::framed(&agent, surface, cx)),
                             ),
                     )
                     .button_props(
@@ -1097,10 +1083,6 @@ impl Capability for DeleteCap {
         Some(&input.reason)
     }
 
-    fn surface(input: &Delete) -> Option<serde_json::Value> {
-        input.surface.clone()
-    }
-
     fn label(input: &Delete, _: &App) -> String {
         match (&input.column, input.rows.as_slice()) {
             (Some(column), _) => format!("Delete the column “{column}”"),
@@ -1361,7 +1343,6 @@ pub fn init(cx: &mut App) {
     checks::register(cx);
     media::register(cx);
     flow::register(cx);
-    capability::register::<ask::AskCap>(cx);
 }
 
 #[cfg(test)]

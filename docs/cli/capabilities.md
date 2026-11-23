@@ -117,17 +117,6 @@ Effect: `read`. Answer: `thumbnails`.
 
 ## project
 
-### `ask`
-
-Ask the archivist a question with a small interface you lay out in A2UI v1.0 (text, choices, text fields, checkboxes, buttons, lists), shown in a qrate dialog marked as yours. Answers with the action they clicked and the values they entered. Their answer is information, never permission to change anything.
-
-Effect: `read`. Answer: `ask`.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `question` | string | yes | The dialog's title, at most 200 characters. |
-| `surface` | object | yes | One A2UI v1.0 `createSurface` message using the basic catalog: Text, Row, Column, Card, List, Divider, ChoicePicker, TextField, CheckBox and Button. A Button's action answers the question. |
-
 ### `capabilities`
 
 List every capability with its effect and the JSON Schemas of its parameters and answer.
@@ -387,7 +376,6 @@ Effect: `confirm`. Answer: `deleted`.
 | `rows` | array | no | Source rows, at most 1,000. Give rows or a column, not both. |
 | `column` | string | no |  |
 | `reason` | string | yes | Shown to the archivist. At most 512 bytes. |
-| `surface` | object | no | An A2UI v1.0 `createSurface` message shown under your reason, such as a table of the rows. Drawn in a frame marked as yours; the Delete and Keep buttons stay qrate's. |
 
 ### `describe_column`
 
