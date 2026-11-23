@@ -8721,6 +8721,7 @@ dependencies = [
  "components",
  "data-exchange",
  "diagnostics",
+ "dunce",
  "file-ingest",
  "gpui-base",
  "gpui-component",

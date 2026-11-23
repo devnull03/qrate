@@ -987,8 +987,16 @@ pub(crate) fn stage_relinks(
             .cell(row, col)
             .cloned()
             .ok_or(RequestError::RowOutOfRange)?;
+        // `file` is canonical, so the files folder must be too before one is made relative to the other.
+        let file = dunce::simplified(&file).to_path_buf();
         let after: SharedString = match &folder {
-            Some(folder) => crate::relink::link_text(folder, &file),
+            Some(folder) => {
+                let folder = folder
+                    .canonicalize()
+                    .map(|folder| dunce::simplified(&folder).to_path_buf())
+                    .unwrap_or_else(|_| folder.clone());
+                crate::relink::link_text(&folder, &file)
+            }
             None => file_ingest::normalized_path(&file),
         }
         .into();

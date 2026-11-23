@@ -30,6 +30,7 @@ components = { path = "../components" }
 visual-search = { path = "../visual-search" }
 clustering = { path = "../clustering" }
 base64 = "0.22"
+dunce = "1"
 sha2 = "0.10"
 
 [dev-dependencies]
