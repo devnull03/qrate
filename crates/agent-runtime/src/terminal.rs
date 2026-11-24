@@ -530,6 +530,9 @@ impl AgentTerminal {
             "builtin:tool-search".to_owned(),
             "--no-skills".to_owned(),
             "--no-context-files".to_owned(),
+            // Fullscreen keeps a viewport the panel's wheel cannot scroll; regular keeps scrollback.
+            "--tui-mode".to_owned(),
+            "regular".to_owned(),
             "--no-approve".to_owned(),
             "--session-dir".to_owned(),
             session_dir.to_string_lossy().into_owned(),
