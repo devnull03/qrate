@@ -2069,7 +2069,7 @@ impl Render for TablePanel {
             .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste_range(cx)))
             .on_action(cx.listener(|this, _: &Clear, _, cx| this.clear_range(cx)))
             .child(
-                div()
+                v_flex()
                     .flex_1()
                     .min_h_0()
                     .relative()
@@ -2094,20 +2094,21 @@ impl Render for TablePanel {
                         .size_full(),
                     )
                     .child(
-                        DataTable::new(&self.state)
-                            .bordered(false)
-                            .stripe(stripe)
-                            .scrollbar_visible(true, false)
-                            .with_size(gpui_component::Size::Size(height)),
+                        div().flex_1().min_h_0().child(
+                            DataTable::new(&self.state)
+                                .bordered(false)
+                                .stripe(stripe)
+                                .scrollbar_visible(true, false)
+                                .with_size(gpui_component::Size::Size(height)),
+                        ),
                     )
-                    // Always shown, unlike the grid's fading one, and clear of the vertical bar.
+                    // Always shown, on its own strip so it never covers the last row.
                     .child(
                         div()
-                            .absolute()
-                            .left_0()
-                            .right(Scrollbar::width() + px(4.))
-                            .bottom_0()
+                            .relative()
+                            .flex_shrink_0()
                             .h(Scrollbar::width())
+                            .mr(Scrollbar::width() + px(4.))
                             .child(
                                 Scrollbar::horizontal(
                                     &self.state.read(cx).horizontal_scroll_handle,
