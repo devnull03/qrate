@@ -2,6 +2,7 @@ use std::ops::RangeInclusive;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use gpui_component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -2096,7 +2097,24 @@ impl Render for TablePanel {
                         DataTable::new(&self.state)
                             .bordered(false)
                             .stripe(stripe)
+                            .scrollbar_visible(true, false)
                             .with_size(gpui_component::Size::Size(height)),
+                    )
+                    // Always shown, unlike the grid's fading one, and clear of the vertical bar.
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right(Scrollbar::width() + px(4.))
+                            .bottom_0()
+                            .h(Scrollbar::width())
+                            .child(
+                                Scrollbar::horizontal(
+                                    &self.state.read(cx).horizontal_scroll_handle,
+                                )
+                                .mode(ScrollbarMode::Always)
+                                .viewport_from_layout(),
+                            ),
                     )
                     // A sibling of the table, not a child of the edited cell: the grid virtualizes
                     // rows and columns away, and the box has to outlive that.
