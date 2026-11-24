@@ -1,7 +1,10 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable as _, menu::ContextMenuExt as _, table::TableState,
+    ActiveTheme, Icon, IconName, Sizable as _, h_flex,
+    menu::ContextMenuExt as _,
+    scroll::{Scrollbar, ScrollbarMode},
+    table::TableState,
 };
 use preview::{can_preview, thumb};
 use table::QrateTableDelegate;
@@ -46,9 +49,10 @@ pub(super) fn render(
             .into_any_element();
     };
 
-    let card_w = ((f32::from(width) - 2. * PAD - GAP * (cols - 1) as f32) / cols as f32).max(1.);
+    let width = f32::from(width) - f32::from(Scrollbar::width());
+    let card_w = ((width - 2. * PAD - GAP * (cols - 1) as f32) / cols as f32).max(1.);
     let focus = focus.clone();
-    uniform_list(
+    let list = uniform_list(
         "gallery",
         count.div_ceil(cols),
         move |range, _window, cx| {
@@ -67,9 +71,26 @@ pub(super) fn render(
         },
     )
     .track_scroll(scroll)
-    .size_full()
-    .p_2()
-    .into_any_element()
+    .flex_1()
+    .min_w_0()
+    .h_full()
+    .p_2();
+    h_flex()
+        .size_full()
+        .child(list)
+        .child(
+            div()
+                .relative()
+                .flex_shrink_0()
+                .h_full()
+                .w(Scrollbar::width())
+                .child(
+                    Scrollbar::vertical(scroll)
+                        .mode(ScrollbarMode::Always)
+                        .viewport_from_layout(),
+                ),
+        )
+        .into_any_element()
 }
 
 fn card(
