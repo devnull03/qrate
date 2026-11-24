@@ -3865,4 +3865,60 @@ mod tests {
             .unwrap()
             .to_string()
     }
+
+    /// Restoring to the start of History gives back the project as it was before any recorded
+    /// change: the History panel's "Start of history" row.
+    #[gpui::test]
+    fn restoring_to_the_start_of_history_gives_back_the_loaded_data(cx: &mut TestAppContext) {
+        let file = std::env::temp_dir().join("qrate-agent-restore-start.qrate");
+        let _ = std::fs::remove_file(&file);
+        let mut project = project();
+        project.file = file.clone();
+        settings::project::create_project_file(
+            &file,
+            &settings::project::ProjectSpec {
+                name: &project.data.name,
+                source: "CSV",
+                columns: &project.data.columns,
+                headers: &project.data.headers,
+                rows: &project.data.rows,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        cx.update(|cx| {
+            register(cx);
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(project);
+        });
+        cx.add_window_view(TablePanel::new);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            crate::write_cells(
+                vec![(0, 0, "Harvest Festival".into())],
+                settings::history::Origin::Typed,
+                cx,
+            );
+            raw(
+                "add_rows",
+                serde_json::json!({"revision": revision(cx).0, "rows": [{"Title": "Dock"}]}),
+                cx,
+            )
+            .unwrap();
+            assert_eq!(cell(0, cx), "Harvest Festival");
+            crate::restore_to(0, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let titles: Vec<_> = (0..3).map(|row| cell(row, cx)).collect();
+            assert_eq!(titles, ["Harvest", "Wharf", "Cannery"]);
+            let state = cx.global::<TableStateHandle>().0.upgrade().unwrap();
+            assert_eq!(
+                state.read(cx).delegate().row_count(),
+                3,
+                "the added row is gone"
+            );
+        });
+    }
 }

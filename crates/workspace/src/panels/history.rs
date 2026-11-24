@@ -53,6 +53,8 @@ enum Row {
         len: usize,
     },
     More,
+    /// Below the oldest entry: the project as it was before every change listed.
+    Start,
 }
 
 /// The heights the list places rows by, which are also the heights the rows are given. Measuring
@@ -443,11 +445,11 @@ impl HistoryPanel {
     }
 
     /// Ask before putting the whole project back, saying how much that reverses.
-    fn confirm_restore(listed: &Listed, window: &mut Window, cx: &mut App) {
+    fn confirm_restore(id: EntryId, when: String, window: &mut Window, cx: &mut App) {
         let Some(file) = cx.try_global::<CurrentProject>().map(|p| p.file.clone()) else {
             return;
         };
-        let since = settings::history::entries_after(&file, listed.entry.id)
+        let since = settings::history::entries_after(&file, id)
             .map(|entries| entries.iter().map(|e| e.changes.len()).sum::<usize>())
             .unwrap_or_default()
             + cx.try_global::<TableStateHandle>()
@@ -460,14 +462,9 @@ impl HistoryPanel {
                         .map(|e| e.changes.len())
                         .sum()
                 });
-        let id = listed.entry.id;
         let answer = window.prompt(
             PromptLevel::Warning,
-            &format!(
-                "Restore the project to {} at {}?",
-                day_label(&listed.day, listed.days_ago),
-                listed.time
-            ),
+            &format!("Restore the project to {when}?"),
             Some(&format!(
                 "{since} change{} made since will be reversed. The restore is added to the history, and Undo takes it back.",
                 if since == 1 { "" } else { "s" }
@@ -776,7 +773,7 @@ impl HistoryPanel {
     fn row_size(&self, row: &Row) -> Size<Pixels> {
         let height = match row {
             Row::Header(_) => HEADER_H,
-            Row::More => MORE_H,
+            Row::More | Row::Start => MORE_H,
             Row::Pending(_) | Row::Burst { .. } => ROW_H,
             Row::Saved { ix, .. } => match self.view.get(*ix) {
                 None => ROW_H,
@@ -859,6 +856,36 @@ impl HistoryPanel {
                 )
                 .into_any_element(),
 
+            Row::Start => h_flex()
+                .h(height)
+                .px_2()
+                .gap_2()
+                .items_center()
+                .border_t_1()
+                .border_color(border)
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().text_sm().child("Start of history"))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child("The project before every change above"),
+                        ),
+                )
+                .child(
+                    Button::new("history-start")
+                        .ghost()
+                        .small()
+                        .label("Restore…")
+                        .on_click(|_, window, cx| {
+                            Self::confirm_restore(0, "the start of its history".into(), window, cx)
+                        }),
+                )
+                .into_any_element(),
+
             Row::Pending(ix) => {
                 let Some((entry, at)) = self.pending.get(*ix) else {
                     return div().into_any_element();
@@ -919,7 +946,14 @@ impl HistoryPanel {
                             (listed.clone(), panel.clone(), panel.clone());
                         let labelled = listed.label.is_some();
                         menu.item(PopupMenuItem::new("Restore Project to Here…").on_click(
-                            move |_, window, cx| Self::confirm_restore(&restore, window, cx),
+                            move |_, window, cx| {
+                                let when = format!(
+                                    "{} at {}",
+                                    day_label(&restore.day, restore.days_ago),
+                                    restore.time
+                                );
+                                Self::confirm_restore(restore.entry.id, when, window, cx)
+                            },
                         ))
                         .when_some(single, |menu, (row, column, before)| {
                             menu.item(PopupMenuItem::new("Restore This Value").on_click(
@@ -1153,6 +1187,9 @@ impl HistoryPanel {
         }
         if self.more && !named_only {
             list.push(Row::More);
+        }
+        if !self.more && !named_only && cell.is_none() && !view.is_empty() {
+            list.push(Row::Start);
         }
 
         self.pending = Rc::new(pending);
