@@ -70,6 +70,23 @@ file-ingest. So nothing visible runs in a browser until that dependency graph co
   recommendation is multithreaded, because diagnostics, imports and visual search run in background
   tasks.
 
+**M0 result (done — #158).** `crates/web` renders a gpui-component view in Chromium, with
+background threads and on the WebGL2 fallback. `./scripts/web.sh --serve` builds it and serves it.
+What the spike settled:
+- **Nightly is required, not optional.** `gpui-pre-platform` depends on `gpui-pre-web` with its
+  default `multithreaded` feature, and `wasm_thread` uses `#![feature]`. A stable build doesn't
+  compile at all. So the threading decision is multithreaded.
+- `+atomics` alone does not produce shared memory. The linker also needs `--shared-memory
+  --import-memory --max-memory` and the TLS exports plus `__heap_base`/`__data_end`. Without those,
+  wasm-bindgen can't prepare the module for threads (see `scripts/web.sh`).
+- Use `Application::run_embedded` and hold the `ApplicationHandle`. On the web, `run` returns
+  immediately and the app is dropped ("app was released").
+- On wasm, `gpui-kit-assets::Assets` downloads icons from a CDN, and it is a struct with a
+  constructor rather than a unit struct. `crates/app/src/assets.rs` must account for both in M1,
+  and M9 should vendor the icons.
+- Fonts: IBM Plex Sans (OFL), converted from the npm package's WOFF2 to TTF, lives in
+  `crates/web/fonts`.
+
 ### Phase 1 — make the graph compile for wasm
 - **Threads:** replace the `std::thread::spawn` calls with `cx.background_spawn` (or the
   `BackgroundExecutor` passed in). `settings/src/db.rs:184` and `settings/src/project.rs:827` are

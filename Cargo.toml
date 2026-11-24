@@ -24,6 +24,7 @@ members = [
   "crates/table",
   "crates/updater",
   "crates/visual-search",
+  "crates/web",
   "crates/window-wrapper",
   "crates/workspace",
 ]
