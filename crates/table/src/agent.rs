@@ -812,6 +812,12 @@ fn publish(source: &SharedString, cx: &mut App) {
     FixProviders::register(source, offer_staged, cx);
     SourceActions::register(source, staged_actions, cx);
     // The grid marks staged cells and the views show the staged bar; both have to redraw.
+    if let Some(state) = cx
+        .try_global::<TableStateHandle>()
+        .and_then(|h| h.0.upgrade())
+    {
+        state.update(cx, |_, cx| cx.notify());
+    }
     cx.refresh_windows();
 }
 
@@ -891,8 +897,8 @@ pub(crate) fn stage_column_rewrite(
     })
 }
 
-/// Stage several columns of several rows as one draft: one rewrite per column touched, each
-/// replacing this agent's earlier draft of that column. A row whose `expect` no longer matches is
+/// Stage several columns of several rows: added to this agent's draft of each column touched, a
+/// row staged again taking the newer value. A row whose `expect` no longer matches is
 /// skipped as stale.
 pub(crate) fn stage_patch(
     agent: &str,
@@ -953,14 +959,13 @@ pub(crate) fn stage_patch(
         .entry(source.clone())
         .or_default();
     for (column, rows) in columns {
-        batch.rewrites.insert(
-            column,
-            Rewrite {
-                note: note.clone(),
-                rows,
-                relink: false,
-            },
-        );
+        let draft = batch.rewrites.entry(column).or_insert_with(|| Rewrite {
+            note: None,
+            rows: BTreeMap::new(),
+            relink: false,
+        });
+        draft.note = note.clone().or(draft.note.take());
+        draft.rows.extend(rows);
     }
     publish(&source, cx);
     log::info!(
@@ -1043,14 +1048,13 @@ pub(crate) fn stage_relinks(
         .entry(source.clone())
         .or_default();
     for (column, rows) in columns {
-        batch.rewrites.insert(
-            column,
-            Rewrite {
-                note: note.clone(),
-                rows,
-                relink: true,
-            },
-        );
+        let draft = batch.rewrites.entry(column).or_insert_with(|| Rewrite {
+            note: None,
+            rows: BTreeMap::new(),
+            relink: true,
+        });
+        draft.note = note.clone().or(draft.note.take());
+        draft.rows.extend(rows);
     }
     publish(&source, cx);
     log::info!("{agent} staged {accepted} relink(s)");
@@ -3821,5 +3825,44 @@ mod tests {
             assert_eq!(linked(0, cx), ("1".into(), Some("1.jpg".into())));
         });
         assert!(dir.join("photos/1.jpg").exists());
+    }
+
+    /// An agent proposing more changes adds to what it proposed, rather than wiping it.
+    #[gpui::test]
+    fn a_second_patch_adds_to_the_first(cx: &mut TestAppContext) {
+        open(cx);
+        cx.update(|cx| {
+            let at = revision(cx).0;
+            let patch = |row: usize, value: &str, cx: &mut gpui::App| {
+                raw(
+                    "stage_patch",
+                    serde_json::json!({"revision": at, "rows": [{"row": row, "set": {"Medium": value}}]}),
+                    cx,
+                )
+                .unwrap()
+            };
+            patch(0, "16mm", cx);
+            patch(1, "VHS-C", cx);
+            patch(0, "35mm", cx);
+            let state = cx.global::<TableStateHandle>().0.upgrade().unwrap();
+            let after = |row: usize, cx: &gpui::App| {
+                crate::agent::staged_change(state.read(cx).delegate(), row, 1, cx)
+                    .map(|change| change.after.to_string())
+            };
+            assert_eq!(after(0, cx).as_deref(), Some("35mm"), "a row staged again takes the newer value");
+            assert_eq!(after(1, cx).as_deref(), Some("VHS-C"), "the earlier row is still staged");
+            crate::agent::apply_all(&agent_source("pi"), cx);
+            assert_eq!(cell_of(0, "Medium", cx), "35mm");
+            assert_eq!(cell_of(1, "Medium", cx), "VHS-C");
+        });
+    }
+
+    fn cell_of(row: usize, column: &str, cx: &mut gpui::App) -> String {
+        let state = cx.global::<TableStateHandle>().0.upgrade().unwrap();
+        let delegate = state.read(cx).delegate();
+        delegate
+            .cell(row, delegate.data_col(column).unwrap())
+            .unwrap()
+            .to_string()
     }
 }

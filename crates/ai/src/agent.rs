@@ -196,8 +196,8 @@ pub struct Rename {
     pub to: String,
 }
 
-/// Several columns of several rows, staged as one draft. A column it touches replaces this agent's
-/// earlier draft for that column.
+/// Several columns of several rows, added to this agent's drafts. A cell staged again takes the
+/// newer value.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct StagePatch {
     pub revision: TableRevision,

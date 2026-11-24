@@ -22,7 +22,7 @@ pub struct StagePatchCap;
 
 impl Capability for StagePatchCap {
     const NAME: &'static str = "stage_patch";
-    const SUMMARY: &'static str = "Stage new values for several columns of several rows as one draft, each row optionally guarded by the values you read. Use it for splitting, merging or normalising across columns. Not for file columns: rename files with stage_renames, or relink rows with stage_relinks.";
+    const SUMMARY: &'static str = "Stage new values for several columns of several rows, each row optionally guarded by the values you read. Adds to your earlier drafts; a cell staged again takes the newer value. Use it for splitting, merging or normalising across columns. Not for file columns: rename files with stage_renames, or relink rows with stage_relinks.";
     const GROUP: &'static str = "stage";
     const EXPOSURE: Exposure = Exposure::Agent;
     const EFFECT: Effect = Effect::Stage;
@@ -501,7 +501,7 @@ pub struct StageRelinksCap;
 
 impl Capability for StageRelinksCap {
     const NAME: &'static str = "stage_relinks";
-    const SUMMARY: &'static str = "Stage new file links for rows, such as for files that moved, as one draft. Each file must exist and be inside the project or covered by a read grant; applying repoints the rows as one undo step.";
+    const SUMMARY: &'static str = "Stage new file links for rows, such as for files that moved, added to your earlier drafts. Each file must exist and be inside the project or covered by a read grant; applying repoints the rows as one undo step.";
     const GROUP: &'static str = "files";
     const EXPOSURE: Exposure = Exposure::Agent;
     const EFFECT: Effect = Effect::Stage;
