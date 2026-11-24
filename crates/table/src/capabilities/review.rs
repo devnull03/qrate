@@ -22,7 +22,7 @@ pub struct StagePatchCap;
 
 impl Capability for StagePatchCap {
     const NAME: &'static str = "stage_patch";
-    const SUMMARY: &'static str = "Stage new values for several columns of several rows as one draft, each row optionally guarded by the values you read. Use it for splitting, merging or normalising across columns.";
+    const SUMMARY: &'static str = "Stage new values for several columns of several rows as one draft, each row optionally guarded by the values you read. Use it for splitting, merging or normalising across columns. Not for file columns: rename files with stage_renames, or relink rows with stage_relinks.";
     const GROUP: &'static str = "stage";
     const EXPOSURE: Exposure = Exposure::Agent;
     const EFFECT: Effect = Effect::Stage;

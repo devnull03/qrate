@@ -904,6 +904,9 @@ pub enum RequestError {
     FileAccessFailed(String),
     FileImportFailed(String),
     NoteTooLong,
+    /// A draft that retypes a file column. Use `stage_renames` to rename the files, or
+    /// `stage_relinks` to point the rows at other files.
+    FileColumn(String),
     /// Visual search is off or still indexing; the archivist turns it on from the search bar.
     VisualSearchOff,
     /// The path is not a file.

@@ -294,7 +294,7 @@ Effect: `stage`. Answer: `stage_changeset`.
 
 ### `stage_column_rewrite`
 
-Stage new values for one whole column as a single draft the archivist previews and applies. Never edit a column cell by cell.
+Stage new values for one whole column as a single draft the archivist previews and applies. Never edit a column cell by cell. Not for file columns: rename files with stage_renames, or relink rows with stage_relinks.
 
 Effect: `stage`. Answer: `staged_rewrite`.
 
@@ -318,7 +318,7 @@ Effect: `stage`. Answer: `staged`.
 
 ### `stage_patch`
 
-Stage new values for several columns of several rows as one draft, each row optionally guarded by the values you read. Use it for splitting, merging or normalising across columns.
+Stage new values for several columns of several rows as one draft, each row optionally guarded by the values you read. Use it for splitting, merging or normalising across columns. Not for file columns: rename files with stage_renames, or relink rows with stage_relinks.
 
 Effect: `stage`. Answer: `staged_patch`.
 

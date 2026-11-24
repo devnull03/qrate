@@ -590,7 +590,7 @@ pub struct StageColumnRewriteCap;
 
 impl Capability for StageColumnRewriteCap {
     const NAME: &'static str = "stage_column_rewrite";
-    const SUMMARY: &'static str = "Stage new values for one whole column as a single draft the archivist previews and applies. Never edit a column cell by cell.";
+    const SUMMARY: &'static str = "Stage new values for one whole column as a single draft the archivist previews and applies. Never edit a column cell by cell. Not for file columns: rename files with stage_renames, or relink rows with stage_relinks.";
     const GROUP: &'static str = "stage";
     const EXPOSURE: Exposure = Exposure::Agent;
     const EFFECT: Effect = Effect::Stage;

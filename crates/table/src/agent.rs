@@ -527,6 +527,14 @@ pub(crate) fn stage_findings(
     let delegate = table.delegate();
     let current = TableRevision(delegate.values_generation());
 
+    for finding in findings
+        .iter()
+        .filter(|finding| finding.replacement.is_some())
+    {
+        if let Some(col) = delegate.data_col(&finding.column) {
+            not_a_file_column(delegate, col)?;
+        }
+    }
     for (ix, finding) in findings.into_iter().enumerate() {
         let cell = (finding.row < delegate.row_count())
             .then(|| delegate.row_fields(finding.row))
@@ -807,6 +815,17 @@ fn publish(source: &SharedString, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Refuse a draft that would retype a file column's text: the row would then name a file that does
+/// not exist, and nothing on disk would move.
+fn not_a_file_column(delegate: &QrateTableDelegate, col: usize) -> Result<(), RequestError> {
+    match delegate.column_type(col) == ColumnType::Filename {
+        true => Err(RequestError::FileColumn(
+            delegate.column_name(col).to_string(),
+        )),
+        false => Ok(()),
+    }
+}
+
 /// Stage one column's new values as a single draft, replacing this agent's earlier rewrite of the
 /// same column. An empty `values` retracts it. No cell is touched.
 pub(crate) fn stage_column_rewrite(
@@ -825,6 +844,7 @@ pub(crate) fn stage_column_rewrite(
     let col = delegate
         .data_col(&column)
         .ok_or(RequestError::UnknownColumn)?;
+    not_a_file_column(delegate, col)?;
     let mut rows = BTreeMap::new();
     let mut unchanged = Vec::new();
     for (row, value) in values {
@@ -907,6 +927,12 @@ pub(crate) fn stage_patch(
             continue;
         }
         for (column, value) in row.set {
+            not_a_file_column(
+                delegate,
+                delegate
+                    .data_col(&column)
+                    .ok_or(RequestError::UnknownColumn)?,
+            )?;
             let before = cell(&column)?;
             if before == value.as_str() {
                 unchanged += 1;
@@ -2801,14 +2827,15 @@ mod tests {
     }
 
     /// The walkthrough the feature exists for: an identifier rewrite and the matching file
-    /// renames, staged together, applied one after the other, and put back by two undos.
+    /// renames, staged together, applied one after the other, and put back by two undos. The
+    /// renames, not the rewrite, change the file column, so the rows stay linked throughout.
     #[gpui::test]
     fn a_rewrite_and_its_renames_apply_and_two_undos_restore_everything(cx: &mut TestAppContext) {
         let dir = open_files("walkthrough", cx);
         let ids = ["AD-001", "AD-002", "AD-003"];
         cx.update(|cx| {
             let values: Vec<(usize, &str)> = ids.iter().copied().enumerate().collect();
-            let request = rewrite("File", &values, cx);
+            let request = rewrite("Title", &values, cx);
             respond_to_agent(request, cx).unwrap();
             let pairs: Vec<(usize, String, String)> = (0..3)
                 .map(|row| {
@@ -2828,19 +2855,25 @@ mod tests {
             assert_eq!(agent_findings(cx), 2, "one entry each");
 
             assert_eq!(
-                apply_rewrite(&agent_source("pi"), &"File".into(), cx),
+                apply_rewrite(&agent_source("pi"), &"Title".into(), cx),
                 (3, 0)
             );
         });
         cx.run_until_parked();
         cx.update(|cx| {
-            assert_eq!(linked(0, cx), ("AD-001".into(), None), "not renamed yet");
+            assert_eq!(
+                linked(0, cx),
+                ("1".into(), Some("1.jpg".into())),
+                "still linked"
+            );
+            assert_eq!(cell(0, cx), "AD-001");
             assert_eq!(apply_renames(&agent_source("pi"), cx), Ok((3, 0)));
         });
         cx.run_until_parked();
         cx.update(|cx| {
             for (row, id) in ids.iter().enumerate() {
                 assert_eq!(linked(row, cx), ((*id).into(), Some(format!("{id}.jpg"))));
+                assert_eq!(cell(row, cx), *id);
                 assert_eq!(on_disk(&dir, &format!("{id}.jpg")), (row + 1).to_string());
             }
             crate::history_step(false, cx);
@@ -2848,10 +2881,11 @@ mod tests {
         });
         cx.run_until_parked();
         cx.update(|cx| {
-            for row in 0..3 {
+            for (row, title) in ["Harvest", "Wharf", "Cannery"].iter().enumerate() {
                 let name = (row + 1).to_string();
                 assert_eq!(linked(row, cx), (name.clone(), Some(format!("{name}.jpg"))));
                 assert_eq!(on_disk(&dir, &format!("{name}.jpg")), name);
+                assert_eq!(cell(row, cx), *title);
             }
             assert_eq!(std::fs::read_dir(dir.join("photos")).unwrap().count(), 3);
         });
@@ -3739,5 +3773,53 @@ mod tests {
         assert_eq!(changed["changed"], true);
         assert_eq!(changed["events"][0]["kind"], "draft_applied");
         assert_eq!(changed["events"][0]["agent"], "pi");
+    }
+
+    /// Retyping a file column would leave rows naming files that do not exist while nothing on
+    /// disk moves, so every draft that tries is refused and pointed at renames or relinks.
+    #[gpui::test]
+    fn a_file_column_is_renamed_or_relinked_never_retyped(cx: &mut TestAppContext) {
+        let dir = open_files("retype", cx);
+        cx.update(|cx| {
+            let at = revision(cx).0;
+            let refused = RequestError::FileColumn("File".into());
+            assert_eq!(
+                raw(
+                    "stage_column_rewrite",
+                    serde_json::json!({"revision": at, "column": "File", "values": [[0, "AD-001"]]}),
+                    cx
+                ),
+                Err(refused.clone())
+            );
+            assert_eq!(
+                raw(
+                    "stage_patch",
+                    serde_json::json!({"revision": at, "rows": [{"row": 0, "set": {"File": "AD-001", "Title": "x"}}]}),
+                    cx
+                ),
+                Err(refused.clone())
+            );
+            assert_eq!(
+                raw(
+                    "stage_findings",
+                    serde_json::json!({"revision": at, "findings": [{"row": 0, "column": "File", "severity": "warning",
+                        "message": "Rename to the new id", "expected": "1", "replacement": "AD-001"}]}),
+                    cx
+                ),
+                Err(refused)
+            );
+            // A finding without a replacement, and a patch of other columns, are fine.
+            assert!(
+                raw(
+                    "stage_findings",
+                    serde_json::json!({"revision": at, "findings": [{"row": 0, "column": "File", "severity": "note",
+                        "message": "Old naming scheme", "expected": "1"}]}),
+                    cx
+                )
+                .is_ok()
+            );
+            assert_eq!(linked(0, cx), ("1".into(), Some("1.jpg".into())));
+        });
+        assert!(dir.join("photos/1.jpg").exists());
     }
 }
