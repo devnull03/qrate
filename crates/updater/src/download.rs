@@ -228,7 +228,7 @@ fn github_feed(
 ) -> Result<String> {
     Ok(match channel {
         ReleaseChannel::Stable => LATEST_STABLE_FEED.to_owned(),
-        ReleaseChannel::Beta => {
+        ReleaseChannel::Alpha | ReleaseChannel::Beta => {
             let releases = releases()?;
             let tag = newest_tag(&releases, channel)
                 .context("no published qrate release carries a signed update manifest")?;

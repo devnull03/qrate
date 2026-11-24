@@ -173,12 +173,17 @@ impl AutoUpdater {
 
         let current = Version::parse(env!("CARGO_PKG_VERSION")).expect("package version is SemVer");
         let source = components::source(cx);
+        let channel = updater::ReleaseChannel::chosen(
+            &settings::effective_text(updater::UPDATE_CHANNEL_KEY, cx),
+            &current,
+        );
         let (tx, rx) = async_channel::unbounded();
         cx.background_spawn(async move {
             let result = updater::fetch_and_stage(
                 &source,
                 &installation,
                 &current,
+                channel,
                 |version| {
                     let _ = tx.try_send(DownloadEvent::Found(version));
                 },

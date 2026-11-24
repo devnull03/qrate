@@ -3,6 +3,10 @@ name = "app"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "qrate"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 gpui.workspace = true
@@ -15,6 +19,7 @@ simplelog.workspace = true
 os_info.workspace = true
 sysinfo.workspace = true
 async-channel = "2"
+getrandom = "0.3"
 single-instance = "0.3.3"
 semver.workspace = true
 serde.workspace = true
@@ -22,9 +27,10 @@ serde_json.workspace = true
 schemars.workspace = true
 tempfile.workspace = true
 url = "2"
-# The agent bridge's request/response types; the transport lives here because only the
+# The agent request/response types; `app_control` answers them because only the
 # composition root links both the contract and the live table.
 ai = { path = "../ai" }
+capability = { path = "../capability" }
 agent-runtime = { path = "../agent-runtime" }
 components = { path = "../components" }
 # Where the Google refresh token lives; it never expires, so it doesn't go in the settings DB.

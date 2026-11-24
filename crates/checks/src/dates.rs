@@ -234,6 +234,7 @@ fn offer(_: &Location, text: &str, subject: Option<&str>, _: &App) -> Vec<Fix> {
         .map(|fixed| Fix {
             label: format!("Use {fixed}").into(),
             replacement: text.replacen(value, &fixed, 1).into(),
+            agent: None,
         })
         .collect()
 }

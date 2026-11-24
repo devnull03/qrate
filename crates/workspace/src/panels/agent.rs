@@ -16,6 +16,21 @@ use gpui_component::{
 };
 
 use crate::BottomDockCrop;
+
+/// While Pi's terminal has focus, the keys a terminal program needs reach it instead of the
+/// window's focus navigation and copy.
+pub const TERMINAL_CONTEXT: &str = "AgentTerminal";
+
+actions!(agent_terminal, [SendTab, SendBackTab, SendInterrupt]);
+
+/// Bindings for [`TERMINAL_CONTEXT`]; deeper than the window's `Root`, so they win there.
+pub fn terminal_key_bindings() -> Vec<KeyBinding> {
+    vec![
+        KeyBinding::new("tab", SendTab, Some(TERMINAL_CONTEXT)),
+        KeyBinding::new("shift-tab", SendBackTab, Some(TERMINAL_CONTEXT)),
+        KeyBinding::new("ctrl-c", SendInterrupt, Some(TERMINAL_CONTEXT)),
+    ]
+}
 use crate::panel_registry::PanelMeta;
 
 /// Where Agent starts out and what it puts in the status bar.
@@ -60,25 +75,25 @@ impl View {
 /// What kind of entry this is, which is also how loudly it reads.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Entry {
-    /// The bridge answered.
+    /// qrate answered.
     Answered,
-    /// The bridge refused before answering — a wrong token, an unparseable request, a rejected
+    /// qrate refused before answering — access switched off, an unparseable request, a rejected
     /// one. The reason this list is worth reading.
     Refused,
-    /// A connect or disconnect. The transport infers both: the protocol has no session, so
-    /// "connected" is the first authenticated call from a name and "disconnected" is silence.
+    /// The first call from a name. Every `qrate agent` command is its own process, so there is no
+    /// session to connect or disconnect; "connected" is just the first time a name is seen.
     Lifecycle,
 }
 
-/// What the agent bridge reports about one thing that happened on it.
+/// What `app_control` reports about one agent call.
 ///
 /// Plain strings rather than the contract's types: this crate hosts panels and has no business
 /// knowing `ai::agent`, and the transport is already matching on the request to answer it.
 pub struct AgentCall {
-    /// Who said they were calling — the `X-Agent` header. A label the caller chose, never proof:
-    /// anything holding the token can claim any name. See the README.
+    /// Who said they were calling — `qrate agent --agent`. A label the caller chose, never proof:
+    /// any local program can claim any name.
     pub agent: SharedString,
-    /// The wire method, or `connected` / `disconnected` for a [`Entry::Lifecycle`] entry.
+    /// The wire method, or `connected` for a [`Entry::Lifecycle`] entry.
     pub label: SharedString,
     /// What was asked for, phrased short — a row count, the query, how many findings.
     pub detail: SharedString,
@@ -111,7 +126,7 @@ impl Logged {
     }
 }
 
-/// Everything that happened on the agent bridge this run, oldest first.
+/// Every agent call this run, oldest first.
 ///
 /// Chronological because this reads as a log: a call and the answer that followed it belong in the
 /// order they happened, and the panel follows the tail rather than making the reader chase it.
@@ -278,7 +293,6 @@ pub struct AgentPanel {
     terminal: agent_runtime::AgentTerminal,
     project: Option<PathBuf>,
     terminal_size: (usize, usize),
-    opened_auth_urls: HashSet<String>,
     _terminal_task: Task<()>,
     /// Refreshes on any entry. One `observe_global` and no re-binding — the history is plain data
     /// that is never rebuilt.
@@ -329,7 +343,6 @@ impl AgentPanel {
             terminal: Default::default(),
             project,
             terminal_size: (100, 32),
-            opened_auth_urls: HashSet::new(),
             _terminal_task: terminal_task,
             // reader had scrolled away if watching a live agent while reading back proves annoying.
             _sub: cx.observe_global::<AgentHistory>(move |_, cx| {
@@ -354,7 +367,6 @@ impl AgentPanel {
                     if this.terminal.is_running()
                         && this.terminal.project() != Some(project.as_path())
                     {
-                        this.opened_auth_urls.clear();
                         this.terminal.start(true, cx);
                     }
                 }
@@ -431,7 +443,6 @@ impl Panel for AgentPanel {
                         .on_click(cx.listener(|this, ix: &usize, _w, cx| {
                             this.view = View::ALL[*ix];
                             if this.view == View::Terminal && !this.terminal.is_running() {
-                                this.opened_auth_urls.clear();
                                 this.terminal.start(true, cx);
                             }
                             cx.notify();
@@ -451,14 +462,18 @@ impl Panel for AgentPanel {
                         .xsmall()
                         .tooltip("New Pi session")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.opened_auth_urls.clear();
                             this.view = View::Terminal;
                             this.terminal.new_session(cx);
                             cx.notify();
                         }))
                         .context_menu(move |menu, _window, _cx| {
                             let (stop, restart) = (panel.clone(), panel.clone());
-                            menu.item(PopupMenuItem::new("Stop").on_click(move |_, _, cx| {
+                            menu.item(PopupMenuItem::new("Revoke file access").on_click(
+                                |_, _, cx| {
+                                    table::revoke_agent_file_access(cx);
+                                },
+                            ))
+                            .item(PopupMenuItem::new("Stop").on_click(move |_, _, cx| {
                                 stop.update(cx, |this, cx| {
                                     this.terminal.stop();
                                     cx.notify();
@@ -469,7 +484,6 @@ impl Panel for AgentPanel {
                                 PopupMenuItem::new("Restart").on_click(move |_, _, cx| {
                                     restart
                                         .update(cx, |this, cx| {
-                                            this.opened_auth_urls.clear();
                                             this.terminal.start(true, cx);
                                             cx.notify();
                                         })
@@ -483,7 +497,7 @@ impl Panel for AgentPanel {
 }
 
 impl Render for AgentPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let installed = cx.has_global::<agent_runtime::AgentRuntime>();
         if self.view == View::Terminal
             && !self.terminal.is_running()
@@ -531,7 +545,7 @@ impl Render for AgentPanel {
         let (terminal_cols, terminal_lines) = self.terminal_size;
         self.terminal.resize(terminal_cols, terminal_lines);
         let agent_panel = cx.entity().downgrade();
-        let terminal_screen = self.terminal.screen(agent_runtime::TerminalPalette {
+        let palette = agent_runtime::TerminalPalette {
             foreground,
             background,
             muted,
@@ -541,15 +555,9 @@ impl Render for AgentPanel {
             blue: info,
             magenta: accent,
             cyan: info,
-        });
-        if let Some(url) = terminal_screen
-            .auth_urls
-            .iter()
-            .find(|url| self.opened_auth_urls.insert((*url).clone()))
-            .cloned()
-        {
-            window.defer(cx, move |_window, cx| cx.open_url(&url));
-        }
+        };
+        self.terminal.set_palette(palette, cx);
+        let terminal_screen = self.terminal.screen(palette);
         let history = cx.try_global::<AgentHistory>();
         let empty = history.is_none_or(|h| h.calls.is_empty());
         let all = history.map_or_else(String::new, |h| {
@@ -559,13 +567,23 @@ impl Render for AgentPanel {
                 .collect::<Vec<_>>()
                 .join("\n")
         });
-        let terminal_content = if terminal_screen.text.is_empty() {
-            StyledText::new(
-                "Use /login openrouter once, then Pi will use OpenRouter's free router by default.",
-            )
-        } else {
-            StyledText::new(terminal_screen.text).with_highlights(terminal_screen.highlights)
-        };
+        let (link_ranges, link_targets): (Vec<_>, Vec<_>) =
+            terminal_screen.links.into_iter().unzip();
+        let terminal_content = InteractiveText::new(
+            "agent-terminal-text",
+            if terminal_screen.text.is_empty() {
+                StyledText::new(
+                    "Use /login openrouter once, then Pi will use OpenRouter's free router by default.",
+                )
+            } else {
+                StyledText::new(terminal_screen.text).with_highlights(terminal_screen.highlights)
+            },
+        )
+        .on_click(link_ranges, move |ix, _window, cx| {
+            if let Some(url) = link_targets.get(ix) {
+                cx.open_url(url);
+            }
+        });
         let (terminal_font, terminal_font_size, terminal_line_height) = terminal_type(cx);
         let terminal_status = self.terminal.status().to_owned();
 
@@ -577,6 +595,18 @@ impl Render for AgentPanel {
             .id("agent-panel")
             .role(Role::Group)
             .aria_label("Agent")
+            .when(self.view == View::Terminal, |panel| {
+                panel.key_context(TERMINAL_CONTEXT)
+            })
+            .on_action(cx.listener(|this, _: &SendTab, _window, _cx| {
+                this.terminal.send(b"\t");
+            }))
+            .on_action(cx.listener(|this, _: &SendBackTab, _window, _cx| {
+                this.terminal.send(b"\x1b[Z");
+            }))
+            .on_action(cx.listener(|this, _: &SendInterrupt, _window, _cx| {
+                this.terminal.send(b"\x03");
+            }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 if this.view == View::Terminal && this.terminal.input(event, cx) {
                     cx.stop_propagation();
@@ -679,8 +709,8 @@ impl Render for AgentPanel {
                         .p_3()
                         .text_sm()
                         .text_color(muted)
-                        // Names where the switch is: an agent that never connected and a bridge
-                        // that was switched off look identical from here otherwise.
+                        // Names where the switch is: an agent that never called and access that
+                        // was switched off look identical from here otherwise.
                         .child("No agent activity yet. Agents may read this app unless you switch that off under Settings ▸ Agent."),
                 )
             })
@@ -816,7 +846,7 @@ mod tests {
             label: label.into(),
             detail: "3 row(s)".into(),
             outcome: match entry {
-                Entry::Refused => "forbidden".into(),
+                Entry::Refused => "agent_access_off".into(),
                 Entry::Lifecycle => "first call from this agent".into(),
                 Entry::Answered => "3 rows".into(),
             },
@@ -849,7 +879,7 @@ mod tests {
     }
 
     /// The panel must render before anything has called, and after — the empty state is what an
-    /// archivist sees on every launch that never starts the bridge. All three entry kinds render,
+    /// archivist sees on every launch no agent calls. All three entry kinds render,
     /// because each takes its own colour branch.
     #[gpui::test]
     fn renders_empty_and_every_entry_kind(cx: &mut TestAppContext) {
@@ -861,9 +891,45 @@ mod tests {
             record(call("connected", Entry::Lifecycle), cx);
             record(call("rows", Entry::Answered), cx);
             record(call("stage_findings", Entry::Refused), cx);
-            record(call("disconnected", Entry::Lifecycle), cx);
         });
         cx.add_window_view(AgentPanel::new);
+    }
+
+    /// The window binds Tab to focus navigation and Ctrl+C to copy; inside Pi's terminal both have
+    /// to reach Pi instead, or autocomplete and cancelling never work.
+    #[gpui::test]
+    fn tab_and_ctrl_c_go_to_pi_inside_its_terminal(cx: &mut TestAppContext) {
+        use gpui::{AppContext as _, Focusable as _};
+        cx.update(gpui_component::init);
+        cx.update(|cx| {
+            cx.set_global(settings::AppSettings::default());
+            cx.bind_keys(crate::agent_terminal_key_bindings());
+        });
+        let resolved = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = resolved.clone();
+        let _observer = cx.update(|cx| {
+            cx.observe_keystrokes(move |event, _, _| {
+                seen.borrow_mut()
+                    .push(event.action.as_ref().map(|action| action.name()));
+            })
+        });
+        let window = cx.add_window(|window, cx| {
+            let panel = cx.new(|cx| AgentPanel::new(window, cx));
+            let focus = panel.focus_handle(cx);
+            window.focus(&focus, cx);
+            gpui_component::Root::new(panel, window, cx)
+        });
+        let cx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        cx.run_until_parked();
+        cx.simulate_keystrokes("tab shift-tab ctrl-c");
+        assert_eq!(
+            *resolved.borrow(),
+            [
+                Some("agent_terminal::SendTab"),
+                Some("agent_terminal::SendBackTab"),
+                Some("agent_terminal::SendInterrupt"),
+            ]
+        );
     }
 
     /// Both views render, and the terminal opens first so Pi is immediately available.

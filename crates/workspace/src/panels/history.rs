@@ -53,6 +53,8 @@ enum Row {
         len: usize,
     },
     More,
+    /// Below the oldest entry: the project as it was before every change listed.
+    Start,
 }
 
 /// The heights the list places rows by, which are also the heights the rows are given. Measuring
@@ -102,7 +104,10 @@ impl Filter {
             Filter::Cells => any(|c| matches!(c, Change::Cell { .. })),
             Filter::Structure => any(|c| !matches!(c, Change::Cell { .. } | Change::Note { .. })),
             Filter::Notes => any(|c| matches!(c, Change::Note { .. })),
-            Filter::Fixes => matches!(entry.origin, Origin::Fix(_) | Origin::Spelling),
+            Filter::Fixes => matches!(
+                entry.origin,
+                Origin::Fix(_) | Origin::Agent { .. } | Origin::Spelling
+            ),
         }
     }
 }
@@ -440,11 +445,11 @@ impl HistoryPanel {
     }
 
     /// Ask before putting the whole project back, saying how much that reverses.
-    fn confirm_restore(listed: &Listed, window: &mut Window, cx: &mut App) {
+    fn confirm_restore(id: EntryId, when: String, window: &mut Window, cx: &mut App) {
         let Some(file) = cx.try_global::<CurrentProject>().map(|p| p.file.clone()) else {
             return;
         };
-        let since = settings::history::entries_after(&file, listed.entry.id)
+        let since = settings::history::entries_after(&file, id)
             .map(|entries| entries.iter().map(|e| e.changes.len()).sum::<usize>())
             .unwrap_or_default()
             + cx.try_global::<TableStateHandle>()
@@ -457,14 +462,9 @@ impl HistoryPanel {
                         .map(|e| e.changes.len())
                         .sum()
                 });
-        let id = listed.entry.id;
         let answer = window.prompt(
             PromptLevel::Warning,
-            &format!(
-                "Restore the project to {} at {}?",
-                day_label(&listed.day, listed.days_ago),
-                listed.time
-            ),
+            &format!("Restore the project to {when}?"),
             Some(&format!(
                 "{since} change{} made since will be reversed. The restore is added to the history, and Undo takes it back.",
                 if since == 1 { "" } else { "s" }
@@ -520,7 +520,9 @@ fn narrowed<'a>(entry: &'a Entry, cell: Option<&(RowId, Vec<String>)>) -> Option
             Change::Note { row: r, column, .. } => {
                 *r == Some(*row) && column.as_deref().is_none_or(named)
             }
-            Change::RowAdded { row: r, .. } | Change::RowRemoved { row: r, .. } => r == row,
+            Change::RowAdded { row: r, .. }
+            | Change::RowRemoved { row: r, .. }
+            | Change::RowArranged { row: r, .. } => r == row,
             _ => false,
         })
         .cloned()
@@ -602,6 +604,11 @@ fn describe(entry: &Entry, rows: &HashMap<RowId, usize>) -> String {
             format!("Renamed column {} to {}", quote(before), quote(after))
         }
         [Change::ColumnMoved { column, .. }] => format!("Moved column {}", quote(column)),
+        [Change::ColumnDescribed { column, .. }] => {
+            format!("Changed type or description of {}", quote(column))
+        }
+        [Change::ColumnFiltered { column, .. }] => format!("Changed filter on {}", quote(column)),
+        [Change::RowArranged { row: id, .. }] => format!("Rearranged {}", row(id)),
         [
             Change::Note {
                 row: id,
@@ -766,7 +773,7 @@ impl HistoryPanel {
     fn row_size(&self, row: &Row) -> Size<Pixels> {
         let height = match row {
             Row::Header(_) => HEADER_H,
-            Row::More => MORE_H,
+            Row::More | Row::Start => MORE_H,
             Row::Pending(_) | Row::Burst { .. } => ROW_H,
             Row::Saved { ix, .. } => match self.view.get(*ix) {
                 None => ROW_H,
@@ -814,11 +821,15 @@ impl HistoryPanel {
                 })
         };
         let meta = |entry: &Entry, when: String| {
-            [Some(entry.origin.label()), entry.author.clone(), Some(when)]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join(" · ")
+            [
+                Some(entry.origin.label()),
+                settings::history::credit(entry.author.as_deref(), &entry.origin),
+                Some(when),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ")
         };
 
         match row {
@@ -842,6 +853,36 @@ impl HistoryPanel {
                         .small()
                         .label("Load Older Changes")
                         .on_click(cx.listener(|this, _, _, cx| this.load_older(cx))),
+                )
+                .into_any_element(),
+
+            Row::Start => h_flex()
+                .h(height)
+                .px_2()
+                .gap_2()
+                .items_center()
+                .border_t_1()
+                .border_color(border)
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().text_sm().child("Start of history"))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child("The project before every change above"),
+                        ),
+                )
+                .child(
+                    Button::new("history-start")
+                        .ghost()
+                        .small()
+                        .label("Restore…")
+                        .on_click(|_, window, cx| {
+                            Self::confirm_restore(0, "the start of its history".into(), window, cx)
+                        }),
                 )
                 .into_any_element(),
 
@@ -905,7 +946,14 @@ impl HistoryPanel {
                             (listed.clone(), panel.clone(), panel.clone());
                         let labelled = listed.label.is_some();
                         menu.item(PopupMenuItem::new("Restore Project to Here…").on_click(
-                            move |_, window, cx| Self::confirm_restore(&restore, window, cx),
+                            move |_, window, cx| {
+                                let when = format!(
+                                    "{} at {}",
+                                    day_label(&restore.day, restore.days_ago),
+                                    restore.time
+                                );
+                                Self::confirm_restore(restore.entry.id, when, window, cx)
+                            },
                         ))
                         .when_some(single, |menu, (row, column, before)| {
                             menu.item(PopupMenuItem::new("Restore This Value").on_click(
@@ -1139,6 +1187,9 @@ impl HistoryPanel {
         }
         if self.more && !named_only {
             list.push(Row::More);
+        }
+        if !self.more && !named_only && cell.is_none() && !view.is_empty() {
+            list.push(Row::Start);
         }
 
         self.pending = Rc::new(pending);

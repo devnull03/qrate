@@ -54,28 +54,55 @@ pub struct UpdateManifest {
     pub artifacts: Vec<UpdateArtifact>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReleaseChannel {
+    /// Every signed release, including alpha builds with features still being tried out.
+    Alpha,
     Beta,
     Stable,
 }
 
+/// Settings key (user scope) for which releases to update to: `stable`, `beta`, `alpha`, or empty
+/// for the running build's own channel.
+pub const UPDATE_CHANNEL_KEY: &str = "update_channel";
+
+/// What Settings offers for [`UPDATE_CHANNEL_KEY`].
+pub const UPDATE_CHANNELS: &[(&str, &str)] = &[
+    ("", "Same as this version"),
+    ("stable", "Stable"),
+    ("beta", "Beta"),
+    ("alpha", "Alpha"),
+];
+
 impl ReleaseChannel {
-    pub fn for_version(version: &Version) -> Self {
-        if version.pre.is_empty() {
-            Self::Stable
-        } else {
-            Self::Beta
+    /// The channel the archivist chose in Settings, or the running build's own.
+    pub fn chosen(setting: &str, current: &Version) -> Self {
+        match setting {
+            "stable" => Self::Stable,
+            "beta" => Self::Beta,
+            "alpha" => Self::Alpha,
+            _ => Self::for_version(current),
         }
     }
 
+    pub fn for_version(version: &Version) -> Self {
+        match version.pre.as_str() {
+            "" => Self::Stable,
+            pre if pre.starts_with("alpha") => Self::Alpha,
+            _ => Self::Beta,
+        }
+    }
+
+    /// A channel takes its own releases and every steadier one: alpha takes betas and stables,
+    /// beta takes stables.
     pub fn accepts(self, version: &Version) -> bool {
-        self == Self::Beta || version.pre.is_empty()
+        Self::for_version(version) >= self
     }
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::Alpha => "alpha",
             Self::Beta => "beta",
             Self::Stable => "stable",
         }
@@ -246,9 +273,10 @@ pub fn validate_update(
     envelope: &SignedEnvelope,
     installation: &Installation,
     current_version: &Version,
+    channel: ReleaseChannel,
 ) -> Result<Option<(UpdateManifest, UpdateArtifact)>> {
     let (manifest, _) = verify_envelope(envelope)?;
-    let Some(artifact) = select_update(&manifest, installation, current_version)? else {
+    let Some(artifact) = select_update(&manifest, installation, current_version, channel)? else {
         return Ok(None);
     };
     Ok(Some((manifest, artifact)))
@@ -259,15 +287,13 @@ pub fn fetch_and_stage(
     source: &Source,
     installation: &Installation,
     current: &Version,
+    channel: ReleaseChannel,
     mut found: impl FnMut(Version),
     mut progress: impl FnMut(u64, u64),
 ) -> Result<Option<StagedUpdate>> {
-    let envelope = download::fetch_feed(
-        &download::client()?,
-        source,
-        ReleaseChannel::for_version(current),
-    )?;
-    let Some((manifest, artifact)) = validate_update(&envelope, installation, current)? else {
+    let envelope = download::fetch_feed(&download::client()?, source, channel)?;
+    let Some((manifest, artifact)) = validate_update(&envelope, installation, current, channel)?
+    else {
         return Ok(None);
     };
     found(manifest.version.clone());
@@ -348,16 +374,17 @@ fn staged_is_verified(path: &Path, artifact: &UpdateArtifact) -> bool {
     )
 }
 
-/// Channel, ordering, and artifact rules on an already-verified manifest.
+/// Channel, ordering, and artifact rules on an already-verified manifest. A newer release only:
+/// choosing Stable on a beta build waits for the next stable release rather than going back.
 pub fn select_update(
     manifest: &UpdateManifest,
     installation: &Installation,
     current_version: &Version,
+    channel: ReleaseChannel,
 ) -> Result<Option<UpdateArtifact>> {
-    let channel = ReleaseChannel::for_version(current_version);
     ensure!(
         channel.accepts(&manifest.version),
-        "release is not in this build's channel"
+        "release is not in the chosen update channel"
     );
     if manifest.version <= *current_version {
         return Ok(None);
@@ -935,27 +962,106 @@ mod tests {
         let current = version("0.4.0-alpha.1");
 
         assert!(
-            select_update(&manifest("0.5.0-beta.1"), &install, &current)
-                .unwrap()
-                .is_some()
+            select_update(
+                &manifest("0.5.0-beta.1"),
+                &install,
+                &current,
+                ReleaseChannel::for_version(&current)
+            )
+            .unwrap()
+            .is_some()
         );
         // Same and older releases are not updates, and neither is a prerelease for a stable build.
         assert!(
-            select_update(&manifest("0.4.0-alpha.1"), &install, &current)
-                .unwrap()
-                .is_none()
+            select_update(
+                &manifest("0.4.0-alpha.1"),
+                &install,
+                &current,
+                ReleaseChannel::for_version(&current)
+            )
+            .unwrap()
+            .is_none()
         );
         assert!(
-            select_update(&manifest("0.3.0"), &install, &current)
-                .unwrap()
-                .is_none()
+            select_update(
+                &manifest("0.3.0"),
+                &install,
+                &current,
+                ReleaseChannel::for_version(&current)
+            )
+            .unwrap()
+            .is_none()
         );
-        assert!(select_update(&manifest("0.5.0-beta.1"), &install, &version("0.4.0")).is_err());
-        // A stable release still reaches a prerelease build.
         assert!(
-            select_update(&manifest("0.5.0"), &install, &current)
+            select_update(
+                &manifest("0.5.0-beta.1"),
+                &install,
+                &version("0.4.0"),
+                ReleaseChannel::for_version(&version("0.4.0"))
+            )
+            .is_err()
+        );
+        // A stable build that chose the beta channel is offered a newer beta.
+        assert!(
+            select_update(
+                &manifest("0.5.0-beta.1"),
+                &install,
+                &version("0.4.0"),
+                ReleaseChannel::chosen("beta", &version("0.4.0"))
+            )
+            .unwrap()
+            .is_some()
+        );
+        // A beta build that chose stable skips betas, and is offered the next stable release.
+        let beta = version("0.5.0-beta.1");
+        let stable = ReleaseChannel::chosen("stable", &beta);
+        assert!(select_update(&manifest("0.5.0-beta.2"), &install, &beta, stable).is_err());
+        assert!(
+            select_update(&manifest("0.5.0"), &install, &beta, stable)
                 .unwrap()
                 .is_some()
+        );
+        // A beta build skips alphas; an alpha build takes betas too.
+        let beta = version("0.5.0-beta.1");
+        assert!(
+            select_update(
+                &manifest("0.5.0-alpha.3"),
+                &install,
+                &version("0.4.0-beta.1"),
+                ReleaseChannel::for_version(&version("0.4.0-beta.1"))
+            )
+            .is_err()
+        );
+        let alpha = version("0.5.0-alpha.1");
+        assert!(
+            select_update(
+                &manifest("0.5.0-beta.1"),
+                &install,
+                &alpha,
+                ReleaseChannel::for_version(&alpha)
+            )
+            .unwrap()
+            .is_some()
+        );
+        assert!(
+            select_update(
+                &manifest("0.5.0-alpha.2"),
+                &install,
+                &beta,
+                ReleaseChannel::chosen("alpha", &beta)
+            )
+            .is_ok()
+        );
+        // A stable release still reaches a prerelease build.
+        assert!(
+            select_update(
+                &manifest("0.5.0"),
+                &install,
+                &current,
+                ReleaseChannel::for_version(&current)
+            )
+            .unwrap()
+            .is_some()
         );
     }
 
@@ -966,19 +1072,51 @@ mod tests {
 
         let mut foreign = manifest("0.5.0-beta.1");
         foreign.artifacts[0].kind = InstallKind::WindowsNsis;
-        assert!(select_update(&foreign, &install, &current).is_err());
+        assert!(
+            select_update(
+                &foreign,
+                &install,
+                &current,
+                ReleaseChannel::for_version(&current)
+            )
+            .is_err()
+        );
 
         let mut offsite = manifest("0.5.0-beta.1");
         offsite.artifacts[0].url = "https://example.com/qrate.tar.gz".into();
-        assert!(select_update(&offsite, &install, &current).is_err());
+        assert!(
+            select_update(
+                &offsite,
+                &install,
+                &current,
+                ReleaseChannel::for_version(&current)
+            )
+            .is_err()
+        );
 
         let mut short_digest = manifest("0.5.0-beta.1");
         short_digest.artifacts[0].sha256 = "abc".into();
-        assert!(select_update(&short_digest, &install, &current).is_err());
+        assert!(
+            select_update(
+                &short_digest,
+                &install,
+                &current,
+                ReleaseChannel::for_version(&current)
+            )
+            .is_err()
+        );
 
         let mut empty = manifest("0.5.0-beta.1");
         empty.artifacts[0].size = 0;
-        assert!(select_update(&empty, &install, &current).is_err());
+        assert!(
+            select_update(
+                &empty,
+                &install,
+                &current,
+                ReleaseChannel::for_version(&current)
+            )
+            .is_err()
+        );
     }
 
     #[test]

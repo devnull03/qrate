@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -66,7 +66,7 @@ fn project_session_dir(profile: &Path, project: &Path) -> PathBuf {
         .join(format!("{stem}-{:016x}", hasher.finish()))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct TerminalPalette {
     pub foreground: Hsla,
     pub background: Hsla,
@@ -82,7 +82,8 @@ pub struct TerminalPalette {
 pub struct TerminalScreen {
     pub text: String,
     pub highlights: Vec<(Range<usize>, HighlightStyle)>,
-    pub auth_urls: Vec<String>,
+    /// Where the program printed a hyperlink (OSC 8), with the exact target it named.
+    pub links: Vec<(Range<usize>, String)>,
 }
 
 static GLOBAL_CREDENTIAL: OnceLock<Option<String>> = OnceLock::new();
@@ -127,6 +128,41 @@ fn global_openrouter_credential(program: &std::path::Path) -> Option<String> {
 
 fn rgb_color(color: Rgb) -> Hsla {
     rgb((u32::from(color.r) << 16) | (u32::from(color.g) << 8) | u32::from(color.b)).into()
+}
+
+fn to_rgb(color: Hsla) -> Rgb {
+    let color = color.to_rgb();
+    let channel = |value: f32| (value.clamp(0., 1.) * 255.).round() as u8;
+    Rgb {
+        r: channel(color.r),
+        g: channel(color.g),
+        b: channel(color.b),
+    }
+}
+
+pub(crate) fn hex(color: Hsla) -> String {
+    let Rgb { r, g, b } = to_rgb(color);
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+pub(crate) fn is_light(color: Hsla) -> bool {
+    color.l >= 0.5
+}
+
+/// The colour a program asked for with OSC 4, 10, 11 or 12: an ANSI index, or 256 and up for
+/// alacritty's foreground, background and cursor.
+fn requested_color(index: usize, palette: TerminalPalette) -> Hsla {
+    match index {
+        256 | 258 => palette.foreground,
+        257 => palette.background,
+        1 | 9 => palette.red,
+        2 | 10 => palette.green,
+        3 | 11 => palette.yellow,
+        4 | 12 => palette.blue,
+        5 | 13 => palette.magenta,
+        6 | 14 => palette.cyan,
+        index => indexed_color(u8::try_from(index).unwrap_or(7)),
+    }
 }
 
 fn indexed_color(index: u8) -> Hsla {
@@ -256,49 +292,6 @@ fn terminal_background(
     };
     (background != Color::Named(NamedColor::Background))
         .then(|| resolve_color(background, palette, dynamic))
-}
-
-fn is_auth_url(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
-    let Some(authority_and_path) = lower
-        .strip_prefix("https://")
-        .or_else(|| lower.strip_prefix("http://"))
-    else {
-        return false;
-    };
-    let authority = authority_and_path.split('/').next().unwrap_or_default();
-    let host = authority
-        .rsplit('@')
-        .next()
-        .unwrap_or_default()
-        .split(':')
-        .next()
-        .unwrap_or_default();
-    let trusted_host = [
-        "x.ai",
-        "openrouter.ai",
-        "openai.com",
-        "anthropic.com",
-        "claude.ai",
-        "google.com",
-        "github.com",
-        "microsoft.com",
-        "qwen.ai",
-        "alibabacloud.com",
-    ]
-    .iter()
-    .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")));
-    trusted_host
-        && [
-            "/auth",
-            "/oauth",
-            "/device",
-            "/login",
-            "/authorize",
-            "accounts.",
-        ]
-        .iter()
-        .any(|marker| lower.contains(marker))
 }
 
 struct TerminalSize;
@@ -446,6 +439,8 @@ pub struct AgentTerminal {
     project: Option<PathBuf>,
     status: String,
     scroll_remainder: f32,
+    /// qrate's current colours, which Pi asks for and draws its theme in.
+    palette: Option<TerminalPalette>,
 }
 
 impl Default for AgentTerminal {
@@ -455,6 +450,7 @@ impl Default for AgentTerminal {
             project: None,
             status: "Pi has not started.".to_owned(),
             scroll_remainder: 0.,
+            palette: None,
         }
     }
 }
@@ -509,11 +505,11 @@ impl AgentTerminal {
             session_dir.display()
         );
         log::debug!(
-            "embedded Pi resources: extension={} (exists={}), endpoint={} (exists={})",
+            "embedded Pi resources: extension={} (exists={}), cli={} (exists={})",
             runtime.extension.display(),
             runtime.extension.is_file(),
-            runtime.endpoint.display(),
-            runtime.endpoint.is_file()
+            runtime.cli.display(),
+            runtime.cli.is_file()
         );
 
         let mut args = runtime.leading_args.clone();
@@ -527,8 +523,16 @@ impl AgentTerminal {
             "--no-extensions".to_owned(),
             "--extension".to_owned(),
             runtime.extension.to_string_lossy().into_owned(),
+            // `--no-extensions` also drops Pi's built-ins; these two are wanted, MCP is not.
+            "--extension".to_owned(),
+            "builtin:codemode".to_owned(),
+            "--extension".to_owned(),
+            "builtin:tool-search".to_owned(),
             "--no-skills".to_owned(),
             "--no-context-files".to_owned(),
+            // Fullscreen keeps a viewport the panel's wheel cannot scroll; regular keeps scrollback.
+            "--tui-mode".to_owned(),
+            "regular".to_owned(),
             "--no-approve".to_owned(),
             "--session-dir".to_owned(),
             session_dir.to_string_lossy().into_owned(),
@@ -563,9 +567,10 @@ impl AgentTerminal {
             ),
             ("PI_SKIP_VERSION_CHECK".to_owned(), "1".to_owned()),
             (
-                "QRATE_AGENT_ENDPOINT".to_owned(),
-                runtime.endpoint.to_string_lossy().into_owned(),
+                "QRATE_CLI".to_owned(),
+                runtime.cli.to_string_lossy().into_owned(),
             ),
+            ("QRATE_AGENT".to_owned(), "pi".to_owned()),
             (
                 "QRATE_PROJECT_DIR".to_owned(),
                 cwd.to_string_lossy().into_owned(),
@@ -573,6 +578,14 @@ impl AgentTerminal {
             ("TERM".to_owned(), "xterm-256color".to_owned()),
             ("COLORTERM".to_owned(), "truecolor".to_owned()),
         ]);
+        if let Some(palette) = self.palette {
+            let colorfgbg = if is_light(palette.background) {
+                "0;15"
+            } else {
+                "15;0"
+            };
+            env.insert("COLORFGBG".to_owned(), colorfgbg.to_owned());
+        }
         let options = Options {
             shell: Some(Shell::new(
                 runtime.program.to_string_lossy().into_owned(),
@@ -645,8 +658,16 @@ impl AgentTerminal {
         let mut exited = None;
         while let Ok(event) = session.events.try_recv() {
             changed = true;
-            if let Event::ChildExit(status) = event {
-                exited = Some(status);
+            match event {
+                Event::ChildExit(status) => exited = Some(status),
+                Event::PtyWrite(reply) => session.notifier.notify(Cow::Owned(reply.into_bytes())),
+                Event::ColorRequest(index, format) => {
+                    if let Some(palette) = self.palette {
+                        let reply = format(to_rgb(requested_color(index, palette)));
+                        session.notifier.notify(Cow::Owned(reply.into_bytes()));
+                    }
+                }
+                _ => {}
             }
         }
         if let Some(status) = exited {
@@ -704,6 +725,7 @@ impl AgentTerminal {
             match stroke.key.as_str() {
                 "enter" => Some(vec![b'\r']),
                 "backspace" => Some(vec![0x7f]),
+                "tab" if stroke.modifiers.shift => Some(b"\x1b[Z".to_vec()),
                 "tab" => Some(vec![b'\t']),
                 "escape" => Some(vec![0x1b]),
                 "home" => Some(b"\x1b[H".to_vec()),
@@ -727,6 +749,29 @@ impl AgentTerminal {
         };
         session.notifier.notify(Cow::Owned(bytes));
         true
+    }
+
+    /// Write raw bytes to Pi, as a key the window would otherwise have taken.
+    pub fn send(&self, bytes: &'static [u8]) -> bool {
+        let Some(session) = self.session.as_ref().filter(|session| session.running) else {
+            return false;
+        };
+        session.notifier.notify(Cow::Borrowed(bytes));
+        true
+    }
+
+    /// Follow qrate's colours: answer Pi's colour queries with them, and rewrite Pi's `qrate`
+    /// theme when they change, which Pi reloads while running.
+    pub fn set_palette(&mut self, palette: TerminalPalette, cx: &App) {
+        if self.palette == Some(palette) {
+            return;
+        }
+        self.palette = Some(palette);
+        if let Some(runtime) = cx.try_global::<AgentRuntime>()
+            && let Err(err) = crate::runtime::write_pi_theme(runtime, palette)
+        {
+            log::warn!("could not write Pi's qrate theme, so Pi keeps its own colours: {err}");
+        }
     }
 
     pub fn resize(&mut self, cols: usize, lines: usize) {
@@ -784,107 +829,109 @@ impl AgentTerminal {
     }
 
     pub fn screen(&self, palette: TerminalPalette) -> TerminalScreen {
-        let Some(session) = &self.session else {
-            return TerminalScreen {
+        match &self.session {
+            Some(session) => render(&session.terminal.lock(), palette),
+            None => TerminalScreen {
                 text: String::new(),
                 highlights: Vec::new(),
-                auth_urls: Vec::new(),
-            };
-        };
-        struct RenderedCell {
-            text: String,
-            style: HighlightStyle,
-            trimmable: bool,
+                links: Vec::new(),
+            },
         }
+    }
+}
 
-        let terminal = session.terminal.lock();
-        let content = terminal.renderable_content();
-        let cursor = content.cursor.point;
-        let mut lines: Vec<Vec<RenderedCell>> = (0..terminal.screen_lines())
-            .map(|_| Vec::with_capacity(COLS))
-            .collect();
-        let mut auth_urls = Vec::new();
-        let mut seen_urls = HashSet::new();
-        let top = -(content.display_offset as i32);
-        for indexed in content.display_iter {
-            let line = indexed.point.line.0 - top;
-            if let Some(output) = usize::try_from(line)
-                .ok()
-                .and_then(|line| lines.get_mut(line))
+/// The visible screen as styled text, with the hyperlinks the program printed.
+fn render<T: EventListener>(terminal: &Term<T>, palette: TerminalPalette) -> TerminalScreen {
+    struct RenderedCell {
+        text: String,
+        style: HighlightStyle,
+        trimmable: bool,
+        link: Option<String>,
+    }
+
+    let content = terminal.renderable_content();
+    let cursor = content.cursor.point;
+    let mut lines: Vec<Vec<RenderedCell>> = (0..terminal.screen_lines())
+        .map(|_| Vec::with_capacity(COLS))
+        .collect();
+    let top = -(content.display_offset as i32);
+    for indexed in content.display_iter {
+        let line = indexed.point.line.0 - top;
+        if let Some(output) = usize::try_from(line)
+            .ok()
+            .and_then(|line| lines.get_mut(line))
+        {
+            if indexed
+                .cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
             {
-                if let Some(hyperlink) = indexed.cell.hyperlink() {
-                    let uri = hyperlink.uri();
-                    if is_auth_url(uri) && seen_urls.insert(uri.to_owned()) {
-                        auth_urls.push(uri.to_owned());
-                    }
-                }
-                if indexed
+                continue;
+            }
+            let is_cursor = indexed.point == cursor;
+            let mut text = String::new();
+            text.push(if is_cursor { '█' } else { indexed.cell.c });
+            if let Some(extra) = indexed.cell.zerowidth() {
+                text.extend(extra);
+            }
+            output.push(RenderedCell {
+                link: indexed
                     .cell
-                    .flags
-                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-                {
-                    continue;
-                }
-                let is_cursor = indexed.point == cursor;
-                let mut text = String::new();
-                text.push(if is_cursor { '█' } else { indexed.cell.c });
-                if let Some(extra) = indexed.cell.zerowidth() {
-                    text.extend(extra);
-                }
-                output.push(RenderedCell {
-                    trimmable: !is_cursor
-                        && indexed.cell.c == ' '
-                        && indexed.cell.bg == Color::Named(NamedColor::Background)
-                        && !indexed.cell.flags.contains(Flags::INVERSE),
-                    text,
-                    style: terminal_style(indexed.cell, palette, content.colors),
-                });
-            }
+                    .hyperlink()
+                    .map(|hyperlink| hyperlink.uri().to_owned()),
+                trimmable: !is_cursor
+                    && indexed.cell.c == ' '
+                    && indexed.cell.bg == Color::Named(NamedColor::Background)
+                    && !indexed.cell.flags.contains(Flags::INVERSE),
+                text,
+                style: terminal_style(indexed.cell, palette, content.colors),
+            });
         }
-        for line in &mut lines {
-            while line.last().is_some_and(|cell| cell.trimmable) {
-                line.pop();
-            }
+    }
+    for line in &mut lines {
+        while line.last().is_some_and(|cell| cell.trimmable) {
+            line.pop();
         }
-        while lines.last().is_some_and(Vec::is_empty) {
-            lines.pop();
-        }
+    }
+    while lines.last().is_some_and(Vec::is_empty) {
+        lines.pop();
+    }
 
-        let mut text = String::new();
-        let mut highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
-        let line_count = lines.len();
-        for (line_index, line) in lines.into_iter().enumerate() {
-            for cell in line {
-                let start = text.len();
-                text.push_str(&cell.text);
-                let end = text.len();
-                if let Some((range, style)) = highlights.last_mut()
-                    && range.end == start
-                    && *style == cell.style
-                {
-                    range.end = end;
-                } else {
-                    highlights.push((start..end, cell.style));
+    let mut text = String::new();
+    let mut highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+    let mut links: Vec<(Range<usize>, String)> = Vec::new();
+    let line_count = lines.len();
+    for (line_index, line) in lines.into_iter().enumerate() {
+        for cell in line {
+            let start = text.len();
+            text.push_str(&cell.text);
+            let end = text.len();
+            if let Some((range, style)) = highlights.last_mut()
+                && range.end == start
+                && *style == cell.style
+            {
+                range.end = end;
+            } else {
+                highlights.push((start..end, cell.style));
+            }
+            if let Some(uri) = cell.link {
+                match links.last_mut() {
+                    Some((range, last)) if *last == uri && range.end == start => {
+                        range.end = end;
+                    }
+                    _ => links.push((start..end, uri)),
                 }
             }
-            if line_index + 1 < line_count {
-                text.push('\n');
-            }
         }
+        if line_index + 1 < line_count {
+            text.push('\n');
+        }
+    }
 
-        for token in text.split_whitespace() {
-            let url = token
-                .trim_start_matches(['<', '(', '[', '{'])
-                .trim_end_matches(['>', ')', ']', '}', '.', ',', ';']);
-            if is_auth_url(url) && seen_urls.insert(url.to_owned()) {
-                auth_urls.push(url.to_owned());
-            }
-        }
-        TerminalScreen {
-            text,
-            highlights,
-            auth_urls,
-        }
+    TerminalScreen {
+        text,
+        highlights,
+        links,
     }
 }
 
@@ -908,8 +955,13 @@ mod tests {
 
     #[cfg(windows)]
     use super::{CREATE_NO_WINDOW, WindowsProcess};
+    use alacritty_terminal::event::VoidListener;
+    use alacritty_terminal::term::{Config, Term};
+    use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
+
     use super::{
-        TerminalPalette, is_auth_url, project_session_dir, terminal_background, terminal_style,
+        TerminalPalette, TerminalSize, hex, project_session_dir, render, requested_color,
+        terminal_background, terminal_style, to_rgb,
     };
 
     fn palette() -> TerminalPalette {
@@ -942,15 +994,43 @@ mod tests {
         );
     }
 
+    /// Pi asks for the background to pick its light or dark colours; the reply must be qrate's.
     #[test]
-    fn only_authentication_urls_are_auto_opened() {
-        assert!(is_auth_url(
-            "https://accounts.x.ai/oauth2/device?user_code=ABCD"
-        ));
-        assert!(is_auth_url("https://openrouter.ai/auth?callback=true"));
-        assert!(!is_auth_url("https://example.com/a-link-from-model-output"));
-        assert!(!is_auth_url("https://example.com/oauth/device"));
-        assert!(!is_auth_url("javascript:alert(1)"));
+    fn a_colour_query_is_answered_with_qrates_colours() {
+        let palette = palette();
+        assert_eq!(
+            to_rgb(requested_color(257, palette)),
+            to_rgb(palette.background)
+        );
+        assert_eq!(
+            to_rgb(requested_color(256, palette)),
+            to_rgb(palette.foreground)
+        );
+        assert_eq!(to_rgb(requested_color(1, palette)), to_rgb(palette.red));
+        assert_eq!(hex(hsla(0., 0., 1., 1.)), "#ffffff");
+    }
+
+    /// A long link wraps over several rows; each row's piece must still open the whole link,
+    /// never the fragment that happens to be on screen.
+    #[test]
+    fn a_wrapped_hyperlink_keeps_its_whole_target() {
+        let mut terminal = Term::new(Config::default(), &TerminalSize, VoidListener);
+        let mut parser = Processor::<StdSyncHandler>::new();
+        let url = format!(
+            "https://auth.openai.com/oauth/authorize?state={}",
+            "x".repeat(150)
+        );
+        parser.advance(
+            &mut terminal,
+            format!("sign in: \x1b]8;;{url}\x07{url}\x1b]8;;\x07 done").as_bytes(),
+        );
+        let screen = render(&terminal, palette());
+        assert!(screen.links.len() >= 2, "the link spans more than one row");
+        for (range, target) in &screen.links {
+            assert_eq!(target, &url);
+            assert!(url.contains(screen.text[range.clone()].trim_end()));
+        }
+        assert!(!screen.text[screen.links[0].0.clone()].contains("sign in"));
     }
 
     #[cfg(windows)]

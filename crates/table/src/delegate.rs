@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use diagnostics::{DATASET_MAIN, Location};
 use settings::columns::{ColumnType, TextMode};
-use settings::history::{Change, Entry, EntryId, Origin};
+use settings::history::{Change, ColumnFilter, Entry, EntryId, Origin, RowPosition};
 use settings::project::RowId;
 
 use crate::history::{Cells, Col, History, Row, Step, Structure};
@@ -59,6 +59,7 @@ pub(crate) struct SaveSnapshot {
     pub row_ids: Vec<RowId>,
     pub rows: Vec<Vec<SharedString>>,
     pub structure: Structure,
+    pub columns: Vec<settings::project::ProjectColumn>,
     pub history: Vec<Entry>,
     /// The log position `history[0]` holds, counted from when the dataset was loaded.
     pub first: u64,
@@ -727,13 +728,17 @@ impl QrateTableDelegate {
 
     /// What a save writes: the grid, its row identities, its hierarchy, and the log entries not yet
     /// on disk.
-    pub(crate) fn save_snapshot(&self) -> SaveSnapshot {
+    pub(crate) fn save_snapshot(
+        &self,
+        columns: Vec<settings::project::ProjectColumn>,
+    ) -> SaveSnapshot {
         let (headers, rows) = self.grid();
         SaveSnapshot {
             headers,
             row_ids: self.row_ids.clone(),
             rows,
             structure: self.hierarchy.rows(),
+            columns,
             history: self.unsaved.clone(),
             first: self.saved_history,
             edits: self.edits,
@@ -941,10 +946,63 @@ impl QrateTableDelegate {
         );
     }
 
+    /// Follow files already renamed on disk: write the cells that name them, repoint each
+    /// `source_path` in `links` as `(row, link)`, and record it all as one undo step.
+    pub(crate) fn follow_renames(
+        &mut self,
+        cells: Cells,
+        links: Vec<(usize, String)>,
+        files: Vec<(PathBuf, PathBuf)>,
+        origin: Origin,
+    ) {
+        let before = self.hierarchy.rows();
+        for (row, link) in links {
+            if let Some(id) = self.row_id(row)
+                && self.hierarchy.source_file(id).is_some()
+            {
+                self.hierarchy.set_source_file(id, link);
+            }
+        }
+        let after = self.hierarchy.rows();
+        let mut edit = Vec::with_capacity(cells.len());
+        for (row, col, text) in cells {
+            if let Some(was) = self.cell(row, col).cloned().filter(|was| *was != text) {
+                self.set_cell(row, col, text.clone());
+                edit.push((row, col, was, text));
+            }
+        }
+        let cells = Step::Cells(edit);
+        self.edits += 1;
+        let changes = self.changes(&cells);
+        self.log(origin, changes);
+        self.history.push(
+            Step::Batch(vec![
+                cells,
+                Step::Hierarchy { before, after },
+                Step::Files(files),
+            ]),
+            self.undo_cap,
+        );
+    }
+
+    /// The disk renames the next undo or redo calls for, to be made before it is replayed.
+    pub(crate) fn pending_renames(&self, redo: bool) -> Vec<(PathBuf, PathBuf)> {
+        self.history
+            .next(redo)
+            .map_or_else(Vec::new, |step| step.renames(redo))
+    }
+
     /// Push a step that has just been applied onto the undo stack, and log it.
     fn record(&mut self, step: Step, origin: Origin) {
-        self.edits += 1;
+        if step.is_empty() {
+            return;
+        }
         let changes = self.changes(&step);
+        assert!(
+            !changes.is_empty(),
+            "an edit must describe its History changes"
+        );
+        self.edits += 1;
         self.log(origin, changes);
         self.history.push(step, self.undo_cap);
     }
@@ -1030,8 +1088,31 @@ impl QrateTableDelegate {
                 from: *from,
                 to: *to,
             }],
-            // A batch's steps are read one by one, each in its own state, as they are replayed.
-            Step::Batch(_) | Step::Hierarchy { .. } => Vec::new(),
+            Step::Hierarchy { before, after } => {
+                let before: HashMap<_, _> = before
+                    .iter()
+                    .map(|row| (row.row_id, RowPosition::from(row)))
+                    .collect();
+                after
+                    .iter()
+                    .filter_map(|row| {
+                        let previous = before.get(&row.row_id)?;
+                        let current = RowPosition::from(row);
+                        (*previous != current).then(|| Change::RowArranged {
+                            row: row.row_id,
+                            before: previous.clone(),
+                            after: current,
+                        })
+                    })
+                    .collect()
+            }
+            Step::ColumnDescriptions(changes) => changes.clone(),
+            Step::Filter { col, before, after } => vec![Change::ColumnFiltered {
+                column: self.column_name(*col).to_string(),
+                before: before.clone(),
+                after: after.clone(),
+            }],
+            Step::Batch(_) | Step::Files(_) => Vec::new(),
         }
     }
 
@@ -1050,6 +1131,7 @@ impl QrateTableDelegate {
 
     fn replay_logged(&mut self, step: &Step, forward: bool, origin: Origin) -> Vec<Change> {
         self.edits += 1;
+        self.values_generation += 1;
         let mut changes = Vec::new();
         let mut reshaped = Reshaped::default();
         self.replay(step, forward, &mut changes, &mut reshaped);
@@ -1068,7 +1150,12 @@ impl QrateTableDelegate {
         let mut positions = None;
         let mut steps = Vec::new();
         let mut applied = Vec::new();
+        let mut arranged = HashMap::new();
         for change in changes {
+            if let Change::RowArranged { row, after, .. } = change {
+                arranged.insert(*row, after);
+                continue;
+            }
             match self.apply_change(change, &mut positions) {
                 Some(step) => {
                     applied.extend(self.changes(&step));
@@ -1100,6 +1187,27 @@ impl QrateTableDelegate {
                     *after_structure = after.clone();
                 }
             }
+        }
+        if !arranged.is_empty() {
+            // Restore all parents together: partial reparenting can temporarily form a cycle.
+            let before = self.hierarchy.rows();
+            let mut rows = before.to_vec();
+            for row in &mut rows {
+                if let Some(position) = arranged.get(&row.row_id) {
+                    row.parent_id = position.parent;
+                    row.level_key = position.level.clone();
+                    row.sibling_order = position.order;
+                }
+            }
+            self.hierarchy
+                .replace_rows(&self.row_ids, &rows, &self.default_level);
+            self.recompute_visible();
+            let step = Step::Hierarchy {
+                before,
+                after: self.hierarchy.rows(),
+            };
+            applied.extend(self.changes(&step));
+            steps.push(step);
         }
         self.log(Origin::Restore(to), applied.clone());
         self.history.push(Step::Batch(steps), self.undo_cap);
@@ -1221,11 +1329,85 @@ impl QrateTableDelegate {
                 self.shift_column(from, to);
                 Some(Step::ColumnMoved { from, to })
             }
-            Change::Note { .. } => None,
+            Change::ColumnDescribed { column, .. } => {
+                self.data_col(column)?;
+                Some(Step::ColumnDescriptions(vec![change.clone()]))
+            }
+            Change::ColumnFiltered { column, after, .. } => {
+                let col = self.data_col(column)?;
+                let before = self.filter_snapshot(col);
+                self.restore_filter(col, after);
+                Some(Step::Filter {
+                    col,
+                    before,
+                    after: after.clone(),
+                })
+            }
+            Change::RowArranged { .. } | Change::Note { .. } => None,
+        }
+    }
+
+    pub(crate) fn record_descriptions(&mut self, changes: Vec<Change>, origin: Origin) {
+        if !changes.is_empty() {
+            self.values_generation += 1;
+            self.record(Step::ColumnDescriptions(changes), origin);
+        }
+    }
+
+    fn filter_snapshot(&self, col: usize) -> ColumnFilter {
+        let mut excluded: Vec<_> = self.filters[col].iter().map(ToString::to_string).collect();
+        excluded.sort();
+        ColumnFilter {
+            enabled: self.filters_enabled[col],
+            excluded,
+        }
+    }
+
+    fn restore_filter(&mut self, col: usize, state: &ColumnFilter) {
+        self.filters_enabled[col] = state.enabled;
+        self.filters[col] = state.excluded.iter().cloned().map(Into::into).collect();
+        self.recompute_visible();
+        self.values_generation += 1;
+    }
+
+    pub(crate) fn filter_from_agent(
+        &mut self,
+        col: usize,
+        keep: Option<&[SharedString]>,
+        origin: Origin,
+    ) {
+        let before = self.filter_snapshot(col);
+        match keep {
+            Some(keep) => {
+                self.set_column_filter_enabled(col, true);
+                self.set_column_kept(col, keep);
+            }
+            None => self.clear_column_filter(col),
+        }
+        let after = self.filter_snapshot(col);
+        if before != after {
+            self.values_generation += 1;
+            self.record(Step::Filter { col, before, after }, origin);
         }
     }
 
     /// The log entries made since the last save, oldest first.
+    /// Credit every change logged since `since` to `origin`, such as the agent that asked for it.
+    pub(crate) fn credit_since(&mut self, since: usize, origin: &Origin) {
+        for entry in self.unsaved.iter_mut().skip(since) {
+            entry.origin = origin.clone();
+        }
+    }
+
+    /// Move a data column to `to`, as one undo step.
+    pub(crate) fn move_column_to(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.columns.len() || to >= self.columns.len() {
+            return;
+        }
+        self.shift_column(from, to);
+        self.record(Step::ColumnMoved { from, to }, Origin::Structure);
+    }
+
     pub fn unsaved_history(&self) -> &[Entry] {
         &self.unsaved
     }
@@ -1238,6 +1420,14 @@ impl QrateTableDelegate {
     }
 
     /// Forget the unsaved entries the ledger says have reached the file.
+    pub(crate) fn undo_depth(&self) -> usize {
+        self.history.depth()
+    }
+
+    pub(crate) fn squash_undo_since(&mut self, mark: usize) {
+        self.history.squash_since(mark);
+    }
+
     pub(crate) fn history_written(&mut self) {
         let written = self.ledger.written.load(Ordering::SeqCst);
         let count = (written.saturating_sub(self.saved_history) as usize).min(self.unsaved.len());
@@ -1345,6 +1535,11 @@ impl QrateTableDelegate {
             Step::Hierarchy { before, after } => {
                 reshaped.structure = Some(if forward { after } else { before }.clone());
             }
+            Step::ColumnDescriptions(_) => {}
+            Step::Filter { col, before, after } => {
+                self.restore_filter(*col, if forward { after } else { before })
+            }
+            Step::Files(_) => {}
         }
         if forward {
             changes.extend(self.changes(step));
@@ -1636,6 +1831,7 @@ impl QrateTableDelegate {
         file_col: Option<usize>,
         destination_parent: Option<usize>,
         files_root: Option<&Path>,
+        origin: Origin,
     ) -> usize {
         use file_ingest::duplicates::{Parent, Resolution};
 
@@ -1767,14 +1963,18 @@ impl QrateTableDelegate {
                 before_structure,
                 after_structure,
             },
-            Origin::Structure,
+            origin,
         );
         added
     }
 
     /// Append spreadsheet values as one undoable step, preserving the project's existing columns.
     /// The new rows join the end of the roots, which is what reconciling the hierarchy does.
-    pub(crate) fn append_spreadsheet_rows(&mut self, values: Vec<Vec<SharedString>>) -> usize {
+    pub(crate) fn append_spreadsheet_rows(
+        &mut self,
+        values: Vec<Vec<SharedString>>,
+        origin: Origin,
+    ) -> usize {
         if values.is_empty() {
             return 0;
         }
@@ -1801,7 +2001,7 @@ impl QrateTableDelegate {
                 before_structure,
                 after_structure,
             },
-            Origin::Import,
+            origin,
         );
         added
     }
@@ -1970,6 +2170,7 @@ impl QrateTableDelegate {
         edit(&mut self.hierarchy)?;
         let after = self.hierarchy.rows();
         self.record(Step::Hierarchy { before, after }, Origin::Structure);
+        self.values_generation += 1;
         self.recompute_visible();
         Ok(())
     }
@@ -1989,6 +2190,12 @@ impl QrateTableDelegate {
     /// Add a blank column at `at`, named for the user to rename. Returns its name.
     pub(crate) fn insert_column(&mut self, at: usize) -> SharedString {
         let name = self.fresh_column_name();
+        self.insert_named_column(at, name.clone());
+        name
+    }
+
+    /// Add a blank column called `name` at `at`, as one undo step.
+    pub(crate) fn insert_named_column(&mut self, at: usize, name: SharedString) {
         let col = Col {
             column: new_column(name.clone()),
             cells: vec![SharedString::default(); self.rows.len()],
@@ -1997,7 +2204,6 @@ impl QrateTableDelegate {
         };
         self.splice_column(at, &col);
         self.record(Step::ColumnAdded { at, col }, Origin::Structure);
-        name
     }
 
     /// Delete a column and every row's cell in it, as one undo step.
@@ -2056,6 +2262,7 @@ impl QrateTableDelegate {
         if let Some(column) = self.columns.get_mut(col) {
             column.key = name.clone();
             column.name = name;
+            self.values_generation += 1;
         }
     }
 
@@ -3038,7 +3245,14 @@ mod app_tests {
                     file_ingest::duplicates::DuplicatePolicy::Skip,
                 );
                 assert_eq!(
-                    delegate.append_components(&resolved, Some(1), Some(0), None, Some(root)),
+                    delegate.append_components(
+                        &resolved,
+                        Some(1),
+                        Some(0),
+                        None,
+                        Some(root),
+                        Origin::Import
+                    ),
                     2
                 );
                 assert_eq!(delegate.row_count(), 6);
@@ -3100,14 +3314,28 @@ mod app_tests {
 
                 let delegate = state.delegate_mut();
                 let resolved = resolve(&delegate.existing_components(Some(0), Some(root)), first);
-                delegate.append_components(&resolved, Some(1), Some(0), None, Some(root));
+                delegate.append_components(
+                    &resolved,
+                    Some(1),
+                    Some(0),
+                    None,
+                    Some(root),
+                    Origin::Import,
+                );
                 assert_eq!(delegate.row_count(), 6);
 
                 let resolved = resolve(&delegate.existing_components(Some(0), Some(root)), second);
                 assert_eq!(resolved.duplicates(), 2);
                 // Only the new photograph arrives, and it joins the series already in the table.
                 assert_eq!(
-                    delegate.append_components(&resolved, Some(1), Some(0), None, Some(root)),
+                    delegate.append_components(
+                        &resolved,
+                        Some(1),
+                        Some(0),
+                        None,
+                        Some(root),
+                        Origin::Import
+                    ),
                     1
                 );
                 assert_eq!(delegate.row_count(), 7);
@@ -3537,10 +3765,13 @@ mod app_tests {
             state.update(cx, |state, _| {
                 let delegate = state.delegate_mut();
                 assert_eq!(
-                    delegate.append_spreadsheet_rows(vec![
-                        vec!["Photograph".into(), "five".into()],
-                        vec!["Film".into(), "six".into()],
-                    ]),
+                    delegate.append_spreadsheet_rows(
+                        vec![
+                            vec!["Photograph".into(), "five".into()],
+                            vec!["Film".into(), "six".into()],
+                        ],
+                        Origin::Import
+                    ),
                     2
                 );
                 assert_eq!(delegate.cell(4, 1).map(|cell| cell.as_ref()), Some("five"));

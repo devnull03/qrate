@@ -633,6 +633,9 @@ impl DetailsPanel {
                         Change::RowAdded { row, .. } if *row == row_id => {
                             ("Item added".into(), None)
                         }
+                        Change::RowArranged { row, .. } if *row == row_id => {
+                            ("Item rearranged".into(), None)
+                        }
                         Change::RowRemoved { row, .. } if *row == row_id => {
                             ("Item deleted".into(), None)
                         }

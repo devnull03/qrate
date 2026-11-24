@@ -460,6 +460,7 @@ impl Render for ViewsPanel {
                 self.table
                     .update(cx, |table, cx| table.render_files_banner(cx)),
             )
+            .child(table::render_staged_bar(cx))
             .child(
                 self.table
                     .update(cx, |table, cx| table.render_search_bar(cx)),
@@ -534,7 +535,7 @@ mod layout {
     use serde::{Deserialize, Serialize};
 
     use super::ViewMode;
-    use crate::panel_registry::{PANELS, PanelRegistry};
+    use crate::panel_registry::{PANELS, PanelRegistry, is_frontmost};
 
     /// Settings key holding every view's arrangement as one JSON object, keyed by
     /// [`ViewMode::as_str`].
@@ -548,6 +549,10 @@ mod layout {
         name: String,
         placement: String,
         open: bool,
+        #[serde(default)]
+        front: bool,
+        #[serde(default)]
+        size: Option<f32>,
     }
 
     /// `DockPlacement` is the library's type and carries no serde impl we control, so the two
@@ -581,11 +586,15 @@ mod layout {
                     name: "DetailsPanel".into(),
                     placement: "right".into(),
                     open: true,
+                    front: true,
+                    size: None,
                 },
                 PanelSlot {
                     name: "ProblemsPanel".into(),
                     placement: "bottom".into(),
                     open: false,
+                    front: true,
+                    size: None,
                 },
             ]),
         }
@@ -618,6 +627,8 @@ mod layout {
                     name: meta.name.to_string(),
                     placement: placement_name(placement).to_string(),
                     open: area.is_dock_open(placement),
+                    front: is_frontmost(area, placement, meta.name, cx),
+                    size: area.dock_size(placement).map(f32::from),
                 })
             })
             .collect();
@@ -658,6 +669,22 @@ mod layout {
                 });
             }
         }
+        // Every move above brings the moved panel to the front, so the last panel into a shared
+        // dock wins unless the saved front tab is put back afterwards.
+        for slot in &slots {
+            let Some(meta) = PANELS.iter().find(|meta| meta.name == slot.name) else {
+                continue;
+            };
+            let at = parse_placement(&slot.placement, meta.default_placement);
+            if slot.front {
+                PanelRegistry::bring_to_front(meta.name, at, dock_area, window, cx);
+            }
+            if let Some(size) = slot.size {
+                dock_area.update(cx, |area, cx| {
+                    area.set_dock_size(at, gpui::px(size), window, cx)
+                });
+            }
+        }
         crate::Workspace::persist_layout(dock_area, cx);
     }
 }
@@ -666,7 +693,7 @@ mod layout {
 mod tests {
     use std::sync::Arc;
 
-    use gpui::{AppContext as _, TestAppContext};
+    use gpui::{AppContext as _, TestAppContext, px};
     use gpui_component::dock::{BasePanelView, DockArea, DockLayout, DockPlacement, panel_handle};
 
     use crate::panel_registry::PanelRegistry;
@@ -736,6 +763,71 @@ mod tests {
             cx.update(|_, cx| PanelRegistry::placement("DetailsPanel", cx)),
             Some(DockPlacement::Right),
             "Gallery's default arrangement puts Details on the right"
+        );
+    }
+
+    /// Two panels sharing a dock: going to Gallery and back moved the second one home last, and
+    /// every move brings its panel to the front, so the tab the reader had open lost to it.
+    #[gpui::test]
+    fn coming_back_to_a_view_restores_its_front_tab_and_dock_size(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(settings::AppSettings::default());
+            cx.set_global(settings::SettingsPersistence::default());
+            cx.set_global(diagnostics::Diagnostics::default());
+        });
+
+        let (dock_area, cx) =
+            cx.add_window_view(|window, cx| DockArea::new("views-front-test", None, window, cx));
+
+        let panel = cx.update(|window, cx| {
+            let weak = dock_area.downgrade();
+            let panel = cx.new(|cx| ViewsPanel::new(weak.clone(), window, cx));
+            dock_area.update(cx, |area, cx| {
+                let centre: Arc<dyn BasePanelView> = panel_handle(panel.clone());
+                area.set_center(DockLayout::tabs().panel_view(centre, cx), window, cx);
+                let problems: Arc<dyn BasePanelView> =
+                    panel_handle(cx.new(|cx| diagnostics::ProblemsPanel::new(window, cx)));
+                let details: Arc<dyn BasePanelView> =
+                    panel_handle(cx.new(|cx| crate::panels::DetailsPanel::new(window, cx)));
+                area.set_dock(
+                    DockPlacement::Right,
+                    DockLayout::tabs()
+                        .panel_view(problems, cx)
+                        .panel_view(details, cx)
+                        .active_index(1),
+                    window,
+                    cx,
+                );
+                area.set_dock_size(DockPlacement::Right, px(420.), window, cx);
+            });
+            PanelRegistry::sync(&dock_area, cx);
+            panel
+        });
+        let details_in_front = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_, cx| PanelRegistry::visible("DetailsPanel", &dock_area, cx))
+        };
+        assert!(details_in_front(cx));
+
+        cx.update(|window, cx| super::switch(&panel, ViewMode::Gallery, window, cx));
+        cx.update(|window, cx| {
+            dock_area.update(cx, |area, cx| {
+                area.set_dock_size(DockPlacement::Right, px(300.), window, cx)
+            })
+        });
+        cx.update(|window, cx| super::switch(&panel, ViewMode::Table, window, cx));
+
+        assert_eq!(
+            cx.update(|_, cx| PanelRegistry::placement("ProblemsPanel", cx)),
+            Some(DockPlacement::Right)
+        );
+        assert!(
+            details_in_front(cx),
+            "Details was the tab in front before Gallery"
+        );
+        assert_eq!(
+            dock_area.read_with(cx, |area, _| area.dock_size(DockPlacement::Right)),
+            Some(px(420.))
         );
     }
 }

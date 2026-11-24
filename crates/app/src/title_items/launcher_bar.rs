@@ -14,8 +14,9 @@ use window_wrapper::OpenBrowser;
 
 use crate::actions::NewProject;
 use crate::app_menus::{
-    CopyDebugInfo, DiscoverPlugins, ManagePlugins, OpenAbout, OpenLogsFolder, OpenPluginsFolder,
-    OpenSettings, REPO_URL, ReloadPlugins, ReportBug, ReportUxIssue, RequestFeature,
+    CopyBuildInfo, CopyDebugInfo, DiscoverPlugins, ManagePlugins, OpenAbout, OpenLogsFolder,
+    OpenPluginsFolder, OpenSettings, REPO_URL, ReloadPlugins, ReportBug, ReportUxIssue,
+    RequestFeature,
 };
 use crate::title_items::update_notice::UpdateNotice;
 
@@ -71,7 +72,10 @@ impl Render for LauncherBar {
                                     }),
                                 )
                                 .separator()
-                                .menu("Copy Debug Info", Box::new(CopyDebugInfo))
+                                .submenu("Copy Debug Info", window, cx, |menu, _, _| {
+                                    menu.menu("Full Report", Box::new(CopyDebugInfo))
+                                        .menu("Build Info Only", Box::new(CopyBuildInfo))
+                                })
                                 .submenu("Send Feedback", window, cx, |menu, _, _| {
                                     menu.menu("Report a Bug…", Box::new(ReportBug))
                                         .menu("Request a Feature…", Box::new(RequestFeature))

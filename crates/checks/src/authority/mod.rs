@@ -12,6 +12,7 @@
 
 mod geonames;
 mod lcsh;
+pub mod search;
 pub mod source;
 mod wikidata;
 
@@ -661,7 +662,7 @@ fn interpret(
 
 /// Shared blocking client. Building one spins up a runtime and a thread, which is not a thing to
 /// do per request — the same reason `plugin-host` keeps one.
-fn client() -> &'static reqwest::blocking::Client {
+pub(crate) fn client() -> &'static reqwest::blocking::Client {
     static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::blocking::Client::builder()
@@ -673,7 +674,7 @@ fn client() -> &'static reqwest::blocking::Client {
 }
 
 /// Spend one request from the window's budget, or refuse.
-fn take_token() -> bool {
+pub(crate) fn take_token() -> bool {
     static BUCKET: Mutex<Option<(Instant, u32)>> = Mutex::new(None);
     let Ok(mut bucket) = BUCKET.lock() else {
         return false;
@@ -723,6 +724,7 @@ fn offer(location: &Location, text: &str, subject: Option<&str>, cx: &App) -> Ve
                 // The whole cell, with just the rejected value swapped, so a multi-valued
                 // cell keeps the values that were fine.
                 replacement: text.replace(&value, suggestion).into(),
+                agent: None,
             })
         })
         .collect()
@@ -774,6 +776,7 @@ pub fn init(cx: &mut App) {
         SourceActions::register(name, actions, cx);
     }
     diagnostics::AsyncValidators::register("authority", check, cx);
+    capability::register::<search::AuthoritySearchCap>(cx);
 }
 
 #[cfg(test)]

@@ -151,6 +151,19 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
                         ),
                     )
                     .item(
+                        Setting::Dropdown {
+                            key: updater::UPDATE_CHANNEL_KEY,
+                            label: "Update channel",
+                            description: "Stable gets finished releases only. Beta also gets \
+                                          pre-releases to try new features early, and Alpha gets \
+                                          experiments still being shaped. Switching to a steadier \
+                                          channel never installs an older version: it waits for \
+                                          that channel's next release.",
+                            options: updater::UPDATE_CHANNELS,
+                        }
+                        .into_item(cx),
+                    )
+                    .item(
                         SettingItem::new(
                             "Download source",
                             SettingField::input(
@@ -286,16 +299,17 @@ pub fn build_pages(cx: &App) -> Vec<SettingPage> {
         project_page(cx),
         SettingPage::new("Agent")
             .description(
-                "An AI agent you run yourself can read the project open in qrate over a local \
-                 connection. It cannot change a cell — it can only stage findings you accept.",
+                "An AI agent you run yourself can read the project open in qrate through the \
+                 `qrate agent` commands. It cannot change a cell — it can only stage findings \
+                 you accept.",
             )
             .group(
-                divided_group(cx).title("Local bridge").item(
+                divided_group(cx).title("Access").item(
                     Setting::Switch {
-                        key: crate::agent_bridge::AGENT_BRIDGE_KEY,
+                        key: crate::app_control::AGENT_ACCESS_KEY,
                         label: "Allow agents to read this app",
-                        description: "Listens on your own machine only, behind a token that \
-                                      changes every launch. Switch off to close the port now.",
+                        description: "Only programs running as you on this machine can ask. \
+                                      Switch off to refuse every agent command now.",
                     }
                     .into_item(cx),
                 ),
@@ -1941,7 +1955,13 @@ fn descriptions_group(project: &CurrentProject, headers: &[ColumnItem], cx: &App
                             cx.default_global::<Pickers>()
                                 .description_rows
                                 .insert((file, setter_name.to_string()));
-                            CurrentProject::set_column_notes(&setter_name, &notes, cx);
+                            table::describe_column(
+                                &setter_name,
+                                None,
+                                Some(&notes),
+                                settings::history::Origin::Structure,
+                                cx,
+                            );
                         }
                     },
                 ),
@@ -2040,7 +2060,13 @@ fn data_types_group(headers: Vec<ColumnItem>, cx: &App) -> SettingGroup {
                         Rc::new(move |changes: &[(&ColumnItem, bool)], cx: &mut App| {
                             for (column, want) in changes {
                                 let ty = if *want { ty } else { columns::ColumnType::Text };
-                                CurrentProject::set_column_type(&column.name, ty.as_str(), cx);
+                                table::describe_column(
+                                    &column.name,
+                                    Some(ty.as_str()),
+                                    None,
+                                    settings::history::Origin::Structure,
+                                    cx,
+                                );
                             }
                         }),
                     ),

@@ -121,12 +121,13 @@ dependencies = [
 
 [[package]]
 name = "agent-runtime"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "alacritty_terminal",
  "components",
  "gpui-pre",
  "log",
+ "serde_json",
  "settings",
  "windows 0.62.2",
 ]
@@ -155,11 +156,12 @@ dependencies = [
 
 [[package]]
 name = "ai"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "anyhow",
  "async-trait",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -247,6 +249,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "anstream"
+version = "0.6.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43d5b281e737544384e969a5ccad3f1cdd24b48086a0fc1b2a5262a26b8f4f4a"
+dependencies = [
+ "anstyle",
+ "anstyle-parse",
+ "anstyle-query",
+ "anstyle-wincon",
+ "colorchoice",
+ "is_terminal_polyfill",
+ "utf8parse",
+]
+
+[[package]]
+name = "anstyle"
+version = "1.0.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
+
+[[package]]
+name = "anstyle-parse"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e7644824f0aa2c7b9384579234ef10eb7efb6a0deb83f9630a49594dd9c15c2"
+dependencies = [
+ "utf8parse",
+]
+
+[[package]]
+name = "anstyle-query"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "anstyle-wincon"
+version = "3.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
+dependencies = [
+ "anstyle",
+ "once_cell_polyfill",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -254,12 +306,13 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "app"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "agent-runtime",
  "ai",
  "anyhow",
  "async-channel",
+ "capability",
  "checks",
  "clustering",
  "cocoa 0.26.0",
@@ -267,6 +320,7 @@ dependencies = [
  "data-exchange",
  "diagnostics",
  "dirs 6.0.0",
+ "getrandom 0.3.4",
  "gpui-component",
  "gpui-kit-assets",
  "gpui-pre",
@@ -1032,6 +1086,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "capability"
+version = "0.7.0-beta.5"
+dependencies = [
+ "ai",
+ "gpui-pre",
+ "log",
+ "schemars",
+ "serde",
+ "serde_json",
+ "settings",
+]
+
+[[package]]
 name = "caseless"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1117,13 +1184,16 @@ dependencies = [
 
 [[package]]
 name = "checks"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
+ "ai",
+ "capability",
  "diagnostics",
  "edtf",
  "gpui-pre",
  "log",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "settings",
@@ -1166,8 +1236,67 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap"
+version = "4.5.53"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9e340e012a1bf4935f5282ed1436d1489548e8f72308207ea5df0e23d2d03f8"
+dependencies = [
+ "clap_builder",
+ "clap_derive",
+]
+
+[[package]]
+name = "clap_builder"
+version = "4.5.53"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d76b5d13eaa18c901fd2f7fca939fefe3a0727a953561fefdf3b2922b8569d00"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "clap_lex",
+ "strsim",
+]
+
+[[package]]
+name = "clap_complete"
+version = "4.5.67"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1248e420506b523e97ebd7b610656114abadbe73b04279a86768a12ce1860837"
+dependencies = [
+ "clap",
+]
+
+[[package]]
+name = "clap_derive"
+version = "4.5.49"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a0b5487afeab2deb2ff4e03a807ad1a03ac532ff5a2cee5d86884440c7f7671"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "clap_lex"
+version = "0.7.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
+
+[[package]]
+name = "clap_mangen"
+version = "0.2.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e30ffc187e2e3aeafcd1c6e2aa416e29739454c0ccaa419226d5ecd181f2d78"
+dependencies = [
+ "clap",
+ "roff",
+]
+
+[[package]]
 name = "clustering"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "caseless",
  "diagnostics",
@@ -1265,6 +1394,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 
 [[package]]
+name = "colorchoice"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
+
+[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1276,7 +1411,7 @@ dependencies = [
 
 [[package]]
 name = "components"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -1758,7 +1893,7 @@ checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 
 [[package]]
 name = "data-exchange"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "base64",
  "calamine",
@@ -1874,7 +2009,7 @@ dependencies = [
 
 [[package]]
 name = "diagnostics"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "gpui-component",
  "gpui-pre",
@@ -2355,7 +2490,7 @@ checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "file-ingest"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "tempfile",
 ]
@@ -4263,6 +4398,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "is_terminal_polyfill"
+version = "1.70.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+
+[[package]]
 name = "itertools"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5800,7 +5941,7 @@ dependencies = [
 
 [[package]]
 name = "onboarding"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "diagnostics",
  "gpui-component",
@@ -5815,6 +5956,12 @@ name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
+
+[[package]]
+name = "once_cell_polyfill"
+version = "1.70.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "oo7"
@@ -6216,7 +6363,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "plugin-api"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "gpui-pre",
  "serde_json",
@@ -6225,7 +6372,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-host"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "diagnostics",
  "gpui-pre",
@@ -6240,7 +6387,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-package"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -6396,7 +6543,7 @@ dependencies = [
 
 [[package]]
 name = "preview"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -6459,7 +6606,7 @@ dependencies = [
 
 [[package]]
 name = "project-wizard"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "anyhow",
  "data-exchange",
@@ -6547,6 +6694,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f6d64c71eb498fe9eae14ce4ec935c555749aef511cca85b5568910d6e48001"
 dependencies = [
  "bytemuck",
+]
+
+[[package]]
+name = "qrate-cli"
+version = "0.7.0-beta.5"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "clap_mangen",
+ "dirs 6.0.0",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -7113,6 +7272,12 @@ dependencies = [
  "symphonia",
  "thiserror 2.0.18",
 ]
+
+[[package]]
+name = "roff"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
 name = "ropey"
@@ -7740,7 +7905,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7979,7 +8144,7 @@ dependencies = [
 
 [[package]]
 name = "spellcheck"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "diagnostics",
  "gpui-pre",
@@ -8531,15 +8696,18 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "ai",
  "anyhow",
+ "async-channel",
  "base64",
+ "capability",
  "clustering",
  "components",
  "data-exchange",
  "diagnostics",
+ "dunce",
  "file-ingest",
  "gpui-base",
  "gpui-component",
@@ -8551,6 +8719,7 @@ dependencies = [
  "preview",
  "qrate-export",
  "regex",
+ "schemars",
  "serde",
  "serde_json",
  "settings",
@@ -9246,7 +9415,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "updater"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -9352,6 +9521,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
+name = "utf8parse"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
+
+[[package]]
 name = "uuid"
 version = "1.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9440,7 +9615,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "visual-search"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -10018,7 +10193,7 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "window-wrapper"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "gpui-component",
  "gpui-pre",
@@ -10820,7 +10995,7 @@ dependencies = [
 
 [[package]]
 name = "workspace"
-version = "0.6.0"
+version = "0.7.0-beta.5"
 dependencies = [
  "agent-runtime",
  "components",

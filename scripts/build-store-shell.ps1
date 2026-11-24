@@ -10,8 +10,19 @@ if (-not (Test-Path -LiteralPath $vswhere)) { throw 'Visual Studio vswhere.exe w
 $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (-not $installation) { throw 'The Visual Studio x64 C++ build tools are required for qrate-shell.dll.' }
 $devcmd = Join-Path $installation 'Common7\Tools\VsDevCmd.bat'
-$environment = & $env:ComSpec /d /s /c "`"`"$devcmd`" -no_logo -arch=x64 -host_arch=x64 >nul && set`""
-if ($LASTEXITCODE -ne 0) { throw 'Could not initialize the x64 Visual Studio environment.' }
+# Run from a batch file: a quoted path inside a quoted cmd.exe command line does not survive
+# PowerShell's native argument passing.
+$probe = Join-Path ([IO.Path]::GetTempPath()) ('qrate-vsdevcmd-' + [guid]::NewGuid().ToString('N') + '.cmd')
+Set-Content -LiteralPath $probe -Encoding ascii -Value @(
+  "@call `"$devcmd`" -no_logo -arch=x64 -host_arch=x64 >nul || exit /b 1"
+  '@set'
+)
+try {
+  $environment = & $env:ComSpec /d /c $probe
+  if ($LASTEXITCODE -ne 0) { throw 'Could not initialize the x64 Visual Studio environment.' }
+} finally {
+  Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+}
 foreach ($line in $environment) {
   if ($line -match '^([^=]+)=(.*)$') {
     [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')

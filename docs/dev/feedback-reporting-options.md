@@ -38,7 +38,7 @@ qrate already has these local support features:
 - Panic messages and backtraces in the session log.
 - App version, commit, operating system, hardware, project size, plugin status, and a short log tail.
 - Home directory redaction.
-- **Copy Debug Info** and **Open Logs Folder** actions.
+- **Copy Debug Info** (full report, or build info only) and **Open Logs Folder** actions.
 - **Help ▸ Send Feedback ▸ Report a Bug…**, **Request a Feature…**, and **Report a UI/UX Issue…**, plus the title-bar **Feedback** button, all opening the hosted form.
 - **Help ▸ GitHub ▸ Issues**, which opens the public issue list.
 

@@ -308,7 +308,7 @@ impl PanelRegistry {
     /// order is untouched and `activate` is the whole point. There is still no public "select
     /// this tab" on `DockArea` — `TabGroup::select_tab` needs the group entity, which the area
     /// keeps to itself.
-    fn bring_to_front(
+    pub(crate) fn bring_to_front(
         name: &str,
         placement: DockPlacement,
         dock_area: &Entity<DockArea>,
@@ -442,7 +442,12 @@ fn needs_edge_tab_normalization(area: &DockArea, cx: &App) -> bool {
 /// Whether `name` is showing in one of a dock's tab groups. This is called by status buttons on
 /// every render, so answer during the pane-tree walk rather than allocating a list of every
 /// frontmost panel first.
-fn is_frontmost(area: &DockArea, placement: DockPlacement, name: &str, cx: &App) -> bool {
+pub(crate) fn is_frontmost(
+    area: &DockArea,
+    placement: DockPlacement,
+    name: &str,
+    cx: &App,
+) -> bool {
     let Some(tree) = area.layout(placement) else {
         return false;
     };

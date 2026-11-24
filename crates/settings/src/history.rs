@@ -36,6 +36,11 @@ pub enum Origin {
     Spelling,
     /// A fix from the Fixes menu or the Problems panel, named by what offered it.
     Fix(String),
+    /// A change an agent made or drafted, named for the History panel ("Add 3 rows").
+    Agent {
+        agent: String,
+        fix: String,
+    },
     /// Rows or columns added, removed, renamed, or moved.
     Structure,
     /// Rows appended from a local spreadsheet.
@@ -57,11 +62,57 @@ impl Origin {
             Origin::Details => "Details panel".into(),
             Origin::Spelling => "Spelling fix".into(),
             Origin::Fix(fix) => format!("Fix: {fix}"),
+            // Entries saved by 0.7.0-beta.1 start in lower case ("rewrite Digital ID").
+            Origin::Agent { fix, .. } => {
+                let mut chars = fix.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_uppercase().chain(chars).collect())
+                    .unwrap_or_default()
+            }
             Origin::Structure => "Rows and columns".into(),
             Origin::Import => "Spreadsheet import".into(),
             Origin::Undo => "Undo".into(),
             Origin::Redo => "Redo".into(),
             Origin::Restore(id) => format!("Restored to #{id}"),
+        }
+    }
+}
+
+/// Who a change is credited to: the archivist who accepted it, and the agent that drafted it.
+pub fn credit(author: Option<&str>, origin: &Origin) -> Option<String> {
+    match (author, origin) {
+        (Some(author), Origin::Agent { agent, .. }) => Some(format!("{author} using {agent}")),
+        (None, Origin::Agent { agent, .. }) => Some(format!("using {agent}")),
+        (author, _) => author.map(str::to_owned),
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColumnDescription {
+    pub data_type: String,
+    pub notes: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColumnFilter {
+    pub enabled: bool,
+    pub excluded: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RowPosition {
+    pub parent: Option<RowId>,
+    pub level: String,
+    pub order: i64,
+}
+
+impl From<&crate::project::RowStructure> for RowPosition {
+    fn from(row: &crate::project::RowStructure) -> Self {
+        Self {
+            parent: row.parent_id,
+            level: row.level_key.clone(),
+            order: row.sibling_order,
         }
     }
 }
@@ -103,6 +154,21 @@ pub enum Change {
         column: String,
         from: usize,
         to: usize,
+    },
+    RowArranged {
+        row: RowId,
+        before: RowPosition,
+        after: RowPosition,
+    },
+    ColumnDescribed {
+        column: String,
+        before: ColumnDescription,
+        after: ColumnDescription,
+    },
+    ColumnFiltered {
+        column: String,
+        before: ColumnFilter,
+        after: ColumnFilter,
     },
     /// `None` on either side is no note there. A row-less or column-less note widens to the whole
     /// column or row, as it does in `__notes`.
@@ -174,6 +240,29 @@ impl Change {
                 from: to,
                 to: from,
             },
+            Change::RowArranged { row, before, after } => Change::RowArranged {
+                row,
+                before: after,
+                after: before,
+            },
+            Change::ColumnDescribed {
+                column,
+                before,
+                after,
+            } => Change::ColumnDescribed {
+                column,
+                before: after,
+                after: before,
+            },
+            Change::ColumnFiltered {
+                column,
+                before,
+                after,
+            } => Change::ColumnFiltered {
+                column,
+                before: after,
+                after: before,
+            },
             Change::Note {
                 row,
                 column,
@@ -193,10 +282,14 @@ impl Change {
     pub fn key(&self) -> (Option<RowId>, Option<&str>) {
         match self {
             Change::Cell { row, column, .. } => (Some(*row), Some(column)),
-            Change::RowAdded { row, .. } | Change::RowRemoved { row, .. } => (Some(*row), None),
+            Change::RowAdded { row, .. }
+            | Change::RowRemoved { row, .. }
+            | Change::RowArranged { row, .. } => (Some(*row), None),
             Change::ColumnAdded { column, .. }
             | Change::ColumnRemoved { column, .. }
             | Change::ColumnMoved { column, .. }
+            | Change::ColumnDescribed { column, .. }
+            | Change::ColumnFiltered { column, .. }
             | Change::ColumnRenamed { after: column, .. } => (None, Some(column)),
             Change::Note { row, column, .. } => (*row, column.as_deref()),
         }
@@ -601,7 +694,10 @@ mod tests {
 
         let typed = Entry::new(Origin::Typed, vec![edit("one", "One")], Some("rk".into()));
         let fixed = Entry::new(
-            Origin::Fix("Use “One.”".into()),
+            Origin::Agent {
+                agent: "pi".into(),
+                fix: "Use “One.”".into(),
+            },
             vec![edit("One", "One.")],
             None,
         );

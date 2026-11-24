@@ -80,6 +80,7 @@ done
 # A prerelease tag decides the channel, not GitHub's prerelease flag — the flag is set by hand and
 # an updater must not take its trust boundary from something a mis-click can change.
 case "$VERSION" in
+  *-alpha*) channel="alpha" ;;
   *-*) channel="beta" ;;
   *) channel="stable" ;;
 esac
