@@ -27,4 +27,9 @@ if not re.fullmatch(r"[0-9a-fA-F]{64}", args.sha256):
 text = args.cask.read_text(encoding="utf-8")
 text = replace_once(r'^  version "[^"\r\n]+"$', f'  version "{args.version}"', text, "version")
 text = replace_once(r'^  sha256 "[^"\r\n]+"$', f'  sha256 "{args.sha256.lower()}"', text, "sha256")
+
+# From 0.7.0 the app bundle carries the `qrate` command; link it onto PATH.
+CLI = '  binary "#{appdir}/qrate.app/Contents/MacOS/qrate-cli", target: "qrate"'
+if tuple(map(int, args.version.split("."))) >= (0, 7, 0) and CLI not in text:
+    text = replace_once(r'^  app "qrate\.app"$', '  app "qrate.app"\n' + CLI, text, "app")
 args.cask.write_text(text, encoding="utf-8", newline="")
