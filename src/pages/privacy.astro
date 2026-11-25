@@ -8,19 +8,31 @@ const CONTACT = 'qrate@dvnl.work';
 <Legal
   title="Privacy policy"
   eyebrow="Privacy"
-  updated="26 September 2026"
-  description="qrate is a desktop app with no accounts or usage analytics. Learn what stays on your device and what optional features send to other providers."
+  updated="25 November 2026"
+  description="qrate is a desktop app with no accounts or usage analytics. Learn what stays on your device, and what the optional Google Sheets sync and AI assistant send to other providers."
   lede="Your catalogue stays on your own disk unless you choose a feature that shares selected data with another service."
 >
   <h2>The short version</h2>
   <p>
     The application has no accounts, no usage analytics and no automatic crash reporting. Your
-    project stays on your device. If you export to Google Sheets, submit feedback with details, use a
-    plugin, or use the optional AI agent, the information you choose to share may go to another
-    provider. qrate also checks release and plugin catalog metadata, and downloads components when
-    you request them.
-    Those network requests contain no project records. This website counts page views without
-    cookies; that is the one difference between the website and the application.
+    project stays on your device. Two optional features send project data to another provider, and
+    both are off until you turn them on:
+  </p>
+  <ul>
+    <li>
+      <strong>Google Sheets export and sync</strong> sends the rows and columns you export to Google,
+      under your own Google account. See <a href="#google">Google Sheets</a>.
+    </li>
+    <li>
+      <strong>The AI assistant</strong> sends your prompts, and the project information it reads to
+      answer them, to an AI model provider: OpenRouter by default. See <a href="#assistant">AI assistant</a>.
+    </li>
+  </ul>
+  <p>
+    Submitting feedback with details, or using a plugin, can also share information you choose with
+    another service. qrate also checks release and plugin catalog metadata, and downloads components
+    when you request them. Those network requests contain no project records. This website counts
+    page views without cookies; that is the one difference between the website and the application.
   </p>
 
   <h2>What qrate collects</h2>
@@ -88,11 +100,11 @@ const CONTACT = 'qrate@dvnl.work';
     If you choose Google Sheets export, the page asks you to sign in to Google and sends the
     selected rows and columns to Google for that export.
   </p>
-  <h2>Google user data</h2>
+  <h2 id="google">Google Sheets</h2>
   <p>
-    qrate can export a project to a Google Sheet. That is the only feature that touches a Google
-    account, and it is optional. Nothing happens until you start the export and consent in your
-    browser.
+    qrate can export a project to a new Google Sheet, or sync it to a spreadsheet you already own.
+    Both are optional and off by default. They appear only after you turn on Google Sheets in <strong>Settings ▸ Google</strong>, and nothing reaches Google until you start an export or sync
+    and consent in your browser. Importing a public sheet by link does not use a Google account.
   </p>
   <ul>
     <li>
@@ -108,12 +120,13 @@ const CONTACT = 'qrate@dvnl.work';
       own machine.
     </li>
     <li>
-      <strong>What is sent:</strong> the rows and columns of the project you chose to export, sent
-      directly from your computer to Google's API in order to create the sheet you asked for.
+      <strong>What is sent:</strong> the rows, columns and cell notes of the project you export or
+      sync, sent directly from your computer to Google's API. A sync replaces the contents of the
+      chosen spreadsheet's first tab, and qrate asks you to confirm before it writes.
     </li>
     <li>
       <strong>Where it goes:</strong> straight to Google. The data does not pass through any server
-      operated by this project, because there is no such server.
+      operated by this project.
     </li>
     <li>
       <strong>Sign-in:</strong> a loopback redirect with PKCE. qrate opens your browser, you consent
@@ -121,20 +134,22 @@ const CONTACT = 'qrate@dvnl.work';
       sees your Google password.
     </li>
     <li>
-      <strong>Tokens:</strong> qrate keeps the access and refresh tokens Google issues on your own
-      computer, so it does not ask for consent on every export. It never sends them to us.
+      <strong>Credentials:</strong> qrate keeps the refresh token Google issues in your operating
+      system's credential store (Windows Credential Manager, macOS Keychain, or the Secret Service on
+      Linux), so it does not ask for consent on every export. It never sends the token to us.
     </li>
     <li>
       <strong>Retention and deletion:</strong> we hold no copy of your Google data, so there is
-      nothing for us to delete. Removing qrate's access from your Google account, or deleting the
-      local qrate data directory, ends it completely.
+      nothing for us to delete. Turning Google Sheets off in <strong>Settings ▸ Google</strong>
+      deletes the stored sign-in from your computer. You can also remove qrate's access from your
+      Google account.
     </li>
   </ul>
   <p>
     You can withdraw consent at any time from your Google account's <a
       href="https://myaccount.google.com/permissions"
       rel="noopener">third-party access page</a
-    >. Sheets qrate has already created stay in your Drive and remain yours.
+    >. Sheets qrate has already created or synced stay in your Drive and remain yours.
   </p>
 
   <h2>Limited Use</h2>
@@ -172,24 +187,92 @@ const CONTACT = 'qrate@dvnl.work';
     <li>
       <strong>Preview tools.</strong> PDFium and ffmpeg run locally. They send nothing anywhere.
     </li>
+    <li>
+      <strong>Visual search.</strong> Its model is downloaded from Hugging Face when you turn visual
+      search on, and then runs entirely on your computer. No image or search text leaves it.
+    </li>
   </ul>
 
-  <h2>Optional AI agent</h2>
+  <h2 id="assistant">AI assistant</h2>
   <p>
-    qrate includes an optional terminal agent that runs on your device. It starts with OpenRouter's
-    <code>openrouter/free</code> model router. If you use the agent, your prompts and the project
-    information you ask it to read can be sent from your device to OpenRouter and the model provider
-    that handles the request. Those prompts and responses do not pass through qrate's servers.
-    OpenRouter and the model provider apply their own privacy, retention and model-use terms.
+    qrate has an optional AI assistant: Pi, an open-source agent that runs on your computer in
+    qrate's Agent panel. The base downloads, and the packages in the Microsoft Store, WinGet and
+    Homebrew, do not include it. qrate downloads it from GitHub only when you choose to install it.
+    The assistant does nothing until you open <strong>Agent ▸ Terminal</strong> and send it a
+    message.
   </p>
   <p>
-    The agent can read project data through a local connection that is protected by a token renewed
-    each time qrate starts. It can stage suggested findings for you to accept or ignore; it cannot
-    change a cell through that connection. The embedded Pi agent stores session history, settings
-    and any sign-in credential in a local profile under qrate's data folder. qrate may pass a
-    credential from your existing Pi OpenRouter login to the agent process for that session. It
-    does not send the credential to qrate servers. Do not include sensitive data in a prompt unless
-    you have reviewed the provider's terms.
+    The assistant itself runs on your device, but the AI model it talks to does not. To answer you,
+    the assistant sends requests to an AI model provider over the internet.
+  </p>
+  <ul>
+    <li>
+      <strong>Who processes it:</strong> by default <a href="https://openrouter.ai/privacy"
+        rel="noopener">OpenRouter</a
+      >, using its <code>openrouter/free</code> router, which passes each request on to one of the
+      model providers it works with. If you choose another model or provider in Pi, requests go to
+      that provider instead. OpenRouter and the model provider handle the data under their own
+      privacy, retention and model-training terms. Some providers, particularly of free models, may
+      keep prompts or use them to improve their models; OpenRouter lists each provider's policy and
+      lets a signed-in account restrict which providers it uses.
+    </li>
+    <li>
+      <strong>What is sent:</strong> your messages, the conversation so far, and whatever project
+      information the assistant reads to answer you. That can include column names, cell values,
+      notes, change history, the problems qrate found, image previews of linked files, and the
+      contents of files outside the project that you allowed it to read. The requests go from your
+      computer to the provider. They do not pass through qrate's servers, and we never see them.
+    </li>
+    <li>
+      <strong>Sign-in and credentials:</strong> you can sign in to OpenRouter in the assistant with <code>/login openrouter</code>. Pi keeps that credential in qrate's private Pi profile on your
+      computer. If you already signed in to OpenRouter with your own copy of Pi, qrate can let the
+      assistant use that sign-in for the session. It passes it to the assistant in memory, and never
+      writes it to qrate's files or logs. No credential is ever sent to us.
+    </li>
+    <li>
+      <strong>What stays on your computer:</strong> the conversation history of each project, Pi's
+      settings and its sign-in, all in the <code>pi-agent</code> folder in qrate's data folder
+      (<code>%LOCALAPPDATA%\qrate</code> on Windows, <code>~/Library/Application Support/qrate</code>
+      on macOS, <code>~/.local/share/qrate</code> on Linux).
+    </li>
+    <li>
+      <strong>Retention and deletion:</strong> delete the <code>pi-agent</code> folder to remove the
+      conversations, settings and sign-in from your computer. Removing the assistant under <strong>Settings ▸ Components</strong> removes its program but leaves that folder. What a
+      provider keeps is governed by its own terms; OpenRouter's covers deleting your OpenRouter
+      account and its data.
+    </li>
+  </ul>
+  <p>The assistant is limited to what you allow:</p>
+  <ul>
+    <li>
+      Every project starts in <strong>review</strong> mode, where the assistant can read the project
+      and propose changes as drafts you accept or reject. You choose <strong>edit</strong> or <strong>connected</strong> mode yourself with <code>/qrate-mode</code>.
+    </li>
+    <li>
+      Changes it makes in edit mode are recorded in History, credited to you using the assistant,
+      and can be undone. Deleting rows or columns always shows you its reason and waits for you to
+      confirm.
+    </li>
+    <li>
+      It reads a file or folder outside the project only after you approve that path. Approvals last
+      until qrate closes, and you can revoke them at any time.
+    </li>
+    <li>
+      In connected mode it can look terms up in public authority files (id.loc.gov, Wikidata and
+      GeoNames), and only after you allow each one. Those lookups send the search terms, not your
+      project.
+    </li>
+    <li>
+      It asks before running any shell command or writing a file. On Linux and macOS, an approved
+      command runs in a sandbox that sees only the project, a temporary folder and the files you
+      allowed.
+    </li>
+  </ul>
+  <p>
+    Other AI agents can read the open project through the <code>qrate</code> command-line tool, over
+    a local connection protected by a token that is renewed each time qrate starts. Those agents are
+    programs you run yourself, and their own providers' terms apply. Do not include sensitive
+    information in a prompt unless you have reviewed the provider's terms.
   </p>
 
   <h2>Children</h2>

@@ -38,14 +38,15 @@ ffmpeg separately with `brew install ffmpeg`.
 
 ## Windows package managers
 
-The WinGet package will use the per-machine MSI. Its first community manifest still needs to be
-submitted and accepted. Once it is listed, install it with:
+The WinGet package installs the base per-machine MSI: no PDF preview, video preview or assistant
+until you add them under **Settings ▸ Components**. Its first community manifest is under review.
+Once it is listed, install it with:
 
 ```powershell
 winget install --id devnull03.qrate --exact
 ```
 
-The Microsoft Store package is in preparation. Its first listing must be submitted and certified
+The Microsoft Store package is also the base app. It is in preparation. Its first listing must be submitted and certified
 before it can be installed from the Store. Use a GitHub Releases download until then.
 
 ## Run from source
