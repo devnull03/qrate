@@ -749,6 +749,24 @@ jobs:
 
   # Store signs the package after certification. Keep the unsigned upload as a workflow artifact,
   # separate from the established GitHub release downloads.
+  # A release published with GITHUB_TOKEN starts no other workflow, so these are called directly.
+  package-managers:
+    needs: [version, release]
+    if: ${{ inputs.publish && !contains(needs.version.outputs.version, '-') }}
+    uses: ./.github/workflows/package-managers.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}
+    secrets: inherit
+
+  redeploy-site:
+    needs: release
+    if: ${{ inputs.publish }}
+    permissions:
+      contents: read
+      deployments: write
+    uses: ./.github/workflows/redeploy-site-on-release.yml
+    secrets: inherit
+
   submit-store:
     needs: [version, build-windows, release]
     if: ${{ !contains(needs.version.outputs.version, '-') && vars.QRATE_STORE_SUBMISSIONS_ENABLED == 'true' && vars.QRATE_STORE_APPLICATION_ID != '' && vars.QRATE_STORE_IDENTITY_NAME != '' && vars.QRATE_STORE_IDENTITY_PUBLISHER != '' && vars.QRATE_STORE_PUBLISHER_DISPLAY_NAME != '' }}

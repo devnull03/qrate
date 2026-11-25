@@ -8,6 +8,12 @@ on:
       tag:
         description: Stable release tag to publish, such as v0.6.0
         required: true
+  workflow_call:
+    inputs:
+      tag:
+        description: Stable release tag to publish, such as v0.6.0
+        required: true
+        type: string
 
 env:
   TAG: ${{ github.event.release.tag_name || inputs.tag }}
