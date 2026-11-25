@@ -77,7 +77,11 @@ A `.qrate` file stores the collection grid, settings, notes, and project metadat
 
 Visual search is off until you download its model, and it runs entirely on your machine: no image and no search text is sent anywhere. The model is stored with qrate's data, and each project keeps its own index inside its `.qrate` file.
 
-qrate works without an account. Google Sheets integration is off until you enable it in **Settings ▸ Google**; sign-in happens on your machine, and qrate only accesses sheets it creates or you select. Plugins run locally, so install them only from sources you trust.
+qrate works without an account. Google Sheets export and sync is off until you enable it in **Settings ▸ Google**. Sign-in happens in your browser, the sign-in is kept in your system's credential store, and qrate only accesses sheets it creates or you select. Exported rows and columns go from your computer straight to Google.
+
+The AI assistant is optional and is not part of the base download. It runs on your computer, but the AI model it uses does not: your messages and the project information it reads to answer them (cell values, notes, history, image previews and files you allow) are sent to an AI model provider, OpenRouter by default, under that provider's terms. Its conversations and sign-in stay in qrate's data folder until you delete them. It starts in review mode, where it can only propose changes for you to accept. Plugins run locally, so install them only from sources you trust.
+
+The [privacy policy](https://qrate.dvnl.work/privacy) covers what each feature sends, to whom, and how to delete it.
 
 ## Learn more
 
