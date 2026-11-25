@@ -338,6 +338,22 @@ jobs:
             -d "HasFfmpeg=$hasFfmpeg" `
             -o "dist\qrate-$ver-x86_64.msi"
           if ($LASTEXITCODE -ne 0) { throw "wix build failed ($LASTEXITCODE)" }
+          # The base MSI, which winget installs: no PDFium, ffmpeg or Pi, which qrate installs on first use.
+          @{ schema = 1; kind = "windows-msi"; packaged_version = $ver; flavor = "base" } |
+            ConvertTo-Json | Set-Content -Encoding utf8 dist/qrate-install-msi-base.json
+          wix build scripts\installer.wxs -arch x64 -ext WixToolset.UI.wixext `
+            -d "Version=$vi" `
+            -d "LicenseRtf=$PWD\dist\license.rtf" `
+            -d "SrcExe=$PWD\dist\portable\qrate.exe" `
+            -d "SrcDir=$PWD\dist\portable" `
+            -d "IconFile=$PWD\assets\icons\app-icon.ico" `
+            -d "HasPdfium=0" `
+            -d "HasFfmpeg=0" `
+            -d "HasAgent=0" `
+            -d "MarkerFile=$PWD\dist\qrate-install-msi-base.json" `
+            -o "dist\qrate-$ver-base-x86_64.msi"
+          if ($LASTEXITCODE -ne 0) { throw "wix build (base) failed ($LASTEXITCODE)" }
+          Remove-Item dist/qrate-install-msi-base.json
           Remove-Item -Recurse -Force dist/portable
 
       - name: Package unsigned Microsoft Store MSIX
@@ -369,6 +385,31 @@ jobs:
             ! grep -q "$part" base.txt || { echo "::error::the base installer carries $part"; exit 1; }
           done
           rm full.txt base.txt
+
+      # An MSI keeps its files under internal IDs; its File table is where the real names are.
+      - name: Check what each MSI carries
+        shell: pwsh
+        run: |
+          $ver = "${{ needs.version.outputs.version }}"
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          function Names($msi) {
+            $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @((Resolve-Path $msi).Path, 0))
+            $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @('SELECT `FileName` FROM `File`'))
+            $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+            $names = @()
+            while ($record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)) {
+              $names += ($record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, 1) -split '\|')[-1]
+            }
+            $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null)
+            $names
+          }
+          $full = Names "dist/qrate-$ver-x86_64.msi"
+          $base = Names "dist/qrate-$ver-base-x86_64.msi"
+          foreach ($part in 'pdfium.dll', 'ffmpeg.exe', 'pi.exe') {
+            if ($full -notcontains $part) { throw "the full MSI is missing $part" }
+            if ($base -contains $part) { throw "the base MSI carries $part" }
+          }
+          if ($base -notcontains 'qrate.exe') { throw "the base MSI is missing qrate.exe" }
 
       - name: Check NSIS install, upgrade and uninstall leave PATH exact
         shell: pwsh
@@ -682,6 +723,8 @@ jobs:
             msiexec /i qrate-${{ needs.version.outputs.version }}-x86_64.msi /quiet /norestart
             ```
             Upgrades in place on top of any earlier MSI install; downgrading is blocked.
+            `*-base-x86_64.msi` is the same per-machine package without PDF preview, video preview
+            or the assistant's runtime; WinGet installs it.
 
             ### File previews
             PDF previews need PDFium, which the full downloads carry and the base ones install on

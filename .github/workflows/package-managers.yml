@@ -112,7 +112,7 @@ jobs:
             throw "WinGet updates require a stable vX.Y.Z tag: $env:RELEASE_TAG"
           }
           $version = $env:RELEASE_TAG.Substring(1)
-          $installerUrl = "https://github.com/devnull03/qrate/releases/download/$($env:RELEASE_TAG)/qrate-$version-x86_64.msi"
+          $installerUrl = "https://github.com/devnull03/qrate/releases/download/$($env:RELEASE_TAG)/qrate-$version-base-x86_64.msi"
           $installer = "$installerUrl|x64|machine"
           $tool = Join-Path $env:RUNNER_TEMP 'wingetcreate.exe'
           Invoke-WebRequest -Uri 'https://aka.ms/wingetcreate/latest' -OutFile $tool
