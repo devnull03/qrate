@@ -1,0 +1,118 @@
+---
+title: Set up columns for your collection
+description: Tell qrate what each column holds, dates, identifiers, filenames, subjects, so its checks catch real mistakes and leave correct values alone.
+qrateVersion: 0.7.1
+series: start-here
+order: 3
+published: 2026-11-26
+tags: [basics, columns]
+related:
+  - { label: 'Columns', href: '/docs/columns' }
+  - { label: 'Diagnostics', href: '/docs/diagnostics' }
+  - { label: 'Projects: column configuration', href: '/docs/projects#create-a-project' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+import DialogMock from '../../components/guide/DialogMock.astro';
+
+A spreadsheet treats every cell the same. qrate does not have to: once it knows a column holds
+dates, it checks them as dates, and once it knows a column is an identifier, it stops trying to
+spell-check `MS-0042`. This tutorial sets up the columns of a typical collection in about ten
+minutes, and shows how to reuse that setup next time.
+
+## Open the column settings
+
+Choose **Data ▸ Column Settings…**, or open **Settings** (**Ctrl+,**) and go to **Columns**. The
+page is split into groups. You only need the first few to start.
+
+## Add and name your columns
+
+If your project came from a spreadsheet, its columns are already here. If it started blank, you
+have **Title** and **File**. Add more from the grid with **Insert ▸ Column Left** or **Insert ▸
+Column Right**, and rename one by right-clicking its header and choosing **Rename column…**.
+
+A common starting set for a photograph or document collection:
+
+| Column | Type | Why |
+| --- | --- | --- |
+| Identifier | Identifier | Accession or call number. Never spell-checked. |
+| Title | Title | The name people see. Spell-checked. |
+| File | Filename | Links the row to its scan, and reports it if the scan goes missing. |
+| Date | Date | Checked against the date format you choose. |
+| Creator | Text | Turn on value-variant review to catch `Smith, J.` vs `Smith, John`. |
+| Subject | Text | Multi-value, checked against an authority such as LCSH. |
+| Description | Text | Free text. Spell-checked. |
+
+## Set each column's type
+
+Under **Data types**, pick a type for each column. A column with no type is **Text**.
+
+- **Title** and **Text** are spell-checked. Every other type is not.
+- **Filename** links a row to a file in the project's files folder.
+- **Date** is checked against **Settings ▸ Table ▸ Checks ▸ Date format**: EDTF (the default),
+  ISO 8601 only, or Lenient. [EDTF dates explained](/guides/edtf-dates-explained) helps you choose.
+- **Number**, **Url** and **Identifier** are what they say.
+- **Description Level**, **Parent Component** and **Source Path** show where a row sits in your
+  hierarchy. See [Levels of description in a spreadsheet](/guides/levels-of-description-in-a-spreadsheet).
+
+<Figure caption="What a type buys you: the Date column flags a date it cannot read, and the Identifier column is left alone.">
+  <AppMock
+    columns={['Identifier', 'Title', 'Date']}
+    widths="0.8fr 1.6fr 0.7fr"
+    rows={[
+      { cells: ['MS-0042-001', 'Letter to Margaret', '1939-03-12'] },
+      { cells: ['MS-0042-002', 'Letter to Margaret', '12/04/1939'], marks: { 2: 'error' }, sel: 2 },
+      { cells: ['MS-0042-003', 'Envelope, postmarked Halifax', '1939-04'] },
+    ]}
+    problems={{ items: [{ sev: 'error', text: '“12/04/1939” is not an EDTF date', loc: 'Row 2 · Date' }] }}
+  />
+</Figure>
+
+## Describe each column
+
+Under **Descriptions**, add a sentence on what goes in each column, such as "Date of creation,
+EDTF. Use `~` for approximate." It shows as a tooltip on the column header, which is the
+cheapest training a volunteer will ever get.
+
+## Cells with more than one value
+
+A photo can have three subjects. Rather than three Subject columns, put them in one cell with a
+separator, such as `Lakes|Picnics|Family`, and set **Multi-value cells ▸ Value separator** to `|`.
+Filters and checks then treat each part as its own value. If your files are headed for Islandora
+Workbench, `|` is also what it expects.
+
+## Choose what gets checked
+
+Three more groups tune the checks per column:
+
+- **Spelling ▸ Spell-checked columns.** Turn it off for columns full of names.
+- **Value variants.** Turn on for names, places and subjects, where the same thing gets written
+  two ways. See [Find and fix name variants](/guides/find-and-fix-name-variants).
+- **Checked against.** Pick LCSH, Wikidata or GeoNames for a heading column. See
+  [Check subject headings against LCSH](/guides/check-subject-headings-against-lcsh).
+
+## Save the setup for next time
+
+At the bottom of the page, **Config file ▸ Export…** writes your column setup to a
+`column_config.csv`. Next time, load it on the wizard's **Columns** step with **Load from a file or
+Sheet link…**, or apply it to an open project with **Data ▸ Load Column Config…**. Every
+collection then starts with the same types and descriptions.
+
+<Figure caption="Reusing a column setup on the wizard's Columns step.">
+  <DialogMock
+    title="Set up your columns"
+    text="Choose where the field list comes from."
+    options={[
+      { label: 'Auto-created from this spreadsheet', detail: 'Default — columns matched from what you just imported.' },
+      { label: 'Load from a file or Sheet link…', detail: 'Same picker as your main import — a local spreadsheet or a Google Sheet.', selected: true },
+      { label: 'Use default Title and File columns', detail: "Start with qrate's two required columns. You can add more later." },
+    ]}
+    buttons={['Back', 'Next →']}
+    primary="Next →"
+  />
+</Figure>
+
+## Next
+
+With columns in place, [describe your first items](/guides/describe-your-first-items).

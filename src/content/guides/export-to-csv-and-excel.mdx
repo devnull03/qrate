@@ -1,6 +1,7 @@
 ---
 title: Export your catalogue to CSV and Excel
 description: Pick the right export for who is receiving it, keep identifiers and dates intact, and hand over files and data together.
+qrateVersion: 0.7.1
 published: 2026-11-26
 tags: [export]
 related:
@@ -8,6 +9,9 @@ related:
   - { label: 'Columns: column type', href: '/docs/columns#column-type' }
   - { label: 'Online converter', href: '/convert' }
 ---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
 
 A qrate project is one `.qrate` file, and sooner or later the data has to go somewhere that does
 not run qrate: a repository ingest, a finding aid, a colleague with Excel. Everything here starts
@@ -24,6 +28,21 @@ from **File ▸ Export**.
 | Zotero, or a citation manager | **Zotero (CSL-JSON)** |
 
 Plugins can add formats of their own to the same menu.
+
+<Figure caption="File ▸ Export and its formats.">
+  <AppMock
+    columns={['Identifier', 'Title', 'Date']}
+    widths="0.8fr 1.5fr 0.7fr"
+    rows={[
+      { cells: ['MS-0042-001', 'Letter to Margaret', '1939-03-12'] },
+      { cells: ['MS-0042-002', 'Letter to Daniel', '1939-04-02'] },
+      { cells: ['MS-0042-003', 'Envelope', '1939-04~'] },
+      { cells: ['', '', ''] },
+      { cells: ['', '', ''] },
+    ]}
+    menu={{ open: 'File', items: ['New Project…', 'Open Projects…', 'Save', '-', 'Import Files or Folders…', 'Import Spreadsheet…', '-', 'Export ▸', '   CSV', '   Excel (.xlsx)', '   JSON-LD', '   Zotero (CSL-JSON)', '   ZIP Archive'], active: '   Excel (.xlsx)' }}
+  />
+</Figure>
 
 ## Excel: what survives
 
@@ -69,6 +88,10 @@ export never leaves a half-written file over an existing one.
 - **The dialog remembers.** It opens in the folder this project last exported to, and suggests a
   filename from the project name.
 - **No qrate on the other machine?** The [online converter](/convert) turns a `.qrate` file into
-  CSV, Excel and the other formats in the browser. The file never leaves that computer.
+  CSV, Excel, JSON-LD, CSL-JSON or a Google Sheet in the browser. See
+  [Open a .qrate file without installing qrate](/guides/open-a-qrate-file-without-qrate).
 - **Google Sheets.** Turn it on in **Settings ▸ Google** to export to a new sheet, or to sync the
-  project into one. Sync goes one way, from qrate to the sheet.
+  project into one. Sync goes one way, from qrate to the sheet. See
+  [Let volunteers see the catalogue in Google Sheets](/guides/share-a-catalogue-in-google-sheets).
+
+Exporting is the last step of the [practical guide to metadata for digitization projects](/guides/metadata-for-digitization-projects).

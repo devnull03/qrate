@@ -1,0 +1,75 @@
+---
+title: Open a .qrate file without installing qrate
+description: Someone sent you a .qrate project and you don't have qrate? Convert it to CSV, Excel, JSON-LD, Zotero or a Google Sheet in your browser, without uploading it anywhere.
+qrateVersion: 0.7.1
+published: 2026-11-26
+tags: [export, sharing]
+related:
+  - { label: 'Online converter', href: '/convert' }
+  - { label: 'Export and Google Sheets', href: '/docs/export-and-sync' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import DialogMock from '../../components/guide/DialogMock.astro';
+
+A `.qrate` file is a qrate project: a catalogue, its column settings, notes and change history, in
+one file. If a colleague, donor or volunteer sent you one and you just need the data, you do not have
+to install anything.
+
+## Use the online converter
+
+1. Open [qrate.dvnl.work/convert](/convert) in any modern browser.
+2. Choose the `.qrate` file, or drop it on the page.
+3. Pick a format and download the result.
+
+The file is read **in your browser**. It is not uploaded to a server, so this works for material you
+cannot send anywhere. The only time data leaves your computer is if you choose a Google Sheets
+export, which sends the rows to your own Google Drive.
+
+<Figure caption="The formats the converter offers.">
+  <DialogMock
+    title="Convert a project"
+    text="Drop a .qrate file here, or choose a file. Read in your browser. Only Sheets exports send rows to Google."
+    options={[
+      { label: 'CSV', detail: 'Opens in any spreadsheet program. The same file the app writes.' },
+      { label: 'Excel workbook', detail: 'Every cell stays as text, and project notes become cell comments.', selected: true },
+      { label: 'JSON-LD', detail: 'Linked data: one node per row, with your column names as schema.org terms.' },
+      { label: 'CSL-JSON for Zotero', detail: 'Choose which columns become Zotero fields. Other columns are kept as notes.' },
+      { label: 'New Google Sheet', detail: 'Creates a sheet in your Google Drive and fills it.' },
+      { label: 'Existing Google Sheet', detail: 'Replaces the first tab of a sheet you pick.' },
+    ]}
+  />
+</Figure>
+
+## Which format to pick
+
+| You want to | Pick |
+| --- | --- |
+| Look at it in Excel without identifiers turning into numbers | **Excel workbook** |
+| Feed it to a script or another system | **CSV** |
+| Import citations into Zotero | **CSL-JSON for Zotero** |
+| Load it into linked-data tools | **JSON-LD** |
+| Share it with people who use Google Drive | **New Google Sheet** |
+
+Excel is the safe default for reading: every cell is kept as text, so `00123` stays `00123`, and any
+notes the cataloguer left become cell comments.
+
+## What the converter does not do
+
+- **It does not include the scans.** A `.qrate` file holds metadata and links, not the image files.
+  If you need both, ask the sender for a **ZIP Archive** export from qrate, which bundles the data
+  with every linked file.
+- **It does not run plugin exports.** Formats a plugin adds exist only in the qrate app.
+- **It does not edit.** To change the catalogue and send it back, install qrate: it is free and
+  runs on Windows, macOS and Linux. See [Start your first qrate project](/guides/start-your-first-project).
+
+## Sending a .qrate file to someone else
+
+If you are the one sending, tell them about the converter, or export the format they need yourself
+with **File ▸ Export**. [Export your catalogue to CSV and Excel](/guides/export-to-csv-and-excel)
+covers which format suits whom.
+
+## Related
+
+- [Let volunteers see the catalogue in Google Sheets](/guides/share-a-catalogue-in-google-sheets)
+- The [practical guide to metadata for digitization projects](/guides/metadata-for-digitization-projects)

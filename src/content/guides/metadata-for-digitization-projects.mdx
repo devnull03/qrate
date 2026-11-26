@@ -1,0 +1,151 @@
+---
+title: 'Metadata for digitization projects: a practical guide for small archives'
+description: What metadata to record when you digitize a collection, how to keep it consistent, and how to get from a folder of scans to a catalogue you can publish, step by step.
+qrateVersion: 0.7.1
+order: 1
+published: 2026-11-26
+tags: [metadata, digitization, small-archives]
+related:
+  - { label: 'Getting started walkthrough', href: '/docs/getting-started' }
+  - { label: 'Columns', href: '/docs/columns' }
+  - { label: 'Diagnostics', href: '/docs/diagnostics' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+import FolderTree from '../../components/guide/FolderTree.astro';
+
+Scanning is the easy part of a digitization project. The scans are useless if nobody can find them,
+and finding them depends on **metadata**: the identifier, title, date, creator, subjects and
+arrangement that describe each item. Most small digitization projects stall not at the scanner but
+at the spreadsheet.
+
+This guide covers the metadata side from start to finish: what to record, how to keep it consistent,
+and how to get from a folder of scans to a catalogue you can publish. Each step links to a detailed
+guide. The examples use qrate, a free desktop app for archival metadata, but the advice holds
+whatever tool you use.
+
+## 1. Decide what to record
+
+Agree on your fields before anyone types. A minimum set that works for most photo, document and
+correspondence collections:
+
+| Field | What goes in it | Example |
+| --- | --- | --- |
+| Identifier | A unique, permanent ID | `RFP-001-0042` |
+| Title | What a person would call it | `Letter to Margaret Ross` |
+| Date | When it was made, in EDTF | `1939-03-12`, `1920~` |
+| Creator | Who made it, in a consistent form | `Ross, Daniel` |
+| Description | What it shows or says | Free text |
+| Subject | Controlled headings | `World War, 1939-1945` |
+| Place | Controlled place names | `Halifax (N.S.)` |
+| Level | Its place in the arrangement | Series, File, Item |
+| File | The scan's filename | `RFP-001-0042.tif` |
+| Rights | Who may use it, and how | `In copyright` |
+
+Write a one-line definition of each field and keep it where cataloguers will see it. In qrate, a
+column description shows as a tooltip on the header. [Set up columns for your collection](/guides/set-up-columns-for-your-collection)
+shows how, and how to reuse the same setup for the next collection.
+
+## 2. Keep the arrangement
+
+Archival collections have structure: a fonds or collection holds series, series hold files, files
+hold items. That **multilevel description** is what lets a researcher understand an item in context.
+
+If your scans are already in folders that mirror the arrangement, use them. qrate turns each folder
+into a parent row and each file into a row inside it, with level names from RAD, DACS or ISAD(G).
+
+<Figure caption="Folders on disk become levels of description in the catalogue.">
+  <div class="flex flex-wrap items-start justify-center gap-6">
+    <FolderTree label="On disk" items={['Ross Family Papers/', '>Correspondence/', '>>RFP-001-0042.tif', '>>RFP-001-0043.tif', '>Photographs/', '>>RFP-002-0001.tif']} />
+    <AppMock
+      columns={['Title', 'Level']}
+      widths="1.5fr 0.7fr"
+      rows={[
+        { cells: ['Correspondence', 'Series'], open: true },
+        { cells: ['RFP-001-0042.tif', 'Item'], depth: 1 },
+        { cells: ['RFP-001-0043.tif', 'Item'], depth: 1 },
+        { cells: ['Photographs', 'Series'], open: false },
+      ]}
+    />
+  </div>
+</Figure>
+
+- [Turn a folder of scans into a RAD or DACS hierarchy](/guides/folder-to-archival-hierarchy)
+- [Levels of description in a spreadsheet: fonds, series, file, item](/guides/levels-of-description-in-a-spreadsheet)
+
+## 3. Name files so they match records
+
+The link between a record and its scan is usually the filename. Two rules prevent most of the pain:
+
+- **Name files after the identifier**, such as `RFP-001-0042.tif`, not `Scan_0042.tif`. Multi-page
+  items can add a page number: `RFP-001-0042_001.tif`.
+- **Never rename after cataloguing starts** without updating the catalogue at the same time.
+
+If you already have a spreadsheet and a folder of scans, qrate can match them by filename and tell you
+exactly which rows have no scan and which scans have no row.
+[Link an existing spreadsheet to its scans by filename](/guides/link-scans-by-filename) walks through
+it. If the folder moves later, [relink it in one step](/guides/relink-scans-after-the-folder-moved).
+
+## 4. Write dates one way
+
+Archival dates are rarely exact, and a column of `ca. 1920`, `1920s?` and `3/4/39` cannot be sorted or
+searched. Use **EDTF**: `1920~` for circa, `1920?` for uncertain, `192X` for a decade, `1920/1925` for a
+range. It is an ISO standard, Islandora reads it, and qrate checks every value in a Date column against
+it and offers fixes for the common slips.
+
+[EDTF dates explained: circa, decades, ranges and uncertain dates](/guides/edtf-dates-explained) has the
+cheat sheet.
+
+## 5. Control names and subjects
+
+Names and subjects are where catalogues drift. One person entered three ways becomes three people in a
+search. Two habits fix it:
+
+- **Use one form per entity**, and catch the variants. qrate groups values that look alike, such as
+  `Varda, Agnès` and `Agnes Varda`, and lets you fix the whole group at once.
+  [Find and fix name variants in a metadata spreadsheet](/guides/find-and-fix-name-variants).
+- **Use an authority** for subjects and places, such as LCSH, GeoNames or Wikidata. qrate checks a
+  column against one and offers the authorised heading.
+  [Check subject headings against LCSH, GeoNames and Wikidata](/guides/check-subject-headings-against-lcsh).
+
+## 6. Describe efficiently
+
+Description is where the hours go, so cut the clicking:
+
+- **Describe with the scan in view.** qrate's Details panel shows the file above the fields.
+- **Describe in batches.** Select twenty rows from the same event and type the shared values once.
+- **Find look-alikes.** [Visual search](/guides/find-similar-photos-with-visual-search) finds every
+  other photo from the same shoot, even before anything is described.
+- **Leave notes, not guesses.** A note on a cell flags a question for whoever reviews it.
+
+[Describe your first items](/guides/describe-your-first-items) covers each of these.
+
+## 7. Check before you publish
+
+Before metadata leaves your hands, check it, all of it, not a sample. In qrate the **Problems** panel
+lists every date that is not EDTF, every name variant, every heading the authority does not know, every
+misspelling and every missing file, grouped so a mistake repeated 300 times is one line.
+
+Aim for an empty **Errors** tab. Warnings are judgment calls; read them, fix or ignore.
+
+## 8. Export, share and publish
+
+Finally, get the metadata where people can use it:
+
+- **CSV or Excel** for an ingest, a finding aid or a colleague.
+  [Export your catalogue to CSV and Excel](/guides/export-to-csv-and-excel).
+- **Islandora** through Workbench.
+  [Clean a spreadsheet before an Islandora Workbench ingest](/guides/clean-a-spreadsheet-for-islandora-workbench).
+- **Google Sheets** for volunteers and board members.
+  [Let volunteers see the catalogue in Google Sheets](/guides/share-a-catalogue-in-google-sheets).
+- **Anyone without qrate** can [open a .qrate file in a browser](/guides/open-a-qrate-file-without-qrate).
+
+Choosing a system to publish with? [Free cataloguing software for small archives](/guides/free-cataloguing-software-for-small-archives)
+compares the options.
+
+## Start here
+
+New to qrate? The five [Start here](/guides) tutorials take about an hour, from
+[starting your first project](/guides/start-your-first-project) to
+[saving and backing it up](/guides/save-back-up-and-move-a-project).

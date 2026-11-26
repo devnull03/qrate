@@ -1,0 +1,109 @@
+---
+title: Relink scans after the files folder moved
+description: Moved your scans to a new drive or server and now every record says the file is missing? Relink the whole folder in one step, or find individual files, and undo it if you picked wrong.
+qrateVersion: 0.7.1
+published: 2026-11-26
+tags: [files, troubleshooting]
+related:
+  - { label: 'Files and photos: missing files', href: '/docs/files-and-photos#missing-files' }
+  - { label: 'Files and photos: when the files folder changes', href: '/docs/files-and-photos#when-the-files-folder-changes' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+import DialogMock from '../../components/guide/DialogMock.astro';
+import FolderTree from '../../components/guide/FolderTree.astro';
+
+The scans moved: a new external drive, a reorganised network share, a different drive letter on a
+new computer. The catalogue still points at the old place, so every row says its file is missing.
+
+Nothing is lost. qrate stores each file's path *relative to the project's files folder*, so when
+the whole folder moves you only have to tell it where the folder went. This guide covers that, the
+one-file case, and the files that were renamed on the way.
+
+## Why it happens
+
+A qrate project never copies your scans. It remembers one **files folder**, and each row names its
+file inside that folder:
+
+<Figure caption="What qrate stores: one folder, then each row's path inside it. Moving the folder breaks only the first part.">
+  <div class="flex flex-wrap items-start justify-center gap-6">
+    <FolderTree label="Before: D:\Scans" items={['Ross Family Papers/', '>Letters/', '>>1939-03-12_letter.jpg']} />
+    <FolderTree label="After: \\archive-server\scans" items={['Ross Family Papers/', '>Letters/', '>>1939-03-12_letter.jpg']} />
+  </div>
+</Figure>
+
+Because the part inside the folder did not change, relinking is one setting, not a thousand.
+
+## Relink the whole folder
+
+When you open a project whose files folder is gone, or holds almost none of its files, qrate shows
+a single banner above the grid instead of an error per row: **Files folder not found**, or **Most
+linked files are missing from** the old folder.
+
+<Figure caption="One banner, not four hundred missing-file errors.">
+  <AppMock
+    columns={['File', 'Title']}
+    widths="1fr 1.4fr"
+    banner={{ text: 'Files folder not found', action: 'Relink…' }}
+    rows={[
+      { cells: ['Letters/1939-03-12_letter.jpg', 'Letter to Margaret'], dim: true },
+      { cells: ['Letters/1939-04-02_letter.jpg', 'Letter to Margaret'], dim: true },
+      { cells: ['Photographs/slide-01.jpg', 'Picnic at the lake'], dim: true },
+    ]}
+  />
+</Figure>
+
+1. Click **Relink…** in the banner, or choose **File ▸ Relink Missing Files…** at any time.
+2. Pick the folder's new location.
+3. qrate counts how many linked files it can find there **before** it changes anything, and tells
+   you: "412 of 412 linked files found in" that folder.
+4. Click **Relink** to use it, **Choose another…** to try again, or **Cancel** to leave things as
+   they were.
+
+<Figure caption="The count comes first, so a wrong folder is obvious before you commit to it.">
+  <DialogMock
+    title="Relink missing files"
+    text="412 of 412 linked files found in \\archive-server\scans\Ross Family Papers"
+    buttons={['Cancel', 'Choose another…', 'Relink']}
+    primary="Relink"
+  />
+</Figure>
+
+### Picked one folder too deep, or too shallow?
+
+If the folder you chose holds none of the files, qrate looks in its parent and in the parent's
+other subfolders, and offers whichever holds the most: "Found 412 in … instead". That catches the
+common slip of choosing `Letters` instead of the collection folder above it.
+
+## Relink one file
+
+A single missing file usually means someone renamed or moved it. Select the row: the Details panel
+shows **File not found** with a **Locate file…** button. Pick the file and the row links to it.
+
+If the folder you picked also holds files for *other* missing rows, qrate offers to relink those
+too. All of it is one step, so one **Ctrl+Z** puts it back.
+
+## Find what is still missing
+
+After relinking, open the Problems panel (**Ctrl+Shift+M**). Any row whose file still cannot be
+found has a file-link finding. Click one to jump to its row, then use **Locate file…** or fix the
+filename in the cell.
+
+qrate also keeps watching the folder while the project is open. Copy a missing scan back in and its
+finding disappears on its own, without reopening the project.
+
+## Stop it happening again
+
+- **Keep the files folder in one permanent place**, ideally the same path on every computer.
+- **Move the folder, not the files.** Moving the whole folder is one relink; reshuffling files
+  inside it is one fix per file.
+- **Move project and files together** when you hand a collection over. A **ZIP Archive** export
+  bundles the data and every linked file with its folder path. See
+  [Export your catalogue to CSV and Excel](/guides/export-to-csv-and-excel).
+
+## Related
+
+- [Save, back up and move a qrate project](/guides/save-back-up-and-move-a-project)
+- [Link an existing spreadsheet to its scans by filename](/guides/link-scans-by-filename)
+- The [practical guide to metadata for digitization projects](/guides/metadata-for-digitization-projects)

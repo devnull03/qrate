@@ -1,6 +1,7 @@
 ---
 title: Clean a spreadsheet before an Islandora Workbench ingest
 description: Catch bad dates, stray spellings, inconsistent names and terms your Islandora site does not know, before Workbench rejects the batch halfway through.
+qrateVersion: 0.7.1
 published: 2026-11-26
 tags: [islandora, diagnostics, export]
 related:
@@ -9,6 +10,10 @@ related:
   - { label: 'Columns', href: '/docs/columns' }
   - { label: 'Export and Google Sheets', href: '/docs/export-and-sync' }
 ---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+import DialogMock from '../../components/guide/DialogMock.astro';
 
 [Islandora Workbench](https://mjordan.github.io/islandora_workbench_docs/) loads content into an
 Islandora site from a CSV file. It is fast and scriptable, and it is unforgiving: a date in the
@@ -20,8 +25,8 @@ guide uses qrate to check the CSV first, then hands Workbench a clean copy.
 
 ## Bring the spreadsheet in
 
-Open the launcher with **File ▸ Open Projects…** (**Ctrl+O**), choose **Import a spreadsheet and
-its folder**, and pick your Workbench CSV. If its `file` column names files in a local folder,
+Open the launcher with **File ▸ Open Projects…** (**Ctrl+O**), choose **Spreadsheet + folder**
+under **Create New**, and pick your Workbench CSV. If its `file` column names files in a local folder,
 give the wizard that folder too, then set the `file` column's type to **Filename** (below). qrate
 then previews each file and flags the ones that are missing, which Workbench would otherwise stop
 on. See [Link an existing spreadsheet to its scans](/guides/link-scans-by-filename).
@@ -48,6 +53,8 @@ Islandora's date fields expect [EDTF](https://www.loc.gov/standards/datetime/). 
 Table ▸ Checks ▸ Date format** to **EDTF** (the default). Every Date column is then checked, and
 values like `ca. 1920` or `12/03/1954` are flagged in the Problems panel. EDTF writes those as
 `1920~` and `1954-03-12` (or `1954-12-03`: the panel is there because qrate cannot know which).
+For `ca. 1920`, qrate offers **Use 1920~** as a one-click fix. [EDTF dates explained](/guides/edtf-dates-explained)
+has the full cheat sheet.
 
 ## Check terms against your Islandora site
 
@@ -65,14 +72,29 @@ Every value the site does not hold becomes an error that names the vocabulary it
 the list of terms Workbench would otherwise either reject or quietly create as new ones,
 depending on your configuration.
 
+<Figure caption="The Islandora plugin's findings in the Problems panel, and its status bar item after a successful connection test.">
+  <AppMock
+    columns={['id', 'title', 'field_resource_type', 'field_subject']}
+    widths="0.4fr 1.3fr 0.9fr 1.1fr"
+    rows={[
+      { cells: ['1', 'Letter to Margaret', 'Text', 'Correspondence'] },
+      { cells: ['2', 'Picnic at the lake', 'Still image', 'Lakes|Picnics'], marks: { 2: 'error' }, sel: 2 },
+      { cells: ['3', 'Harbour, looking east', 'Still Image', 'Harbours'] },
+    ]}
+    problems={{ tab: 'Errors', items: [{ sev: 'error', text: '"Still image" is not a term in the Islandora typeofresource vocabulary', loc: 'Row 2 · field_resource_type' }] }}
+    status={{ left: '', right: 'Islandora ✓   Details   Problems   History' }}
+  />
+</Figure>
+
 ## Make names and subjects consistent
 
 Right-click a column header such as `field_linked_agent` or `field_subject` and choose **Review
 value variants**. qrate groups values that look like the same thing written differently:
 `Smith, John`, `Smith, John.` and `John Smith`.
 
-Right-click a group in the Problems panel to replace every occurrence with one form, as a single
-undo step. If two values really are different people, mark them as distinct and qrate stops
+Right-click a group in the Problems panel and choose **Change all to** the right form: every
+occurrence changes as a single undo step. [Find and fix name variants](/guides/find-and-fix-name-variants)
+goes deeper. If two values really are different people, mark them as distinct and qrate stops
 asking. qrate never merges anything on its own.
 
 ## Work through the Problems panel
@@ -105,3 +127,9 @@ against the new CSV before the real ingest:
 The `.qrate` project stays behind as the record of what you changed. Its History lists every
 fix, so you can answer "why does this subject read differently from the donor's list" months
 later.
+
+## Related
+
+- [Check subject headings against LCSH, GeoNames and Wikidata](/guides/check-subject-headings-against-lcsh),
+  for columns that use national authorities rather than your site's taxonomies.
+- The [practical guide to metadata for digitization projects](/guides/metadata-for-digitization-projects).

@@ -29,25 +29,16 @@ an authenticated Wrangler CLI.
 
 ## Guides
 
-How-to articles live in `src/content/guides/`, one Markdown file each, and are served at
-`/guides/<filename>`. Unlike the docs they are written here, not synced from main. The front
-matter is checked by `src/content.config.ts`; set `draft: true` to preview one in `bun run dev`
-without publishing it.
+How-to articles live in `src/content/guides/`, one MDX file each, served at `/guides/<filename>`.
+Unlike the docs they are written here, not synced from main. `src/content.config.ts` checks the
+front matter, including `qrateVersion`, the version a guide was tested against; `series:
+start-here` puts a guide in the numbered beginner track. Set `draft: true` to preview one in
+`bun run dev` without publishing it.
 
-Writing one:
-
-- **One task, one search.** Pick the phrase an archivist would type (`EDTF dates circa`,
-  `link scans to spreadsheet`) and put it in the title, the filename, the description, and the
-  first paragraph. Two guides never chase the same phrase.
-- **Answer first.** The opening paragraph says what the reader will have at the end. Steps are
-  numbered, headings say what the section does.
-- **Only what qrate really does.** Every menu path and setting comes from the docs or the code
-  on main. Link the matching docs page in `related`.
-- **Link the guides together.** Two or three links to sibling guides in the body, with the
-  phrase of the guide you link to as the anchor text.
-- **Show it.** A screenshot of the result belongs in `public/guides/<filename>/` with real alt
-  text.
-- **Date it honestly.** Set `updated` when a guide changes because qrate did.
+Pictures are screenshots under `public/guides/<filename>/`, or drawings from
+`src/components/guide/` (`AppMock`, `DialogMock`, `FolderTree`) inside a `Figure`. How to write
+one, the starter file, and the pull request checklist are on [/guides/contribute](https://qrate.dvnl.work/guides/contribute),
+built from `src/content/guide-template.mdx` and `.github/PULL_REQUEST_TEMPLATE/guide.md`.
 
 ## Deploy
 

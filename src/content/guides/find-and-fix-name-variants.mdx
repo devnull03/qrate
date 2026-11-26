@@ -1,0 +1,114 @@
+---
+title: Find and fix name variants in a metadata spreadsheet
+description: Catch the same person, place or subject written three different ways, review each group, and fix the column in one step, without merging people who only look alike.
+qrateVersion: 0.7.1
+published: 2026-11-26
+tags: [names, diagnostics, cleanup]
+related:
+  - { label: 'Diagnostics: what qrate checks', href: '/docs/diagnostics#what-qrate-checks' }
+  - { label: 'Columns: value variants', href: '/docs/columns#value-variants' }
+  - { label: 'Diagnostics: applying a fix', href: '/docs/diagnostics#applying-a-fix' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+
+Every catalogue that more than one person has touched has them: `Smith, John`, `Smith, John.`,
+`John Smith` and `Smith, Jhon`. Each looks fine on its own. Together they split one person into
+four, and a search for one finds a quarter of the records.
+
+Data librarians usually reach for OpenRefine's clustering for this. qrate has the same idea built
+into its checks, so variants show up while you catalogue rather than in a separate clean-up pass.
+This guide turns it on, works through the groups, and covers the cases where two similar names
+really are two people.
+
+## Turn on variant review for a column
+
+Variant review is per column, because it only makes sense where the same thing is meant to be
+written the same way: creators, places, subjects, collection titles.
+
+Right-click the column header and choose **Review value variants**. A tick shows it is on; choose it
+again to turn it off. You can also switch it on under **Data ▸ Column Settings… ▸ Value variants**.
+
+## Read the groups
+
+qrate compares the values in the column and groups the ones that look like versions of each other.
+Each group lands in the Problems panel as a warning, with the reasons it was grouped:
+
+- **accents or diacritics differ**: `Agnès Varda` and `Agnes Varda`
+- **different order**: `Varda, Agnès` and `Agnès Varda`
+- **formatting differs**: `Smith, John` and `Smith, John.`
+- **a word is abbreviated** or **one value has an extra word**: `Satwinder B.` and `Satwinder Bains`
+- **close spelling**: `Smith, Jhon` and `Smith, John`
+
+<Figure caption="A variant group in the Problems panel, expanded to show each form and where it occurs.">
+  <AppMock
+    columns={['Title', 'Creator']}
+    widths="1.4fr 1fr"
+    rows={[
+      { cells: ['La Pointe Courte, press still', 'Varda, Agnès'], marks: { 1: 'warn' } },
+      { cells: ['Cléo de 5 à 7, poster', 'Agnès Varda'], marks: { 1: 'warn' }, sel: 1 },
+      { cells: ['Interview transcript', 'Agnes Varda'], marks: { 1: 'warn' } },
+      { cells: ['Festival programme', 'Varda, Agnès'], marks: { 1: 'warn' } },
+    ]}
+    problems={{ tab: 'Warnings', items: [
+      { sev: 'warn', text: '3 values may be variants: accents or diacritics differ, different order', loc: 'Creator', count: 4 },
+      { sev: 'warn', text: 'Varda, Agnès', loc: 'Rows 1, 4' },
+      { sev: 'warn', text: 'Agnès Varda', loc: 'Row 2' },
+      { sev: 'warn', text: 'Agnes Varda', loc: 'Row 3' },
+    ] }}
+  />
+</Figure>
+
+Similarity is a hint, not a verdict. qrate never decides that two values are the same entity. It
+only tells you they look alike.
+
+## Fix a whole group in one step
+
+Decide which form is right, usually the one your authority file uses, then:
+
+1. Right-click the group in the Problems panel.
+2. Choose **Change all to “Varda, Agnès”**.
+
+Every cell in the group takes that form, as a single change you can undo. Only forms that already
+appear in the column are offered, so qrate never invents a spelling.
+
+To fix one cell instead, right-click it, open **Problems**, and pick **Use “Varda, Agnès”**.
+
+## Multi-value cells are safe
+
+If a cell holds several names, such as `Varda, Agnès|Demy, Jacques`, set the column's **Value
+separator** to `|` first. qrate then compares each name on its own, and a fix replaces only the
+variant, leaving `Demy, Jacques` untouched.
+
+## When they really are different
+
+`Bains, S.` might be Satwinder Bains or her cousin Sandeep. If a group joins values that are
+genuinely different, right-click it and choose **These are distinct — ignore this cluster**. qrate
+remembers that for this column and stops grouping them. The choice is saved in the project, so a
+colleague opening it later does not get asked again.
+
+For a value that is fine as it is, **Ignore this occurrence** or **Ignore in column** hides the
+finding without changing anything.
+
+## Make it stick
+
+A clean column today drifts tomorrow. Two habits help:
+
+- Leave variant review on for name and subject columns. New variants appear as warnings the
+  moment someone types them.
+- Check names against an authority as well. [Check subject headings against LCSH, GeoNames and
+  Wikidata](/guides/check-subject-headings-against-lcsh) catches a heading that is consistent but
+  not the authorised form.
+
+## Related
+
+- [Clean a spreadsheet before an Islandora Workbench ingest](/guides/clean-a-spreadsheet-for-islandora-workbench)
+  uses variant review on `field_linked_agent` and `field_subject`.
+- [EDTF dates explained](/guides/edtf-dates-explained) does the same kind of clean-up for dates.
+- The [practical guide to metadata for digitization projects](/guides/metadata-for-digitization-projects)
+  shows where name control fits.
+
+qrate's clustering is inspired by OpenRefine's
+[Cluster and edit](https://openrefine.org/docs/manual/cellediting#cluster-and-edit), with an
+independent implementation.

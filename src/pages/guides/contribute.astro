@@ -1,0 +1,121 @@
+---
+import Base from '../../layouts/Base.astro';
+import '../../styles/guide.css';
+import { getReleases, latest, REPO } from '../../lib/releases.js';
+import template from '../../../.github/PULL_REQUEST_TEMPLATE/guide.md?raw';
+import starter from '../../content/guide-template.mdx?raw';
+
+const rel = latest(await getReleases());
+const gh = `https://github.com/${REPO}`;
+---
+
+<Base
+  title="qrate · contribute a guide"
+  description="Write a how-to guide for qrate: what makes a good guide, how to add visuals, and the checklist for your pull request."
+  current="guides"
+  version={rel?.tag_name}
+>
+  <section class="gut border-b border-rule py-[30px] md:pb-[46px] md:pt-[54px]">
+    <div class="mx-auto max-w-[720px]">
+      <a href="/guides" class="eyebrow">← Guides</a>
+      <h1 class="m-0 mb-3.5 mt-[18px] text-[32px] font-semibold leading-[1.04] tracking-[-0.035em] md:text-[46px]">
+        Contribute a guide
+      </h1>
+      <p class="m-0 text-[15px] leading-[1.6] text-body">
+        You know a job qrate helps with that nobody has written up yet. Here is how to turn it into a
+        guide, and what we check before it goes live.
+      </p>
+    </div>
+  </section>
+
+  <article class="gut py-[30px] md:py-[44px]">
+    <div class="guide mx-auto max-w-[720px]">
+      <h2>What makes a good guide</h2>
+      <ul>
+        <li>
+          <strong>One real task.</strong> "Prepare a photo collection for a community archive", not "the
+          Columns settings page". The docs already describe each feature; a guide gets someone through a
+          job.
+        </li>
+        <li>
+          <strong>One search phrase.</strong> Pick what an archivist would type, such as
+          <code>EDTF dates circa</code>, and put it in the title, the filename, the description and the
+          first paragraph. Check the <a href="/guides">existing guides</a> so two never chase the same
+          phrase.
+        </li>
+        <li>
+          <strong>The answer first.</strong> The first paragraph says what the reader will have at the
+          end. Steps are numbered, one action each.
+        </li>
+        <li>
+          <strong>Only what qrate does.</strong> Follow every step yourself, in the version you name.
+          Menu paths and labels must match the app exactly.
+        </li>
+        <li>
+          <strong>Pictures.</strong> At least two, each with a caption that says what to look at.
+        </li>
+        <li>
+          <strong>Links.</strong> Two or three other guides in the body, and the matching docs pages in
+          the <code>related</code> list.
+        </li>
+      </ul>
+
+      <h2>Say which version you wrote it for</h2>
+      <p>
+        Every guide sets <code>qrateVersion</code> to the version you tested with. The page shows it
+        under the title, and when qrate moves past it, the page says so, so readers know a menu may
+        have moved. When you update a guide for a new version, change <code>qrateVersion</code> and set
+        <code>updated</code> to the date.
+      </p>
+
+      <h2>Add the guide</h2>
+      <ol>
+        <li>
+          Fork <a href={gh}>devnull03/qrate</a> and check out the <code>site</code> branch. It holds only
+          the website.
+        </li>
+        <li>
+          Copy <code>src/content/guide-template.mdx</code> to
+          <code>src/content/guides/&lt;your-slug&gt;.mdx</code>. The filename becomes the address:
+          <code>/guides/&lt;your-slug&gt;</code>.
+        </li>
+        <li>Write it. Run <code>bun install</code> and <code>bun run dev</code> to see it at <code>localhost:4321/guides</code>.</li>
+        <li>Run <code>bun run build</code>. It checks the front matter and fails on a missing field.</li>
+        <li>Open a pull request into <code>site</code> and paste the checklist below into it.</li>
+      </ol>
+
+      <h2>Pictures</h2>
+      <p>Two kinds work, and a guide can mix them:</p>
+      <ul>
+        <li>
+          <strong>Screenshots.</strong> Put them in <code>public/guides/&lt;your-slug&gt;/</code> as WebP
+          or PNG under 300 KB, and show them with <code>&lt;Figure src=… alt=… caption=… /&gt;</code>. Use
+          the example project or made-up records, never a real collection's private material.
+        </li>
+        <li>
+          <strong>Drawn windows.</strong> <code>AppMock</code> draws the qrate window (grid, Details,
+          Problems, menus), <code>DialogMock</code> a dialog, and <code>FolderTree</code> a folder tree.
+          They follow the site's theme and never go stale in a way that is hard to fix. Copy the labels
+          from the app, word for word.
+        </li>
+      </ul>
+
+      <h2>The starter file</h2>
+      <pre><code>{starter}</code></pre>
+
+      <h2>The pull request checklist</h2>
+      <p>
+        Paste this into your pull request description, and tick each item. The same text is in
+        <code>.github/PULL_REQUEST_TEMPLATE/guide.md</code>.
+      </p>
+      <pre><code>{template}</code></pre>
+
+      <h2>Not ready to write?</h2>
+      <p>
+        <a href={`${gh}/issues/new?title=${encodeURIComponent('Guide idea: ')}`}>Open an issue</a> with
+        the task you would like a guide for, or <a href="/feedback">send feedback</a>. Ideas from people
+        who catalogue for a living are the most useful kind.
+      </p>
+    </div>
+  </article>
+</Base>

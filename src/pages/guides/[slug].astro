@@ -1,6 +1,7 @@
 ---
 import { render } from 'astro:content';
 import Base from '../../layouts/Base.astro';
+import '../../styles/guide.css';
 import { getReleases, latest } from '../../lib/releases.js';
 import { getGuides, readingMinutes, formatDate, type Guide } from '../../lib/guides';
 
@@ -8,14 +9,15 @@ export async function getStaticPaths() {
   const guides = await getGuides();
   return guides.map((guide, i) => ({
     params: { slug: guide.id },
-    props: { guide, newer: guides[i - 1], older: guides[i + 1] },
+    props: { guide, previous: guides[i - 1], next: guides[i + 1] },
   }));
 }
 
-const { guide, newer, older } = Astro.props as { guide: Guide; newer?: Guide; older?: Guide };
+const { guide, previous, next } = Astro.props as { guide: Guide; previous?: Guide; next?: Guide };
 const { Content } = await render(guide);
-const { title, description, published, updated, tags, related } = guide.data;
+const { title, description, published, updated, tags, related, qrateVersion } = guide.data;
 const rel = latest(await getReleases());
+const current = rel?.tag_name?.replace(/^v/, '');
 const url = new URL(`/guides/${guide.id}`, Astro.site).href;
 const team = { '@type': 'Organization', name: 'qrate', url: Astro.site?.href };
 const schema = [
@@ -29,6 +31,7 @@ const schema = [
     author: team,
     publisher: team,
     mainEntityOfPage: url,
+    about: { '@type': 'SoftwareApplication', name: 'qrate', softwareVersion: qrateVersion },
     keywords: tags.join(', '),
   },
   {
@@ -60,6 +63,14 @@ const schema = [
         <span>{readingMinutes(guide.body)} min read</span>
         {tags.map((t) => <span class="text-dim">#{t}</span>)}
       </div>
+      <p class="m-0 mt-4 border-l-2 border-accent pl-3 text-[13px] leading-[1.6] text-body">
+        Written for <strong class="font-semibold text-ink">qrate {qrateVersion}</strong>.
+        {
+          current && current !== qrateVersion
+            ? ` qrate is now at ${current}, so a menu or label may have moved. The docs describe the current version.`
+            : ' If a menu or label has moved since, the docs describe the current version.'
+        }
+      </p>
     </div>
   </section>
 
@@ -88,8 +99,8 @@ const schema = [
     <div class="mx-auto grid max-w-[720px] grid-cols-1 gap-px md:grid-cols-2">
       {
         [
-          [older, 'Previous guide', ''],
-          [newer, 'Next guide', 'md:text-right'],
+          [previous, 'Previous', ''],
+          [next, 'Next', 'md:text-right'],
         ].map(([g, label, align]) =>
           g ? (
             <a href={`/guides/${(g as Guide).id}`} class={`py-5 hover:no-underline ${align}`}>
@@ -104,129 +115,3 @@ const schema = [
     </div>
   </nav>
 </Base>
-
-<style is:global>
-  .guide > :first-child {
-    margin-top: 0;
-  }
-
-  .guide h2 {
-    font-size: 22px;
-    font-weight: 600;
-    letter-spacing: -0.02em;
-    margin: 36px 0 10px;
-    scroll-margin-top: 20px;
-  }
-
-  .guide h3 {
-    font-size: 17px;
-    font-weight: 600;
-    margin: 24px 0 6px;
-  }
-
-  .guide p,
-  .guide li {
-    font-size: 15px;
-    line-height: 1.7;
-    color: var(--body);
-  }
-
-  .guide p {
-    margin: 0 0 14px;
-  }
-
-  .guide ul,
-  .guide ol {
-    margin: 0 0 14px;
-    padding-left: 22px;
-  }
-
-  .guide ul {
-    list-style: square;
-  }
-
-  .guide ol {
-    list-style: decimal;
-  }
-
-  .guide li {
-    margin-bottom: 6px;
-  }
-
-  .guide li::marker {
-    color: var(--accent);
-    font-family: var(--font-mono);
-    font-size: 13px;
-  }
-
-  .guide a {
-    color: var(--accent);
-  }
-
-  .guide strong {
-    color: var(--ink);
-    font-weight: 600;
-  }
-
-  .guide code {
-    font-family: var(--font-mono);
-    font-size: 13px;
-    color: var(--ink);
-    background: var(--rule-soft);
-    padding: 1px 4px;
-  }
-
-  .guide pre {
-    margin: 0 0 16px;
-    padding: 14px 16px;
-    overflow-x: auto;
-    background: #17140f;
-    font-size: 13px;
-    line-height: 1.6;
-  }
-
-  .guide pre code {
-    background: none;
-    padding: 0;
-    color: #f2ede4;
-  }
-
-  .guide blockquote {
-    margin: 0 0 14px;
-    padding: 8px 0 8px 14px;
-    border-left: 2px solid var(--accent);
-  }
-
-  .guide blockquote p {
-    margin: 0;
-    font-size: 14px;
-  }
-
-  .guide table {
-    width: 100%;
-    margin: 0 0 16px;
-    border-collapse: collapse;
-    font-size: 13.5px;
-    display: block;
-    overflow-x: auto;
-  }
-
-  .guide th,
-  .guide td {
-    border: 1px solid var(--rule);
-    padding: 6px 10px;
-    text-align: left;
-    vertical-align: top;
-    color: var(--body);
-  }
-
-  .guide th {
-    color: var(--ink);
-    font-weight: 600;
-  }
-
-  .guide img {
-    max-width: 100%;
-    height: auto;
-  }
-</style>

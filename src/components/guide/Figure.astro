@@ -1,0 +1,17 @@
+---
+// Every visual in a guide sits in one of these: a scroll box so a wide window never widens the
+// page, and a caption that says what to look at.
+interface Props {
+  caption: string;
+  src?: string;
+  alt?: string;
+}
+const { caption, src, alt = '' } = Astro.props;
+---
+
+<figure class="my-7">
+  <div class="overflow-x-auto bg-ground p-4 md:p-6">
+    {src ? <img src={src} alt={alt} class="mx-auto block max-w-full border border-rule" loading="lazy" /> : <slot />}
+  </div>
+  <figcaption class="mt-2 font-mono text-[11.5px] leading-[1.6] text-dim">{caption}</figcaption>
+</figure>

@@ -1,0 +1,121 @@
+---
+title: 'Levels of description in a spreadsheet: fonds, series, file, item'
+description: How to keep archival levels of description, fonds to item, when your catalogue is a spreadsheet, and how RAD, DACS and ISAD(G) name them in qrate.
+qrateVersion: 0.7.1
+published: 2026-11-26
+tags: [arrangement, rad, dacs]
+related:
+  - { label: 'Projects: project settings', href: '/docs/projects#project-settings' }
+  - { label: 'The grid: groups', href: '/docs/grid#groups' }
+  - { label: 'Columns: column type', href: '/docs/columns#column-type' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+
+**Levels of description** are the archival answer to "what is this row?" A fonds is everything one
+creator made; a series is a group of records kept together for a reason; a file is a folder of
+related items; an item is one letter or one photograph. Multilevel description, from ISAD(G) to RAD
+and DACS, describes each level once and lets the levels below inherit from it.
+
+A spreadsheet has no levels. It has rows. This guide shows the usual workarounds, why they break,
+and how qrate keeps levels and the nesting between them without a "parent ID" column.
+
+## The spreadsheet workaround and its problems
+
+Most digitization spreadsheets fake the hierarchy with two extra columns:
+
+| ID | Level | Parent | Title |
+| --- | --- | --- | --- |
+| F1 | Fonds | | Ross family fonds |
+| S1 | Series | F1 | Correspondence |
+| I1 | Item | S1 | Letter to Margaret, 1939 |
+
+It works until it doesn't. Sort the sheet and the visual order is gone. Mistype `S1` as `SI` and an
+item silently belongs to nothing. Move a series under a different sub-fonds and you are editing IDs
+by hand. Nothing checks any of it.
+
+## How qrate keeps levels
+
+In qrate, nesting is part of the row itself. A series row *contains* its items, the way a folder
+contains files, and the grid shows it with a chevron you can fold.
+
+<Figure caption="Series and items in qrate: the nesting is the hierarchy, so there is no Parent column to mistype.">
+  <AppMock
+    columns={['Title', 'Level', 'Date']}
+    widths="1.8fr 0.7fr 0.7fr"
+    rows={[
+      { cells: ['Correspondence', 'Series', '1932/1966'], open: true },
+      { cells: ['Letter to Margaret', 'Item', '1939-03-12'], depth: 1, sel: 0 },
+      { cells: ['Letter to Daniel', 'Item', '1939-04-02'], depth: 1 },
+      { cells: ['Photographs', 'Series', '1950/1972'], open: true },
+      { cells: ['Picnic at the lake', 'Item', '1962~'], depth: 1 },
+    ]}
+  />
+</Figure>
+
+Each row also carries its **level**, taken from the description standard the project uses. Moving a
+row moves its children with it, and every move is one undoable step.
+
+## The standards, as qrate names them
+
+Pick the standard when you create a project (the **Advanced** block of the wizard's Files step), or
+later under **Settings ▸ Project ▸ Description**. Each supplies its own list of levels:
+
+| Standard | Levels, broadest first |
+| --- | --- |
+| **RAD** (Canada) | Fonds, Collection, Sous-fonds, Series, Subseries, File, Item |
+| **DACS** (United States) | Collection, Record group, Series, Subseries, File, Item |
+| **ISAD(G)** (international) | Fonds, Sub-fonds, Series, Sub-series, File, Item |
+| **Records in Contexts** | Record set, Record |
+| **Custom** | Group, Item, renamed to whatever you need |
+
+**Imported folders are** and **Imported files are** decide what level new folder and file rows
+get. RAD, DACS and ISAD(G) default to Series and Item; Records in Contexts to Record set and Record.
+Change them to match your material: if each folder on disk is a file in the archival sense, say
+so.
+
+Switching standard later is safe. It changes what *new* rows default to and leaves every existing
+row at the level it has, and the old level names stay available.
+
+## Build the levels
+
+There are two ways in, and you can mix them.
+
+**From folders.** If your scans are already arranged in folders, start a project from them and
+qrate turns each folder into a parent row. [Turn a folder of scans into a RAD or DACS hierarchy](/guides/folder-to-archival-hierarchy)
+walks through it.
+
+**By hand.** For a flat list, build the tree in the grid:
+
+1. Select the item rows that belong together, right-click a row header and choose **Group**.
+   qrate adds a parent row above them; type the series title into it.
+2. Or put the cursor on an item and press **Ctrl+]** to make it a child of the row above.
+   **Ctrl+[** moves it back out.
+3. Or drag a row header onto the middle of another row to nest it there.
+
+### Know the limit in 0.7.1
+
+Rows imported from folders and files get the folder and file levels you chose. A row you add by
+hand takes the level of the row next to it. qrate 0.7.1 has no command yet to change the level of a
+single row, so plan the levels before you import: choose what folders and files are called so that
+most rows land on the right level, and record exceptions in a note until you export.
+
+## Get the levels out again
+
+Level and parent live with the row, so to write them into a CSV or Excel export, add a column for
+each and set its type in **Settings ▸ Columns ▸ Data types**:
+
+- **Description Level** writes the level, such as Series.
+- **Parent Component** writes the row it sits inside.
+- **Source Path** writes the folder path a row was imported from.
+
+qrate fills these on export, from the real structure, so they cannot drift out of step with it. The
+JSON-LD and ZIP exports keep the hierarchy even without them. See
+[Export your catalogue to CSV and Excel](/guides/export-to-csv-and-excel).
+
+## Where this fits
+
+Levels are one part of a digitization project's metadata. The
+[practical guide to metadata for digitization projects](/guides/metadata-for-digitization-projects)
+puts them alongside dates, names, subjects and files.

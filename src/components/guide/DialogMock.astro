@@ -1,0 +1,44 @@
+---
+// A drawn qrate dialog: a title, an optional line of text, choices, and buttons.
+interface Props {
+  title: string;
+  text?: string;
+  options?: { label: string; detail?: string; selected?: boolean }[];
+  fields?: [string, string][];
+  buttons?: string[];
+  primary?: string;
+}
+const { title, text, options = [], fields = [], buttons = [], primary } = Astro.props;
+---
+
+<div class="mx-auto w-full max-w-[460px] border border-app-border bg-app-bg font-sans text-[12px] text-app-fg shadow-[0_12px_34px_rgba(23,20,15,.16)]">
+  <div class="border-b border-app-border bg-app-title px-3.5 py-2 text-[12.5px] font-semibold">{title}</div>
+  <div class="flex flex-col gap-2 px-3.5 py-3">
+    {text && <div class="leading-[1.5]">{text}</div>}
+    {
+      options.map((o) => (
+        <div class:list={['border px-3 py-2', o.selected ? 'border-app-active-border bg-app-active-bg' : 'border-app-border']}>
+          <div class="font-medium">{o.label}</div>
+          {o.detail && <div class="mt-0.5 text-[11px] leading-[1.45] text-app-muted">{o.detail}</div>}
+        </div>
+      ))
+    }
+    {
+      fields.map(([k, v]) => (
+        <div class="grid grid-cols-[140px_1fr] items-center gap-2">
+          <span class="text-app-muted">{k}</span>
+          <span class="border border-app-border px-2 py-1 font-mono text-[11px]">{v}</span>
+        </div>
+      ))
+    }
+  </div>
+  {
+    buttons.length > 0 && (
+      <div class="flex justify-end gap-2 border-t border-app-border bg-app-title px-3.5 py-2">
+        {buttons.map((b) => (
+          <span class:list={['border px-3 py-1', b === primary ? 'border-app-active-border bg-app-active-border text-white' : 'border-app-border']}>{b}</span>
+        ))}
+      </div>
+    )
+  }
+</div>

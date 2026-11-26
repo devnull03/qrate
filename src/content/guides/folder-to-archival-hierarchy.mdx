@@ -1,6 +1,7 @@
 ---
 title: Turn a folder of scans into a RAD or DACS hierarchy
 description: Start a qrate project from the folders you already have, so series, files and items arrive as nested rows with their levels filled in.
+qrateVersion: 0.7.1
 published: 2026-11-26
 tags: [projects, arrangement]
 related:
@@ -8,6 +9,11 @@ related:
   - { label: 'The grid: groups', href: '/docs/grid#groups' }
   - { label: 'Columns: column type', href: '/docs/columns#column-type' }
 ---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+import DialogMock from '../../components/guide/DialogMock.astro';
+import FolderTree from '../../components/guide/FolderTree.astro';
 
 Most digitization projects already have an arrangement before anyone opens a spreadsheet: it is
 the folder tree on the shared drive. A `Series 1` folder holds `File 3`, which holds the scans.
@@ -27,20 +33,43 @@ the arrangement you want to describe:
 - Folder names you are happy to see in the grid. You can rename rows later, but it is quicker to
   fix `New folder (2)` now.
 
+<Figure caption="A folder tree that is ready to import: one folder per series, scans inside the folder they belong to.">
+  <FolderTree label="Ross Family Papers" items={['Correspondence/', '>Outgoing/', '>>1939-03-12_letter.jpg', '>>1939-04-02_letter.jpg', '>Incoming/', '>>1946-10-08_envelope.jpg', 'Photographs/', '>slide-01.jpg', '>slide-02.jpg']} />
+</Figure>
+
 qrate never moves or copies these files. The project links to them where they are, so leave the
 tree where it will live, not on your desktop.
 
 ## Create the project
 
-1. Open the launcher with **File ▸ Open Projects…** (**Ctrl+O**).
-2. Choose **Blank project**, then choose the top folder of the collection. You can also drag the
-   folder straight onto the launcher.
-3. Under **Archival description standard**, pick the one your institution follows: **RAD**,
-   **DACS**, **ISAD(G)**, **Records in Contexts**, or **Custom**.
-4. Choose what folders and files are called. For a typical collection, folders are **Series**
-   and files are **Item**. If your lowest folders are files in the archival sense, say so here.
-5. Save the project. The wizard suggests the folder you last used, or a `qrate` folder in your
-   Documents the first time.
+1. Open the launcher with **File ▸ Open Projects…** (**Ctrl+O**). You can also drag the folder
+   straight onto the launcher and skip to step 4.
+2. Under **Create New**, choose **Blank**, and give the project a name on the **Name** step.
+3. On the **Files** step, choose **Link a files folder** and pick the top folder of the
+   collection.
+4. Open **Advanced: folder rows, description standard, duplicates**:
+   - **Archival description standard**: pick the one your institution follows, **RAD**,
+     **DACS**, **ISAD(G)**, **Records in Contexts**, or **Custom**.
+   - **Folders are called** and **Files are called**: for a typical collection, Series and Item.
+     If your lowest folders are files in the archival sense, say so here.
+   - **Create a row for the selected files folder**: leave it off when the folder holds only this
+     collection, turn it on if you want a top row for the fonds or collection itself.
+5. On **Create**, check the **Hierarchy preview**, then click **Create Project**.
+
+<Figure caption="The Advanced block on the Files step, where folder rows get their level names.">
+  <DialogMock
+    title="Add your files"
+    text="Folder and file rows become archival components using this vocabulary."
+    fields={[
+      ['Archival description standard', 'RAD'],
+      ['Folders are called', 'Series'],
+      ['Files are called', 'Item'],
+      ['Create a row for the selected files folder', 'Off'],
+    ]}
+    buttons={['Back', 'Next →']}
+    primary="Next →"
+  />
+</Figure>
 
 The result is one `.qrate` file. It is a single SQLite database, so you can copy it, back it up
 or email it like any other file. The scans stay where they were.
@@ -50,6 +79,21 @@ or email it like any other file. The scans stay where they were.
 Every folder is now a row with a chevron in its row header, and the files inside it are its
 children. Click a chevron to collapse or expand a group, or press **Ctrl+Alt+Right** and
 **Ctrl+Alt+Left** to expand or collapse everything.
+
+<Figure caption="The same tree in the grid. A Description Level column, added afterwards, shows each row's level.">
+  <AppMock
+    columns={['File', 'Title', 'Description Level']}
+    widths="1.4fr 1.2fr 0.8fr"
+    rows={[
+      { cells: ['Correspondence', '', 'Series'], open: true },
+      { cells: ['Outgoing', '', 'Series'], depth: 1, open: true },
+      { cells: ['1939-03-12_letter.jpg', '', 'Item'], depth: 2, sel: 1 },
+      { cells: ['1939-04-02_letter.jpg', '', 'Item'], depth: 2 },
+      { cells: ['Incoming', '', 'Series'], depth: 1, open: false },
+      { cells: ['Photographs', '', 'Series'], open: false },
+    ]}
+  />
+</Figure>
 
 qrate stores each row's level, its parent and the path it came from with the row itself. To see
 them as columns, and to have them written out when you export, add a column and set its type in
@@ -85,6 +129,12 @@ Project ▸ Description**. Changing the standard never rewrites rows: it sets th
 new rows and later imports get. Rows you have already described keep their level.
 
 ## Next
+
+Nested folders all get the folder level, so `Outgoing` above is a Series too. In qrate 0.7.1 there is
+no command to change one row's level, so if your sub-folders are sub-series, decide before import
+whether Series or Subseries is the better name for every folder level.
+[Levels of description in a spreadsheet](/guides/levels-of-description-in-a-spreadsheet) covers what
+each standard calls them.
 
 Describe the items, then check your work in the Problems panel before you export. The JSON-LD
 and ZIP exports keep the arrangement, because each row records the row it is part of. See

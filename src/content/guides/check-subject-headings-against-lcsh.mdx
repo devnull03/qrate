@@ -1,0 +1,98 @@
+---
+title: Check subject headings against LCSH, GeoNames and Wikidata
+description: Validate a spreadsheet column of subjects or places against Library of Congress Subject Headings, GeoNames or Wikidata, and accept the closest authorised heading with a click.
+qrateVersion: 0.7.1
+published: 2026-11-26
+tags: [subjects, authorities, lcsh]
+related:
+  - { label: 'Columns: authority lists', href: '/docs/columns#authority-lists' }
+  - { label: 'Diagnostics', href: '/docs/diagnostics' }
+  - { label: 'Islandora plugin', href: '/docs/plugins/islandora' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+
+A subject column is only as useful as it is consistent with the vocabulary it claims to use.
+`World War 1`, `WWI` and `World War, 1914-1918` are all readable, but only the last is the Library
+of Congress subject heading, and only the last will link up with every other catalogue that uses
+LCSH.
+
+Checking headings by hand means a browser tab on id.loc.gov and a lot of copying. qrate can check
+the whole column for you, against LCSH, GeoNames or Wikidata, and offer the closest authorised form
+as a fix.
+
+## Pick the authority for a column
+
+1. Choose **Data ▸ Column Settings…**.
+2. Under **Checked against**, pick the authority for the column:
+   - **LCSH** for topical subjects.
+   - **GeoNames** for places.
+   - **Wikidata** for people, organisations and anything else with a Wikidata item.
+3. If the column holds several headings per cell, set its **Value separator**, such as `|`, so each
+   heading is checked on its own.
+
+Values are checked over the network, so findings appear as the answers come back, not as you type.
+
+## Read the findings
+
+Each heading the authority does not recognise becomes an error in the Problems panel, saying which
+authority turned it down:
+
+<Figure caption="LCSH findings. Right-clicking the cell offers the closest authorised heading as the fix.">
+  <AppMock
+    columns={['Title', 'Subject']}
+    widths="1.2fr 1.4fr"
+    rows={[
+      { cells: ['Enlistment papers', 'World War 1'], marks: { 1: 'error' }, sel: 1 },
+      { cells: ['Ration book', 'World War, 1939-1945'] },
+      { cells: ['Harbour, looking east', 'Harbors'] },
+      { cells: ['Victory parade', 'WWII'], marks: { 1: 'error' } },
+    ]}
+    context={{ items: ['Problems (1) ▸', '-', 'Use “World War, 1914-1918”', 'Ignore this occurrence', 'Ignore in column'], active: 'Use “World War, 1914-1918”', top: 96, left: 330 }}
+    problems={{ tab: 'Errors', items: [
+      { sev: 'error', text: '“World War 1” is not a Library of Congress subject heading', loc: 'Row 1 · Subject' },
+      { sev: 'error', text: '“WWII” is not a Library of Congress subject heading', loc: 'Row 4 · Subject' },
+    ] }}
+  />
+</Figure>
+
+The messages are specific to the authority:
+
+- LCSH: “World War 1” is not a Library of Congress subject heading
+- GeoNames: “Halifx” is not a place GeoNames knows
+- Wikidata: “Agnes Vardaa” does not match anything in Wikidata
+
+## Accept a suggestion
+
+Where the authority has a close match, qrate offers it. Right-click the cell, open **Problems**, and
+choose **Use “World War, 1914-1918”**. It replaces the cell's value as one change you can undo.
+
+For many cells with the same heading, look for the group in the Problems panel: repeated findings
+are grouped with a count, and fixing them is quicker from there.
+
+Not every rejection is a mistake. A local heading, a new term, or a name the authority does not
+hold yet can be correct. Choose **Ignore this occurrence**, or **Ignore in column** to accept that
+value everywhere in the column.
+
+## Set up GeoNames
+
+GeoNames needs a free account with its web services turned on. Create one at geonames.org, enable
+**Free Web Services** in your account page, then enter the username under **Settings ▸ Columns ▸
+Authority accounts**. If GeoNames rejects the account, qrate stops sending requests and shows one
+warning instead of an error per row. Fix the account in the same place to try again.
+
+## Your own vocabularies
+
+If your headings come from an Islandora site's taxonomies rather than LCSH, the
+[Islandora plugin](/docs/plugins/islandora) checks a column against those instead, and suggests
+terms as you type. [Clean a spreadsheet before an Islandora Workbench ingest](/guides/clean-a-spreadsheet-for-islandora-workbench)
+sets it up.
+
+## Related
+
+- [Find and fix name variants](/guides/find-and-fix-name-variants): consistent forms first, then
+  authorised forms.
+- [Set up columns for your collection](/guides/set-up-columns-for-your-collection): where the other
+  column settings live.
+- The [practical guide to metadata for digitization projects](/guides/metadata-for-digitization-projects).

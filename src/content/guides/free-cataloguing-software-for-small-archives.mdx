@@ -1,0 +1,124 @@
+---
+title: 'Free cataloguing software for small archives: spreadsheets, AtoM, ArchivesSpace and qrate'
+description: An honest comparison of free ways for a small archive to catalogue a collection, what each is good at, what it costs to run, and how they work together.
+qrateVersion: 0.7.1
+published: 2026-11-26
+tags: [software, small-archives]
+related:
+  - { label: 'Install qrate', href: '/docs/install' }
+  - { label: 'Export and Google Sheets', href: '/docs/export-and-sync' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+
+A small archive, a historical society, a community collection, a university department with one
+part-time archivist, needs to describe its holdings and has close to no budget. The good news is
+that the best-known tools are free. The catch is that "free to download" and "free to run" are not
+the same thing.
+
+This guide compares four free options honestly, including the one we make. Short version: they do
+different jobs, and the strongest setup often uses two of them.
+
+## The short answer
+
+| | Spreadsheet | AtoM | ArchivesSpace | qrate |
+| --- | --- | --- | --- | --- |
+| **What it is** | Excel, LibreOffice or Google Sheets | Web-based description and access system | Web-based archives management system | Desktop app for preparing metadata |
+| **Runs on** | Your computer or Google | A web server | A web server | Your computer |
+| **Needs IT to set up** | No | Yes, or paid hosting | Yes, or paid hosting | No |
+| **Publishes a public catalogue** | No | Yes | Yes, with its public interface | No |
+| **Multilevel description** | Faked with ID columns | Yes | Yes | Yes |
+| **Checks dates, spelling, authorities** | No | Some, on entry | Some, on entry | Yes, continuously |
+| **Shows the scan beside the record** | No | Yes, once uploaded | Through digital object links | Yes, from your folders |
+| **Works offline** | Mostly | No | No | Yes |
+
+## Spreadsheets
+
+Most small archives start here, and there is no shame in it: everyone knows how to use one, and a
+CSV goes anywhere.
+
+**Good at:** zero setup, easy sharing, getting volunteers typing on day one.
+
+**Where it hurts:** nothing checks anything. Dates arrive in five formats, names in three spellings,
+and the hierarchy lives in "parent ID" columns that break when someone sorts. A spreadsheet also
+knows nothing about the scans it describes.
+
+## AtoM (Access to Memory)
+
+AtoM is an open-source, web-based system for archival description and online access, built around
+international standards with templates for ISAD(G), RAD and DACS. Many Canadian archives and
+networks use it to publish finding aids.
+
+**Good at:** standards-based multilevel description, authority records, and a public website for
+your holdings.
+
+**What it costs to run:** it is server software. Someone has to install, update and back it up, or
+you pay a hosting provider. For a one-person shop, that is the real price.
+
+## ArchivesSpace
+
+ArchivesSpace is an open-source, web-based archives management system, widely used in the United
+States and built around DACS. It covers accessioning, description, locations and more, with an
+optional public interface.
+
+**Good at:** running an archive's whole collection management, not just description, for teams.
+
+**What it costs to run:** like AtoM, it is a server application. Many institutions use paid hosting
+or a consortium arrangement rather than running it themselves.
+
+## qrate
+
+qrate is the tool we make, so read this section with that in mind. It is a free, open-source
+desktop app for creating and cleaning metadata: a spreadsheet-like grid that understands archival
+description.
+
+**Good at:**
+
+- **No setup.** Install it and start. A project is one file on your computer.
+- **Working with the files you have.** Start from a folder of scans and it becomes a
+  [RAD or DACS hierarchy](/guides/folder-to-archival-hierarchy); start from a spreadsheet and each
+  row [links to its scan](/guides/link-scans-by-filename).
+- **Catching mistakes while you work.** [EDTF dates](/guides/edtf-dates-explained),
+  [name variants](/guides/find-and-fix-name-variants),
+  [LCSH, GeoNames and Wikidata headings](/guides/check-subject-headings-against-lcsh), spelling in over
+  60 languages and missing files all show up in one Problems panel.
+- **Offline and private.** Nothing leaves your computer unless you export it.
+
+**What it is not:** qrate does not publish a public catalogue, and it is not a multi-user server
+system. It does not manage accessions, locations or loans. When the metadata is ready, it
+[exports](/guides/export-to-csv-and-excel) to CSV, Excel, JSON-LD, Zotero or a ZIP of data and
+files, for whatever publishes it.
+
+## Using them together
+
+The tools are less rivals than stages. A common pattern:
+
+<Figure caption="Prepare and check metadata offline, then load it into the system that publishes it.">
+  <div class="mx-auto grid max-w-[640px] grid-cols-1 gap-px border border-rule bg-rule font-mono text-[12px] md:grid-cols-3">
+    <div class="bg-paper p-4"><div class="text-accent">1 · Prepare</div><div class="mt-1 text-body">Folders of scans and legacy spreadsheets become one checked qrate project.</div></div>
+    <div class="bg-paper p-4"><div class="text-accent">2 · Export</div><div class="mt-1 text-body">CSV with the column names the target system's import expects.</div></div>
+    <div class="bg-paper p-4"><div class="text-accent">3 · Publish</div><div class="mt-1 text-body">Import into AtoM, ArchivesSpace or Islandora for public access.</div></div>
+  </div>
+</Figure>
+
+AtoM and ArchivesSpace both import spreadsheets, and Islandora uses CSV through Islandora Workbench.
+Name your qrate columns after the target's import template, and the export is ready to load.
+[Clean a spreadsheet before an Islandora Workbench ingest](/guides/clean-a-spreadsheet-for-islandora-workbench)
+shows this end to end.
+
+## How to choose
+
+- **You need a public online catalogue and have IT support or a hosting budget:** AtoM or
+  ArchivesSpace, with qrate as an optional clean-up step before import.
+- **You have scans, spreadsheets and no server:** start with qrate. Your work exports cleanly if you
+  move to a hosted system later.
+- **You have a few hundred items and one volunteer:** a spreadsheet can be enough. Add qrate when the
+  mistakes start costing you time.
+
+Whatever you choose, describe to a standard (RAD, DACS or ISAD(G)), write dates in EDTF, and keep
+names consistent. That is what makes the catalogue portable between all of these tools.
+
+## Next
+
+- [Start your first qrate project](/guides/start-your-first-project)
+- The [practical guide to metadata for digitization projects](/guides/metadata-for-digitization-projects)

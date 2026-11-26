@@ -6,7 +6,11 @@ export type Guide = CollectionEntry<'guides'>;
 export async function getGuides(): Promise<Guide[]> {
   const all = await getCollection('guides', (g) => import.meta.env.DEV || !g.data.draft);
   return all.sort(
-    (a, b) => b.data.published.getTime() - a.data.published.getTime() || a.data.title.localeCompare(b.data.title)
+    (a, b) =>
+      Number(b.data.series === 'start-here') - Number(a.data.series === 'start-here') ||
+      a.data.order - b.data.order ||
+      b.data.published.getTime() - a.data.published.getTime() ||
+      a.data.title.localeCompare(b.data.title)
   );
 }
 

@@ -1,0 +1,107 @@
+---
+title: Find your way around the qrate window
+description: The grid, the gallery, the Details, Problems and History panels, and the status bar that shows and hides them. Five minutes now saves hunting later.
+qrateVersion: 0.7.1
+series: start-here
+order: 2
+published: 2026-11-26
+tags: [basics]
+related:
+  - { label: 'Step 1: the project window', href: '/docs/getting-started/1-create-a-project#the-project-window' }
+  - { label: 'Keyboard shortcuts', href: '/docs/shortcuts' }
+  - { label: 'The grid', href: '/docs/grid' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+
+qrate's window has one job in the middle, describing rows, and a few panels around it that help.
+This tour names each part, so the rest of the tutorials can say "open the Details panel" and you
+know where to look. Open the example project from the launcher and follow along.
+
+<Figure caption="The project window in Table view: the Details panel in the left dock, the grid in the centre, Problems in the bottom dock, and the status bar along the bottom.">
+  <AppMock
+    columns={['File', 'Title', 'Date', 'Subject']}
+    widths="1.1fr 1.4fr 0.6fr 1fr"
+    rows={[
+      { cells: ['slide-01.jpg', 'Picnic at the lake', '1962~', 'Lakes'] },
+      { cells: ['slide-02.jpg', 'Grandmother in the garden', '1963', 'Gardens'], sel: 1 },
+      { cells: ['slide-03.jpg', 'House on Elm Street', 'ca. 1965', 'Houses'], marks: { 2: 'error' } },
+      { cells: ['slide-04.jpg', 'Wedding party, steps of the church', '1966-06', 'Weddings'] },
+    ]}
+    details={{ file: 'slide-02.jpg', fields: [['Title', 'Grandmother in the garden'], ['Date', '1963']] }}
+    problems={{ items: [{ sev: 'error', text: '“ca. 1965” is not an EDTF date', loc: 'Row 3 · Date' }] }}
+  />
+</Figure>
+
+## The grid
+
+The grid is a spreadsheet. Each **row** is one record, a photo, a letter, a box, and each
+**column** is one field, such as Title or Date. Click a cell and type to replace its value, or
+press **Enter** to edit what is there. Copy and paste work between qrate and Excel or Google
+Sheets.
+
+Rows can sit inside other rows, the way items sit inside a series. A row with children has a
+chevron in its row header: click it to fold the group away.
+
+## Table and Gallery
+
+Above the grid, the **Table** and **Gallery** tabs switch between rows of text and a wall of
+thumbnails. **Ctrl+1** and **Ctrl+2** do the same. The gallery is the quickest way to spot a scan
+that is upside down, blank, or attached to the wrong record.
+
+<Figure caption="Gallery view: one tile per row, from the file each row links to.">
+  <AppMock
+    gallery
+    columns={['File']}
+    rows={[
+      { cells: ['slide-01.jpg'] },
+      { cells: ['slide-02.jpg'], sel: 0 },
+      { cells: ['slide-03.jpg'] },
+      { cells: ['slide-04.jpg'] },
+    ]}
+  />
+</Figure>
+
+## The panels
+
+Panels open in three **docks**: left, right and bottom. Each has a button in the status bar that
+shows or hides it.
+
+| Panel | Starts in | What it is for |
+| --- | --- | --- |
+| **Details** | Left dock (right dock in Gallery) | The selected row's file and fields together. Edit a field here, or select several rows and edit them all at once. |
+| **Problems** | Bottom dock | Everything qrate's checks found: spelling, dates, missing files, and more. Click a finding to jump to its cell. |
+| **History** | Right dock | Every change to the project, who made it and when, with a way to put things back. |
+
+The keyboard is quicker once you know it: **Ctrl+B** toggles the left dock, **Ctrl+Alt+B** the
+right, and **``Ctrl+` ``** the bottom. **Ctrl+Shift+M** opens Problems wherever it is. **Shift+Esc**
+zooms the panel you are in to fill the window, and pressing it again puts it back.
+
+## The viewer
+
+Click the preview in the Details panel to open the file full screen. You can zoom, rotate, page
+through a PDF, and step to the previous or next row's file with the arrows. **Open in new window**
+puts the file in a second window that follows your selection, which is handy on two screens.
+**Esc** closes the viewer.
+
+## The menus
+
+The menu bar has **File**, **Edit**, **Insert**, **View**, **Data**, **Plugins** and **Help**. On
+a Mac they live in the system menu bar. A few you will use often:
+
+- **File ▸ Import Files or Folders…** adds more files as rows.
+- **File ▸ Export** writes CSV, Excel and other formats.
+- **Data ▸ Column Settings…** sets what each column holds.
+- **Settings** (**Ctrl+,**) holds everything else.
+
+## The status bar
+
+The bar along the bottom is worth a glance now and then. Besides the panel buttons, it shows the
+**Problems** count, and **New files (N)** when files have appeared in your files folder that no
+row links to yet.
+
+## Next
+
+Now that you know where things are, [set up columns for your collection](/guides/set-up-columns-for-your-collection).
+Ten minutes on columns makes every check after that more useful.
