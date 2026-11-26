@@ -16,9 +16,34 @@ const { guide, newer, older } = Astro.props as { guide: Guide; newer?: Guide; ol
 const { Content } = await render(guide);
 const { title, description, published, updated, tags, related } = guide.data;
 const rel = latest(await getReleases());
+const url = new URL(`/guides/${guide.id}`, Astro.site).href;
+const team = { '@type': 'Organization', name: 'qrate', url: Astro.site?.href };
+const schema = [
+  {
+    '@context': 'https://schema.org',
+    '@type': 'Article',
+    headline: title,
+    description,
+    datePublished: published.toISOString().slice(0, 10),
+    dateModified: (updated ?? published).toISOString().slice(0, 10),
+    author: team,
+    publisher: team,
+    mainEntityOfPage: url,
+    keywords: tags.join(', '),
+  },
+  {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Guides', item: new URL('/guides', Astro.site).href },
+      { '@type': 'ListItem', position: 2, name: title, item: url },
+    ],
+  },
+];
 ---
 
 <Base title={`qrate · ${title}`} description={description} current="guides" version={rel?.tag_name}>
+  <script type="application/ld+json" set:html={JSON.stringify(schema)} />
   <section class="gut border-b border-rule py-[30px] md:pb-[46px] md:pt-[54px]">
     <div class="mx-auto max-w-[720px]">
       <a href="/guides" class="eyebrow">← How-to guides</a>
