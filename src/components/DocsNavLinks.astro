@@ -1,6 +1,6 @@
 ---
 // Overrides Starlight's SocialIcons slot. The design header (frame 1b) carries
-// Site / Changelog / GitHub next to the theme toggle, and Starlight has no
+// Site / Guides / Changelog / GitHub next to the theme toggle, and Starlight has no
 // config option for plain top-level links — only social icons.
 // GitHub stays the icon Starlight renders from `social`, so it is not repeated
 // as text here — two GitHub controls side by side was the earlier mistake.
@@ -8,6 +8,7 @@ import Default from '@astrojs/starlight/components/SocialIcons.astro';
 
 const links = [
   { label: 'Site', href: '/' },
+  { label: 'Guides', href: '/guides' },
   { label: 'Changelog', href: '/changelog' },
 ];
 ---

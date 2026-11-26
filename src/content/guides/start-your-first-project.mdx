@@ -1,0 +1,148 @@
+---
+title: Start your first qrate project
+description: Install qrate, try the example project, then create your own from a folder of scans, an existing spreadsheet, or an empty grid.
+qrateVersion: 0.7.1
+series: start-here
+order: 1
+published: 2026-11-26
+tags: [basics, projects]
+related:
+  - { label: 'Install', href: '/docs/install' }
+  - { label: 'Projects', href: '/docs/projects' }
+  - { label: 'Getting started walkthrough', href: '/docs/getting-started' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+import DialogMock from '../../components/guide/DialogMock.astro';
+
+By the end of this tutorial you will have your own qrate project open, with your collection's rows
+in it, saved as one `.qrate` file. It takes about ten minutes, and most of that is deciding which
+way to start.
+
+## Install qrate
+
+Download qrate from the [install page](/docs/install). The recommended **base** download suits
+most people: it is small, and qrate offers to add optional tools, such as PDF and video previews,
+the first time you need them. On a Mac you can also use Homebrew:
+
+```sh
+brew install --cask devnull03/tap/qrate
+```
+
+qrate is free and open source. There is no account to create and nothing to sign in to. Projects
+live on your computer.
+
+## Look around the example first
+
+When qrate opens, it shows the launcher. Before you create anything, click **Open example** under
+**Explore an example project**. It opens four slides from a family collection, with photos to
+browse and a few problems for qrate to point out. Nothing you do in it can hurt your own work, so
+it is the place to click around.
+
+<Figure caption="The launcher, drawn. Explore an example project sits beside Create New, which has the three ways to start a project of your own.">
+  <DialogMock
+    title="Welcome to qrate"
+    text="Build a catalog from a spreadsheet, or start with a blank one. No account needed. Projects live on this computer."
+    options={[
+      { label: 'Explore an example project', detail: 'Four slides from a family collection, with photos to browse in Gallery and findings to review in Problems.' },
+      { label: 'Blank', detail: "Add files whenever you're ready.", selected: true },
+      { label: 'Spreadsheet + folder', detail: 'Import a CSV or Excel file and its folder.' },
+      { label: 'Google Sheet', detail: 'Use a shared spreadsheet link.' },
+    ]}
+    buttons={['Open an existing .qrate project…', 'Open example']}
+  />
+</Figure>
+
+To come back to the launcher later, choose **File ▸ Open Projects…** or press **Ctrl+O** (**Cmd+O**
+on a Mac). It also lists your recent projects.
+
+## Pick how you start
+
+Under **Create New**, choose by what you already have, not by what you want to end up with. Any
+project can take more rows, files and spreadsheets later.
+
+| You have | Choose | What you get |
+| --- | --- | --- |
+| A folder of scans and nothing written down | **Blank**, then link the folder | One row per file, nested in one row per folder |
+| A spreadsheet somebody already started | **Spreadsheet + folder** | The spreadsheet as the grid, each row linked to its file |
+| A shared Google Sheet | **Google Sheet** | A copy of the sheet as a project |
+| Nothing yet | **Blank**, then **Add files later** | An empty grid to type into |
+
+You can also drag things onto the launcher: a spreadsheet starts an import, and files or folders
+start a folder-based project.
+
+## Walk through the wizard
+
+The wizard has a step for each decision, named across its top: **Name**, **Files**, **Link**,
+**Columns** and **Create**. A blank project skips **Link**.
+
+1. **Name.** Type a **Project name** and choose where to **Save project to**. qrate suggests the
+   folder you last used, or a `qrate` folder in your Documents the first time.
+2. **Files.** Choose your spreadsheet, your files folder, or both. **Add files later** starts
+   with an empty table.
+3. **Link.** For a spreadsheet and folder, qrate matches rows to files and tells you how many it
+   found. See [Link an existing spreadsheet to its scans](/guides/link-scans-by-filename).
+4. **Columns.** qrate needs to know two things: which column is each row's **Title**, and which
+   holds its **File**. From a spreadsheet it guesses both. For a blank project, **Use default
+   Title and File columns** gives you those two to start.
+5. **Create.** The last page, **Ready to create your project**, sums it all up. For folders, it
+   shows a **Hierarchy preview** of the rows it will make. Check it, then click **Create Project**.
+
+<Figure caption="The Files step for a folder-based project, with its Advanced block open. These are the only settings here that are easier to get right now than later.">
+  <DialogMock
+    title="Add your files"
+    text="Point qrate at a folder of files, or skip and add them later."
+    options={[
+      { label: 'Link a files folder', detail: 'Match photos and scans to rows now.', selected: true },
+      { label: 'Add files later', detail: 'Start with an empty table. Skips linking.' },
+    ]}
+    fields={[
+      ['Archival description standard', 'DACS'],
+      ['Folders are called', 'Series'],
+      ['Files are called', 'Item'],
+    ]}
+    buttons={['Back', 'Next →']}
+    primary="Next →"
+  />
+</Figure>
+
+The **Advanced** block on the Files step holds the archival description standard (RAD, DACS,
+ISAD(G), Records in Contexts, or Custom) and what folders and files are called. Pick the
+standard your institution uses. If you are not sure, any choice is safe: it can be changed later
+in **Settings ▸ Project ▸ Description**, and changing it never rewrites rows you have described.
+[Levels of description in a spreadsheet](/guides/levels-of-description-in-a-spreadsheet) explains
+the choice.
+
+## What you have now
+
+The project opens in the grid. Each row is a record, each column is a field.
+
+<Figure caption="A new project started from a folder: a parent row for each folder, a row for each file inside it.">
+  <AppMock
+    columns={['File', 'Title', 'Date']}
+    widths="1.3fr 1.6fr 0.7fr"
+    rows={[
+      { cells: ['Letters', '', ''], open: true },
+      { cells: ['1939-03-12_letter.jpg', '', ''], depth: 1, sel: 1 },
+      { cells: ['1939-04-02_letter.jpg', '', ''], depth: 1 },
+      { cells: ['1946-10-08_envelope.jpg', '', ''], depth: 1 },
+      { cells: ['Photographs', '', ''], open: false },
+    ]}
+  />
+</Figure>
+
+Two facts shape everything after this:
+
+- **The project is one file.** A `.qrate` file holds your rows, column settings, notes and
+  history. Copy it to move or back up the project.
+- **Your files stay where they are.** qrate links to your scans in their folder. It never moves
+  them or copies them into the project, so keep that folder somewhere permanent.
+
+qrate saves your edits on its own, a moment after you stop typing. A dot in the title bar means
+there are changes it has not written yet, and **Ctrl+S** saves at once.
+
+## Next
+
+Take a few minutes to [find your way around the qrate window](/guides/find-your-way-around-qrate)
+before you start describing.

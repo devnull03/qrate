@@ -1,0 +1,108 @@
+---
+title: Save, back up and move a qrate project
+description: How qrate saves, what to back up, and how to move a project and its scans to another computer or drive without losing a single link.
+qrateVersion: 0.7.1
+series: start-here
+order: 5
+published: 2026-11-26
+tags: [basics, projects, files]
+related:
+  - { label: 'Projects: saving', href: '/docs/projects#saving' }
+  - { label: 'Files and photos: when the whole files folder moved', href: '/docs/files-and-photos#when-the-whole-files-folder-moved' }
+  - { label: 'Change history', href: '/docs/history' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+import DialogMock from '../../components/guide/DialogMock.astro';
+import FolderTree from '../../components/guide/FolderTree.astro';
+
+A catalogue is months of work. This last tutorial covers the three things that keep it safe:
+knowing when qrate has saved, knowing what to back up, and moving a project without breaking it.
+
+## How qrate saves
+
+qrate saves on its own. A moment after you stop typing, it writes your edits to the project file
+in the background, so a big project never makes you wait. Column settings and layout save the
+moment you change them.
+
+- A **dot in the title bar** means there are edits it has not written yet.
+- **Ctrl+S** saves at once, whatever the autosave setting.
+- If a save fails, say the drive is full, qrate tells you and keeps your changes. It never drops
+  edits without asking you first.
+
+To change this, open **Settings ▸ Table ▸ Saving**: turn **Autosave** off, or choose **On every
+edit** instead of **After a short pause**.
+
+## What to back up
+
+A project is two things in two places:
+
+<Figure caption="A project and its files. Back up both; they do not have to live side by side.">
+  <div class="flex flex-wrap items-start justify-center gap-6">
+    <FolderTree label="Documents" items={['qrate/', '>Ross Family Papers.qrate']} />
+    <FolderTree label="Archive drive" items={['Ross Family Papers/', '>Letters/', '>>1939-03-12_letter.jpg', '>>1939-04-02_letter.jpg', '>Photographs/', '>>slide-01.jpg']} />
+  </div>
+</Figure>
+
+- **The `.qrate` file** holds every row, column setting, note and the full change history. It is
+  one file. Copy it, and you have copied the project.
+- **The files folder** holds your scans. qrate only links to them, so they are not inside the
+  `.qrate` file and need backing up on their own.
+
+Copy the `.qrate` file while qrate is closed, or right after a save, so you catch everything.
+
+## Mark a version before a big change
+
+Before a bulk find-and-replace or handing the project to a colleague, name a point in the history.
+In the **History** panel, right-click the latest saved change, choose **Name This Version…**, and
+type something like "Before subject clean-up". If it goes wrong, right-click that change and choose
+**Restore Project to Here…**. The restore is itself a change you can undo, and no history is
+deleted.
+
+## Move a project to another computer
+
+1. Copy the `.qrate` file and the files folder to the new computer or drive.
+2. Open the `.qrate` file in qrate.
+3. If the files folder is in a new place, qrate notices. Instead of hundreds of missing-file
+   errors, it shows one banner above the grid.
+
+<Figure caption="The banner qrate shows when the files folder is not where the project expects it.">
+  <AppMock
+    columns={['File', 'Title']}
+    widths="1fr 1.4fr"
+    banner={{ text: 'Files folder not found', action: 'Relink…' }}
+    rows={[
+      { cells: ['1939-03-12_letter.jpg', 'Letter to Margaret'], dim: true },
+      { cells: ['1939-04-02_letter.jpg', 'Letter to Margaret'], dim: true },
+    ]}
+  />
+</Figure>
+
+4. Click **Relink…** and pick the folder's new location. qrate counts the files it can find there
+   first and asks you to confirm, so you never relink to the wrong folder by accident.
+
+<Figure caption="qrate checks the folder before it changes anything.">
+  <DialogMock
+    title="Relink missing files"
+    text="412 of 412 linked files found in E:\Archive\Ross Family Papers"
+    buttons={['Cancel', 'Choose another…', 'Relink']}
+    primary="Relink"
+  />
+</Figure>
+
+If you picked a folder one level off, qrate also looks in its parent and sibling folders and offers
+the one holding the most files. [Relink scans after the files folder moved](/guides/relink-scans-after-the-folder-moved)
+covers the trickier cases.
+
+## Hand the project to someone without qrate
+
+Not everyone you work with will install qrate. **File ▸ Export** writes CSV, Excel, JSON-LD and a
+ZIP of data plus files. The [online converter](/convert) turns a `.qrate` file into CSV, Excel,
+JSON-LD, CSL-JSON or a Google Sheet in any browser. See [Open a .qrate file without installing qrate](/guides/open-a-qrate-file-without-qrate).
+
+## You are set up
+
+That is the whole loop: start a project, set up columns, describe, save. From here, the
+[guides](/guides) take on real jobs. A good first one is the
+[practical guide to metadata for digitization projects](/guides/metadata-for-digitization-projects).

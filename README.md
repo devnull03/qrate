@@ -27,6 +27,19 @@ that worktree when the server exits. It uses a checked-in signed fixture and doe
 Cloudflare credentials. Use `bun run dev:windows:refresh` to test the latest production catalog with
 an authenticated Wrangler CLI.
 
+## Guides
+
+How-to articles live in `src/content/guides/`, one MDX file each, served at `/guides/<filename>`.
+Unlike the docs they are written here, not synced from main. `src/content.config.ts` checks the
+front matter, including `qrateVersion`, the version a guide was tested against; `series:
+start-here` puts a guide in the numbered beginner track. Set `draft: true` to preview one in
+`bun run dev` without publishing it.
+
+Pictures are screenshots under `public/guides/<filename>/`, or drawings from
+`src/components/guide/` (`AppMock`, `DialogMock`, `FolderTree`) inside a `Figure`. How to write
+one, the starter file, and the pull request checklist are on [/guides/contribute](https://qrate.dvnl.work/guides/contribute),
+built from `src/content/guide-template.mdx` and `.github/PULL_REQUEST_TEMPLATE/guide.md`.
+
 ## Deploy
 
 Cloudflare builds the `site` branch and deploys the `qrate` Worker. GitHub release and catalog

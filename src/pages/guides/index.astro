@@ -1,0 +1,64 @@
+---
+import Base from '../../layouts/Base.astro';
+import { getReleases, latest } from '../../lib/releases.js';
+import { getGuides, readingMinutes, type Guide } from '../../lib/guides';
+
+const guides = await getGuides();
+const start = guides.filter((g) => g.data.series === 'start-here');
+const rest = guides.filter((g) => g.data.series !== 'start-here');
+const rel = latest(await getReleases());
+
+const sections: [string, string, Guide[], boolean][] = [
+  ['Start here', 'New to qrate? Read these in order, from an empty launcher to a project you can trust.', start, true],
+  ['Guides', 'Real cataloguing jobs, start to finish.', rest, false],
+];
+---
+
+<Base
+  title="qrate · tutorials and how-to guides"
+  description="Tutorials for qrate, the free desktop app for archival metadata: start a project, set up columns, link scans, clean a spreadsheet, check dates and headings, and export."
+  current="guides"
+  version={rel?.tag_name}
+>
+  <section class="gut border-b border-rule py-[30px] md:pb-[46px] md:pt-[54px]">
+    <div class="eyebrow">Guides</div>
+    <h1
+      class="m-0 mb-3.5 mt-[18px] max-w-[720px] text-[32px] font-semibold leading-[1.04] tracking-[-0.035em] md:text-[46px]"
+    >
+      Learn qrate one task at a time.
+    </h1>
+    <p class="m-0 max-w-[560px] text-[15px] leading-[1.6] text-body">
+      Short tutorials to get started, then guides for the jobs archivists actually have. For what a
+      single menu or setting does, see the <a href="/docs" class="text-accent">docs</a>. Want to
+      write one? <a href="/guides/contribute" class="text-accent">Contribute a guide</a>.
+    </p>
+  </section>
+
+  {
+    sections.map(([heading, blurb, list, numbered]) =>
+      list.length === 0 ? null : (
+        <section class="gut border-b border-rule-soft py-[30px] md:py-[44px]">
+          <h2 class="m-0 text-[22px] font-semibold">{heading}</h2>
+          <p class="m-0 mb-5 mt-1 text-[14px] text-body">{blurb}</p>
+          <ol class="m-0 grid list-none grid-cols-1 gap-px border border-rule bg-rule p-0 md:grid-cols-2">
+            {list.map((g, i) => (
+              <li class:list={['bg-paper', i === list.length - 1 && list.length % 2 === 1 && 'md:col-span-2']}>
+                <a href={`/guides/${g.id}`} class="flex h-full gap-4 p-5 hover:no-underline md:p-6 [&:hover_h3]:underline">
+                  {numbered && <span class="font-mono text-[22px] font-semibold leading-none text-accent">{i + 1}</span>}
+                  <span class="flex min-w-0 flex-col gap-2">
+                    <span class="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+                      {readingMinutes(g.body)} min read · qrate {g.data.qrateVersion}
+                      {g.data.draft && ' · draft'}
+                    </span>
+                    <h3 class="m-0 text-[19px] font-semibold leading-[1.2] text-ink">{g.data.title}</h3>
+                    <span class="text-[14px] leading-[1.6] text-body">{g.data.description}</span>
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )
+    )
+  }
+</Base>

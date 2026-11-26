@@ -1,0 +1,102 @@
+---
+title: Find similar photos in a collection with visual search
+description: Search a photo or document collection by what the pictures show, not by their metadata, and find every other print from the same shoot. Runs offline, on your own computer.
+qrateVersion: 0.7.1
+published: 2026-11-26
+tags: [photos, search]
+related:
+  - { label: 'Visual search', href: '/docs/visual-search' }
+  - { label: 'Files and photos', href: '/docs/files-and-photos' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+
+Undescribed photographs are the classic backlog: three thousand scans, a filename each, and no
+words to search. Visual search lets you search them anyway. Type `a horse-drawn cart on a dirt
+road` and qrate ranks the collection by how well each picture matches, even though no cell says
+"cart". Or pick one photo and ask for everything that looks like it.
+
+It all runs on your own computer. No image and no search text leaves it.
+
+## What it is good for
+
+- **Finding the rest of a shoot.** One photo of a parade, and the other twelve rolls of it.
+- **Grouping before describing.** Find every image of the old mill, describe one, and copy the
+  description to the rest with the Details panel.
+- **Finding duplicates and copies.** The same form scanned twice, the print and its negative.
+- **Answering reference questions.** "Do you have anything with a streetcar in it?"
+
+It covers anything qrate can preview: photos, the first page of PDFs, video poster frames and
+audio cover art.
+
+## Turn it on
+
+1. Press **Ctrl+F** to open search.
+2. Turn on the **picture toggle** in the search bar.
+3. The first time, qrate offers **Download model**. The model is about 607 MB, downloads once per
+   computer, and is checked against a published checksum before it is installed.
+
+qrate then reads each file's thumbnail once to index it, about a tenth of a second per file, in the
+background. The index is saved in the project, so it only happens once, and only new or changed
+files are read again later.
+
+## Search by description
+
+Type what is *in the picture*, in plain words:
+
+| Works | Doesn't |
+| --- | --- |
+| `two people shaking hands` | `handshake photo formal` |
+| `a group of children outside a school` | `school 1952` |
+| `a sailing ship in a harbour` | `accession 1994.12` |
+
+The grid, or the gallery, narrows to the results with the best match first. The **slider** next to
+the result count widens or narrows how many you see; drag it left for only the closest matches.
+
+<Figure caption="A visual search in the gallery: the closest matches first, and the slider beside the count sets how far down the list to go.">
+  <AppMock
+    gallery
+    search="a sailing ship in a harbour"
+    columns={['File']}
+    rows={[
+      { cells: ['harbour-1931-04.jpg'], sel: 0 },
+      { cells: ['harbour-1931-07.jpg'] },
+      { cells: ['schooner-bluenose.jpg'] },
+      { cells: ['waterfront-ca1925.jpg'] },
+    ]}
+  />
+</Figure>
+
+## Find similar items
+
+Right-click a row, or a tile in the gallery, and choose **Find similar items**. qrate ranks every
+other file by how much it looks like that one. This is the fastest way to collect the rest of a
+photo shoot, the other copies of a form, or the pages that came out of the same album.
+
+## Describe the group in one go
+
+Once the results are the ones you want:
+
+1. Select them, in the grid or the gallery.
+2. In the Details panel, type the shared values, such as the subject or the event, once. They go
+   into every selected row.
+3. Clear the search to bring every row back.
+
+See [Describe your first items](/guides/describe-your-first-items) for multi-row editing.
+
+## Know its limits
+
+- **It ranks, it does not decide.** The model knows nothing about your collection and can be
+  confidently wrong. Treat each result as a suggestion to check.
+- **It reads one picture per file**: page one of a PDF, one frame of a video.
+- **It does not read text in the image**, printed or handwritten. To search words inside PDFs, use
+  the book toggle next to the picture toggle.
+- **English queries work best**, because the model was trained on English descriptions.
+- **It never writes to your data.** It only finds and orders rows.
+
+## Related
+
+- [Link an existing spreadsheet to its scans by filename](/guides/link-scans-by-filename): visual
+  search needs rows linked to files.
+- The [practical guide to metadata for digitization projects](/guides/metadata-for-digitization-projects).

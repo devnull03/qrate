@@ -1,0 +1,42 @@
+---
+# Copy this file to src/content/guides/<the-search-phrase-as-a-slug>.mdx
+title: Do the task in a few words, starting with a verb
+description: One or two sentences with the search phrase in them. This is what search results show.
+qrateVersion: 0.7.1
+published: 2026-01-01
+tags: [one, two]
+related:
+  - { label: 'The docs page this builds on', href: '/docs/...' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+import DialogMock from '../../components/guide/DialogMock.astro';
+
+Open with the problem the reader has, in their words, and say what they will have at the end.
+
+## The first step, as an instruction
+
+1. Numbered steps, one action each.
+2. Menu paths in bold: **File ▸ Export**.
+
+<Figure caption="Say what to look at, not what the picture is.">
+  <AppMock
+    columns={['Title', 'Date']}
+    rows={[
+      { cells: ['Letter to Margaret', '1939-03-12'] },
+      { cells: ['Envelope', 'ca. 1939'], marks: { 1: 'error' }, sel: 1 },
+    ]}
+    problems={{ items: [{ sev: 'error', text: '“ca. 1939” is not an EDTF date', loc: 'Row 2 · Date' }] }}
+  />
+</Figure>
+
+<Figure
+  src="/guides/your-guide/screenshot.webp"
+  alt="What the screenshot shows, for someone who cannot see it"
+  caption="A real screenshot works the same way."
+/>
+
+## Related
+
+- [Another guide](/guides/...)

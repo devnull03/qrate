@@ -1,0 +1,102 @@
+---
+title: Describe your first items
+description: Fill in records the fast way in qrate. Edit in the grid or the Details panel, describe many rows at once, leave notes for colleagues, and undo anything.
+qrateVersion: 0.7.1
+series: start-here
+order: 4
+published: 2026-11-26
+tags: [basics, grid]
+related:
+  - { label: 'Step 3: Describe items in the grid', href: '/docs/getting-started/3-describe-items' }
+  - { label: 'The grid', href: '/docs/grid' }
+  - { label: 'Change history', href: '/docs/history' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+
+This is the part of cataloguing that takes the hours: looking at an item and writing down what it
+is. qrate cannot do the looking for you, but it can cut the clicking. By the end of this tutorial
+you will have described a handful of items, filled a field across many rows at once, and left a
+note for whoever checks your work.
+
+## Type in the grid
+
+Click a cell and start typing: what you type replaces the cell. Press **Enter** to keep it and move
+on. To change part of a value instead, select the cell and press **Enter** first.
+
+The rest works the way spreadsheets taught you. **Delete** clears a cell, copy and paste work
+between qrate and Excel, and **Alt+Shift+Down** adds a row below the one you are on.
+
+## Describe while you look
+
+The grid is fast for short fields, but for a description you want to see the item. Select a row:
+the **Details** panel shows its file at the top and its fields underneath. Click a field there,
+type, and press **Enter**. Click the preview to open the file full screen and zoom in on a
+signature or a postmark.
+
+<Figure caption="The Details panel: the selected row's scan above its fields, so you can read the item while you describe it.">
+  <AppMock
+    columns={['File', 'Title', 'Date']}
+    widths="1fr 1.4fr 0.6fr"
+    rows={[
+      { cells: ['1939-03-12_letter.jpg', 'Letter to Margaret', '1939-03-12'], sel: 'row' },
+      { cells: ['1939-04-02_letter.jpg', '', ''] },
+      { cells: ['1946-10-08_envelope.jpg', '', ''] },
+    ]}
+    details={{ file: '1939-03-12_letter.jpg', fields: [['Title', 'Letter to Margaret'], ['Date', '1939-03-12'], ['Creator', 'Ross, Daniel']] }}
+  />
+</Figure>
+
+## Fill a field across many rows
+
+Twenty letters from the same donor, all with the same creator? Don't type it twenty times.
+
+1. Hold **Ctrl** and click each row, or click the first and **Shift**-click the last.
+2. In the Details panel, a field whose values differ shows **Mixed** and how many values it holds.
+3. Type the value once. It goes into every selected row.
+
+One **Ctrl+Z** undoes it for all of them.
+
+<Figure caption="Three rows selected. The Details panel shows Mixed where they differ; typing there fills all three.">
+  <AppMock
+    columns={['File', 'Title', 'Creator']}
+    widths="1fr 1.3fr 0.9fr"
+    rows={[
+      { cells: ['1939-03-12_letter.jpg', 'Letter to Margaret', 'Ross, Daniel'], sel: 'row' },
+      { cells: ['1939-04-02_letter.jpg', 'Letter to Margaret', ''], sel: 'row' },
+      { cells: ['1946-10-08_envelope.jpg', 'Envelope', ''], sel: 'row' },
+    ]}
+    details={{ fields: [['Title', 'Mixed (2 values)'], ['Creator', 'Mixed (2 values)']] }}
+  />
+</Figure>
+
+## Find and replace
+
+**Ctrl+F** finds text in the grid, and **Ctrl+H** replaces it, one match or all of them. Use it for
+the boring fixes, such as `Hfx` to `Halifax` across a whole column.
+
+To work on part of the collection, filter it. Right-click a cell and choose **Filter by this
+value** to see only the rows that share it. A filter only hides rows: export and the checks still
+see everything.
+
+## Leave a note
+
+Not sure about a date? Don't guess silently. Right-click the cell and choose **Notes ▸ Add note…**,
+or press **Shift+F2**, and write the question down. A corner marker shows on the cell, the note
+appears on the **Notes** tab of the Problems panel, and it travels into Excel exports as a cell
+comment. Set your name under **Settings ▸ Application ▸ Identity ▸ Author name** so people know
+who asked.
+
+## Undo, and the longer memory
+
+**Ctrl+Z** undoes the last change, including rows and columns you added or moved. It covers the
+current session.
+
+For anything older, open the **History** panel from the status bar. It lists every change ever
+made to the project, who made it and how, and lets you put one cell or the whole project back.
+Right-click a cell and choose **Show edit history** to see just that cell's story.
+
+## Next
+
+You have a project worth keeping. Learn how to [save, back up and move a qrate project](/guides/save-back-up-and-move-a-project).

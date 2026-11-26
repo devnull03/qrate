@@ -1,0 +1,86 @@
+---
+title: Let volunteers see the catalogue in Google Sheets
+description: Publish a qrate catalogue to a Google Sheet for volunteers, board members or researchers, keep it up to date with one-way sync, and keep qrate as the copy you edit.
+qrateVersion: 0.7.1
+published: 2026-11-26
+tags: [google-sheets, sharing, export]
+related:
+  - { label: 'Export and Google Sheets', href: '/docs/export-and-sync' }
+  - { label: 'Privacy: Google Sheets', href: '/privacy#google' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import DialogMock from '../../components/guide/DialogMock.astro';
+
+Small archives run on volunteers, and volunteers live in Google Sheets. qrate can publish your
+catalogue to a sheet they can open on any computer or phone, and refresh it whenever you have made
+progress.
+
+The arrangement this guide sets up: **qrate is where the catalogue is edited, the sheet is where it
+is read.** Sync goes one way, from qrate to the sheet, so the sheet never overwrites your work.
+
+## Turn on Google Sheets
+
+Google Sheets export is off until you turn it on, so nothing in qrate talks to Google by accident.
+
+1. Open **Settings ▸ Google** and turn it on.
+2. The first time you export, sign in to Google in your browser. qrate never sees your password,
+   and it can only reach sheets it created or that you picked yourself.
+
+No qrate account or server is involved: the rows go from your computer to your Google Drive.
+
+## Publish to a new sheet
+
+Choose **File ▸ Export ▸ New Google Sheet…**. qrate creates a sheet in your Drive and fills it.
+Notes you left on cells become notes on the matching cells in the sheet, and notes on columns land on
+the header cells.
+
+Share the sheet from Google Sheets as you would any other, with **Viewer** access for most people.
+
+## Keep it up to date
+
+After a session of cataloguing, choose **File ▸ Export ▸ Sync to Google Sheet…**. qrate writes into
+the sheet this project is linked to, or one you pick through Google's file picker.
+
+<Figure caption="qrate names the sheet and asks before it replaces anything.">
+  <DialogMock
+    title="Sync to Google Sheet"
+    text="Replace the contents of the first tab of “Ross Family Papers — catalogue” with this project?"
+    buttons={['Cancel', 'Replace']}
+    primary="Replace"
+  />
+</Figure>
+
+Sync **replaces the whole first tab**: rows and columns beyond the project's are cleared, and so are
+notes the last sync left. That is what keeps the sheet an exact copy. qrate writes the new values
+before it clears anything, so a sync that fails partway never leaves the sheet empty.
+
+## What volunteers can and cannot do
+
+Because sync only goes one way, edits made in the sheet do **not** come back into qrate, and the
+next sync overwrites them. Set expectations:
+
+- **Give most people view access.** They can search, filter and read.
+- **Collect corrections somewhere else**: a comment on the cell, a second tab, or a form. The first
+  tab is replaced on every sync, but other tabs are not touched.
+- **Make the change in qrate**, where the checks and the history are, then sync.
+
+If volunteers do the describing in a sheet, import their work the other way instead: **File ▸ Import
+Spreadsheet…** appends rows from a CSV or Excel export of the sheet, as one change you can undo.
+
+## Start a project from a sheet
+
+If the catalogue already lives in Google Sheets, choose **Google Sheet** on the launcher and paste
+the link. qrate reads the sheet once to build a project, and dates come in as `YYYY-MM-DD`. From
+then on qrate is the working copy, and you can sync back to the same sheet.
+
+## No qrate on the other computer?
+
+The [online converter](/convert) does the same export from a `.qrate` file in a browser, including
+**New Google Sheet** and **Existing Google Sheet**. See
+[Open a .qrate file without installing qrate](/guides/open-a-qrate-file-without-qrate).
+
+## Related
+
+- [Export your catalogue to CSV and Excel](/guides/export-to-csv-and-excel)
+- The [practical guide to metadata for digitization projects](/guides/metadata-for-digitization-projects)

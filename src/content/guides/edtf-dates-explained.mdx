@@ -1,0 +1,122 @@
+---
+title: 'EDTF dates explained: circa, decades, ranges and uncertain dates'
+description: Write archival dates in EDTF, the Extended Date/Time Format, with examples for circa, questionable, decade and range dates, and check a whole column of them in qrate.
+qrateVersion: 0.7.1
+published: 2026-11-26
+tags: [dates, edtf, diagnostics]
+related:
+  - { label: 'Columns: column type (Date)', href: '/docs/columns#column-type' }
+  - { label: 'Diagnostics', href: '/docs/diagnostics' }
+---
+
+import Figure from '../../components/guide/Figure.astro';
+import AppMock from '../../components/guide/AppMock.astro';
+
+**EDTF**, the Extended Date/Time Format, is a way to write the dates archives actually have:
+approximate ones, uncertain ones, decades and ranges. It was developed at the Library of Congress
+and is now part of ISO 8601. Islandora, many digital asset systems and linked-data tools read it.
+
+Archival dates are rarely exact, and a spreadsheet full of `ca. 1920`, `1920's?` and `[1920]` is
+hard for any system to sort or search. EDTF gives each of those one spelling. This guide is a
+cheat sheet, then shows how qrate checks a column of EDTF dates and fixes the common slips.
+
+## The EDTF cheat sheet
+
+| You mean | Archivists often write | EDTF |
+| --- | --- | --- |
+| An exact day | 12 March 1939, 3/12/1939 | `1939-03-12` |
+| A month | March 1939 | `1939-03` |
+| A year | 1939 | `1939` |
+| About this date | circa 1920, ca. 1920, c. 1920 | `1920~` |
+| Probably this date, not sure | 1920?, [1920?] | `1920?` |
+| Both approximate and uncertain | ca. 1920? | `1920%` |
+| A decade | 1920s | `192X` |
+| A century | 1900s, 20th century | `19XX` |
+| A range | 1920–1925 | `1920/1925` |
+| A range, open at one end | before 1925 | `../1925` |
+| A range, open at one end | 1920 onward | `1920/..` |
+| A range, end not known | 1920 to ? | `1920/` |
+| One of these years | either 1667 or 1668 | `[1667,1668]` |
+| All of these dates | 1960 and December 1961 | `{1960,1961-12}` |
+
+A qualifier at the end covers the whole date: `1939-03~` is "about March 1939", and `1939-03-12?`
+is "probably 12 March 1939".
+
+## Why bother
+
+- **Sorting and searching work.** `1920~` sorts with 1920. `ca. 1920` sorts with the c's.
+- **The uncertainty survives.** A plain `1920` claims more than you know. `1920~` says exactly as
+  much as you know.
+- **Systems can read it.** Islandora's date fields, and the linked-data tools around them, expect
+  EDTF. Getting it right before an ingest saves a round of rejected rows.
+
+## Check a column of dates in qrate
+
+1. Choose **Data ▸ Column Settings…** and set your date column's type to **Date** under **Data
+   types**.
+2. Open **Settings ▸ Table ▸ Checks ▸ Date format** and choose **EDTF** (the default).
+3. Open the Problems panel with **Ctrl+Shift+M**.
+
+Every value EDTF cannot read is now an error, with the value in the message. Identical mistakes are
+grouped, so fifty cells of `ca. 1920` are one line with a count.
+
+<Figure caption="Dates qrate cannot read as EDTF, grouped in the Problems panel. Right-click one for the offered rewrite.">
+  <AppMock
+    columns={['Title', 'Date']}
+    widths="1.6fr 0.8fr"
+    rows={[
+      { cells: ['Picnic at the lake', 'ca. 1962'], marks: { 1: 'error' } },
+      { cells: ['Grandmother in the garden', '1963'] },
+      { cells: ['House on Elm Street', '1965/04/20'], marks: { 1: 'error' }, sel: 1 },
+      { cells: ['Wedding party', '1966-6-4'], marks: { 1: 'error' } },
+      { cells: ['Christmas morning', '1960s'], marks: { 1: 'error' } },
+    ]}
+    problems={{ tab: 'Errors', items: [
+      { sev: 'error', text: '“ca. 1962” is not an EDTF date', loc: 'Row 1 · Date' },
+      { sev: 'error', text: '“1965/04/20” is not an EDTF date', loc: 'Row 3 · Date' },
+      { sev: 'error', text: '“1966-6-4” is not an EDTF date', loc: 'Row 4 · Date' },
+      { sev: 'error', text: '“1960s” is not an EDTF date', loc: 'Row 5 · Date' },
+    ] }}
+  />
+</Figure>
+
+## Fix the common slips
+
+For the mistakes that are typing habits rather than questions of fact, qrate offers a rewrite.
+Right-click the cell, open **Problems**, and pick the suggestion, such as **Use 1962~**:
+
+| Written | Offered | Why |
+| --- | --- | --- |
+| `circa 1962`, `ca. 1962`, `c. 1962` | `1962~` | The EDTF approximate marker |
+| `1965/04/20`, `1965.04.20` | `1965-04-20` | Hyphens, not slashes or dots |
+| `1966-6-4` | `1966-06-04` | Two-digit months and days |
+
+A rewrite is offered only if the result is valid. Anything that needs judgment, such as `1960s`
+(the decade, or a guess within it?) or `12/04/1939` (December or April?), gets no suggestion. That
+is deliberate: deciding what a date means is the archivist's call, not a menu's. Type the answer,
+`196X` or `1939-04-12`, and the error clears.
+
+## When EDTF is too strict
+
+Not every project is headed for an EDTF system. **Settings ▸ Table ▸ Checks ▸ Date format** has
+two other modes:
+
+- **ISO 8601 only** accepts `YYYY`, `YYYY-MM`, `YYYY-MM-DD` and a range of two of them. Use it when
+  the receiving system cannot read EDTF qualifiers.
+- **Lenient** accepts everything EDTF does plus the catalogue habits: `circa 1920`, `ca. 1920`,
+  `c. 1920`, `1920s`, `[1920?]` and `[ca. 1920]`. Use it to clean up a legacy sheet in stages,
+  catching real errors first and converting spellings later.
+
+A project can override your default, so one EDTF project and one lenient project can sit side by
+side.
+
+## Related
+
+- [Clean a spreadsheet before an Islandora Workbench ingest](/guides/clean-a-spreadsheet-for-islandora-workbench)
+  puts the date check to work with Islandora's other fields.
+- [Find and fix name variants](/guides/find-and-fix-name-variants) does for names what this does for
+  dates.
+- The [practical guide to metadata for digitization projects](/guides/metadata-for-digitization-projects)
+  covers the other fields.
+
+The full specification is at the [Library of Congress](https://www.loc.gov/standards/datetime/).

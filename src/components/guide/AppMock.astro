@@ -1,0 +1,201 @@
+---
+// A drawn qrate window for guides, in the app-* tokens so it follows the site theme like
+// AppWindow does. Labels must be the real ones from the docs for the guide's qrateVersion.
+type Sev = 'error' | 'warn' | 'note';
+interface Row {
+  n?: string;
+  cells: string[];
+  depth?: number;
+  open?: boolean;
+  sel?: number | 'row';
+  marks?: Record<number, Sev>;
+  dim?: boolean;
+}
+interface Props {
+  columns: string[];
+  widths?: string;
+  rows: Row[];
+  menu?: { open: string; items: string[]; active?: string };
+  context?: { items: string[]; active?: string; top?: number; left?: number };
+  problems?: { tab?: string; items: { sev: Sev; text: string; loc: string; count?: number }[] };
+  details?: { file?: string; fields: [string, string][] };
+  banner?: { text: string; action?: string };
+  search?: string;
+  status?: { left?: string; right?: string };
+  gallery?: boolean;
+}
+
+const { columns, widths, rows, menu, context, problems, details, banner, search, status, gallery } = Astro.props;
+const menus = ['File', 'Edit', 'Insert', 'View', 'Data', 'Plugins', 'Help'];
+const grid = `34px ${widths ?? `repeat(${columns.length}, minmax(0, 1fr))`}`;
+const clip = 'overflow-hidden text-ellipsis whitespace-nowrap';
+const sevColor = { error: 'text-app-danger', warn: 'text-app-warn', note: 'text-app-muted' };
+const sevIcon = { error: '⊗', warn: '⚠', note: '✎' };
+const markBorder = { error: 'var(--app-danger)', warn: 'var(--app-warn)', note: 'var(--app-muted)' };
+---
+
+<div class="relative min-w-[600px] border border-app-border bg-app-bg font-mono text-[11px] text-app-fg">
+  <div class="flex h-7 items-center justify-between border-b border-app-border bg-app-title px-2.5 font-sans text-[11px]">
+    <div class="flex gap-3">
+      {menus.map((m) => <span class={m === menu?.open ? 'bg-app-active-bg px-1 text-app-fg' : 'px-1'}>{m}</span>)}
+    </div>
+    <div class="flex gap-[5px]">
+      <span class="h-[9px] w-[11px] border border-app-muted"></span>
+      <span class="h-[9px] w-[11px] border border-app-muted"></span>
+      <span class="h-[9px] w-[11px] border border-app-muted"></span>
+    </div>
+  </div>
+
+  {
+    menu && (
+      <div
+        class="absolute z-10 min-w-[220px] border border-app-border bg-app-bg py-1 font-sans text-[11.5px] shadow-[0_8px_24px_rgba(0,0,0,.18)]"
+        style={`top: 27px; left: ${10 + menus.indexOf(menu.open) * 38}px`}
+      >
+        {menu.items.map((item) =>
+          item === '-' ? (
+            <div class="my-1 border-t border-app-row-border" />
+          ) : (
+            <div class:list={['px-3 py-[3px]', item === menu.active && 'bg-app-active-bg shadow-[inset_2px_0_0_var(--app-active-border)]']}>
+              {item}
+            </div>
+          )
+        )}
+      </div>
+    )
+  }
+
+  {
+    context && (
+      <div
+        class="absolute z-10 min-w-[230px] border border-app-border bg-app-bg py-1 font-sans text-[11.5px] shadow-[0_8px_24px_rgba(0,0,0,.18)]"
+        style={`top: ${context.top ?? 90}px; left: ${context.left ?? 260}px`}
+      >
+        {context.items.map((item) =>
+          item === '-' ? (
+            <div class="my-1 border-t border-app-row-border" />
+          ) : (
+            <div class:list={['px-3 py-[3px]', item === context.active && 'bg-app-active-bg shadow-[inset_2px_0_0_var(--app-active-border)]']}>
+              {item}
+            </div>
+          )
+        )}
+      </div>
+    )
+  }
+
+  {
+    search && (
+      <div class="flex items-center gap-2 border-b border-app-border bg-app-title px-2.5 py-1.5">
+        <span class="text-app-muted">⌕</span>
+        <span class="flex-1 border border-app-active-border bg-app-bg px-2 py-0.5">{search}</span>
+      </div>
+    )
+  }
+
+  {
+    banner && (
+      <div class="flex items-center justify-between gap-3 border-b border-app-border bg-app-active-bg px-2.5 py-1.5 font-sans">
+        <span>{banner.text}</span>
+        {banner.action && <span class="border border-app-active-border px-2 py-0.5">{banner.action}</span>}
+      </div>
+    )
+  }
+
+  <div class:list={['grid', details && 'grid-cols-[190px_1fr]']}>
+    {
+      details && (
+        <div class="border-r border-app-border bg-app-title p-2.5 font-sans">
+          <div class="mb-1.5 text-[10px] uppercase tracking-[0.08em] text-app-muted">Details</div>
+          {details.file && (
+            <div class="mb-2 flex aspect-[4/3] items-end border border-app-border bg-[repeating-linear-gradient(135deg,var(--app-even)_0_6px,var(--app-bg)_6px_12px)] p-1.5">
+              <span class="font-mono text-[10px] text-app-muted">{details.file}</span>
+            </div>
+          )}
+          {details.fields.map(([k, v]) => (
+            <div class="mb-1.5">
+              <div class="text-[10px] text-app-muted">{k}</div>
+              <div class="border-b border-app-row-border pb-0.5 text-[11.5px]">{v}</div>
+            </div>
+          ))}
+        </div>
+      )
+    }
+    <div class="min-w-0">
+      <div class="flex gap-3 border-b border-app-border bg-app-title px-2.5 py-1 font-sans text-[11px]">
+        <span class={gallery ? 'text-app-muted' : 'shadow-[inset_0_-2px_0_var(--app-active-border)]'}>Table</span>
+        <span class={gallery ? 'shadow-[inset_0_-2px_0_var(--app-active-border)]' : 'text-app-muted'}>Gallery</span>
+      </div>
+      {!gallery && (
+        <div>
+          <div class="grid border-b border-app-border bg-app-head text-app-head-fg [&>*]:min-w-0 [&>*]:px-2 [&>*]:py-1.5" style={`grid-template-columns: ${grid}`}>
+            <div></div>
+            {columns.map((c) => <div class={clip}>{c}</div>)}
+          </div>
+          {
+            rows.map((r, i) => (
+              <div
+                class:list={[
+                  'grid border-b border-app-row-border [&>*]:min-w-0 [&>*]:px-2 [&>*]:py-1.5',
+                  r.sel === 'row' ? 'bg-app-active-bg' : i % 2 === 1 ? 'bg-app-even' : 'bg-app-bg',
+                  r.dim && 'text-app-muted',
+                ]}
+                style={`grid-template-columns: ${grid}`}
+              >
+                <div class="text-right text-app-muted">{r.n ?? i + 1}</div>
+                {r.cells.map((cell, c) => (
+                  <div
+                    class:list={[clip, r.sel === c && 'bg-app-active-bg shadow-[inset_0_0_0_1px_var(--app-active-border)]']}
+                    style={[
+                      c === 0 && r.depth ? `padding-left: ${8 + r.depth * 14}px` : '',
+                      r.marks?.[c] ? `box-shadow: inset 0 -2px 0 ${markBorder[r.marks[c]]}` : '',
+                    ].join(';')}
+                  >
+                    {c === 0 && r.open !== undefined && <span class="text-app-muted">{r.open ? '▾ ' : '▸ '}</span>}
+                    {cell}
+                  </div>
+                ))}
+              </div>
+            ))
+          }
+        </div>
+      )}
+      {gallery && (
+        <div class="grid grid-cols-4 gap-2 p-2.5">
+          {rows.map((r) => (
+            <div class:list={['border p-1', r.sel !== undefined ? 'border-app-active-border bg-app-active-bg' : 'border-app-border']}>
+              <div class="aspect-square bg-[repeating-linear-gradient(135deg,var(--app-even)_0_6px,var(--app-bg)_6px_12px)]" />
+              <div class={`mt-1 ${clip} text-[10px]`}>{r.cells[0]}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  </div>
+
+  {
+    problems && (
+      <div class="border-t border-app-border">
+        <div class="flex gap-3 border-b border-app-row-border bg-app-title px-2.5 py-1 font-sans text-[11px]">
+          <span class="font-semibold">Problems</span>
+          {['All', 'Errors', 'Warnings', 'Notes'].map((t) => (
+            <span class={t === (problems.tab ?? 'All') ? 'shadow-[inset_0_-2px_0_var(--app-active-border)]' : 'text-app-muted'}>{t}</span>
+          ))}
+        </div>
+        {problems.items.map((p) => (
+          <div class="flex gap-2 border-b border-app-row-border px-2.5 py-1">
+            <span class={sevColor[p.sev]}>{sevIcon[p.sev]}</span>
+            <span class={`flex-1 ${clip} font-sans`}>{p.text}</span>
+            {p.count && <span class="text-app-muted">×{p.count}</span>}
+            <span class="text-app-muted">{p.loc}</span>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  <div class="flex items-center justify-between border-t border-app-border bg-app-title px-2.5 py-[5px] text-[10px] text-app-muted">
+    <span>{status?.left ?? ''}</span>
+    <span>{status?.right ?? 'Details   Problems   History'}</span>
+  </div>
+</div>
