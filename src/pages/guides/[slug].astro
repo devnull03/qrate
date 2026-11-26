@@ -20,29 +20,32 @@ const rel = latest(await getReleases());
 
 <Base title={`qrate · ${title}`} description={description} current="guides" version={rel?.tag_name}>
   <section class="gut border-b border-rule py-[30px] md:pb-[46px] md:pt-[54px]">
-    <a href="/guides" class="eyebrow">← How-to guides</a>
-    <h1
-      class="m-0 mb-3.5 mt-[18px] max-w-[760px] text-[32px] font-semibold leading-[1.04] tracking-[-0.035em] md:text-[46px]"
-    >
-      {title}
-    </h1>
-    <p class="m-0 max-w-[600px] text-[15px] leading-[1.6] text-body">{description}</p>
-    <div class="mt-5 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
-      <span>{formatDate(published)}</span>
-      {updated && <span>Updated {formatDate(updated)}</span>}
-      <span>{readingMinutes(guide.body)} min read</span>
-      {tags.map((t) => <span class="text-dim">#{t}</span>)}
+    <div class="mx-auto max-w-[720px]">
+      <a href="/guides" class="eyebrow">← How-to guides</a>
+      <h1
+        class="m-0 mb-3.5 mt-[18px] text-[32px] font-semibold leading-[1.04] tracking-[-0.035em] md:text-[46px]"
+      >
+        {title}
+      </h1>
+      <p class="m-0 text-[15px] leading-[1.6] text-body">{description}</p>
+      <div class="mt-5 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+        <span>By the qrate team</span>
+        <span>{formatDate(published)}</span>
+        {updated && <span>Updated {formatDate(updated)}</span>}
+        <span>{readingMinutes(guide.body)} min read</span>
+        {tags.map((t) => <span class="text-dim">#{t}</span>)}
+      </div>
     </div>
   </section>
 
   <article class="gut py-[30px] md:py-[44px]">
-    <div class="guide max-w-[720px]">
+    <div class="guide mx-auto max-w-[720px]">
       <Content />
     </div>
 
     {
       related.length > 0 && (
-        <aside class="mt-10 max-w-[720px] border-l-2 border-accent py-1 pl-4">
+        <aside class="mx-auto mt-10 max-w-[720px] border-l-2 border-accent py-1 pl-4">
           <div class="mb-1 font-mono text-[11px] uppercase tracking-[0.08em] text-dim">In the docs</div>
           <ul class="m-0 flex list-none flex-col gap-1 p-0 text-[14px]">
             {related.map((r) => (
@@ -56,22 +59,24 @@ const rel = latest(await getReleases());
     }
   </article>
 
-  <nav class="gut grid grid-cols-1 gap-px border-y border-rule bg-rule md:grid-cols-2">
-    {
-      [
-        [older, 'Previous guide', ''],
-        [newer, 'Next guide', 'md:text-right'],
-      ].map(([g, label, align]) =>
-        g ? (
-          <a href={`/guides/${(g as Guide).id}`} class={`bg-paper py-5 hover:no-underline ${align}`}>
-            <div class="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">{label}</div>
-            <div class="mt-1 text-[16px] font-semibold text-ink">{(g as Guide).data.title}</div>
-          </a>
-        ) : (
-          <div class="hidden bg-paper md:block" />
+  <nav class="gut border-t border-rule">
+    <div class="mx-auto grid max-w-[720px] grid-cols-1 gap-px md:grid-cols-2">
+      {
+        [
+          [older, 'Previous guide', ''],
+          [newer, 'Next guide', 'md:text-right'],
+        ].map(([g, label, align]) =>
+          g ? (
+            <a href={`/guides/${(g as Guide).id}`} class={`py-5 hover:no-underline ${align}`}>
+              <div class="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">{label}</div>
+              <div class="mt-1 text-[16px] font-semibold text-ink">{(g as Guide).data.title}</div>
+            </a>
+          ) : (
+            <div class="hidden md:block" />
+          )
         )
-      )
-    }
+      }
+    </div>
   </nav>
 </Base>
 
