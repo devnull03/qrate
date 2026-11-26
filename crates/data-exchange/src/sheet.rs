@@ -20,7 +20,7 @@ pub enum SheetSyncError {
     )]
     Private,
     #[error("We couldn't reach Google Sheets — {0}")]
-    Http(#[from] reqwest::Error),
+    Http(#[from] anyhow::Error),
     #[error("We couldn't save the downloaded sheet — {0}")]
     Io(#[from] std::io::Error),
     #[error("We couldn't open the downloaded sheet — {0}")]
@@ -98,33 +98,18 @@ pub fn a1_to_index(cell: &str) -> Option<(u32, u32)> {
 
 /// Fetch a public Sheet as `.xlsx` (one download) and pull out both the first
 /// tab's rows and its cell notes. CSV export drops the notes, so we use xlsx
-/// for everything. The `.xlsx` is cached in the temp dir. Blocking — call it
-/// off the UI thread.
-pub fn fetch_sheet(link: &str) -> Result<SheetData, SheetSyncError> {
+/// for everything. The `.xlsx` is cached in the temp dir.
+pub async fn fetch_sheet(
+    client: &dyn fetch::HttpClient,
+    link: &str,
+) -> Result<SheetData, SheetSyncError> {
     let SheetRef { id, gid } = parse_sheet_ref(link)?;
     // ponytail: gid forwarded as a hint, falls back to first tab; real multi-tab selection needs API v4.
     let gid_param = gid.map(|g| format!("&gid={g}")).unwrap_or_default();
     let url = format!("https://docs.google.com/spreadsheets/d/{id}/export?format=xlsx{gid_param}");
-    // Explicit timeout so a stalled connection returns an error instead of
-    // hanging the background worker thread forever.
-    let resp = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?
-        .get(&url)
-        .send()?
-        .error_for_status()?;
-
-    if resp
-        .url()
-        .host_str()
-        .unwrap_or_default()
-        .contains("accounts.google.com")
-    {
-        return Err(SheetSyncError::Private);
-    }
-    let body = resp.bytes()?;
-    // A private sheet serves an HTML sign-in page instead of the zip; every
-    // xlsx starts with the "PK" local-file-header magic.
+    let body = fetch::get(client, &url).await?.ok()?.body;
+    // A private sheet redirects to an HTML sign-in page instead of the zip;
+    // every xlsx starts with the "PK" local-file-header magic.
     if !body.starts_with(b"PK") {
         return Err(SheetSyncError::Private);
     }

@@ -46,6 +46,7 @@ use diagnostics::{
 };
 use gpui::{App, AppContext as _, Global, SharedString, Task};
 
+use fetch::{HttpClient, HttpRequestExt, Method, StatusCode};
 use source::AuthoritySource;
 
 /// Wait for typing to stop before calling out. Longer than the plugin host's debounce because
@@ -358,19 +359,21 @@ fn fetch_next(cx: &mut App) {
         return;
     }
     let config = run.config.clone();
+    let client = cx.http_client();
     // Detached: a newer run cancels the debounce, never answers a request already paid for.
     cx.spawn(async move |cx| {
         let fetched = cx
             .background_spawn(async move {
                 let sources = source::all(&config);
-                asked
-                    .into_iter()
-                    .filter_map(|(name, scope, terms)| {
-                        let source = sources.iter().find(|s| s.name() == name)?;
-                        let result = lookup_all(source.as_ref(), &terms);
-                        Some((name, scope, terms, result))
-                    })
-                    .collect::<Vec<_>>()
+                let mut fetched = Vec::new();
+                for (name, scope, terms) in asked {
+                    let Some(source) = sources.iter().find(|s| s.name() == name) else {
+                        continue;
+                    };
+                    let result = lookup_all(&*client, source.as_ref(), &terms).await;
+                    fetched.push((name, scope, terms, result));
+                }
+                fetched
             })
             .await;
         cx.update(|cx| store(fetched, cx));
@@ -564,7 +567,11 @@ enum Lookup {
 }
 
 /// Ask `source` about each term in turn, skipping the rest once the request budget is spent.
-fn lookup_all(source: &dyn AuthoritySource, terms: &[String]) -> LookupBatch {
+async fn lookup_all(
+    client: &dyn HttpClient,
+    source: &dyn AuthoritySource,
+    terms: &[String],
+) -> LookupBatch {
     let mut batch = LookupBatch {
         verdicts: Vec::new(),
         unanswered: Vec::new(),
@@ -578,7 +585,7 @@ fn lookup_all(source: &dyn AuthoritySource, terms: &[String]) -> LookupBatch {
             );
             break;
         }
-        match lookup_result(source, term) {
+        match lookup_result(client, source, term).await {
             Lookup::Verdict(verdict) => batch.verdicts.push((term.to_lowercase(), verdict)),
             Lookup::Retry => batch.unanswered.push(term.to_lowercase()),
             Lookup::Refused(failure) => {
@@ -593,42 +600,30 @@ fn lookup_all(source: &dyn AuthoritySource, terms: &[String]) -> LookupBatch {
 /// One term. `None` when the authority could not be reached or did not answer with anything
 /// readable — that must never be cached, and must never become a finding, because "the server is
 /// down" reported as "this heading is wrong" is the one mistake this crate must not make.
-fn lookup_result(source: &dyn AuthoritySource, term: &str) -> Lookup {
-    let response = match client().get(source.lookup_url(term)).send() {
-        Ok(response) => response,
+async fn lookup_result(
+    client: &dyn HttpClient,
+    source: &dyn AuthoritySource,
+    term: &str,
+) -> Lookup {
+    match get_text(client, &source.lookup_url(term)).await {
+        Ok((status, body)) => interpret(source, term, status, &body),
         Err(err) => {
-            log::warn!("{}: could not check “{term}”: {err}", source.name());
-            return Lookup::Retry;
+            log::warn!("{}: could not check “{term}”: {err:#}", source.name());
+            Lookup::Retry
         }
-    };
-    let status = response.status();
-    let body = match response.text() {
-        Ok(body) => body,
-        Err(err) => {
-            log::warn!(
-                "{}: could not read the answer for “{term}”: {err}",
-                source.name()
-            );
-            return Lookup::Retry;
-        }
-    };
-    interpret(source, term, status, &body)
+    }
 }
 
 #[cfg(test)]
 fn lookup(source: &dyn AuthoritySource, term: &str) -> Option<Verdict> {
-    match lookup_result(source, term) {
+    let client = reqwest_client::ReqwestClient::user_agent("qrate-test").unwrap();
+    match futures::executor::block_on(lookup_result(&client, source, term)) {
         Lookup::Verdict(verdict) => Some(verdict),
         Lookup::Retry | Lookup::Refused(_) => None,
     }
 }
 
-fn interpret(
-    source: &dyn AuthoritySource,
-    term: &str,
-    status: reqwest::StatusCode,
-    body: &str,
-) -> Lookup {
+fn interpret(source: &dyn AuthoritySource, term: &str, status: StatusCode, body: &str) -> Lookup {
     let refusal = source.refusal(body);
     if !status.is_success() {
         let reason = refusal.unwrap_or_else(|| format!("HTTP {status}"));
@@ -660,17 +655,16 @@ fn interpret(
     })
 }
 
-/// Shared blocking client. Building one spins up a runtime and a thread, which is not a thing to
-/// do per request — the same reason `plugin-host` keeps one.
-pub(crate) fn client() -> &'static reqwest::blocking::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::blocking::Client::builder()
-            .timeout(TIMEOUT)
-            .user_agent(concat!("qrate/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .unwrap_or_default()
-    })
+/// One lookup's status and body. Shared by the validator pass and the agent-facing search.
+pub(crate) async fn get_text(
+    client: &dyn HttpClient,
+    url: &str,
+) -> anyhow::Result<(StatusCode, String)> {
+    let request = fetch::request(Method::GET, url)
+        .timeout(TIMEOUT)
+        .body(Default::default())?;
+    let reply = fetch::send(client, request).await?;
+    Ok((reply.status, reply.text()))
 }
 
 /// Spend one request from the window's budget, or refuse.
@@ -783,6 +777,7 @@ pub fn init(cx: &mut App) {
 mod tests {
     use crate::authority::geonames::GeoNames;
     use crate::authority::{Lookup, Verdict, interpret, values_in};
+    use fetch::StatusCode;
 
     #[gpui::test]
     fn a_repeated_value_is_asked_once_and_never_while_pending(cx: &mut gpui::TestAppContext) {
@@ -894,7 +889,7 @@ mod tests {
             interpret(
                 &source,
                 "Vancouver",
-                reqwest::StatusCode::UNAUTHORIZED,
+                StatusCode::UNAUTHORIZED,
                 refused
             ),
             Lookup::Refused(message) if message == "user does not exist"
@@ -911,9 +906,7 @@ mod tests {
             {"name":"Vancouver"},
             {"name":"Vancouver Island"}
         ]}"#;
-        let Lookup::Verdict(verdict) =
-            interpret(&source, "Vancouvr", reqwest::StatusCode::OK, body)
-        else {
+        let Lookup::Verdict(verdict) = interpret(&source, "Vancouvr", StatusCode::OK, body) else {
             panic!("the response must produce a verdict");
         };
         assert_eq!(

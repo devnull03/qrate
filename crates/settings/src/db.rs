@@ -9,13 +9,11 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::mpsc,
-    thread,
     time::Duration,
 };
 
 use anyhow::{Context as _, Result};
-use gpui::SharedString;
+use gpui::{BackgroundExecutor, SharedString};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
@@ -171,53 +169,40 @@ fn save_app_settings_snapshot(snapshot: PersistSettings) -> Result<()> {
     Ok(())
 }
 
-/// Background writer handle. Call `enqueue_save` on every mutation; writes are debounced.
+/// Background writer handle. Call `enqueue_save` on every mutation; writes are debounced, and the
+/// quit path calls [`flush_app_settings`] instead of waiting the debounce out.
 #[derive(Clone)]
 pub struct SettingsWriter {
-    tx: mpsc::Sender<PersistSettings>,
+    tx: async_channel::Sender<PersistSettings>,
 }
 
 impl SettingsWriter {
-    pub fn start() -> Self {
-        let (tx, rx) = mpsc::channel::<PersistSettings>();
-
-        thread::spawn(move || {
-            let debounce = Duration::from_millis(450);
-            let mut pending: Option<PersistSettings> = None;
-
-            loop {
-                match rx.recv_timeout(debounce) {
-                    Ok(s) => {
-                        pending = Some(s);
-                        // Drain bursts quickly.
-                        while let Ok(s2) = rx.try_recv() {
-                            pending = Some(s2);
+    pub fn start(executor: &BackgroundExecutor) -> Self {
+        let (tx, rx) = async_channel::unbounded::<PersistSettings>();
+        let timer = executor.clone();
+        executor
+            .spawn(async move {
+                while let Ok(mut pending) = rx.recv().await {
+                    // Latest snapshot wins once a whole debounce window passes without a newer one.
+                    loop {
+                        timer.timer(Duration::from_millis(450)).await;
+                        let Ok(newer) = rx.try_recv() else { break };
+                        pending = newer;
+                        while let Ok(newer) = rx.try_recv() {
+                            pending = newer;
                         }
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if let Some(s) = pending.take()
-                            && let Err(error) = save_app_settings_snapshot(s)
-                        {
-                            log::error!("settings: failed to save app snapshot: {error:#}");
-                        }
-                    }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        if let Some(s) = pending.take()
-                            && let Err(error) = save_app_settings_snapshot(s)
-                        {
-                            log::error!("settings: failed to save final app snapshot: {error:#}");
-                        }
-                        break;
+                    if let Err(error) = save_app_settings_snapshot(pending) {
+                        log::error!("settings: failed to save app snapshot: {error:#}");
                     }
                 }
-            }
-        });
-
+            })
+            .detach();
         Self { tx }
     }
 
     pub fn enqueue_save(&self, settings: &AppSettings) {
-        if self.tx.send(PersistSettings::from(settings)).is_err() {
+        if self.tx.try_send(PersistSettings::from(settings)).is_err() {
             log::error!("settings: app writer is unavailable");
         }
     }

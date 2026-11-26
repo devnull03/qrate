@@ -138,6 +138,7 @@ impl MarketplaceWindow {
         ];
         urls.dedup();
         log::info!("fetching signed plugin catalog");
+        let client = cx.http_client();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -153,7 +154,8 @@ impl MarketplaceWindow {
                     let data = plugins
                         .parent()
                         .ok_or_else(|| anyhow::anyhow!("plugin folder has no parent"))?;
-                    plugin_package::fetch_catalog_cached(&urls, &key, &data.join("plugin-catalog"))
+                    let cache = data.join("plugin-catalog");
+                    plugin_package::fetch_catalog_cached(&*client, &urls, &key, &cache).await
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -195,6 +197,7 @@ impl MarketplaceWindow {
         log::info!("checking direct plugin release from {source}");
         self.direct = DirectState::Loading;
         cx.notify();
+        let client = cx.http_client();
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(300))
@@ -207,12 +210,13 @@ impl MarketplaceWindow {
             }
             let result = cx
                 .background_spawn(async move {
-                    let release = plugin_package::resolve_github_release(&source)?;
+                    let release = plugin_package::resolve_github_release(&*client, &source).await?;
                     let temp = tempfile::Builder::new()
                         .prefix("qrate-plugin-download-")
                         .suffix(".zip")
                         .tempfile()?;
-                    plugin_package::download_package(&release.artifact_url, temp.path())?;
+                    plugin_package::download_package(&*client, &release.artifact_url, temp.path())
+                        .await?;
                     let inspection = plugin_package::inspect_archive(temp.path())?;
                     let archive = temp.into_temp_path().keep()?;
                     anyhow::Ok(DirectReview {
@@ -285,6 +289,7 @@ impl MarketplaceWindow {
             cx,
         );
         let name = plugin.name.clone();
+        let client = cx.http_client();
         cx.spawn_in(window, async move |this, cx| {
             if answer.await.unwrap_or(1) != 0 {
                 return;
@@ -305,7 +310,8 @@ impl MarketplaceWindow {
                         .prefix("qrate-plugin-download-")
                         .suffix(".zip")
                         .tempfile()?;
-                    plugin_package::download_package(&plugin.current.artifact_url, temp.path())?;
+                    let url = &plugin.current.artifact_url;
+                    plugin_package::download_package(&*client, url, temp.path()).await?;
                     let plugins = plugin_host::plugins_dir()
                         .ok_or_else(|| anyhow::anyhow!("qrate application data is unavailable"))?;
                     let data = plugins

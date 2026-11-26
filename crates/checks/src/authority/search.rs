@@ -104,22 +104,20 @@ impl Capability for AuthoritySearchCap {
         if let Some(why) = source.unavailable() {
             return Task::ready(Err(RequestError::EditRefused(why)));
         }
+        let client = cx.http_client();
         cx.background_executor().spawn(async move {
             if !crate::authority::take_token() {
                 return Err(RequestError::RateLimited);
             }
             let term = input.term.trim().to_owned();
-            let response = crate::authority::client()
-                .get(source.lookup_url(&term))
-                .send()
+            let (status, body) = crate::authority::get_text(&*client, &source.lookup_url(&term))
+                .await
                 .map_err(|error| {
                     RequestError::FileAccessFailed(format!(
-                        "{} did not answer: {error}",
+                        "{} did not answer: {error:#}",
                         source.name()
                     ))
                 })?;
-            let status = response.status();
-            let body = response.text().unwrap_or_default();
             if !status.is_success() {
                 return Err(RequestError::FileAccessFailed(format!(
                     "{} answered {status}",

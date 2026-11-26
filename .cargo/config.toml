@@ -9,6 +9,28 @@ linker = "rust-lld.exe"
 # Link the C runtime in, so qrate runs on a machine without the Visual C++ Redistributable.
 rustflags = ["-C", "target-feature=+crt-static"]
 
+[target.wasm32-unknown-unknown]
+# gpui's web platform runs background work on Web Workers that share one memory, so std is rebuilt
+# with atomics and the module imports a shared memory with the TLS exports wasm-bindgen needs.
+rustflags = [
+  "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
+  "-C", "link-arg=--shared-memory",
+  "-C", "link-arg=--import-memory",
+  "-C", "link-arg=--max-memory=4294967296",
+  "-C", "link-arg=--export=__wasm_init_tls",
+  "-C", "link-arg=--export=__tls_size",
+  "-C", "link-arg=--export=__tls_align",
+  "-C", "link-arg=--export=__tls_base",
+  "-C", "link-arg=--export=__heap_base",
+  "-C", "link-arg=--export=__data_end",
+  "--cfg", "getrandom_backend=\"wasm_js\"",
+]
+
+[alias]
+# Nightly only: `cargo +nightly wasm-check -p app`.
+wasm-check = "check --target wasm32-unknown-unknown -Zbuild-std=std,panic_abort"
+wasm-build = "build --target wasm32-unknown-unknown -Zbuild-std=std,panic_abort"
+
 [env]
 # Make Rust artifacts path-independent so zccache can reuse them across worktrees.
 # ZCCACHE_PATH_REMAP = "auto"

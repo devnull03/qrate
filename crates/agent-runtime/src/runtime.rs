@@ -167,13 +167,26 @@ fn seed_settings(path: &Path) -> Result<(), String> {
     fs::write(path, text + "\n").map_err(|err| err.to_string())
 }
 
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn hex(color: gpui::Hsla) -> String {
+    let color = color.to_rgb();
+    let channel = |value: f32| (value.clamp(0., 1.) * 255.).round() as u8;
+    let (r, g, b) = (channel(color.r), channel(color.g), channel(color.b));
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn is_light(color: gpui::Hsla) -> bool {
+    color.l >= 0.5
+}
+
 /// Write Pi's `qrate` theme in qrate's colours. It starts from Pi's own light or dark theme, so
 /// every colour Pi needs is set and code highlighting stays Pi's; Pi reloads the file while running.
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn write_pi_theme(
     runtime: &AgentRuntime,
     palette: crate::TerminalPalette,
 ) -> Result<(), String> {
-    use crate::terminal::{hex, is_light};
     let base = if is_light(palette.background) {
         "light"
     } else {

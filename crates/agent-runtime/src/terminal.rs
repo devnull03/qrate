@@ -36,7 +36,8 @@ use gpui::{
     UnderlineStyle, px, rgb,
 };
 
-use crate::AgentRuntime;
+use crate::runtime::is_light;
+use crate::{AgentRuntime, NOT_INSTALLED, TerminalPalette, TerminalScreen};
 
 const COLS: usize = 100;
 const LINES: usize = 32;
@@ -64,26 +65,6 @@ fn project_session_dir(profile: &Path, project: &Path) -> PathBuf {
     profile
         .join("sessions")
         .join(format!("{stem}-{:016x}", hasher.finish()))
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub struct TerminalPalette {
-    pub foreground: Hsla,
-    pub background: Hsla,
-    pub muted: Hsla,
-    pub red: Hsla,
-    pub green: Hsla,
-    pub yellow: Hsla,
-    pub blue: Hsla,
-    pub magenta: Hsla,
-    pub cyan: Hsla,
-}
-
-pub struct TerminalScreen {
-    pub text: String,
-    pub highlights: Vec<(Range<usize>, HighlightStyle)>,
-    /// Where the program printed a hyperlink (OSC 8), with the exact target it named.
-    pub links: Vec<(Range<usize>, String)>,
 }
 
 static GLOBAL_CREDENTIAL: OnceLock<Option<String>> = OnceLock::new();
@@ -138,15 +119,6 @@ fn to_rgb(color: Hsla) -> Rgb {
         g: channel(color.g),
         b: channel(color.b),
     }
-}
-
-pub(crate) fn hex(color: Hsla) -> String {
-    let Rgb { r, g, b } = to_rgb(color);
-    format!("#{r:02x}{g:02x}{b:02x}")
-}
-
-pub(crate) fn is_light(color: Hsla) -> bool {
-    color.l >= 0.5
 }
 
 /// The colour a program asked for with OSC 4, 10, 11 or 12: an ANSI index, or 256 and up for
@@ -454,9 +426,6 @@ impl Default for AgentTerminal {
         }
     }
 }
-
-/// The status while there is no runtime to start, until it is installed.
-pub const NOT_INSTALLED: &str = "Pi is not installed. Install the assistant runtime to start it.";
 
 impl AgentTerminal {
     pub fn is_running(&self) -> bool {
@@ -960,9 +929,10 @@ mod tests {
     use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 
     use super::{
-        TerminalPalette, TerminalSize, hex, project_session_dir, render, requested_color,
+        TerminalPalette, TerminalSize, project_session_dir, render, requested_color,
         terminal_background, terminal_style, to_rgb,
     };
+    use crate::runtime::hex;
 
     fn palette() -> TerminalPalette {
         TerminalPalette {

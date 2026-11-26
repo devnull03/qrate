@@ -26,7 +26,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const COLUMN_NOTES_WRITE_PREFIX: &str = "column_notes:";
@@ -808,33 +808,38 @@ pub fn write_visual_index(path: &Path, model: &str, entries: &[VisualEntry]) -> 
 
 /// Debounced background writer for `__settings` values. The dock-layout and
 /// window-bounds observers fire on every drag event; latest value per
-/// (file, key) wins, and one thread serves all project files — no lifecycle
+/// (file, key) wins, and one task serves all project files — no lifecycle
 /// to manage on project switch, since the path travels with each entry.
 /// Mirrors `db::SettingsWriter`. A `None` value is a removal, queued like any write.
 #[derive(Clone)]
 pub struct ProjectSettingsWriter {
     pending: Arc<Mutex<Pending>>,
-    wake: mpsc::Sender<()>,
+    wake: async_channel::Sender<()>,
 }
 
 type Pending = HashMap<(PathBuf, String), Option<String>>;
 
 impl ProjectSettingsWriter {
-    pub fn start() -> Self {
+    pub fn start(executor: &gpui::BackgroundExecutor) -> Self {
         let pending: Arc<Mutex<Pending>> = Arc::default();
-        let (wake, rx) = mpsc::channel::<()>();
+        let (wake, rx) = async_channel::unbounded::<()>();
         let map = pending.clone();
-        std::thread::spawn(move || {
-            let debounce = Duration::from_millis(450);
-            while rx.recv().is_ok() {
-                // Something was enqueued — let the burst settle (drain wake-ups
-                // until one debounce window passes quietly), then write.
-                while rx.recv_timeout(debounce).is_ok() {}
-                Self::write_pending(&map);
-            }
-            // Channel closed (writer dropped) — flush whatever is left.
-            Self::write_pending(&map);
-        });
+        let timer = executor.clone();
+        executor
+            .spawn(async move {
+                while rx.recv().await.is_ok() {
+                    // Let the burst settle: write once a whole debounce window passes quietly.
+                    loop {
+                        timer.timer(Duration::from_millis(450)).await;
+                        if rx.try_recv().is_err() {
+                            break;
+                        }
+                        while rx.try_recv().is_ok() {}
+                    }
+                    Self::write_pending(&map);
+                }
+            })
+            .detach();
         Self { pending, wake }
     }
 
@@ -842,7 +847,7 @@ impl ProjectSettingsWriter {
         if let Ok(mut map) = self.pending.lock() {
             map.insert((file.to_path_buf(), key.to_string()), value);
         }
-        let _ = self.wake.send(());
+        let _ = self.wake.try_send(());
     }
 
     /// Writes everything still pending, synchronously — the app-quit path,
@@ -2124,8 +2129,8 @@ mod tests {
         write_batch(&path, &[("table_stripes".into(), None)]).unwrap();
     }
 
-    #[test]
-    fn writer_flushes_latest_value_per_key() {
+    #[gpui::test]
+    fn writer_flushes_latest_value_per_key(cx: &mut gpui::TestAppContext) {
         let path = tempfile("writer.qrate");
         create_project_file(
             &path,
@@ -2137,7 +2142,7 @@ mod tests {
         )
         .unwrap();
 
-        let writer = ProjectSettingsWriter::start();
+        let writer = ProjectSettingsWriter::start(&cx.executor());
         writer.enqueue(&path, "dock_layout", Some("{\"v\":1}".into()));
         writer.enqueue(&path, "dock_layout", Some("{\"v\":2}".into())); // latest wins
         writer.flush(); // quit path: synchronous, doesn't wait out the debounce

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The three checks CI runs, in CI's order, in their own target dir.
+# The checks CI runs, in CI's order, in their own target dirs.
 #
 # The dir matters: clippy's `-D warnings` and rust-analyzer's plain clippy are different
 # fingerprints, so sharing `target/` would make every run rebuild what the editor just built.
@@ -15,3 +15,9 @@ cargo fmt --all --check
 # keeps the remap, and so does every ordinary build.
 ZCCACHE_PATH_REMAP= cargo clippy --workspace --all-targets -- -D warnings -A dead_code
 cargo test --workspace
+# The browser build needs nightly (see docs/dev/web-support-plan.md); CI's `wasm` job runs it.
+if rustup toolchain list | grep -q '^nightly'; then
+  CARGO_TARGET_DIR="${CARGO_TARGET_DIR}-wasm" cargo +nightly wasm-check -p app -p web
+else
+  echo "skipping the wasm32 check: install it with rustup toolchain install nightly -c rust-src -t wasm32-unknown-unknown" >&2
+fi

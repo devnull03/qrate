@@ -103,6 +103,23 @@ What the spike settled:
   Copy Debug Info keeps working from an in-memory ring buffer.
 - Gate: `cargo check --target wasm32-unknown-unknown -p table -p workspace -p app`.
 
+**M1 result (done — #159).** `cargo +nightly wasm-check -p app -p web` passes, and CI runs it
+as the `wasm` job (`scripts/ci.sh` too, when nightly is installed). The nightly flags live in
+`.cargo/config.toml` under `[target.wasm32-unknown-unknown]`, with `wasm-check`/`wasm-build`
+aliases. What it settled:
+- **HTTP goes through gpui's `HttpClient`, not async reqwest.** Async reqwest needs a tokio
+  reactor, which gpui's executors are not, so it would have broken desktop HTTP. The new `fetch`
+  crate does one round trip over `cx.http_client()`; `app` installs Zed's `reqwest_client` on the
+  desktop, and the browser brings `fetch`. data-exchange, spellcheck, checks and plugin-package
+  moved to it, which made their call chains async.
+- Two crates keep blocking reqwest on the desktop only: `plugin-host` (Lua's `http.get` cannot
+  yield) and `updater` (whose `web.rs` refuses every download, so `components` compiles unchanged).
+- Native-only code gets a same-surface browser stand-in rather than `cfg` at every caller:
+  `agent-runtime/src/web.rs` (no PTY), `plugin-host/src/web.rs` (no Luau; plugins load as a
+  "desktop only" failure), `updater/src/web.rs`. PDFium does not bind in the browser yet (M5).
+- The settings writers run on the background executor instead of `std::thread`.
+- The workspace `zip` is deflate-only, so no C codecs reach the wasm build.
+
 ### Phase 2 — storage: open and save `.qrate` files
 - `settings/src/project.rs:275/287` and `settings/src/db.rs:120` open by path. Add a web branch that
   takes bytes: `Connection::open_in_memory` plus `deserialize_read_exact`, as in

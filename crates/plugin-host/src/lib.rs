@@ -7,13 +7,17 @@
 //! the host reads the folder, so the sandbox never gains a way to name a file itself.
 
 mod agent_program;
+#[cfg(not(target_family = "wasm"))]
+mod plugin;
+#[cfg(target_family = "wasm")]
+#[path = "web.rs"]
 mod plugin;
 
 pub use agent_program::{
     AgentDiagnostic, AgentProgramError, AgentProgramOutput, AgentSnapshot, DEADLINE, MAX_OUTPUT,
     MEMORY_LIMIT, run_agent_program, validate_agent_program,
 };
-pub use plugin::{Env, LuaPlugin, PERMISSION_NET, PackageDescriptor, Writes};
+pub use plugin::LuaPlugin;
 // So the Settings window can render a plugin's knobs without depending on `plugin-api` directly.
 pub use plugin_api::{SettingKind, SettingScope, SettingSpec};
 
@@ -33,6 +37,34 @@ use plugin_api::{
     Suggestions,
 };
 use serde_json::Value as Json;
+
+/// The one permission that exists. Declared by a plugin, granted by the user, checked here.
+pub const PERMISSION_NET: &str = "net";
+
+/// What a command asked the host to store, by scope. `None` means "leave that scope alone";
+/// `Some` replaces the plugin's whole object there, which is the same replace-the-set rule
+/// diagnostics use and saves inventing merge semantics.
+#[derive(Default, Debug, PartialEq)]
+pub struct Writes {
+    pub column: Option<Json>,
+    pub project: Option<Json>,
+    pub user: Option<Json>,
+}
+
+/// Everything the host settles before a plugin's first line runs: what it may `require`, what it is
+/// allowed to reach, and what it stored the last time it ran.
+#[derive(Default)]
+pub struct Env {
+    pub modules: Vec<(String, String)>,
+    pub granted: Vec<String>,
+    pub storage: Json,
+}
+
+pub struct PackageDescriptor {
+    pub name: String,
+    pub api_version: u64,
+    pub permissions: Vec<String>,
+}
 
 /// How long the grid must be quiet before plugins run. A commit fires per keystroke, and coalescing
 /// them is a bigger win than the threading — the threading only stops one slow plugin dropping a

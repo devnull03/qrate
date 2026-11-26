@@ -64,18 +64,23 @@ pub fn stored(cx: &App) -> Stored {
 }
 
 impl Stored {
-    /// The resolution ladder, run on a background thread: the persisted copy while it is fresh,
+    /// The resolution ladder, run on a background task: the persisted copy while it is fresh,
     /// otherwise a conditional re-check and then the persisted copy, and the compiled-in pair if
     /// nothing was ever persisted.
     ///
     /// Returns the credentials to use and, when the endpoint answered with a new pair, what to
     /// persist. A network failure keeps whatever is stored — working offline is the normal case
     /// for this audience, so it must never block an export.
-    pub fn refreshed(self) -> (Option<ClientCreds>, Option<(ClientCreds, Option<String>)>) {
+    pub async fn refreshed(
+        self,
+        client: &dyn http_client::HttpClient,
+    ) -> (Option<ClientCreds>, Option<(ClientCreds, Option<String>)>) {
         if !self.stale && self.creds.is_some() {
             return (self.creds, None);
         }
-        match data_exchange::google::fetch_config(&self.endpoint, self.etag.as_deref()) {
+        match data_exchange::google::fetch_config(client, &self.endpoint, self.etag.as_deref())
+            .await
+        {
             Ok(Some(config)) => (
                 Some(config.creds.clone()),
                 Some((config.creds, config.etag)),
@@ -194,9 +199,30 @@ mod tests {
 
     use super::Stored;
 
-    /// An endpoint nothing listens on: a connection refused in milliseconds, which is the failure
-    /// every offline user hits.
+    use futures::executor::block_on;
+    use http_client::{AsyncBody, HttpClient, Request, Response, Url, http::HeaderValue};
+
     const DEAD: &str = "http://127.0.0.1:1/oauth/config";
+
+    /// Fails every request the way a machine with no network does.
+    struct Offline;
+
+    impl HttpClient for Offline {
+        fn user_agent(&self) -> Option<&HeaderValue> {
+            None
+        }
+
+        fn proxy(&self) -> Option<&Url> {
+            None
+        }
+
+        fn send(
+            &self,
+            _: Request<AsyncBody>,
+        ) -> futures::future::BoxFuture<'static, anyhow::Result<Response<AsyncBody>>> {
+            Box::pin(async { Err(anyhow::anyhow!("offline")) })
+        }
+    }
 
     fn stored(creds: Option<ClientCreds>, stale: bool) -> Stored {
         Stored {
@@ -218,7 +244,7 @@ mod tests {
     /// export wait on the network.
     #[test]
     fn a_fresh_copy_is_used_without_asking_the_endpoint() {
-        let (resolved, persist) = stored(Some(creds()), false).refreshed();
+        let (resolved, persist) = block_on(stored(Some(creds()), false).refreshed(&Offline));
         assert_eq!(resolved, Some(creds()));
         assert!(persist.is_none());
     }
@@ -227,7 +253,7 @@ mod tests {
     /// stored pair in place rather than fail the sign-in.
     #[test]
     fn an_unreachable_endpoint_keeps_what_is_stored() {
-        let (resolved, persist) = stored(Some(creds()), true).refreshed();
+        let (resolved, persist) = block_on(stored(Some(creds()), true).refreshed(&Offline));
         assert_eq!(resolved, Some(creds()));
         assert!(persist.is_none());
     }
@@ -236,7 +262,7 @@ mod tests {
     /// in a test build — so this is the "no credentials anywhere" answer, not a panic.
     #[test]
     fn with_nothing_stored_it_falls_through_to_the_compiled_in_pair() {
-        let (resolved, _) = stored(None, true).refreshed();
+        let (resolved, _) = block_on(stored(None, true).refreshed(&Offline));
         assert_eq!(resolved, ClientCreds::compiled_in());
     }
 }

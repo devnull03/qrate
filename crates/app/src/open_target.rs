@@ -19,6 +19,7 @@ impl OpenTarget {
                     }
                 };
             }
+            #[cfg(not(target_family = "wasm"))]
             Some(value) if value.starts_with("file:") => {
                 url::Url::parse(value).ok()?.to_file_path().ok()?
             }

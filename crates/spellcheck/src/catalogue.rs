@@ -266,25 +266,19 @@ pub fn name_of(code: &str) -> &str {
 
 /// Fetch a dictionary's two files and write them where [`crate::source`] will find them.
 ///
-/// Blocking on purpose — the caller runs it on the background executor, the same shape
-/// `data_exchange::fetch_sheet` uses. Both files are downloaded before either is written, so a
-/// failure half way cannot leave an install that looks complete and parses to nothing.
-pub fn download(code: &str) -> Result<(), String> {
+/// Both files are downloaded before either is written, so a failure half way cannot leave an
+/// install that looks complete and parses to nothing.
+pub async fn download(client: &dyn fetch::HttpClient, code: &str) -> Result<(), String> {
     let (aff_path, dic_path) = paths(code).ok_or("qrate has nowhere to store dictionaries")?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let get = |file: &str| -> Result<Vec<u8>, String> {
+    let get = async |file: &str| -> Result<Vec<u8>, String> {
         let url = format!("{RAW}/{code}/{file}");
-        let resp = client.get(&url).send().map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("{} returned {}", url, resp.status()));
+        let reply = fetch::get(client, &url).await.map_err(|e| e.to_string())?;
+        if !reply.status.is_success() {
+            return Err(format!("{} returned {}", url, reply.status));
         }
-        resp.bytes().map(|b| b.to_vec()).map_err(|e| e.to_string())
+        Ok(reply.body)
     };
-    let (aff, dic) = (get("index.aff")?, get("index.dic")?);
+    let (aff, dic) = (get("index.aff").await?, get("index.dic").await?);
 
     if let Some(parent) = aff_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -366,13 +360,13 @@ mod network {
     #[test]
     #[ignore]
     fn every_catalogued_dictionary_still_resolves() {
-        let client = reqwest::blocking::Client::new();
+        let client = reqwest_client::ReqwestClient::user_agent("qrate-test").unwrap();
         let mut broken = Vec::new();
         for (code, _, _) in super::CATALOGUE {
             let url = format!("{}/{code}/index.aff", super::RAW);
-            match client.head(&url).send() {
-                Ok(r) if r.status().is_success() => {}
-                Ok(r) => broken.push(format!("{code}: {}", r.status())),
+            match futures::executor::block_on(fetch::get(&client, &url)) {
+                Ok(r) if r.status.is_success() => {}
+                Ok(r) => broken.push(format!("{code}: {}", r.status)),
                 Err(e) => broken.push(format!("{code}: {e}")),
             }
         }
@@ -392,7 +386,8 @@ mod round_trip {
     #[ignore]
     fn a_downloaded_dictionary_installs_and_checks() {
         assert!(!is_installed("fr"), "start from a clean data dir");
-        download("fr").expect("French downloads");
+        let client = reqwest_client::ReqwestClient::user_agent("qrate-test").unwrap();
+        futures::executor::block_on(download(&client, "fr")).expect("French downloads");
         assert!(is_installed("fr"), "both files landed");
 
         let spell =

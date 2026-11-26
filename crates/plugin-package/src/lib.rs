@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -12,6 +12,8 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
+use fetch::{AsyncBody, HttpClient, HttpRequestExt, Method, StatusCode, Url, header};
+use futures::AsyncReadExt as _;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -159,7 +161,7 @@ pub enum InstallTarget {
 }
 
 pub fn parse_install_link(value: &str) -> Result<InstallTarget> {
-    let url = reqwest::Url::parse(value).context("invalid qrate install link")?;
+    let url = Url::parse(value).context("invalid qrate install link")?;
     ensure!(
         url.scheme() == "qrate"
             && url.host_str() == Some("plugin")
@@ -267,20 +269,23 @@ pub fn verify_catalog(bytes: &[u8], signature_bytes: &[u8], key: &VerifyingKey) 
 
 /// Takes the catalog from the first of `urls` that has one, so a download source without it falls
 /// through to the site. The verified cache answers only when none of them could.
-pub fn fetch_catalog_cached(
+pub async fn fetch_catalog_cached(
+    client: &dyn HttpClient,
     urls: &[String],
     key: &VerifyingKey,
     cache_root: &Path,
 ) -> Result<Catalog> {
     let catalog_path = cache_root.join("catalog.json");
     let signature_path = cache_root.join("catalog.json.sig");
-    match fetch_catalog_files(urls).and_then(|(catalog, signature)| {
-        let verified = verify_catalog(&catalog, &signature, key)?;
-        fs::create_dir_all(cache_root)?;
-        write_bytes_atomic(&catalog_path, &catalog)?;
-        write_bytes_atomic(&signature_path, &signature)?;
-        Ok(verified)
-    }) {
+    match fetch_catalog_files(client, urls)
+        .await
+        .and_then(|(catalog, signature)| {
+            let verified = verify_catalog(&catalog, &signature, key)?;
+            fs::create_dir_all(cache_root)?;
+            write_bytes_atomic(&catalog_path, &catalog)?;
+            write_bytes_atomic(&signature_path, &signature)?;
+            Ok(verified)
+        }) {
         Ok(catalog) => Ok(catalog),
         Err(download_error) => {
             let catalog = fs::read(&catalog_path)
@@ -294,40 +299,20 @@ pub fn fetch_catalog_cached(
     }
 }
 
-fn fetch_catalog_files(urls: &[String]) -> Result<(Vec<u8>, Vec<u8>)> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()?;
-    // `None` is "not here", the one answer that moves on to the next URL.
-    let fetch = |url: &str, limit: u64| -> Result<Option<Vec<u8>>> {
-        let local = reqwest::Url::parse(url)
-            .ok()
-            .filter(|url| url.scheme() == "file")
-            .and_then(|url| url.to_file_path().ok());
-        if let Some(path) = local {
-            return match fs::read(path) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                read => {
-                    let bytes = read?;
-                    ensure!(bytes.len() as u64 <= limit, "download is too large");
-                    Ok(Some(bytes))
-                }
-            };
-        }
-        let response = client.get(url).send()?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        bounded_response(response, limit).map(Some)
-    };
+async fn fetch_catalog_files(
+    client: &dyn HttpClient,
+    urls: &[String],
+) -> Result<(Vec<u8>, Vec<u8>)> {
     for url in urls {
-        let Some(bytes) =
-            fetch(url, MAX_CATALOG_BYTES as u64).context("could not download plugin catalog")?
+        let Some(bytes) = fetch_file(client, url, MAX_CATALOG_BYTES as u64)
+            .await
+            .context("could not download plugin catalog")?
         else {
             log::warn!("there is no plugin catalog at {url}");
             continue;
         };
-        let signature = fetch(&format!("{url}.sig"), 64 * 1024)
+        let signature = fetch_file(client, &format!("{url}.sig"), 64 * 1024)
+            .await
             .context("could not download plugin catalog signature")?
             .with_context(|| format!("the plugin catalog at {url} has no signature"))?;
         return Ok((bytes, signature));
@@ -335,60 +320,101 @@ fn fetch_catalog_files(urls: &[String]) -> Result<(Vec<u8>, Vec<u8>)> {
     bail!("there is no plugin catalog at {}", urls.join(" or "))
 }
 
-fn bounded_response(response: reqwest::blocking::Response, limit: u64) -> Result<Vec<u8>> {
-    ensure!(
-        response.status().is_success(),
-        "server returned HTTP {}",
-        response.status()
-    );
-    if let Some(length) = response.content_length() {
-        ensure!(length <= limit, "download is too large");
+/// `None` is "not here", the one answer that moves on to the next URL.
+async fn fetch_file(client: &dyn HttpClient, url: &str, limit: u64) -> Result<Option<Vec<u8>>> {
+    #[cfg(not(target_family = "wasm"))]
+    let local = Url::parse(url)
+        .ok()
+        .filter(|url| url.scheme() == "file")
+        .and_then(|url| url.to_file_path().ok());
+    #[cfg(target_family = "wasm")]
+    let local: Option<PathBuf> = None;
+    if let Some(path) = local {
+        return match fs::read(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            read => {
+                let bytes = read?;
+                ensure!(bytes.len() as u64 <= limit, "download is too large");
+                Ok(Some(bytes))
+            }
+        };
+    }
+    let mut response = client.send(get(url, Duration::from_secs(20))?).await?;
+    if response.status() == StatusCode::NOT_FOUND {
+        return Ok(None);
     }
     let mut bytes = Vec::new();
-    response.take(limit + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() as u64 <= limit, "download is too large");
-    Ok(bytes)
+    read_bounded(&mut response, limit, |chunk| {
+        bytes.extend_from_slice(chunk);
+        Ok(())
+    })
+    .await?;
+    Ok(Some(bytes))
 }
 
-pub fn download_package(url: &str, output: &Path) -> Result<(String, u64)> {
-    let mut response = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()?
-        .get(url)
-        .send()?;
+fn get(url: &str, timeout: Duration) -> Result<fetch::Request<AsyncBody>> {
+    Ok(fetch::request(Method::GET, url)
+        .timeout(timeout)
+        .body(AsyncBody::empty())?)
+}
+
+/// Hands the body to `sink` a chunk at a time and refuses it once it passes `limit`, so an
+/// oversized download is stopped rather than read whole into memory first.
+async fn read_bounded(
+    response: &mut fetch::Response<AsyncBody>,
+    limit: u64,
+    mut sink: impl FnMut(&[u8]) -> Result<()> + Send,
+) -> Result<u64> {
     ensure!(
         response.status().is_success(),
         "server returned HTTP {}",
         response.status()
     );
-    if let Some(length) = response.content_length() {
-        ensure!(length <= MAX_PACKAGE_BYTES, "download is too large");
+    let length = response
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok()?.parse::<u64>().ok());
+    if let Some(length) = length {
+        ensure!(length <= limit, "download is too large");
     }
+    let mut total = 0_u64;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let read = response.body_mut().read(&mut buffer).await?;
+        if read == 0 {
+            return Ok(total);
+        }
+        total += read as u64;
+        ensure!(total <= limit, "download is too large");
+        sink(&buffer[..read])?;
+    }
+}
 
+pub async fn download_package(
+    client: &dyn HttpClient,
+    url: &str,
+    output: &Path,
+) -> Result<(String, u64)> {
+    let mut response = client.send(get(url, Duration::from_secs(60))?).await?;
     let mut file = fs::OpenOptions::new()
         .write(true)
         .truncate(true)
         .open(output)?;
     let mut hasher = Sha256::new();
-    let mut total = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = response.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        total = total
-            .checked_add(read as u64)
-            .ok_or_else(|| anyhow::anyhow!("download is too large"))?;
-        ensure!(total <= MAX_PACKAGE_BYTES, "download is too large");
-        hasher.update(&buffer[..read]);
-        file.write_all(&buffer[..read])?;
-    }
+    let total = read_bounded(&mut response, MAX_PACKAGE_BYTES, |chunk| {
+        hasher.update(chunk);
+        file.write_all(chunk)?;
+        Ok(())
+    })
+    .await?;
     file.flush()?;
     Ok((format!("{:x}", hasher.finalize()), total))
 }
 
-pub fn resolve_github_release(source: &str) -> Result<DirectRelease> {
+pub async fn resolve_github_release(
+    client: &dyn HttpClient,
+    source: &str,
+) -> Result<DirectRelease> {
     let url = validate_github_url(source)?;
     let parts: Vec<_> = url
         .path_segments()
@@ -420,13 +446,9 @@ pub fn resolve_github_release(source: &str) -> Result<DirectRelease> {
         html_url: String,
         assets: Vec<Asset>,
     }
-    let release: Release = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .user_agent("qrate-plugin-installer")
-        .build()?
-        .get(endpoint)
-        .send()?
-        .error_for_status()
+    let release: Release = fetch::send(client, get(&endpoint, Duration::from_secs(20))?)
+        .await?
+        .ok()
         .context("GitHub could not resolve that release")?
         .json()?;
     let mut packages = release
@@ -458,8 +480,8 @@ pub fn validate_github_source(source: &str) -> Result<()> {
     validate_github_url(source).map(drop)
 }
 
-fn validate_github_url(source: &str) -> Result<reqwest::Url> {
-    let url = reqwest::Url::parse(source).context("invalid GitHub URL")?;
+fn validate_github_url(source: &str) -> Result<Url> {
+    let url = Url::parse(source).context("invalid GitHub URL")?;
     ensure!(
         url.scheme() == "https" && url.host_str() == Some("github.com"),
         "only public HTTPS GitHub repositories are supported"
@@ -869,7 +891,7 @@ fn validate_sha256(value: &str) -> Result<()> {
 }
 
 fn validate_https_url(value: &str) -> Result<()> {
-    let url = reqwest::Url::parse(value).context("invalid HTTPS URL")?;
+    let url = Url::parse(value).context("invalid HTTPS URL")?;
     ensure!(
         url.scheme() == "https"
             && url.host_str().is_some()
@@ -959,6 +981,7 @@ mod tests {
     use anyhow::bail;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use ed25519_dalek::{Signer as _, SigningKey};
+    use futures::executor::block_on;
     use serde_json::json;
     use sha2::{Digest as _, Sha256};
     use tempfile::tempdir;
@@ -1069,22 +1092,43 @@ mod tests {
         )
         .unwrap();
         let url = |path: std::path::PathBuf| {
-            reqwest::Url::from_file_path(path.join("catalog.json"))
+            fetch::Url::from_file_path(path.join("catalog.json"))
                 .unwrap()
                 .to_string()
         };
         let cache = temp.path().join("cache");
+        let client = http_client::BlockedHttpClient::new();
 
         // A mirror without the catalog falls through to the next URL.
         let urls = [url(temp.path().join("mirror")), url(site.clone())];
-        fetch_catalog_cached(&urls, &key.verifying_key(), &cache).unwrap();
+        block_on(fetch_catalog_cached(
+            &client,
+            &urls,
+            &key.verifying_key(),
+            &cache,
+        ))
+        .unwrap();
         assert!(cache.join("catalog.json").exists());
 
         // When no URL has it, the verified cache still answers.
         let missing = [url(temp.path().join("mirror"))];
-        fetch_catalog_cached(&missing, &key.verifying_key(), &cache).unwrap();
+        block_on(fetch_catalog_cached(
+            &client,
+            &missing,
+            &key.verifying_key(),
+            &cache,
+        ))
+        .unwrap();
         fs::remove_dir_all(&cache).unwrap();
-        assert!(fetch_catalog_cached(&missing, &key.verifying_key(), &cache).is_err());
+        assert!(
+            block_on(fetch_catalog_cached(
+                &client,
+                &missing,
+                &key.verifying_key(),
+                &cache
+            ))
+            .is_err()
+        );
     }
 
     #[test]

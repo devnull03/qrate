@@ -132,6 +132,7 @@ pub fn switch_theme(name: &str, cx: &mut App) {
 /// startup, after `gpui_component::init(cx)` and after `AppSettings` has been loaded.
 pub fn init(cx: &mut App) {
     apply_ui_scale(cx);
+    #[cfg(not(target_family = "wasm"))]
     if let Some(dir) = themes_dir() {
         match extract_embedded_themes(&dir) {
             Ok(()) => {

@@ -11,13 +11,18 @@
 //! GPL. PDFium itself is Apache-2.0 or BSD-3, which is clean.
 
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(not(target_family = "wasm"))]
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use components::{ComponentId, Found};
+#[cfg(not(target_family = "wasm"))]
+use components::ComponentId;
+use components::Found;
 use image::DynamicImage;
 use pdfium_render::prelude::{
-    PdfPageTextChars, PdfRenderConfig, PdfSearchDirection, PdfSearchOptions, Pdfium,
+    PdfDocument, PdfPageTextChars, PdfRenderConfig, PdfSearchDirection, PdfSearchOptions, Pdfium,
+    PdfiumError,
 };
 
 /// Illustrator files are, in practice, PDFs with extra private data, so PDFium opens them. It is
@@ -26,8 +31,17 @@ pub fn handles(extension: &str) -> bool {
     matches!(extension, "pdf" | "ai")
 }
 
+/// The browser build of PDFium has no file access of its own, so it is handed the bytes.
+fn open<'a>(pdfium: &'a Pdfium, path: &Path) -> Result<PdfDocument<'a>, PdfiumError> {
+    #[cfg(not(target_family = "wasm"))]
+    return pdfium.load_pdf_from_file(path, None);
+    #[cfg(target_family = "wasm")]
+    return pdfium.load_pdf_from_byte_vec(std::fs::read(path).map_err(PdfiumError::IoError)?, None);
+}
+
 /// Where to look for the library, in order: beside the executable (a full install), the copy qrate
 /// installed on demand, then the system's own, which the empty path stands for.
+#[cfg(not(target_family = "wasm"))]
 fn candidates(exe_dir: Option<&Path>, installed: Option<&Path>) -> Vec<PathBuf> {
     exe_dir
         .into_iter()
@@ -37,7 +51,14 @@ fn candidates(exe_dir: Option<&Path>, installed: Option<&Path>) -> Vec<PathBuf> 
         .collect()
 }
 
+/// Not yet in the browser, where PDFium is a separate wasm module loaded from JavaScript.
+#[cfg(target_family = "wasm")]
+fn bind() -> Option<(Pdfium, Option<Found>)> {
+    None
+}
+
 /// The library, and where it came from when qrate did not install it.
+#[cfg(not(target_family = "wasm"))]
 fn bind() -> Option<(Pdfium, Option<Found>)> {
     let exe = std::env::current_exe().ok();
     let exe_dir = exe.as_deref().and_then(Path::parent);
@@ -115,7 +136,7 @@ fn locked() -> Option<std::sync::MutexGuard<'static, Pdfium>> {
 /// or the file will not open, which the caller reads as "no paging".
 pub fn page_count(path: &Path) -> Option<usize> {
     let pdfium = locked()?;
-    let document = pdfium.load_pdf_from_file(path, None).ok()?;
+    let document = open(&pdfium, path).ok()?;
     usize::try_from(document.pages().len()).ok()
 }
 
@@ -125,7 +146,7 @@ pub fn page_count(path: &Path) -> Option<usize> {
 /// thumbnails until it is read. Per-page locking if that shows up in a real collection.
 pub fn text(path: &Path) -> Option<String> {
     let pdfium = locked()?;
-    let document = pdfium.load_pdf_from_file(path, None).ok()?;
+    let document = open(&pdfium, path).ok()?;
     Some(
         document
             .pages()
@@ -144,7 +165,7 @@ pub fn text(path: &Path) -> Option<String> {
 /// to prove a no.
 pub fn has_text_layer(path: &Path) -> Option<bool> {
     let pdfium = locked()?;
-    let document = pdfium.load_pdf_from_file(path, None).ok()?;
+    let document = open(&pdfium, path).ok()?;
     Some(
         document
             .pages()
@@ -187,8 +208,7 @@ pub struct Match {
 /// than a flattened copy of it.
 pub fn search(path: &Path, needle: &str) -> Option<Vec<Match>> {
     let pdfium = locked()?;
-    let document = pdfium
-        .load_pdf_from_file(path, None)
+    let document = open(&pdfium, path)
         .map_err(|err| log::warn!("could not open {}: {err}", path.display()))
         .ok()?;
     let options = PdfSearchOptions::new();
@@ -263,8 +283,7 @@ fn context(chars: &PdfPageTextChars, start: usize, length: usize) -> (String, Ra
 /// a page is something the viewer navigates rather than something the data model knows about.
 pub fn decode(path: &Path, max_edge: u32, page: usize) -> Option<DynamicImage> {
     let pdfium = locked()?;
-    let document = pdfium
-        .load_pdf_from_file(path, None)
+    let document = open(&pdfium, path)
         .map_err(|err| log::warn!("could not open {}: {err}", path.display()))
         .ok()?;
     let index = i32::try_from(page).ok()?;
@@ -283,7 +302,9 @@ pub fn decode(path: &Path, max_edge: u32, page: usize) -> Option<DynamicImage> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
+    #[cfg(not(target_family = "wasm"))]
+    use std::path::PathBuf;
 
     use crate::pdf;
 

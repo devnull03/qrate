@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use futures::executor::block_on;
 use gpui::{App, SharedString};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -194,9 +195,9 @@ fn serve(mut stream: TcpStream, token: &str, jobs: &async_channel::Sender<Job>) 
             let (reply, answer) = async_channel::bounded(1);
             match call {
                 None => ("404 Not Found", json!({ "error": "not_found" })),
-                Some(call) => match jobs.send_blocking(Job { call, reply }) {
-                    Ok(()) => answer
-                        .recv_blocking()
+                // `futures`' block_on rather than async-channel's own, which the browser lacks.
+                Some(call) => match block_on(jobs.send(Job { call, reply })) {
+                    Ok(()) => block_on(answer.recv())
                         .unwrap_or(("503 Service Unavailable", json!({ "error": "app_closing" }))),
                     Err(_) => ("503 Service Unavailable", json!({ "error": "app_closing" })),
                 },

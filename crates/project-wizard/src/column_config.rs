@@ -89,9 +89,10 @@ impl ColumnConfigLoader {
     fn check_sheet(&mut self, cx: &mut Context<Self>) {
         let link = self.sheet_link.read(cx).value().to_string();
         let headers = self.headers.clone();
+        let client = cx.http_client();
         let fetch = cx
             .background_executor()
-            .spawn(async move { data_exchange::fetch_sheet(&link) });
+            .spawn(async move { data_exchange::fetch_sheet(&*client, &link).await });
         cx.spawn(async move |this, cx| {
             let result = fetch
                 .await

@@ -803,6 +803,7 @@ fn to_google_sheet(
     let refresh_token = crate::google::refresh_token();
     let window = Some(window.window_handle());
 
+    let client = cx.http_client();
     cx.spawn(async move |cx| {
         let Some(token) = resolve_token(stored, refresh_token, cx).await else {
             return;
@@ -818,10 +819,10 @@ fn to_google_sheet(
         };
 
         if let Some(id) = &chosen {
-            let (access, id) = (token.access.clone(), id.clone());
+            let (access, id, client) = (token.access.clone(), id.clone(), client.clone());
             let name = cx
                 .background_spawn(async move {
-                    data_exchange::google::sheet_title(&access, &id)
+                    data_exchange::google::sheet_title(&*client, &access, &id).await
                 })
                 .await
                 .unwrap_or_else(|err| {
@@ -854,17 +855,19 @@ fn to_google_sheet(
         let sheet = cx
             .background_spawn(async move {
                 let notes = sheet_notes(&project_file, &grid)?;
-                let fill = |id: &str, existing: bool| {
-                    fill_google_sheet(&token.access, id, &grid, &notes, existing)
+                let client = &*client;
+                let (id, url, existing) = match chosen {
+                    Some(id) => (id, None, true),
+                    None => {
+                        let title = format!("{title} — qrate");
+                        let (id, url) =
+                            data_exchange::google::create_sheet(client, &token.access, &title)
+                                .await?;
+                        (id, Some(url), false)
+                    }
                 };
-                anyhow::Ok(match chosen {
-                    Some(id) => fill(&id, true).map(|()| (id, None))?,
-                    None => data_exchange::google::create_sheet(
-                        &token.access,
-                        &format!("{title} — qrate"),
-                    )
-                    .and_then(|(id, url)| fill(&id, false).map(|()| (id, Some(url))))?,
-                })
+                fill_google_sheet(client, &token.access, &id, &grid, &notes, existing).await?;
+                anyhow::Ok((id, url))
             })
             .await;
         let note = match sheet {
@@ -898,30 +901,31 @@ fn to_google_sheet(
 
 /// Replace the first tab's values, then its notes. An `existing` sheet may carry notes from an
 /// earlier sync on cells that no longer hold what they described, so those are cleared first.
-fn fill_google_sheet(
+async fn fill_google_sheet(
+    client: &dyn http_client::HttpClient,
     token: &str,
     id: &str,
     grid: &ExportGrid,
     notes: &[SheetNote],
     existing: bool,
 ) -> Result<(), data_exchange::google::GoogleError> {
-    data_exchange::google::write_values(token, id, &grid.headers, &grid.rows)?;
+    data_exchange::google::write_values(client, token, id, &grid.headers, &grid.rows).await?;
     if notes.is_empty() && !existing {
         return Ok(());
     }
-    let sheet_id = data_exchange::google::first_tab_id(token, id)?;
+    let sheet_id = data_exchange::google::first_tab_id(client, token, id).await?;
     if existing {
         let clear = serde_json::json!({ "requests": [{ "updateCells": {
             "range": { "sheetId": sheet_id },
             "fields": "note",
         }}]});
-        data_exchange::google::batch_update(token, id, &clear)?;
+        data_exchange::google::batch_update(client, token, id, &clear).await?;
     }
     if notes.is_empty() {
         return Ok(());
     }
     let body = qrate_export::sheet_note_request_body(sheet_id, notes);
-    data_exchange::google::batch_update(token, id, &body)
+    data_exchange::google::batch_update(client, token, id, &body).await
 }
 
 /// Start Google authentication from Settings without requiring an export as the trigger.
@@ -992,7 +996,13 @@ async fn resolve_token(
     cx: &mut gpui::AsyncApp,
 ) -> Option<data_exchange::google::Token> {
     log::info!("resolving Google OAuth client credentials");
-    let (creds, persist) = cx.background_spawn(async move { stored.refreshed() }).await;
+    let client = cx.update(|cx| cx.http_client());
+    let (creds, persist) = cx
+        .background_spawn({
+            let client = client.clone();
+            async move { stored.refreshed(&*client).await }
+        })
+        .await;
     let Some(creds) = creds else {
         log::error!(
             "Google sync has no client credentials — this build has none compiled in and the \
@@ -1004,7 +1014,7 @@ async fn resolve_token(
         cx.update(|cx| crate::google::remember(&creds, etag, cx));
         log::info!("updated cached Google OAuth client credentials");
     }
-    let token = sign_in(&creds, refresh_token, cx).await;
+    let token = sign_in(client, &creds, refresh_token, cx).await;
     if token.is_some() {
         cx.update(|cx| crate::google::set_authenticated(true, cx));
     }
@@ -1044,15 +1054,18 @@ async fn choose_sheet(access_token: &str, cx: &mut gpui::AsyncApp) -> Option<Str
 /// the listener has to be bound before it does, so those two steps are interleaved here rather
 /// than run as one background job.
 async fn sign_in(
+    client: std::sync::Arc<dyn http_client::HttpClient>,
     creds: &data_exchange::google::ClientCreds,
     refresh_token: Option<String>,
     cx: &mut gpui::AsyncApp,
 ) -> Option<data_exchange::google::Token> {
     if let Some(stored) = refresh_token {
         log::info!("refreshing the stored Google sign-in");
-        let creds = creds.clone();
+        let (creds, client) = (creds.clone(), client.clone());
         let token = cx
-            .background_spawn(async move { data_exchange::google::refresh(&creds, &stored) })
+            .background_spawn(async move {
+                data_exchange::google::refresh(&*client, &creds, &stored).await
+            })
             .await;
         match token {
             Ok(token) => {
@@ -1081,7 +1094,7 @@ async fn sign_in(
     })?;
 
     match cx
-        .background_spawn(async move { consent.wait_for_token() })
+        .background_spawn(async move { consent.wait_for_token(&*client).await })
         .await
     {
         Ok(token) => {

@@ -1,13 +1,17 @@
 //! Trusted update metadata, installation provenance, and post-exit update jobs.
 
-#[cfg(feature = "client")]
+#[cfg(all(feature = "client", not(target_family = "wasm")))]
 mod download;
+#[cfg(all(feature = "client", target_family = "wasm"))]
+#[path = "web.rs"]
+mod download;
+#[cfg(feature = "client")]
+mod source;
 
 #[cfg(feature = "client")]
-pub use download::{
-    DOWNLOAD_SOURCE_ENV, DOWNLOAD_SOURCE_KEY, Source, client, download_verified, read_bytes,
-    try_mirror,
-};
+pub use download::{client, download_verified, read_bytes, try_mirror};
+#[cfg(feature = "client")]
+pub use source::{DOWNLOAD_SOURCE_ENV, DOWNLOAD_SOURCE_KEY, Source};
 use std::{
     fs,
     io::{Read as _, Write as _},

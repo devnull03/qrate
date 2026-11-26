@@ -7,7 +7,8 @@ use std::borrow::Cow;
 
 use gpui::{AssetSource, Result, SharedString};
 
-pub struct Assets;
+/// On the web the wrapped set downloads its icons on demand, so it holds a cache and is built once.
+pub struct Assets(pub gpui_component_assets::Assets);
 
 const OWN: [(&str, &str); 10] = [
     (
@@ -56,12 +57,12 @@ impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         match OWN.iter().find(|(name, _)| *name == path) {
             Some((_, svg)) => Ok(Some(Cow::Borrowed(svg.as_bytes()))),
-            None => gpui_component_assets::Assets.load(path),
+            None => self.0.load(path),
         }
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut all = gpui_component_assets::Assets.list(path)?;
+        let mut all = self.0.list(path)?;
         all.extend(
             OWN.iter()
                 .filter(|(name, _)| name.starts_with(path))
@@ -77,7 +78,7 @@ mod tests {
 
     #[test]
     fn our_icons_load_and_the_library_still_does() {
-        let assets = super::Assets;
+        let assets = super::Assets(gpui_component_assets::Assets::new(""));
         assert!(
             assets
                 .load("icons/panel-left-filled.svg")

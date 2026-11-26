@@ -8,6 +8,7 @@ mod app_settings;
 mod assets;
 mod export;
 mod google;
+#[cfg(not(target_family = "wasm"))]
 mod instance_handoff;
 mod logging;
 #[cfg(target_os = "macos")]
@@ -605,6 +606,7 @@ fn main() {
     let initial_target = launch_args
         .iter()
         .find_map(|argument| open_target::OpenTarget::parse(argument));
+    #[cfg(not(target_family = "wasm"))]
     let initial_request = match &initial_target {
         Some(open_target::OpenTarget::Plugin(link)) => Some(link.clone()),
         Some(open_target::OpenTarget::Project(path) | open_target::OpenTarget::Folder(path)) => {
@@ -616,10 +618,12 @@ fn main() {
         None => None,
     };
     let (url_sender, url_receiver) = async_channel::unbounded();
+    #[cfg(not(target_family = "wasm"))]
     if !instance_handoff::start(initial_request.as_deref(), url_sender.clone()) {
         return;
     }
-    let app = gpui_platform::application().with_assets(assets::Assets);
+    let app = gpui_platform::application()
+        .with_assets(assets::Assets(gpui_component_assets::Assets::new("")));
     #[cfg(target_os = "macos")]
     macos_services::register(url_sender.clone());
     app.on_open_urls(move |urls| {
@@ -632,6 +636,16 @@ fn main() {
     app.run(move |cx| {
         let started = std::time::Instant::now();
         gpui_component::init(cx);
+        #[cfg(not(target_family = "wasm"))]
+        match reqwest_client::ReqwestClient::user_agent(&format!(
+            "qrate/{}",
+            env!("CARGO_PKG_VERSION")
+        )) {
+            Ok(client) => cx.set_http_client(std::sync::Arc::new(client)),
+            Err(error) => {
+                log::error!("could not start the HTTP client, so qrate is offline: {error:#}")
+            }
+        }
         cx.register_url_scheme("qrate").detach();
         #[cfg(target_os = "linux")]
         instance_handoff::register_linux_handlers();
@@ -643,10 +657,12 @@ fn main() {
         });
         cx.set_global(settings);
         cx.set_global(SettingsPersistence {
-            writer: Some(SettingsWriter::start()),
+            writer: Some(SettingsWriter::start(cx.background_executor())),
         });
         cx.set_global(settings::project::ProjectPersistence {
-            writer: Some(settings::project::ProjectSettingsWriter::start()),
+            writer: Some(settings::project::ProjectSettingsWriter::start(
+                cx.background_executor(),
+            )),
         });
         settings::dirty::init(cx);
         // Here and only here: past the single-instance hand-off, before any tier loads a part.

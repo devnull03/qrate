@@ -262,10 +262,10 @@ pub fn start_download(code: SharedString, then: fn(&mut App), cx: &mut App) {
     let downloading = cx.default_global::<Downloading>();
     downloading.active.insert(code.to_string());
     downloading.wanted.insert(code.to_string());
-    let fetching = code.clone();
+    let (fetching, client) = (code.clone(), cx.http_client());
     let fetch = cx
         .background_executor()
-        .spawn(async move { catalogue::download(&fetching) });
+        .spawn(async move { catalogue::download(&*client, &fetching).await });
     cx.spawn(async move |cx| {
         let result = fetch.await;
         cx.update(|cx| {

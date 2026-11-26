@@ -13,14 +13,15 @@ gpui.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
+http_client.workspace = true
 dirs.workspace = true
 log.workspace = true
 simplelog.workspace = true
 os_info.workspace = true
 sysinfo.workspace = true
 async-channel = "2"
+futures = "0.3"
 getrandom = "0.3"
-single-instance = "0.3.3"
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -68,6 +69,11 @@ winresource = "0.1"
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "=0.26.0"
 objc = "0.2"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+# gpui's HTTP client is a null client until one is installed; the browser brings `fetch` instead.
+reqwest_client.workspace = true
+single-instance = "0.3.3"
 
 [dev-dependencies]
 # `#[gpui::test]` and TestAppContext are behind this feature.

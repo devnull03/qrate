@@ -147,3 +147,26 @@ jobs:
       # is lost. Test binaries still land in target/debug/deps, beside the PDFium fetched above.
       - name: Test
         run: cargo nextest run --workspace
+
+  # The browser build (crates/web, docs/dev/web-support-plan.md). gpui's web platform needs
+  # nightly for wasm threads, so this is a separate job; it only type-checks, it does not bundle.
+  wasm:
+    name: check (wasm32)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm
+          save-if: ${{ github.event_name != 'pull_request' }}
+
+      - name: Check
+        run: cargo +nightly wasm-check -p app -p web

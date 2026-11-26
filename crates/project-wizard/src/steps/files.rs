@@ -308,11 +308,10 @@ impl ProjectWizard {
 
     pub(crate) fn check_sheet_link(&mut self, auto_advance: bool, cx: &mut Context<Self>) {
         let link = self.sheet_link_input.read(cx).value().to_string();
-        // Fetch is a blocking network call — run it on a background thread so
-        // the UI doesn't freeze, then apply the result back on the UI thread.
+        let client = cx.http_client();
         let fetch = cx
             .background_executor()
-            .spawn(async move { data_exchange::fetch_sheet(&link) });
+            .spawn(async move { data_exchange::fetch_sheet(&*client, &link).await });
         cx.spawn(async move |this, cx| {
             let result = fetch.await;
             let ready = this

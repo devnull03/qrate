@@ -10,6 +10,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 
 use base64::Engine;
+use fetch::{HttpClient, Method, StatusCode, header};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -31,7 +32,7 @@ pub enum GoogleError {
     #[error("This build of qrate has no Google client ID, so it can't sign in to Google")]
     NotConfigured,
     #[error("We couldn't reach Google — {0}")]
-    Http(#[from] reqwest::Error),
+    Http(#[from] anyhow::Error),
     #[error("We couldn't listen for Google's reply — {0}")]
     Io(#[from] std::io::Error),
     #[error("Google's sign-in was cancelled or didn't come back")]
@@ -77,10 +78,8 @@ impl ClientCreds {
     }
 }
 
-fn client() -> Result<reqwest::blocking::Client, reqwest::Error> {
-    reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
+fn bearer(token: &str) -> String {
+    format!("Bearer {token}")
 }
 
 /// URL-safe random, for the PKCE verifier and the state parameter.
@@ -108,7 +107,7 @@ pub fn begin_consent(creds: &ClientCreds) -> Result<Consent, GoogleError> {
     let (verifier, state) = (nonce(), nonce());
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(Sha256::digest(verifier.as_bytes()));
-    let mut url = reqwest::Url::parse("https://accounts.google.com/o/oauth2/v2/auth")
+    let mut url = fetch::Url::parse("https://accounts.google.com/o/oauth2/v2/auth")
         .expect("the constant Google authorization URL is valid");
     url.query_pairs_mut()
         .append_pair("client_id", &creds.client_id)
@@ -209,7 +208,7 @@ fn wait_for_query(
 
 impl Consent {
     /// Blocks until the browser hits the loopback port, then trades the code for tokens.
-    pub fn wait_for_token(self) -> Result<Token, GoogleError> {
+    pub async fn wait_for_token(self, client: &dyn HttpClient) -> Result<Token, GoogleError> {
         let params = wait_for_query(&self.listener, &self.state, "qrate is signed in")?;
         let code = params.get("code").ok_or(GoogleError::NoCode)?;
         let mut form = self.creds.form();
@@ -219,26 +218,34 @@ impl Consent {
             ("redirect_uri", self.redirect),
             ("code_verifier", self.verifier),
         ]);
-        client()?
-            .post("https://oauth2.googleapis.com/token")
-            .form(&form)
-            .send()?
-            .json::<TokenResponse>()?
-            .into_token()
+        exchange(client, &form).await
     }
 }
 
 /// Trade a stored refresh token for a fresh access token, so consent is once per machine.
-pub fn refresh(creds: &ClientCreds, refresh_token: &str) -> Result<Token, GoogleError> {
+pub async fn refresh(
+    client: &dyn HttpClient,
+    creds: &ClientCreds,
+    refresh_token: &str,
+) -> Result<Token, GoogleError> {
     let mut form = creds.form();
     form.extend([
         ("refresh_token", refresh_token.to_string()),
         ("grant_type", "refresh_token".to_string()),
     ]);
-    client()?
-        .post("https://oauth2.googleapis.com/token")
-        .form(&form)
-        .send()?
+    exchange(client, &form).await
+}
+
+async fn exchange(
+    client: &dyn HttpClient,
+    form: &[(&'static str, String)],
+) -> Result<Token, GoogleError> {
+    let request = fetch::form(
+        fetch::request(Method::POST, "https://oauth2.googleapis.com/token"),
+        &form,
+    )?;
+    fetch::send(client, request)
+        .await?
         .json::<TokenResponse>()?
         .into_token()
 }
@@ -289,25 +296,28 @@ pub struct Config {
 
 /// Ask the credential endpoint whether the stored pair is stale. `Ok(None)` is a `304` — what the
 /// caller already has is current, which is the answer on almost every check.
-pub fn fetch_config(endpoint: &str, etag: Option<&str>) -> Result<Option<Config>, GoogleError> {
-    let mut request = client()?
-        .get(endpoint)
-        .bearer_auth(CONFIG_TOKEN.unwrap_or_default());
+pub async fn fetch_config(
+    client: &dyn HttpClient,
+    endpoint: &str,
+    etag: Option<&str>,
+) -> Result<Option<Config>, GoogleError> {
+    let mut request = fetch::request(Method::GET, endpoint).header(
+        header::AUTHORIZATION,
+        bearer(CONFIG_TOKEN.unwrap_or_default()),
+    );
     if let Some(etag) = etag {
-        request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+        request = request.header(header::IF_NONE_MATCH, etag);
     }
-    let response = request.send()?;
-    if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+    let request = request
+        .body(Default::default())
+        .map_err(anyhow::Error::from)?;
+    let response = fetch::send(client, request).await?;
+    if response.status == StatusCode::NOT_MODIFIED {
         return Ok(None);
     }
-    let response = response.error_for_status()?;
-    let etag = response
-        .headers()
-        .get(reqwest::header::ETAG)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+    let response = response.ok()?;
     let mut config: Config = response.json()?;
-    config.etag = etag;
+    config.etag = response.header(header::ETAG).map(str::to_string);
     Ok(Some(config))
 }
 
@@ -321,14 +331,20 @@ struct CreatedSheet {
 
 /// Create an empty spreadsheet in the user's Drive. Returns its id and the URL to open — the id is
 /// what a project stores to stay linked to it, so [`write_values`] can refill it later.
-pub fn create_sheet(token: &str, title: &str) -> Result<(String, String), GoogleError> {
-    let created: CreatedSheet = client()?
-        .post("https://sheets.googleapis.com/v4/spreadsheets")
-        .bearer_auth(token)
-        .json(&serde_json::json!({ "properties": { "title": title } }))
-        .send()?
-        .error_for_status()?
-        .json()?;
+pub async fn create_sheet(
+    client: &dyn HttpClient,
+    token: &str,
+    title: &str,
+) -> Result<(String, String), GoogleError> {
+    let request = fetch::json(
+        fetch::request(
+            Method::POST,
+            "https://sheets.googleapis.com/v4/spreadsheets",
+        )
+        .header(header::AUTHORIZATION, bearer(token)),
+        &serde_json::json!({ "properties": { "title": title } }),
+    )?;
+    let created: CreatedSheet = fetch::send(client, request).await?.ok()?.json()?;
     Ok((created.id, created.url))
 }
 
@@ -337,7 +353,8 @@ pub fn create_sheet(token: &str, title: &str) -> Result<(String, String), Google
 ///
 /// The new values are written first. Only after that succeeds are stale rows and columns cleared,
 /// so a failed write cannot leave the old spreadsheet empty.
-pub fn write_values(
+pub async fn write_values(
+    client: &dyn HttpClient,
     token: &str,
     spreadsheet_id: &str,
     headers: &[String],
@@ -352,33 +369,37 @@ pub fn write_values(
         cells.resize(width, String::new());
         values.push(cells);
     }
-    let response = client()?
-        .put(format!(
-            "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/A1?valueInputOption=RAW"
-        ))
-        .bearer_auth(token)
-        .json(&serde_json::json!({ "values": values }))
-        .send()?;
-    reached(response)?;
+    let url = format!(
+        "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/A1?valueInputOption=RAW"
+    );
+    send_reached(
+        client,
+        Method::PUT,
+        &url,
+        token,
+        &serde_json::json!({ "values": values }),
+    )
+    .await?;
 
     let tail = format!("A{}:ZZZ", rows.len() + 2);
-    clear_values(token, spreadsheet_id, &tail)?;
+    clear_values(client, token, spreadsheet_id, &tail).await?;
     if width < 18_278 {
         let excess_columns = format!("{}:ZZZ", column_label(width + 1));
-        clear_values(token, spreadsheet_id, &excess_columns)?;
+        clear_values(client, token, spreadsheet_id, &excess_columns).await?;
     }
     Ok(())
 }
 
-fn clear_values(token: &str, spreadsheet_id: &str, range: &str) -> Result<(), GoogleError> {
-    let response = client()?
-        .post(format!(
-            "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{range}:clear"
-        ))
-        .bearer_auth(token)
-        .json(&serde_json::json!({}))
-        .send()?;
-    reached(response)
+async fn clear_values(
+    client: &dyn HttpClient,
+    token: &str,
+    spreadsheet_id: &str,
+    range: &str,
+) -> Result<(), GoogleError> {
+    let url = format!(
+        "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{range}:clear"
+    );
+    send_reached(client, Method::POST, &url, token, &serde_json::json!({})).await
 }
 
 fn column_label(mut index: usize) -> String {
@@ -393,16 +414,51 @@ fn column_label(mut index: usize) -> String {
 
 /// `drive.file` answers 404, not 403, for a file the token was never granted — so the plain status
 /// is indistinguishable from a deleted sheet and has to be named for the user.
-fn reached(response: reqwest::blocking::Response) -> Result<(), GoogleError> {
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
+fn reached(response: fetch::Reply) -> Result<fetch::Reply, GoogleError> {
+    if response.status == StatusCode::NOT_FOUND {
         return Err(GoogleError::NoAccess);
     }
-    response.error_for_status()?;
+    Ok(response.ok()?)
+}
+
+async fn send_reached(
+    client: &dyn HttpClient,
+    method: Method,
+    url: &str,
+    token: &str,
+    body: &serde_json::Value,
+) -> Result<(), GoogleError> {
+    let request = fetch::json(
+        fetch::request(method, url).header(header::AUTHORIZATION, bearer(token)),
+        body,
+    )?;
+    reached(fetch::send(client, request).await?)?;
     Ok(())
 }
 
+async fn get_reached(
+    client: &dyn HttpClient,
+    token: &str,
+    spreadsheet_id: &str,
+    fields: &str,
+) -> Result<fetch::Reply, GoogleError> {
+    let url = format!(
+        "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}?fields={}",
+        urlencode(fields)
+    );
+    let request = fetch::request(Method::GET, &url)
+        .header(header::AUTHORIZATION, bearer(token))
+        .body(Default::default())
+        .map_err(anyhow::Error::from)?;
+    reached(fetch::send(client, request).await?)
+}
+
 /// The title of the spreadsheet, for asking before it is overwritten.
-pub fn sheet_title(token: &str, spreadsheet_id: &str) -> Result<String, GoogleError> {
+pub async fn sheet_title(
+    client: &dyn HttpClient,
+    token: &str,
+    spreadsheet_id: &str,
+) -> Result<String, GoogleError> {
     #[derive(Deserialize)]
     struct Titled {
         properties: Title,
@@ -411,17 +467,9 @@ pub fn sheet_title(token: &str, spreadsheet_id: &str) -> Result<String, GoogleEr
     struct Title {
         title: String,
     }
-    let response = client()?
-        .get(format!(
-            "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
-        ))
-        .bearer_auth(token)
-        .query(&[("fields", "properties(title)")])
-        .send()?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(GoogleError::NoAccess);
-    }
-    let titled: Titled = response.error_for_status()?.json()?;
+    let titled: Titled = get_reached(client, token, spreadsheet_id, "properties(title)")
+        .await?
+        .json()?;
     Ok(titled.properties.title)
 }
 
@@ -442,18 +490,15 @@ struct SheetList {
 }
 
 /// Notes use the numeric ID of the first tab; it is not necessarily zero on an existing sheet.
-pub fn first_tab_id(token: &str, spreadsheet_id: &str) -> Result<i64, GoogleError> {
-    let response = client()?
-        .get(format!(
-            "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
-        ))
-        .bearer_auth(token)
-        .query(&[("fields", "sheets(properties(sheetId))")])
-        .send()?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(GoogleError::NoAccess);
-    }
-    let sheets: SheetList = response.error_for_status()?.json()?;
+pub async fn first_tab_id(
+    client: &dyn HttpClient,
+    token: &str,
+    spreadsheet_id: &str,
+) -> Result<i64, GoogleError> {
+    let sheets: SheetList =
+        get_reached(client, token, spreadsheet_id, "sheets(properties(sheetId))")
+            .await?
+            .json()?;
     sheets
         .sheets
         .first()
@@ -462,19 +507,14 @@ pub fn first_tab_id(token: &str, spreadsheet_id: &str) -> Result<i64, GoogleErro
 }
 
 /// Apply the shared note requests after values.update; its field mask leaves values untouched.
-pub fn batch_update(
+pub async fn batch_update(
+    client: &dyn HttpClient,
     token: &str,
     spreadsheet_id: &str,
     body: &serde_json::Value,
 ) -> Result<(), GoogleError> {
-    let response = client()?
-        .post(format!(
-            "https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate"
-        ))
-        .bearer_auth(token)
-        .json(body)
-        .send()?;
-    reached(response)
+    let url = format!("https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate");
+    send_reached(client, Method::POST, &url, token, body).await
 }
 
 /// The link a stored spreadsheet id points at.

@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 log.workspace = true
 anyhow.workspace = true
+async-channel = "2"
 chrono.workspace = true
 dirs.workspace = true
 gpui.workspace = true
@@ -14,3 +15,6 @@ rusqlite.workspace = true
 qrate-export = { path = "../qrate-export" }
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

@@ -96,6 +96,8 @@ problem — read the `--check` diff and apply it by hand rather than fighting th
 | `plugin-package` | verifies, installs, updates, and removes plugin release packages (manifest, catalog signature, receipts) |
 | `preview` | turns a linked file into pixels — the format ladder and the thumbnail cache. Native decoders (PDF, video, RAW) belong here so they never reach `table` |
 | `visual-search` | CLIP on the CPU through candle (pure Rust) and its pinned weights download. No gpui — `table::visual` owns the index job, the search bar, and "Find similar items", and stores the vectors in the project's `.qrate` (`__visual_index`). Weights live in `<data dir>/models`, never in the install |
+| `fetch` | one HTTP round trip over gpui's `HttpClient` — reqwest on the desktop (installed in `app`), `fetch` in the browser. Every crate that talks to a server goes through it, except `plugin-host` (Lua's `http.get` must stay blocking) and `updater` (desktop-only downloads) |
+| `web` | the browser entry point: a wasm `cdylib` built and served by `scripts/web.sh`. See `docs/dev/web-support-plan.md` |
 | `ai` | two halves: `agent.rs` is the *shipped* external-agent contract (see `AGENTS.md`); the rest is traits + Cohere/mock providers for planned AI review/embedding, deliberately unfinished |
 
 ## Project Status Tracking

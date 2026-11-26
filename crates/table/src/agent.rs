@@ -2989,7 +2989,9 @@ mod tests {
             gpui_component::init(cx);
             cx.set_global(settings::AppSettings::default());
             cx.set_global(settings::project::ProjectPersistence {
-                writer: Some(settings::project::ProjectSettingsWriter::start()),
+                writer: Some(settings::project::ProjectSettingsWriter::start(
+                    cx.background_executor(),
+                )),
             });
             cx.set_global(project);
         });

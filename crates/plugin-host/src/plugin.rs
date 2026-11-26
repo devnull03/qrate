@@ -27,6 +27,8 @@ use plugin_api::{
 };
 use serde_json::Value as Json;
 
+use crate::{Env, PERMISSION_NET, PackageDescriptor, Writes};
+
 /// Enough for a vocabulary list or a compiled pattern set, far short of a runaway allocation.
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 
@@ -85,34 +87,6 @@ const MAX_EXPORT_COLUMNS: usize = 512;
 const MAX_EXPORT_ROWS: usize = 250_000;
 const MAX_EXPORT_CELLS: usize = 2_000_000;
 const MAX_EXPORT_INPUT_BYTES: usize = 64 * 1024 * 1024;
-
-/// The one permission that exists. Declared by a plugin, granted by the user, checked here.
-pub const PERMISSION_NET: &str = "net";
-
-/// What a command asked the host to store, by scope. `None` means "leave that scope alone";
-/// `Some` replaces the plugin's whole object there, which is the same replace-the-set rule
-/// diagnostics use and saves inventing merge semantics.
-#[derive(Default, Debug, PartialEq)]
-pub struct Writes {
-    pub column: Option<Json>,
-    pub project: Option<Json>,
-    pub user: Option<Json>,
-}
-
-/// Everything the host settles before a plugin's first line runs: what it may `require`, what it is
-/// allowed to reach, and what it stored the last time it ran.
-#[derive(Default)]
-pub struct Env {
-    pub modules: Vec<(String, String)>,
-    pub granted: Vec<String>,
-    pub storage: Json,
-}
-
-pub struct PackageDescriptor {
-    pub name: String,
-    pub api_version: u64,
-    pub permissions: Vec<String>,
-}
 
 struct Loaded {
     lua: Lua,
