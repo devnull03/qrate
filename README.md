@@ -27,6 +27,13 @@ that worktree when the server exits. It uses a checked-in signed fixture and doe
 Cloudflare credentials. Use `bun run dev:windows:refresh` to test the latest production catalog with
 an authenticated Wrangler CLI.
 
+## Guides
+
+How-to articles live in `src/content/guides/`, one Markdown file each, and are served at
+`/guides/<filename>`. Unlike the docs they are written here, not synced from main. The front
+matter is checked by `src/content.config.ts`; set `draft: true` to preview one in `bun run dev`
+without publishing it.
+
 ## Deploy
 
 Cloudflare builds the `site` branch and deploys the `qrate` Worker. GitHub release and catalog

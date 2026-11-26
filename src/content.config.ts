@@ -1,4 +1,6 @@
 import { defineCollection } from 'astro:content';
+import { glob } from 'astro/loaders';
+import { z } from 'astro/zod';
 import { docsLoader } from '@astrojs/starlight/loaders';
 import { docsSchema } from '@astrojs/starlight/schema';
 
@@ -6,6 +8,21 @@ import { docsSchema } from '@astrojs/starlight/schema';
 // further docs/ directory so the pages come out under /docs. Starlight has no
 // `prefix` option; a nested directory is the documented way to do this.
 // Most of the tree is generated — see scripts/sync-docs.mjs.
+//
+// Guides are written here on the site branch, not synced from main: they walk
+// through a task end to end, where the docs describe one feature at a time.
 export const collections = {
   docs: defineCollection({ loader: docsLoader(), schema: docsSchema() }),
+  guides: defineCollection({
+    loader: glob({ pattern: '*.md', base: './src/content/guides' }),
+    schema: z.object({
+      title: z.string(),
+      description: z.string(),
+      published: z.coerce.date(),
+      updated: z.coerce.date().optional(),
+      tags: z.array(z.string()).default([]),
+      related: z.array(z.object({ label: z.string(), href: z.string() })).default([]),
+      draft: z.boolean().default(false),
+    }),
+  }),
 };
